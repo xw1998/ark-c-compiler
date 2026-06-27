@@ -1,0 +1,40 @@
+# Build artifacts
+*.o
+*.obj
+*.a
+*.lib
+*.exe
+*.out
+*.bin
+*.hex
+*.elf
+*.map
+*.S.tmp
+
+# 日志文件
+*.log
+test_results.txt
+
+# 测试中间产物（c 后端生成）
+*.gen.c
+*.gen.exe
+
+# Binaries
+arkcc
+arkcc.exe
+
+# IDE/Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build directories
+build/
+out/
+dist/
