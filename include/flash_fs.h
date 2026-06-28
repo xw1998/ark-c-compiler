@@ -12,4 +12,9 @@
  */
 int fs_read_file(const char *path, char *buf, int max_len);
 
+/* 写二进制数据到输出文件/Flash。返回写入字节数；失败返回 -1。
+ * path 为 "-" 时输出到标准输出（host）或回调（STM32）。
+ */
+int fs_write_file(const char *path, const unsigned char *data, int len);
+
 #endif /* ARK_FLASH_FS_H */

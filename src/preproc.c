@@ -19,7 +19,6 @@
 #include "config.h"
 #include "arkcc_config.h"
 #include "type.h"   /* type_set_pack/type_get_pack：#pragma pack 对齐控制 */
-#include <stdlib.h>  /* malloc/free：trigraph 缓冲区 */
 
 #define PP_BUF_SIZE (512 * 1024)
 #define PP_INC_BUF  (128 * 1024)
@@ -33,11 +32,14 @@
  * ??'  ^      ??<  {      ??>  }      ??!  |
  * ??-  ~
  * 仅当 g_config.enable_trigraph 打开时启用。
- * 输出写入 out（不含终止符）；返回新长度。 */
-static int apply_trigraphs(const char *src, char *out, int out_cap) {
+ *
+ * 原地替换：trigraph 是 3 字符→1 字符，结果不比源长，
+ * 因此 write 指针永远不会超过 read 指针，可以原地修改。
+ * 返回新长度（不含终止符）；缓冲区以 '\0' 结尾。 */
+static int apply_trigraphs(char *src) {
+    char *w = src;
     const char *p = src;
-    int n = 0;
-    while (*p && n < out_cap - 1) {
+    while (*p) {
         if (p[0] == '?' && p[1] == '?') {
             char r = 0;
             switch (p[2]) {
@@ -52,12 +54,12 @@ static int apply_trigraphs(const char *src, char *out, int out_cap) {
                 case '-': r = '~';  break;
                 default:  r = 0;    break;
             }
-            if (r) { out[n++] = r; p += 3; continue; }
+            if (r) { *w++ = r; p += 3; continue; }
         }
-        out[n++] = *p++;
+        *w++ = *p++;
     }
-    out[n] = 0;
-    return n;
+    *w = 0;
+    return (int)(w - src);
 }
 #endif
 
@@ -953,13 +955,12 @@ char *preproc_process(const char *src) {
 #if ARKCC_FEATURE_TRIGRAPH
     /* 三元组替换（编译期开关 + 运行时开关双重守护）。
      * 在翻译阶段 1 处理：先替换 ??x → 单字符，再做宏展开/条件编译。
-     * 注意：用 malloc 而非 mem_pool_alloc，避免 512KB 缓冲区耗尽内存池。 */
+     * 原地修改 src 缓冲区：trigraph 是 3→1 缩短，write 指针不会超过 read。
+     * 注：调用方传入的 g_src 由 compiler.c 持有，每次编译前会重新读入，
+     * 故原地修改是安全的。 */
     if (g_config.enable_trigraph) {
-        char *tri = (char *)malloc(PP_BUF_SIZE);
-        if (tri) {
-            apply_trigraphs(src, tri, PP_BUF_SIZE);
-            src_ptr = tri;
-        }
+        apply_trigraphs((char *)src);
+        src_ptr = src;
     }
 #endif
     /* 注意：preproc_reset() 应该由 compiler.c 在每次编译开始时调用 */

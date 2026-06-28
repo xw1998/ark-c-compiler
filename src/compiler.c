@@ -15,15 +15,30 @@
 #include "config.h"
 #include "arkcc_config.h"
 #include "opt.h"
-#include <stdio.h>
 
-#define SRC_BUFFER_SIZE (128 * 1024)
-#define ASM_BUFFER_SIZE (512 * 1024)
-#define CODE_BUFFER_SIZE (256 * 1024)
+/* 缓冲区大小可由编译期覆盖：
+ *   host 默认 128KB/512KB/256KB；STM32 移植可缩到 32KB/128KB/64KB。
+ * -c / -link 模式的输出累积缓冲区同理（STM32 上这两种模式通常不用，
+ * 可通过 -D 将其设为很小的值以节省 SRAM）。 */
+#ifndef ARK_SRC_BUF_SIZE
+#define ARK_SRC_BUF_SIZE  (128 * 1024)
+#endif
+#ifndef ARK_ASM_BUF_SIZE
+#define ARK_ASM_BUF_SIZE  (512 * 1024)
+#endif
+#ifndef ARK_CODE_BUF_SIZE
+#define ARK_CODE_BUF_SIZE (256 * 1024)
+#endif
+#ifndef ARK_OBJ_BUF_SIZE
+#define ARK_OBJ_BUF_SIZE  (ARK_ASM_BUF_SIZE + 16)
+#endif
+#ifndef ARK_LINK_BUF_SIZE
+#define ARK_LINK_BUF_SIZE (256 * 1024)
+#endif
 
-static char          g_src[SRC_BUFFER_SIZE];
-static char          g_asm[ASM_BUFFER_SIZE];
-static unsigned char g_code[CODE_BUFFER_SIZE];
+static char          g_src[ARK_SRC_BUF_SIZE];
+static char          g_asm[ARK_ASM_BUF_SIZE];
+static unsigned char g_code[ARK_CODE_BUF_SIZE];
 
 static int derive_output(const char *input, char *out, int cap, const char *ext) {
     int n = ark_strlen(input);
@@ -46,29 +61,21 @@ static int derive_output(const char *input, char *out, int cap, const char *ext)
 }
 
 static int write_binary(const char *path, const unsigned char *data, int n) {
-    FILE *fp = fopen(path, "wb");
-    int wr;
-    if (!fp) {
-        ark_log("[arkcc] cannot open output '%s'\n", path);
+    int wr = fs_write_file(path, data, n);
+    if (wr != n) {
+        ark_log("[arkcc] cannot write output '%s'\n", path);
         return ARK_ERR_IO;
     }
-    wr = (int)fwrite(data, 1, (size_t)n, fp);
-    fclose(fp);
-    if (wr != n) return ARK_ERR_IO;
     return ARK_OK;
 }
 
 static int write_text(const char *path, const char *s) {
-    FILE *fp = fopen(path, "wb");
     int n = ark_strlen(s);
-    int wr;
-    if (!fp) {
-        ark_log("[arkcc] cannot open output '%s'\n", path);
+    int wr = fs_write_file(path, (const unsigned char *)s, n);
+    if (wr != n) {
+        ark_log("[arkcc] cannot write output '%s'\n", path);
         return ARK_ERR_IO;
     }
-    wr = (int)fwrite(s, 1, (size_t)n, fp);
-    fclose(fp);
-    if (wr != n) return ARK_ERR_IO;
     return ARK_OK;
 }
 
@@ -89,41 +96,48 @@ int ark_compile(const ArkOptions *opts) {
 
     /* -link 模式：合并多个 .ark_obj（自定义最简格式：原始文本对象拼接） */
     if (opts->link_mode) {
-        FILE *fp_out;
         const char *out_path = opts->output_path ? opts->output_path : "a.out.c";
         int li;
         char buf[64 * 1024];
-        fp_out = fopen(out_path, "wb");
-        if (!fp_out) {
-            ark_log("[arkcc] cannot open link output '%s'\n", out_path);
-            return ARK_ERR_IO;
-        }
+        /* 由于 fs_write_file 一次写整块，先把链接结果累积到 out_buf。
+         * 大小由 ARK_LINK_BUF_SIZE 控制（STM32 上可设为很小）。 */
+        static char out_buf[ARK_LINK_BUF_SIZE];
+        int out_len = 0;
         for (li = 0; li < opts->link_input_count; li++) {
             int n = fs_read_file(opts->link_inputs[li], buf, sizeof(buf));
+            int rem;
+            const char *p;
             if (n < 0) {
                 ark_log("[arkcc] cannot read object '%s'\n", opts->link_inputs[li]);
-                fclose(fp_out);
                 return ARK_ERR_IO;
             }
             /* 简单跳过对象头 "ARKOBJ\n" 与可选的 #include 块（如果存在） */
-            {
-                const char *p = buf;
-                int rem = n;
-                if (rem >= 7 && p[0] == 'A' && p[1] == 'R' && p[2] == 'K' &&
-                    p[3] == 'O' && p[4] == 'B' && p[5] == 'J' && p[6] == '\n') {
-                    p += 7; rem -= 7;
-                }
-                /* 只在第一个对象保留 #include 块；其余跳过到首个 typedef 之后即可。
-                 * 这里简化：把每个对象的全部内容直接拼接，重复的 #include 不会引起 gcc 错误。 */
-                if (li > 0) {
-                    /* 跳过开头空行 */
-                    while (rem > 0 && (*p == '\n' || *p == '\r')) { p++; rem--; }
-                }
-                fwrite(p, 1, (size_t)rem, fp_out);
-                fputc('\n', fp_out);
+            p = buf;
+            rem = n;
+            if (rem >= 7 && p[0] == 'A' && p[1] == 'R' && p[2] == 'K' &&
+                p[3] == 'O' && p[4] == 'B' && p[5] == 'J' && p[6] == '\n') {
+                p += 7; rem -= 7;
             }
+            /* 只在第一个对象保留 #include 块；其余跳过到首个 typedef 之后即可。
+             * 这里简化：把每个对象的全部内容直接拼接，重复的 #include 不会引起 gcc 错误。 */
+            if (li > 0) {
+                /* 跳过开头空行 */
+                while (rem > 0 && (*p == '\n' || *p == '\r')) { p++; rem--; }
+            }
+            if (out_len + rem + 1 > (int)sizeof(out_buf)) {
+                ark_log("[arkcc] link output too large\n");
+                return ARK_ERR_IO;
+            }
+            {
+                int k;
+                for (k = 0; k < rem; k++) out_buf[out_len++] = p[k];
+            }
+            out_buf[out_len++] = '\n';
         }
-        fclose(fp_out);
+        if (fs_write_file(out_path, (const unsigned char *)out_buf, out_len) != out_len) {
+            ark_log("[arkcc] cannot write link output '%s'\n", out_path);
+            return ARK_ERR_IO;
+        }
         if (opts->verbose) ark_log("[arkcc] linked %d objects -> %s\n", opts->link_input_count, out_path);
         return ARK_OK;
     }
@@ -147,7 +161,7 @@ int ark_compile(const ArkOptions *opts) {
                 return ARK_ERR_ARG;
             }
             mem_pool_reset();
-            asm_len = fs_read_file(opts->input_path, g_asm, ASM_BUFFER_SIZE);
+            asm_len = fs_read_file(opts->input_path, g_asm, ARK_ASM_BUF_SIZE);
             if (asm_len < 0) {
                 ark_log("[arkcc] cannot read '%s'\n", opts->input_path);
                 return ARK_ERR_IO;
@@ -162,13 +176,14 @@ int ark_compile(const ArkOptions *opts) {
                     return write_text(opts->output_path, asm_text);
                 } else if (!opts->output_path ||
                            ark_streq(opts->output_path, "-")) {
-                    fwrite(asm_text, 1, (size_t)asm_len, stdout);
-                    fflush(stdout);
+                    /* 写入标准输出（fs_write_file 处理 "-" 路径） */
+                    if (fs_write_file("-", (const unsigned char *)asm_text, asm_len) != asm_len)
+                        return ARK_ERR_IO;
                 }
                 return ARK_OK;
             }
 
-            code_size = be2->assemble(asm_text, g_code, CODE_BUFFER_SIZE);
+            code_size = be2->assemble(asm_text, g_code, ARK_CODE_BUF_SIZE);
             if (code_size < 0) {
                 ark_log("[arkcc] assembly of '%s' failed\n", opts->input_path);
                 return ARK_ERR_ASM;
@@ -202,7 +217,7 @@ int ark_compile(const ArkOptions *opts) {
     }
     preproc_add_include_dir("stdlib/include");
 
-    src_len = fs_read_file(opts->input_path, g_src, SRC_BUFFER_SIZE);
+    src_len = fs_read_file(opts->input_path, g_src, ARK_SRC_BUF_SIZE);
     if (src_len < 0) {
         ark_log("[arkcc] cannot read '%s'\n", opts->input_path);
         return ARK_ERR_IO;
@@ -213,8 +228,10 @@ int ark_compile(const ArkOptions *opts) {
     /* -E 仅预处理 */
     if (opts->preprocess_only) {
         const char *target = opts->output_path ? opts->output_path : "-";
+        int e_len = ark_strlen(preprocessed);
         if (ark_streq(target, "-")) {
-            fwrite(preprocessed, 1, (size_t)ark_strlen(preprocessed), stdout);
+            if (fs_write_file("-", (const unsigned char *)preprocessed, e_len) != e_len)
+                return ARK_ERR_IO;
             return ARK_OK;
         }
         return write_text(target, preprocessed);
@@ -258,7 +275,7 @@ int ark_compile(const ArkOptions *opts) {
     }
 #endif
 
-    asm_len = be->emit_asm(ir, g_asm, ASM_BUFFER_SIZE);
+    asm_len = be->emit_asm(ir, g_asm, ARK_ASM_BUF_SIZE);
     if (asm_len < 0) return ARK_ERR_CODEGEN;
     g_asm[asm_len] = 0;
 
@@ -266,18 +283,28 @@ int ark_compile(const ArkOptions *opts) {
     if (opts->compile_only) {
         char outpath[512];
         const char *target;
-        FILE *fp;
+        /* 对象格式：固定 7 字节头 "ARKOBJ\n" + g_asm 正文 */
+        static char obj_buf[ARK_OBJ_BUF_SIZE];
+        int ol = 0;
+        const char *hdr = "ARKOBJ\n";
+        int hk;
         if (opts->output_path) target = opts->output_path;
         else {
             if (derive_output(opts->input_path, outpath, sizeof(outpath), ".ark_obj") != 0)
                 return ARK_ERR_ARG;
             target = outpath;
         }
-        fp = fopen(target, "wb");
-        if (!fp) return ARK_ERR_IO;
-        fputs("ARKOBJ\n", fp);
-        fwrite(g_asm, 1, (size_t)asm_len, fp);
-        fclose(fp);
+        for (hk = 0; hdr[hk]; hk++) obj_buf[ol++] = hdr[hk];
+        if (asm_len + ol > (int)sizeof(obj_buf)) {
+            ark_log("[arkcc] object output too large for buffer\n");
+            return ARK_ERR_IO;
+        }
+        {
+            int k;
+            for (k = 0; k < asm_len; k++) obj_buf[ol++] = g_asm[k];
+        }
+        if (fs_write_file(target, (const unsigned char *)obj_buf, ol) != ol)
+            return ARK_ERR_IO;
         if (opts->verbose) ark_log("[arkcc] wrote object '%s' (%d bytes)\n", target, asm_len);
         return ARK_OK;
     }
@@ -290,14 +317,14 @@ int ark_compile(const ArkOptions *opts) {
         } else if (opts->output_path && (ark_streq(opts->output_path, "nul") || ark_streq(opts->output_path, "NUL"))) {
             /* 丢弃输出 */
         } else {
-            FILE *fp = stdout;
-            fwrite(g_asm, 1, (size_t)asm_len, fp);
-            fflush(fp);
+            /* 写入标准输出（fs_write_file 处理 "-" 路径） */
+            if (fs_write_file("-", (const unsigned char *)g_asm, asm_len) != asm_len)
+                return ARK_ERR_IO;
         }
         return ARK_OK;
     }
 
-    code_size = be->assemble(g_asm, g_code, CODE_BUFFER_SIZE);
+    code_size = be->assemble(g_asm, g_code, ARK_CODE_BUF_SIZE);
     if (code_size < 0) {
         ark_log("[arkcc] assembly failed\n");
         return ARK_ERR_ASM;

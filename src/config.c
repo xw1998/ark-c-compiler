@@ -9,8 +9,7 @@
  */
 #include "config.h"
 #include "platform.h"
-#include <stdio.h>
-#include <string.h>
+#include "flash_fs.h"
 
 ArkccConfig g_config;
 
@@ -91,62 +90,83 @@ static void apply_kv(const char *section, const char *key, const char *val) {
 }
 
 void config_load_file(const char *path) {
-    FILE *fp;
-    char line[512];
+    static char cfg_buf[4096];
     char section[64] = "";
+    int len;
+    int i;
+    char *line_start;
     if (!path) return;
-    fp = fopen(path, "r");
-    if (!fp) {
+    /* 用 fs_read_file 一次性读取整个配置文件（host=stdio，STM32=W25Q Flash）。
+     * 失败时静默回退到编译期默认值。 */
+    len = fs_read_file(path, cfg_buf, (int)sizeof(cfg_buf) - 1);
+    if (len < 0) {
         ark_log("[config] cannot open config file '%s' (ignored)\n", path);
         return;
     }
+    cfg_buf[len] = 0;
     g_config.config_file = path;
-    while (fgets(line, sizeof(line), fp)) {
-        char *p = line;
-        char *key;
-        char *val;
-        char *eq;
-        char *end;
-        /* 跳过前导空白 */
-        while (*p == ' ' || *p == '\t') p++;
-        /* 空行/注释 */
-        if (*p == 0 || *p == '\n' || *p == '\r' || *p == ';' || *p == '#') continue;
-        /* 段名 [section] */
-        if (*p == '[') {
-            char *q = p + 1;
-            char *e = q;
-            while (*e && *e != ']' && *e != '\n' && *e != '\r') e++;
-            *e = 0;
-            /* 复制到 section */
+    /* 逐行解析：手动按 \n 切分。CR/LF 一并处理。 */
+    line_start = cfg_buf;
+    for (i = 0; i <= len; i++) {
+        if (i == len || cfg_buf[i] == '\n') {
+            char *p = line_start;
+            char *key;
+            char *val;
+            char *eq;
+            char *end;
+            /* 截断当前行 */
+            if (i < len) cfg_buf[i] = 0;
+            /* 去掉行尾 \r */
             {
-                int i = 0;
-                while (q[i] && i < (int)sizeof(section) - 1) { section[i] = q[i]; i++; }
-                section[i] = 0;
+                int ll = (int)(&cfg_buf[i] - p);
+                while (ll > 0 && (p[ll-1] == '\r')) { p[ll-1] = 0; ll--; }
             }
-            continue;
+            /* 跳过前导空白 */
+            while (*p == ' ' || *p == '\t') p++;
+            /* 空行/注释 */
+            if (*p == 0 || *p == ';' || *p == '#') {
+                line_start = &cfg_buf[i + 1];
+                continue;
+            }
+            /* 段名 [section] */
+            if (*p == '[') {
+                char *q = p + 1;
+                char *e = q;
+                while (*e && *e != ']') e++;
+                *e = 0;
+                {
+                    int k = 0;
+                    while (q[k] && k < (int)sizeof(section) - 1) { section[k] = q[k]; k++; }
+                    section[k] = 0;
+                }
+                line_start = &cfg_buf[i + 1];
+                continue;
+            }
+            /* key=value */
+            eq = p;
+            while (*eq && *eq != '=') eq++;
+            if (*eq != '=') {
+                line_start = &cfg_buf[i + 1];
+                continue;
+            }
+            *eq = 0;
+            /* 去掉 key 尾空白 */
+            end = eq;
+            while (end > p && (end[-1] == ' ' || end[-1] == '\t')) { end--; *end = 0; }
+            key = p;
+            val = eq + 1;
+            /* 跳过 val 前空白 */
+            while (*val == ' ' || *val == '\t') val++;
+            /* 去掉 val 尾空白 */
+            {
+                char *ve = val;
+                while (*ve) ve++;
+                while (ve > val && (ve[-1] == ' ' || ve[-1] == '\t')) { ve--; *ve = 0; }
+            }
+            apply_kv(section, key, val);
+            line_start = &cfg_buf[i + 1];
         }
-        /* key=value */
-        eq = p;
-        while (*eq && *eq != '=' && *eq != '\n' && *eq != '\r') eq++;
-        if (*eq != '=') continue;
-        *eq = 0;
-        /* 去掉 key 尾空白 */
-        end = eq;
-        while (end > p && (end[-1] == ' ' || end[-1] == '\t')) { end--; *end = 0; }
-        key = p;
-        val = eq + 1;
-        /* 跳过 val 前空白 */
-        while (*val == ' ' || *val == '\t') val++;
-        /* 去掉 val 尾空白与换行 */
-        {
-            char *ve = val;
-            while (*ve && *ve != '\n' && *ve != '\r') ve++;
-            *ve = 0;
-            while (ve > val && (ve[-1] == ' ' || ve[-1] == '\t')) { ve--; *ve = 0; }
-        }
-        apply_kv(section, key, val);
     }
-    fclose(fp);
 }
 
 /* 命令行识别以下参数并更新 g_config：
@@ -212,18 +232,17 @@ void config_apply_args(int argc, char **argv) {
 }
 
 void config_print(void) {
-    fprintf(stderr,
-        "[arkcc] config:\n"
-        "  vla=%d complex=%d wchar=%d trigraph=%d\n"
-        "  fpu_hw=%d dwarf=%d\n"
-        "  opt_constfold=%d opt_dce=%d opt_regalloc=%d\n"
-        "  opt_level=%d debug_info=%d\n"
-        "  config_file=%s\n",
-        g_config.enable_vla, g_config.enable_complex,
-        g_config.enable_wchar, g_config.enable_trigraph,
-        g_config.enable_fpu_hw, g_config.enable_dwarf,
-        g_config.enable_opt_constfold, g_config.enable_opt_dce,
-        g_config.enable_opt_regalloc,
-        g_config.opt_level, g_config.debug_info,
-        g_config.config_file ? g_config.config_file : "(none)");
+    ark_log("[arkcc] config:\n");
+    ark_log("  vla=%d complex=%d wchar=%d trigraph=%d\n",
+            g_config.enable_vla, g_config.enable_complex,
+            g_config.enable_wchar, g_config.enable_trigraph);
+    ark_log("  fpu_hw=%d dwarf=%d\n",
+            g_config.enable_fpu_hw, g_config.enable_dwarf);
+    ark_log("  opt_constfold=%d opt_dce=%d opt_regalloc=%d\n",
+            g_config.enable_opt_constfold, g_config.enable_opt_dce,
+            g_config.enable_opt_regalloc);
+    ark_log("  opt_level=%d debug_info=%d\n",
+            g_config.opt_level, g_config.debug_info);
+    ark_log("  config_file=%s\n",
+            g_config.config_file ? g_config.config_file : "(none)");
 }

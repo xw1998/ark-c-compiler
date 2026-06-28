@@ -15,7 +15,7 @@ ARKCC := arkcc
 RM    := rm -f
 endif
 
-.PHONY: all clean test test-arm test-c test-x86 test-riscv
+.PHONY: all clean test test-arm test-c test-x86 test-riscv stm32
 
 all: $(ARKCC)
 
@@ -44,5 +44,33 @@ test-riscv: $(ARKCC)
 	./$(ARKCC) examples/arith.c -target riscv32 -S -o nul
 	./$(ARKCC) examples/func.c  -target riscv32 -S -o nul
 
+# ===== STM32 交叉编译 =====
+# arm-none-eabi-gcc 不存在时该目标会失败，但 Makefile 语法正确。
+ARM_GCC ?= arm-none-eabi-gcc
+
+STM32_CFLAGS = -mcpu=cortex-m7 -mthumb -mfpu=fpv5-d16 -mfloat-abi=hard \
+    -DARKCC_STM32 \
+    -DARK_POOL_SIZE=262144 \
+    -DARK_SRC_BUF_SIZE=32768 -DARK_ASM_BUF_SIZE=131072 -DARK_CODE_BUF_SIZE=65536 \
+    -DARK_OBJ_BUF_SIZE=4096 -DARK_LINK_BUF_SIZE=4096 \
+    -DARKCC_BACKEND_X86_64=0 -DARKCC_BACKEND_RISCV32=0 -DARKCC_BACKEND_C=0 \
+    -Iinclude -Iport/stm32 \
+    -Wall -Wextra -O2 -std=c99 -ffreestanding -nostdlib \
+    -Wno-unused-parameter -Wno-unused-but-set-variable -Wno-unused-variable -Wno-unused-function
+
+# STM32 仅编译 ARM 后端 + 前端核心（排除 main.c；config.c 已改为 fs_read_file 实现，保留）。
+# 排除 C 后端（STM32 上不需要）；x86_64/riscv32 后端文件不参与编译，
+# 由 -DARKCC_BACKEND_*=0 让 registry.c 不引用它们的符号。
+STM32_SRC := $(wildcard src/*.c)
+STM32_SRC := $(filter-out src/main.c, $(STM32_SRC))
+STM32_SRC += src/backend/arm/backend_arm.c src/backend/registry.c
+STM32_SRC += port/stm32/flash_fs_stm32.c port/stm32/platform_stm32.c port/stm32/main_stm32.c
+
+arkcc_stm32.elf: $(STM32_SRC)
+	$(ARM_GCC) $(STM32_CFLAGS) -o $@ $^ -lgcc
+
+stm32: arkcc_stm32.elf
+
 clean:
 	-$(RM) $(ARKCC) arkcc arkcc.exe *.bin *.gen.c
+	-$(RM) arkcc_stm32.elf

@@ -53,3 +53,17 @@ int fs_read_file(const char *path, char *buf, int max_len) {
     }
     return -1;
 }
+
+/* STM32 上：写入 Flash 或返回给调用者。
+ * 占位实现：通过回调或全局指针返回编译结果。
+ * 用户移植时替换为 Flash 编程或 RAM 拷贝。 */
+extern void arkcc_on_output(const unsigned char *data, int len);
+
+int fs_write_file(const char *path, const unsigned char *data, int len) {
+    (void)path;
+    if (!data || len < 0) return -1;
+    /* path 为 "-" 或任何路径：统一通过回调返回编译结果。
+     * 移植者可在此判断 path 并写入 W25Q 对应区域。 */
+    arkcc_on_output(data, len);
+    return len;
+}

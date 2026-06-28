@@ -17,3 +17,22 @@ int fs_read_file(const char *path, char *buf, int max_len) {
     buf[n] = '\0';
     return n;
 }
+
+int fs_write_file(const char *path, const unsigned char *data, int len) {
+    int wr;
+    if (!path || !data || len < 0) return -1;
+    /* "-" 表示标准输出（-E / -S 默认行为） */
+    if (path[0] == '-' && path[1] == 0) {
+        wr = (int)fwrite(data, 1, (size_t)len, stdout);
+        fflush(stdout);
+        return wr;
+    }
+    {
+        FILE *fp = fopen(path, "wb");
+        if (!fp) return -1;
+        wr = (int)fwrite(data, 1, (size_t)len, fp);
+        fclose(fp);
+        if (wr != len) return -1;
+        return wr;
+    }
+}
