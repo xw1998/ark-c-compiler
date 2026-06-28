@@ -22,4 +22,13 @@ void opt_constfold_func(IrFunc *f);
 /* 单函数死代码消除：删除 RETURN/JMP 之后、下一个标签之前的不可达指令。 */
 void opt_dce_func(IrFunc *f);
 
+/* 自动内联：将小函数体内联到调用点。
+ * 阈值：IR 指令数 ≤ ARK_INLINE_THRESHOLD（默认12）。
+ * 排除：递归、变参、irq、naked、asm_func、>4参数。 */
+void opt_inline(IrProgram *prog);
+
+/* 自动向量化：识别简单计数循环（a[i]=b[i]±c[i]），用 SIMD 指令并行处理。
+ * 仅在 ARM 后端真正加速；C 后端做标量回退。 */
+void opt_vectorize(IrProgram *prog);
+
 #endif /* ARK_OPT_H */

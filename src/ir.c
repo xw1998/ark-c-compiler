@@ -206,6 +206,10 @@ const char *ir_op_name(IrOp op) {
         case IR_PUSH_GLOBAL_ADDR: return "PUSH_GLOBAL_ADDR";
         case IR_ALLOCA:       return "ALLOCA";
         case IR_SMC:          return "SMC";
+        case IR_SIMD_ADD16:   return "SIMD_ADD16";
+        case IR_SIMD_SUB16:   return "SIMD_SUB16";
+        case IR_SIMD_ADD8:    return "SIMD_ADD8";
+        case IR_SIMD_SUB8:    return "SIMD_SUB8";
         default:              return "NOP";
     }
 }

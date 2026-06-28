@@ -18,6 +18,8 @@ typedef struct {
     int enable_opt_constfold;
     int enable_opt_dce;
     int enable_opt_regalloc;
+    int enable_opt_inline;   /* --autoinline / -O2 */
+    int enable_opt_vectorize;/* --vectorize / -O2 */
     int opt_level;          /* 0=无优化, 1=基础, 2=激进 */
     int debug_info;         /* 0=无, 1=DWARF */
     int split_sections;     /* -ffunction-sections：每函数一段 */

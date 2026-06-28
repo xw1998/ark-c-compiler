@@ -228,7 +228,17 @@ typedef enum {
     IR_LOAD_FLD,       /* 位域读取；val=位偏移, aux=位宽 */
     IR_PUSH_GLOBAL_ADDR, /* 取全局变量地址；name = 全局变量名（不加载值） */
     IR_ALLOCA,         /* B3: VLA 动态栈分配；弹出字节数，压入分配区首地址 */
-    IR_SMC             /* __smc(n) Secure Monitor Call；val=SMC 编号 */
+    IR_SMC,            /* __smc(n) Secure Monitor Call；val=SMC 编号 */
+
+    /* === 0.7.0 新增：SIMD 并行运算（Cortex-M4/M7 DSP 指令）===
+     * 栈语义与 IR_BINARY 一致：弹出右操作数 r1、左操作数 r0，
+     * 按通道并行运算后压回 r0。
+     *   IR_SIMD_ADD16 / SUB16：2x16 位带符号通道
+     *   IR_SIMD_ADD8  / SUB8  ：4x8  位带符号通道 */
+    IR_SIMD_ADD16,
+    IR_SIMD_SUB16,
+    IR_SIMD_ADD8,
+    IR_SIMD_SUB8
 } IrOp;
 
 /* 简单字符串比较，避免依赖 string.h */

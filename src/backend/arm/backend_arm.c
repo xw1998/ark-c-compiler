@@ -539,6 +539,8 @@ static char *codegen_arm(IrProgram *prog) {
                     emit_line(&buf, "ADD r0, r0, r1");
                     if (es == 1) {
                         emit_line(&buf, "LDRB r0, [r0, #0]");
+                    } else if (es == 2 && !packed) {
+                        emit_line(&buf, "LDRSH r0, [r0, #0]");
                     } else if (packed) {
                         /* __packed 指针未对齐访问：按字节加载后拼装。
                          * es==2: LDRB x2 + LSL + ORR
@@ -575,6 +577,8 @@ static char *codegen_arm(IrProgram *prog) {
                     emit_pop_r1(&buf);
                     if (es == 1) {
                         emit_line(&buf, "STRB r0, [r1, #0]");
+                    } else if (es == 2 && !packed) {
+                        emit_line(&buf, "STRH r0, [r1, #0]");
                     } else if (packed) {
                         /* __packed 指针未对齐存储：按字节写入。
                          * r0=值，r1=地址，r2 为临时寄存器 */
@@ -1140,6 +1144,35 @@ static char *codegen_arm(IrProgram *prog) {
                     emit_push_r0(&buf);                 /* 压入首地址 */
                     break;
                 }
+                /* === 0.7.0：SIMD 并行运算（Cortex-M4/M7 DSP 指令）===
+                 * 栈语义：弹 r1（右操作数）、弹 r0（左操作数），
+                 * 执行并行运算后压回 r0。SADD16/SSUB16/SADD8/SSUB8
+                 * 均为 ARMv6TE+ DSP 扩展指令，对 32 位寄存器内的
+                 * 多个带符号子字并行做加/减。 */
+                case IR_SIMD_ADD16:
+                    emit_pop_r1(&buf);
+                    emit_pop_r0(&buf);
+                    emit_line(&buf, "SADD16 r0, r0, r1");
+                    emit_push_r0(&buf);
+                    break;
+                case IR_SIMD_SUB16:
+                    emit_pop_r1(&buf);
+                    emit_pop_r0(&buf);
+                    emit_line(&buf, "SSUB16 r0, r0, r1");
+                    emit_push_r0(&buf);
+                    break;
+                case IR_SIMD_ADD8:
+                    emit_pop_r1(&buf);
+                    emit_pop_r0(&buf);
+                    emit_line(&buf, "SADD8 r0, r0, r1");
+                    emit_push_r0(&buf);
+                    break;
+                case IR_SIMD_SUB8:
+                    emit_pop_r1(&buf);
+                    emit_pop_r0(&buf);
+                    emit_line(&buf, "SSUB8 r0, r0, r1");
+                    emit_push_r0(&buf);
+                    break;
                 default:
                     asmbuf_puts(&buf, "    ; unknown ir op ");
                     asmbuf_int(&buf, (int)I->op);

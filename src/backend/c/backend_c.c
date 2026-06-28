@@ -63,40 +63,40 @@ static void emit_str_literal(AsmBuffer *b, const char *data, int len) {
 static void emit_binop(AsmBuffer *b, int op) {
     int is_unsigned = (op & 0x100) != 0;
     int base_op = op & ~0x100;
-    /* lhs op rhs */
+    /* lhs op rhs —— 使用 ark_a/ark_c 避免与用户全局变量名冲突 */
     switch (base_op) {
-        case (int)TOK_PLUS:  asmbuf_puts(b, "(a + c)"); break;
-        case (int)TOK_MINUS: asmbuf_puts(b, "(a - c)"); break;
-        case (int)TOK_MUL:   asmbuf_puts(b, "(a * c)"); break;
-        case (int)TOK_DIV:   asmbuf_puts(b, "(c ? a / c : 0)"); break;
-        case (int)TOK_MOD:   asmbuf_puts(b, "(c ? a % c : 0)"); break;
-        case (int)TOK_BAND:  asmbuf_puts(b, "(a & c)"); break;
-        case (int)TOK_BOR:   asmbuf_puts(b, "(a | c)"); break;
-        case (int)TOK_BXOR:  asmbuf_puts(b, "(a ^ c)"); break;
-        case (int)TOK_SHL:   asmbuf_puts(b, "(a << c)"); break;
+        case (int)TOK_PLUS:  asmbuf_puts(b, "(ark_a + ark_c)"); break;
+        case (int)TOK_MINUS: asmbuf_puts(b, "(ark_a - ark_c)"); break;
+        case (int)TOK_MUL:   asmbuf_puts(b, "(ark_a * ark_c)"); break;
+        case (int)TOK_DIV:   asmbuf_puts(b, "(ark_c ? ark_a / ark_c : 0)"); break;
+        case (int)TOK_MOD:   asmbuf_puts(b, "(ark_c ? ark_a % ark_c : 0)"); break;
+        case (int)TOK_BAND:  asmbuf_puts(b, "(ark_a & ark_c)"); break;
+        case (int)TOK_BOR:   asmbuf_puts(b, "(ark_a | ark_c)"); break;
+        case (int)TOK_BXOR:  asmbuf_puts(b, "(ark_a ^ ark_c)"); break;
+        case (int)TOK_SHL:   asmbuf_puts(b, "(ark_a << ark_c)"); break;
         case (int)TOK_SHR:
-            if (is_unsigned) asmbuf_puts(b, "((unsigned int)a >> c)");
-            else             asmbuf_puts(b, "(a >> c)");
+            if (is_unsigned) asmbuf_puts(b, "((unsigned int)ark_a >> ark_c)");
+            else             asmbuf_puts(b, "(ark_a >> ark_c)");
             break;
-        case (int)TOK_EQ:    asmbuf_puts(b, "(a == c)"); break;
-        case (int)TOK_NE:    asmbuf_puts(b, "(a != c)"); break;
+        case (int)TOK_EQ:    asmbuf_puts(b, "(ark_a == ark_c)"); break;
+        case (int)TOK_NE:    asmbuf_puts(b, "(ark_a != ark_c)"); break;
         case (int)TOK_LT:
-            if (is_unsigned) asmbuf_puts(b, "((unsigned int)a < (unsigned int)c)");
-            else             asmbuf_puts(b, "(a < c)");
+            if (is_unsigned) asmbuf_puts(b, "((unsigned int)ark_a < (unsigned int)ark_c)");
+            else             asmbuf_puts(b, "(ark_a < ark_c)");
             break;
         case (int)TOK_GT:
-            if (is_unsigned) asmbuf_puts(b, "((unsigned int)a > (unsigned int)c)");
-            else             asmbuf_puts(b, "(a > c)");
+            if (is_unsigned) asmbuf_puts(b, "((unsigned int)ark_a > (unsigned int)ark_c)");
+            else             asmbuf_puts(b, "(ark_a > ark_c)");
             break;
         case (int)TOK_LE:
-            if (is_unsigned) asmbuf_puts(b, "((unsigned int)a <= (unsigned int)c)");
-            else             asmbuf_puts(b, "(a <= c)");
+            if (is_unsigned) asmbuf_puts(b, "((unsigned int)ark_a <= (unsigned int)ark_c)");
+            else             asmbuf_puts(b, "(ark_a <= ark_c)");
             break;
         case (int)TOK_GE:
-            if (is_unsigned) asmbuf_puts(b, "((unsigned int)a >= (unsigned int)c)");
-            else             asmbuf_puts(b, "(a >= c)");
+            if (is_unsigned) asmbuf_puts(b, "((unsigned int)ark_a >= (unsigned int)ark_c)");
+            else             asmbuf_puts(b, "(ark_a >= ark_c)");
             break;
-        default:             asmbuf_puts(b, "(a)"); break;
+        default:             asmbuf_puts(b, "(ark_a)"); break;
     }
 }
 
@@ -572,9 +572,9 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
         asmbuf_puts(&buf, "    (void)a0; (void)a1; (void)a2; (void)a3;\n");
         asmbuf_puts(&buf, "    (void)a4; (void)a5; (void)a6; (void)a7;\n");
         asmbuf_puts(&buf, "    static char frame[4096];\n");
-        asmbuf_puts(&buf, "    ark_slot stk[256]; int sp = 0; long long a, c; long long addr; long long es;\n");
-        asmbuf_puts(&buf, "    double fa, fc; (void)fa; (void)fc;\n");
-        asmbuf_puts(&buf, "    (void)addr; (void)es; (void)frame; (void)a; (void)c;\n");
+        asmbuf_puts(&buf, "    ark_slot stk[256]; int sp = 0; long long ark_a, ark_c; long long ark_addr; long long ark_es;\n");
+        asmbuf_puts(&buf, "    double ark_fa, ark_fc; (void)ark_fa; (void)ark_fc;\n");
+        asmbuf_puts(&buf, "    (void)ark_addr; (void)ark_es; (void)frame; (void)ark_a; (void)ark_c;\n");
 
         for (i = 0; i < f->code_count; i++) {
             IrInst *I = &f->code[i];
@@ -684,34 +684,36 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
                     asmbuf_puts(&buf, ") = stk[--sp].i;");
                     break;
                 case IR_LOAD_IDX:
-                    asmbuf_puts(&buf, "{ long long ix = stk[--sp].i; long long ad = stk[--sp].i; es = ");
+                    asmbuf_puts(&buf, "{ long long ix = stk[--sp].i; long long ad = stk[--sp].i; ark_es = ");
                     asmbuf_int(&buf, I->val);
-                    asmbuf_puts(&buf, "; if (es==1) stk[sp++].i = *(signed char*)(intptr_t)(ad + ix);");
-                    asmbuf_puts(&buf, " else stk[sp++].i = *(int*)(intptr_t)(ad + ix*es); }");
+                    asmbuf_puts(&buf, "; if (ark_es==1) stk[sp++].i = *(signed char*)(intptr_t)(ad + ix);");
+                    asmbuf_puts(&buf, " else if (ark_es==2) stk[sp++].i = *(short*)(intptr_t)(ad + ix*2);");
+                    asmbuf_puts(&buf, " else stk[sp++].i = *(int*)(intptr_t)(ad + ix*ark_es); }");
                     break;
                 case IR_STORE_IDX:
-                    asmbuf_puts(&buf, "{ long long va = stk[--sp].i; long long ad = stk[--sp].i; es = ");
+                    asmbuf_puts(&buf, "{ long long va = stk[--sp].i; long long ad = stk[--sp].i; ark_es = ");
                     asmbuf_int(&buf, I->val);
-                    asmbuf_puts(&buf, "; if (es==1) *(char*)(intptr_t)ad = (char)va;");
+                    asmbuf_puts(&buf, "; if (ark_es==1) *(char*)(intptr_t)ad = (char)va;");
+                    asmbuf_puts(&buf, " else if (ark_es==2) *(short*)(intptr_t)ad = (short)va;");
                     asmbuf_puts(&buf, " else *(int*)(intptr_t)ad = (int)va;");
                     asmbuf_puts(&buf, " stk[sp++].i = va; }");
                     break;
                 case IR_BINARY:
-                    asmbuf_puts(&buf, "c = stk[--sp].i; a = stk[--sp].i; stk[sp++].i = ");
+                    asmbuf_puts(&buf, "ark_c = stk[--sp].i; ark_a = stk[--sp].i; stk[sp++].i = ");
                     emit_binop(&buf, I->aux);
                     asmbuf_putc(&buf, ';');
                     break;
                 case IR_FADD:
-                    asmbuf_puts(&buf, "fc = stk[--sp].f; fa = stk[--sp].f; stk[sp++].f = fa + fc;");
+                    asmbuf_puts(&buf, "ark_fc = stk[--sp].f; ark_fa = stk[--sp].f; stk[sp++].f = ark_fa + ark_fc;");
                     break;
                 case IR_FSUB:
-                    asmbuf_puts(&buf, "fc = stk[--sp].f; fa = stk[--sp].f; stk[sp++].f = fa - fc;");
+                    asmbuf_puts(&buf, "ark_fc = stk[--sp].f; ark_fa = stk[--sp].f; stk[sp++].f = ark_fa - ark_fc;");
                     break;
                 case IR_FMUL:
-                    asmbuf_puts(&buf, "fc = stk[--sp].f; fa = stk[--sp].f; stk[sp++].f = fa * fc;");
+                    asmbuf_puts(&buf, "ark_fc = stk[--sp].f; ark_fa = stk[--sp].f; stk[sp++].f = ark_fa * ark_fc;");
                     break;
                 case IR_FDIV:
-                    asmbuf_puts(&buf, "fc = stk[--sp].f; fa = stk[--sp].f; stk[sp++].f = (fc!=0.0) ? (fa / fc) : 0.0;");
+                    asmbuf_puts(&buf, "ark_fc = stk[--sp].f; ark_fa = stk[--sp].f; stk[sp++].f = (ark_fc!=0.0) ? (ark_fa / ark_fc) : 0.0;");
                     break;
                 case IR_FCMP: {
                     /* 屏蔽 aux 高位标志（0x200=double 精度），取比较运算符。
@@ -727,16 +729,16 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
                         case (int)TOK_GE: cop = ">="; break;
                         default: break;
                     }
-                    asmbuf_puts(&buf, "fc = stk[--sp].f; fa = stk[--sp].f; stk[sp++].i = (fa ");
+                    asmbuf_puts(&buf, "ark_fc = stk[--sp].f; ark_fa = stk[--sp].f; stk[sp++].i = (ark_fa ");
                     asmbuf_puts(&buf, cop);
-                    asmbuf_puts(&buf, " fc) ? 1 : 0;");
+                    asmbuf_puts(&buf, " ark_fc) ? 1 : 0;");
                     break;
                 }
                 case IR_F2I:
-                    asmbuf_puts(&buf, "fa = stk[--sp].f; stk[sp++].i = (long long)fa;");
+                    asmbuf_puts(&buf, "ark_fa = stk[--sp].f; stk[sp++].i = (long long)ark_fa;");
                     break;
                 case IR_I2F:
-                    asmbuf_puts(&buf, "a = stk[--sp].i; stk[sp++].f = (double)a;");
+                    asmbuf_puts(&buf, "ark_a = stk[--sp].i; stk[sp++].f = (double)ark_a;");
                     break;
                 case IR_ASM:
                     /* '@' 前缀表示扩展形式：紧跟 `"text" : outputs : inputs : clobbers`，
@@ -757,11 +759,11 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
                     break;
                 case IR_UNARY: {
                     int op = I->aux;
-                    asmbuf_puts(&buf, "a = stk[--sp].i; stk[sp++].i = ");
-                    if (op == (int)TOK_MINUS) asmbuf_puts(&buf, "(-a)");
-                    else if (op == (int)TOK_BNOT) asmbuf_puts(&buf, "(~a)");
-                    else if (op == (int)TOK_NOT)  asmbuf_puts(&buf, "(!a)");
-                    else asmbuf_puts(&buf, "(a)");
+                    asmbuf_puts(&buf, "ark_a = stk[--sp].i; stk[sp++].i = ");
+                    if (op == (int)TOK_MINUS) asmbuf_puts(&buf, "(-ark_a)");
+                    else if (op == (int)TOK_BNOT) asmbuf_puts(&buf, "(~ark_a)");
+                    else if (op == (int)TOK_NOT)  asmbuf_puts(&buf, "(!ark_a)");
+                    else asmbuf_puts(&buf, "(ark_a)");
                     asmbuf_putc(&buf, ';');
                     break;
                 }
@@ -786,17 +788,17 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
                     asmbuf_putc(&buf, ';');
                     break;
                 case IR_JZ:
-                    asmbuf_puts(&buf, "a = stk[--sp].i; if (!a) goto L_");
+                    asmbuf_puts(&buf, "ark_a = stk[--sp].i; if (!ark_a) goto L_");
                     asmbuf_int(&buf, I->val);
                     asmbuf_putc(&buf, ';');
                     break;
                 case IR_JNZ:
-                    asmbuf_puts(&buf, "a = stk[--sp].i; if (a) goto L_");
+                    asmbuf_puts(&buf, "ark_a = stk[--sp].i; if (ark_a) goto L_");
                     asmbuf_int(&buf, I->val);
                     asmbuf_putc(&buf, ';');
                     break;
                 case IR_CMP_JMP_EQ:
-                    asmbuf_puts(&buf, "a = stk[sp-1].i; if (a == ");
+                    asmbuf_puts(&buf, "ark_a = stk[sp-1].i; if (ark_a == ");
                     asmbuf_int(&buf, I->val);
                     asmbuf_puts(&buf, ") { --sp; goto L_");
                     asmbuf_int(&buf, I->aux);
@@ -878,15 +880,15 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
                 }
                 /* === 整数除法/取模：aux=0 有符号, aux=1 无符号 === */
                 case IR_DIV:
-                    asmbuf_puts(&buf, "c = stk[--sp].i; a = stk[--sp].i; stk[sp++].i = (");
-                    if (I->aux) asmbuf_puts(&buf, "(unsigned)a / (unsigned)c");
-                    else        asmbuf_puts(&buf, "a / c");
+                    asmbuf_puts(&buf, "ark_c = stk[--sp].i; ark_a = stk[--sp].i; stk[sp++].i = (");
+                    if (I->aux) asmbuf_puts(&buf, "(unsigned)ark_a / (unsigned)ark_c");
+                    else        asmbuf_puts(&buf, "ark_a / ark_c");
                     asmbuf_puts(&buf, ");");
                     break;
                 case IR_MOD:
-                    asmbuf_puts(&buf, "c = stk[--sp].i; a = stk[--sp].i; stk[sp++].i = (");
-                    if (I->aux) asmbuf_puts(&buf, "(unsigned)a % (unsigned)c");
-                    else        asmbuf_puts(&buf, "a % c");
+                    asmbuf_puts(&buf, "ark_c = stk[--sp].i; ark_a = stk[--sp].i; stk[sp++].i = (");
+                    if (I->aux) asmbuf_puts(&buf, "(unsigned)ark_a % (unsigned)ark_c");
+                    else        asmbuf_puts(&buf, "ark_a % ark_c");
                     asmbuf_puts(&buf, ");");
                     break;
                 /* === 64 位运算：C 后端用单个 long long 槽位 === */
@@ -900,7 +902,7 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
                     break;
                 case IR_64BINARY:
                     /* 与 IR_BINARY 同：a/c 已是 long long，运算即 64 位 */
-                    asmbuf_puts(&buf, "c = stk[--sp].i; a = stk[--sp].i; stk[sp++].i = ");
+                    asmbuf_puts(&buf, "ark_c = stk[--sp].i; ark_a = stk[--sp].i; stk[sp++].i = ");
                     emit_binop(&buf, I->aux);
                     asmbuf_putc(&buf, ';');
                     break;
@@ -916,9 +918,9 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
                         case (int)TOK_GE: cop = ">="; break;
                         default: break;
                     }
-                    asmbuf_puts(&buf, "c = stk[--sp].i; a = stk[--sp].i; stk[sp++].i = (a ");
+                    asmbuf_puts(&buf, "ark_c = stk[--sp].i; ark_a = stk[--sp].i; stk[sp++].i = (ark_a ");
                     asmbuf_puts(&buf, cop);
-                    asmbuf_puts(&buf, " c) ? 1 : 0;");
+                    asmbuf_puts(&buf, " ark_c) ? 1 : 0;");
                     break;
                 }
                 /* === 内存拷贝：栈顶=dst, 次顶=src === */
@@ -946,6 +948,38 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
                     break;
                 case IR_RETURN:
                     asmbuf_puts(&buf, "return (long long)stk[--sp].i;");
+                    break;
+                /* === 0.7.0：SIMD 并行运算标量回退 ===
+                 * SADD16/SSUB16：把 32 位寄存器拆为两个带符号 16 位通道，
+                 * 分别相加/相减后重新拼接。SADD8/SSUB8 同理（4 个 8 位通道）。
+                 * 与 ARM DSP 指令语义等价（不饱和，按通道回绕）。 */
+                case IR_SIMD_ADD16:
+                    asmbuf_puts(&buf, "ark_c = stk[--sp].i; ark_a = stk[--sp].i; { unsigned _a=(unsigned)ark_a, _c=(unsigned)ark_c; "
+                                      "unsigned lo=(_a&0xFFFF)+(_c&0xFFFF); "
+                                      "unsigned hi=((_a>>16)&0xFFFF)+((_c>>16)&0xFFFF); "
+                                      "stk[sp++].i=(long long)((unsigned)((hi<<16)|(lo&0xFFFF))); }");
+                    break;
+                case IR_SIMD_SUB16:
+                    asmbuf_puts(&buf, "ark_c = stk[--sp].i; ark_a = stk[--sp].i; { unsigned _a=(unsigned)ark_a, _c=(unsigned)ark_c; "
+                                      "unsigned lo=(_a&0xFFFF)-(_c&0xFFFF); "
+                                      "unsigned hi=((_a>>16)&0xFFFF)-((_c>>16)&0xFFFF); "
+                                      "stk[sp++].i=(long long)((unsigned)((hi<<16)|(lo&0xFFFF))); }");
+                    break;
+                case IR_SIMD_ADD8:
+                    asmbuf_puts(&buf, "ark_c = stk[--sp].i; ark_a = stk[--sp].i; { unsigned _a=(unsigned)ark_a, _c=(unsigned)ark_c; "
+                                      "unsigned b0=(_a&0xFF)+(_c&0xFF); "
+                                      "unsigned b1=((_a>>8)&0xFF)+((_c>>8)&0xFF); "
+                                      "unsigned b2=((_a>>16)&0xFF)+((_c>>16)&0xFF); "
+                                      "unsigned b3=((_a>>24)&0xFF)+((_c>>24)&0xFF); "
+                                      "stk[sp++].i=(long long)((unsigned)((b3<<24)|((b2&0xFF)<<16)|((b1&0xFF)<<8)|(b0&0xFF))); }");
+                    break;
+                case IR_SIMD_SUB8:
+                    asmbuf_puts(&buf, "ark_c = stk[--sp].i; ark_a = stk[--sp].i; { unsigned _a=(unsigned)ark_a, _c=(unsigned)ark_c; "
+                                      "unsigned b0=(_a&0xFF)-(_c&0xFF); "
+                                      "unsigned b1=((_a>>8)&0xFF)-((_c>>8)&0xFF); "
+                                      "unsigned b2=((_a>>16)&0xFF)-((_c>>16)&0xFF); "
+                                      "unsigned b3=((_a>>24)&0xFF)-((_c>>24)&0xFF); "
+                                      "stk[sp++].i=(long long)((unsigned)((b3<<24)|((b2&0xFF)<<16)|((b1&0xFF)<<8)|(b0&0xFF))); }");
                     break;
                 default:
                     asmbuf_puts(&buf, "/* unknown ir */");

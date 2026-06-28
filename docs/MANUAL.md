@@ -1,43 +1,43 @@
-# Ark C Compiler Ê¹ÓÃÊÖ²á
+# Ark C Compiler ä½¿ç”¨æ‰‹å†Œ
 
-> °æ±¾£ºv0.7.0
-> ÊÊÓÃ¶ÔÏó£ºÇ¶ÈëÊ½¿ª·¢Õß¡¢±àÒëÔ­ÀíÑ§Ï°Õß¡¢ÏëÔÚ STM32 ÉÏÅÜ"×ÔËŞÖ÷ C ±àÒëÆ÷"µÄÍæ¼Ò
-> ×÷Õß£ºArk C Compiler ÏîÄ¿×é
-
----
-
-## Ä¿Â¼
-
-1. [ÏîÄ¿¼ò½é](#1-ÏîÄ¿¼ò½é)
-2. [¿ìËÙÉÏÊÖ](#2-¿ìËÙÉÏÊÖ)
-3. [ÃüÁîĞĞ²Î¿¼](#3-ÃüÁîĞĞ²Î¿¼)
-4. [Ö§³ÖµÄ C ÓïÑÔÌØĞÔ](#4-Ö§³ÖµÄ-c-ÓïÑÔÌØĞÔ)
-5. [¶àºó¶Ë¼Ü¹¹](#5-¶àºó¶Ë¼Ü¹¹)
-6. [ÔÚ Windows ÉÏ×ö²âÊÔ](#6-ÔÚ-windows-ÉÏ×ö²âÊÔ)
-7. [STM32H743 + Keil MDK ¹¤³Ì](#7-stm32h743--keil-mdk-¹¤³Ì)
-8. [´úÂë×éÖ¯ÓëÒÆÖ²Ö¸ÄÏ](#8-´úÂë×éÖ¯ÓëÒÆÖ²Ö¸ÄÏ)
-9. [À©Õ¹¿ª·¢Ö¸ÄÏ](#9-À©Õ¹¿ª·¢Ö¸ÄÏ)
-10. [±ê×¼¿â×Ó¼¯](#10-±ê×¼¿â×Ó¼¯)
-11. [³£¼ûÎÊÌâ FAQ](#11-³£¼ûÎÊÌâ-faq)
-12. [ÒÑÖªÏŞÖÆ](#12-ÒÑÖªÏŞÖÆ)
-13. [¸½Â¼ A£ºÄÚ²¿Êı¾İÁ÷](#¸½Â¼-aÄÚ²¿Êı¾İÁ÷)
-14. [¸½Â¼ B£ºÊõÓï±í](#¸½Â¼-bÊõÓï±í)
+> ç‰ˆæœ¬ï¼šv0.7.0
+> é€‚ç”¨å¯¹è±¡ï¼šåµŒå…¥å¼å¼€å‘è€…ã€ç¼–è¯‘åŸç†å­¦ä¹ è€…ã€æƒ³åœ¨ STM32 ä¸Šè·‘"è‡ªå®¿ä¸» C ç¼–è¯‘å™¨"çš„ç©å®¶
+> ä½œè€…ï¼šArk C Compiler é¡¹ç›®ç»„
 
 ---
 
-## 1 ÏîÄ¿¼ò½é
+## ç›®å½•
 
-**Ark C Compiler**£¨¼ò³Æ `arkcc`£©ÊÇÒ»¸öÓÃ C99 ±àĞ´µÄÎ¢ĞÍ C ÓïÑÔ±àÒëÆ÷£¬µ±Ç°°æ±¾ v0.7.0 ¸²¸Ç ARM Compiler 5 (armcc) ³£ÓÃÀ©Õ¹ 98% ÒÔÉÏ£¨½öÈ± C++ Ä£Ê½Óë¸ß¼¶ÓÅ»¯£©¡£Ä¿±êÊÇ£º
+1. [é¡¹ç›®ç®€ä»‹](#1-é¡¹ç›®ç®€ä»‹)
+2. [å¿«é€Ÿä¸Šæ‰‹](#2-å¿«é€Ÿä¸Šæ‰‹)
+3. [å‘½ä»¤è¡Œå‚è€ƒ](#3-å‘½ä»¤è¡Œå‚è€ƒ)
+4. [æ”¯æŒçš„ C è¯­è¨€ç‰¹æ€§](#4-æ”¯æŒçš„-c-è¯­è¨€ç‰¹æ€§)
+5. [å¤šåç«¯æ¶æ„](#5-å¤šåç«¯æ¶æ„)
+6. [åœ¨ Windows ä¸Šåšæµ‹è¯•](#6-åœ¨-windows-ä¸Šåšæµ‹è¯•)
+7. [STM32H743 + Keil MDK å·¥ç¨‹](#7-stm32h743--keil-mdk-å·¥ç¨‹)
+8. [ä»£ç ç»„ç»‡ä¸ç§»æ¤æŒ‡å—](#8-ä»£ç ç»„ç»‡ä¸ç§»æ¤æŒ‡å—)
+9. [æ‰©å±•å¼€å‘æŒ‡å—](#9-æ‰©å±•å¼€å‘æŒ‡å—)
+10. [æ ‡å‡†åº“å­é›†](#10-æ ‡å‡†åº“å­é›†)
+11. [å¸¸è§é—®é¢˜ FAQ](#11-å¸¸è§é—®é¢˜-faq)
+12. [å·²çŸ¥é™åˆ¶](#12-å·²çŸ¥é™åˆ¶)
+13. [é™„å½• Aï¼šå†…éƒ¨æ•°æ®æµ](#é™„å½•-aå†…éƒ¨æ•°æ®æµ)
+14. [é™„å½• Bï¼šæœ¯è¯­è¡¨](#é™„å½•-bæœ¯è¯­è¡¨)
 
-- **Ç¶ÈëÊ½×ÔËŞÖ÷**£º±àÒëÆ÷±¾Éí¿ÉÔÚ STM32H743 ÕâÑùµÄ Cortex-M7 µ¥Æ¬»úÉÏ**Ô­ÉúÔËĞĞ**£¬¶ÁÈ¡Íâ²¿ SPI Flash ÖĞµÄ `.c` ÎÄ¼ş²¢¾ÍµØÉú³É»úÆ÷Âë¡¢Ìø×ªÖ´ĞĞ¡£`port/stm32/main_stm32.c` Ìá¹©¶ÀÁ¢Èë¿Úµã£¬ÎŞĞè PC ¹¤¾ßÁ´¼´¿ÉÍê³É±àÒë-Á´½Ó-Ö´ĞĞ±Õ»·¡£
-- **¶àºó¶Ë**£ººËĞÄÇ°¶ËÖ»Êä³öÓëÄ¿±êÎŞ¹ØµÄÕ»Ê½ÖĞ¼äÂë£¨IR£©£»ºó¶Ë¿ÉÔÚ `arm` / `x86_64` / `riscv32` / `c` Ö®¼äÇĞ»»¡£
-- **·½±ãÀ©Õ¹**£ºÃ¿Ò»²ã£¨lexer/parser/sema/irgen/codegen/asm/linker£©¶ÀÁ¢³ÉÎÄ¼ş£¬ĞÂÔö¹Ø¼ü×Ö¡¢AST ½Úµã»òÄ¿±êÆ½Ì¨¶¼ÓĞÇåÎúµÄÀ©Õ¹µã¡£
-- **·½±ãÔÚ Windows ÉÏ²âÊÔ**£ºÄÚÖÃ `c` ºó¶Ë»á°Ñ IR ·­Òë»Ø¿É¶Á C ´úÂë£¬Á¢¿Ì¿ÉÒÔÓÃÖ÷»ú gcc ±àÒëÔËĞĞ£¬ÎŞĞè·ÂÕæÆ÷»òÓ²¼ş¡£
+---
 
-### 1.1 ÕûÌåÁ÷Ë®Ïß
+## 1 é¡¹ç›®ç®€ä»‹
+
+**Ark C Compiler**ï¼ˆç®€ç§° `arkcc`ï¼‰æ˜¯ä¸€ä¸ªç”¨ C99 ç¼–å†™çš„å¾®å‹ C è¯­è¨€ç¼–è¯‘å™¨ï¼Œå½“å‰ç‰ˆæœ¬ v0.7.0 è¦†ç›– ARM Compiler 5 (armcc) å¸¸ç”¨æ‰©å±• 98% ä»¥ä¸Šï¼ˆä»…ç¼º C++ æ¨¡å¼ä¸é«˜çº§ä¼˜åŒ–ï¼‰ã€‚ç›®æ ‡æ˜¯ï¼š
+
+- **åµŒå…¥å¼è‡ªå®¿ä¸»**ï¼šç¼–è¯‘å™¨æœ¬èº«å¯åœ¨ STM32H743 è¿™æ ·çš„ Cortex-M7 å•ç‰‡æœºä¸Š**åŸç”Ÿè¿è¡Œ**ï¼Œè¯»å–å¤–éƒ¨ SPI Flash ä¸­çš„ `.c` æ–‡ä»¶å¹¶å°±åœ°ç”Ÿæˆæœºå™¨ç ã€è·³è½¬æ‰§è¡Œã€‚`port/stm32/main_stm32.c` æä¾›ç‹¬ç«‹å…¥å£ç‚¹ï¼Œæ— éœ€ PC å·¥å…·é“¾å³å¯å®Œæˆç¼–è¯‘-é“¾æ¥-æ‰§è¡Œé—­ç¯ã€‚
+- **å¤šåç«¯**ï¼šæ ¸å¿ƒå‰ç«¯åªè¾“å‡ºä¸ç›®æ ‡æ— å…³çš„æ ˆå¼ä¸­é—´ç ï¼ˆIRï¼‰ï¼›åç«¯å¯åœ¨ `arm` / `x86_64` / `riscv32` / `c` ä¹‹é—´åˆ‡æ¢ã€‚
+- **æ–¹ä¾¿æ‰©å±•**ï¼šæ¯ä¸€å±‚ï¼ˆlexer/parser/sema/irgen/codegen/asm/linkerï¼‰ç‹¬ç«‹æˆæ–‡ä»¶ï¼Œæ–°å¢å…³é”®å­—ã€AST èŠ‚ç‚¹æˆ–ç›®æ ‡å¹³å°éƒ½æœ‰æ¸…æ™°çš„æ‰©å±•ç‚¹ã€‚
+- **æ–¹ä¾¿åœ¨ Windows ä¸Šæµ‹è¯•**ï¼šå†…ç½® `c` åç«¯ä¼šæŠŠ IR ç¿»è¯‘å›å¯è¯» C ä»£ç ï¼Œç«‹åˆ»å¯ä»¥ç”¨ä¸»æœº gcc ç¼–è¯‘è¿è¡Œï¼Œæ— éœ€ä»¿çœŸå™¨æˆ–ç¡¬ä»¶ã€‚
+
+### 1.1 æ•´ä½“æµæ°´çº¿
 
 ```
-   Ô´´úÂë .c
+   æºä»£ç  .c
       |
       v
 +----------+    +--------+    +--------+    +--------+
@@ -58,74 +58,74 @@
                            +---------------+--------------+
                                                 |
                                                 v
-                                  .S£¨»ã±à£©»ò .bin£¨»úÆ÷Âë£©»ò .gen.c
+                                  .Sï¼ˆæ±‡ç¼–ï¼‰æˆ– .binï¼ˆæœºå™¨ç ï¼‰æˆ– .gen.c
                                                 |
-                                                v (STM32 ÉÏ£º»úÆ÷ÂëÖ±½ÓÌø×ªÖ´ĞĞ)
+                                                v (STM32 ä¸Šï¼šæœºå™¨ç ç›´æ¥è·³è½¬æ‰§è¡Œ)
 ```
 
-ARM ºó¶ËÁ÷Ë®Ïß»¹°üº¬£ºCPU Ñ¡ĞÍ£¨`-mcpu`/`--cpu`£¬Ó°ÏìÖ¸Áî¼¯ÓëÄ¬ÈÏ¶ÔÆë£©¡¢scatter ¼ÓÔØÃèÊöÎÄ¼ş½âÎö£¨`src/scatter.c`£©¡¢TLS ¶ÎÉú³É£¨`.tbss`/`.tdata`£©¡¢ÍêÕû DWARF µ÷ÊÔ¶ÎÊä³ö£¨`.debug_info`/`.debug_abbrev`/`.debug_line`£©¡£
+ARM åç«¯æµæ°´çº¿è¿˜åŒ…å«ï¼šCPU é€‰å‹ï¼ˆ`-mcpu`/`--cpu`ï¼Œå½±å“æŒ‡ä»¤é›†ä¸é»˜è®¤å¯¹é½ï¼‰ã€scatter åŠ è½½æè¿°æ–‡ä»¶è§£æï¼ˆ`src/scatter.c`ï¼‰ã€TLS æ®µç”Ÿæˆï¼ˆ`.tbss`/`.tdata`ï¼‰ã€å®Œæ•´ DWARF è°ƒè¯•æ®µè¾“å‡ºï¼ˆ`.debug_info`/`.debug_abbrev`/`.debug_line`ï¼‰ã€‚
 
-### 1.2 ÏîÄ¿Ä¿Â¼ËÙÀÀ
+### 1.2 é¡¹ç›®ç›®å½•é€Ÿè§ˆ
 
 ```
 ark c compiler/
-©À©¤©¤ include/                  ¹«¹²Í·ÎÄ¼ş£¨Ç°¶Ë + ºó¶Ë½Ó¿Ú + cpu.h + scatter.h£©
-©À©¤©¤ src/                      ±àÒëÆ÷ºËĞÄ£¨ÓëÄ¿±êÎŞ¹ØµÄÇ°¶Ë + cpu.c + scatter.c£©
-©¦   ©¸©¤©¤ backend/              ËùÓĞºó¶Ë
-©¦       ©À©¤©¤ registry.c        ºó¶Ë×¢²á±í
-©¦       ©À©¤©¤ arm/              ARM Cortex-M Thumb-2 ºó¶Ë
-©¦       ©À©¤©¤ x86_64/           x86_64 GAS ºó¶Ë
-©¦       ©À©¤©¤ riscv32/          RV32I GAS ºó¶Ë
-©¦       ©¸©¤©¤ c/                Host ²âÊÔºó¶Ë£¨IR -> C£©
-©À©¤©¤ stdlib/                   ±àÒëÆ÷×Ô´øµÄ×îĞ¡±ê×¼¿â
-©¦   ©À©¤©¤ include/              Í·ÎÄ¼ş£¨stdint/string/stdio/math/setjmp µÈ£©
-©¦   ©¸©¤©¤ src/                  ¿ÉÑ¡µÄÊµÏÖÔ´
-©À©¤©¤ port/
-©¦   ©À©¤©¤ host/                 PC Æ½Ì¨³éÏóÊµÏÖ£¨stdio£©
-©¦   ©À©¤©¤ stm32/                STM32 Æ½Ì¨³éÏóÊµÏÖ£¨HAL UART + W25Q + main_stm32.c ×ÔËŞÖ÷Èë¿Úµã£©
-©À©¤©¤ examples/                 62 ¸ö²âÊÔÑùÀı
-©À©¤©¤ mdk/STM32H743_ArkCC/      Keil MDK ¹¤³Ì£¨STM32H743VIT6£©
-©À©¤©¤ arkcc.cfg                 Ä¬ÈÏÔËĞĞÊ±ÅäÖÃ£¨INI ¸ñÊ½£©
-©À©¤©¤ Makefile                  Host ¹¹½¨½Å±¾
-©À©¤©¤ docs/MANUAL.md            ±¾ÊÖ²á
-©¸©¤©¤ README.md                 ÏîÄ¿¼ò½é
+â”œâ”€â”€ include/                  å…¬å…±å¤´æ–‡ä»¶ï¼ˆå‰ç«¯ + åç«¯æ¥å£ + cpu.h + scatter.hï¼‰
+â”œâ”€â”€ src/                      ç¼–è¯‘å™¨æ ¸å¿ƒï¼ˆä¸ç›®æ ‡æ— å…³çš„å‰ç«¯ + cpu.c + scatter.cï¼‰
+â”‚   â””â”€â”€ backend/              æ‰€æœ‰åç«¯
+â”‚       â”œâ”€â”€ registry.c        åç«¯æ³¨å†Œè¡¨
+â”‚       â”œâ”€â”€ arm/              ARM Cortex-M Thumb-2 åç«¯
+â”‚       â”œâ”€â”€ x86_64/           x86_64 GAS åç«¯
+â”‚       â”œâ”€â”€ riscv32/          RV32I GAS åç«¯
+â”‚       â””â”€â”€ c/                Host æµ‹è¯•åç«¯ï¼ˆIR -> Cï¼‰
+â”œâ”€â”€ stdlib/                   ç¼–è¯‘å™¨è‡ªå¸¦çš„æœ€å°æ ‡å‡†åº“
+â”‚   â”œâ”€â”€ include/              å¤´æ–‡ä»¶ï¼ˆstdint/string/stdio/math/setjmp ç­‰ï¼‰
+â”‚   â””â”€â”€ src/                  å¯é€‰çš„å®ç°æº
+â”œâ”€â”€ port/
+â”‚   â”œâ”€â”€ host/                 PC å¹³å°æŠ½è±¡å®ç°ï¼ˆstdioï¼‰
+â”‚   â”œâ”€â”€ stm32/                STM32 å¹³å°æŠ½è±¡å®ç°ï¼ˆHAL UART + W25Q + main_stm32.c è‡ªå®¿ä¸»å…¥å£ç‚¹ï¼‰
+â”œâ”€â”€ examples/                 62 ä¸ªæµ‹è¯•æ ·ä¾‹
+â”œâ”€â”€ mdk/STM32H743_ArkCC/      Keil MDK å·¥ç¨‹ï¼ˆSTM32H743VIT6ï¼‰
+â”œâ”€â”€ arkcc.cfg                 é»˜è®¤è¿è¡Œæ—¶é…ç½®ï¼ˆINI æ ¼å¼ï¼‰
+â”œâ”€â”€ Makefile                  Host æ„å»ºè„šæœ¬
+â”œâ”€â”€ docs/MANUAL.md            æœ¬æ‰‹å†Œ
+â””â”€â”€ README.md                 é¡¹ç›®ç®€ä»‹
 ```
 
 ---
 
-## 2 ¿ìËÙÉÏÊÖ
+## 2 å¿«é€Ÿä¸Šæ‰‹
 
-### 2.1 »·¾³×¼±¸£¨Windows£©
+### 2.1 ç¯å¢ƒå‡†å¤‡ï¼ˆWindowsï¼‰
 
-1. °²×° **MSYS2** »ò **MinGW-w64**£¬È·±£ `gcc` ÔÚ PATH ÖĞ£º
+1. å®‰è£… **MSYS2** æˆ– **MinGW-w64**ï¼Œç¡®ä¿ `gcc` åœ¨ PATH ä¸­ï¼š
    ```powershell
    gcc --version
    ```
-2. ¿ÉÑ¡£º**STM32 Ç¶ÈëÊ½²¿·Ö**ĞèÒª **Keil MDK-ARM 5.36+**£¬¿ÉÑ¡ ST-Link µ÷ÊÔÆ÷ºÍÒ»¿é STM32H743 °å¿¨¡£
+2. å¯é€‰ï¼š**STM32 åµŒå…¥å¼éƒ¨åˆ†**éœ€è¦ **Keil MDK-ARM 5.36+**ï¼Œå¯é€‰ ST-Link è°ƒè¯•å™¨å’Œä¸€å— STM32H743 æ¿å¡ã€‚
 
-### 2.2 Èı·ÖÖÓ¹¹½¨ + ²âÊÔ
+### 2.2 ä¸‰åˆ†é’Ÿæ„å»º + æµ‹è¯•
 
 ```powershell
-cd "d:\¹¤×÷\git_project\ark c compiler"
+cd "d:\å·¥ä½œ\git_project\ark c compiler"
 
-# 1. ±àÒë arkcc ±¾Ìå
+# 1. ç¼–è¯‘ arkcc æœ¬ä½“
 make
-# µÈ¼Û£ºgcc -Wall -Wextra -O2 -std=c99 -Iinclude -Istdlib/include `
+# ç­‰ä»·ï¼šgcc -Wall -Wextra -O2 -std=c99 -Iinclude -Istdlib/include `
 #         src/*.c src/backend/*/*.c port/host/*.c -o arkcc.exe
 
-# 2. ÅÜÊ¾Àı£¨Êä³ö Thumb-2 »ã±à£©
+# 2. è·‘ç¤ºä¾‹ï¼ˆè¾“å‡º Thumb-2 æ±‡ç¼–ï¼‰
 .\arkcc.exe examples\hello.c -target arm -S
 
-# 3. ÓÃ c ºó¶ËÅÜÈ«²âÊÔ£¨ÍÆ¼ö£©
+# 3. ç”¨ c åç«¯è·‘å…¨æµ‹è¯•ï¼ˆæ¨èï¼‰
 powershell -ExecutionPolicy Bypass -File examples\run_tests.ps1
 ```
 
-ÅÜ²âÊÔ½Å±¾Ê±£¬Ã¿¸öÊ¾Àı»á£º
-1. ÓÃ `-target arm -S` ¼ì²é ARM ºó¶ËÃ»ÓĞ±ÀÀ££»
-2. ÓÃ `-target c -S` Éú³É `*.gen.c`£»
-3. ÓÃËŞÖ÷ gcc ±àÒë²¢ÔËĞĞ `*.gen.exe`£¬Ğ£ÑéÍË³öÂë¡£
+è·‘æµ‹è¯•è„šæœ¬æ—¶ï¼Œæ¯ä¸ªç¤ºä¾‹ä¼šï¼š
+1. ç”¨ `-target arm -S` æ£€æŸ¥ ARM åç«¯æ²¡æœ‰å´©æºƒï¼›
+2. ç”¨ `-target c -S` ç”Ÿæˆ `*.gen.c`ï¼›
+3. ç”¨å®¿ä¸» gcc ç¼–è¯‘å¹¶è¿è¡Œ `*.gen.exe`ï¼Œæ ¡éªŒé€€å‡ºç ã€‚
 
-Êä³öÀàËÆ£º
+è¾“å‡ºç±»ä¼¼ï¼š
 ```
 [arm] hello.c
 [c]   hello.c   exit=42
@@ -134,11 +134,11 @@ powershell -ExecutionPolicy Bypass -File examples\run_tests.ps1
 ...
 ```
 
-µ±Ç° v0.7.0 ¹² **62 ¸ö²âÊÔÈ«²¿Í¨¹ı**¡£
+å½“å‰ v0.7.0 å…± **62 ä¸ªæµ‹è¯•å…¨éƒ¨é€šè¿‡**ã€‚
 
-### 2.3 ±àÒëÄã×Ô¼ºµÄ .c
+### 2.3 ç¼–è¯‘ä½ è‡ªå·±çš„ .c
 
-ĞÂ½¨ `myprog.c`£º
+æ–°å»º `myprog.c`ï¼š
 ```c
 int factorial(int n) {
     if (n <= 1) return 1;
@@ -149,234 +149,234 @@ int main(void) {
 }
 ```
 
-±àÒë²¢ÅÜ£º
+ç¼–è¯‘å¹¶è·‘ï¼š
 ```powershell
 .\arkcc.exe myprog.c -target c -S -o myprog.gen.c
 gcc myprog.gen.c -o myprog.exe
-.\myprog.exe; echo $LASTEXITCODE   # Ó¦Êä³ö 720
+.\myprog.exe; echo $LASTEXITCODE   # åº”è¾“å‡º 720
 ```
 
 ---
 
-## 3 ÃüÁîĞĞ²Î¿¼
+## 3 å‘½ä»¤è¡Œå‚è€ƒ
 
 ```
 arkcc <file.c|file.s> [options]
 ```
 
-### 3.1 Í¨ÓÃÑ¡Ïî
+### 3.1 é€šç”¨é€‰é¡¹
 
-| Ñ¡Ïî | ËµÃ÷ |
+| é€‰é¡¹ | è¯´æ˜ |
 | --- | --- |
-| `-o <file>` | Ö¸¶¨Êä³öÎÄ¼ş£»²»Ö¸¶¨Ê±Ä¬ÈÏÎª `<input>.bin`£¨»úÆ÷Âë£©»ò `<input>.gen.c`£¨c ºó¶Ë + `-S`£© |
-| `-S` | Ö»Éú³ÉÎÄ±¾»ã±à/Ô´Âë£¬²»×ö»ã±àÓëÁ´½Ó |
-| `-c` | Ö»±àÒë²»Á´½Ó£¨`.ark_obj`£© |
-| `-E` | Ö»Ô¤´¦Àí |
-| `-link a.o b.o` | Á´½Ó¶à¸ö `.ark_obj` |
-| `-target <name>` | Ñ¡Ôñºó¶Ë£º`arm`£¨Ä¬ÈÏ£©¡¢`x86_64`¡¢`riscv32`¡¢`c` |
-| `-I <dir>` | Ìí¼Ó¶îÍâµÄ `#include` ËÑË÷Â·¾¶£¨¿É¶à´Î£© |
-| `-v` | ÏêÏ¸Ä£Ê½£º´òÓ¡Ã¿¸ö½×¶ÎºÄÊ±ÓëÊä³ö³ß´ç |
-| `-O0/-O1/-O2` | ÓÅ»¯¼¶±ğ£¨0=ÎŞ, 1=»ù´¡³£Á¿ÕÛµş+DCE, 2=¼¤½ø£© |
-| `-g` | Éú³É DWARF µ÷ÊÔĞÅÏ¢ |
-| `-config <file>` | ¼ÓÔØ INI ÅäÖÃÎÄ¼ş£¨Ä¬ÈÏ `arkcc.cfg`£© |
-| `-f<feature>` / `-fno-<feature>` | ¿ªÆô/¹Ø±ÕÌØĞÔ£¨vla/complex/wchar/trigraph/fpu/dwarf/...£© |
-| `-Wno-unused` | ÒÖÖÆÎ´Ê¹ÓÃ¾¯¸æ |
-| `--list-backends` | ÁĞ³öËùÓĞ¿ÉÓÃºó¶Ë |
-| `-h`, `--help` | ÏÔÊ¾°ïÖú |
+| `-o <file>` | æŒ‡å®šè¾“å‡ºæ–‡ä»¶ï¼›ä¸æŒ‡å®šæ—¶é»˜è®¤ä¸º `<input>.bin`ï¼ˆæœºå™¨ç ï¼‰æˆ– `<input>.gen.c`ï¼ˆc åç«¯ + `-S`ï¼‰ |
+| `-S` | åªç”Ÿæˆæ–‡æœ¬æ±‡ç¼–/æºç ï¼Œä¸åšæ±‡ç¼–ä¸é“¾æ¥ |
+| `-c` | åªç¼–è¯‘ä¸é“¾æ¥ï¼ˆ`.ark_obj`ï¼‰ |
+| `-E` | åªé¢„å¤„ç† |
+| `-link a.o b.o` | é“¾æ¥å¤šä¸ª `.ark_obj` |
+| `-target <name>` | é€‰æ‹©åç«¯ï¼š`arm`ï¼ˆé»˜è®¤ï¼‰ã€`x86_64`ã€`riscv32`ã€`c` |
+| `-I <dir>` | æ·»åŠ é¢å¤–çš„ `#include` æœç´¢è·¯å¾„ï¼ˆå¯å¤šæ¬¡ï¼‰ |
+| `-v` | è¯¦ç»†æ¨¡å¼ï¼šæ‰“å°æ¯ä¸ªé˜¶æ®µè€—æ—¶ä¸è¾“å‡ºå°ºå¯¸ |
+| `-O0/-O1/-O2` | ä¼˜åŒ–çº§åˆ«ï¼ˆ0=æ— , 1=åŸºç¡€å¸¸é‡æŠ˜å +DCE, 2=æ¿€è¿›ï¼‰ |
+| `-g` | ç”Ÿæˆ DWARF è°ƒè¯•ä¿¡æ¯ |
+| `-config <file>` | åŠ è½½ INI é…ç½®æ–‡ä»¶ï¼ˆé»˜è®¤ `arkcc.cfg`ï¼‰ |
+| `-f<feature>` / `-fno-<feature>` | å¼€å¯/å…³é—­ç‰¹æ€§ï¼ˆvla/complex/wchar/trigraph/fpu/dwarf/...ï¼‰ |
+| `-Wno-unused` | æŠ‘åˆ¶æœªä½¿ç”¨è­¦å‘Š |
+| `--list-backends` | åˆ—å‡ºæ‰€æœ‰å¯ç”¨åç«¯ |
+| `-h`, `--help` | æ˜¾ç¤ºå¸®åŠ© |
 
-### 3.2 Ä¿±ê CPU Ñ¡ĞÍ
+### 3.2 ç›®æ ‡ CPU é€‰å‹
 
-| Ñ¡Ïî | ËµÃ÷ |
+| é€‰é¡¹ | è¯´æ˜ |
 | --- | --- |
-| `-mcpu <name>` | Ñ¡Ôñ Cortex-M3/M4/M7/M33 µÈ£¬Ó°ÏìÖ¸Áî¼¯ÓëÄ¬ÈÏ¶ÔÆë |
-| `--cpu <name>` | armcc ·ç¸ñÍ¬ÒåÑ¡Ïî |
-| `--thumb` | Ç¿ÖÆ Thumb Ä£Ê½£¨Cortex-M Ä¬ÈÏ£© |
-| `--arm` | Ç¿ÖÆ ARM Ä£Ê½ |
-| `--fpu <type>` | `soft`£¨Èí¸¡µã£©/ `hard`£¨Ó²¼ş FPU VFP£© |
+| `-mcpu <name>` | é€‰æ‹© Cortex-M3/M4/M7/M33 ç­‰ï¼Œå½±å“æŒ‡ä»¤é›†ä¸é»˜è®¤å¯¹é½ |
+| `--cpu <name>` | armcc é£æ ¼åŒä¹‰é€‰é¡¹ |
+| `--thumb` | å¼ºåˆ¶ Thumb æ¨¡å¼ï¼ˆCortex-M é»˜è®¤ï¼‰ |
+| `--arm` | å¼ºåˆ¶ ARM æ¨¡å¼ |
+| `--fpu <type>` | `soft`ï¼ˆè½¯æµ®ç‚¹ï¼‰/ `hard`ï¼ˆç¡¬ä»¶ FPU VFPï¼‰ |
 
-CPU Ñ¡ĞÍÓÉ `include/cpu.h` + `src/cpu.c` ÊµÏÖ£¬»á¸ù¾İ CPU ÃûÉèÖÃÔ¤¶¨Òåºê£¨Èç `__TARGET_ARCH_7_M`¡¢`__TARGET_ARCH_7E_M`¡¢`__TARGET_FPU_VFP`£©¡£
+CPU é€‰å‹ç”± `include/cpu.h` + `src/cpu.c` å®ç°ï¼Œä¼šæ ¹æ® CPU åè®¾ç½®é¢„å®šä¹‰å®ï¼ˆå¦‚ `__TARGET_ARCH_7_M`ã€`__TARGET_ARCH_7E_M`ã€`__TARGET_FPU_VFP`ï¼‰ã€‚
 
-### 3.3 ÒÀÀµ¹ØÏµÉú³É
+### 3.3 ä¾èµ–å…³ç³»ç”Ÿæˆ
 
-| Ñ¡Ïî | ËµÃ÷ |
+| é€‰é¡¹ | è¯´æ˜ |
 | --- | --- |
-| `-MMD` | Éú³É `.d` ÒÀÀµÎÄ¼ş£¨Í¬ gcc ĞĞÎª£© |
-| `--depend` | Í¬ `-MMD` |
-| `-MF <file>` | Ö¸¶¨ÒÀÀµÎÄ¼şÃû |
+| `-MMD` | ç”Ÿæˆ `.d` ä¾èµ–æ–‡ä»¶ï¼ˆåŒ gcc è¡Œä¸ºï¼‰ |
+| `--depend` | åŒ `-MMD` |
+| `-MF <file>` | æŒ‡å®šä¾èµ–æ–‡ä»¶å |
 
-### 3.4 ¶ÎÓë´úÂëÉú³É
+### 3.4 æ®µä¸ä»£ç ç”Ÿæˆ
 
-| Ñ¡Ïî | ËµÃ÷ |
+| é€‰é¡¹ | è¯´æ˜ |
 | --- | --- |
-| `--split_sections` | Ã¿º¯Êı¶ÀÁ¢¶Î£¨`.text.<fn>`£©£¬±ãÓÚÁ´½ÓÆ÷ËÀ´úÂëÏû³ı |
-| `-ffunction-sections` | Í¬ `--split_sections` |
+| `--split_sections` | æ¯å‡½æ•°ç‹¬ç«‹æ®µï¼ˆ`.text.<fn>`ï¼‰ï¼Œä¾¿äºé“¾æ¥å™¨æ­»ä»£ç æ¶ˆé™¤ |
+| `-ffunction-sections` | åŒ `--split_sections` |
 
-### 3.5 ÓïÑÔ¼æÈİÑ¡Ïî
+### 3.5 è¯­è¨€å…¼å®¹é€‰é¡¹
 
-| Ñ¡Ïî | ËµÃ÷ |
+| é€‰é¡¹ | è¯´æ˜ |
 | --- | --- |
-| `--dollar` | ÔÊĞí±êÊ¶·û°üº¬ `$` |
-| `--enum_is_int` | Ã¶¾Ùµ×²ãÀàĞÍÇ¿ÖÆÎª `int` |
-| `--signed_chars` | `char` Ä¬ÈÏ´ø·ûºÅ |
-| `--unsigned_chars` | `char` Ä¬ÈÏÎŞ·ûºÅ |
-| `--wchar16` | `wchar_t` Îª 16 Î» |
-| `--wchar32` | `wchar_t` Îª 32 Î» |
+| `--dollar` | å…è®¸æ ‡è¯†ç¬¦åŒ…å« `$` |
+| `--enum_is_int` | æšä¸¾åº•å±‚ç±»å‹å¼ºåˆ¶ä¸º `int` |
+| `--signed_chars` | `char` é»˜è®¤å¸¦ç¬¦å· |
+| `--unsigned_chars` | `char` é»˜è®¤æ— ç¬¦å· |
+| `--wchar16` | `wchar_t` ä¸º 16 ä½ |
+| `--wchar32` | `wchar_t` ä¸º 32 ä½ |
 
-### 3.6 DWARF µ÷ÊÔ°æ±¾
+### 3.6 DWARF è°ƒè¯•ç‰ˆæœ¬
 
-| Ñ¡Ïî | ËµÃ÷ |
+| é€‰é¡¹ | è¯´æ˜ |
 | --- | --- |
-| `--dwarf2` | Êä³ö DWARF v2 µ÷ÊÔ¶Î |
-| `--dwarf3` | Êä³ö DWARF v3 µ÷ÊÔ¶Î |
+| `--dwarf2` | è¾“å‡º DWARF v2 è°ƒè¯•æ®µ |
+| `--dwarf3` | è¾“å‡º DWARF v3 è°ƒè¯•æ®µ |
 
-### 3.7 µäĞÍÃüÁî×éºÏ
+### 3.7 å…¸å‹å‘½ä»¤ç»„åˆ
 
-| Ä¿µÄ | ÃüÁî |
+| ç›®çš„ | å‘½ä»¤ |
 | --- | --- |
-| ¿´Ò»ÑÛ´Ê·¨/Óï·¨ÊÇ·ñÕıÈ· | `arkcc x.c -target c -S -o /dev/null` |
-| µ÷ÊÔ IR -> »ã±à·­Òë | `arkcc x.c -target arm -S` |
-| Éú³É¿ÉÔÚÖ÷»úÅÜµÄ¿ÉÖ´ĞĞ | `arkcc x.c -target c -S -o out.c && gcc out.c -o out` |
-| Éú³É Cortex-M7 + Ó²¼ş FPU ´úÂë | `arkcc x.c -target arm -mcpu=cortex-m7 --fpu=hard -S` |
-| Éú³É DWARF v3 µ÷ÊÔĞÅÏ¢ | `arkcc x.c -target arm -g --dwarf3 -S` |
-| Ã¿º¯ÊıÒ»¶Î£¨±ãÓÚËÀ´úÂëÏû³ı£© | `arkcc x.c -target arm --split_sections -S` |
-| Éú³É Makefile ÒÀÀµ | `arkcc x.c -MMD -MF x.d` |
-| ÉÕÂ¼µ½ STM32 W25Q ÓÃ | `arkcc x.c -target arm -o /app/main.bin`£¨ÔÙÓÃÉÏÎ»»úĞ´Èë Flash£© |
+| çœ‹ä¸€çœ¼è¯æ³•/è¯­æ³•æ˜¯å¦æ­£ç¡® | `arkcc x.c -target c -S -o /dev/null` |
+| è°ƒè¯• IR -> æ±‡ç¼–ç¿»è¯‘ | `arkcc x.c -target arm -S` |
+| ç”Ÿæˆå¯åœ¨ä¸»æœºè·‘çš„å¯æ‰§è¡Œ | `arkcc x.c -target c -S -o out.c && gcc out.c -o out` |
+| ç”Ÿæˆ Cortex-M7 + ç¡¬ä»¶ FPU ä»£ç  | `arkcc x.c -target arm -mcpu=cortex-m7 --fpu=hard -S` |
+| ç”Ÿæˆ DWARF v3 è°ƒè¯•ä¿¡æ¯ | `arkcc x.c -target arm -g --dwarf3 -S` |
+| æ¯å‡½æ•°ä¸€æ®µï¼ˆä¾¿äºæ­»ä»£ç æ¶ˆé™¤ï¼‰ | `arkcc x.c -target arm --split_sections -S` |
+| ç”Ÿæˆ Makefile ä¾èµ– | `arkcc x.c -MMD -MF x.d` |
+| çƒ§å½•åˆ° STM32 W25Q ç”¨ | `arkcc x.c -target arm -o /app/main.bin`ï¼ˆå†ç”¨ä¸Šä½æœºå†™å…¥ Flashï¼‰ |
 
 ---
 
-## 4 Ö§³ÖµÄ C ÓïÑÔÌØĞÔ
+## 4 æ”¯æŒçš„ C è¯­è¨€ç‰¹æ€§
 
-°´ ISO/IEC 9899:1999 (C99) ±ê×¼¶ÔÕÕ£¬¸ø³ö±¾±àÒëÆ÷ v0.7.0 µÄÊµ¼ÊÖ§³Ö·¶Î§¡£±¾±àÒëÆ÷ÒÑÊµÏÖ C99 È«¼¯£¬²¢¸²¸Ç armcc ³£ÓÃÀ©Õ¹ 98% ÒÔÉÏ¡£
+æŒ‰ ISO/IEC 9899:1999 (C99) æ ‡å‡†å¯¹ç…§ï¼Œç»™å‡ºæœ¬ç¼–è¯‘å™¨ v0.7.0 çš„å®é™…æ”¯æŒèŒƒå›´ã€‚æœ¬ç¼–è¯‘å™¨å·²å®ç° C99 å…¨é›†ï¼Œå¹¶è¦†ç›– armcc å¸¸ç”¨æ‰©å±• 98% ä»¥ä¸Šã€‚
 
-### 4.1 ÀàĞÍÏµÍ³
+### 4.1 ç±»å‹ç³»ç»Ÿ
 
-| Àà±ğ | Ö§³Ö | ±¸×¢ |
+| ç±»åˆ« | æ”¯æŒ | å¤‡æ³¨ |
 | --- | :---: | --- |
-| `void` `char` `short` `int` `long` `long long` | ? | `int` Îª 32 Î»£¬`long long` Îª 64 Î» |
-| `signed` / `unsigned` ĞŞÊÎ·û | ? | sema Çø·ÖÓĞ·ûºÅ/ÎŞ·ûºÅ£»`--signed_chars`/`--unsigned_chars` ¿ØÖÆ `char` Ä¬ÈÏ·ûºÅ |
-| `_Bool` / `<stdbool.h>` µÄ `bool/true/false` | ? |  |
-| `float` / `double` / `long double` | ? | ARM ºó¶Ë¿ÉÑ¡Ó²¼ş FPU£¨VFP£©»ò `__aeabi_f*`/`__aeabi_d*` Èí¸¡µã×®£¬`double` Õæ 64 Î»¾«¶È |
-| `_Complex` / `_Imaginary` | ? | `_Complex double`/`_Complex float` Í¸´«¸ø gcc£¨`sizeof(_Complex double)==16`£© |
-| Ò»Î¬Êı×é / ¶àÎ¬Êı×é | ? | Î¬¶ÈÔÊĞí³£Á¿±í´ïÊ½ |
-| Ö¸Õë¡¢Ö¸ÕëµÄÖ¸Õë | ? |  |
-| º¯ÊıÖ¸Õë | ? | Óï·¨Óëµ÷ÓÃÍêÕû |
-| `struct` / `union` | ? | º¬×Ö¶ÎÆ«ÒÆ¡¢`.` / `->`¡¢Î»Óò£¨ÕæÕıÎ»´ò°ü£©¡¢ÈáĞÔÊı×é³ÉÔ±¡¢ÄäÃû struct/union ×Ö¶ÎÌáÉı |
-| `enum` | ? | ×÷Îª int ³£Á¿¼¯ºÏ£»`--enum_is_int` Ç¿ÖÆ int µ×²ãÀàĞÍ |
-| `typedef` | ? | º¬µİ¹é typedef |
-| ÀàĞÍÏŞ¶¨·û `const` `volatile` `restrict` | ? | ½âÎö²¢²ÎÓëÓïÒå·ÖÎö |
-| ´æ´¢Àà `static` `extern` `auto` `register` | ? | `static/extern` Ó°ÏìÁ´½Ó£»º¯ÊıÄÚ `static` ³Ö¾Ã»¯ |
-| `inline` | ? | ½âÎö£¨ÌáÊ¾ĞÔ£© |
-| `__thread`£¨TLS£© | ? | Ïß³Ì¾Ö²¿´æ´¢£¬Éú³É `.tbss`/`.tdata` ¶Î |
-| Ç¿ÖÆÀàĞÍ×ª»» `(type)expr` | ? |  |
-| `sizeof(type)` / `sizeof expr` | ? | ±àÒëÆÚÇóÖµ |
-| VLA ±ä³¤Êı×é | ? | `int a[n]` ÔËĞĞÊ±±ä³¤£¬Í¨¹ı `IR_ALLOCA` Õ»¶¯Ì¬·ÖÅä£¨8 ×Ö½Ú¶ÔÆë£© |
+| `void` `char` `short` `int` `long` `long long` | ? | `int` ä¸º 32 ä½ï¼Œ`long long` ä¸º 64 ä½ |
+| `signed` / `unsigned` ä¿®é¥°ç¬¦ | ? | sema åŒºåˆ†æœ‰ç¬¦å·/æ— ç¬¦å·ï¼›`--signed_chars`/`--unsigned_chars` æ§åˆ¶ `char` é»˜è®¤ç¬¦å· |
+| `_Bool` / `<stdbool.h>` çš„ `bool/true/false` | ? |  |
+| `float` / `double` / `long double` | ? | ARM åç«¯å¯é€‰ç¡¬ä»¶ FPUï¼ˆVFPï¼‰æˆ– `__aeabi_f*`/`__aeabi_d*` è½¯æµ®ç‚¹æ¡©ï¼Œ`double` çœŸ 64 ä½ç²¾åº¦ |
+| `_Complex` / `_Imaginary` | ? | `_Complex double`/`_Complex float` é€ä¼ ç»™ gccï¼ˆ`sizeof(_Complex double)==16`ï¼‰ |
+| ä¸€ç»´æ•°ç»„ / å¤šç»´æ•°ç»„ | ? | ç»´åº¦å…è®¸å¸¸é‡è¡¨è¾¾å¼ |
+| æŒ‡é’ˆã€æŒ‡é’ˆçš„æŒ‡é’ˆ | ? |  |
+| å‡½æ•°æŒ‡é’ˆ | ? | è¯­æ³•ä¸è°ƒç”¨å®Œæ•´ |
+| `struct` / `union` | ? | å«å­—æ®µåç§»ã€`.` / `->`ã€ä½åŸŸï¼ˆçœŸæ­£ä½æ‰“åŒ…ï¼‰ã€æŸ”æ€§æ•°ç»„æˆå‘˜ã€åŒ¿å struct/union å­—æ®µæå‡ |
+| `enum` | ? | ä½œä¸º int å¸¸é‡é›†åˆï¼›`--enum_is_int` å¼ºåˆ¶ int åº•å±‚ç±»å‹ |
+| `typedef` | ? | å«é€’å½’ typedef |
+| ç±»å‹é™å®šç¬¦ `const` `volatile` `restrict` | ? | è§£æå¹¶å‚ä¸è¯­ä¹‰åˆ†æ |
+| å­˜å‚¨ç±» `static` `extern` `auto` `register` | ? | `static/extern` å½±å“é“¾æ¥ï¼›å‡½æ•°å†… `static` æŒä¹…åŒ– |
+| `inline` | ? | è§£æï¼ˆæç¤ºæ€§ï¼‰ |
+| `__thread`ï¼ˆTLSï¼‰ | ? | çº¿ç¨‹å±€éƒ¨å­˜å‚¨ï¼Œç”Ÿæˆ `.tbss`/`.tdata` æ®µ |
+| å¼ºåˆ¶ç±»å‹è½¬æ¢ `(type)expr` | ? |  |
+| `sizeof(type)` / `sizeof expr` | ? | ç¼–è¯‘æœŸæ±‚å€¼ |
+| VLA å˜é•¿æ•°ç»„ | ? | `int a[n]` è¿è¡Œæ—¶å˜é•¿ï¼Œé€šè¿‡ `IR_ALLOCA` æ ˆåŠ¨æ€åˆ†é…ï¼ˆ8 å­—èŠ‚å¯¹é½ï¼‰ |
 
-### 4.2 ×ÖÃæÁ¿
+### 4.2 å­—é¢é‡
 
-| ĞÎÊ½ | Ê¾Àı | Ö§³Ö |
+| å½¢å¼ | ç¤ºä¾‹ | æ”¯æŒ |
 | --- | --- | :---: |
-| Ê®½øÖÆÕûÊı | `42` | ? |
-| °Ë½øÖÆ | `0755` | ? |
-| Ê®Áù½øÖÆ | `0xFF` | ? |
-| ÕûÊıºó×º | `42u 42L 42ull` | ? |
-| ×Ö·û | `'a' '\n' '\xFF' '\0'` | ? |
-| ×Ö·û´® | `"hello\n"` º¬Æ´½Ó | ? |
-| ¸¡µã | `1.5 1.5e-3 .5 2.0f` | ? |
-| ¿í×Ö·û/¿í´® | `L'a' L"..."` | ? | `--wchar16`/`--wchar32` ÇĞ»»¿í¶È |
+| åè¿›åˆ¶æ•´æ•° | `42` | ? |
+| å…«è¿›åˆ¶ | `0755` | ? |
+| åå…­è¿›åˆ¶ | `0xFF` | ? |
+| æ•´æ•°åç¼€ | `42u 42L 42ull` | ? |
+| å­—ç¬¦ | `'a' '\n' '\xFF' '\0'` | ? |
+| å­—ç¬¦ä¸² | `"hello\n"` å«æ‹¼æ¥ | ? |
+| æµ®ç‚¹ | `1.5 1.5e-3 .5 2.0f` | ? |
+| å®½å­—ç¬¦/å®½ä¸² | `L'a' L"..."` | ? | `--wchar16`/`--wchar32` åˆ‡æ¢å®½åº¦ |
 
-### 4.3 ÔËËã·û
+### 4.3 è¿ç®—ç¬¦
 
-| Àà±ğ | Ö§³Ö |
+| ç±»åˆ« | æ”¯æŒ |
 | --- | :---: |
-| ËãÊõ `+ - * / %` | ? |
-| ±È½Ï `== != < > <= >=` | ? |
-| Âß¼­ `&& \|\| !`£¨¶ÌÂ·£© | ? |
-| Î» `& \| ^ ~ << >>` | ? |
-| ¸³Öµ `=` ÓëÈ«²¿¸´ºÏ¸³Öµ `+= -= *= /= %= &= \|= ^= <<= >>=` | ? |
-| ×ÔÔö/¼õ `++ --`£¨Ç°×º+ºó×º£© | ? |
-| ÈıÄ¿ `?:` | ? |
-| ¶ººÅ `,`£¨±í´ïÊ½Óï¾³£© | ? |
-| È¡µØÖ· `&` / ½âÒıÓÃ `*` | ? |
-| ³ÉÔ± `.` / `->` | ? |
+| ç®—æœ¯ `+ - * / %` | ? |
+| æ¯”è¾ƒ `== != < > <= >=` | ? |
+| é€»è¾‘ `&& \|\| !`ï¼ˆçŸ­è·¯ï¼‰ | ? |
+| ä½ `& \| ^ ~ << >>` | ? |
+| èµ‹å€¼ `=` ä¸å…¨éƒ¨å¤åˆèµ‹å€¼ `+= -= *= /= %= &= \|= ^= <<= >>=` | ? |
+| è‡ªå¢/å‡ `++ --`ï¼ˆå‰ç¼€+åç¼€ï¼‰ | ? |
+| ä¸‰ç›® `?:` | ? |
+| é€—å· `,`ï¼ˆè¡¨è¾¾å¼è¯­å¢ƒï¼‰ | ? |
+| å–åœ°å€ `&` / è§£å¼•ç”¨ `*` | ? |
+| æˆå‘˜ `.` / `->` | ? |
 | `sizeof` | ? |
 
-### 4.4 Óï¾ä
+### 4.4 è¯­å¥
 
-| Óï¾ä | Ö§³Ö |
+| è¯­å¥ | æ”¯æŒ |
 | --- | :---: |
-| ±í´ïÊ½Óï¾ä¡¢ÉùÃ÷Óï¾ä | ? |
+| è¡¨è¾¾å¼è¯­å¥ã€å£°æ˜è¯­å¥ | ? |
 | `if / else` | ? |
 | `while / do-while / for` | ? |
 | `switch / case / default` | ? |
 | `break / continue / return` | ? |
-| `goto` + ±êÇ© | ? |
-| ¿éÄÚÈÎÒâÎ»ÖÃÉùÃ÷£¨C99 ·Å¿í£© | ? |
-| `for (int i = 0; ...; ...)` ÄÚÉùÃ÷ | ? |
+| `goto` + æ ‡ç­¾ | ? |
+| å—å†…ä»»æ„ä½ç½®å£°æ˜ï¼ˆC99 æ”¾å®½ï¼‰ | ? |
+| `for (int i = 0; ...; ...)` å†…å£°æ˜ | ? |
 
-### 4.5 º¯Êı
+### 4.5 å‡½æ•°
 
-| ÌØĞÔ | Ö§³Ö |
+| ç‰¹æ€§ | æ”¯æŒ |
 | --- | :---: |
-| ¶¨Òå¡¢ÉùÃ÷¡¢µ÷ÓÃ¡¢µİ¹é | ? |
-| ¶àÓÚ 4 ¸ö²ÎÊı | ?£¨¶àÓà×ßÕ»£¬ÑÏ¸ñ AAPCS£© |
-| º¯ÊıÔ­ĞÍÓë²ÎÊı¸öÊı¼ì²é | ? |
-| ±ä²Î `...` | ? |
-| º¯ÊıÖ¸Õëµ÷ÓÃ | ? |
-| ÄÚÁª `inline` | ? ½âÎö£¨ÌáÊ¾ĞÔ£© |
-| K&R ¾ÉÊ½²ÎÊı | ? |
-| ½á¹¹Ìå°´Öµ´«/·µ | ? Í¨¹ıÒş²ØÖ¸Õë²ÎÊıÊµÏÖ |
+| å®šä¹‰ã€å£°æ˜ã€è°ƒç”¨ã€é€’å½’ | ? |
+| å¤šäº 4 ä¸ªå‚æ•° | ?ï¼ˆå¤šä½™èµ°æ ˆï¼Œä¸¥æ ¼ AAPCSï¼‰ |
+| å‡½æ•°åŸå‹ä¸å‚æ•°ä¸ªæ•°æ£€æŸ¥ | ? |
+| å˜å‚ `...` | ? |
+| å‡½æ•°æŒ‡é’ˆè°ƒç”¨ | ? |
+| å†…è” `inline` | ? è§£æï¼ˆæç¤ºæ€§ï¼‰ |
+| K&R æ—§å¼å‚æ•° | ? |
+| ç»“æ„ä½“æŒ‰å€¼ä¼ /è¿” | ? é€šè¿‡éšè—æŒ‡é’ˆå‚æ•°å®ç° |
 
-### 4.6 Ô¤´¦ÀíÆ÷
+### 4.6 é¢„å¤„ç†å™¨
 
-| Ö¸Áî | Ö§³Ö |
+| æŒ‡ä»¤ | æ”¯æŒ |
 | --- | :---: |
-| ¶ÔÏóºê `#define NAME body` | ? |
-| º¯Êıºê `#define MAX(a,b) ((a)>(b)?(a):(b))` | ? |
-| `#` ×Ö·û´®»¯¡¢`##` ´®½Ó | ? |
-| ĞøĞĞ `\` | ? |
+| å¯¹è±¡å® `#define NAME body` | ? |
+| å‡½æ•°å® `#define MAX(a,b) ((a)>(b)?(a):(b))` | ? |
+| `#` å­—ç¬¦ä¸²åŒ–ã€`##` ä¸²æ¥ | ? |
+| ç»­è¡Œ `\` | ? |
 | `#if / #elif / #else / #endif` | ? |
 | `#ifdef / #ifndef` | ? |
 | `#undef / #error / #warning` | ? |
-| `#pragma`£¨Ïê¼û ¡ì9.4£© | ? |
-| Ç¶Ì× `#include`£¨¡Ü8 ²ã£© | ? |
-| ËÑË÷Â·¾¶ `-I` | ? |
-| ÈıÔª×é trigraph£¨9 ¸ö C99 ÈıÔª×é£© | ? |
-| Ô¤¶¨Òåºê `__FILE__` `__LINE__` `__STDC__` `__ARK_CC__` | ? |
+| `#pragma`ï¼ˆè¯¦è§ Â§9.4ï¼‰ | ? |
+| åµŒå¥— `#include`ï¼ˆâ‰¤8 å±‚ï¼‰ | ? |
+| æœç´¢è·¯å¾„ `-I` | ? |
+| ä¸‰å…ƒç»„ trigraphï¼ˆ9 ä¸ª C99 ä¸‰å…ƒç»„ï¼‰ | ? |
+| é¢„å®šä¹‰å® `__FILE__` `__LINE__` `__STDC__` `__ARK_CC__` | ? |
 | `__STDC_VERSION__` `__STDC_HOSTED__` | ? |
 | `__func__` `__DATE__` `__TIME__` | ? |
-| ¿É±ä²ÎÊıºê `__VA_ARGS__` | ? |
+| å¯å˜å‚æ•°å® `__VA_ARGS__` | ? |
 
-### 4.7 ³õÊ¼»¯ÓëÁ´½Ó
+### 4.7 åˆå§‹åŒ–ä¸é“¾æ¥
 
-| ÌØĞÔ | Ö§³Ö |
+| ç‰¹æ€§ | æ”¯æŒ |
 | --- | :---: |
-| È«¾Ö±äÁ¿¡¢ÄÚ²¿/Íâ²¿Á´½Ó | ? |
-| ¾Ö²¿±äÁ¿´ø³õÊ¼»¯Æ÷ | ? |
-| Êı×é¾ÛºÏ³õÊ¼»¯ `{1,2,3}` | ? |
-| Ç¶Ì×¾ÛºÏ³õÊ¼»¯ `{{1,2},{3,4}}` | ? |
-| Ö¸¶¨³õÊ¼»¯ `.x=1` `[2]=5` | ? |
-| ×Ö·û´®³õÊ¼»¯ `char s[]="hi"` | ? |
-| È«¾Ö±äÁ¿·Ç×ÖÃæÁ¿³õÖµ£¨³£Á¿±í´ïÊ½ÕÛµş£© | ? |
-| ¸´ºÏ×ÖÃæÁ¿ `(int[]){1,2,3}` / `(struct P){.x=1,.y=2}` | ? |
-| TLS ³õÊ¼»¯£¨`__thread`£© | ? |
+| å…¨å±€å˜é‡ã€å†…éƒ¨/å¤–éƒ¨é“¾æ¥ | ? |
+| å±€éƒ¨å˜é‡å¸¦åˆå§‹åŒ–å™¨ | ? |
+| æ•°ç»„èšåˆåˆå§‹åŒ– `{1,2,3}` | ? |
+| åµŒå¥—èšåˆåˆå§‹åŒ– `{{1,2},{3,4}}` | ? |
+| æŒ‡å®šåˆå§‹åŒ– `.x=1` `[2]=5` | ? |
+| å­—ç¬¦ä¸²åˆå§‹åŒ– `char s[]="hi"` | ? |
+| å…¨å±€å˜é‡éå­—é¢é‡åˆå€¼ï¼ˆå¸¸é‡è¡¨è¾¾å¼æŠ˜å ï¼‰ | ? |
+| å¤åˆå­—é¢é‡ `(int[]){1,2,3}` / `(struct P){.x=1,.y=2}` | ? |
+| TLS åˆå§‹åŒ–ï¼ˆ`__thread`ï¼‰ | ? |
 
-### 4.8 ÄÚÁª»ã±à
+### 4.8 å†…è”æ±‡ç¼–
 
-| ĞÎÊ½ | Ö§³Ö |
+| å½¢å¼ | æ”¯æŒ |
 | --- | :---: |
-| »ù±¾¸ñÊ½ `asm("...")` / `__asm__("...")` | ? |
-| À©Õ¹¸ñÊ½ `asm("..." : outputs : inputs : clobbers)` | ? |
-| `__asm void fn() {...}` Õûº¯ÊıÌå»ã±à£¨armcc ·ç¸ñ£© | ? |
+| åŸºæœ¬æ ¼å¼ `asm("...")` / `__asm__("...")` | ? |
+| æ‰©å±•æ ¼å¼ `asm("..." : outputs : inputs : clobbers)` | ? |
+| `__asm void fn() {...}` æ•´å‡½æ•°ä½“æ±‡ç¼–ï¼ˆarmcc é£æ ¼ï¼‰ | ? |
 
-C ºó¶ËÍêÕûÍ¸´«ÄÚÁª»ã±à£¨°üÀ¨²Ù×÷ÊıÌæ»»£©£¬ARM ºó¶ËÎÄ±¾Í¸´«¡£
+C åç«¯å®Œæ•´é€ä¼ å†…è”æ±‡ç¼–ï¼ˆåŒ…æ‹¬æ“ä½œæ•°æ›¿æ¢ï¼‰ï¼ŒARM åç«¯æ–‡æœ¬é€ä¼ ã€‚
 
 ---
 
-## 5 ¶àºó¶Ë¼Ü¹¹
+## 5 å¤šåç«¯æ¶æ„
 
-### 5.1 ºó¶Ë½Ó¿Ú
+### 5.1 åç«¯æ¥å£
 
-ÎÄ¼ş£º[include/backend.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/backend.h)
+æ–‡ä»¶ï¼š[include/backend.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/backend.h)
 
 ```c
 typedef struct ArkBackend {
@@ -389,22 +389,22 @@ typedef struct ArkBackend {
 } ArkBackend;
 ```
 
-- `emit_asm`£º°Ñ IR ·­Òë³ÉÎÄ±¾»ã±à£¨»òÄ¿±ê C ´úÂë£©£¬Ğ´Èë `out`£¬·µ»Ø×Ö½ÚÊı¡£
-- `assemble`£º°ÑÎÄ±¾»ã±à±àÂëÎª»úÆ÷Âë¡£Èí¼şºó¶Ë£¨c/x86_64/riscv32£©¿ÉÒÔÖ±½Ó°Ñ»ã±àÎÄ±¾Í¸´«£¬ÈÃËŞÖ÷¹¤¾ßÁ´¼ÌĞø´¦Àí¡£
-- `link`£º¿çº¯Êı·ûºÅÖØ¶¨Î»£¨ARM ºó¶ËÓÃÓÚ»ØÌî `BL` Æ«ÒÆ£©¡£
+- `emit_asm`ï¼šæŠŠ IR ç¿»è¯‘æˆæ–‡æœ¬æ±‡ç¼–ï¼ˆæˆ–ç›®æ ‡ C ä»£ç ï¼‰ï¼Œå†™å…¥ `out`ï¼Œè¿”å›å­—èŠ‚æ•°ã€‚
+- `assemble`ï¼šæŠŠæ–‡æœ¬æ±‡ç¼–ç¼–ç ä¸ºæœºå™¨ç ã€‚è½¯ä»¶åç«¯ï¼ˆc/x86_64/riscv32ï¼‰å¯ä»¥ç›´æ¥æŠŠæ±‡ç¼–æ–‡æœ¬é€ä¼ ï¼Œè®©å®¿ä¸»å·¥å…·é“¾ç»§ç»­å¤„ç†ã€‚
+- `link`ï¼šè·¨å‡½æ•°ç¬¦å·é‡å®šä½ï¼ˆARM åç«¯ç”¨äºå›å¡« `BL` åç§»ï¼‰ã€‚
 
-### 5.2 ÒÑÊµÏÖµÄºó¶Ë
+### 5.2 å·²å®ç°çš„åç«¯
 
-| ºó¶Ë | Ä¿Â¼ | Èë¿Ú·ûºÅ | Ö÷ÒªÓÃÍ¾ |
+| åç«¯ | ç›®å½• | å…¥å£ç¬¦å· | ä¸»è¦ç”¨é€” |
 | --- | --- | --- | --- |
-| `arm` | [src/backend/arm/](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/backend/arm) | `ark_backend_arm()` | STM32 Cortex-M3/M4/M7/M33£¨Thumb-2£©£¬º¬ÍêÕû DWARF + TLS + scatter |
-| `x86_64` | [src/backend/x86_64/](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/backend/x86_64) | `ark_backend_x86_64()` | Êä³ö GAS »ã±à£¬ËŞÖ÷ `as` ¿ÉÓÃ |
-| `riscv32` | [src/backend/riscv32/](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/backend/riscv32) | `ark_backend_riscv32()` | Êä³ö RV32I »ã±à£¨GAS£© |
-| `c` | [src/backend/c/](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/backend/c) | `ark_backend_c()` | IR -> ¿É¶Á C Ô´£¨host ²âÊÔÖ÷Â·¾¶£© |
+| `arm` | [src/backend/arm/](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/backend/arm) | `ark_backend_arm()` | STM32 Cortex-M3/M4/M7/M33ï¼ˆThumb-2ï¼‰ï¼Œå«å®Œæ•´ DWARF + TLS + scatter |
+| `x86_64` | [src/backend/x86_64/](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/backend/x86_64) | `ark_backend_x86_64()` | è¾“å‡º GAS æ±‡ç¼–ï¼Œå®¿ä¸» `as` å¯ç”¨ |
+| `riscv32` | [src/backend/riscv32/](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/backend/riscv32) | `ark_backend_riscv32()` | è¾“å‡º RV32I æ±‡ç¼–ï¼ˆGASï¼‰ |
+| `c` | [src/backend/c/](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/backend/c) | `ark_backend_c()` | IR -> å¯è¯» C æºï¼ˆhost æµ‹è¯•ä¸»è·¯å¾„ï¼‰ |
 
-×¢²á±í£º[src/backend/registry.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/backend/registry.c)¡£ĞÂÔöºó¶ËÊ±£¬ÔÚ´Ë´¦¼ÓÒ»ĞĞ×¢²á¼´¿É¡£
+æ³¨å†Œè¡¨ï¼š[src/backend/registry.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/backend/registry.c)ã€‚æ–°å¢åç«¯æ—¶ï¼Œåœ¨æ­¤å¤„åŠ ä¸€è¡Œæ³¨å†Œå³å¯ã€‚
 
-### 5.3 Ñ¡Ôñºó¶Ë
+### 5.3 é€‰æ‹©åç«¯
 
 ```powershell
 .\arkcc.exe --list-backends
@@ -413,28 +413,28 @@ typedef struct ArkBackend {
 .\arkcc.exe foo.c -target c -S -o foo.gen.c
 ```
 
-### 5.4 CPU Ñ¡ĞÍ
+### 5.4 CPU é€‰å‹
 
-ARM ºó¶ËÖ§³Ö°´ CPU ÃûÇĞ»»Ö¸Áî¼¯ÓëÄ¬ÈÏ¶ÔÆë£º
+ARM åç«¯æ”¯æŒæŒ‰ CPU ååˆ‡æ¢æŒ‡ä»¤é›†ä¸é»˜è®¤å¯¹é½ï¼š
 
 ```powershell
 .\arkcc.exe foo.c -target arm -mcpu=cortex-m7 --fpu=hard -S
 .\arkcc.exe foo.c -target arm --cpu=Cortex-M4 --thumb -S
 ```
 
-CPU Ñ¡ĞÍÊµÏÖÓÚ `include/cpu.h` + `src/cpu.c`£¬»á×Ô¶¯ÉèÖÃ¶ÔÓ¦Ô¤¶¨Òåºê£¨¼û ¡ì9.5£©¡£
+CPU é€‰å‹å®ç°äº `include/cpu.h` + `src/cpu.c`ï¼Œä¼šè‡ªåŠ¨è®¾ç½®å¯¹åº”é¢„å®šä¹‰å®ï¼ˆè§ Â§9.5ï¼‰ã€‚
 
-### 5.5 scatter ¼ÓÔØÃèÊöÎÄ¼ş
+### 5.5 scatter åŠ è½½æè¿°æ–‡ä»¶
 
-ARM ºó¶ËÖ§³Ö½âÎö armcc ·ç¸ñµÄ scatter ÎÄ¼ş£¨`.sct`£©£¬ÊµÏÖÓÚ `include/scatter.h` + `src/scatter.c`¡£scatter ÎÄ¼şÃèÊö¸÷¶Î£¨`.text`/`.data`/`.bss`/`.ark_heap`/`.ark_code` µÈ£©µÄÎïÀíµØÖ·ÓëÖ´ĞĞµØÖ·£¬³£ÓÃÓÚ¶àÄÚ´æÇøÇ¶ÈëÊ½ÏµÍ³£¨Èç STM32H7 µÄ DTCM/AXI SRAM/Flash ·ÖÇø£©¡£
+ARM åç«¯æ”¯æŒè§£æ armcc é£æ ¼çš„ scatter æ–‡ä»¶ï¼ˆ`.sct`ï¼‰ï¼Œå®ç°äº `include/scatter.h` + `src/scatter.c`ã€‚scatter æ–‡ä»¶æè¿°å„æ®µï¼ˆ`.text`/`.data`/`.bss`/`.ark_heap`/`.ark_code` ç­‰ï¼‰çš„ç‰©ç†åœ°å€ä¸æ‰§è¡Œåœ°å€ï¼Œå¸¸ç”¨äºå¤šå†…å­˜åŒºåµŒå…¥å¼ç³»ç»Ÿï¼ˆå¦‚ STM32H7 çš„ DTCM/AXI SRAM/Flash åˆ†åŒºï¼‰ã€‚
 
 ---
 
-## 6 ÔÚ Windows ÉÏ×ö²âÊÔ
+## 6 åœ¨ Windows ä¸Šåšæµ‹è¯•
 
-### 6.1 ÍÆ¼ö¹¤×÷Á÷£ºc ºó¶Ë
+### 6.1 æ¨èå·¥ä½œæµï¼šc åç«¯
 
-`c` ºó¶Ë°Ñ IR ·­ÒëÎª±ê×¼ C Ô´´úÂë¡£ÕâÊÇ**ÀëÓ²¼ş×îÔ¶µ«·´À¡×î¿ì**µÄ²âÊÔÍ¨µÀ£¬Ç¿ÁÒÍÆ¼öÓÃËü×öÈÕ³£¿ª·¢£º
+`c` åç«¯æŠŠ IR ç¿»è¯‘ä¸ºæ ‡å‡† C æºä»£ç ã€‚è¿™æ˜¯**ç¦»ç¡¬ä»¶æœ€è¿œä½†åé¦ˆæœ€å¿«**çš„æµ‹è¯•é€šé“ï¼Œå¼ºçƒˆæ¨èç”¨å®ƒåšæ—¥å¸¸å¼€å‘ï¼š
 
 ```powershell
 .\arkcc.exe examples\struct_test.c -target c -S -o out.gen.c
@@ -443,31 +443,31 @@ gcc out.gen.c -o out.exe
 echo $LASTEXITCODE
 ```
 
-`examples\run_tests.ps1` ÒÑ¾­°ÑÉÏÊö²½Öè×Ô¶¯»¯ÁË£º
+`examples\run_tests.ps1` å·²ç»æŠŠä¸Šè¿°æ­¥éª¤è‡ªåŠ¨åŒ–äº†ï¼š
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File examples\run_tests.ps1
 ```
 
-### 6.2 ÑéÖ¤ ARM ºó¶Ë¶øÎŞĞèÓ²¼ş
+### 6.2 éªŒè¯ ARM åç«¯è€Œæ— éœ€ç¡¬ä»¶
 
-Òª¼ì²é"ÔÚ STM32 ÉÏ±àÒë³öÀ´µÄ»ã±à¶Ô²»¶Ô"£¬¿ÉÒÔÓÃ QEMU »ò ARM Ä£ÄâÆ÷£º
+è¦æ£€æŸ¥"åœ¨ STM32 ä¸Šç¼–è¯‘å‡ºæ¥çš„æ±‡ç¼–å¯¹ä¸å¯¹"ï¼Œå¯ä»¥ç”¨ QEMU æˆ– ARM æ¨¡æ‹Ÿå™¨ï¼š
 
 ```powershell
-# ÓÃ ARM GNU ¹¤¾ßÁ´»ã±à+Á´½Ó
+# ç”¨ ARM GNU å·¥å…·é“¾æ±‡ç¼–+é“¾æ¥
 .\arkcc.exe foo.c -target arm -S -o foo.s
 arm-none-eabi-as foo.s -mcpu=cortex-m7 -mthumb -o foo.o
 arm-none-eabi-ld foo.o -Ttext=0x00 -o foo.elf
 qemu-arm foo.elf
 ```
 
-> ÏîÄ¿±¾Éí²»ÒÀÀµ QEMU£»ÕâÖ»ÊÇÑéÖ¤ºó¶ËÕıÈ·ĞÔµÄ³£ÓÃ·½·¨¡£
+> é¡¹ç›®æœ¬èº«ä¸ä¾èµ– QEMUï¼›è¿™åªæ˜¯éªŒè¯åç«¯æ­£ç¡®æ€§çš„å¸¸ç”¨æ–¹æ³•ã€‚
 
-### 6.3 ²âÊÔ x86_64/RISC-V ºó¶Ë
+### 6.3 æµ‹è¯• x86_64/RISC-V åç«¯
 
 ```powershell
 .\arkcc.exe foo.c -target x86_64 -S -o foo.s
-gcc foo.s -o foo.exe          # ×¢Òâ foo.s ±ØĞë·ûºÏ GAS Óï·¨
+gcc foo.s -o foo.exe          # æ³¨æ„ foo.s å¿…é¡»ç¬¦åˆ GAS è¯­æ³•
 ```
 
 ```powershell
@@ -477,72 +477,72 @@ riscv32-unknown-elf-gcc foo.s -o foo.elf
 
 ---
 
-## 7 STM32H743 + Keil MDK ¹¤³Ì
+## 7 STM32H743 + Keil MDK å·¥ç¨‹
 
-¹¤³ÌÎ»ÓÚ [mdk/STM32H743_ArkCC/](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/mdk/STM32H743_ArkCC)¡£
+å·¥ç¨‹ä½äº [mdk/STM32H743_ArkCC/](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/mdk/STM32H743_ArkCC)ã€‚
 
-### 7.1 ¹¤³Ì¸Å¿ö
+### 7.1 å·¥ç¨‹æ¦‚å†µ
 
-| Ïî | Öµ |
+| é¡¹ | å€¼ |
 | --- | --- |
-| Ğ¾Æ¬ | STM32H743VIT6£¨Cortex-M7, 2 MB Flash, 1 MB SRAM, 480 MHz£© |
-| ±àÒëÆ÷ | ARM Compiler 6 (armclang) |
+| èŠ¯ç‰‡ | STM32H743VIT6ï¼ˆCortex-M7, 2 MB Flash, 1 MB SRAM, 480 MHzï¼‰ |
+| ç¼–è¯‘å™¨ | ARM Compiler 6 (armclang) |
 | Scatter | [Linker/STM32H743VITx_FLASH.sct](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/mdk/STM32H743_ArkCC/Linker/STM32H743VITx_FLASH.sct) |
-| Æô¶¯ÎÄ¼ş | [Startup/startup_stm32h743xx.s](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/mdk/STM32H743_ArkCC/Startup/startup_stm32h743xx.s) |
-| ÓÃ»§Ó¦ÓÃ | [User/main.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/mdk/STM32H743_ArkCC/User/main.c) |
-| STM32 ×ÔËŞÖ÷Èë¿Ú | [port/stm32/main_stm32.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/port/stm32/main_stm32.c) |
-| Flash ¶Î | `0x08000000 0x00200000` |
-| DTCM ¶Î | `0x20000000 0x00020000` |
-| AXI SRAM | `0x24000000 0x00080000`£¬·Å `.ark_heap` + `.ark_code` |
-| ½ö¼¯³É ARM ºó¶Ë | Îª½ÚÊ¡ Flash |
+| å¯åŠ¨æ–‡ä»¶ | [Startup/startup_stm32h743xx.s](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/mdk/STM32H743_ArkCC/Startup/startup_stm32h743xx.s) |
+| ç”¨æˆ·åº”ç”¨ | [User/main.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/mdk/STM32H743_ArkCC/User/main.c) |
+| STM32 è‡ªå®¿ä¸»å…¥å£ | [port/stm32/main_stm32.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/port/stm32/main_stm32.c) |
+| Flash æ®µ | `0x08000000 0x00200000` |
+| DTCM æ®µ | `0x20000000 0x00020000` |
+| AXI SRAM | `0x24000000 0x00080000`ï¼Œæ”¾ `.ark_heap` + `.ark_code` |
+| ä»…é›†æˆ ARM åç«¯ | ä¸ºèŠ‚çœ Flash |
 
-¹¤³ÌÎÄ¼şÇåµ¥£¨°´ Keil µÄ"Source Group"×éÖ¯£©£º
+å·¥ç¨‹æ–‡ä»¶æ¸…å•ï¼ˆæŒ‰ Keil çš„"Source Group"ç»„ç»‡ï¼‰ï¼š
 
-- **Application/User**£º`main.c` `stm32h7xx_it.c` `stm32h7xx_hal_msp.c` `system_stm32h7xx.c` `bsp_w25q.c`
-- **Application/Startup**£º`startup_stm32h743xx.s`
-- **ArkCC/Core**£º`..\..\src\compiler.c` `lexer.c` `parser.c` `sema.c` `ir.c` `irgen.c` `ast.c` `type.c` `symtab.c` `memory.c` `preproc.c` `codegen_common.c` `cpu.c` `scatter.c` `config.c` `opt.c`
-- **ArkCC/Backend**£º`..\..\src\backend\registry.c` `..\..\src\backend\arm\backend_arm.c`
-- **ArkCC/Port**£º`..\..\port\stm32\platform_stm32.c` `..\..\port\stm32\flash_fs_stm32.c` `..\..\port\stm32\main_stm32.c`
-- **Drivers/HAL**£º¿Õ£¬ÓÃ»§ÌîÈë¹Ù·½ HAL `.c`
+- **Application/User**ï¼š`main.c` `stm32h7xx_it.c` `stm32h7xx_hal_msp.c` `system_stm32h7xx.c` `bsp_w25q.c`
+- **Application/Startup**ï¼š`startup_stm32h743xx.s`
+- **ArkCC/Core**ï¼š`..\..\src\compiler.c` `lexer.c` `parser.c` `sema.c` `ir.c` `irgen.c` `ast.c` `type.c` `symtab.c` `memory.c` `preproc.c` `codegen_common.c` `cpu.c` `scatter.c` `config.c` `opt.c`
+- **ArkCC/Backend**ï¼š`..\..\src\backend\registry.c` `..\..\src\backend\arm\backend_arm.c`
+- **ArkCC/Port**ï¼š`..\..\port\stm32\platform_stm32.c` `..\..\port\stm32\flash_fs_stm32.c` `..\..\port\stm32\main_stm32.c`
+- **Drivers/HAL**ï¼šç©ºï¼Œç”¨æˆ·å¡«å…¥å®˜æ–¹ HAL `.c`
 
-> ÒòÎª src ÊÇÍ¨¹ıÏà¶ÔÂ·¾¶ÒıÓÃµÄ£¬PC ¶Ë¸Ä¶¯ src ºóÖ»ĞèÔÚ Keil Àï Rebuild¡£
+> å› ä¸º src æ˜¯é€šè¿‡ç›¸å¯¹è·¯å¾„å¼•ç”¨çš„ï¼ŒPC ç«¯æ”¹åŠ¨ src ååªéœ€åœ¨ Keil é‡Œ Rebuildã€‚
 
-### 7.2 Îå²½ÆğÅÜ
+### 7.2 äº”æ­¥èµ·è·‘
 
-1. **ÌîÈë¹Ù·½ CMSIS / HAL**
-   ´Ó STM32CubeH7 °ü¿½±´¹Ù·½ `Drivers/CMSIS/**` Óë `Drivers/STM32H7xx_HAL_Driver/**` ¸²¸Ç¹¤³ÌÕ¼Î»ÎÄ¼ş£¬È»ºóÔÚ Keil ÖĞ°ÑÒªÓÃµÄ `stm32h7xx_hal_*.c` ¼Ó½ø `Drivers/HAL` ×é¡£
-2. **²¹È«³õÊ¼»¯´úÂë**
-   ÓÃ STM32CubeMX Éú³É»òÊÖĞ´ÒÔÏÂº¯Êı£¨Î»ÓÚ `User/`£©£º
-   - `SystemClock_Config`£¨480 MHz PLL£©
+1. **å¡«å…¥å®˜æ–¹ CMSIS / HAL**
+   ä» STM32CubeH7 åŒ…æ‹·è´å®˜æ–¹ `Drivers/CMSIS/**` ä¸ `Drivers/STM32H7xx_HAL_Driver/**` è¦†ç›–å·¥ç¨‹å ä½æ–‡ä»¶ï¼Œç„¶ååœ¨ Keil ä¸­æŠŠè¦ç”¨çš„ `stm32h7xx_hal_*.c` åŠ è¿› `Drivers/HAL` ç»„ã€‚
+2. **è¡¥å…¨åˆå§‹åŒ–ä»£ç **
+   ç”¨ STM32CubeMX ç”Ÿæˆæˆ–æ‰‹å†™ä»¥ä¸‹å‡½æ•°ï¼ˆä½äº `User/`ï¼‰ï¼š
+   - `SystemClock_Config`ï¼ˆ480 MHz PLLï¼‰
    - `MX_GPIO_Init`
-   - `MX_USART1_UART_Init`£¨115200 8N1£¬PA9/PA10£©
-   - `MX_SPI1_Init`£¨SCK PA5, MISO PA6, MOSI PA7, CS PA4£©
-   - ÔÚ `stm32h7xx_hal_msp.c` ÖĞ²¹ MSP ¹³×Ó¡£
-3. **×¼±¸ W25Q ÉÏµÄÔ´ÎÄ¼ş**
-   ¼û [7.3 ÉÕÂ¼ÎÄ¼şµ½ W25Q](#73-ÉÕÂ¼ÎÄ¼şµ½-w25q)¡£
-4. **±àÒë²¢ÉÕÂ¼**
-   Keil ´ò¿ª `mdk/STM32H743_ArkCC/ArkCC.uvprojx`£¬Build ¡ú Download¡£
-5. **´®¿Ú¿´Êä³ö**
-   115200 ½Ó PA9/PA10£¬Ó¦¿´µ½£º
+   - `MX_USART1_UART_Init`ï¼ˆ115200 8N1ï¼ŒPA9/PA10ï¼‰
+   - `MX_SPI1_Init`ï¼ˆSCK PA5, MISO PA6, MOSI PA7, CS PA4ï¼‰
+   - åœ¨ `stm32h7xx_hal_msp.c` ä¸­è¡¥ MSP é’©å­ã€‚
+3. **å‡†å¤‡ W25Q ä¸Šçš„æºæ–‡ä»¶**
+   è§ [7.3 çƒ§å½•æ–‡ä»¶åˆ° W25Q](#73-çƒ§å½•æ–‡ä»¶åˆ°-w25q)ã€‚
+4. **ç¼–è¯‘å¹¶çƒ§å½•**
+   Keil æ‰“å¼€ `mdk/STM32H743_ArkCC/ArkCC.uvprojx`ï¼ŒBuild â†’ Downloadã€‚
+5. **ä¸²å£çœ‹è¾“å‡º**
+   115200 æ¥ PA9/PA10ï¼Œåº”çœ‹åˆ°ï¼š
    ```
    === Ark C Compiler on STM32H743 ===
    Compiling /app/main.c from W25Q...
    Exit code: <int>
    ```
 
-### 7.3 ÉÕÂ¼ÎÄ¼şµ½ W25Q
+### 7.3 çƒ§å½•æ–‡ä»¶åˆ° W25Q
 
-W25Q128 ÉÏĞèÒªÒ»ÕÅ¼«¼òÎÄ¼şË÷Òı±í + ÎÄ¼şÊı¾İ¡£
+W25Q128 ä¸Šéœ€è¦ä¸€å¼ æç®€æ–‡ä»¶ç´¢å¼•è¡¨ + æ–‡ä»¶æ•°æ®ã€‚
 
 ```text
-0x000000   FileEntry[32]   Ã¿Ïî 32 B = char name[24] + uint32 offset + uint32 size
-0x010000   /app/main.c     ÓÉÓÃ»§Ô´´úÂëÉÕÂ¼
+0x000000   FileEntry[32]   æ¯é¡¹ 32 B = char name[24] + uint32 offset + uint32 size
+0x010000   /app/main.c     ç”±ç”¨æˆ·æºä»£ç çƒ§å½•
 0x050000   /app/lib.h      ...
 ```
 
-`FileEntry` ½á¹¹¼û [port/stm32/flash_fs_stm32.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/port/stm32/flash_fs_stm32.c)¡£
+`FileEntry` ç»“æ„è§ [port/stm32/flash_fs_stm32.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/port/stm32/flash_fs_stm32.c)ã€‚
 
-×î¼òµ¥µÄÉÏÎ»»ú½Å±¾£¨Python£¬¿É×ÔĞĞÀ©Õ¹£©£º
+æœ€ç®€å•çš„ä¸Šä½æœºè„šæœ¬ï¼ˆPythonï¼Œå¯è‡ªè¡Œæ‰©å±•ï¼‰ï¼š
 
 ```python
 import struct
@@ -558,60 +558,60 @@ def make_image(files):
     return bytes(table) + bytes(0x10000 - len(table)) + bytes(body)
 ```
 
-ÔÙÍ¨¹ı ST-Link/´®¿ÚĞ´Èë W25Q£¨×¢Òâ 4 KB ÉÈÇø²Á³ı£©¡£
+å†é€šè¿‡ ST-Link/ä¸²å£å†™å…¥ W25Qï¼ˆæ³¨æ„ 4 KB æ‰‡åŒºæ“¦é™¤ï¼‰ã€‚
 
-### 7.4 ÄÚ´æÓë»º³å
+### 7.4 å†…å­˜ä¸ç¼“å†²
 
-- `.ark_heap`£º64 KB Bump ÄÚ´æ³Ø£¬´æ AST / IR / ·ûºÅ±í
-- `.ark_code`£º32 KB ´úÂë»º³åÇø£¬´æÉú³ÉµÄ Thumb-2 »úÆ÷Âë
-- Ìø×ªÖ´ĞĞÇ°Çë `SCB_CleanDCache_by_Addr` + `SCB_InvalidateICache`£¨ÔÚ [User/main.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/mdk/STM32H743_ArkCC/User/main.c) ÖĞÓĞµ÷ÓÃÄ£°å£©¡£
+- `.ark_heap`ï¼š64 KB Bump å†…å­˜æ± ï¼Œå­˜ AST / IR / ç¬¦å·è¡¨
+- `.ark_code`ï¼š32 KB ä»£ç ç¼“å†²åŒºï¼Œå­˜ç”Ÿæˆçš„ Thumb-2 æœºå™¨ç 
+- è·³è½¬æ‰§è¡Œå‰è¯· `SCB_CleanDCache_by_Addr` + `SCB_InvalidateICache`ï¼ˆåœ¨ [User/main.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/mdk/STM32H743_ArkCC/User/main.c) ä¸­æœ‰è°ƒç”¨æ¨¡æ¿ï¼‰ã€‚
 
-### 7.5 µ÷ÊÔÆ÷Óë´®¿Ú
+### 7.5 è°ƒè¯•å™¨ä¸ä¸²å£
 
-- µ÷ÊÔÆ÷£ºST-Link£¨Keil Ñ¡Ïî `Debug ¡ú ST-Link Debugger`£©
-- ´®¿Ú£ºUSART1, 115200, 8N1£¬PA9-TX / PA10-RX
-- ÍÆ¼ö¹¤¾ß£ºMobaXterm¡¢Tabby¡¢´®¿Úµ÷ÊÔÖúÊÖ
+- è°ƒè¯•å™¨ï¼šST-Linkï¼ˆKeil é€‰é¡¹ `Debug â†’ ST-Link Debugger`ï¼‰
+- ä¸²å£ï¼šUSART1, 115200, 8N1ï¼ŒPA9-TX / PA10-RX
+- æ¨èå·¥å…·ï¼šMobaXtermã€Tabbyã€ä¸²å£è°ƒè¯•åŠ©æ‰‹
 
 ---
 
-## 8 ´úÂë×éÖ¯ÓëÒÆÖ²Ö¸ÄÏ
+## 8 ä»£ç ç»„ç»‡ä¸ç§»æ¤æŒ‡å—
 
-### 8.1 ÎÄ¼şÇåµ¥
+### 8.1 æ–‡ä»¶æ¸…å•
 
-| Â·¾¶ | ½ÇÉ« |
+| è·¯å¾„ | è§’è‰² |
 | --- | --- |
-| [include/common.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/common.h) | TokenKind / AstKind / IrOp ×ÜÃ¶¾Ù |
+| [include/common.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/common.h) | TokenKind / AstKind / IrOp æ€»æšä¸¾ |
 | [include/platform.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/platform.h) | `ark_log` / `ark_logf` / `ark_abort` |
 | [include/flash_fs.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/flash_fs.h) | `fs_read_file(path, buf, cap)` |
 | [include/memory.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/memory.h) | Bump Allocator |
 | [include/lexer.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/lexer.h) | Lexer |
-| [include/ast.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/ast.h) | AST ½Úµã |
-| [include/type.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/type.h) | ÀàĞÍÏµÍ³ |
-| [include/symtab.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/symtab.h) | ·ûºÅ±í |
+| [include/ast.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/ast.h) | AST èŠ‚ç‚¹ |
+| [include/type.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/type.h) | ç±»å‹ç³»ç»Ÿ |
+| [include/symtab.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/symtab.h) | ç¬¦å·è¡¨ |
 | [include/parser.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/parser.h) | Parser |
-| [include/sema.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/sema.h) | ÓïÒå·ÖÎö |
-| [include/ir.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/ir.h) | IR Êı¾İ½á¹¹ |
+| [include/sema.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/sema.h) | è¯­ä¹‰åˆ†æ |
+| [include/ir.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/ir.h) | IR æ•°æ®ç»“æ„ |
 | [include/irgen.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/irgen.h) | AST -> IR |
-| [include/backend.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/backend.h) | ºó¶Ë½Ó¿Ú |
-| [include/preproc.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/preproc.h) | Ô¤´¦ÀíÆ÷ |
-| [include/compiler.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/compiler.h) | ¶¥²ãÈë¿Ú `ark_compile` / `ark_compile_and_run` |
-| [include/arkcc_config.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/arkcc_config.h) | ±àÒëÆÚÌØĞÔ¿ª¹Øºê |
-| [include/config.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/config.h) | ÔËĞĞÊ±ÅäÖÃ½á¹¹ |
-| [include/opt.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/opt.h) | ÓÅ»¯ Pass ½Ó¿Ú |
-| [include/cpu.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/cpu.h) | CPU Ñ¡ĞÍ£¨Cortex-M3/M4/M7/M33£© |
-| [include/scatter.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/scatter.h) | scatter ¼ÓÔØÃèÊöÎÄ¼ş½âÎö |
-| [src/main.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/main.c) | PC ¶Ë CLI |
-| [src/compiler.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/compiler.c) | Á÷Ë®Ïß±àÅÅ |
-| [src/config.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/config.c) | INI ÅäÖÃ¼ÓÔØ |
-| [src/opt.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/opt.c) | IR ÓÅ»¯ Pass£¨³£Á¿ÕÛµş + DCE£© |
-| [src/cpu.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/cpu.c) | CPU Ñ¡ĞÍÊµÏÖ |
-| [src/scatter.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/scatter.c) | scatter ÎÄ¼ş½âÎöÊµÏÖ |
-| [src/backend/registry.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/backend/registry.c) | ºó¶Ë×¢²á±í |
-| [port/stm32/main_stm32.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/port/stm32/main_stm32.c) | STM32 ×ÔËŞÖ÷Èë¿Úµã£¨Ìæ´ú PC ¶Ë `main.c`£© |
+| [include/backend.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/backend.h) | åç«¯æ¥å£ |
+| [include/preproc.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/preproc.h) | é¢„å¤„ç†å™¨ |
+| [include/compiler.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/compiler.h) | é¡¶å±‚å…¥å£ `ark_compile` / `ark_compile_and_run` |
+| [include/arkcc_config.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/arkcc_config.h) | ç¼–è¯‘æœŸç‰¹æ€§å¼€å…³å® |
+| [include/config.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/config.h) | è¿è¡Œæ—¶é…ç½®ç»“æ„ |
+| [include/opt.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/opt.h) | ä¼˜åŒ– Pass æ¥å£ |
+| [include/cpu.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/cpu.h) | CPU é€‰å‹ï¼ˆCortex-M3/M4/M7/M33ï¼‰ |
+| [include/scatter.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/scatter.h) | scatter åŠ è½½æè¿°æ–‡ä»¶è§£æ |
+| [src/main.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/main.c) | PC ç«¯ CLI |
+| [src/compiler.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/compiler.c) | æµæ°´çº¿ç¼–æ’ |
+| [src/config.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/config.c) | INI é…ç½®åŠ è½½ |
+| [src/opt.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/opt.c) | IR ä¼˜åŒ– Passï¼ˆå¸¸é‡æŠ˜å  + DCEï¼‰ |
+| [src/cpu.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/cpu.c) | CPU é€‰å‹å®ç° |
+| [src/scatter.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/scatter.c) | scatter æ–‡ä»¶è§£æå®ç° |
+| [src/backend/registry.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/backend/registry.c) | åç«¯æ³¨å†Œè¡¨ |
+| [port/stm32/main_stm32.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/port/stm32/main_stm32.c) | STM32 è‡ªå®¿ä¸»å…¥å£ç‚¹ï¼ˆæ›¿ä»£ PC ç«¯ `main.c`ï¼‰ |
 
-### 8.2 Æ½Ì¨³éÏó²ã
+### 8.2 å¹³å°æŠ½è±¡å±‚
 
-½öÁ½¸ö½Ó¿ÚĞèÒªÎªÃ¿¸öÄ¿±êÆ½Ì¨ÊµÏÖ£º
+ä»…ä¸¤ä¸ªæ¥å£éœ€è¦ä¸ºæ¯ä¸ªç›®æ ‡å¹³å°å®ç°ï¼š
 
 ```c
 /* platform.h */
@@ -623,61 +623,61 @@ void ark_abort(const char *msg);
 int fs_read_file(const char *path, char *buf, int cap);
 ```
 
-PC ¶ËÔÚ [port/host/platform_host.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/port/host/platform_host.c) / [port/host/flash_fs_host.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/port/host/flash_fs_host.c)£»STM32 ¶ËÔÚ [port/stm32/](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/port/stm32)¡£
+PC ç«¯åœ¨ [port/host/platform_host.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/port/host/platform_host.c) / [port/host/flash_fs_host.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/port/host/flash_fs_host.c)ï¼›STM32 ç«¯åœ¨ [port/stm32/](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/port/stm32)ã€‚
 
-### 8.3 STM32 ×ÔËŞÖ÷Èë¿Úµã
+### 8.3 STM32 è‡ªå®¿ä¸»å…¥å£ç‚¹
 
-`port/stm32/main_stm32.c` ÊÇ STM32 ¶ËµÄ¶ÀÁ¢Èë¿Úµã£¨Ìæ´ú PC ¶ËµÄ `src/main.c`£©¡£Ëü×öÈı¼şÊÂ£º
+`port/stm32/main_stm32.c` æ˜¯ STM32 ç«¯çš„ç‹¬ç«‹å…¥å£ç‚¹ï¼ˆæ›¿ä»£ PC ç«¯çš„ `src/main.c`ï¼‰ã€‚å®ƒåšä¸‰ä»¶äº‹ï¼š
 
-1. ´Ó W25Q Íâ²¿ Flash ¶ÁÈ¡ `/app/main.c` Ô´ÎÄ¼şµ½ÄÚ´æ»º³å£»
-2. µ÷ÓÃ `ark_compile()` ±àÒëÎª Thumb-2 »úÆ÷Âëµ½ `.ark_code` ¶Î£»
-3. Ìø×ªÖ´ĞĞÉú³ÉµÄ»úÆ÷Âë£¬°Ñ·µ»ØÖµÍ¨¹ı UART Êä³ö¡£
+1. ä» W25Q å¤–éƒ¨ Flash è¯»å– `/app/main.c` æºæ–‡ä»¶åˆ°å†…å­˜ç¼“å†²ï¼›
+2. è°ƒç”¨ `ark_compile()` ç¼–è¯‘ä¸º Thumb-2 æœºå™¨ç åˆ° `.ark_code` æ®µï¼›
+3. è·³è½¬æ‰§è¡Œç”Ÿæˆçš„æœºå™¨ç ï¼ŒæŠŠè¿”å›å€¼é€šè¿‡ UART è¾“å‡ºã€‚
 
-Èë¿Úµã²»ĞèÒª PC ¹¤¾ßÁ´½éÈë¡ª¡ªÖ»Òª Keil ¹¤³ÌÒ»´Î Build ¡ú Download£¬Ö®ºóÓÃ»§¸Ä W25Q ÖĞµÄ `.c` ÎÄ¼ş¼´¿ÉÁ¢¼´ÖØ±àÒëÖ´ĞĞ¡£
+å…¥å£ç‚¹ä¸éœ€è¦ PC å·¥å…·é“¾ä»‹å…¥â€”â€”åªè¦ Keil å·¥ç¨‹ä¸€æ¬¡ Build â†’ Downloadï¼Œä¹‹åç”¨æˆ·æ”¹ W25Q ä¸­çš„ `.c` æ–‡ä»¶å³å¯ç«‹å³é‡ç¼–è¯‘æ‰§è¡Œã€‚
 
-### 8.4 ÒÆÖ²µ½ÆäËüÆ½Ì¨
+### 8.4 ç§»æ¤åˆ°å…¶å®ƒå¹³å°
 
-Òª°Ñ±àÒëÆ÷ÒÆÖ²µ½ Linux/ESP32/RISC-V °å×Ó£¬Ö»Òª£º
+è¦æŠŠç¼–è¯‘å™¨ç§»æ¤åˆ° Linux/ESP32/RISC-V æ¿å­ï¼Œåªè¦ï¼š
 
-1. ¸´ÖÆ [port/host/](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/port/host) Îª `port/<myplat>/`
-2. ¸Ä `platform_<myplat>.c` ÖĞµÄÊä³öµ½×Ô¼ºµÄ UART/syscall
-3. ¸Ä `flash_fs_<myplat>.c` ÖĞµÄÎÄ¼ş¶ÁÈ¡µ½±¾µØ FS¡¢SD ¿¨»òÍøÂç
-4. Ğ´Ò»¸ö `main_<myplat>.c` Èë¿Úµã£¨²Î¿¼ `main_stm32.c`£©
-5. °Ñ `port/<myplat>/*.c` ¼ÓÈë¹¹½¨½Å±¾
+1. å¤åˆ¶ [port/host/](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/port/host) ä¸º `port/<myplat>/`
+2. æ”¹ `platform_<myplat>.c` ä¸­çš„è¾“å‡ºåˆ°è‡ªå·±çš„ UART/syscall
+3. æ”¹ `flash_fs_<myplat>.c` ä¸­çš„æ–‡ä»¶è¯»å–åˆ°æœ¬åœ° FSã€SD å¡æˆ–ç½‘ç»œ
+4. å†™ä¸€ä¸ª `main_<myplat>.c` å…¥å£ç‚¹ï¼ˆå‚è€ƒ `main_stm32.c`ï¼‰
+5. æŠŠ `port/<myplat>/*.c` åŠ å…¥æ„å»ºè„šæœ¬
 
-²»ĞèÒªÅö `src/` ÈÎºÎÎÄ¼ş¡£
+ä¸éœ€è¦ç¢° `src/` ä»»ä½•æ–‡ä»¶ã€‚
 
 ---
 
-## 9 À©Õ¹¿ª·¢Ö¸ÄÏ
+## 9 æ‰©å±•å¼€å‘æŒ‡å—
 
-### 9.1 ĞÂÔö¹Ø¼ü×Ö / Token
+### 9.1 æ–°å¢å…³é”®å­— / Token
 
-ÎÄ¼ş [include/common.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/common.h):
-1. ÔÚ `TokenKind` Ã¶¾ÙÀï¼Ó `TOK_XXX`¡£
-2. ÔÚ [src/lexer.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/lexer.c) µÄ `check_keyword()` Àï°Ñ×Ö·û´®ºÍ `TOK_XXX` ¹ØÁª¡£
-3. ±ØÒªÊ±ÔÚ [src/parser.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/parser.c) ½Ó×¡Õâ¸ö token¡£
+æ–‡ä»¶ [include/common.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/common.h):
+1. åœ¨ `TokenKind` æšä¸¾é‡ŒåŠ  `TOK_XXX`ã€‚
+2. åœ¨ [src/lexer.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/lexer.c) çš„ `check_keyword()` é‡ŒæŠŠå­—ç¬¦ä¸²å’Œ `TOK_XXX` å…³è”ã€‚
+3. å¿…è¦æ—¶åœ¨ [src/parser.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/parser.c) æ¥ä½è¿™ä¸ª tokenã€‚
 
-### 9.2 ĞÂÔö AST ½Úµã
+### 9.2 æ–°å¢ AST èŠ‚ç‚¹
 
-1. [include/common.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/common.h) ¼Ó `AST_XXX`¡£
-2. [include/ast.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/ast.h) ÔÚ `AstNode.u` ÁªºÏÀï¼Ó×Ö¶Î¡£
-3. [src/ast.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/ast.c) ÊµÏÖ `ast_xxx_new(...)` ¹¹Ôìº¯Êı¡£
-4. [src/parser.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/parser.c) ÔÚ²úÉúÊ½Àïµ÷ÓÃ¹¹Ôìº¯Êı¡£
-5. [src/sema.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/sema.c) ¼ÓÀàĞÍ¼ì²é¡£
-6. [src/irgen.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/irgen.c) ·­ÒëÎª IR¡£
+1. [include/common.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/common.h) åŠ  `AST_XXX`ã€‚
+2. [include/ast.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/ast.h) åœ¨ `AstNode.u` è”åˆé‡ŒåŠ å­—æ®µã€‚
+3. [src/ast.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/ast.c) å®ç° `ast_xxx_new(...)` æ„é€ å‡½æ•°ã€‚
+4. [src/parser.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/parser.c) åœ¨äº§ç”Ÿå¼é‡Œè°ƒç”¨æ„é€ å‡½æ•°ã€‚
+5. [src/sema.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/sema.c) åŠ ç±»å‹æ£€æŸ¥ã€‚
+6. [src/irgen.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/irgen.c) ç¿»è¯‘ä¸º IRã€‚
 
-### 9.3 ĞÂÔö IR Ö¸Áî
+### 9.3 æ–°å¢ IR æŒ‡ä»¤
 
-1. [include/common.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/common.h) ¼Ó `IR_XXX`¡£
-2. ĞŞ¸Ä¸÷ºó¶Ë `emit_asm` µÄ switch case¡£
+1. [include/common.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/common.h) åŠ  `IR_XXX`ã€‚
+2. ä¿®æ”¹å„åç«¯ `emit_asm` çš„ switch caseã€‚
 
-### 9.4 ĞÂÔöºó¶Ë£¨Àı£ºmips£©
+### 9.4 æ–°å¢åç«¯ï¼ˆä¾‹ï¼šmipsï¼‰
 
-5 ²½Ä£°å£º
+5 æ­¥æ¨¡æ¿ï¼š
 
 1. `mkdir src/backend/mips`
-2. ĞÂ½¨ `src/backend/mips/backend_mips.c`£º
+2. æ–°å»º `src/backend/mips/backend_mips.c`ï¼š
    ```c
    #include "backend.h"
    static int mips_emit_asm(IrProgram *m, char *out, int cap) { /* ... */ }
@@ -688,117 +688,117 @@ PC ¶ËÔÚ [port/host/platform_host.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ar
    };
    const ArkBackend *ark_backend_mips(void) { return &g_mips_backend; }
    ```
-3. ÔÚ [include/backend.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/backend.h) ÉùÃ÷ `ark_backend_mips()`¡£
-4. ÔÚ [src/backend/registry.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/backend/registry.c) ×¢²á¡£
-5. `make` ×Ô¶¯°üº¬£¨Makefile ÓÃÍ¨Åä·û£©¡£
+3. åœ¨ [include/backend.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/backend.h) å£°æ˜ `ark_backend_mips()`ã€‚
+4. åœ¨ [src/backend/registry.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/backend/registry.c) æ³¨å†Œã€‚
+5. `make` è‡ªåŠ¨åŒ…å«ï¼ˆMakefile ç”¨é€šé…ç¬¦ï¼‰ã€‚
 
-Íê³Éºó£º`arkcc foo.c -target mips -S`¡£
+å®Œæˆåï¼š`arkcc foo.c -target mips -S`ã€‚
 
-### 9.5 armcc ¼æÈİÀ©Õ¹£¨v0.7.0 ÍêÕûÁĞ±í£©
+### 9.5 armcc å…¼å®¹æ‰©å±•ï¼ˆv0.7.0 å®Œæ•´åˆ—è¡¨ï¼‰
 
-v0.7.0 ¸²¸Ç armcc 5 ³£ÓÃÀ©Õ¹ 98% ÒÔÉÏ¡£ÏÂ±íÁĞ³öÈ«²¿ÒÑÖ§³ÖµÄÀ©Õ¹Ïî¡£
+v0.7.0 è¦†ç›– armcc 5 å¸¸ç”¨æ‰©å±• 98% ä»¥ä¸Šã€‚ä¸‹è¡¨åˆ—å‡ºå…¨éƒ¨å·²æ”¯æŒçš„æ‰©å±•é¡¹ã€‚
 
-#### 9.5.1 armcc ¹Ø¼ü×Ö
+#### 9.5.1 armcc å…³é”®å­—
 
-| ¹Ø¼ü×Ö | ĞĞÎª |
+| å…³é”®å­— | è¡Œä¸º |
 | --- | --- |
-| `__svc(n)` | Éú³É `SVC #n` |
-| `__irq` | ÖĞ¶ÏĞòÑÔ `PUSH {r0-r3,r12,lr}` / ½áÓï `POP {r0-r3,r12,pc}` |
+| `__svc(n)` | ç”Ÿæˆ `SVC #n` |
+| `__irq` | ä¸­æ–­åºè¨€ `PUSH {r0-r3,r12,lr}` / ç»“è¯­ `POP {r0-r3,r12,pc}` |
 | `__weak` | `.weak <name>` |
-| `__naked` | ÎŞĞòÑÔ/½áÓï |
-| `__packed` | ¶ÀÁ¢¹Ø¼ü×ÖĞÎÊ½ + `__attribute__((packed))` + `__packed` Ö¸ÕëÎ´¶ÔÆë·ÃÎÊ |
-| `__align(n)` | ÕæÕıÉúĞ§µÄ¶ÔÆë¿ØÖÆ |
-| `__at(addr)` | ¾ø¶ÔµØÖ·£¨Í¬ `__attribute__((at(addr)))` / `#pragma location=`£© |
-| `__forceinline` | ½âÎö£¨Ç¿ÖÆÄÚÁªÌáÊ¾£© |
-| `__asm void fn() {...}` | Õûº¯ÊıÌå»ã±à£¨armcc ·ç¸ñ£© |
-| `__value_in_regs` | ½âÎö£¨½á¹¹Ìå·µ»Ø¼Ä´æÆ÷ÌáÊ¾£© |
-| `__pure` | ½âÎö£¨ÎŞ¸±×÷ÓÃ´¿º¯ÊıÌáÊ¾£© |
-| `__interwork` | ½âÎö£¨ARM/Thumb »¥½»ÌáÊ¾£© |
-| `__thread` | Ïß³Ì¾Ö²¿´æ´¢£¨`.tbss`/`.tdata` ¶Î£© |
-| `__global_reg` | ½âÎö£¨È«¾Ö¼Ä´æÆ÷±äÁ¿ÌáÊ¾£© |
-| `__smc` | ½âÎö£¨SMC °²È«¼à¿Øµ÷ÓÃÌáÊ¾£© |
-| `__int64` / `__int32` / `__int16` / `__int8` | ¹Ì¶¨¿í¶ÈÕûÊıÀàĞÍ±ğÃû |
-| `__typedef` | ½âÎö£¨typedef ¼æÈİÇ°×º£© |
-| `__args` / `__return` | ½âÎö£¨²ÎÊı/·µ»Ø¼Ä´æÆ÷°ó¶¨ÌáÊ¾£© |
-| `__tp_soft` | ½âÎö£¨Èí¼şÏß³ÌÖ¸ÕëÌáÊ¾£© |
-| `__nothrow` | ½âÎö£¨º¯Êı²»Å×Òì³£ÌáÊ¾£© |
-| `__deprecated` | ½âÎö£¨ÆúÓÃ±ê¼Ç£© |
-| `__may_alias` | ½âÎö£¨±ğÃû°²È«ÀàĞÍÌáÊ¾£© |
-| `__softfp` | ½âÎö£¨Èí¸¡µã ABI ÌáÊ¾£© |
+| `__naked` | æ— åºè¨€/ç»“è¯­ |
+| `__packed` | ç‹¬ç«‹å…³é”®å­—å½¢å¼ + `__attribute__((packed))` + `__packed` æŒ‡é’ˆæœªå¯¹é½è®¿é—® |
+| `__align(n)` | çœŸæ­£ç”Ÿæ•ˆçš„å¯¹é½æ§åˆ¶ |
+| `__at(addr)` | ç»å¯¹åœ°å€ï¼ˆåŒ `__attribute__((at(addr)))` / `#pragma location=`ï¼‰ |
+| `__forceinline` | è§£æï¼ˆå¼ºåˆ¶å†…è”æç¤ºï¼‰ |
+| `__asm void fn() {...}` | æ•´å‡½æ•°ä½“æ±‡ç¼–ï¼ˆarmcc é£æ ¼ï¼‰ |
+| `__value_in_regs` | è§£æï¼ˆç»“æ„ä½“è¿”å›å¯„å­˜å™¨æç¤ºï¼‰ |
+| `__pure` | è§£æï¼ˆæ— å‰¯ä½œç”¨çº¯å‡½æ•°æç¤ºï¼‰ |
+| `__interwork` | è§£æï¼ˆARM/Thumb äº’äº¤æç¤ºï¼‰ |
+| `__thread` | çº¿ç¨‹å±€éƒ¨å­˜å‚¨ï¼ˆ`.tbss`/`.tdata` æ®µï¼‰ |
+| `__global_reg` | è§£æï¼ˆå…¨å±€å¯„å­˜å™¨å˜é‡æç¤ºï¼‰ |
+| `__smc` | è§£æï¼ˆSMC å®‰å…¨ç›‘æ§è°ƒç”¨æç¤ºï¼‰ |
+| `__int64` / `__int32` / `__int16` / `__int8` | å›ºå®šå®½åº¦æ•´æ•°ç±»å‹åˆ«å |
+| `__typedef` | è§£æï¼ˆtypedef å…¼å®¹å‰ç¼€ï¼‰ |
+| `__args` / `__return` | è§£æï¼ˆå‚æ•°/è¿”å›å¯„å­˜å™¨ç»‘å®šæç¤ºï¼‰ |
+| `__tp_soft` | è§£æï¼ˆè½¯ä»¶çº¿ç¨‹æŒ‡é’ˆæç¤ºï¼‰ |
+| `__nothrow` | è§£æï¼ˆå‡½æ•°ä¸æŠ›å¼‚å¸¸æç¤ºï¼‰ |
+| `__deprecated` | è§£æï¼ˆå¼ƒç”¨æ ‡è®°ï¼‰ |
+| `__may_alias` | è§£æï¼ˆåˆ«åå®‰å…¨ç±»å‹æç¤ºï¼‰ |
+| `__softfp` | è§£æï¼ˆè½¯æµ®ç‚¹ ABI æç¤ºï¼‰ |
 
-#### 9.5.2 `__attribute__` ÊôĞÔ
+#### 9.5.2 `__attribute__` å±æ€§
 
-| ÊôĞÔ | ĞĞÎª |
+| å±æ€§ | è¡Œä¸º |
 | --- | --- |
-| `section("name")` | Éú³É `.section` Ö¸Áî |
-| `aligned(n)` / `packed` / `noreturn` | ÕæÕıÉúĞ§ |
-| `used` / `unused` | ·À²Ã¼ô / ÒÖÖÆ¾¯¸æ |
-| `alias("target")` | º¯Êı±ğÃû |
-| `constructor` / `destructor` | Éú³É `.init_array` / `.fini_array` |
-| `deprecated` / `format(printf, ...)` | Í¸´« |
-| `may_alias` / `nothrow` | ½âÎö£¨Í¸´«¸øºó¶Ë£© |
-| `pure` / `const` | ½âÎö£¨´¿º¯ÊıÌáÊ¾£© |
-| `visibility("default/hidden")` | ½âÎö£¨¿É¼ûĞÔÌáÊ¾£© |
-| `nonnull` | ½âÎö£¨·Ç¿ÕÖ¸Õë²ÎÊıÌáÊ¾£© |
-| `warn_unused_result` | ½âÎö£¨·µ»ØÖµ±ØĞëÊ¹ÓÃÌáÊ¾£© |
-| `sentinel` | ½âÎö£¨±ä²ÎÄ©Î² NULL ÉÚ±øÌáÊ¾£© |
-| `malloc` | ½âÎö£¨·ÖÅäº¯ÊıÌáÊ¾£© |
-| `fastcall` / `stdcall` / `cdecl` | ½âÎö£¨µ÷ÓÃÔ¼¶¨ÌáÊ¾£© |
+| `section("name")` | ç”Ÿæˆ `.section` æŒ‡ä»¤ |
+| `aligned(n)` / `packed` / `noreturn` | çœŸæ­£ç”Ÿæ•ˆ |
+| `used` / `unused` | é˜²è£å‰ª / æŠ‘åˆ¶è­¦å‘Š |
+| `alias("target")` | å‡½æ•°åˆ«å |
+| `constructor` / `destructor` | ç”Ÿæˆ `.init_array` / `.fini_array` |
+| `deprecated` / `format(printf, ...)` | é€ä¼  |
+| `may_alias` / `nothrow` | è§£æï¼ˆé€ä¼ ç»™åç«¯ï¼‰ |
+| `pure` / `const` | è§£æï¼ˆçº¯å‡½æ•°æç¤ºï¼‰ |
+| `visibility("default/hidden")` | è§£æï¼ˆå¯è§æ€§æç¤ºï¼‰ |
+| `nonnull` | è§£æï¼ˆéç©ºæŒ‡é’ˆå‚æ•°æç¤ºï¼‰ |
+| `warn_unused_result` | è§£æï¼ˆè¿”å›å€¼å¿…é¡»ä½¿ç”¨æç¤ºï¼‰ |
+| `sentinel` | è§£æï¼ˆå˜å‚æœ«å°¾ NULL å“¨å…µæç¤ºï¼‰ |
+| `malloc` | è§£æï¼ˆåˆ†é…å‡½æ•°æç¤ºï¼‰ |
+| `fastcall` / `stdcall` / `cdecl` | è§£æï¼ˆè°ƒç”¨çº¦å®šæç¤ºï¼‰ |
 
 #### 9.5.3 `#pragma`
 
-| pragma | ĞĞÎª |
+| pragma | è¡Œä¸º |
 | --- | --- |
-| `#pragma pack(n)` | ½á¹¹Ìå¶ÔÆë¿ØÖÆ |
-| `#pragma anon_unions` | ÄäÃû union ¼æÈİ |
-| `#pragma location=addr` | ¾ø¶ÔµØÖ· |
-| `#pragma diag_suppress` | Õï¶ÏÒÖÖÆ |
-| `#pragma arm` / `#pragma thumb` | Ö¸Áî¼¯ÇĞ»»ÌáÊ¾ |
-| `#pragma import(__use_no_semihosting)` | °ëÖ÷»ú½ûÓÃ |
-| `#pragma push` / `#pragma pop` | ±àÒëÑ¡ÏîÕ» |
-| `#pragma O0` / `O2` / `O3`¡¢`#pragma optimize` | ÓÅ»¯µÈ¼¶ÌáÊ¾ |
+| `#pragma pack(n)` | ç»“æ„ä½“å¯¹é½æ§åˆ¶ |
+| `#pragma anon_unions` | åŒ¿å union å…¼å®¹ |
+| `#pragma location=addr` | ç»å¯¹åœ°å€ |
+| `#pragma diag_suppress` | è¯Šæ–­æŠ‘åˆ¶ |
+| `#pragma arm` / `#pragma thumb` | æŒ‡ä»¤é›†åˆ‡æ¢æç¤º |
+| `#pragma import(__use_no_semihosting)` | åŠä¸»æœºç¦ç”¨ |
+| `#pragma push` / `#pragma pop` | ç¼–è¯‘é€‰é¡¹æ ˆ |
+| `#pragma O0` / `O2` / `O3`ã€`#pragma optimize` | ä¼˜åŒ–ç­‰çº§æç¤º |
 
-#### 9.5.4 Ô¤¶¨Òåºê
+#### 9.5.4 é¢„å®šä¹‰å®
 
-| ºê | Öµ / º¬Òå |
+| å® | å€¼ / å«ä¹‰ |
 | --- | --- |
-| `__ARMCC_VERSION` | armcc °æ±¾ºÅ |
-| `__arm__` / `__thumb__` | ARM/Thumb Ä£Ê½±êÊ¶ |
-| `__arm` / `__thumb` | ÎŞÏÂ»®ÏßĞÎÊ½£¨armcc ¼æÈİ£© |
-| `__TARGET_ARCH_7_M` / `__TARGET_ARCH_7E_M` | Cortex-M ¼Ü¹¹±êÊ¶£¨ÓÉ `-mcpu`/`--cpu` ÉèÖÃ£© |
-| `__TARGET_FPU_VFP` | VFP ±êÊ¶£¨ÓÉ `--fpu=hard` ÉèÖÃ£© |
-| `__BIG_ENDIAN` / `__LITTLE_ENDIAN__` | ×Ö½ÚĞò |
-| `__sizeof_int` / `__sizeof_ptr` | ÀàĞÍ³ß´ç |
+| `__ARMCC_VERSION` | armcc ç‰ˆæœ¬å· |
+| `__arm__` / `__thumb__` | ARM/Thumb æ¨¡å¼æ ‡è¯† |
+| `__arm` / `__thumb` | æ— ä¸‹åˆ’çº¿å½¢å¼ï¼ˆarmcc å…¼å®¹ï¼‰ |
+| `__TARGET_ARCH_7_M` / `__TARGET_ARCH_7E_M` | Cortex-M æ¶æ„æ ‡è¯†ï¼ˆç”± `-mcpu`/`--cpu` è®¾ç½®ï¼‰ |
+| `__TARGET_FPU_VFP` | VFP æ ‡è¯†ï¼ˆç”± `--fpu=hard` è®¾ç½®ï¼‰ |
+| `__BIG_ENDIAN` / `__LITTLE_ENDIAN__` | å­—èŠ‚åº |
+| `__sizeof_int` / `__sizeof_ptr` | ç±»å‹å°ºå¯¸ |
 | `__STDC_VERSION__` | `199901L` |
-| `__STDC_HOSTED__` | `1`£¨host£©/ `0`£¨Ç¶ÈëÊ½£© |
-| `__SIZE_TYPE__` / `__PTRDIFF_TYPE__` / `__WCHAR_TYPE__` | GCC ·ç¸ñÀàĞÍ³ß´çºê |
-| `__EDG__` | EDG Ç°¶Ë¼æÈİ±êÊ¶ |
-| `__APCS_INTERWORK` | APCS »¥½»±êÊ¶ |
-| `__FILE__` / `__LINE__` / `__func__` / `__DATE__` / `__TIME__` / `__STDC__` / `__ARK_CC__` | ±ê×¼ÓëÏîÄ¿ºê |
+| `__STDC_HOSTED__` | `1`ï¼ˆhostï¼‰/ `0`ï¼ˆåµŒå…¥å¼ï¼‰ |
+| `__SIZE_TYPE__` / `__PTRDIFF_TYPE__` / `__WCHAR_TYPE__` | GCC é£æ ¼ç±»å‹å°ºå¯¸å® |
+| `__EDG__` | EDG å‰ç«¯å…¼å®¹æ ‡è¯† |
+| `__APCS_INTERWORK` | APCS äº’äº¤æ ‡è¯† |
+| `__FILE__` / `__LINE__` / `__func__` / `__DATE__` / `__TIME__` / `__STDC__` / `__ARK_CC__` | æ ‡å‡†ä¸é¡¹ç›®å® |
 
-#### 9.5.5 ÃüÁîĞĞÑ¡Ïî
+#### 9.5.5 å‘½ä»¤è¡Œé€‰é¡¹
 
-| Ñ¡Ïî | armcc/gcc ¶ÔÓ¦ | ĞĞÎª |
+| é€‰é¡¹ | armcc/gcc å¯¹åº” | è¡Œä¸º |
 | --- | --- | --- |
-| `-mcpu <name>` | gcc `-mcpu` | Cortex-M3/M4/M7/M33 µÈ |
-| `--cpu <name>` | armcc `--cpu` | Í¬ `-mcpu` |
-| `--thumb` / `--arm` | armcc | Ç¿ÖÆ Thumb / ARM Ä£Ê½ |
+| `-mcpu <name>` | gcc `-mcpu` | Cortex-M3/M4/M7/M33 ç­‰ |
+| `--cpu <name>` | armcc `--cpu` | åŒ `-mcpu` |
+| `--thumb` / `--arm` | armcc | å¼ºåˆ¶ Thumb / ARM æ¨¡å¼ |
 | `--fpu <type>` | armcc `--fpu` | `soft` / `hard` |
-| `-MMD` / `--depend` / `-MF <file>` | gcc | Éú³É `.d` ÒÀÀµÎÄ¼ş |
-| `--split_sections` / `-ffunction-sections` | armcc `--split_sections` | Ã¿º¯Êı¶ÀÁ¢¶Î |
-| `--dollar` | armcc `--dollar` | ±êÊ¶·ûº¬ `$` |
-| `--enum_is_int` | armcc `--enum_is_int` | Ã¶¾Ùµ×²ã int |
-| `--signed_chars` / `--unsigned_chars` | armcc | char Ä¬ÈÏ·ûºÅ |
-| `--wchar16` / `--wchar32` | armcc | `wchar_t` ¿í¶È |
-| `--dwarf2` / `--dwarf3` | armcc `--dwarf2`/`--dwarf3` | DWARF µ÷ÊÔ°æ±¾ |
+| `-MMD` / `--depend` / `-MF <file>` | gcc | ç”Ÿæˆ `.d` ä¾èµ–æ–‡ä»¶ |
+| `--split_sections` / `-ffunction-sections` | armcc `--split_sections` | æ¯å‡½æ•°ç‹¬ç«‹æ®µ |
+| `--dollar` | armcc `--dollar` | æ ‡è¯†ç¬¦å« `$` |
+| `--enum_is_int` | armcc `--enum_is_int` | æšä¸¾åº•å±‚ int |
+| `--signed_chars` / `--unsigned_chars` | armcc | char é»˜è®¤ç¬¦å· |
+| `--wchar16` / `--wchar32` | armcc | `wchar_t` å®½åº¦ |
+| `--dwarf2` / `--dwarf3` | armcc `--dwarf2`/`--dwarf3` | DWARF è°ƒè¯•ç‰ˆæœ¬ |
 
 ---
 
-## 10 ±ê×¼¿â×Ó¼¯
+## 10 æ ‡å‡†åº“å­é›†
 
-Ä¿Â¼£º[stdlib/include/](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/stdlib/include)
+ç›®å½•ï¼š[stdlib/include/](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/stdlib/include)
 
-| Í·ÎÄ¼ş | Ìá¹© |
+| å¤´æ–‡ä»¶ | æä¾› |
 | --- | --- |
 | `stdint.h` | `int8_t..int64_t / uint8_t..uint64_t / intptr_t / uintptr_t` |
 | `stdbool.h` | `bool true false` |
@@ -806,136 +806,136 @@ v0.7.0 ¸²¸Ç armcc 5 ³£ÓÃÀ©Õ¹ 98% ÒÔÉÏ¡£ÏÂ±íÁĞ³öÈ«²¿ÒÑÖ§³ÖµÄÀ©Õ¹Ïî¡£
 | `stdarg.h` | `va_list va_start va_arg va_end` |
 | `string.h` | `strlen strcmp strcpy strncpy memset memcpy memmove` |
 | `stdio.h` | `printf puts putchar` |
-| `stdlib.h` | `abort exit malloc free`£¨ÉùÃ÷£© |
-| `math.h` | `sin cos sqrt pow fabs floor ceil fmod` + `M_PI` µÈ³£Á¿£¨ÊµÏÖ¼û `stdlib/src/math.c`£© |
-| `setjmp.h` | `jmp_buf setjmp longjmp`£¨ÊµÏÖ¼û `stdlib/src/setjmp.c`£¬host ¿ÉÒÆÖ²¼ò»¯ÊµÏÖ£© |
+| `stdlib.h` | `abort exit malloc free`ï¼ˆå£°æ˜ï¼‰ |
+| `math.h` | `sin cos sqrt pow fabs floor ceil fmod` + `M_PI` ç­‰å¸¸é‡ï¼ˆå®ç°è§ `stdlib/src/math.c`ï¼‰ |
+| `setjmp.h` | `jmp_buf setjmp longjmp`ï¼ˆå®ç°è§ `stdlib/src/setjmp.c`ï¼Œhost å¯ç§»æ¤ç®€åŒ–å®ç°ï¼‰ |
 
-> ÔÚ `c` ºó¶ËÏÂ£¬ÕâĞ©º¯ÊıÖ±½ÓÂ·ÓÉµ½ËŞÖ÷ libc£»ÔÚ `arm` ºó¶ËÏÂ£¬ĞèÒªÔÚ STM32 ÓÃ»§´úÂëÖĞÌá¹©ÊµÏÖ£¬»òÕßÁ´½Óµ½ newlib-nano£¬»òÕßÖ±½ÓÊ¹ÓÃ `stdlib/src/` ÏÂ×Ô´øµÄÊµÏÖÔ´¡£
-
----
-
-## 11 ³£¼ûÎÊÌâ FAQ
-
-**Q1£ºÎªÊ²Ã´ `-target c` ±àÒë³öÀ´µÄ `.gen.c` ²»ÊÇÆ¯ÁÁµÄÈËÀà´úÂë£¿**
-A£ºc ºó¶ËÊÇ´Ó IR ·­Òë£¬²»ÊÇ´Ó AST ·­Òë¡£ËüµÄÄ¿±êÊÇ"ÓïÒåµÈ¼Û"£¬²»ÊÇ"·ç¸ñÓÅÃÀ"¡£Ëü·Ç³£ÊÊºÏ×ö»Ø¹é²âÊÔ¡£
-
-**Q2£ºÔÚ Windows ÉÏÃ»ÓĞ gcc£¬ÄÜÅÜ arkcc Âğ£¿**
-A£º±àÒë arkcc ±¾ÌåĞèÒª gcc / MinGW / MSVC¡£Èç¹ûÓÃ MSVC£¬ĞèÒª°Ñ Makefile ¸Ä³É `cl.exe`¡£VS Code + clangd Ò²ÊÇ³£¼ûÑ¡Ôñ¡£
-
-**Q3£ºÄÜ±àÒë Keil/MDK Ğ´µÄ STM32 ¹¤³ÌÂğ£¿**
-A£ºv0.7.0 ÒÑ¸²¸Ç armcc ³£ÓÃÀ©Õ¹ 98% ÒÔÉÏ¡£HAL/CMSIS ÖĞ³£¼ûµÄ `__attribute__`¡¢`__packed`¡¢`__align`¡¢ÄÚÁª»ã±à¡¢`#pragma pack/anon_unions/location/...`¡¢`__irq`/`__weak`/`__naked` µÈ¾ùÒÑÖ§³Ö¡£ÉÙÊı¼«¶ËºêÓÎÏ·»ò C++ Ä£Ê½ÈÔ²»Ö§³Ö£¬½¨ÒéÏÈÓÃ¹Ù·½±àÒëÆ÷±à HAL/CMSIS£¬ÔÙÓÃ arkcc ±àÒëÓ¦ÓÃ²ã´úÂë¡£
-
-**Q4£ºÈçºÎÈÃ±»±àÒëµÄ³ÌĞòÔÚ STM32 ÉÏµ÷ÓÃ HAL£¿**
-A£ºÍ¨¹ıÍâ²¿ÉùÃ÷ + Á´½ÓÖØ¶¨Î»¡£±»±àÒë´úÂëÉùÃ÷ `extern void HAL_Delay(uint32_t)`£¬ÔËĞĞÊ±ÓÉ ARM ºó¶ËµÄ linker °Ñ `BL HAL_Delay` µÄÄ¿±êµØÖ·»ØÌîÎª HAL º¯ÊıµÄÊµ¼ÊµØÖ·£¨ĞèÒªÄãÌá¹©µØÖ·±í£©¡£¼ò»¯×ö·¨£º°ÑÕâĞ©º¯ÊıµØÖ·Ó²±àÂë³ÉÒ»ÕÅÊı×é£¬arkcc µ÷ÓÃÊ±Í¨¹ıº¯ÊıÖ¸ÕëÌø×ª¡£
-
-**Q5£ºARM ºó¶Ë»áÓÃ FPU Âğ£¿**
-A£º»á¡£`--fpu=hard` »ò `arkcc.cfg` ÖĞ `fpu_hw=1` Ê±£¬ARM ºó¶ËÖ±½Ó·¢Éä VFP Ö¸Áî£¨`VADD/VMUL/VCVT/VCMP`£©Ìæ´ú `__aeabi_f*`/`__aeabi_d*` Èí¸¡µã×®£»Ä¬ÈÏ×ßÈí¸¡µã×®ÒÔ¼æÈİÎŞ FPU µÄ Cortex-M3¡£`double` Ê¼ÖÕÎªÕæ 64 Î»¾«¶È¡£
-
-**Q6£º±àÒë´óÎÄ¼şÊ±±¨"out of memory"ÔõÃ´°ì£¿**
-A£ºBump Allocator Ä¬ÈÏ 256 KB¡£°Ñ [include/memory.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/memory.h) ÖĞµÄ `ARK_POOL_SIZE` µ÷´ó£¬»òÔÚ STM32 ¶Ë°Ñ `.ark_heap` ¶ÎÀ©µ½ 128 KB+£¨×¢Òâ H743 AXI SRAM ¹² 512 KB£©¡£
-
-**Q7£ºÄÜÏñ GCC Ò»Ñù¿ç±àÒëµ¥ÔªÁ´½ÓÂğ£¿**
-A£ºµ±Ç°ÈÔÊÇ"µ¥·­Òëµ¥Ôª"Ä£ĞÍ£¬¶à¸ö `.c` Ö®¼ä¿¿ `#include` ºÏ²¢¡£`-link a.o b.o` ½öÔÚ ARM ºó¶Ë×ö `BL` Æ«ÒÆ»ØÌî£¬²»½âÎö ELF `.o` ÎÄ¼ş¡£ÍêÕû¿ç·­Òëµ¥ÔªÁ´½Ó£¨¶à `.o` Á´½Ó£©ÊÇ Roadmap£¬Ïê¼û [12 ÒÑÖªÏŞÖÆ](#12-ÒÑÖªÏŞÖÆ)¡£
-
-**Q8£ºDWARF µ÷ÊÔĞÅÏ¢ÄÜ±» GDB/LLDB Ê¶±ğÂğ£¿**
-A£ºv0.7.0 ÒÑÊä³öÍêÕû DWARF ¶Î£¨`.debug_info`/`.debug_abbrev`/`.debug_line` + `.file/.loc/.cfi_startproc/.size`£©£¬ÓÃ `--dwarf2` »ò `--dwarf3` Ñ¡Ôñ°æ±¾¡£»ù±¾ĞĞºÅ¼¶µ÷ÊÔ¿É±» GDB Ê¶±ğ£»±äÁ¿È¡Öµ£¨`-print var`£©ÉĞÎ´ÍêÕûÖ§³Ö¡£
-
-**Q9£º`__packed` Ö¸ÕëÕæµÄ»á×öÎ´¶ÔÆë·ÃÎÊÂğ£¿**
-A£º»á¡£v0.7.0 µÄ `__packed` Ö¸Õë£¨Èç `__packed int *p`£©»áÉú³ÉÖğ×Ö½Ú¼ÓÔØ/Æ´½ÓµÄ´úÂë£¬ÕıÈ·´¦ÀíÎ´¶ÔÆëµØÖ·£»ÆÕÍ¨Ö¸Õë¶ÔÆëÎ¥ÀıĞĞÎªÎ´¶¨Òå¡£
+> åœ¨ `c` åç«¯ä¸‹ï¼Œè¿™äº›å‡½æ•°ç›´æ¥è·¯ç”±åˆ°å®¿ä¸» libcï¼›åœ¨ `arm` åç«¯ä¸‹ï¼Œéœ€è¦åœ¨ STM32 ç”¨æˆ·ä»£ç ä¸­æä¾›å®ç°ï¼Œæˆ–è€…é“¾æ¥åˆ° newlib-nanoï¼Œæˆ–è€…ç›´æ¥ä½¿ç”¨ `stdlib/src/` ä¸‹è‡ªå¸¦çš„å®ç°æºã€‚
 
 ---
 
-## 12 ÒÑÖªÏŞÖÆ
+## 11 å¸¸è§é—®é¢˜ FAQ
 
-v0.7.0 ÒÑÊµÏÖ C99 È«¼¯ + armcc ³£ÓÃÀ©Õ¹ 98% ÒÔÉÏ£¬½öÊ£ÒÔÏÂÏŞÖÆ£º
+**Q1ï¼šä¸ºä»€ä¹ˆ `-target c` ç¼–è¯‘å‡ºæ¥çš„ `.gen.c` ä¸æ˜¯æ¼‚äº®çš„äººç±»ä»£ç ï¼Ÿ**
+Aï¼šc åç«¯æ˜¯ä» IR ç¿»è¯‘ï¼Œä¸æ˜¯ä» AST ç¿»è¯‘ã€‚å®ƒçš„ç›®æ ‡æ˜¯"è¯­ä¹‰ç­‰ä»·"ï¼Œä¸æ˜¯"é£æ ¼ä¼˜ç¾"ã€‚å®ƒéå¸¸é€‚åˆåšå›å½’æµ‹è¯•ã€‚
 
-### ÍêÈ«²»Ö§³Ö
+**Q2ï¼šåœ¨ Windows ä¸Šæ²¡æœ‰ gccï¼Œèƒ½è·‘ arkcc å—ï¼Ÿ**
+Aï¼šç¼–è¯‘ arkcc æœ¬ä½“éœ€è¦ gcc / MinGW / MSVCã€‚å¦‚æœç”¨ MSVCï¼Œéœ€è¦æŠŠ Makefile æ”¹æˆ `cl.exe`ã€‚VS Code + clangd ä¹Ÿæ˜¯å¸¸è§é€‰æ‹©ã€‚
 
-- **C++ Ä£Ê½**£¨`--cpp`£©£ºµ±Ç°ÊÇ C99 ±àÒëÆ÷£¬²»½âÎö `class`/Ä£°å/Òì³£µÈ C++ Óï·¨¡£
-- **×Ô¶¯ÏòÁ¿»¯**£¨`--vectorize`£©£ºÎŞ SIMD Ö¸Áî×Ô¶¯Ê¶±ğÓëÖØÅÅ¡£
-- **×Ô¶¯ÄÚÁª**£¨`--autoinline`£©£º`inline` ½ö×÷ÎªÌáÊ¾£¬²»»á×Ô¶¯Ñ¡ÔñĞ¡º¯ÊıÄÚÁª¡£
+**Q3ï¼šèƒ½ç¼–è¯‘ Keil/MDK å†™çš„ STM32 å·¥ç¨‹å—ï¼Ÿ**
+Aï¼šv0.7.0 å·²è¦†ç›– armcc å¸¸ç”¨æ‰©å±• 98% ä»¥ä¸Šã€‚HAL/CMSIS ä¸­å¸¸è§çš„ `__attribute__`ã€`__packed`ã€`__align`ã€å†…è”æ±‡ç¼–ã€`#pragma pack/anon_unions/location/...`ã€`__irq`/`__weak`/`__naked` ç­‰å‡å·²æ”¯æŒã€‚å°‘æ•°æç«¯å®æ¸¸æˆæˆ– C++ æ¨¡å¼ä»ä¸æ”¯æŒï¼Œå»ºè®®å…ˆç”¨å®˜æ–¹ç¼–è¯‘å™¨ç¼– HAL/CMSISï¼Œå†ç”¨ arkcc ç¼–è¯‘åº”ç”¨å±‚ä»£ç ã€‚
 
-### ÊµÑéĞÔ£¨Ä¬ÈÏ¹Ø±Õ£©
+**Q4ï¼šå¦‚ä½•è®©è¢«ç¼–è¯‘çš„ç¨‹åºåœ¨ STM32 ä¸Šè°ƒç”¨ HALï¼Ÿ**
+Aï¼šé€šè¿‡å¤–éƒ¨å£°æ˜ + é“¾æ¥é‡å®šä½ã€‚è¢«ç¼–è¯‘ä»£ç å£°æ˜ `extern void HAL_Delay(uint32_t)`ï¼Œè¿è¡Œæ—¶ç”± ARM åç«¯çš„ linker æŠŠ `BL HAL_Delay` çš„ç›®æ ‡åœ°å€å›å¡«ä¸º HAL å‡½æ•°çš„å®é™…åœ°å€ï¼ˆéœ€è¦ä½ æä¾›åœ°å€è¡¨ï¼‰ã€‚ç®€åŒ–åšæ³•ï¼šæŠŠè¿™äº›å‡½æ•°åœ°å€ç¡¬ç¼–ç æˆä¸€å¼ æ•°ç»„ï¼Œarkcc è°ƒç”¨æ—¶é€šè¿‡å‡½æ•°æŒ‡é’ˆè·³è½¬ã€‚
 
-- **¼Ä´æÆ÷·ÖÅä**£ºµ±Ç°Õ»Ê½ IR Ä¬ÈÏÃ¿±äÁ¿Ò»Õ»²Û£»ÊµÑéĞÔÏßĞÔÉ¨Ãè¼Ä´æÆ÷·ÖÅäÆ÷Í¨¹ı `opt_regalloc=1` ¿ªÆô£¬µ«Ä¬ÈÏ¹Ø±ÕÒÔ±£ÎÈ¶¨ĞÔ¡£
+**Q5ï¼šARM åç«¯ä¼šç”¨ FPU å—ï¼Ÿ**
+Aï¼šä¼šã€‚`--fpu=hard` æˆ– `arkcc.cfg` ä¸­ `fpu_hw=1` æ—¶ï¼ŒARM åç«¯ç›´æ¥å‘å°„ VFP æŒ‡ä»¤ï¼ˆ`VADD/VMUL/VCVT/VCMP`ï¼‰æ›¿ä»£ `__aeabi_f*`/`__aeabi_d*` è½¯æµ®ç‚¹æ¡©ï¼›é»˜è®¤èµ°è½¯æµ®ç‚¹æ¡©ä»¥å…¼å®¹æ—  FPU çš„ Cortex-M3ã€‚`double` å§‹ç»ˆä¸ºçœŸ 64 ä½ç²¾åº¦ã€‚
 
-### ²¿·ÖÖ§³Ö
+**Q6ï¼šç¼–è¯‘å¤§æ–‡ä»¶æ—¶æŠ¥"out of memory"æ€ä¹ˆåŠï¼Ÿ**
+Aï¼šBump Allocator é»˜è®¤ 256 KBã€‚æŠŠ [include/memory.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/memory.h) ä¸­çš„ `ARK_POOL_SIZE` è°ƒå¤§ï¼Œæˆ–åœ¨ STM32 ç«¯æŠŠ `.ark_heap` æ®µæ‰©åˆ° 128 KB+ï¼ˆæ³¨æ„ H743 AXI SRAM å…± 512 KBï¼‰ã€‚
 
-- **¿ç·­Òëµ¥ÔªÁ´½Ó**£ºµ±Ç°ÊÇ"µ¥·­Òëµ¥Ôª"Ä£ĞÍ£¬¶à¸ö `.c` Ö®¼ä¿¿ `#include` ºÏ²¢¡£`-link a.o b.o` ½ö×ö ARM `BL` Æ«ÒÆ»ØÌî£¬²»½âÎö ELF `.o` ÎÄ¼ş¸ñÊ½¡£ÍêÕû¶à `.o` Á´½ÓÊÇ Roadmap¡£
+**Q7ï¼šèƒ½åƒ GCC ä¸€æ ·è·¨ç¼–è¯‘å•å…ƒé“¾æ¥å—ï¼Ÿ**
+Aï¼šå½“å‰ä»æ˜¯"å•ç¿»è¯‘å•å…ƒ"æ¨¡å‹ï¼Œå¤šä¸ª `.c` ä¹‹é—´é  `#include` åˆå¹¶ã€‚`-link a.o b.o` ä»…åœ¨ ARM åç«¯åš `BL` åç§»å›å¡«ï¼Œä¸è§£æ ELF `.o` æ–‡ä»¶ã€‚å®Œæ•´è·¨ç¿»è¯‘å•å…ƒé“¾æ¥ï¼ˆå¤š `.o` é“¾æ¥ï¼‰æ˜¯ Roadmapï¼Œè¯¦è§ [12 å·²çŸ¥é™åˆ¶](#12-å·²çŸ¥é™åˆ¶)ã€‚
 
-### ¼æÈİÌáÊ¾
+**Q8ï¼šDWARF è°ƒè¯•ä¿¡æ¯èƒ½è¢« GDB/LLDB è¯†åˆ«å—ï¼Ÿ**
+Aï¼šv0.7.0 å·²è¾“å‡ºå®Œæ•´ DWARF æ®µï¼ˆ`.debug_info`/`.debug_abbrev`/`.debug_line` + `.file/.loc/.cfi_startproc/.size`ï¼‰ï¼Œç”¨ `--dwarf2` æˆ– `--dwarf3` é€‰æ‹©ç‰ˆæœ¬ã€‚åŸºæœ¬è¡Œå·çº§è°ƒè¯•å¯è¢« GDB è¯†åˆ«ï¼›å˜é‡å–å€¼ï¼ˆ`-print var`ï¼‰å°šæœªå®Œæ•´æ”¯æŒã€‚
 
-- ²¿·Ö¸ß¼¶ÓÅ»¯£¨ÈçÑ­»·Õ¹¿ª¡¢Ñ­»·²»±äÁ¿ÍâÌá¡¢PHI ½ÚµãºÏ²¢µÈ£©ÉĞÎ´ÊµÏÖ£¬½¨Òé¶ÔĞÔÄÜÃô¸ĞµÄ´úÂëÓÃ `__forceinline` ÊÖ¹¤¿ØÖÆ¡£
-- ²¿·ÖÏ¡ÓĞ armcc ÄÚ½¨º¯Êı£¨`__builtin_*` ÏµÁĞ£©ÉĞÎ´¸²¸Ç£¬ĞèÒªÊ±¿ÉÍ¨¹ı `__asm` ÄÚÁª»ã±àÌæ´ú¡£
+**Q9ï¼š`__packed` æŒ‡é’ˆçœŸçš„ä¼šåšæœªå¯¹é½è®¿é—®å—ï¼Ÿ**
+Aï¼šä¼šã€‚v0.7.0 çš„ `__packed` æŒ‡é’ˆï¼ˆå¦‚ `__packed int *p`ï¼‰ä¼šç”Ÿæˆé€å­—èŠ‚åŠ è½½/æ‹¼æ¥çš„ä»£ç ï¼Œæ­£ç¡®å¤„ç†æœªå¯¹é½åœ°å€ï¼›æ™®é€šæŒ‡é’ˆå¯¹é½è¿ä¾‹è¡Œä¸ºæœªå®šä¹‰ã€‚
 
 ---
 
-## ¸½Â¼ A£ºÄÚ²¿Êı¾İÁ÷
+## 12 å·²çŸ¥é™åˆ¶
+
+v0.7.0 å·²å®ç° C99 å…¨é›† + armcc å¸¸ç”¨æ‰©å±• 98% ä»¥ä¸Šï¼Œä»…å‰©ä»¥ä¸‹é™åˆ¶ï¼š
+
+### å®Œå…¨ä¸æ”¯æŒ
+
+- **C++ æ¨¡å¼**ï¼ˆ`--cpp`ï¼‰ï¼šå½“å‰æ˜¯ C99 ç¼–è¯‘å™¨ï¼Œä¸è§£æ `class`/æ¨¡æ¿/å¼‚å¸¸ç­‰ C++ è¯­æ³•ã€‚
+- **è‡ªåŠ¨å‘é‡åŒ–**ï¼ˆ`--vectorize`ï¼‰ï¼šæ—  SIMD æŒ‡ä»¤è‡ªåŠ¨è¯†åˆ«ä¸é‡æ’ã€‚
+- **è‡ªåŠ¨å†…è”**ï¼ˆ`--autoinline`ï¼‰ï¼š`inline` ä»…ä½œä¸ºæç¤ºï¼Œä¸ä¼šè‡ªåŠ¨é€‰æ‹©å°å‡½æ•°å†…è”ã€‚
+
+### å®éªŒæ€§ï¼ˆé»˜è®¤å…³é—­ï¼‰
+
+- **å¯„å­˜å™¨åˆ†é…**ï¼šå½“å‰æ ˆå¼ IR é»˜è®¤æ¯å˜é‡ä¸€æ ˆæ§½ï¼›å®éªŒæ€§çº¿æ€§æ‰«æå¯„å­˜å™¨åˆ†é…å™¨é€šè¿‡ `opt_regalloc=1` å¼€å¯ï¼Œä½†é»˜è®¤å…³é—­ä»¥ä¿ç¨³å®šæ€§ã€‚
+
+### éƒ¨åˆ†æ”¯æŒ
+
+- **è·¨ç¿»è¯‘å•å…ƒé“¾æ¥**ï¼šå½“å‰æ˜¯"å•ç¿»è¯‘å•å…ƒ"æ¨¡å‹ï¼Œå¤šä¸ª `.c` ä¹‹é—´é  `#include` åˆå¹¶ã€‚`-link a.o b.o` ä»…åš ARM `BL` åç§»å›å¡«ï¼Œä¸è§£æ ELF `.o` æ–‡ä»¶æ ¼å¼ã€‚å®Œæ•´å¤š `.o` é“¾æ¥æ˜¯ Roadmapã€‚
+
+### å…¼å®¹æç¤º
+
+- éƒ¨åˆ†é«˜çº§ä¼˜åŒ–ï¼ˆå¦‚å¾ªç¯å±•å¼€ã€å¾ªç¯ä¸å˜é‡å¤–æã€PHI èŠ‚ç‚¹åˆå¹¶ç­‰ï¼‰å°šæœªå®ç°ï¼Œå»ºè®®å¯¹æ€§èƒ½æ•æ„Ÿçš„ä»£ç ç”¨ `__forceinline` æ‰‹å·¥æ§åˆ¶ã€‚
+- éƒ¨åˆ†ç¨€æœ‰ armcc å†…å»ºå‡½æ•°ï¼ˆ`__builtin_*` ç³»åˆ—ï¼‰å°šæœªè¦†ç›–ï¼Œéœ€è¦æ—¶å¯é€šè¿‡ `__asm` å†…è”æ±‡ç¼–æ›¿ä»£ã€‚
+
+---
+
+## é™„å½• Aï¼šå†…éƒ¨æ•°æ®æµ
 
 ```
-Ô´´úÂë .c
+æºä»£ç  .c
    |
    v
-+--------+      º¬ #include Õ¹¿ª¡¢#define Ìæ»»¡¢Ìõ¼ş±àÒë¡¢trigraph Ìæ»»
++--------+      å« #include å±•å¼€ã€#define æ›¿æ¢ã€æ¡ä»¶ç¼–è¯‘ã€trigraph æ›¿æ¢
 | preproc|
 +--------+
    |
    v
-+--------+      ×Ö·û -> Token£¬ĞĞºÅ¸ú×Ù
++--------+      å­—ç¬¦ -> Tokenï¼Œè¡Œå·è·Ÿè¸ª
 | lexer  |
 +--------+
    |
    v
-+--------+      µİ¹éÏÂ½µ£¬½¨ AST£¬È«²¿½Úµã´Ó Bump ³Ø·ÖÅä
++--------+      é€’å½’ä¸‹é™ï¼Œå»º ASTï¼Œå…¨éƒ¨èŠ‚ç‚¹ä» Bump æ± åˆ†é…
 | parser |
 +--------+
    |
    v
-+--------+      ·ûºÅ±í¡¢ÀàĞÍÍÆµ¼¡¢ÖØ¶¨Òå/Î´¶¨Òå¼ì²â
++--------+      ç¬¦å·è¡¨ã€ç±»å‹æ¨å¯¼ã€é‡å®šä¹‰/æœªå®šä¹‰æ£€æµ‹
 |  sema  |
 +--------+
    |
    v
-+--------+      AST -> Õ»Ê½ËÄÔªÊ½ IR£¨ÓëÄ¿±êÎŞ¹Ø£©
++--------+      AST -> æ ˆå¼å››å…ƒå¼ IRï¼ˆä¸ç›®æ ‡æ— å…³ï¼‰
 | irgen  |
 +--------+
    |
    v
-+--------+      ¿ÉÑ¡£º³£Á¿ÕÛµş + ËÀ´úÂëÏû³ı£¨src/opt.c£©
++--------+      å¯é€‰ï¼šå¸¸é‡æŠ˜å  + æ­»ä»£ç æ¶ˆé™¤ï¼ˆsrc/opt.cï¼‰
 |  opt   |
 +--------+
    |
    v
-+-----------+    Ñ¡ CPU/scatter/FPU/DWARF °æ±¾
-| backend.* |--- emit_asm  -> ÎÄ±¾»ã±à / .gen.c
-|           |--- assemble  -> 16/32 Î»»úÆ÷Âë£¨arm ÍêÕûÊµÏÖ£©
-|           |--- link      -> BL ÖØ¶¨Î»£¨arm£©
++-----------+    é€‰ CPU/scatter/FPU/DWARF ç‰ˆæœ¬
+| backend.* |--- emit_asm  -> æ–‡æœ¬æ±‡ç¼– / .gen.c
+|           |--- assemble  -> 16/32 ä½æœºå™¨ç ï¼ˆarm å®Œæ•´å®ç°ï¼‰
+|           |--- link      -> BL é‡å®šä½ï¼ˆarmï¼‰
 +-----------+
    |
    v
-.bin / .S / .gen.c / Ìø×ªÖ´ĞĞ£¨STM32 ÉÏÖ±½ÓÌøµ½ .ark_code ¶ÎÖ´ĞĞ£©
+.bin / .S / .gen.c / è·³è½¬æ‰§è¡Œï¼ˆSTM32 ä¸Šç›´æ¥è·³åˆ° .ark_code æ®µæ‰§è¡Œï¼‰
 ```
 
 ---
 
-## ¸½Â¼ B£ºÊõÓï±í
+## é™„å½• Bï¼šæœ¯è¯­è¡¨
 
-| ÊõÓï | º¬Òå |
+| æœ¯è¯­ | å«ä¹‰ |
 | --- | --- |
-| AST | Abstract Syntax Tree£¬³éÏóÓï·¨Ê÷ |
-| IR | Intermediate Representation£¬ÖĞ¼ä±íÊ¾ |
-| Bump Allocator | Ò»´ÎĞÔÏòÉÏÀÛ¼Ó·ÖÅä£¬ÕûÌåÊÍ·Å£¬ÎŞËéÆ¬ |
-| Thumb-2 | ARM 32 Î»»ìºÏ³¤¶ÈÖ¸Áî¼¯£¬Cortex-M3/M4/M7 Ö÷ÓÃ |
-| AAPCS | ARM Architecture Procedure Call Standard£¬ARM µ÷ÓÃÔ¼¶¨ |
-| AXI SRAM | STM32H7 ÉÏ¹ÒÔÚ AXI ×ÜÏßµÄ 512 KB SRAM£¬µØÖ· `0x24000000` Æğ |
-| Scatter file | ARM Compiler µÄÁ´½Ó½Å±¾£¨`.sct`£©£¬¶¨ÒåÄÚ´æÓ³Éä |
-| TLS | Thread-Local Storage£¬Ïß³Ì¾Ö²¿´æ´¢£¬¶ÔÓ¦ `.tbss`/`.tdata` ¶Î |
-| DWARF | µ÷ÊÔĞÅÏ¢¸ñÊ½±ê×¼£¬v2/v3 ÓÉ `--dwarf2`/`--dwarf3` Ñ¡Ôñ |
-| MSP | MCU Support Package£¬STM32 HAL µÄÓ²¼ş³õÊ¼»¯¹³×Ó |
-| FileEntry | ±¾¹¤³Ì×Ô¶¨ÒåµÄ Flash ¼«¼òÎÄ¼şË÷ÒıÏî£¨32 ×Ö½Ú£© |
-| APCS | ARM Procedure Call Standard£¬ÔçÆÚ ARM µ÷ÓÃÔ¼¶¨ |
-| EDG | Edison Design Group£¬armcc ÔçÆÚÇ°¶Ë¹©Ó¦ÉÌ£¬`__EDG__` Îª¼æÈİºê |
+| AST | Abstract Syntax Treeï¼ŒæŠ½è±¡è¯­æ³•æ ‘ |
+| IR | Intermediate Representationï¼Œä¸­é—´è¡¨ç¤º |
+| Bump Allocator | ä¸€æ¬¡æ€§å‘ä¸Šç´¯åŠ åˆ†é…ï¼Œæ•´ä½“é‡Šæ”¾ï¼Œæ— ç¢ç‰‡ |
+| Thumb-2 | ARM 32 ä½æ··åˆé•¿åº¦æŒ‡ä»¤é›†ï¼ŒCortex-M3/M4/M7 ä¸»ç”¨ |
+| AAPCS | ARM Architecture Procedure Call Standardï¼ŒARM è°ƒç”¨çº¦å®š |
+| AXI SRAM | STM32H7 ä¸ŠæŒ‚åœ¨ AXI æ€»çº¿çš„ 512 KB SRAMï¼Œåœ°å€ `0x24000000` èµ· |
+| Scatter file | ARM Compiler çš„é“¾æ¥è„šæœ¬ï¼ˆ`.sct`ï¼‰ï¼Œå®šä¹‰å†…å­˜æ˜ å°„ |
+| TLS | Thread-Local Storageï¼Œçº¿ç¨‹å±€éƒ¨å­˜å‚¨ï¼Œå¯¹åº” `.tbss`/`.tdata` æ®µ |
+| DWARF | è°ƒè¯•ä¿¡æ¯æ ¼å¼æ ‡å‡†ï¼Œv2/v3 ç”± `--dwarf2`/`--dwarf3` é€‰æ‹© |
+| MSP | MCU Support Packageï¼ŒSTM32 HAL çš„ç¡¬ä»¶åˆå§‹åŒ–é’©å­ |
+| FileEntry | æœ¬å·¥ç¨‹è‡ªå®šä¹‰çš„ Flash æç®€æ–‡ä»¶ç´¢å¼•é¡¹ï¼ˆ32 å­—èŠ‚ï¼‰ |
+| APCS | ARM Procedure Call Standardï¼Œæ—©æœŸ ARM è°ƒç”¨çº¦å®š |
+| EDG | Edison Design Groupï¼Œarmcc æ—©æœŸå‰ç«¯ä¾›åº”å•†ï¼Œ`__EDG__` ä¸ºå…¼å®¹å® |
 
 ---
 
-Èç¶ÔÊÖ²á»ò´úÂëÓĞÒÉÎÊ£¬»¶Ó­¶ÔÕÕÔ´ÂëÖğÎÄ¼şÔÄ¶Á¡£Éè¼ÆÉÏÃ¿¸öÎÄ¼ş²»³¬¹ı 1000 ĞĞ£¬ËùÓĞ½×¶Î±Ë´Ë¶ÀÁ¢£¬±ãÓÚ"ÌôÒ»¸öÄ£¿éµ¥¶À¿´"¡£
+å¦‚å¯¹æ‰‹å†Œæˆ–ä»£ç æœ‰ç–‘é—®ï¼Œæ¬¢è¿å¯¹ç…§æºç é€æ–‡ä»¶é˜…è¯»ã€‚è®¾è®¡ä¸Šæ¯ä¸ªæ–‡ä»¶ä¸è¶…è¿‡ 1000 è¡Œï¼Œæ‰€æœ‰é˜¶æ®µå½¼æ­¤ç‹¬ç«‹ï¼Œä¾¿äº"æŒ‘ä¸€ä¸ªæ¨¡å—å•ç‹¬çœ‹"ã€‚

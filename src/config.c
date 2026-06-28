@@ -56,6 +56,8 @@ void config_init(void) {
     g_config.enable_opt_constfold = ARKCC_FEATURE_OPT_CONSTFOLD;
     g_config.enable_opt_dce       = ARKCC_FEATURE_OPT_DCE;
     g_config.enable_opt_regalloc  = ARKCC_FEATURE_OPT_REGALLOC;
+    g_config.enable_opt_inline    = ARKCC_FEATURE_OPT_INLINE;
+    g_config.enable_opt_vectorize = ARKCC_FEATURE_OPT_VECTORIZE;
     g_config.opt_level            = 0;
     g_config.debug_info           = 0;
     g_config.split_sections       = 0;
@@ -86,6 +88,8 @@ static void apply_kv(const char *section, const char *key, const char *val) {
         else if (ark_streq(key, "opt_constfold")) g_config.enable_opt_constfold = parse_bool(val);
         else if (ark_streq(key, "opt_dce"))   g_config.enable_opt_dce       = parse_bool(val);
         else if (ark_streq(key, "opt_regalloc")) g_config.enable_opt_regalloc = parse_bool(val);
+        else if (ark_streq(key, "opt_inline"))    g_config.enable_opt_inline    = parse_bool(val);
+        else if (ark_streq(key, "opt_vectorize")) g_config.enable_opt_vectorize = parse_bool(val);
     } else if (ark_streq(section, "general")) {
         if (ark_streq(key, "opt_level")) {
             int v = 0;
@@ -211,6 +215,11 @@ void config_apply_args(int argc, char **argv) {
         if (a[0] == '-' && a[1] == 'O' && a[2] >= '0' && a[2] <= '9' && a[3] == 0) {
             g_config.opt_level = a[2] - '0';
             if (g_config.opt_level > 2) g_config.opt_level = 2;
+            /* -O2 自动启用内联与向量化 */
+            if (g_config.opt_level >= 2) {
+                g_config.enable_opt_inline    = 1;
+                g_config.enable_opt_vectorize = 1;
+            }
             continue;
         }
         if (ark_streq(a, "-g")) {
@@ -276,12 +285,28 @@ void config_apply_args(int argc, char **argv) {
         /* 静默接受的 armcc 5 选项（不影响代码生成） */
         if (ark_streq(a, "--thumb") || ark_streq(a, "--arm") ||
             ark_streq(a, "--remarks") ||
-            ark_streq(a, "--autoinline") || ark_streq(a, "--no_autoinline") ||
-            ark_streq(a, "--vectorize") || ark_streq(a, "--no_vectorize") ||
             ark_streq(a, "--library_type") || ark_streq(a, "--locale") ||
             ark_streq(a, "--multibyte_chars") || ark_streq(a, "--data_reorder") ||
             ark_streq(a, "--diag_style") ||
             ark_streq(a, "--remove_unneeded_entities")) {
+            continue;
+        }
+        /* --autoinline / --no_autoinline：开启/关闭自动内联 */
+        if (ark_streq(a, "--autoinline")) {
+            g_config.enable_opt_inline = 1;
+            continue;
+        }
+        if (ark_streq(a, "--no_autoinline")) {
+            g_config.enable_opt_inline = 0;
+            continue;
+        }
+        /* --vectorize / --no_vectorize：开启/关闭自动向量化 */
+        if (ark_streq(a, "--vectorize")) {
+            g_config.enable_opt_vectorize = 1;
+            continue;
+        }
+        if (ark_streq(a, "--no_vectorize")) {
+            g_config.enable_opt_vectorize = 0;
             continue;
         }
         /* -fno-xxx / -fxxx */
@@ -309,6 +334,10 @@ void config_apply_args(int argc, char **argv) {
                 g_config.enable_opt_dce                 = enable;
             else if (ark_streq(name, "opt-regalloc") || ark_streq(name, "regalloc"))
                 g_config.enable_opt_regalloc            = enable;
+            else if (ark_streq(name, "opt-inline") || ark_streq(name, "autoinline"))
+                g_config.enable_opt_inline              = enable;
+            else if (ark_streq(name, "opt-vectorize") || ark_streq(name, "vectorize"))
+                g_config.enable_opt_vectorize           = enable;
             else if (ark_streq(name, "function-sections") || ark_streq(name, "split_sections"))
                 g_config.split_sections                 = enable;
             else if (ark_streq(name, "enum-is-int"))   g_config.enum_is_int          = enable;
@@ -328,6 +357,8 @@ void config_print(void) {
     ark_log("  opt_constfold=%d opt_dce=%d opt_regalloc=%d\n",
             g_config.enable_opt_constfold, g_config.enable_opt_dce,
             g_config.enable_opt_regalloc);
+    ark_log("  opt_inline=%d opt_vectorize=%d\n",
+            g_config.enable_opt_inline, g_config.enable_opt_vectorize);
     ark_log("  opt_level=%d debug_info=%d split_sections=%d\n",
             g_config.opt_level, g_config.debug_info, g_config.split_sections);
     ark_log("  config_file=%s\n",

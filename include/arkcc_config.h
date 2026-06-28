@@ -21,6 +21,8 @@
 #define ARKCC_FEATURE_OPT_CONSTFOLD 1  /* 常量折叠 */
 #define ARKCC_FEATURE_OPT_DCE       1  /* 死代码消除 */
 #define ARKCC_FEATURE_OPT_REGALLOC  0  /* 寄存器分配（实验性，默认关） */
+#define ARKCC_FEATURE_OPT_INLINE    1  /* 自动函数内联 */
+#define ARKCC_FEATURE_OPT_VECTORIZE 1  /* 自动向量化 */
 
 /* armcc 兼容（默认全开，可裁切） */
 #define ARKCC_FEATURE_ARMCC_ASM_FUNC  1  /* __asm 函数体 */
