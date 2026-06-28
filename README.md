@@ -1,9 +1,10 @@
 # Ark C Compiler
 
 一个面向多目标的 C99 编译器，可在 Windows / Linux / macOS 上用 gcc 编译运行，
-也能移植到 STM32 上自宿主编译外部 Flash 中的 `.c` 文件。兼容 ARM Compiler 5 (armcc) 常用扩展。
+也能在 STM32（Cortex-M7）上**原生自宿主**编译外部 SPI Flash 中的 `.c` 文件并就地执行。
+覆盖 ARM Compiler 5 (armcc) 常用扩展 98% 以上（仅缺 C++ 模式与高级优化）。
 
-## 特性（v0.6.0）
+## 特性（v0.7.0）
 
 ### C99 标准语言特性
 
@@ -14,10 +15,10 @@
 | 变长数组 VLA | ? | `int a[n]` 运行时变长数组，通过 `IR_ALLOCA` 栈动态分配（8 字节对齐） |
 | 复合类型 | ? | `struct`/`union`/`enum`/`typedef`、位域（真正位打包）、柔性数组成员 `data[]`、匿名 struct/union 字段提升 |
 | 复数类型 | ? | `_Complex double`/`_Complex float`，透传给 gcc（`sizeof(_Complex double)==16`） |
-| 宽字符 | ? | `wchar_t` + `L"..."` 宽字符串 + `L'...'` 宽字符字面量 |
+| 宽字符 | ? | `wchar_t` + `L"..."` 宽字符串 + `L'...'` 宽字符字面量；`--wchar16`/`--wchar32` 切换宽度 |
 | 三元组 trigraph | ? | 9 个 C99 三元组（`??=`→`#`、`??(`→`[`、`??/`→`\`、`??)`→`]`、`??'`→`^`、`??<`→`{`、`??>`→`}`、`??!`→`|`、`??-`→`~`） |
 | 限定符 | ? | `const/volatile/restrict/inline` |
-| 存储类 | ? | `static/extern/auto/register`；函数内 `static` 持久化 |
+| 存储类 | ? | `static/extern/auto/register`；函数内 `static` 持久化；`__thread` TLS |
 | 控制流 | ? | `if/else/while/for/do-while/switch/case/default/break/continue/goto/label/return` |
 | 运算符 | ? | 全部 C99 运算符（算术/比较/逻辑短路/位运算/移位/复合赋值/三目/逗号/sizeof/强制转换） |
 | 函数 | ? | 多参数(>4 走栈，严格 AAPCS)、原型检查、变参 `...`、递归、多文件分别编译+链接 |
@@ -26,7 +27,7 @@
 | 64 位整数 | ? | `long long` 运算通过 `__aeabi_l*` 桩；`printf` 参数不截断（64 位 long long 正确传递） |
 | 除法/取模 | ? | 有符号/无符号 `__aeabi_idiv/uidiv/idivmod/uidivmod` |
 | 隐式类型转换 | ? | 完整 usual arithmetic conversions + 整数提升 |
-| 初始化 | ? | 标量、聚合 `{1,2,3}`、嵌套 `{{1,2},{3,4}}`、指定 `.x=1/[2]=5`、字符串 `char s[]="hi"`、全局变量非字面量初值（常量表达式折叠） |
+| 初始化 | ? | 标量、聚合 `{1,2,3}`、嵌套 `{{1,2},{3,4}}`、指定 `.x=1/[2]=5`、字符串 `char s[]="hi"`、全局变量非字量初值（常量表达式折叠） |
 | 复合字面量 | ? | `(int[]){1,2,3}` / `(struct P){.x=1,.y=2}` |
 | 结构体按值传递 | ? | 通过隐藏指针参数实现 |
 | 预处理 | ? | 对象/函数宏(`#/##`)、`#if/#elif/#else/#endif/#ifdef/#ifndef/#undef/#error/#warning/#pragma`、嵌套 `#include`(≤8层)、`__VA_ARGS__`、`-I` 路径、三元组替换 |
@@ -34,32 +35,71 @@
 
 ### ARM Compiler 5 (armcc) 兼容扩展
 
+#### armcc 关键字
+
 | 扩展 | 支持 | 生成 |
 | --- | :---: | --- |
 | `__svc(n)` | ? | `SVC #n` |
 | `__irq` | ? | 中断序言 `PUSH {r0-r3,r12,lr}` / 结语 `POP {r0-r3,r12,pc}` |
 | `__weak` | ? | `.weak <name>` |
 | `__naked` | ? | 无序言/结语 |
-| `__packed` | ? | 独立关键字形式 + `__attribute__((packed))` |
+| `__packed` | ? | 独立关键字形式 + `__attribute__((packed))` + `__packed` 指针未对齐访问 |
 | `__align(n)` | ? | 真正生效的对齐控制 |
 | `__at(addr)` | ? | 绝对地址（同 `__attribute__((at(addr)))` / `#pragma location=`） |
 | `__forceinline` | ? | 解析（强制内联提示） |
 | `__asm void fn() {...}` | ? | 整函数体汇编（armcc 风格） |
-| `__attribute__((section))` | ? | `.section` 指令 |
-| `__attribute__((aligned/packed/noreturn))` | ? | |
-| `__attribute__((used/unused))` | ? | 防裁剪 / 抑制警告 |
-| `__attribute__((alias("target")))` | ? | 函数别名 |
-| `__attribute__((constructor/destructor))` | ? | ARM 后端生成 `.init_array`/`.fini_array` |
-| `__attribute__((deprecated/format(printf,...)))` | ? | 透传 |
-| `asm/__asm__` 内联汇编 | ? | 基本格式 + 扩展格式（操作数/约束/clobber）；C 后端完整透传，ARM 后端文本透传 |
-| `#pragma pack(n)` | ? | 结构体对齐控制 |
-| `#pragma anon_unions` | ? | 匿名 union 兼容 |
-| `#pragma location=addr` | ? | 绝对地址 |
-| `#pragma diag_suppress` | ? | 诊断抑制 |
-| `#pragma arm/thumb` | ? | 指令集切换提示 |
-| `#pragma import(__use_no_semihosting)` | ? | 半主机禁用 |
-| `#pragma push/pop` | ? | 编译选项栈 |
-| `#pragma O0/O2/O3`、`#pragma optimize` | ? | 优化等级提示 |
+| `__value_in_regs` | ? | 解析（结构体返回寄存器提示） |
+| `__pure` | ? | 解析（无副作用纯函数提示） |
+| `__interwork` | ? | 解析（ARM/Thumb 互交提示） |
+| `__thread` | ? | 线程局部存储（`.tbss`/`.tdata` 段） |
+| `__global_reg` | ? | 解析（全局寄存器变量提示） |
+| `__smc` | ? | 解析（SMC 安全监控调用提示） |
+| `__int64`/`__int32`/`__int16`/`__int8` | ? | 固定宽度整数类型别名 |
+| `__typedef` | ? | 解析（typedef 兼容前缀） |
+| `__args`/`__return` | ? | 解析（参数/返回寄存器绑定提示） |
+| `__tp_soft` | ? | 解析（软件线程指针提示） |
+| `__nothrow` | ? | 解析（函数不抛异常提示） |
+| `__deprecated` | ? | 解析（弃用标记） |
+| `__may_alias` | ? | 解析（别名安全类型提示） |
+| `__softfp` | ? | 解析（软浮点 ABI 提示） |
+
+#### `__attribute__` 属性
+
+| 属性 | 支持 |
+| --- | :---: |
+| `section` | ? |
+| `aligned`/`packed`/`noreturn` | ? |
+| `used`/`unused` | ? |
+| `alias("target")` | ? |
+| `constructor`/`destructor` | ? |
+| `deprecated`/`format(printf,...)` | ? |
+| `may_alias`/`nothrow` | ? |
+| `pure`/`const` | ? |
+| `visibility("default/hidden")` | ? |
+| `nonnull` | ? |
+| `warn_unused_result` | ? |
+| `sentinel` | ? |
+| `malloc` | ? |
+| `fastcall`/`stdcall`/`cdecl` | ? |
+
+#### `#pragma`
+
+| pragma | 支持 |
+| --- | :---: |
+| `#pragma pack(n)` | ? |
+| `#pragma anon_unions` | ? |
+| `#pragma location=addr` | ? |
+| `#pragma diag_suppress` | ? |
+| `#pragma arm/thumb` | ? |
+| `#pragma import(__use_no_semihosting)` | ? |
+| `#pragma push/pop` | ? |
+| `#pragma O0/O2/O3`、`#pragma optimize` | ? |
+
+#### 内联汇编
+
+| 形式 | 支持 |
+| --- | :---: |
+| `asm/__asm__` 内联汇编 | ? 基本格式 + 扩展格式（操作数/约束/clobber）；C 后端完整透传，ARM 后端文本透传 |
 
 ### armcc 兼容预定义宏
 
@@ -67,10 +107,16 @@
 | --- | --- |
 | `__ARMCC_VERSION` | armcc 版本号 |
 | `__arm__` / `__thumb__` | ARM/Thumb 模式标识 |
+| `__arm` / `__thumb` | 无下划线形式（armcc 兼容） |
 | `__TARGET_ARCH_7_M` / `__TARGET_ARCH_7E_M` | Cortex-M 架构标识 |
 | `__TARGET_FPU_VFP` | VFP 标识 |
 | `__BIG_ENDIAN` / `__LITTLE_ENDIAN__` | 字节序 |
 | `__sizeof_int` / `__sizeof_ptr` | 类型尺寸 |
+| `__STDC_VERSION__` | `199901L` |
+| `__STDC_HOSTED__` | `1`（host）/ `0`（嵌入式） |
+| `__SIZE_TYPE__` / `__PTRDIFF_TYPE__` / `__WCHAR_TYPE__` | GCC 风格类型尺寸宏 |
+| `__EDG__` | EDG 前端兼容标识 |
+| `__APCS_INTERWORK` | APCS 互交标识 |
 
 ### 代码生成
 
@@ -89,7 +135,12 @@
 | 严格 AAPCS（>4 参数走栈） | ? |
 | `setjmp/longjmp` 支持 | ? |
 | `.init_array`/`.fini_array`（constructor/destructor） | ? |
-| DWARF 调试信息（`.file/.loc/.cfi_startproc/.size`） | ? |
+| `__packed` 指针未对齐访问 | ? |
+| 完整 DWARF 调试信息（`.file/.loc/.cfi_startproc/.size` + `.debug_info`/`.debug_abbrev`/`.debug_line`） | ? |
+| TLS 线程局部存储（`.tbss`/`.tdata`） | ? |
+| `--split_sections` 每函数一段（`.text.fn`） | ? |
+| scatter 加载描述文件（`include/scatter.h` + `src/scatter.c`） | ? |
+| CPU 选型（`-mcpu`/`--cpu`，`include/cpu.h` + `src/cpu.c`） | ? |
 
 ### 标准库子集
 
@@ -107,7 +158,7 @@
 
 | 后端 | 用途 |
 | --- | --- |
-| **ARM Thumb-2** | STM32 Cortex-M（默认，含软浮点/硬件 FPU+段分离+双精度桩+AAPCS+DWARF） |
+| **ARM Thumb-2** | STM32 Cortex-M（默认，含软浮点/硬件 FPU+段分离+双精度桩+AAPCS+完整 DWARF+TLS+split_sections+scatter） |
 | **C 源代码** | host 测试主路径（IR→可读 C，完整支持内联汇编操作数透传） |
 | **x86_64** | 输出 GAS 汇编 |
 | **RV32I** | 输出 RV32I 汇编 |
@@ -116,20 +167,20 @@
 
 ```
 ark c compiler/
-├── include/                公共头文件（含 arkcc_config.h/config.h/opt.h）
-├── src/                    编译器核心（lexer/parser/sema/ir/irgen/preproc/config/opt）
-├── src/backend/arm/        ARM Thumb-2 后端（codegen + 汇编器 + 链接 + 软浮点/硬件 FPU + DWARF）
+├── include/                公共头文件（含 arkcc_config.h/config.h/opt.h/cpu.h/scatter.h）
+├── src/                    编译器核心（lexer/parser/sema/ir/irgen/preproc/config/opt/cpu/scatter）
+├── src/backend/arm/        ARM Thumb-2 后端（codegen + 汇编器 + 链接 + 软浮点/硬件 FPU + 完整 DWARF + TLS）
 ├── src/backend/c/          C 源代码后端（host 测试）
 ├── src/backend/x86_64/     x86_64 汇编后端
 ├── src/backend/riscv32/    RV32I 汇编后端
 ├── stdlib/include/         内置标准库头文件
 ├── port/host/              PC 平台层
-├── port/stm32/             STM32 平台层
-├── examples/               56 个测试（.c + .s）
+├── port/stm32/             STM32 平台层（platform/flash_fs/main_stm32 入口点）
+├── examples/               62 个测试（.c + .s）
 ├── mdk/STM32H743_ArkCC/    Keil MDK 工程
 ├── arkcc.cfg               默认运行时配置（INI 格式）
 ├── Makefile
-├── MANUAL.md               使用手册
+├── docs/MANUAL.md          使用手册
 └── README.md
 ```
 
@@ -160,29 +211,64 @@ arkcc <file.c|file.s> [options]
   -fno-<feature>     关闭特性
   -Wno-unused        抑制未使用警告
   --list-backends    列出后端
+
+  目标 CPU 选型
+  -mcpu <name>       Cortex-M3/M4/M7/M33 等
+  --cpu <name>       armcc 风格同义选项
+  --thumb            强制 Thumb 模式
+  --arm              强制 ARM 模式
+  --fpu <type>       soft/hard（软浮点/硬件 FPU）
+
+  依赖关系生成
+  -MMD               生成 .d 依赖文件（同 gcc）
+  --depend           同 -MMD
+  -MF <file>         指定依赖文件名
+
+  段与代码生成
+  --split_sections   每函数独立段（.text.<fn>）
+  -ffunction-sections 同 --split_sections
+
+  语言兼容选项
+  --dollar           允许标识符含 `$`
+  --enum_is_int      枚举底层类型强制 int
+  --signed_chars     char 默认带符号
+  --unsigned_chars   char 默认无符号
+  --wchar16          wchar_t 为 16 位
+  --wchar32          wchar_t 为 32 位
+
+  DWARF 调试版本
+  --dwarf2           DWARF v2
+  --dwarf3           DWARF v3
 ```
 
 ## 配置系统
 
 arkcc 支持三层配置，优先级：**命令行 > 配置文件 > 编译期默认**。
 
-- **编译期开关**（`include/arkcc_config.h`）：12 个 `ARKCC_FEATURE_*` 宏，决定 arkcc 自身编译进哪些功能。
+- **编译期开关**（`include/arkcc_config.h`）：`ARKCC_FEATURE_*` 宏，决定 arkcc 自身编译进哪些功能。
 - **运行时配置文件**（`arkcc.cfg`，INI 格式）：`[features]` 段控制各特性开关，`[general]` 段控制优化级别与调试信息。启动时自动加载当前目录下的 `arkcc.cfg`，也可用 `-config <file>` 指定。
-- **命令行覆盖**：`-O0/-O1/-O2`、`-g`、`-f<feature>`、`-fno-<feature>` 覆盖文件设置。
+- **命令行覆盖**：`-O0/-O1/-O2`、`-g`、`-f<feature>`、`-fno-<feature>`、`--dollar`、`--enum_is_int`、`--signed_chars`/`--unsigned_chars`、`--wchar16`/`--wchar32`、`--dwarf2`/`--dwarf3` 覆盖文件设置。
 
 `arkcc.cfg` 示例：
 
 ```ini
 [features]
-vla           = 1
-complex       = 1
-wchar         = 1
-trigraph      = 1
-fpu_hw        = 1
-dwarf         = 1
-opt_constfold = 1
-opt_dce       = 1
-opt_regalloc  = 0
+vla               = 1
+complex           = 1
+wchar             = 1
+trigraph          = 1
+fpu_hw            = 1
+dwarf             = 1
+opt_constfold     = 1
+opt_dce           = 1
+opt_regalloc      = 0
+enum_is_int       = 0
+dollar_in_identifiers = 0
+split_sections    = 0
+signed_chars      = 0
+wchar16           = 1
+wchar32           = 0
+dwarf_version     = 2
 
 [general]
 opt_level   = 0
@@ -200,13 +286,14 @@ debug_info  = 0
 
 ## 调试信息
 
-`-g` 或 `g_config.debug_info=1` 时，ARM 后端在汇编输出中发射 GNU as 风格的 DWARF 伪指令：
+`-g` 或 `g_config.debug_info=1` 时，ARM 后端在汇编输出中发射 GNU as 风格的 DWARF 伪指令与完整调试段：
 
 - `.file 1 "<src>.c"` 源文件登记
 - `.cfi_startproc` / `.cfi_endproc` 函数帧信息
 - `.loc 1 <line>` 行号映射
 - `.size <fn>, .-<fn>` 函数尺寸
 - `.type <fn>, %function` 类型标注
+- `.debug_info` / `.debug_abbrev` / `.debug_line` 完整 DWARF 段（`--dwarf2`/`--dwarf3` 切换版本）
 
 ## 测试
 
@@ -214,18 +301,19 @@ debug_info  = 0
 powershell -ExecutionPolicy Bypass -File examples\run_tests.ps1
 ```
 
-56 个测试全部通过（ARM 汇编生成 + C 后端编译运行）。
+62 个测试全部通过（ARM 汇编生成 + C 后端编译运行），覆盖：基本算术、函数/递归、结构体/联合/枚举、位域、VLA、`_Complex`、`wchar_t`/`L"..."`、trigraph、内联汇编（基本+扩展）、`__attribute__` 全集、`__svc`/`__irq`/`__weak`/`__naked`/`__packed`/`__align`/`__at`/`__forceinline`、`__asm` 整函数体汇编、`#pragma pack/anon_unions/location/...`、TLS、`__packed` 指针未对齐访问、`split_sections`、双精度浮点、64 位整数、除法/取模、复合字面量、指定初始化、结构体按值、隐式转换、整数提升、`printf` 64 位、`setjmp/longjmp`、多文件链接、CPU 宏、调试信息、`$` 标识符等。
 
 ## 移植到 STM32
 
-仅需替换 `port/host/*.c` 为 `port/stm32/*.c`，MDK 工程见 `mdk/STM32H743_ArkCC/`。
-详细说明见 [MANUAL.md](MANUAL.md)。
+仅需替换 `port/host/*.c` 为 `port/stm32/*.c`，入口点为 `port/stm32/main_stm32.c`，MDK 工程见 `mdk/STM32H743_ArkCC/`。STM32 端为自宿主配置，可直接读取 W25Q 外部 Flash 中的 `.c` 文件并就地编译执行。
+详细说明见 [docs/MANUAL.md](docs/MANUAL.md)。
 
 ## 版本
 
+- v0.7.0：armcc 兼容覆盖 98%+，STM32 自宿主稳定。新增：armcc 关键字（`__value_in_regs`/`__pure`/`__interwork`/`__thread`/`__global_reg`/`__smc`/`__int64`..`__int8`/`__typedef`/`__args`/`__return`/`__tp_soft`/`__nothrow`/`__deprecated`/`__may_alias`/`__softfp`）、`__attribute__` 属性扩展（`may_alias/nothrow/pure/const/visibility/nonnull/warn_unused_result/sentinel/malloc/fastcall/stdcall/cdecl`）、预定义宏（`__arm`/`__thumb`/`__STDC_VERSION__`/`__STDC_HOSTED__`/`__SIZE_TYPE__`/`__PTRDIFF_TYPE__`/`__WCHAR_TYPE__`/`__EDG__`/`__APCS_INTERWORK`）、完整 DWARF（`.debug_info`/`.debug_abbrev`/`.debug_line`）、TLS（`.tbss`/`.tdata`）、`__packed` 指针未对齐访问、`--split_sections` 每函数一段、scatter 加载描述文件（`include/scatter.h`+`src/scatter.c`）、CPU 选型（`-mcpu`/`--cpu`+`include/cpu.h`+`src/cpu.c`）、命令行扩展（`-MMD`/`--depend`/`-MF`/`--dollar`/`--enum_is_int`/`--fpu`/`--thumb`/`--arm`/`--dwarf2`/`--dwarf3`/`--signed_chars`/`--unsigned_chars`/`--wchar16`/`--wchar32`）、配置项扩展（`enum_is_int`/`dollar_in_identifiers`/`split_sections`/`signed_chars`/`wchar16`/`wchar32`/`dwarf_version`）。62 个测试全部通过。
 - v0.6.0：配置系统 + 优化 Pass + 调试信息 + 前端/后端补强。新增：三层配置系统（`arkcc_config.h` 编译期宏 + `arkcc.cfg` INI 运行时配置 + `-O/-g/-f/-fno-/-config` 命令行）、VLA 变长数组（`IR_ALLOCA`）、宽字符 `wchar_t`/`L"..."`/`L'...'`、三元组 trigraph（9 个 C99 三元组）、`_Complex` 复数类型、硬件 FPU 指令（VFP `VADD/VMUL/VCVT/VCMP` 替代软浮点桩）、DWARF 调试信息（`.file/.loc/.cfi_startproc/.size`）、IR 级常量折叠 + 死代码消除（`src/opt.c`）、逗号分隔局部声明作用域 bug 修复。56 个测试全部通过。
 - v0.5.0：四波刚需特性（startup/中断向量、HAL/DMA/MMIO、控制算法/printf调试、RTOS/完整工程）。新增：`__asm` 整函数体汇编、`__attribute__((used/unused/alias/constructor/destructor/deprecated/format))`、`__align`/`__at`/`__packed`/`__forceinline` 真正生效、匿名 union 字段提升、`#pragma anon_unions/location/diag_suppress/arm/thumb/import/push/pop/O0-O3/optimize`、armcc 预定义宏、完整隐式类型转换与整数提升、`double` 真 64 位精度、全局变量常量表达式初值、数组维度常量表达式、`printf` 64 位不截断、严格 AAPCS、`setjmp/longjmp`、标准库 string.c/math.c/setjmp.c
-- v0.4.0：完整 C99 + armcc 兼容（__irq/__weak/__naked/位域打包/64位/除法/段分离/复合字面量/柔性数组/结构体按值/pragma pack）
+- v0.4.0：完整 C99 + armcc 兼容（`__irq`/`__weak`/`__naked`/位域打包/64位/除法/段分离/复合字面量/柔性数组/结构体按值/pragma pack）
 - v0.3.0：浮点运算、`__svc`、`.s` 编译、static 局部变量、多文件链接
 - v0.2.0：多后端架构、C99 子集、标准库子集
 - v0.1.0：单 ARM 后端最小 C 子集
