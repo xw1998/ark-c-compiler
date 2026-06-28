@@ -41,6 +41,13 @@ typedef struct IrFunc {
     int      is_deprecated;  /* __attribute__((deprecated)) */
     char    *alias_target; /* __attribute__((alias("xxx"))) */
     char    *asm_body;     /* __asm 函数体的原始汇编文本 */
+    /* 0.6.x：armcc 5 兼容函数修饰符（多数仅语义标记） */
+    int      is_value_in_regs; /* __value_in_regs */
+    int      is_pure;          /* __pure / __attribute__((pure)) */
+    int      is_const_attr;    /* __attribute__((const)) */
+    int      is_interwork;     /* __interwork（静默忽略）*/
+    int      smc_num;          /* __smc(n) 编号；-1=未使用 */
+    int      global_reg;       /* __global_reg(n) 寄存器号；-1=未使用 */
     int      param_names_count;
     char   **param_names;
     Type   **param_types;
@@ -82,6 +89,9 @@ typedef struct IrGlobal {
     /* __attribute__((used/unused)) */
     int     is_used;
     int     is_unused;
+    /* 0.6.x：TLS / 全局寄存器变量 */
+    int     is_tls;       /* __thread 线程局部存储 */
+    int     global_reg;   /* __global_reg(n) 寄存器号；-1=未使用 */
 } IrGlobal;
 
 typedef struct IrProgram {

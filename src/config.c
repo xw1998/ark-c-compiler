@@ -58,7 +58,18 @@ void config_init(void) {
     g_config.enable_opt_regalloc  = ARKCC_FEATURE_OPT_REGALLOC;
     g_config.opt_level            = 0;
     g_config.debug_info           = 0;
+    g_config.split_sections       = 0;
     g_config.config_file          = 0;
+    /* 0.6.x：armcc 5 兼容运行时开关默认值 */
+    g_config.enum_is_int          = 0;
+    g_config.dollar_in_identifiers= 1;  /* armcc 默认支持 $ 标识符 */
+    g_config.signed_chars         = 0;
+    g_config.unsigned_chars       = 0;
+    g_config.wchar16              = 0;
+    g_config.wchar32              = 0;
+    g_config.dwarf_version        = 0;
+    g_config.scatter_file         = 0;
+    g_config.fpu_type             = 0;
 }
 
 /* 把 "key=value" 应用到 g_config。section 为当前 INI 段名（"features"/"general"）。
@@ -85,6 +96,8 @@ static void apply_kv(const char *section, const char *key, const char *val) {
             }
         } else if (ark_streq(key, "debug_info")) {
             g_config.debug_info = parse_bool(val) ? 1 : 0;
+        } else if (ark_streq(key, "split_sections") || ark_streq(key, "function-sections")) {
+            g_config.split_sections = parse_bool(val) ? 1 : 0;
         }
     }
 }
@@ -179,6 +192,15 @@ void config_load_file(const char *path) {
  * feature 名称：vla/complex/wchar/trigraph/fpu/fpu_hw/dwarf/opt-constfold/
  *               opt-dce/opt-regalloc/constfold/dce/regalloc
  * 不识别的参数原样不动（main 仍会处理 -o/-target/-I 等）。
+ *
+ * 0.6.x 新增 armcc 5 风格 --xxx 选项（多数静默接受）：
+ *   --enum_is_int / -fenum-is-int / --dollar / --signed_chars / --unsigned_chars
+ *   --wchar16 / --wchar32 / --dwarf2 / --dwarf3 / --scatter <file> / --fpu <name>
+ *   --thumb / --arm / --remarks / --autoinline / --no_autoinline
+ *   --vectorize / --no_vectorize / --split_sections / --library_type
+ *   --locale / --multibyte_chars / --data_reorder / --diag_style
+ *   --remove_unneeded_entities
+ *   --cpp : 报错"不支持 C++"
  */
 void config_apply_args(int argc, char **argv) {
     int i;
@@ -199,6 +221,67 @@ void config_apply_args(int argc, char **argv) {
             /* 仅记录路径，加载由 main 在调用 config_apply_args 之前完成 */
             g_config.config_file = argv[i + 1];
             i++;
+            continue;
+        }
+        /* --cpp：arkcc 不支持 C++，明确报错 */
+        if (ark_streq(a, "--cpp")) {
+            ark_log("[arkcc] error: C++ (--cpp) is not supported\n");
+            continue;
+        }
+        /* 0.6.x：armcc 5 风格 --xxx 选项 */
+        if (ark_streq(a, "--enum_is_int") || ark_streq(a, "-fenum-is-int")) {
+            g_config.enum_is_int = 1;
+            continue;
+        }
+        if (ark_streq(a, "--dollar")) {
+            g_config.dollar_in_identifiers = 1;
+            continue;
+        }
+        if (ark_streq(a, "--signed_chars")) {
+            g_config.signed_chars = 1;
+            g_config.unsigned_chars = 0;
+            continue;
+        }
+        if (ark_streq(a, "--unsigned_chars")) {
+            g_config.unsigned_chars = 1;
+            g_config.signed_chars = 0;
+            continue;
+        }
+        if (ark_streq(a, "--wchar16")) {
+            g_config.wchar16 = 1;
+            g_config.wchar32 = 0;
+            continue;
+        }
+        if (ark_streq(a, "--wchar32")) {
+            g_config.wchar32 = 1;
+            g_config.wchar16 = 0;
+            continue;
+        }
+        if (ark_streq(a, "--dwarf2")) { g_config.dwarf_version = 2; continue; }
+        if (ark_streq(a, "--dwarf3")) { g_config.dwarf_version = 3; continue; }
+        if (ark_streq(a, "--scatter") && i + 1 < argc) {
+            g_config.scatter_file = argv[i + 1];
+            i++;
+            continue;
+        }
+        if (ark_streq(a, "--fpu") && i + 1 < argc) {
+            const char *name = argv[i + 1];
+            g_config.fpu_type = name;
+            /* 简化：none → 关 FPU；其他 → 开 FPU */
+            if (ark_streq(name, "none")) g_config.enable_fpu_hw = 0;
+            else                          g_config.enable_fpu_hw = 1;
+            i++;
+            continue;
+        }
+        /* 静默接受的 armcc 5 选项（不影响代码生成） */
+        if (ark_streq(a, "--thumb") || ark_streq(a, "--arm") ||
+            ark_streq(a, "--remarks") ||
+            ark_streq(a, "--autoinline") || ark_streq(a, "--no_autoinline") ||
+            ark_streq(a, "--vectorize") || ark_streq(a, "--no_vectorize") ||
+            ark_streq(a, "--library_type") || ark_streq(a, "--locale") ||
+            ark_streq(a, "--multibyte_chars") || ark_streq(a, "--data_reorder") ||
+            ark_streq(a, "--diag_style") ||
+            ark_streq(a, "--remove_unneeded_entities")) {
             continue;
         }
         /* -fno-xxx / -fxxx */
@@ -226,6 +309,10 @@ void config_apply_args(int argc, char **argv) {
                 g_config.enable_opt_dce                 = enable;
             else if (ark_streq(name, "opt-regalloc") || ark_streq(name, "regalloc"))
                 g_config.enable_opt_regalloc            = enable;
+            else if (ark_streq(name, "function-sections") || ark_streq(name, "split_sections"))
+                g_config.split_sections                 = enable;
+            else if (ark_streq(name, "enum-is-int"))   g_config.enum_is_int          = enable;
+            else if (ark_streq(name, "dollar"))        g_config.dollar_in_identifiers= enable;
             /* 未识别 -fxxx：忽略，不报错（避免与 gcc 风格的 -fxxx 冲突） */
         }
     }
@@ -241,8 +328,8 @@ void config_print(void) {
     ark_log("  opt_constfold=%d opt_dce=%d opt_regalloc=%d\n",
             g_config.enable_opt_constfold, g_config.enable_opt_dce,
             g_config.enable_opt_regalloc);
-    ark_log("  opt_level=%d debug_info=%d\n",
-            g_config.opt_level, g_config.debug_info);
+    ark_log("  opt_level=%d debug_info=%d split_sections=%d\n",
+            g_config.opt_level, g_config.debug_info, g_config.split_sections);
     ark_log("  config_file=%s\n",
             g_config.config_file ? g_config.config_file : "(none)");
 }

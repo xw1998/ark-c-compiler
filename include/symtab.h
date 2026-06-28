@@ -32,6 +32,7 @@ typedef struct Symbol {
     int            is_extern;
     int            enum_value;
     int            svc_num;      /* __svc(n) 编号；0 表示非 SVC 函数 */
+    int            smc_num;      /* __smc(n) 编号；0 表示非 SMC 函数 */
     int            is_irq;       /* __irq 中断函数 */
     int            is_weak;      /* __weak 弱符号 */
     int            is_naked;     /* __naked 裸函数 */

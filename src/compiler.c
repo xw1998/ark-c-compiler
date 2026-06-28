@@ -11,6 +11,7 @@
 #include "irgen.h"
 #include "ir.h"
 #include "preproc.h"
+#include "cpu.h"
 #include "backend.h"
 #include "config.h"
 #include "arkcc_config.h"
@@ -217,6 +218,29 @@ int ark_compile(const ArkOptions *opts) {
     }
     preproc_add_include_dir("stdlib/include");
 
+    /* --cpu/-mcpu：根据目标 CPU 覆盖默认（M7）的预定义宏与 FPU/DSP 开关。
+     * 必须在 preproc_process 之前调用，使后续预处理看到正确的
+     * __TARGET_ARCH_* / __TARGET_FEATURE_DSP / __TARGET_FPU_VFP 等宏。 */
+    if (opts->cpu) {
+        const CpuInfo *cpu = cpu_lookup(opts->cpu);
+        if (!cpu) {
+            ark_log("[arkcc] unknown CPU '%s' (supported: Cortex-M0/M0+/M1/M3/M4/M7/M23/M33)\n",
+                    opts->cpu);
+            return ARK_ERR_ARG;
+        }
+        cpu_apply_predefines(cpu);
+        /* 不支持 FPU 的 CPU 自动关闭硬件 FPU 代码生成 */
+        if (!cpu->has_fpu) g_config.enable_fpu_hw = 0;
+        if (opts->verbose) {
+            ark_log("[arkcc] cpu=%s arch_m=%d dsp=%d fpu=%d\n",
+                    cpu->name, cpu->arch_m, cpu->has_dsp, cpu->has_fpu);
+        }
+    }
+
+    /* --split_sections/-ffunction-sections：把运行时开关同步到 g_config，
+     * 供 ARM/C 后端在每个函数前生成独立段。 */
+    if (opts->split_sections) g_config.split_sections = 1;
+
     src_len = fs_read_file(opts->input_path, g_src, ARK_SRC_BUF_SIZE);
     if (src_len < 0) {
         ark_log("[arkcc] cannot read '%s'\n", opts->input_path);
@@ -224,6 +248,87 @@ int ark_compile(const ArkOptions *opts) {
     }
 
     preprocessed = preproc_process(g_src);
+
+    /* -MMD/--depend：生成依赖文件（Makefile 风格，gcc -MMD 兼容）。
+     * 格式："<output>: <source> <header1> <header2> ...\n"
+     * 输出路径由 -MF 指定，否则默认 "<input>.d"。 */
+    if (opts->gen_depend) {
+        const char *incs[64];
+        int ninc = preproc_get_included_files(incs, 64);
+        char dep_path[512];
+        const char *dep_target;
+        /* 推导输出目标名：优先用 -o（去掉扩展名加 .o），否则 <input>.o */
+        char obj_name[512];
+        if (opts->output_path) {
+            int ol = ark_strlen(opts->output_path);
+            int dot = -1; int k;
+            for (k = ol - 1; k >= 0; k--) {
+                if (opts->output_path[k] == '/' || opts->output_path[k] == '\\') break;
+                if (opts->output_path[k] == '.') { dot = k; break; }
+            }
+            if (dot < 0) dot = ol;
+            for (k = 0; k < dot && k < (int)sizeof(obj_name) - 3; k++) obj_name[k] = opts->output_path[k];
+            obj_name[dot] = 0;
+            /* 默认加 .o 扩展名（除非 -S 输出 .s） */
+            if (opts->emit_asm) {
+                obj_name[dot] = '.'; obj_name[dot+1] = 's'; obj_name[dot+2] = 0;
+            } else {
+                obj_name[dot] = '.'; obj_name[dot+1] = 'o'; obj_name[dot+2] = 0;
+            }
+        } else {
+            /* 从 input_path 推导 */
+            int il = ark_strlen(opts->input_path);
+            int dot = -1; int k;
+            for (k = il - 1; k >= 0; k--) {
+                if (opts->input_path[k] == '/' || opts->input_path[k] == '\\') break;
+                if (opts->input_path[k] == '.') { dot = k; break; }
+            }
+            if (dot < 0) dot = il;
+            for (k = 0; k < dot && k < (int)sizeof(obj_name) - 3; k++) obj_name[k] = opts->input_path[k];
+            obj_name[dot] = '.'; obj_name[dot+1] = 'o'; obj_name[dot+2] = 0;
+        }
+        /* 依赖文件路径：-MF 指定，否则 <input>.d */
+        if (opts->depend_file) {
+            dep_target = opts->depend_file;
+        } else {
+            int il = ark_strlen(opts->input_path);
+            int dot = -1; int k;
+            for (k = il - 1; k >= 0; k--) {
+                if (opts->input_path[k] == '/' || opts->input_path[k] == '\\') break;
+                if (opts->input_path[k] == '.') { dot = k; break; }
+            }
+            if (dot < 0) dot = il;
+            for (k = 0; k < dot && k < (int)sizeof(dep_path) - 3; k++) dep_path[k] = opts->input_path[k];
+            dep_path[dot] = '.'; dep_path[dot+1] = 'd'; dep_path[dot+2] = 0;
+            dep_target = dep_path;
+        }
+        /* 构造依赖文件内容："<obj>: <source> <h1> <h2> ...\n" */
+        {
+            static char dep_buf[8192];
+            int dl = 0;
+            int k;
+            /* 输出目标 */
+            for (k = 0; obj_name[k] && dl < (int)sizeof(dep_buf) - 1; k++) dep_buf[dl++] = obj_name[k];
+            dep_buf[dl++] = ':';
+            dep_buf[dl++] = ' ';
+            /* 源文件 */
+            for (k = 0; opts->input_path[k] && dl < (int)sizeof(dep_buf) - 1; k++) dep_buf[dl++] = opts->input_path[k];
+            /* 依赖的头文件 */
+            for (k = 0; k < ninc && dl < (int)sizeof(dep_buf) - 2; k++) {
+                dep_buf[dl++] = ' ';
+                {
+                    int j;
+                    for (j = 0; incs[k][j] && dl < (int)sizeof(dep_buf) - 1; j++) dep_buf[dl++] = incs[k][j];
+                }
+            }
+            dep_buf[dl++] = '\n';
+            if (fs_write_file(dep_target, (const unsigned char *)dep_buf, dl) != dl) {
+                ark_log("[arkcc] cannot write dependency file '%s'\n", dep_target);
+                return ARK_ERR_IO;
+            }
+            if (opts->verbose) ark_log("[arkcc] wrote dependency file '%s' (%d includes)\n", dep_target, ninc);
+        }
+    }
 
     /* -E 仅预处理 */
     if (opts->preprocess_only) {
@@ -372,5 +477,9 @@ int ark_compile_and_run(const char *path) {
     o.opt_level = 0;
     o.debug_info = 0;
     o.no_unused_warn = 0;
+    o.cpu = 0;
+    o.gen_depend = 0;
+    o.depend_file = 0;
+    o.split_sections = 0;
     return ark_compile(&o);
 }

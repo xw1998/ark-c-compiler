@@ -80,6 +80,7 @@ Symbol *sym_add(SymKind kind, const char *name, Type *type, int offset) {
     s->is_extern = 0;
     s->enum_value = 0;
     s->svc_num = 0;
+    s->smc_num = 0;
     s->is_irq = 0;
     s->is_weak = 0;
     s->is_naked = 0;

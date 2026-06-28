@@ -103,6 +103,25 @@ typedef enum {
     /* === 0.5.x 新增（B4：_Complex 关键字）=== */
     TOK_COMPLEX,          /* _Complex */
 
+    /* === 0.6.x 新增：armcc 5 兼容关键字（受 ARKCC_FEATURE_ARMCC_KEYWORDS 守护）=== */
+    TOK_VALUE_IN_REGS,    /* __value_in_regs */
+    TOK_THREAD,           /* __thread */
+    TOK_GLOBAL_REG,       /* __global_reg */
+    TOK_PURE,             /* __pure */
+    TOK_INTERWORK,        /* __interwork */
+    TOK_SMC,              /* __smc */
+    TOK_INT64,            /* __int64 */
+    TOK_INT32,            /* __int32 */
+    TOK_INT16,            /* __int16 */
+    TOK_INT8,             /* __int8 */
+    TOK_TYPEDEF_KW,       /* __typedef（等价 typedef）*/
+    TOK_ARGS,             /* __args */
+    TOK_RETURN_KW,        /* __return */
+    TOK_TP_SOFT,          /* __tp_soft */
+    TOK_NOTHROW,          /* __nothrow */
+    TOK_DEPRECATED_KW,    /* __deprecated（关键字形式）*/
+    TOK_MAY_ALIAS,        /* __may_alias */
+
     TOK__SENTINEL
 } TokenKind;
 
@@ -208,7 +227,8 @@ typedef enum {
     IR_STORE_FLD,      /* 位域存储；val=位偏移, aux=位宽 */
     IR_LOAD_FLD,       /* 位域读取；val=位偏移, aux=位宽 */
     IR_PUSH_GLOBAL_ADDR, /* 取全局变量地址；name = 全局变量名（不加载值） */
-    IR_ALLOCA          /* B3: VLA 动态栈分配；弹出字节数，压入分配区首地址 */
+    IR_ALLOCA,         /* B3: VLA 动态栈分配；弹出字节数，压入分配区首地址 */
+    IR_SMC             /* __smc(n) Secure Monitor Call；val=SMC 编号 */
 } IrOp;
 
 /* 简单字符串比较，避免依赖 string.h */

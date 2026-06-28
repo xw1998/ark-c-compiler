@@ -64,6 +64,27 @@ static int is_hex(char c) {
 }
 static int is_oct(char c) { return c >= '0' && c <= '7'; }
 
+/* 标识符字符判定：$ 在 --dollar 启用时也视为标识符字符。
+ * 用于支持 ARMCC 风格带 $ 的标识符（如 $count）。 */
+static int is_ident_start(char c) {
+    if (is_alpha(c)) return 1;
+#if ARKCC_FEATURE_ARMCC_KEYWORDS
+    if (c == '$' && g_config.dollar_in_identifiers) return 1;
+#else
+    (void)c;
+#endif
+    return 0;
+}
+static int is_ident_char(char c) {
+    if (is_alnum(c)) return 1;
+#if ARKCC_FEATURE_ARMCC_KEYWORDS
+    if (c == '$' && g_config.dollar_in_identifiers) return 1;
+#else
+    (void)c;
+#endif
+    return 0;
+}
+
 static int hex_val(char c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
@@ -152,6 +173,26 @@ static Keyword g_keywords[] = {
     /* B4: _Complex 关键字（C99）*/
     {"_Complex",      TOK_COMPLEX},
     {"__complex__",   TOK_COMPLEX},
+#if ARKCC_FEATURE_ARMCC_KEYWORDS
+    /* 0.6.x：armcc 5 兼容关键字。受编译期开关守护，可裁切。 */
+    {"__value_in_regs", TOK_VALUE_IN_REGS},
+    {"__thread",        TOK_THREAD},
+    {"__global_reg",    TOK_GLOBAL_REG},
+    {"__pure",          TOK_PURE},
+    {"__interwork",     TOK_INTERWORK},
+    {"__smc",           TOK_SMC},
+    {"__int64",         TOK_INT64},
+    {"__int32",         TOK_INT32},
+    {"__int16",         TOK_INT16},
+    {"__int8",          TOK_INT8},
+    {"__typedef",       TOK_TYPEDEF_KW},
+    {"__args",          TOK_ARGS},
+    {"__return",        TOK_RETURN_KW},
+    {"__tp_soft",       TOK_TP_SOFT},
+    {"__nothrow",       TOK_NOTHROW},
+    {"__deprecated",    TOK_DEPRECATED_KW},
+    {"__may_alias",     TOK_MAY_ALIAS},
+#endif
     /* __asm 词法上仍归为 TOK_ASM；parser 通过上下文区分内联 asm 语句与
      * armcc 风格整函数体汇编（__asm void fn(){...}）。 */
     {0, TOK_EOF}
@@ -301,9 +342,9 @@ static Token lexer_read_token(Lexer *lex) {
 #endif
 
     /* 标识符 / 关键字 */
-    if (is_alpha(c)) {
+    if (is_ident_start(c)) {
         int len, kw;
-        while (is_alnum(*lex->p)) lex->p++;
+        while (is_ident_char(*lex->p)) lex->p++;
         len = (int)(lex->p - start);
         kw = check_keyword(start, len);
         if (kw >= 0) return make_token((TokenKind)kw, line);

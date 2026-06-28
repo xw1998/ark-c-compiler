@@ -33,6 +33,13 @@ IrFunc *ir_func_new(const char *name) {
     f->is_deprecated = 0;
     f->alias_target = 0;
     f->asm_body = 0;
+    /* 0.6.x：armcc 5 兼容函数修饰符默认值 */
+    f->is_value_in_regs = 0;
+    f->is_pure = 0;
+    f->is_const_attr = 0;
+    f->is_interwork = 0;
+    f->smc_num = -1;
+    f->global_reg = -1;
     f->param_names = 0;
     f->param_names_count = 0;
     f->param_types = 0;
@@ -136,6 +143,9 @@ IrGlobal *ir_program_add_global(IrProgram *prog, const char *name, Type *t) {
     g->align_bytes = 0;
     g->is_used = 0;
     g->is_unused = 0;
+    /* 0.6.x：TLS / 全局寄存器变量默认值 */
+    g->is_tls = 0;
+    g->global_reg = -1;
     prog->globals = (IrGlobal **)mem_realloc(prog->globals,
         n * (int)sizeof(IrGlobal *),
         (n + 1) * (int)sizeof(IrGlobal *));
@@ -195,6 +205,7 @@ const char *ir_op_name(IrOp op) {
         case IR_LOAD_FLD:     return "LOAD_FLD";
         case IR_PUSH_GLOBAL_ADDR: return "PUSH_GLOBAL_ADDR";
         case IR_ALLOCA:       return "ALLOCA";
+        case IR_SMC:          return "SMC";
         default:              return "NOP";
     }
 }

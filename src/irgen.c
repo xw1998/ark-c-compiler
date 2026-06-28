@@ -323,6 +323,9 @@ IrProgram *irgen_program(AstNode *prog) {
                 s->svc_num = d->u.func.svc_num;
                 s->is_asm_func = d->u.func.is_asm_func;
                 s->alias_target = d->u.func.alias_target;
+#if ARKCC_FEATURE_ARMCC_KEYWORDS
+                s->smc_num = d->u.func.smc_num;
+#endif
                 if (d->kind == AST_FUNC_DEF || d->kind == AST_ASM_FUNC) s->is_defined = 1;
             }
         } else if (d->kind == AST_VAR_DECL && d->u.var.is_global) {
@@ -339,6 +342,10 @@ IrProgram *irgen_program(AstNode *prog) {
                 gv->is_unused = d->u.var.is_unused;
                 gv->has_at    = d->u.var.has_at;
                 gv->at_addr   = d->u.var.at_addr;
+#if ARKCC_FEATURE_ARMCC_KEYWORDS
+                gv->is_tls     = d->u.var.is_tls;
+                gv->global_reg = d->u.var.global_reg;
+#endif
                 if (d->u.var.init) {
                     AstNode *iv = d->u.var.init;
                     if (iv->kind == AST_NUM) {
@@ -401,6 +408,10 @@ IrProgram *irgen_program(AstNode *prog) {
                         gc->is_unused = c->u.var.is_unused;
                         gc->has_at    = c->u.var.has_at;
                         gc->at_addr   = c->u.var.at_addr;
+#if ARKCC_FEATURE_ARMCC_KEYWORDS
+                        gc->is_tls     = c->u.var.is_tls;
+                        gc->global_reg = c->u.var.global_reg;
+#endif
                         if (c->u.var.init) {
                             AstNode *iv = c->u.var.init;
                             if (iv->kind == AST_NUM) {
@@ -458,6 +469,14 @@ IrProgram *irgen_program(AstNode *prog) {
             fn->is_constructor = d->u.func.is_constructor;
             fn->is_destructor  = d->u.func.is_destructor;
             fn->is_deprecated  = d->u.func.is_deprecated;
+#if ARKCC_FEATURE_ARMCC_KEYWORDS
+            fn->is_value_in_regs = d->u.func.is_value_in_regs;
+            fn->is_pure          = d->u.func.is_pure;
+            fn->is_const_attr    = d->u.func.is_const_attr;
+            fn->is_interwork     = d->u.func.is_interwork;
+            fn->smc_num          = d->u.func.smc_num;
+            fn->global_reg       = d->u.func.global_reg;
+#endif
             ir_program_add(out, fn);
             continue;
         }
@@ -474,6 +493,14 @@ IrProgram *irgen_program(AstNode *prog) {
                 fn->is_constructor = d->u.func.is_constructor;
                 fn->is_destructor  = d->u.func.is_destructor;
                 fn->is_deprecated  = d->u.func.is_deprecated;
+#if ARKCC_FEATURE_ARMCC_KEYWORDS
+                fn->is_value_in_regs = d->u.func.is_value_in_regs;
+                fn->is_pure          = d->u.func.is_pure;
+                fn->is_const_attr    = d->u.func.is_const_attr;
+                fn->is_interwork     = d->u.func.is_interwork;
+                fn->smc_num          = d->u.func.smc_num;
+                fn->global_reg       = d->u.func.global_reg;
+#endif
                 ir_program_add(out, fn);
             }
             continue;
@@ -498,6 +525,14 @@ IrProgram *irgen_program(AstNode *prog) {
             g.fn->is_constructor = d->u.func.is_constructor;
             g.fn->is_destructor  = d->u.func.is_destructor;
             g.fn->is_deprecated  = d->u.func.is_deprecated;
+#if ARKCC_FEATURE_ARMCC_KEYWORDS
+            g.fn->is_value_in_regs = d->u.func.is_value_in_regs;
+            g.fn->is_pure          = d->u.func.is_pure;
+            g.fn->is_const_attr    = d->u.func.is_const_attr;
+            g.fn->is_interwork     = d->u.func.is_interwork;
+            g.fn->smc_num          = d->u.func.smc_num;
+            g.fn->global_reg       = d->u.func.global_reg;
+#endif
             g.bp = 0;
             g.max_size = 0;
             g.break_label = -1;
@@ -1023,8 +1058,11 @@ static void irgen_lvalue_addr(IrGen *g, AstNode *node) {
         Symbol *s = sym_find(node->u.name);
         if (s && s->kind == SYM_GLOBAL) {
             /* 全局变量取地址：发 PUSH_GLOBAL_ADDR，后端以变量地址入栈。
-             * 替代旧的 PUSH_INT 0 占位（C 后端会忽略 name，导致地址为 0）。 */
-            ir_emit(g->fn, IR_PUSH_GLOBAL_ADDR, 0, node->u.name, 0);
+             * 替代旧的 PUSH_INT 0 占位（C 后端会忽略 name，导致地址为 0）。
+             * static 局部变量被提升为全局，引用时用 mangle 后的名字 */
+            const char *gname = node->u.name;
+            if (s->is_static) gname = static_local_name(g->fn->name, node->u.name);
+            ir_emit(g->fn, IR_PUSH_GLOBAL_ADDR, 0, gname, 0);
         } else if (s) {
             ir_emit(g->fn, IR_PUSH_ADDR, s->offset, node->u.name, 0);
         } else {
@@ -1317,9 +1355,16 @@ static void irgen_expr(IrGen *g, AstNode *node) {
             if (op == (int)TOK_BAND) {
                 irgen_lvalue_addr(g, node->u.unary.operand);
             } else if (op == (int)TOK_MUL) {
+                int packed_aux = 0;
                 irgen_expr(g, node->u.unary.operand);
                 ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
-                ir_emit(g->fn, IR_LOAD_IDX, type_size(node->type ? node->type : type_int()), 0, 0);
+                /* __packed 指针解引用：aux 0x400 标记按字节访问未对齐内存 */
+                if (node->u.unary.operand->type &&
+                    node->u.unary.operand->type->kind == TYPE_PTR &&
+                    node->u.unary.operand->type->is_packed) {
+                    packed_aux = 0x400;
+                }
+                ir_emit(g->fn, IR_LOAD_IDX, type_size(node->type ? node->type : type_int()), 0, packed_aux);
             } else if (op == (int)TOK_INC || op == (int)TOK_DEC) {
                 int delta = (op == (int)TOK_INC) ? 1 : -1;
                 AstNode *operand = node->u.unary.operand;
@@ -1409,18 +1454,30 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                 } else if (L->kind == AST_ARRAY_ACCESS) {
                     AstNode *arr = L->u.array_access.array;
                     int elem_sz = 4;
+                    int packed_aux = 0;
                     if (arr->type && (arr->type->kind == TYPE_ARRAY || arr->type->kind == TYPE_PTR))
                         elem_sz = type_size(arr->type->base);
                     if (elem_sz <= 0) elem_sz = 4;
+                    /* __packed 指针下标存储：aux 0x400 标记按字节访问 */
+                    if (arr->type && arr->type->kind == TYPE_PTR && arr->type->is_packed) {
+                        packed_aux = 0x400;
+                    }
                     irgen_lvalue_addr(g, L);
                     irgen_expr(g, node->u.binary.right);
-                    ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, 0);
+                    ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, packed_aux);
                 } else if (L->kind == AST_UNARY && L->u.unary.op == (int)TOK_MUL) {
                     int elem_sz = type_size(L->type ? L->type : type_int());
+                    int packed_aux = 0;
                     if (elem_sz <= 0) elem_sz = 4;
                     irgen_expr(g, L->u.unary.operand);
                     irgen_expr(g, node->u.binary.right);
-                    ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, 0);
+                    /* __packed 指针存储：aux 0x400 标记按字节访问未对齐内存 */
+                    if (L->u.unary.operand->type &&
+                        L->u.unary.operand->type->kind == TYPE_PTR &&
+                        L->u.unary.operand->type->is_packed) {
+                        packed_aux = 0x400;
+                    }
+                    ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, packed_aux);
                 } else if (L->kind == AST_MEMBER) {
                     int bo, bw;
                     if (member_bitfield_info(L, &bo, &bw)) {
@@ -1491,13 +1548,21 @@ static void irgen_expr(IrGen *g, AstNode *node) {
             /* __svc(n) 函数：生成 SVC 指令而非 BL */
             if (s && s->svc_num != 0) {
                 ir_emit(g->fn, IR_SVC, s->svc_num, node->u.call.name, 0);
-            } else {
+            }
+#if ARKCC_FEATURE_ARMCC_KEYWORDS
+            /* __smc(n) 函数：生成 SMC 指令而非 BL */
+            else if (s && s->smc_num >= 0) {
+                ir_emit(g->fn, IR_SMC, s->smc_num, node->u.call.name, 0);
+            }
+#endif
+            else {
                 ir_emit(g->fn, IR_CALL, n, node->u.call.name, 0);
             }
             break;
         }
         case AST_ARRAY_ACCESS: {
             int elem_sz;
+            int packed_aux = 0;
             AstNode *arr = node->u.array_access.array;
             /* 推断下标结果的类型：若 arr 是数组/指针，结果即元素类型。
              * 当结果是数组类型时（如 matrix[1] 仍是 int[3]），按 C 语义
@@ -1516,9 +1581,13 @@ static void irgen_expr(IrGen *g, AstNode *node) {
             else
                 elem_sz = type_size(node->type ? node->type : type_int());
             if (elem_sz <= 0) elem_sz = 4;
+            /* __packed 指针下标读取：aux 0x400 标记按字节访问未对齐内存 */
+            if (arr->type && arr->type->kind == TYPE_PTR && arr->type->is_packed) {
+                packed_aux = 0x400;
+            }
             irgen_lvalue_addr(g, node);
             ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
-            ir_emit(g->fn, IR_LOAD_IDX, elem_sz, 0, 0);
+            ir_emit(g->fn, IR_LOAD_IDX, elem_sz, 0, packed_aux);
             break;
         }
         case AST_MEMBER: {

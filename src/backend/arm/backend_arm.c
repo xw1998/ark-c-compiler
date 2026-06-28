@@ -353,6 +353,13 @@ static char *codegen_arm(IrProgram *prog) {
             continue;
         }
 
+        /* --split_sections/-ffunction-sections：每个函数独立段 .text.<name>，
+         * 便于链接器死代码消除（--gc-sections）。alias 函数不生成段（仅 .set）。 */
+        if (g_config.split_sections && !f->alias_target) {
+            asmbuf_puts(&buf, ".section .text.");
+            asmbuf_puts(&buf, f->name);
+            asmbuf_puts(&buf, ", \"ax\", %progbits\n");
+        }
         asmbuf_puts(&buf, ".global ");
         asmbuf_puts(&buf, f->name);
         asmbuf_putc(&buf, '\n');
@@ -366,6 +373,24 @@ static char *codegen_arm(IrProgram *prog) {
             /* __attribute__((used))：仅注释标记；.global 已确保符号导出 */
             asmbuf_puts(&buf, "@ __attribute__((used))\n");
         }
+#if ARKCC_FEATURE_ARMCC_KEYWORDS
+        /* armcc 5 兼容函数修饰符：仅注释标记（ARM 后端不改变调用约定）。
+         *   __value_in_regs / __pure / __interwork / __smc(n) / __global_reg(n) */
+        if (f->is_value_in_regs) asmbuf_puts(&buf, "@ __value_in_regs\n");
+        if (f->is_pure)          asmbuf_puts(&buf, "@ __pure\n");
+        if (f->is_const_attr)    asmbuf_puts(&buf, "@ __attribute__((const))\n");
+        if (f->is_interwork)     asmbuf_puts(&buf, "@ __interwork\n");
+        if (f->smc_num > 0) {
+            asmbuf_puts(&buf, "@ __smc(");
+            asmbuf_int(&buf, f->smc_num);
+            asmbuf_puts(&buf, ")\n");
+        }
+        if (f->global_reg >= 0) {
+            asmbuf_puts(&buf, "@ __global_reg(");
+            asmbuf_int(&buf, f->global_reg);
+            asmbuf_puts(&buf, ")\n");
+        }
+#endif
         /* __asm 整函数体：发射 label 与用户原始汇编，跳过 prologue/epilogue */
         if (f->is_asm_func) {
             asmbuf_puts(&buf, f->name);
@@ -504,6 +529,7 @@ static char *codegen_arm(IrProgram *prog) {
                     break;
                 case IR_LOAD_IDX: {
                     int es = I->val;
+                    int packed = (I->aux & 0x400) ? 1 : 0;
                     emit_pop_r1(&buf);
                     emit_pop_r0(&buf);
                     if (es > 1) {
@@ -511,17 +537,63 @@ static char *codegen_arm(IrProgram *prog) {
                         emit_line(&buf, "MUL r1, r2");
                     }
                     emit_line(&buf, "ADD r0, r0, r1");
-                    if (es == 1) emit_line(&buf, "LDRB r0, [r0, #0]");
-                    else         emit_line(&buf, "LDR r0, [r0, #0]");
+                    if (es == 1) {
+                        emit_line(&buf, "LDRB r0, [r0, #0]");
+                    } else if (packed) {
+                        /* __packed 指针未对齐访问：按字节加载后拼装。
+                         * es==2: LDRB x2 + LSL + ORR
+                         * es==4: LDRB x4 + LSL + ORR 链
+                         * r0=地址，r2/r3 为临时寄存器 */
+                        if (es == 2) {
+                            emit_line(&buf, "LDRB r2, [r0, #0]");
+                            emit_line(&buf, "LDRB r3, [r0, #1]");
+                            emit_line(&buf, "LSL r3, r3, #8");
+                            emit_line(&buf, "ORR r0, r2, r3");
+                        } else {
+                            /* 默认按 4 字节处理（es>=4 取低 4 字节） */
+                            emit_line(&buf, "LDRB r2, [r0, #0]");
+                            emit_line(&buf, "LDRB r3, [r0, #1]");
+                            emit_line(&buf, "LSL r3, r3, #8");
+                            emit_line(&buf, "ORR r2, r2, r3");
+                            emit_line(&buf, "LDRB r3, [r0, #2]");
+                            emit_line(&buf, "LSL r3, r3, #16");
+                            emit_line(&buf, "ORR r2, r2, r3");
+                            emit_line(&buf, "LDRB r3, [r0, #3]");
+                            emit_line(&buf, "LSL r3, r3, #24");
+                            emit_line(&buf, "ORR r0, r2, r3");
+                        }
+                    } else {
+                        emit_line(&buf, "LDR r0, [r0, #0]");
+                    }
                     emit_push_r0(&buf);
                     break;
                 }
                 case IR_STORE_IDX: {
                     int es = I->val;
+                    int packed = (I->aux & 0x400) ? 1 : 0;
                     emit_pop_r0(&buf);
                     emit_pop_r1(&buf);
-                    if (es == 1) emit_line(&buf, "STRB r0, [r1, #0]");
-                    else         emit_line(&buf, "STR r0, [r1, #0]");
+                    if (es == 1) {
+                        emit_line(&buf, "STRB r0, [r1, #0]");
+                    } else if (packed) {
+                        /* __packed 指针未对齐存储：按字节写入。
+                         * r0=值，r1=地址，r2 为临时寄存器 */
+                        if (es == 2) {
+                            emit_line(&buf, "STRB r0, [r1, #0]");
+                            emit_line(&buf, "LSR r2, r0, #8");
+                            emit_line(&buf, "STRB r2, [r1, #1]");
+                        } else {
+                            emit_line(&buf, "STRB r0, [r1, #0]");
+                            emit_line(&buf, "LSR r2, r0, #8");
+                            emit_line(&buf, "STRB r2, [r1, #1]");
+                            emit_line(&buf, "LSR r2, r0, #16");
+                            emit_line(&buf, "STRB r2, [r1, #2]");
+                            emit_line(&buf, "LSR r2, r0, #24");
+                            emit_line(&buf, "STRB r2, [r1, #3]");
+                        }
+                    } else {
+                        emit_line(&buf, "STR r0, [r1, #0]");
+                    }
                     emit_push_r0(&buf);
                     break;
                 }
@@ -836,7 +908,8 @@ static char *codegen_arm(IrProgram *prog) {
                 case IR_ASM:
                     /* 内联汇编原样写出。
                      * 扩展形式 '@' 前缀（来自 irgen 拼接）：跳过引号写模板内容，
-                     * 忽略 outputs/inputs/clobbers（ARM 后端不做操作数替换）。 */
+                     * 忽略 outputs/inputs/clobbers；同时把 %0/%1/... 替换为
+                     * r0/r1/...（AAPCS 操作数编号对应寄存器，armcc 风格替换）。 */
                     if (I->name && I->name[0] == '@') {
                         const char *s = I->name + 1;
                         /* 跳过空白找首个 '"' */
@@ -852,6 +925,11 @@ static char *codegen_arm(IrProgram *prog) {
                                     else if (s[1] == '\\') asmbuf_putc(&buf, '\\');
                                     else if (s[1] == '"') asmbuf_putc(&buf, '"');
                                     else asmbuf_putc(&buf, s[1]);
+                                    s += 2;
+                                } else if (*s == '%' && s[1] >= '0' && s[1] <= '3') {
+                                    /* 扩展内联汇编操作数替换：%0→r0, %1→r1, ... */
+                                    asmbuf_putc(&buf, 'r');
+                                    asmbuf_putc(&buf, s[1]);
                                     s += 2;
                                 } else {
                                     asmbuf_putc(&buf, *s);
@@ -904,6 +982,18 @@ static char *codegen_arm(IrProgram *prog) {
                     emit_push_r0(&buf);
                     break;
                 }
+#if ARKCC_FEATURE_ARMCC_KEYWORDS
+                case IR_SMC: {
+                    /* __smc(n) — 安全监控调用；参数已在栈顶，弹到 r0 后执行 SMC */
+                    int n = I->val;
+                    emit_pop_r0(&buf);
+                    asmbuf_puts(&buf, "    SMC #");
+                    asmbuf_int(&buf, n);
+                    asmbuf_putc(&buf, '\n');
+                    emit_push_r0(&buf);
+                    break;
+                }
+#endif
                 /* === 整数除法/取模：通过 ARM EABI 软除法 helper 实现 ===
                  * 栈顶为除数(r1)，次顶为被除数(r0)，结果压回 r0。 */
                 case IR_DIV:
@@ -1141,6 +1231,17 @@ static char *codegen_arm(IrProgram *prog) {
             } else {
                 want_sec = 1;
             }
+#if ARKCC_FEATURE_ARMCC_KEYWORDS
+            /* __thread 线程局部存储：改用 .tbss(无初始化)/.tdata(有初始化)。
+             * 这两个段由加载器在每线程上下文中单独实例化。 */
+            if (g->is_tls) {
+                if (!g->has_init || g->init_aggregate) {
+                    want_sec = 5;  /* .tbss */
+                } else {
+                    want_sec = 6;  /* .tdata */
+                }
+            }
+#endif
             /* 切换段（与当前段不同才发出段指令） */
             if (want_custom) {
                 asmbuf_puts(&buf, ".section \"");
@@ -1151,6 +1252,10 @@ static char *codegen_arm(IrProgram *prog) {
                 if (want_sec == 1) asmbuf_puts(&buf, ".data\n");
                 else if (want_sec == 2) asmbuf_puts(&buf, ".bss\n");
                 else if (want_sec == 3) asmbuf_puts(&buf, ".section .rodata\n");
+#if ARKCC_FEATURE_ARMCC_KEYWORDS
+                else if (want_sec == 5) asmbuf_puts(&buf, ".section .tbss,\"aw\",%nobits\n");
+                else if (want_sec == 6) asmbuf_puts(&buf, ".section .tdata,\"aw\",%progbits\n");
+#endif
                 cur_sec = want_sec;
             }
             /* 符号属性 + 标签 */
@@ -1234,6 +1339,84 @@ static char *codegen_arm(IrProgram *prog) {
         /* 恢复 .text 段，便于后续手动追加 */
         asmbuf_puts(&buf, ".text\n\n");
     }
+#if ARKCC_FEATURE_DWARF_FULL
+    /* DWARF 调试信息（--dwarf2/--dwarf3 启用）：
+     * 发射 .debug_info/.debug_abbrev/.debug_line 三个节，记录编译单元、
+     * 函数符号与行号映射，供 GDB/LLDB 单步调试。这里采用 DWARF v2 子集，
+     * 仅写编译单元头 + 每函数 DIE + 行号程序；不记录变量位置（简化实现）。
+     * 详细类型信息由 DW_FORM_ref4 引用 .debug_abbrev 中预定义的 DW_TAG。 */
+    if (g_config.dwarf_version >= 2) {
+        int fi2;
+        const char *fname = prog->source_file ? prog->source_file : "input.c";
+        /* .debug_abbrev：缩写表，定义 DIE 的 tag/属性形式 */
+        asmbuf_puts(&buf, ".section .debug_abbrev,\"\",%progbits\n");
+        asmbuf_puts(&buf, ".balign 4\n");
+        asmbuf_puts(&buf, "    .byte 1\n");              /* abbrev code 1 */
+        asmbuf_puts(&buf, "    .byte 17\n");             /* DW_TAG_compile_unit */
+        asmbuf_puts(&buf, "    .byte 0\n");              /* DW_CHILDREN_yes */
+        asmbuf_puts(&buf, "    .byte 3\n  .byte 8\n");   /* DW_AT_name, DW_FORM_string */
+        asmbuf_puts(&buf, "    .byte 16\n  .byte 6\n");  /* DW_AT_stmt_list, DW_FORM_data4 */
+        asmbuf_puts(&buf, "    .byte 0\n  .byte 0\n");   /* end attr/end form */
+        asmbuf_puts(&buf, "    .byte 2\n");              /* abbrev code 2 */
+        asmbuf_puts(&buf, "    .byte 46\n");             /* DW_TAG_subprogram */
+        asmbuf_puts(&buf, "    .byte 0\n");              /* DW_CHILDREN_no */
+        asmbuf_puts(&buf, "    .byte 3\n  .byte 8\n");   /* DW_AT_name, DW_FORM_string */
+        asmbuf_puts(&buf, "    .byte 17\n  .byte 1\n");  /* DW_AT_low_pc, DW_FORM_addr */
+        asmbuf_puts(&buf, "    .byte 18\n  .byte 1\n");  /* DW_AT_high_pc, DW_FORM_addr */
+        asmbuf_puts(&buf, "    .byte 0\n  .byte 0\n");   /* end attr/end form */
+        asmbuf_puts(&buf, "    .byte 0\n");              /* end abbrev table */
+        /* .debug_info：编译单元 + 每函数 DIE */
+        asmbuf_puts(&buf, ".section .debug_info,\"\",%progbits\n");
+        asmbuf_puts(&buf, ".balign 4\n");
+        asmbuf_puts(&buf, "    .word 0\n");              /* unit_length（占位，简化） */
+        asmbuf_puts(&buf, "    .half 2\n");              /* DWARF version 2 */
+        asmbuf_puts(&buf, "    .word 0\n");              /* debug_abbrev_offset */
+        asmbuf_puts(&buf, "    .byte 4\n");              /* address_size */
+        asmbuf_puts(&buf, "    .byte 1\n");              /* abbrev 1 = compile_unit */
+        asmbuf_puts(&buf, "    .asciz \"");
+        asmbuf_puts(&buf, fname);
+        asmbuf_puts(&buf, "\"\n");
+        asmbuf_puts(&buf, "    .word 0\n");              /* stmt_list offset */
+        for (fi2 = 0; fi2 < prog->func_count; fi2++) {
+            IrFunc *f2 = prog->funcs[fi2];
+            if (f2->alias_target) continue;
+            asmbuf_puts(&buf, "    .byte 2\n");          /* abbrev 2 = subprogram */
+            asmbuf_puts(&buf, "    .asciz \"");
+            asmbuf_puts(&buf, f2->name);
+            asmbuf_puts(&buf, "\"\n");
+            asmbuf_puts(&buf, "    .word ");
+            asmbuf_puts(&buf, f2->name);
+            asmbuf_putc(&buf, '\n');                     /* low_pc */
+            asmbuf_puts(&buf, "    .word ");
+            asmbuf_puts(&buf, f2->name);
+            asmbuf_puts(&buf, "_end\n");                 /* high_pc */
+        }
+        asmbuf_puts(&buf, "    .byte 0\n");              /* end DIE list */
+        /* .debug_line：行号程序（仅文件名表 + 结束 entry） */
+        asmbuf_puts(&buf, ".section .debug_line,\"\",%progbits\n");
+        asmbuf_puts(&buf, ".balign 4\n");
+        asmbuf_puts(&buf, "    .word 0\n");              /* unit_length（占位） */
+        asmbuf_puts(&buf, "    .half 2\n");              /* DWARF version 2 */
+        asmbuf_puts(&buf, "    .word 0\n");              /* header_length */
+        asmbuf_puts(&buf, "    .byte 4\n");              /* minimum_instruction_length */
+        asmbuf_puts(&buf, "    .byte 0\n");              /* default_is_stmt */
+        asmbuf_puts(&buf, "    .byte 1\n");              /* line_base */
+        asmbuf_puts(&buf, "    .byte 1\n");              /* line_range */
+        asmbuf_puts(&buf, "    .byte 13\n");             /* opcode_base */
+        asmbuf_puts(&buf, "    .byte 0,1,1,0,1,0,0,1,1,1,1,1\n"); /* standard_opcode_lengths */
+        asmbuf_puts(&buf, "    .asciz \"");
+        asmbuf_puts(&buf, fname);
+        asmbuf_puts(&buf, "\"\n");                       /* include_directories */
+        asmbuf_puts(&buf, "    .byte 0\n");
+        asmbuf_puts(&buf, "    .asciz \"");
+        asmbuf_puts(&buf, fname);
+        asmbuf_puts(&buf, "\"\n");                       /* file_names */
+        asmbuf_puts(&buf, "    .byte 0,0,0\n");
+        asmbuf_puts(&buf, "    .byte 0\n");              /* end file table */
+        asmbuf_puts(&buf, "    .byte 0,9,2\n");          /* DW_LNE_end_sequence */
+        asmbuf_puts(&buf, ".text\n");
+    }
+#endif
     return buf.buf;
 }
 

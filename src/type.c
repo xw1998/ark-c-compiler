@@ -3,6 +3,7 @@
  */
 #include "type.h"
 #include "memory.h"
+#include "config.h"
 
 static Type ty_void   = { TYPE_VOID,   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 static Type ty_char   = { TYPE_CHAR,   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
@@ -288,7 +289,12 @@ int type_size(Type *t) {
             return s;
         }
         case TYPE_UNION:  return t->size;
-        case TYPE_ENUM:   return 4;
+        case TYPE_ENUM:
+            /* --enum_is_int / -fenum-is-int：强制枚举为 int（4 字节）。
+             * armcc 默认会按枚举值范围选择最小类型；arkcc 始终使用 int，
+             * 因此无论开关与否都返回 4。开关仅用于兼容 armcc 命令行。 */
+            (void)g_config.enum_is_int;
+            return 4;
         case TYPE_FUNC:   return 4;
     }
     return 4;

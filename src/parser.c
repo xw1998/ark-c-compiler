@@ -76,6 +76,13 @@ static int is_basic_type_token(TokenKind k) {
         case TOK_CONST: case TOK_VOLATILE: case TOK_RESTRICT: case TOK_INLINE:
         case TOK_STATIC: case TOK_EXTERN: case TOK_AUTO: case TOK_REGISTER:
         case TOK_TYPEDEF:
+        case TOK_PACKED_KW:  /* __packed 可作为 cast/decl 起始限定符 */
+        case TOK_COMPLEX:    /* _Complex */
+        /* armcc 定宽整数类型 */
+        case TOK_INT8: case TOK_INT16: case TOK_INT32: case TOK_INT64:
+        /* armcc 函数/变量修饰关键字（可出现在声明开头） */
+        case TOK_THREAD: case TOK_PURE: case TOK_INTERWORK:
+        case TOK_VALUE_IN_REGS: case TOK_SMC: case TOK_GLOBAL_REG:
             return 1;
         default: return 0;
     }
@@ -174,6 +181,10 @@ static int   g_attr_is_unused;
 static char *g_attr_alias_target;
 static int   g_attr_align_bytes;
 static int   g_decl_align_bytes;
+/* __packed 作用于指针类型（如 `__packed int *p`）：标记传给 parse_declarator，
+ * 在构造 TYPE_PTR 时设置 is_packed=1，irgen/ARM 后端据此使用按字节访问。
+ * 在 parse_top_decl / parse_local_var_decl 每个声明开始处复位。 */
+static int   g_decl_packed_ptr;
 /* B3: VLA 尺寸表达式。parse_declarator 解析到非常量数组维度时写入，
  * parse_local_var_decl / parse_top_decl 在构造变量节点时取用并复位。
  * 仅记录首个 VLA 维度（多数 VLA 用法为单维 int a[n]）。 */
@@ -196,7 +207,21 @@ static int      g_attr_has_at;
  * 风格），返回位掩码：
  *   bit0 = is_irq, bit1 = is_weak, bit2 = is_naked,
  *   bit3 = is_softfp, bit4 = is_forceinline
- * 这些关键字可出现在返回类型前、类型与函数名之间、参数表后等位置。 */
+ * 这些关键字可出现在返回类型前、类型与函数名之间、参数表后等位置。
+ *
+ * 0.6.x：同时识别 armcc 5 兼容关键字 __value_in_regs/__pure/__interwork/
+ * __nothrow/__deprecated/__may_alias/__tp_soft/__args/__return 等，
+ * 通过全局变量传递给 parse_top_decl（多数仅语义标记）。
+ *   - g_func_is_value_in_regs / g_func_is_pure / g_func_is_const_attr
+ *   - g_func_is_interwork / g_func_is_deprecated_kw
+ *   静默忽略：__nothrow/__may_alias/__tp_soft/__args/__return
+ */
+static int g_func_is_value_in_regs;
+static int g_func_is_pure;
+static int g_func_is_const_attr;
+static int g_func_is_interwork;
+static int g_func_is_deprecated_kw;
+
 static int parse_func_modifiers(Parser *p) {
     int flags = 0;
     for (;;) {
@@ -206,7 +231,20 @@ static int parse_func_modifiers(Parser *p) {
         else if (k == TOK_NAKED)      flags |= 4;
         else if (k == TOK_SOFTFP)     flags |= 8;
         else if (k == TOK_FORCEINLINE) flags |= 16;
+#if ARKCC_FEATURE_ARMCC_KEYWORDS
+        else if (k == TOK_VALUE_IN_REGS) { g_func_is_value_in_regs = 1; }
+        else if (k == TOK_PURE)          { g_func_is_pure = 1; }
+        else if (k == TOK_INTERWORK)     { g_func_is_interwork = 1; }
+        else if (k == TOK_DEPRECATED_KW) { g_func_is_deprecated_kw = 1; }
+        /* 静默忽略的关键字：__nothrow/__may_alias/__tp_soft/__args/__return */
+        else if (k == TOK_NOTHROW || k == TOK_MAY_ALIAS ||
+                 k == TOK_TP_SOFT || k == TOK_ARGS || k == TOK_RETURN_KW) {
+            /* 静默忽略 */
+        }
         else break;
+#else
+        else break;
+#endif
         lexer_advance(p->lex);
     }
     return flags;
@@ -309,6 +347,30 @@ static void parse_attribute(Parser *p, Type *attach_type) {
                 /* deprecated：透传给 gcc 触发弃用警告（带可选消息字符串） */
                 if (ark_streq(nm, "deprecated") || ark_streq(nm, "__deprecated__")) {
                     g_attr_is_deprecated = 1;
+                }
+                /* 0.6.x：armcc 5 / GNU 兼容属性补充。
+                 *   - pure/const：透传给 gcc，标记函数无副作用。
+                 *   - may_alias/nothrow/visibility/nonnull/warn_unused_result/
+                 *     sentinel/malloc/fastcall/stdcall/cdecl：静默忽略。 */
+                if (ark_streq(nm, "pure") || ark_streq(nm, "__pure__")) {
+                    g_func_is_pure = 1;
+                }
+                if (ark_streq(nm, "const") || ark_streq(nm, "__const__")) {
+                    g_func_is_const_attr = 1;
+                }
+                /* 静默忽略的属性：may_alias/nothrow/visibility/nonnull/
+                 * warn_unused_result/sentinel/malloc/fastcall/stdcall/cdecl */
+                if (ark_streq(nm, "may_alias") || ark_streq(nm, "__may_alias__") ||
+                    ark_streq(nm, "nothrow") || ark_streq(nm, "__nothrow__") ||
+                    ark_streq(nm, "visibility") || ark_streq(nm, "__visibility__") ||
+                    ark_streq(nm, "nonnull") || ark_streq(nm, "__nonnull__") ||
+                    ark_streq(nm, "warn_unused_result") || ark_streq(nm, "__warn_unused_result__") ||
+                    ark_streq(nm, "sentinel") || ark_streq(nm, "__sentinel__") ||
+                    ark_streq(nm, "malloc") || ark_streq(nm, "__malloc__") ||
+                    ark_streq(nm, "fastcall") || ark_streq(nm, "__fastcall__") ||
+                    ark_streq(nm, "stdcall") || ark_streq(nm, "__stdcall__") ||
+                    ark_streq(nm, "cdecl") || ark_streq(nm, "__cdecl__")) {
+                    /* 静默忽略 */
                 }
                 /* noreturn 等静默忽略 */
             }
@@ -581,6 +643,9 @@ static Type *parse_declspec(Parser *p, int *p_storage, int *p_is_typedef) {
     int packed_pending = 0;  /* __packed 关键字独立形式：作用于下一个 struct/union 或指针 */
     int complex_pending = 0; /* B4: _Complex 修饰符 */
     Token tok;
+    /* 每次 declspec 开始时复位 packed 指针标记，避免跨声明/转换泄漏。
+     * 若本 declspec 看到 __packed，循环内会重新置 1。 */
+    g_decl_packed_ptr = 0;
     /* 解析关键字直到不再匹配 */
     for (;;) {
         tok = lexer_peek(p->lex);
@@ -598,9 +663,10 @@ static Type *parse_declspec(Parser *p, int *p_storage, int *p_is_typedef) {
             case TOK_PACKED_KW:
                 /* ARM Compiler 5 风格：__packed 出现在 declspec 中。
                  * 对 struct/union 类型等价于 __attribute__((packed))；
-                 * 对指针类型语义为"按字节访问未对齐目标"，本编译器不实现该
-                 * 访问行为，但保留解析以兼容代码。 */
+                 * 对指针类型（如 __packed int *p）标记为 packed 指针，
+                 * 由 irgen/ARM 后端实现按字节访问未对齐目标的语义。 */
                 packed_pending = 1;
+                g_decl_packed_ptr = 1;
                 lexer_advance(p->lex);
                 saw_kw = 1;
                 continue;
@@ -612,6 +678,23 @@ static Type *parse_declspec(Parser *p, int *p_storage, int *p_is_typedef) {
             case TOK_SIGNED:   sign = 1; lexer_advance(p->lex); saw_kw = 1; continue;
             case TOK_UNSIGNED: sign = 2; lexer_advance(p->lex); saw_kw = 1; continue;
             case TOK_LONG:     long_count++; lexer_advance(p->lex); saw_kw = 1; continue;
+#if ARKCC_FEATURE_ARMCC_KEYWORDS
+            case TOK_TYPEDEF_KW:
+                /* __typedef：等价 typedef */
+                is_td = 1; lexer_advance(p->lex); saw_kw = 1; continue;
+            case TOK_THREAD:
+                /* __thread：线程局部存储。设置存储类标志位 0x10000，
+                 * 由 parse_top_decl/parse_local_var_decl 读取并写入 var.is_tls。
+                 * 不影响类型推导。 */
+                sto |= 0x10000;
+                lexer_advance(p->lex);
+                saw_kw = 1;
+                continue;
+            case TOK_INT8:    lexer_advance(p->lex); if (!base) base = type_char();  saw_kw = 1; continue;
+            case TOK_INT16:   lexer_advance(p->lex); if (!base) base = type_short(); saw_kw = 1; continue;
+            case TOK_INT32:   lexer_advance(p->lex); if (!base) base = type_int();   saw_kw = 1; continue;
+            case TOK_INT64:   lexer_advance(p->lex); if (!base) base = type_llong(); saw_kw = 1; continue;
+#endif
             case TOK_SHORT:    /* 设置 short 标记 */ {
                 lexer_advance(p->lex);
                 if (!base) base = type_short();
@@ -885,6 +968,10 @@ static Type *parse_declarator(Parser *p, Type *base, char **out_name) {
         lexer_advance(p->lex);
         skip_qualifiers(p);
         t = type_pointer(t);
+        /* __packed 指针：标记此指针类型为 packed，irgen/ARM 后端据此
+         * 使用按字节访问而非 LDR/STR，避免未对齐访问异常。
+         * 标志在每个指针层都设置（支持 __packed int **p 这类多重指针）。 */
+        if (g_decl_packed_ptr) t->is_packed = 1;
     }
     /* 可选的带括号声明子（函数指针）：("(" "*" name ")" "(" params ")") */
     if (lexer_peek(p->lex).kind == TOK_LPAREN &&
@@ -994,6 +1081,42 @@ static void parse_at_keyword(Parser *p) {
     }
 }
 
+#if ARKCC_FEATURE_ARMCC_KEYWORDS
+/* __global_reg(n) — ARM Compiler 5 全局寄存器变量声明。
+ * 形如 __global_reg(6) int x; ：返回寄存器号，-1 表示未命中。 */
+static int parse_global_reg(Parser *p) {
+    int reg = -1;
+    if (lexer_peek(p->lex).kind != TOK_GLOBAL_REG) return -1;
+    lexer_advance(p->lex);
+    if (lexer_peek(p->lex).kind == TOK_LPAREN) {
+        lexer_advance(p->lex);
+        if (lexer_peek(p->lex).kind == TOK_NUM) {
+            reg = lexer_peek(p->lex).value;
+            lexer_advance(p->lex);
+        }
+        if (lexer_peek(p->lex).kind == TOK_RPAREN) lexer_advance(p->lex);
+    }
+    return reg;
+}
+
+/* __smc(n) — ARM Compiler 5 SMC（安全监控调用）声明。
+ * 与 __svc(n) 同构，返回编号，0 表示未命中。 */
+static int parse_smc(Parser *p) {
+    int num = 0;
+    if (lexer_peek(p->lex).kind != TOK_SMC) return 0;
+    lexer_advance(p->lex);
+    if (lexer_peek(p->lex).kind == TOK_LPAREN) {
+        lexer_advance(p->lex);
+        if (lexer_peek(p->lex).kind == TOK_NUM) {
+            num = lexer_peek(p->lex).value;
+            lexer_advance(p->lex);
+        }
+        if (lexer_peek(p->lex).kind == TOK_RPAREN) lexer_advance(p->lex);
+    }
+    return num;
+}
+#endif
+
 /* 顶层声明 */
 static AstNode *parse_top_decl(Parser *p) {
     int storage = 0;
@@ -1005,6 +1128,14 @@ static AstNode *parse_top_decl(Parser *p) {
     char *decl_section = 0;       /* 本声明的 section 名（捕获后复位全局） */
     int   is_asm_fn = 0;          /* __asm void fn(){...} 函数体汇编标记 */
     int   decl_align = 0;         /* __align(n) 解析结果 */
+    int   decl_is_tls = 0;        /* __thread 线程局部存储标记 */
+    int   smc_num = -1;           /* __smc(n) 编号；-1=未使用 */
+    int   global_reg_num = -1;    /* __global_reg(n) 寄存器号；-1=未使用 */
+    int   func_is_value_in_regs = 0;
+    int   func_is_pure = 0;
+    int   func_is_const_attr = 0;
+    int   func_is_interwork = 0;
+    int   func_is_deprecated_kw = 0;
     /* 复位 __attribute__ 驱动的函数属性全局，避免跨声明泄漏 */
     g_attr_is_weak = 0; g_attr_is_naked = 0; g_attr_is_irq = 0;
     g_attr_section = 0; g_decl_is_const = 0;
@@ -1014,7 +1145,14 @@ static AstNode *parse_top_decl(Parser *p) {
     g_attr_is_softfp = 0; g_attr_is_forceinline = 0;
     g_attr_has_at = 0; g_attr_at_addr = 0;
     g_attr_is_constructor = 0; g_attr_is_destructor = 0; g_attr_is_deprecated = 0;
+    g_decl_packed_ptr = 0;  /* __packed 指针标记：每个声明开始时复位 */
     g_vla_size_expr = 0;  /* B3: 文件作用域不允许 VLA，复位防泄漏 */
+    /* 0.6.x：复位 armcc 5 兼容函数修饰符全局 */
+    g_func_is_value_in_regs = 0;
+    g_func_is_pure = 0;
+    g_func_is_const_attr = 0;
+    g_func_is_interwork = 0;
+    g_func_is_deprecated_kw = 0;
     /* armcc 风格 __asm void fn(){...} 整函数体汇编：在解析任何其他修饰符前识别 */
     if (lexer_peek(p->lex).kind == TOK_ASM) {
         /* 区分 __asm <type> name(...){...}（函数体汇编）与 __asm("..."); 内联 asm。
@@ -1041,11 +1179,25 @@ static AstNode *parse_top_decl(Parser *p) {
     }
     /* __at(addr)：可出现在 declspec 之前 */
     if (lexer_peek(p->lex).kind == TOK_AT) parse_at_keyword(p);
+#if ARKCC_FEATURE_ARMCC_KEYWORDS
+    /* __global_reg(n)：可出现在 declspec 之前（全局寄存器变量） */
+    if (lexer_peek(p->lex).kind == TOK_GLOBAL_REG) {
+        global_reg_num = parse_global_reg(p);
+    }
+#endif
     func_mods |= parse_func_modifiers(p);  /* 前置 __irq 等（返回类型前） */
     base = parse_declspec(p, &storage, &is_td);
     decl_is_const = g_decl_is_const;
     decl_section = g_attr_section;
     if (g_attr_align_bytes && !decl_align) decl_align = g_attr_align_bytes;
+#if ARKCC_FEATURE_ARMCC_KEYWORDS
+    /* __thread 在 parse_declspec 中设置 storage 的 0x10000 位 */
+    decl_is_tls = (storage & 0x10000) ? 1 : 0;
+    /* 解析后再次检查 __global_reg（可出现在类型后） */
+    if (lexer_peek(p->lex).kind == TOK_GLOBAL_REG && global_reg_num < 0) {
+        global_reg_num = parse_global_reg(p);
+    }
+#endif
     if (!base) {
         perror_at(p, "expected declaration at top level");
         return 0;
@@ -1065,7 +1217,21 @@ static AstNode *parse_top_decl(Parser *p) {
         if (lexer_peek(p->lex).kind == TOK_SVC) {
             svc_num = parse_svc(p);
         }
+#if ARKCC_FEATURE_ARMCC_KEYWORDS
+        /* __smc(n) 出现在类型与声明子之间，与 __svc 同位置 */
+        if (lexer_peek(p->lex).kind == TOK_SMC) {
+            smc_num = parse_smc(p);
+        }
+#endif
         func_mods |= parse_func_modifiers(p);  /* __svc 后 */
+        /* 解析完函数修饰符后捕获 armcc 5 兼容属性 */
+#if ARKCC_FEATURE_ARMCC_KEYWORDS
+        func_is_value_in_regs = g_func_is_value_in_regs;
+        func_is_pure          = g_func_is_pure;
+        func_is_const_attr    = g_func_is_const_attr;
+        func_is_interwork     = g_func_is_interwork;
+        func_is_deprecated_kw = g_func_is_deprecated_kw;
+#endif
         Type *t = parse_declarator(p, base, &name);
         if (!name) {
             perror_at(p, "expected identifier in declaration");
@@ -1117,6 +1283,14 @@ static AstNode *parse_top_decl(Parser *p) {
             if (g_attr_is_irq)   func_mods |= 1;
             if (g_attr_is_weak)  func_mods |= 2;
             if (g_attr_is_naked) func_mods |= 4;
+#if ARKCC_FEATURE_ARMCC_KEYWORDS
+            /* 参数表后再次出现的 armcc 5 兼容修饰符，合并到本地 */
+            if (g_func_is_value_in_regs) func_is_value_in_regs = 1;
+            if (g_func_is_pure)          func_is_pure = 1;
+            if (g_func_is_const_attr)    func_is_const_attr = 1;
+            if (g_func_is_interwork)     func_is_interwork = 1;
+            if (g_func_is_deprecated_kw) func_is_deprecated_kw = 1;
+#endif
             if (lexer_peek(p->lex).kind == TOK_SEMICOLON) {
                 AstNode *n;
                 lexer_advance(p->lex);
@@ -1136,6 +1310,15 @@ static AstNode *parse_top_decl(Parser *p) {
                 n->u.func.is_constructor = g_attr_is_constructor;
                 n->u.func.is_destructor  = g_attr_is_destructor;
                 n->u.func.is_deprecated  = g_attr_is_deprecated;
+#if ARKCC_FEATURE_ARMCC_KEYWORDS
+                n->u.func.is_value_in_regs = func_is_value_in_regs;
+                n->u.func.is_pure          = func_is_pure;
+                n->u.func.is_const_attr    = func_is_const_attr;
+                n->u.func.is_interwork     = func_is_interwork;
+                n->u.func.smc_num          = smc_num;
+                n->u.func.global_reg       = global_reg_num;
+                n->u.func.is_deprecated   |= func_is_deprecated_kw;
+#endif
                 return n;
             }
             /* __asm 函数体汇编：抓取 '{' 到匹配 '}' 之间的原始源码文本，
@@ -1194,6 +1377,15 @@ static AstNode *parse_top_decl(Parser *p) {
                 n->u.func.is_constructor = g_attr_is_constructor;
                 n->u.func.is_destructor  = g_attr_is_destructor;
                 n->u.func.is_deprecated  = g_attr_is_deprecated;
+#if ARKCC_FEATURE_ARMCC_KEYWORDS
+                n->u.func.is_value_in_regs = func_is_value_in_regs;
+                n->u.func.is_pure          = func_is_pure;
+                n->u.func.is_const_attr    = func_is_const_attr;
+                n->u.func.is_interwork     = func_is_interwork;
+                n->u.func.smc_num          = smc_num;
+                n->u.func.global_reg       = global_reg_num;
+                n->u.func.is_deprecated   |= func_is_deprecated_kw;
+#endif
                 return n;
             }
             g_current_func_name = name;
@@ -1214,6 +1406,15 @@ static AstNode *parse_top_decl(Parser *p) {
                 n->u.func.is_constructor = g_attr_is_constructor;
                 n->u.func.is_destructor  = g_attr_is_destructor;
                 n->u.func.is_deprecated  = g_attr_is_deprecated;
+#if ARKCC_FEATURE_ARMCC_KEYWORDS
+                n->u.func.is_value_in_regs = func_is_value_in_regs;
+                n->u.func.is_pure          = func_is_pure;
+                n->u.func.is_const_attr    = func_is_const_attr;
+                n->u.func.is_interwork     = func_is_interwork;
+                n->u.func.smc_num          = smc_num;
+                n->u.func.global_reg       = global_reg_num;
+                n->u.func.is_deprecated   |= func_is_deprecated_kw;
+#endif
                 g_current_func_name = 0;
                 return n;
             }
@@ -1271,6 +1472,10 @@ static AstNode *parse_top_decl(Parser *p) {
                 n->u.var.is_unused  = g_attr_is_unused;
                 n->u.var.has_at     = g_attr_has_at;
                 n->u.var.at_addr    = g_attr_at_addr;
+#if ARKCC_FEATURE_ARMCC_KEYWORDS
+                n->u.var.is_tls     = decl_is_tls;
+                n->u.var.global_reg = global_reg_num;
+#endif
                 /* 处理同行多变量声明 a, b = 2; */
                 while (lexer_peek(p->lex).kind == TOK_COMMA) {
                     char *nm2 = 0;
@@ -1367,6 +1572,10 @@ static AstNode *parse_local_var_decl(Parser *p, Type *base, int storage, int is_
             n->u.var.align_bytes = g_attr_align_bytes;
             n->u.var.is_used    = g_attr_is_used;
             n->u.var.is_unused  = g_attr_is_unused;
+#if ARKCC_FEATURE_ARMCC_KEYWORDS
+            /* __thread 局部变量（TLS 标记，仅静态局部有意义） */
+            n->u.var.is_tls = (storage & 0x10000) ? 1 : 0;
+#endif
 #if ARKCC_FEATURE_VLA
             /* B3: 取用 parse_declarator 记录的 VLA 尺寸表达式 */
             if (g_vla_size_expr && g_config.enable_vla) {
@@ -1412,6 +1621,7 @@ static AstNode *parse_statement(Parser *p) {
         g_decl_is_const = 0; g_attr_section = 0;
         g_attr_align_bytes = 0;
         g_attr_is_used = 0; g_attr_is_unused = 0;
+        g_decl_packed_ptr = 0;
         /* __align(n) 出现在局部声明前 */
         if (lexer_peek(p->lex).kind == TOK_ALIGN_KW) {
             lexer_advance(p->lex);

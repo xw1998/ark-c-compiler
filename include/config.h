@@ -20,7 +20,18 @@ typedef struct {
     int enable_opt_regalloc;
     int opt_level;          /* 0=无优化, 1=基础, 2=激进 */
     int debug_info;         /* 0=无, 1=DWARF */
+    int split_sections;     /* -ffunction-sections：每函数一段 */
     const char *config_file; /* 配置文件路径 */
+    /* === 0.6.x 新增：armcc 5 兼容运行时开关 === */
+    int enum_is_int;          /* --enum_is_int / -fenum-is-int：enum 强制为 int */
+    int dollar_in_identifiers;/* --dollar：$ 作为标识符字符 */
+    int signed_chars;         /* --signed_chars：char 默认带符号 */
+    int unsigned_chars;       /* --unsigned_chars：char 默认无符号 */
+    int wchar16;              /* --wchar16：wchar_t 为 16 位 */
+    int wchar32;              /* --wchar32：wchar_t 为 32 位 */
+    int dwarf_version;        /* --dwarf2=2 / --dwarf3=3；0=默认 */
+    const char *scatter_file; /* --scatter <file>：scatter 加载描述文件 */
+    const char *fpu_type;     /* --fpu <name>：FPU 类型名 */
 } ArkccConfig;
 
 extern ArkccConfig g_config;

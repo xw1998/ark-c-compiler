@@ -26,5 +26,8 @@
 #define ARKCC_FEATURE_ARMCC_ASM_FUNC  1  /* __asm 函数体 */
 #define ARKCC_FEATURE_ARMCC_PRAGMA    1  /* #pragma 兼容 */
 #define ARKCC_FEATURE_ARMCC_KEYWORDS  1  /* __irq/__weak/__naked 等 */
+#define ARKCC_FEATURE_ENUM_IS_INT     1  /* --enum_is_int / -fenum-is-int */
+#define ARKCC_FEATURE_SCATTER         1  /* scatter 加载描述文件解析 */
+#define ARKCC_FEATURE_DWARF_FULL      1  /* 完整 .debug_info/.debug_abbrev/.debug_line */
 
 #endif /* ARKCC_CONFIG_H */

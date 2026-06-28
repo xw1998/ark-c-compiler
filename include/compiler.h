@@ -22,6 +22,11 @@ typedef struct {
     int         opt_level;        /* -O0/-O1/-O2，目前接受但忽略 */
     int         debug_info;       /* -g 接受但忽略 */
     int         no_unused_warn;   /* -Wno-unused */
+    /* === 0.6.0 扩展：armcc 5 兼容 === */
+    const char *cpu;            /* --cpu/-mcpu 目标 CPU 名（如 Cortex-M4） */
+    int         gen_depend;     /* -MMD/--depend 生成依赖文件 */
+    const char *depend_file;    /* -MF 依赖文件输出路径 */
+    int         split_sections; /* -ffunction-sections/--split_sections 每函数一段 */
 } ArkOptions;
 
 int ark_compile(const ArkOptions *opts);

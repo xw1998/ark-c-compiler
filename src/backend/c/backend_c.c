@@ -114,6 +114,16 @@ static void emit_func_proto(AsmBuffer *b, IrFunc *f) {
     if (f->is_constructor) asmbuf_puts(b, "__attribute__((constructor)) ");
     if (f->is_destructor)  asmbuf_puts(b, "__attribute__((destructor)) ");
     if (f->is_deprecated)  asmbuf_puts(b, "__attribute__((deprecated)) ");
+#if ARKCC_FEATURE_ARMCC_KEYWORDS
+    /* armcc 5 兼容函数属性透传给 gcc：
+     *   __pure            -> __attribute__((pure))
+     *   __attribute__((const)) -> __attribute__((const))
+     *   __value_in_regs   -> 仅注释（gcc 用寄存器结构体返回约定，无直接对应属性）
+     *   __interwork       -> 仅注释（ARM/Thumb 互调用，host 无意义）
+     *   __smc(n)          -> 仅注释（安全监控调用，host 无意义） */
+    if (f->is_pure)       asmbuf_puts(b, "__attribute__((pure)) ");
+    if (f->is_const_attr) asmbuf_puts(b, "__attribute__((const)) ");
+#endif
     if (f->alias_target) {
         /* alias 声明：__attribute__((alias("ark_xxx"))) */
         asmbuf_puts(b, "__attribute__((alias(\"ark_");
@@ -130,6 +140,20 @@ static void emit_func_proto(AsmBuffer *b, IrFunc *f) {
     }
     asmbuf_puts(b, ");");
     if (f->is_irq) asmbuf_puts(b, " /* __irq */");
+#if ARKCC_FEATURE_ARMCC_KEYWORDS
+    if (f->is_value_in_regs) asmbuf_puts(b, " /* __value_in_regs */");
+    if (f->is_interwork)     asmbuf_puts(b, " /* __interwork */");
+    if (f->smc_num > 0) {
+        asmbuf_puts(b, " /* __smc(");
+        asmbuf_int(b, f->smc_num);
+        asmbuf_puts(b, ") */");
+    }
+    if (f->global_reg >= 0) {
+        asmbuf_puts(b, " /* __global_reg(");
+        asmbuf_int(b, f->global_reg);
+        asmbuf_puts(b, ") */");
+    }
+#endif
     asmbuf_putc(b, '\n');
 }
 
@@ -349,6 +373,10 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
             /* 存储类 */
             if (g->is_extern) asmbuf_puts(&buf, "extern ");
             else if (g->is_static) asmbuf_puts(&buf, "static ");
+#if ARKCC_FEATURE_ARMCC_KEYWORDS
+            /* __thread：线程局部存储，透传给 gcc（host 上由 gcc/libpthread 处理） */
+            if (g->is_tls && !g->is_extern) asmbuf_puts(&buf, "__thread ");
+#endif
             /* const 限定符：让 gcc 把全局放到 .rodata 段 */
             if (g->is_const && !g->is_extern) asmbuf_puts(&buf, "const ");
             /* 类型 + 名字（含数组维度、指针 * 等） */
@@ -375,6 +403,14 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
                 }
                 asmbuf_puts(&buf, ") */");
             }
+#if ARKCC_FEATURE_ARMCC_KEYWORDS
+            /* __global_reg(n)：host 上无法绑定全局寄存器；仅注释 */
+            if (g->global_reg >= 0) {
+                asmbuf_puts(&buf, " /* __global_reg(");
+                asmbuf_int(&buf, g->global_reg);
+                asmbuf_puts(&buf, ") */");
+            }
+#endif
             /* 自定义段：__attribute__((section("..."))) */
             if (g->section && !g->is_extern) {
                 asmbuf_puts(&buf, " __attribute__((section(\"");
@@ -473,6 +509,23 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
         if (f->is_constructor) asmbuf_puts(&buf, "__attribute__((constructor)) ");
         if (f->is_destructor)  asmbuf_puts(&buf, "__attribute__((destructor)) ");
         if (f->is_deprecated)  asmbuf_puts(&buf, "__attribute__((deprecated)) ");
+#if ARKCC_FEATURE_ARMCC_KEYWORDS
+        if (f->is_pure)       asmbuf_puts(&buf, "__attribute__((pure)) ");
+        if (f->is_const_attr) asmbuf_puts(&buf, "__attribute__((const)) ");
+        if (f->is_value_in_regs) asmbuf_puts(&buf, "/* __value_in_regs */ ");
+        if (f->is_interwork)     asmbuf_puts(&buf, "/* __interwork */ ");
+        if (f->smc_num > 0) {
+            asmbuf_puts(&buf, "/* __smc(");
+            asmbuf_int(&buf, f->smc_num);
+            asmbuf_puts(&buf, ") */ ");
+        }
+#endif
+        /* --split_sections/-ffunction-sections：每函数独立段，透传给 gcc */
+        if (g_config.split_sections) {
+            asmbuf_puts(&buf, "__attribute__((section(\".text.");
+            asmbuf_puts(&buf, f->name);
+            asmbuf_puts(&buf, "\"))) ");
+        }
         asmbuf_puts(&buf, f->is_static ? "static long long ark_" : "long long ark_");
         asmbuf_puts(&buf, f->name);
         asmbuf_puts(&buf, "(");

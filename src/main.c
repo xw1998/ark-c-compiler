@@ -2,11 +2,14 @@
  * 用法：arkcc <file.c> [-o output] [-S] [-v] [-target name] [-I dir] [--list-backends]
  *       新增：-c / -E / -link a.o b.o / -O0|1|2 / -g / -Wno-unused
  *             -config <file> / -f<feature> / -fno-<feature>
+ *             --enum_is_int / --dollar / --dwarf2 / --dwarf3 / --scatter <file>
  */
 #include "compiler.h"
 #include "platform.h"
 #include "common.h"
 #include "config.h"
+#include "scatter.h"
+#include "arkcc_config.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -28,6 +31,10 @@ static void usage(void) {
         "  -config <file>     load arkcc INI config file\n"
         "  -f<feature>        enable feature (vla/complex/wchar/trigraph/fpu/dwarf/...)\n"
         "  -fno-<feature>     disable feature\n"
+        "  -mcpu <name>       target CPU (Cortex-M0/M3/M4/M7/M33...); alias: --cpu\n"
+        "  -MMD               generate dependency file; alias: --depend\n"
+        "  -MF <file>         dependency output path (use with -MMD)\n"
+        "  -ffunction-sections  one section per function; alias: --split_sections\n"
         "  --list-backends    print available backends and exit\n"
         "  -h, --help         this message\n",
         ARK_VERSION);
@@ -59,6 +66,10 @@ static void reset_opts(ArkOptions *o) {
     o->opt_level = 0;
     o->debug_info = 0;
     o->no_unused_warn = 0;
+    o->cpu = 0;
+    o->gen_depend = 0;
+    o->depend_file = 0;
+    o->split_sections = 0;
 }
 
 int main(int argc, char **argv) {
@@ -105,6 +116,28 @@ int main(int argc, char **argv) {
         else if (a[0] == '-' && a[1] == 'f') {
             /* -fxxx / -fno-xxx：已由 config_apply_args 处理，此处静默接受 */
         }
+        else if (strcmp(a, "--enum_is_int") == 0 || strcmp(a, "-fenum-is-int") == 0 ||
+                 strcmp(a, "--dollar") == 0 ||
+                 strcmp(a, "--signed_chars") == 0 || strcmp(a, "--unsigned_chars") == 0 ||
+                 strcmp(a, "--wchar16") == 0 || strcmp(a, "--wchar32") == 0 ||
+                 strcmp(a, "--dwarf2") == 0 || strcmp(a, "--dwarf3") == 0 ||
+                 strcmp(a, "--thumb") == 0 || strcmp(a, "--arm") == 0 ||
+                 strcmp(a, "--remarks") == 0 || strcmp(a, "--autoinline") == 0 ||
+                 strcmp(a, "--no_autoinline") == 0 || strcmp(a, "--vectorize") == 0 ||
+                 strcmp(a, "--no_vectorize") == 0 || strcmp(a, "--library_type") == 0 ||
+                 strcmp(a, "--locale") == 0 || strcmp(a, "--multibyte_chars") == 0 ||
+                 strcmp(a, "--data_reorder") == 0 || strcmp(a, "--diag_style") == 0 ||
+                 strcmp(a, "--remove_unneeded_entities") == 0) {
+            /* armcc 5 兼容选项：已由 config_apply_args 处理或静默忽略 */
+        }
+        else if (strcmp(a, "--scatter") == 0 && i + 1 < argc) {
+            /* --scatter <file>：已由 config_apply_args 记录路径，此处跳过参数 */
+            i++;
+        }
+        else if (strcmp(a, "--fpu") == 0 && i + 1 < argc) {
+            /* --fpu <name>：已由 config_apply_args 处理，此处跳过参数 */
+            i++;
+        }
         else if (strcmp(a, "-o") == 0 && i + 1 < argc) {
             opts.output_path = argv[++i];
         }
@@ -115,6 +148,19 @@ int main(int argc, char **argv) {
             if (opts.include_dir_count < 16)
                 opts.include_dirs[opts.include_dir_count++] = argv[++i];
             else i++;
+        }
+        else if (strcmp(a, "-mcpu") == 0 || strcmp(a, "--cpu") == 0) {
+            if (i + 1 < argc) opts.cpu = argv[++i];
+        }
+        else if (strcmp(a, "-MMD") == 0 || strcmp(a, "--depend") == 0) {
+            opts.gen_depend = 1;
+        }
+        else if (strcmp(a, "-MF") == 0 && i + 1 < argc) {
+            opts.depend_file = argv[++i];
+        }
+        else if (strcmp(a, "-ffunction-sections") == 0 ||
+                 strcmp(a, "--split_sections") == 0) {
+            opts.split_sections = 1;
         }
         else if (strcmp(a, "-link") == 0) {
             opts.link_mode = 1;
@@ -145,6 +191,19 @@ int main(int argc, char **argv) {
         usage();
         return 1;
     }
+#if ARKCC_FEATURE_SCATTER
+    /* --scatter <file>：解析 ARM scatter 加载描述文件，校验语法并记录区域。
+     * 解析结果当前仅打印到日志（arkcc 不内置链接器），供调试与未来扩展。 */
+    if (g_config.scatter_file) {
+        ScatterDesc sd;
+        sd.load_regions = 0;
+        sd.error_count = 0;
+        if (scatter_parse_file(g_config.scatter_file, &sd) == 0) {
+            if (opts.verbose) scatter_dump(&sd);
+        }
+        scatter_free(&sd);
+    }
+#endif
     rc = ark_compile(&opts);
     if (rc != ARK_OK) {
         fprintf(stderr, "[arkcc] failed with code %d\n", rc);

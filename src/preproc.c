@@ -77,6 +77,11 @@ static int    g_inc_depth;
 static const char *g_inc_dirs[PP_MAX_INC_DIRS];
 static int    g_inc_dir_count;
 static char   g_main_file[256];
+/* 已 include 文件路径列表：用于 -MMD 依赖文件生成。
+ * 仅保存成功 include 过的文件（resolve 后的实际路径或原始参数）。 */
+#define PP_MAX_INC_FILES 64
+static const char *g_inc_files[PP_MAX_INC_FILES];
+static int         g_inc_file_count;
 /* #pragma pack(push/pop) 栈：保存历史对齐值以便恢复 */
 static int    g_pack_stack[PP_PACK_STACK];
 static int    g_pack_top;
@@ -151,8 +156,20 @@ void preproc_reset(void) {
     g_inc_depth = 0;
     g_inc_dir_count = 0;
     g_main_file[0] = 0;
+    g_inc_file_count = 0;
     g_pack_top = 0;
     type_set_pack(0);
+}
+
+/* 公开接口：定义/取消对象宏。供 cpu.c 等模块在 preproc_process 之前调用。
+ * 同名旧宏会被先移除再添加，确保 body 是最新值。 */
+void preproc_define(const char *name, const char *body) {
+    remove_macro(name);
+    add_object_macro(name, body);
+}
+
+void preproc_undef(const char *name) {
+    remove_macro(name);
 }
 
 void preproc_add_include_dir(const char *dir) {
@@ -613,6 +630,11 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
                         if (rd < 0) {
                             ark_log("[preproc] cannot include '%s'\n", path);
                         } else {
+                            /* 记录依赖文件：供 -MMD 依赖文件生成使用。
+                             * 用 mem_strdup 持久化路径字符串（来自内存池）。 */
+                            if (g_inc_file_count < PP_MAX_INC_FILES) {
+                                g_inc_files[g_inc_file_count++] = mem_strdup(path);
+                            }
                             g_inc_depth++;
                             process(inc_buf, out, out_len, out_cap);
                             g_inc_depth--;
@@ -972,6 +994,9 @@ char *preproc_process(const char *src) {
      * 这里仅追加普通对象宏。 */
     if (!find_macro("__arm__"))             add_object_macro("__arm__", "1");
     if (!find_macro("__thumb__"))           add_object_macro("__thumb__", "2");
+    /* armcc 5 同时定义有下划线和无下划线版本；__arm/__thumb 用于源码兼容检测 */
+    if (!find_macro("__arm"))               add_object_macro("__arm", "1");
+    if (!find_macro("__thumb"))             add_object_macro("__thumb", "2");
     if (!find_macro("__ARMCC_VERSION"))     add_object_macro("__ARMCC_VERSION", "5060750");
     if (!find_macro("__TARGET_ARCH_7_M"))   add_object_macro("__TARGET_ARCH_7_M", "1");
     if (!find_macro("__TARGET_ARCH_7E_M"))  add_object_macro("__TARGET_ARCH_7E_M", "1");
@@ -980,7 +1005,32 @@ char *preproc_process(const char *src) {
     if (!find_macro("__LITTLE_ENDIAN__"))   add_object_macro("__LITTLE_ENDIAN__", "1");
     if (!find_macro("__sizeof_int"))        add_object_macro("__sizeof_int", "4");
     if (!find_macro("__sizeof_ptr"))        add_object_macro("__sizeof_ptr", "4");
+    /* C99 标准预定义宏：arkcc 实现的是 C99 子集，标记为 hosted=0
+     * （目标为裸机 STM32，无操作系统宿主环境）。 */
+    if (!find_macro("__STDC_VERSION__"))    add_object_macro("__STDC_VERSION__", "199901L");
+    if (!find_macro("__STDC_HOSTED__"))     add_object_macro("__STDC_HOSTED__", "0");
+    /* C99 <stddef.h> 类型推导宏：arkcc 把 size_t 定义为 unsigned int，
+     * ptrdiff_t 为 int，wchar_t 为 unsigned int。供头文件与用户代码检测。 */
+    if (!find_macro("__SIZE_TYPE__"))       add_object_macro("__SIZE_TYPE__", "unsigned int");
+    if (!find_macro("__PTRDIFF_TYPE__"))    add_object_macro("__PTRDIFF_TYPE__", "int");
+    if (!find_macro("__WCHAR_TYPE__"))      add_object_macro("__WCHAR_TYPE__", "unsigned int");
+    /* armcc 5 兼容：EDG 前端标识与 APCS interwork 标记。
+     * __EDG__ 标识编译器基于 EDG 前端（armcc 5 即如此）；
+     * __APCS_INTERWORK 标识 ARM/Thumb 互调用支持已启用。 */
+    if (!find_macro("__EDG__"))             add_object_macro("__EDG__", "1");
+    if (!find_macro("__APCS_INTERWORK"))    add_object_macro("__APCS_INTERWORK", "1");
     process(src_ptr, out, &out_len, PP_BUF_SIZE - 1);
     out[out_len] = 0;
     return out;
+}
+
+/* 返回预处理过程中成功 include 过的文件路径列表。
+ * 路径为 #include 后原始字符串（可能是相对路径或 <...> 内的名字）。
+ * 调用方提供 out 数组与容量 max_count，返回实际填入的项数。 */
+int preproc_get_included_files(const char **out, int max_count) {
+    int i;
+    int n = g_inc_file_count;
+    if (n > max_count) n = max_count;
+    for (i = 0; i < n; i++) out[i] = g_inc_files[i];
+    return n;
 }
