@@ -6,6 +6,10 @@
 
 #define IR_INIT_CAP 64
 
+/* 当前发射行号；irgen 在每次 ir_emit 前设置，ir.c 拷贝到 IrInst.line。
+ * 默认 0 表示行号未知（非 irgen 路径）。 */
+int g_ir_cur_line = 0;
+
 IrFunc *ir_func_new(const char *name) {
     IrFunc *f = (IrFunc *)mem_pool_alloc(sizeof(IrFunc));
     f->name = mem_strdup(name);
@@ -50,6 +54,7 @@ void ir_emit(IrFunc *f, IrOp op, int val, const char *name, int aux) {
         I->val = val;
         I->name = name ? mem_strdup(name) : 0;
         I->aux = aux;
+        I->line = g_ir_cur_line;
     }
 }
 
@@ -64,6 +69,7 @@ IrProgram *ir_program_new(void) {
     p->floats = 0;
     p->float_count = 0;
     p->float_capacity = 0;
+    p->source_file = 0;
     return p;
 }
 
@@ -95,6 +101,7 @@ int ir_program_add_string(IrProgram *prog, const char *data, int len) {
     IrString *s = (IrString *)mem_pool_alloc(sizeof(IrString));
     s->id = n;
     s->len = len;
+    s->is_wide = 0;
     s->data = (char *)mem_pool_alloc(len + 1);
     {
         int i;
@@ -187,6 +194,7 @@ const char *ir_op_name(IrOp op) {
         case IR_STORE_FLD:    return "STORE_FLD";
         case IR_LOAD_FLD:     return "LOAD_FLD";
         case IR_PUSH_GLOBAL_ADDR: return "PUSH_GLOBAL_ADDR";
+        case IR_ALLOCA:       return "ALLOCA";
         default:              return "NOP";
     }
 }

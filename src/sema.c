@@ -329,11 +329,12 @@ static void sema_stmt(AstNode *node) {
     switch (node->kind) {
         case AST_BLOCK: {
             int i;
-            sym_enter_scope();
+            /* 声明块（逗号分隔的局部变量声明）不创建嵌套作用域 */
+            if (!node->u.block.is_decl_list) sym_enter_scope();
             for (i = 0; i < node->u.block.stmt_count; i++) {
                 sema_stmt(node->u.block.stmts[i]);
             }
-            sym_leave_scope();
+            if (!node->u.block.is_decl_list) sym_leave_scope();
             break;
         }
         case AST_VAR_DECL: {

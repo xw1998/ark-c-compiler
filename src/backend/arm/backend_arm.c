@@ -13,6 +13,8 @@
 #include "memory.h"
 #include "platform.h"
 #include "common.h"
+#include "config.h"
+#include "arkcc_config.h"
 
 /* --- 内部 helper: 输出常用指令片段 --- */
 static void emit_line(AsmBuffer *b, const char *s) {
@@ -47,6 +49,44 @@ static void emit_mov_imm(AsmBuffer *b, int rd, int imm) {
 static void emit_push_r0(AsmBuffer *b) { emit_line(b, "PUSH {r0}"); }
 static void emit_pop_r0(AsmBuffer *b)  { emit_line(b, "POP {r0}");  }
 static void emit_pop_r1(AsmBuffer *b)  { emit_line(b, "POP {r1}");  }
+
+#if ARKCC_FEATURE_FPU_HW
+/* 硬件 VFP 浮点路径辅助函数。
+ * 约定：浮点值在栈上以整数位模式存放（单精度=1 槽，双精度=2 槽低/高）。
+ * 弹出操作数到 r0/r1（单）或 r0/r1+r2/r3（双），经 VMOV 送入 VFP 寄存器，
+ * 执行 VFP 运算后用 VMOV 取回 r0（单）或 r0/r1（双）压栈。 */
+
+/* 单精度二元运算：弹出 b(s1)、a(s0)，发射 VOP.F32 s0,s0,s1，结果 s0 压栈。 */
+static void emit_vfp_f32_binop(AsmBuffer *b, const char *vop) {
+    emit_pop_r1(b); emit_pop_r0(b);
+    emit_line(b, "VMOV s0, r0");
+    emit_line(b, "VMOV s1, r1");
+    asmbuf_puts(b, "    ");
+    asmbuf_puts(b, vop);
+    asmbuf_puts(b, ".F32 s0, s0, s1\n");
+    emit_line(b, "VMOV r0, s0");
+    emit_push_r0(b);
+}
+
+/* 双精度二元运算：弹出 b(d1)、a(d0)，发射 VOP.F64 d0,d0,d1，结果 d0 压栈。 */
+static void emit_vfp_f64_binop(AsmBuffer *b, const char *vop) {
+    emit_line(b, "POP {r3}");  /* b_high */
+    emit_line(b, "POP {r2}");  /* b_low  */
+    emit_line(b, "POP {r1}");  /* a_high */
+    emit_line(b, "POP {r0}");  /* a_low  */
+    emit_line(b, "VMOV s0, r0");
+    emit_line(b, "VMOV s1, r1");
+    emit_line(b, "VMOV s2, r2");
+    emit_line(b, "VMOV s3, r3");
+    asmbuf_puts(b, "    ");
+    asmbuf_puts(b, vop);
+    asmbuf_puts(b, ".F64 d0, d0, d1\n");
+    emit_line(b, "VMOV r0, s0");
+    emit_line(b, "VMOV r1, s1");
+    emit_push_r0(b);
+    asmbuf_puts(b, "    PUSH {r1}\n");
+}
+#endif /* ARKCC_FEATURE_FPU_HW */
 
 static void emit_label(AsmBuffer *b, const char *fn, int n) {
     asmbuf_puts(b, ".L_");
@@ -154,9 +194,10 @@ static void emit_unary(AsmBuffer *b, int op) {
 }
 
 static void emit_prologue(AsmBuffer *b, const char *fn_name, int local_size,
-                          int is_irq, int is_naked) {
+                          int is_irq, int is_naked, int dbg) {
     asmbuf_puts(b, fn_name);
     asmbuf_puts(b, ":\n");
+    if (dbg) emit_line(b, ".cfi_startproc");
     if (is_naked) {
         /* __naked：不生成任何序言，函数体由用户全权负责 */
         return;
@@ -199,11 +240,25 @@ static void emit_epilogue_return(AsmBuffer *b, int local_size,
 static char *codegen_arm(IrProgram *prog) {
     AsmBuffer buf;
     int fi;
+#if ARKCC_FEATURE_DWARF
+    int dbg = (g_config.debug_info || g_config.enable_dwarf) ? 1 : 0;
+#else
+    int dbg = 0;
+#endif
     asmbuf_init(&buf);
 
     asmbuf_puts(&buf, "; Ark C Compiler - generated Thumb-2 assembly\n");
     asmbuf_puts(&buf, ".thumb\n");
     asmbuf_puts(&buf, ".text\n\n");
+
+#if ARKCC_FEATURE_DWARF
+    /* DWARF：声明源文件，供后续 .loc 1 <line> 引用 */
+    if (dbg && prog->source_file) {
+        asmbuf_puts(&buf, ".file 1 \"");
+        asmbuf_puts(&buf, prog->source_file);
+        asmbuf_puts(&buf, "\"\n");
+    }
+#endif
 
     /* 字符串字面量段 */
     if (prog->string_count > 0) {
@@ -337,10 +392,28 @@ static char *codegen_arm(IrProgram *prog) {
             asmbuf_putc(&buf, '\n');
             continue;
         }
-        emit_prologue(&buf, f->name, local_size, f->is_irq, f->is_naked);
+#if ARKCC_FEATURE_DWARF
+        if (dbg) {
+            asmbuf_puts(&buf, ".type ");
+            asmbuf_puts(&buf, f->name);
+            asmbuf_puts(&buf, ", %function\n");
+        }
+#endif
+        emit_prologue(&buf, f->name, local_size, f->is_irq, f->is_naked, dbg);
 
+        {
+        int cur_line = 0;
         for (i = 0; i < f->code_count; i++) {
             IrInst *I = &f->code[i];
+#if ARKCC_FEATURE_DWARF
+            /* DWARF：行号变化时发射 .loc 1 <line> */
+            if (dbg && I->line != 0 && I->line != cur_line) {
+                cur_line = I->line;
+                asmbuf_puts(&buf, ".loc 1 ");
+                asmbuf_int(&buf, cur_line);
+                asmbuf_putc(&buf, '\n');
+            }
+#endif
             switch (I->op) {
                 case IR_FUNC_BEGIN:
                 case IR_FUNC_END:
@@ -527,6 +600,13 @@ static char *codegen_arm(IrProgram *prog) {
                 }
                 case IR_FADD: {
                     int is_dbl = (I->aux & 0x200) != 0;
+#if ARKCC_FEATURE_FPU_HW
+                    if (g_config.enable_fpu_hw) {
+                        if (is_dbl) emit_vfp_f64_binop(&buf, "VADD");
+                        else        emit_vfp_f32_binop(&buf, "VADD");
+                        break;
+                    }
+#endif
                     if (is_dbl) {
                         emit_line(&buf, "POP {r3}");
                         emit_line(&buf, "POP {r2}");
@@ -544,6 +624,13 @@ static char *codegen_arm(IrProgram *prog) {
                 }
                 case IR_FSUB: {
                     int is_dbl = (I->aux & 0x200) != 0;
+#if ARKCC_FEATURE_FPU_HW
+                    if (g_config.enable_fpu_hw) {
+                        if (is_dbl) emit_vfp_f64_binop(&buf, "VSUB");
+                        else        emit_vfp_f32_binop(&buf, "VSUB");
+                        break;
+                    }
+#endif
                     if (is_dbl) {
                         emit_line(&buf, "POP {r3}");
                         emit_line(&buf, "POP {r2}");
@@ -561,6 +648,13 @@ static char *codegen_arm(IrProgram *prog) {
                 }
                 case IR_FMUL: {
                     int is_dbl = (I->aux & 0x200) != 0;
+#if ARKCC_FEATURE_FPU_HW
+                    if (g_config.enable_fpu_hw) {
+                        if (is_dbl) emit_vfp_f64_binop(&buf, "VMUL");
+                        else        emit_vfp_f32_binop(&buf, "VMUL");
+                        break;
+                    }
+#endif
                     if (is_dbl) {
                         emit_line(&buf, "POP {r3}");
                         emit_line(&buf, "POP {r2}");
@@ -578,6 +672,13 @@ static char *codegen_arm(IrProgram *prog) {
                 }
                 case IR_FDIV: {
                     int is_dbl = (I->aux & 0x200) != 0;
+#if ARKCC_FEATURE_FPU_HW
+                    if (g_config.enable_fpu_hw) {
+                        if (is_dbl) emit_vfp_f64_binop(&buf, "VDIV");
+                        else        emit_vfp_f32_binop(&buf, "VDIV");
+                        break;
+                    }
+#endif
                     if (is_dbl) {
                         emit_line(&buf, "POP {r3}");
                         emit_line(&buf, "POP {r2}");
@@ -596,6 +697,26 @@ static char *codegen_arm(IrProgram *prog) {
                 case IR_F2I: {
                     /* float/double -> int（向零截断） */
                     int is_dbl = (I->aux & 0x200) != 0;
+#if ARKCC_FEATURE_FPU_HW
+                    if (g_config.enable_fpu_hw) {
+                        if (is_dbl) {
+                            /* double: 弹出 d0，VCVT.S32.F64 s0,d0，取回 r0 */
+                            emit_line(&buf, "POP {r1}");  /* high */
+                            emit_line(&buf, "POP {r0}");  /* low */
+                            emit_line(&buf, "VMOV s0, r0");
+                            emit_line(&buf, "VMOV s1, r1");
+                            emit_line(&buf, "VCVT.S32.F64 s0, d0");
+                            emit_line(&buf, "VMOV r0, s0");
+                        } else {
+                            emit_pop_r0(&buf);
+                            emit_line(&buf, "VMOV s0, r0");
+                            emit_line(&buf, "VCVT.S32.F32 s0, s0");
+                            emit_line(&buf, "VMOV r0, s0");
+                        }
+                        emit_push_r0(&buf);
+                        break;
+                    }
+#endif
                     if (is_dbl) {
                         emit_line(&buf, "POP {r1}");
                         emit_line(&buf, "POP {r0}");
@@ -610,6 +731,24 @@ static char *codegen_arm(IrProgram *prog) {
                 case IR_I2F: {
                     /* int -> float/double */
                     int is_dbl = (I->aux & 0x200) != 0;
+#if ARKCC_FEATURE_FPU_HW
+                    if (g_config.enable_fpu_hw) {
+                        emit_pop_r0(&buf);
+                        emit_line(&buf, "VMOV s0, r0");
+                        if (is_dbl) {
+                            emit_line(&buf, "VCVT.F64.S32 d0, s0");
+                            emit_line(&buf, "VMOV r0, s0");
+                            emit_line(&buf, "VMOV r1, s1");
+                            emit_push_r0(&buf);
+                            asmbuf_puts(&buf, "    PUSH {r1}\n");
+                        } else {
+                            emit_line(&buf, "VCVT.F32.S32 s0, s0");
+                            emit_line(&buf, "VMOV r0, s0");
+                            emit_push_r0(&buf);
+                        }
+                        break;
+                    }
+#endif
                     emit_pop_r0(&buf);
                     if (is_dbl) {
                         emit_line(&buf, "BL __aeabi_i2d");
@@ -626,6 +765,47 @@ static char *codegen_arm(IrProgram *prog) {
                      * __aeabi_fcmpeq 与 __aeabi_dcmpeq 等系列返回 0/1 */
                     int op = I->aux & ~0x200;
                     int is_dbl = (I->aux & 0x200) != 0;
+#if ARKCC_FEATURE_FPU_HW
+                    if (g_config.enable_fpu_hw) {
+                        const char *cond = "EQ";
+                        if (is_dbl) {
+                            emit_line(&buf, "POP {r3}");
+                            emit_line(&buf, "POP {r2}");
+                            emit_line(&buf, "POP {r1}");
+                            emit_line(&buf, "POP {r0}");
+                            emit_line(&buf, "VMOV s0, r0");
+                            emit_line(&buf, "VMOV s1, r1");
+                            emit_line(&buf, "VMOV s2, r2");
+                            emit_line(&buf, "VMOV s3, r3");
+                            emit_line(&buf, "VCMP.F64 d0, d1");
+                        } else {
+                            emit_pop_r1(&buf); emit_pop_r0(&buf);
+                            emit_line(&buf, "VMOV s0, r0");
+                            emit_line(&buf, "VMOV s1, r1");
+                            emit_line(&buf, "VCMP.F32 s0, s1");
+                        }
+                        emit_line(&buf, "VMRS APSR_nzcv, FPSCR");
+                        emit_mov_imm(&buf, 0, 0);
+                        switch (op) {
+                            case (int)TOK_EQ: cond = "EQ"; break;
+                            case (int)TOK_NE: cond = "NE"; break;
+                            case (int)TOK_LT: cond = "LT"; break;
+                            case (int)TOK_GT: cond = "GT"; break;
+                            case (int)TOK_LE: cond = "LE"; break;
+                            case (int)TOK_GE: cond = "GE"; break;
+                            default: cond = "EQ"; break;
+                        }
+                        asmbuf_puts(&buf, "    IT ");
+                        asmbuf_puts(&buf, cond);
+                        asmbuf_putc(&buf, '\n');
+                        asmbuf_puts(&buf, "    MOV");
+                        asmbuf_puts(&buf, cond);
+                        asmbuf_puts(&buf, " r0, #1\n");
+                        emit_push_r0(&buf);
+                        break;
+                    }
+#endif
+                    {
                     const char *helper = "__aeabi_fcmpeq";
                     switch (op) {
                         case (int)TOK_EQ: helper = is_dbl ? "__aeabi_dcmpeq" : "__aeabi_fcmpeq"; break;
@@ -651,6 +831,7 @@ static char *codegen_arm(IrProgram *prog) {
                     if (op == (int)TOK_NE) emit_line(&buf, "EOR r0, r0, #1");
                     emit_push_r0(&buf);
                     break;
+                    }
                 }
                 case IR_ASM:
                     /* 内联汇编原样写出。
@@ -855,12 +1036,37 @@ static char *codegen_arm(IrProgram *prog) {
                 case IR_RETURN:
                     emit_epilogue_return(&buf, local_size, f->is_irq, f->is_naked);
                     break;
+                case IR_ALLOCA: {
+                    /* B3: VLA 动态栈分配。弹栈取字节数（已在 r0），
+                     * 按 8 字节对齐下调 sp，压入分配区首地址。
+                     * ARM 测试仅做汇编生成检查；运行时语义由 C 后端承担。 */
+                    emit_pop_r0(&buf);                  /* r0 = 字节数 */
+                    emit_line(&buf, "ADD r0, r0, #7");
+                    emit_line(&buf, "BIC r0, r0, #7");  /* 8 字节对齐 */
+                    emit_line(&buf, "SUB sp, sp, r0");  /* 分配 */
+                    emit_push_r0(&buf);                 /* 占位：保持栈平衡 */
+                    emit_line(&buf, "MOV r0, sp");
+                    emit_line(&buf, "ADD sp, sp, #4");  /* 撤销占位 */
+                    emit_push_r0(&buf);                 /* 压入首地址 */
+                    break;
+                }
                 default:
                     asmbuf_puts(&buf, "    ; unknown ir op ");
                     asmbuf_int(&buf, (int)I->op);
                     asmbuf_putc(&buf, '\n');
                     break;
             }
+        }
+#if ARKCC_FEATURE_DWARF
+        if (dbg) {
+            emit_line(&buf, ".cfi_endproc");
+            asmbuf_puts(&buf, ".size ");
+            asmbuf_puts(&buf, f->name);
+            asmbuf_puts(&buf, ", .-");
+            asmbuf_puts(&buf, f->name);
+            asmbuf_putc(&buf, '\n');
+        }
+#endif
         }
         asmbuf_putc(&buf, '\n');
 

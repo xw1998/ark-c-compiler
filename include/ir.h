@@ -12,7 +12,12 @@ typedef struct IrInst {
     int   val;   /* 立即数/偏移/标签号 */
     char *name;  /* 变量名/函数名 */
     int   aux;   /* 辅助：BINARY 的具体运算符等 */
+    int   line;  /* 源文件行号（来自 AST，供 DWARF .loc 使用）；0=未知 */
 } IrInst;
+
+/* irgen 在发射每条指令前设置该变量；ir_emit 会将其拷贝到 IrInst.line。
+ * 非 irgen 路径（如手写 IR）保持 0，表示行号未知。 */
+extern int g_ir_cur_line;
 
 typedef struct IrFunc {
     char    *name;
@@ -46,6 +51,7 @@ typedef struct IrString {
     int    id;
     char  *data;
     int    len;
+    int    is_wide;  /* B2: 宽字符串 L"..." 标记 */
 } IrString;
 
 typedef struct IrGlobal {
@@ -89,6 +95,8 @@ typedef struct IrProgram {
     double    *floats;
     int        float_count;
     int        float_capacity;
+    /* 源文件路径（供 DWARF .file/.loc 使用）；NULL=未知 */
+    const char *source_file;
 } IrProgram;
 
 IrFunc    *ir_func_new(const char *name);

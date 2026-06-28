@@ -4,20 +4,22 @@
 #include "type.h"
 #include "memory.h"
 
-static Type ty_void   = { TYPE_VOID,   0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_char   = { TYPE_CHAR,   0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_short  = { TYPE_SHORT,  0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_int    = { TYPE_INT,    0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_long   = { TYPE_LONG,   0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_llong  = { TYPE_LLONG,  0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_bool   = { TYPE_BOOL,   0, 0, 1, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_float  = { TYPE_FLOAT,  0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_double = { TYPE_DOUBLE, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_uchar  = { TYPE_CHAR,   0, 0, 1, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_ushort = { TYPE_SHORT,  0, 0, 1, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_uint   = { TYPE_INT,    0, 0, 1, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_ulong  = { TYPE_LONG,   0, 0, 1, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_ullong = { TYPE_LLONG,  0, 0, 1, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_void   = { TYPE_VOID,   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_char   = { TYPE_CHAR,   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_short  = { TYPE_SHORT,  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_int    = { TYPE_INT,    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_long   = { TYPE_LONG,   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_llong  = { TYPE_LLONG,  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_bool   = { TYPE_BOOL,   0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_float  = { TYPE_FLOAT,  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_double = { TYPE_DOUBLE, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_uchar  = { TYPE_CHAR,   0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_ushort = { TYPE_SHORT,  0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_uint   = { TYPE_INT,    0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_ulong  = { TYPE_LONG,   0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_ullong = { TYPE_LLONG,  0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 };
+/* B2: wchar_t —— 宿主/C 后端透传给 gcc，按 4 字节无符号整数处理 */
+static Type ty_wchar  = { TYPE_WCHAR,  0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 };
 
 Type *type_void(void)   { return &ty_void;  }
 Type *type_char(void)   { return &ty_char;  }
@@ -70,6 +72,17 @@ Type *type_func(Type *ret, Type **params, int pc, int variadic) {
     t->params = params;
     t->param_count = pc;
     t->is_variadic = variadic;
+    return t;
+}
+
+/* B2: wchar_t —— 与宿主 int 同尺寸，4 字节无符号 */
+Type *type_wchar(void) { return &ty_wchar; }
+
+/* B4: _Complex —— base 指向 float/double；大小为 2*base */
+Type *type_complex(Type *base) {
+    Type *t = (Type *)mem_pool_alloc(sizeof(Type));
+    t->kind = TYPE_COMPLEX;
+    t->base = base;
     return t;
 }
 
@@ -253,6 +266,8 @@ int type_size(Type *t) {
         case TYPE_FLOAT:  return 4;
         case TYPE_DOUBLE: return 8;
         case TYPE_PTR:    return 4;
+        case TYPE_WCHAR:  return 4;  /* B2 */
+        case TYPE_COMPLEX: return 2 * type_size(t->base); /* B4: 实部+虚部 */
         case TYPE_ARRAY:  return type_size(t->base) * (t->size > 0 ? t->size : 1);
         case TYPE_STRUCT: {
             /* 总大小按最大字段对齐补齐。
@@ -289,6 +304,7 @@ int type_align(Type *t) {
         case TYPE_SHORT:  return 2;
         case TYPE_LLONG:
         case TYPE_DOUBLE: return 8;
+        case TYPE_COMPLEX: return type_align(t->base); /* B4 */
         case TYPE_ARRAY:  return type_align(t->base);
         case TYPE_STRUCT:
         case TYPE_UNION: {
@@ -309,6 +325,8 @@ int type_equal(Type *a, Type *b) {
     if (a->kind != b->kind) return 0;
     if (a->kind == TYPE_PTR || a->kind == TYPE_ARRAY)
         return type_equal(a->base, b->base);
+    if (a->kind == TYPE_COMPLEX)
+        return type_equal(a->base, b->base);
     return 1;
 }
 
@@ -317,7 +335,8 @@ int type_is_integer(Type *t) {
     return t->kind == TYPE_CHAR || t->kind == TYPE_SHORT ||
            t->kind == TYPE_INT  || t->kind == TYPE_LONG  ||
            t->kind == TYPE_LLONG|| t->kind == TYPE_BOOL  ||
-           t->kind == TYPE_ENUM;
+           t->kind == TYPE_ENUM ||
+           t->kind == TYPE_WCHAR;  /* B2: wchar_t 是整型 */
 }
 
 int type_is_arith(Type *t) {

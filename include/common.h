@@ -100,6 +100,9 @@ typedef enum {
     TOK_FORCEINLINE,      /* __forceinline */
     TOK_ASM_FN,           /* __asm 函数体 (ARM Compiler 5) */
 
+    /* === 0.5.x 新增（B4：_Complex 关键字）=== */
+    TOK_COMPLEX,          /* _Complex */
+
     TOK__SENTINEL
 } TokenKind;
 
@@ -204,7 +207,8 @@ typedef enum {
     IR_MEMCPY,         /* 内存拷贝；val=字节数（结构体赋值/按值传递） */
     IR_STORE_FLD,      /* 位域存储；val=位偏移, aux=位宽 */
     IR_LOAD_FLD,       /* 位域读取；val=位偏移, aux=位宽 */
-    IR_PUSH_GLOBAL_ADDR /* 取全局变量地址；name = 全局变量名（不加载值） */
+    IR_PUSH_GLOBAL_ADDR, /* 取全局变量地址；name = 全局变量名（不加载值） */
+    IR_ALLOCA          /* B3: VLA 动态栈分配；弹出字节数，压入分配区首地址 */
 } IrOp;
 
 /* 简单字符串比较，避免依赖 string.h */

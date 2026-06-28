@@ -23,7 +23,7 @@ struct AstNode {
         struct { AstNode *cond; AstNode *then_stmt; AstNode *else_stmt; } if_stmt;
         struct { AstNode *cond; AstNode *body; } while_stmt;
         struct { AstNode *init; AstNode *cond; AstNode *step; AstNode *body; } for_stmt;
-        struct { AstNode **stmts; int stmt_count; } block;
+        struct { AstNode **stmts; int stmt_count; int is_decl_list; } block;
         struct {
             char    *name;
             Type    *ret_type;
@@ -63,6 +63,8 @@ struct AstNode {
             int      align_bytes;/* __align(n) / __attribute__((aligned(n)))；0=默认 */
             int      is_used;    /* __attribute__((used)) */
             int      is_unused;  /* __attribute__((unused)) */
+            int      is_vla;     /* B3: 变长数组标记；var_type 为指针，vla_size_expr 为元素个数表达式 */
+            AstNode *vla_size_expr; /* B3: VLA 元素个数运行时表达式 */
         } var;
         struct { AstNode *array; AstNode *index; } array_access;
         struct { char *name; AstNode **args; int arg_count; AstNode *callee; } call;

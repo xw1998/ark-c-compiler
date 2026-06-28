@@ -21,7 +21,9 @@ typedef enum {
     TYPE_STRUCT,
     TYPE_UNION,
     TYPE_FUNC,
-    TYPE_ENUM
+    TYPE_ENUM,
+    TYPE_WCHAR,     /* 宽字符 wchar_t（B2） */
+    TYPE_COMPLEX    /* _Complex 复数（B4）：base 指向 float/double */
 } ValueType;
 
 typedef struct StructField {
@@ -35,7 +37,7 @@ typedef struct StructField {
 
 typedef struct Type {
     ValueType    kind;
-    struct Type *base;       /* PTR/ARRAY 的元素类型；FUNC 的返回类型 */
+    struct Type *base;       /* PTR/ARRAY 的元素类型；FUNC 的返回类型；COMPLEX 的实数类型 */
     int          size;       /* 数组长度；struct/union 的总字节数 */
     int          is_unsigned;
     int          is_variadic;/* 函数：是否可变参 */
@@ -45,6 +47,7 @@ typedef struct Type {
     int          param_count;
     int          is_packed;       /* __attribute__((packed)) */
     int          align_override;  /* __attribute__((aligned(N))) 显式对齐，0=默认 */
+    int          is_vla;          /* 变长数组标记（B3）：运行时分配 */
 } Type;
 
 Type *type_void(void);
@@ -66,6 +69,8 @@ Type *type_array(Type *base, int size);
 Type *type_struct(const char *tag, int is_union);
 Type *type_enum(const char *tag);
 Type *type_func(Type *ret, Type **params, int pc, int variadic);
+Type *type_wchar(void);                       /* B2: wchar_t */
+Type *type_complex(Type *base);               /* B4: _Complex base（base 为 float/double）*/
 
 void  type_struct_add_field(Type *st, const char *name, Type *ft);
 void  type_struct_add_bitfield(Type *st, const char *name, Type *ft, int width);

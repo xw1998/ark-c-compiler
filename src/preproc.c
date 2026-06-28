@@ -16,13 +16,50 @@
 #include "memory.h"
 #include "platform.h"
 #include "flash_fs.h"
+#include "config.h"
+#include "arkcc_config.h"
 #include "type.h"   /* type_set_pack/type_get_pack：#pragma pack 对齐控制 */
+#include <stdlib.h>  /* malloc/free：trigraph 缓冲区 */
 
 #define PP_BUF_SIZE (512 * 1024)
 #define PP_INC_BUF  (128 * 1024)
 #define PP_MAX_INC_DEPTH 8
 #define PP_MAX_INC_DIRS  16
 #define PP_PACK_STACK    32
+
+#if ARKCC_FEATURE_TRIGRAPH
+/* 三元组替换：C99 定义 9 个三元组，在翻译阶段 1 处理。
+ * ??=  #      ??(  [      ??/  \      ??)  ]
+ * ??'  ^      ??<  {      ??>  }      ??!  |
+ * ??-  ~
+ * 仅当 g_config.enable_trigraph 打开时启用。
+ * 输出写入 out（不含终止符）；返回新长度。 */
+static int apply_trigraphs(const char *src, char *out, int out_cap) {
+    const char *p = src;
+    int n = 0;
+    while (*p && n < out_cap - 1) {
+        if (p[0] == '?' && p[1] == '?') {
+            char r = 0;
+            switch (p[2]) {
+                case '=': r = '#';  break;
+                case '(': r = '[';  break;
+                case '/': r = '\\'; break;
+                case ')': r = ']';  break;
+                case '\'': r = '^'; break;
+                case '<': r = '{';  break;
+                case '>': r = '}';  break;
+                case '!': r = '|';  break;
+                case '-': r = '~';  break;
+                default:  r = 0;    break;
+            }
+            if (r) { out[n++] = r; p += 3; continue; }
+        }
+        out[n++] = *p++;
+    }
+    out[n] = 0;
+    return n;
+}
+#endif
 
 typedef struct Macro {
     char         *name;
@@ -912,6 +949,19 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
 char *preproc_process(const char *src) {
     char *out = (char *)mem_pool_alloc(PP_BUF_SIZE);
     int out_len = 0;
+    const char *src_ptr = src;
+#if ARKCC_FEATURE_TRIGRAPH
+    /* 三元组替换（编译期开关 + 运行时开关双重守护）。
+     * 在翻译阶段 1 处理：先替换 ??x → 单字符，再做宏展开/条件编译。
+     * 注意：用 malloc 而非 mem_pool_alloc，避免 512KB 缓冲区耗尽内存池。 */
+    if (g_config.enable_trigraph) {
+        char *tri = (char *)malloc(PP_BUF_SIZE);
+        if (tri) {
+            apply_trigraphs(src, tri, PP_BUF_SIZE);
+            src_ptr = tri;
+        }
+    }
+#endif
     /* 注意：preproc_reset() 应该由 compiler.c 在每次编译开始时调用 */
     g_cur_line = 1;
     g_macro_expand = 1;
@@ -929,7 +979,7 @@ char *preproc_process(const char *src) {
     if (!find_macro("__LITTLE_ENDIAN__"))   add_object_macro("__LITTLE_ENDIAN__", "1");
     if (!find_macro("__sizeof_int"))        add_object_macro("__sizeof_int", "4");
     if (!find_macro("__sizeof_ptr"))        add_object_macro("__sizeof_ptr", "4");
-    process(src, out, &out_len, PP_BUF_SIZE - 1);
+    process(src_ptr, out, &out_len, PP_BUF_SIZE - 1);
     out[out_len] = 0;
     return out;
 }

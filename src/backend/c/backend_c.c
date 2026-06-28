@@ -16,6 +16,8 @@
 #include "memory.h"
 #include "platform.h"
 #include "common.h"
+#include "config.h"
+#include "arkcc_config.h"
 
 #define MAX_CALL_ARGS 8
 
@@ -179,6 +181,12 @@ static void emit_c_type(AsmBuffer *b, Type *t, const char *name) {
         case TYPE_FLOAT:  asmbuf_puts(b, "float "); break;
         case TYPE_DOUBLE: asmbuf_puts(b, "double "); break;
         case TYPE_ENUM:   asmbuf_puts(b, "int "); break;
+        case TYPE_WCHAR:  asmbuf_puts(b, "wchar_t "); break;  /* B2: 透传给 gcc */
+        case TYPE_COMPLEX: /* B4: _Complex float/double 透传给 gcc */
+            asmbuf_puts(b, "_Complex ");
+            if (t->base && t->base->kind == TYPE_FLOAT) asmbuf_puts(b, "float ");
+            else asmbuf_puts(b, "double ");
+            break;
         case TYPE_PTR: {
             /* 指针：name 前加 '*'，递归输出 base */
             char namebuf[256];
@@ -253,7 +261,9 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
     asmbuf_puts(&buf, "#include <stdlib.h>\n");
     asmbuf_puts(&buf, "#include <string.h>\n");
     asmbuf_puts(&buf, "#include <stdint.h>\n");
-    asmbuf_puts(&buf, "#include <setjmp.h>\n\n");
+    asmbuf_puts(&buf, "#include <setjmp.h>\n");
+    asmbuf_puts(&buf, "#include <malloc.h>\n");   /* B3: alloca 用于 VLA */
+    asmbuf_puts(&buf, "#include <wchar.h>\n\n");   /* B2: wchar_t 宽字符 */
     asmbuf_puts(&buf, "typedef long long ark_long;\n\n");
     asmbuf_puts(&buf, "/* 用 long long 保证 8 字节槽位与 double 完全重叠，避免 LLP64 下 long=4 的位模式截断 */\n");
     asmbuf_puts(&buf, "typedef union { long long i; double f; } ark_slot;\n");
@@ -307,11 +317,24 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
         int i;
         for (i = 0; i < prog->string_count; i++) {
             IrString *s = prog->strings[i];
-            asmbuf_puts(&buf, "static const char ark_str_");
-            asmbuf_int(&buf, s->id);
-            asmbuf_puts(&buf, "[] = ");
-            emit_str_literal(&buf, s->data, s->len);
-            asmbuf_puts(&buf, ";\n");
+#if ARKCC_FEATURE_WCHAR
+            if (s->is_wide) {
+                /* B2: 宽字符串。发射为 wchar_t 数组 + L"..." 字面量，
+                 * gcc 按宽字符编码填充。元素类型透传 wchar_t。 */
+                asmbuf_puts(&buf, "static const wchar_t ark_wstr_");
+                asmbuf_int(&buf, s->id);
+                asmbuf_puts(&buf, "[] = L");
+                emit_str_literal(&buf, s->data, s->len);
+                asmbuf_puts(&buf, ";\n");
+            } else
+#endif
+            {
+                asmbuf_puts(&buf, "static const char ark_str_");
+                asmbuf_int(&buf, s->id);
+                asmbuf_puts(&buf, "[] = ");
+                emit_str_literal(&buf, s->data, s->len);
+                asmbuf_puts(&buf, ";\n");
+            }
         }
         if (prog->string_count) asmbuf_putc(&buf, '\n');
     }
@@ -527,10 +550,22 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
                     asmbuf_int(&buf, I->val);
                     asmbuf_puts(&buf, ";");
                     break;
-                case IR_PUSH_STR:
-                    asmbuf_puts(&buf, "stk[sp++].i = (long long)(intptr_t)ark_str_");
+                case IR_PUSH_STR: {
+                    /* B2: 宽字符串引用 ark_wstr_<id>，普通字符串引用 ark_str_<id> */
+                    int is_w = 0;
+#if ARKCC_FEATURE_WCHAR
+                    if (I->val >= 0 && I->val < prog->string_count &&
+                        prog->strings[I->val]->is_wide) is_w = 1;
+#endif
+                    asmbuf_puts(&buf, "stk[sp++].i = (long long)(intptr_t)ark_");
+                    asmbuf_puts(&buf, is_w ? "wstr_" : "str_");
                     asmbuf_int(&buf, I->val);
                     asmbuf_putc(&buf, ';');
+                    break;
+                }
+                case IR_ALLOCA:
+                    /* B3: VLA 动态分配。弹栈取字节数，alloca 分配，压入首地址。 */
+                    asmbuf_puts(&buf, "stk[sp-1].i = (long long)(intptr_t)alloca((size_t)stk[sp-1].i);");
                     break;
                 case IR_PUSH_VAR:
                     asmbuf_puts(&buf, "stk[sp++].i = *(long long*)(frame + ");

@@ -23,6 +23,8 @@
 #include "platform.h"
 #include "symtab.h"
 #include "sema.h"
+#include "config.h"
+#include "arkcc_config.h"
 
 static AstNode *parse_top_decl(Parser *p);
 static AstNode *parse_block(Parser *p);
@@ -172,6 +174,10 @@ static int   g_attr_is_unused;
 static char *g_attr_alias_target;
 static int   g_attr_align_bytes;
 static int   g_decl_align_bytes;
+/* B3: VLA 尺寸表达式。parse_declarator 解析到非常量数组维度时写入，
+ * parse_local_var_decl / parse_top_decl 在构造变量节点时取用并复位。
+ * 仅记录首个 VLA 维度（多数 VLA 用法为单维 int a[n]）。 */
+static AstNode *g_vla_size_expr;
 static int   g_attr_is_softfp;
 static int   g_attr_is_forceinline;
 /* constructor/destructor/deprecated：函数属性，由 parse_attribute 写入，
@@ -573,6 +579,7 @@ static Type *parse_declspec(Parser *p, int *p_storage, int *p_is_typedef) {
     Type *base = 0;
     int saw_kw = 0;
     int packed_pending = 0;  /* __packed 关键字独立形式：作用于下一个 struct/union 或指针 */
+    int complex_pending = 0; /* B4: _Complex 修饰符 */
     Token tok;
     /* 解析关键字直到不再匹配 */
     for (;;) {
@@ -633,6 +640,14 @@ static Type *parse_declspec(Parser *p, int *p_storage, int *p_is_typedef) {
             case TOK_DOUBLE:
                 lexer_advance(p->lex);
                 if (!base) base = type_double();
+                saw_kw = 1; continue;
+            case TOK_COMPLEX:
+#if ARKCC_FEATURE_COMPLEX
+                /* B4: _Complex 修饰符；作用于后续 float/double（默认 double）。
+                 * 编译期 + 运行时双重守护。 */
+                if (g_config.enable_complex) complex_pending = 1;
+#endif
+                lexer_advance(p->lex);
                 saw_kw = 1; continue;
             case TOK_STRUCT:
             case TOK_UNION: {
@@ -696,6 +711,17 @@ done:
     if (p_storage) *p_storage = sto;
     if (p_is_typedef) *p_is_typedef = is_td;
     (void)packed_pending; /* __packed 用于非 struct 类型时静默忽略 */
+#if ARKCC_FEATURE_COMPLEX
+    /* B4: _Complex 修饰。_Complex double → type_complex(double)；
+     * _Complex float → type_complex(float)；
+     * _Complex（无 float/double）默认按 _Complex double。 */
+    if (complex_pending && g_config.enable_complex) {
+        if (!base || (base->kind != TYPE_FLOAT && base->kind != TYPE_DOUBLE)) {
+            base = type_double();
+        }
+        base = type_complex(base);
+    }
+#endif
     return base;
 }
 
@@ -897,6 +923,7 @@ static Type *parse_declarator(Parser *p, Type *base, char **out_name) {
         /* 收集维度，然后构造 array(array(...)) */
         int dims[8];
         int dim_count = 0;
+        int vla_dim = -1;  /* B3: 非常量维度索引；-1 表示无 VLA */
         while (lexer_peek(p->lex).kind == TOK_LBRACKET) {
             int v = 0;
             lexer_advance(p->lex);  /* 吃掉 '[' */
@@ -911,7 +938,20 @@ static Type *parse_declarator(Parser *p, Type *base, char **out_name) {
                 if (dim_expr && eval_const_expr(dim_expr, &folded) && folded > 0) {
                     v = folded;
                 } else {
+#if ARKCC_FEATURE_VLA
+                    /* B3: 非常量维度 → 变长数组。仅记录首个 VLA 维度表达式，
+                     * 由 parse_local_var_decl / parse_top_decl 取用。
+                     * 编译期 + 运行时双重守护。 */
+                    if (g_config.enable_vla && vla_dim < 0 && !g_vla_size_expr) {
+                        vla_dim = dim_count;
+                        g_vla_size_expr = dim_expr;
+                        v = 0;  /* 占位；实际类型用 type_pointer */
+                    } else {
+                        v = 1;  /* 非常量或求值失败：占位维度 */
+                    }
+#else
                     v = 1;  /* 非常量或求值失败：占位维度 */
+#endif
                 }
             }
             if (lexer_peek(p->lex).kind == TOK_RBRACKET) lexer_advance(p->lex);
@@ -922,7 +962,14 @@ static Type *parse_declarator(Parser *p, Type *base, char **out_name) {
             /* 从右到左构造嵌套数组；保留 size==0 表示待推导（如 char s[] = "..."）。
              * 柔性数组成员亦以 size==0 数组形式出现，由 type_struct_add_field 处理。 */
             for (i = dim_count - 1; i >= 0; i--) {
-                t = type_array(t, dims[i]);
+                if (i == vla_dim) {
+                    /* B3: VLA 维度用指针替代数组；标记 is_vla。
+                     * 后续 irgen 在变量声明处发 IR_ALLOCA 动态分配。 */
+                    t = type_pointer(t);
+                    t->is_vla = 1;
+                } else {
+                    t = type_array(t, dims[i]);
+                }
             }
         }
     }
@@ -967,6 +1014,7 @@ static AstNode *parse_top_decl(Parser *p) {
     g_attr_is_softfp = 0; g_attr_is_forceinline = 0;
     g_attr_has_at = 0; g_attr_at_addr = 0;
     g_attr_is_constructor = 0; g_attr_is_destructor = 0; g_attr_is_deprecated = 0;
+    g_vla_size_expr = 0;  /* B3: 文件作用域不允许 VLA，复位防泄漏 */
     /* armcc 风格 __asm void fn(){...} 整函数体汇编：在解析任何其他修饰符前识别 */
     if (lexer_peek(p->lex).kind == TOK_ASM) {
         /* 区分 __asm <type> name(...){...}（函数体汇编）与 __asm("..."); 内联 asm。
@@ -1319,10 +1367,19 @@ static AstNode *parse_local_var_decl(Parser *p, Type *base, int storage, int is_
             n->u.var.align_bytes = g_attr_align_bytes;
             n->u.var.is_used    = g_attr_is_used;
             n->u.var.is_unused  = g_attr_is_unused;
+#if ARKCC_FEATURE_VLA
+            /* B3: 取用 parse_declarator 记录的 VLA 尺寸表达式 */
+            if (g_vla_size_expr && g_config.enable_vla) {
+                n->u.var.is_vla = 1;
+                n->u.var.vla_size_expr = g_vla_size_expr;
+                g_vla_size_expr = 0;
+            }
+#endif
             if (!blk) blk = n;
             else {
                 if (blk->kind != AST_BLOCK) {
                     AstNode *b = ast_block(line);
+                    b->u.block.is_decl_list = 1;  /* 逗号分隔声明块：不创建嵌套作用域 */
                     block_add_stmt(b, blk);
                     block_add_stmt(b, n);
                     blk = b;
@@ -1801,8 +1858,17 @@ static AstNode *parse_primary_expr(Parser *p) {
         return ast_num(t.value, line);
     }
     if (t.kind == TOK_STR) {
+        AstNode *sn;
         lexer_advance(p->lex);
-        return ast_str(t.str, line);
+        sn = ast_str(t.str, line);
+#if ARKCC_FEATURE_WCHAR
+        /* B2: lexer 把宽字符串 L"..." 的 value 置 1；这里给 AST_STR
+         * 节点标注 wchar_t* 类型，irgen/后端据此发射宽字符串。 */
+        if (t.value == 1 && g_config.enable_wchar) {
+            sn->type = type_pointer(type_wchar());
+        }
+#endif
+        return sn;
     }
     if (t.kind == TOK_IDENT) {
         /* __func__ 处理：返回当前函数名作为字符串字面量 */

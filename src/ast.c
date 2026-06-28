@@ -85,6 +85,7 @@ AstNode *ast_block(int line) {
     AstNode *n = ast_new(AST_BLOCK, line);
     n->u.block.stmts = 0;
     n->u.block.stmt_count = 0;
+    n->u.block.is_decl_list = 0;
     return n;
 }
 

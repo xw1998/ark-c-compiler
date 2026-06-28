@@ -12,6 +12,9 @@
 #include "ir.h"
 #include "preproc.h"
 #include "backend.h"
+#include "config.h"
+#include "arkcc_config.h"
+#include "opt.h"
 #include <stdio.h>
 
 #define SRC_BUFFER_SIZE (128 * 1024)
@@ -241,7 +244,19 @@ int ark_compile(const ArkOptions *opts) {
 
     ir = irgen_program(ast);
     if (!ir) return ARK_ERR_IRGEN;
+    ir->source_file = opts->input_path;  /* 供 DWARF .file/.loc 使用 */
     if (opts->verbose) ark_log("[arkcc] irgen OK (%d funcs)\n", ir->func_count);
+
+    /* IR 级优化：常量折叠 + 死代码消除。
+     * 编译期由 ARKCC_FEATURE_OPT_* 守护，运行时由 g_config / opt_level 守护。 */
+#if ARKCC_FEATURE_OPT_CONSTFOLD || ARKCC_FEATURE_OPT_DCE
+    {
+        int lvl = opts->opt_level;
+        if (lvl < g_config.opt_level) lvl = g_config.opt_level;
+        opt_run(ir, lvl);
+        if (opts->verbose) ark_log("[arkcc] opt OK (level %d)\n", lvl);
+    }
+#endif
 
     asm_len = be->emit_asm(ir, g_asm, ASM_BUFFER_SIZE);
     if (asm_len < 0) return ARK_ERR_CODEGEN;

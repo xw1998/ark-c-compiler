@@ -14,6 +14,8 @@
 #include "platform.h"
 #include "common.h"
 #include "sema.h"
+#include "config.h"
+#include "arkcc_config.h"
 
 /* 内部缓冲区，用于把 AST 初始化列表序列化成 C 源码片段。
  * 64 KB 足够普通示例使用。 */
@@ -651,16 +653,18 @@ static const char *irgen_compound_literal(IrGen *g, AstNode *node) {
 
 static void irgen_stmt(IrGen *g, AstNode *node) {
     if (!node) return;
+    g_ir_cur_line = node->line;  /* 供 DWARF .loc 使用 */
     switch (node->kind) {
         case AST_BLOCK: {
             int i;
             int saved_bp = g->bp;
-            sym_enter_scope();
+            /* 声明块（逗号分隔的局部变量声明）不创建嵌套作用域 */
+            if (!node->u.block.is_decl_list) sym_enter_scope();
             for (i = 0; i < node->u.block.stmt_count; i++) {
                 irgen_stmt(g, node->u.block.stmts[i]);
             }
-            sym_leave_scope();
-            g->bp = saved_bp;
+            if (!node->u.block.is_decl_list) sym_leave_scope();
+            if (!node->u.block.is_decl_list) g->bp = saved_bp;
             break;
         }
         case AST_VAR_DECL: {
@@ -724,6 +728,26 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
             off = alloc_local(g, sz);
             s = sym_add(SYM_VAR, node->u.var.name, node->u.var.var_type, off);
             (void)s;
+#if ARKCC_FEATURE_VLA
+            /* B3: 变长数组。var_type 已是带 is_vla 标记的指针；
+             * 槽位存放指向动态分配区的指针（4 字节）。
+             * 运行时：求值元素个数 * 元素大小 → IR_ALLOCA → 存指针到槽。 */
+            if (node->u.var.is_vla && g_config.enable_vla) {
+                Type *elem_t = node->u.var.var_type->base;
+                int elem_sz = type_size(elem_t);
+                if (elem_sz <= 0) elem_sz = 4;
+                /* 元素个数 */
+                irgen_expr(g, node->u.var.vla_size_expr);
+                /* * 元素大小 → 字节数 */
+                ir_emit(g->fn, IR_PUSH_INT, elem_sz, 0, 0);
+                ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_MUL);
+                /* 动态分配，压入首地址 */
+                ir_emit(g->fn, IR_ALLOCA, 0, 0, 0);
+                /* 存入槽位 */
+                ir_emit(g->fn, IR_STORE, off, 0, 0);
+                break;
+            }
+#endif
             if (node->u.var.init) {
                 AstNode *iv = node->u.var.init;
                 if (iv->kind == AST_INIT_LIST) {
@@ -1085,6 +1109,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
         ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
         return;
     }
+    g_ir_cur_line = node->line;  /* 供 DWARF .loc 使用 */
     switch (node->kind) {
         case AST_NUM:
             if (node->type && (node->type->kind == TYPE_FLOAT || node->type->kind == TYPE_DOUBLE)) {
@@ -1100,6 +1125,15 @@ static void irgen_expr(IrGen *g, AstNode *node) {
         case AST_STR: {
             int slen = ark_strlen(node->u.name);
             int id = ir_program_add_string(g->prog, node->u.name, slen);
+#if ARKCC_FEATURE_WCHAR
+            /* B2: 宽字符串（node->type 为 wchar_t*）→ 标记 IrString，
+             * C 后端据此发射 L"..." 与 wchar_t 数组。 */
+            if (g_config.enable_wchar && node->type &&
+                node->type->kind == TYPE_PTR &&
+                node->type->base && node->type->base->kind == TYPE_WCHAR) {
+                g->prog->strings[id]->is_wide = 1;
+            }
+#endif
             ir_emit(g->fn, IR_PUSH_STR, id, node->u.name, 0);
             break;
         }

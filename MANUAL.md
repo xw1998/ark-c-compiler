@@ -1,46 +1,50 @@
-# Ark C Compiler ä½¿ç”¨æ‰‹å†Œ
+# Ark C Compiler Ê¹ÓÃÊÖ²á
 
-> ç‰ˆæœ¬ï¼š0.5.0
-> ä¸€ä¸ªå®Œæ•´çš„ C99 ç¼–è¯‘å™¨ï¼Œå…¼å®¹ ARM Compiler 5 å¸¸ç”¨æ‰©å±•ï¼Œå¯åœ¨ STM32 ä¸Šè‡ªå®¿ä¸»ç¼–è¯‘
-
----
-
-## ç›®å½•
-
-1. [é¡¹ç›®ç®€ä»‹](#1-é¡¹ç›®ç®€ä»‹)
-2. [å¿«é€Ÿä¸Šæ‰‹](#2-å¿«é€Ÿä¸Šæ‰‹)
-3. [å‘½ä»¤è¡Œå‚è€ƒ](#3-å‘½ä»¤è¡Œå‚è€ƒ)
-4. [C99 è¯­è¨€ç‰¹æ€§æ”¯æŒ](#4-c99-è¯­è¨€ç‰¹æ€§æ”¯æŒ)
-5. [ARM Compiler 5 å…¼å®¹æ‰©å±•](#5-arm-compiler-5-å…¼å®¹æ‰©å±•)
-6. [å¤šåç«¯æ¶æ„](#6-å¤šåç«¯æ¶æ„)
-7. [åœ¨ Windows ä¸Šåšæµ‹è¯•](#7-åœ¨-windows-ä¸Šåšæµ‹è¯•)
-8. [STM32H743 + Keil MDK å·¥ç¨‹](#8-stm32h743--keil-mdk-å·¥ç¨‹)
-9. [ä»£ç ç»„ç»‡ä¸ç§»æ¤æŒ‡å—](#9-ä»£ç ç»„ç»‡ä¸ç§»æ¤æŒ‡å—)
-10. [æ‰©å±•å¼€å‘æŒ‡å—](#10-æ‰©å±•å¼€å‘æŒ‡å—)
-11. [æ ‡å‡†åº“å­é›†](#11-æ ‡å‡†åº“å­é›†)
-12. [å¸¸è§é—®é¢˜ FAQ](#12-å¸¸è§é—®é¢˜-faq)
-13. [å·²çŸ¥é™åˆ¶](#13-å·²çŸ¥é™åˆ¶)
-14. [é™„å½•ï¼šå†…éƒ¨æ•°æ®æµ](#14-é™„å½•å†…éƒ¨æ•°æ®æµ)
+> °æ±¾£º0.6.0
+> Ò»¸öÍêÕûµÄ C99 ±àÒëÆ÷£¬¼æÈİ ARM Compiler 5 ³£ÓÃÀ©Õ¹£¬¿ÉÔÚ STM32 ÉÏ×ÔËŞÖ÷±àÒë
 
 ---
 
-## 1 é¡¹ç›®ç®€ä»‹
+## Ä¿Â¼
 
-**Ark C Compiler**ï¼ˆç®€ç§° `arkcc`ï¼‰æ˜¯ä¸€ä¸ªç”¨ C99 ç¼–å†™çš„ C è¯­è¨€ç¼–è¯‘å™¨ï¼Œç›®æ ‡æ˜¯ï¼š
+1. [ÏîÄ¿¼ò½é](#1-ÏîÄ¿¼ò½é)
+2. [¿ìËÙÉÏÊÖ](#2-¿ìËÙÉÏÊÖ)
+3. [ÃüÁîĞĞ²Î¿¼](#3-ÃüÁîĞĞ²Î¿¼)
+4. [C99 ÓïÑÔÌØĞÔÖ§³Ö](#4-c99-ÓïÑÔÌØĞÔÖ§³Ö)
+5. [ARM Compiler 5 ¼æÈİÀ©Õ¹](#5-arm-compiler-5-¼æÈİÀ©Õ¹)
+6. [¶àºó¶Ë¼Ü¹¹](#6-¶àºó¶Ë¼Ü¹¹)
+7. [ÅäÖÃÏµÍ³](#7-ÅäÖÃÏµÍ³)
+8. [ÓÅ»¯ Pass](#8-ÓÅ»¯-pass)
+9. [ÔÚ Windows ÉÏ×ö²âÊÔ](#9-ÔÚ-windows-ÉÏ×ö²âÊÔ)
+10. [STM32H743 + Keil MDK ¹¤³Ì](#10-stm32h743--keil-mdk-¹¤³Ì)
+11. [´úÂë×éÖ¯ÓëÒÆÖ²Ö¸ÄÏ](#11-´úÂë×éÖ¯ÓëÒÆÖ²Ö¸ÄÏ)
+12. [À©Õ¹¿ª·¢Ö¸ÄÏ](#12-À©Õ¹¿ª·¢Ö¸ÄÏ)
+13. [±ê×¼¿â×Ó¼¯](#13-±ê×¼¿â×Ó¼¯)
+14. [³£¼ûÎÊÌâ FAQ](#14-³£¼ûÎÊÌâ-faq)
+15. [ÒÑÖªÏŞÖÆ](#15-ÒÑÖªÏŞÖÆ)
+16. [¸½Â¼£ºÄÚ²¿Êı¾İÁ÷](#16-¸½Â¼ÄÚ²¿Êı¾İÁ÷)
 
-- **å®Œæ•´ C99**ï¼šæ”¯æŒ C99 æ ‡å‡†çš„å…¨éƒ¨å¸¸ç”¨è¯­æ³•ï¼Œå«å®Œæ•´éšå¼ç±»å‹è½¬æ¢ã€æ•´æ•°æå‡ã€`double` çœŸ 64 ä½ç²¾åº¦
-- **åµŒå…¥å¼è‡ªå®¿ä¸»**ï¼šç¼–è¯‘å™¨æœ¬èº«å¯åœ¨ STM32H743 ä¸Šè¿è¡Œ
-- **å¤šåç«¯**ï¼š`arm` / `x86_64` / `riscv32` / `c` å››ä¸ªåç«¯å¯åˆ‡æ¢
-- **ARM Compiler 5 å…¼å®¹**ï¼šæ”¯æŒ `__svc`/`__irq`/`__weak`/`__naked`/`__packed`/`__align`/`__at`/`__forceinline`/`__asm` å‡½æ•°ä½“/`__attribute__` å…¨å¥—å±æ€§/`#pragma` å…¨å¥—æŒ‡ä»¤/é¢„å®šä¹‰å®ç­‰åµŒå…¥å¼å¸¸ç”¨æ‰©å±•
-- **æ–¹ä¾¿ Windows æµ‹è¯•**ï¼š`c` åç«¯æŠŠ IR ç¿»è¯‘å› C ä»£ç ï¼Œç”¨ä¸»æœº gcc ç¼–è¯‘è¿è¡Œ
+---
 
-### æ•´ä½“æµæ°´çº¿
+## 1 ÏîÄ¿¼ò½é
+
+**Ark C Compiler**£¨¼ò³Æ `arkcc`£©ÊÇÒ»¸öÓÃ C99 ±àĞ´µÄ C ÓïÑÔ±àÒëÆ÷£¬Ä¿±êÊÇ£º
+
+- **ÍêÕû C99**£ºÖ§³Ö C99 ±ê×¼µÄÈ«²¿³£ÓÃÓï·¨£¬º¬ VLA ±ä³¤Êı×é¡¢¿í×Ö·û `wchar_t`¡¢ÈıÔª×é trigraph¡¢`_Complex` ¸´Êı¡¢ÍêÕûÒşÊ½ÀàĞÍ×ª»»¡¢ÕûÊıÌáÉı¡¢`double` Õæ 64 Î»¾«¶È
+- **Ç¶ÈëÊ½×ÔËŞÖ÷**£º±àÒëÆ÷±¾Éí¿ÉÔÚ STM32H743 ÉÏÔËĞĞ
+- **¶àºó¶Ë**£º`arm` / `x86_64` / `riscv32` / `c` ËÄ¸öºó¶Ë¿ÉÇĞ»»
+- **ARM Compiler 5 ¼æÈİ**£ºÖ§³Ö `__svc`/`__irq`/`__weak`/`__naked`/`__packed`/`__align`/`__at`/`__forceinline`/`__asm` º¯ÊıÌå/`__attribute__` È«Ì×ÊôĞÔ/`#pragma` È«Ì×Ö¸Áî/Ô¤¶¨ÒåºêµÈÇ¶ÈëÊ½³£ÓÃÀ©Õ¹
+- **¿ÉÅäÖÃ**£ºÈı²ãÅäÖÃÏµÍ³£¨±àÒëÆÚºê + INI ÅäÖÃÎÄ¼ş + ÃüÁîĞĞ£©£¬¿É²ÃÇĞÇ°¶ËÌØĞÔ¡¢Ó²¼ş FPU¡¢DWARF µ÷ÊÔĞÅÏ¢¡¢ÓÅ»¯ Pass
+- **IR ¼¶ÓÅ»¯**£º`-O1` ÆôÓÃ³£Á¿ÕÛµş + ËÀ´úÂëÏû³ı
+- **·½±ã Windows ²âÊÔ**£º`c` ºó¶Ë°Ñ IR ·­Òë»Ø C ´úÂë£¬ÓÃÖ÷»ú gcc ±àÒëÔËĞĞ
+
+### ÕûÌåÁ÷Ë®Ïß
 
 ```
-   æºä»£ç  .c / .s
+   Ô´´úÂë .c / .s
       |
       v
-  .s æ–‡ä»¶? --Yes--> ç›´æ¥ assemble --> .bin
+  .s ÎÄ¼ş? --Yes--> Ö±½Ó assemble --> .bin
       |
       No
       v
@@ -51,6 +55,11 @@
                                                 v
                                             +--------+
                                             | irgen  |
+                                            +--------+
+                                                |
+                                                v
+                                            +--------+      -O1: ³£Á¿ÕÛµş + DCE
+                                            |  opt   |
                                             +--------+
                                                 |
                                                 v
@@ -67,25 +76,25 @@
 
 ---
 
-## 2 å¿«é€Ÿä¸Šæ‰‹
+## 2 ¿ìËÙÉÏÊÖ
 
-### 2.1 ç¯å¢ƒå‡†å¤‡
+### 2.1 »·¾³×¼±¸
 
-- **Windows**ï¼šMinGW-w64 / MSYS2ï¼Œç¡®ä¿ `gcc` åœ¨ PATH
-- **STM32**ï¼šKeil MDK-ARM 5.36+
+- **Windows**£ºMinGW-w64 / MSYS2£¬È·±£ `gcc` ÔÚ PATH
+- **STM32**£ºKeil MDK-ARM 5.36+
 
-### 2.2 ä¸‰åˆ†é’Ÿæ„å»º + æµ‹è¯•
+### 2.2 Èı·ÖÖÓ¹¹½¨ + ²âÊÔ
 
 ```powershell
-cd "d:\å·¥ä½œ\git_project\ark c compiler"
+cd "d:\¹¤×÷\git_project\ark c compiler"
 
-# 1. ç¼–è¯‘ arkcc
+# 1. ±àÒë arkcc
 make
 
-# 2. è·‘å…¨éƒ¨æµ‹è¯•
+# 2. ÅÜÈ«²¿²âÊÔ
 powershell -ExecutionPolicy Bypass -File examples\run_tests.ps1
 
-# 3. ç¼–è¯‘ä½ è‡ªå·±çš„ç¨‹åº
+# 3. ±àÒëÄã×Ô¼ºµÄ³ÌĞò
 .\arkcc.exe myprog.c -target c -S -o myprog.gen.c
 gcc myprog.gen.c -o myprog.exe
 .\myprog.exe
@@ -93,110 +102,124 @@ gcc myprog.gen.c -o myprog.exe
 
 ---
 
-## 3 å‘½ä»¤è¡Œå‚è€ƒ
+## 3 ÃüÁîĞĞ²Î¿¼
 
 ```
 arkcc <file.c|file.s> [options]
 ```
 
-| é€‰é¡¹ | è¯´æ˜ |
+| Ñ¡Ïî | ËµÃ÷ |
 | --- | --- |
-| `-o <file>` | è¾“å‡ºæ–‡ä»¶ |
-| `-S` | åªç”Ÿæˆæ–‡æœ¬æ±‡ç¼–/æºç  |
-| `-target <name>` | `arm`ï¼ˆé»˜è®¤ï¼‰ã€`x86_64`ã€`riscv32`ã€`c` |
-| `-I <dir>` | `#include` æœç´¢è·¯å¾„ï¼ˆå¯å¤šæ¬¡ï¼‰ |
-| `-v` | è¯¦ç»†æ¨¡å¼ |
-| `--list-backends` | åˆ—å‡ºåç«¯ |
+| `-o <file>` | Êä³öÎÄ¼ş |
+| `-S` | Ö»Éú³ÉÎÄ±¾»ã±à/Ô´Âë |
+| `-c` | Ö»±àÒë²»Á´½Ó£¨Éú³É `.ark_obj`£© |
+| `-E` | Ö»Ô¤´¦Àí£¬Êä³öÕ¹¿ªºóµÄÔ´Âë |
+| `-link a.o b.o` | Á´½Ó¶à¸ö `.ark_obj`£¨Óë `-o` ÅäºÏ£© |
+| `-target <name>` | `arm`£¨Ä¬ÈÏ£©¡¢`x86_64`¡¢`riscv32`¡¢`c` |
+| `-I <dir>` | `#include` ËÑË÷Â·¾¶£¨¿É¶à´Î£© |
+| `-O0` / `-O1` / `-O2` | ÓÅ»¯¼¶±ğ£¨0=ÎŞ, 1=³£Á¿ÕÛµş+DCE, 2=¼¤½ø£¬Ïê¼ûµÚ 8 ÕÂ£© |
+| `-g` | Éú³É DWARF µ÷ÊÔĞÅÏ¢£¨`.file/.loc/.cfi/.size`£© |
+| `-config <file>` | ¼ÓÔØ INI ÅäÖÃÎÄ¼ş£¨Ä¬ÈÏ `arkcc.cfg`£¬Ïê¼ûµÚ 7 ÕÂ£© |
+| `-f<feature>` | ¿ªÆôÌØĞÔ£¨`vla/complex/wchar/trigraph/fpu_hw/dwarf/opt_constfold/opt_dce/...`£© |
+| `-fno-<feature>` | ¹Ø±ÕÌØĞÔ |
+| `-Wno-unused` | ÒÖÖÆÎ´Ê¹ÓÃ¾¯¸æ |
+| `-v` | ÏêÏ¸Ä£Ê½£¨´òÓ¡µ±Ç° `g_config`£© |
+| `--list-backends` | ÁĞ³öºó¶Ë |
 
-`.s`/`.S` æ±‡ç¼–æ–‡ä»¶ç›´æ¥ç¼–è¯‘ä¸ºäºŒè¿›åˆ¶ï¼Œè·³è¿‡å‰ç«¯æµæ°´çº¿ã€‚
+`.s`/`.S` »ã±àÎÄ¼şÖ±½Ó±àÒëÎª¶ş½øÖÆ£¬Ìø¹ıÇ°¶ËÁ÷Ë®Ïß¡£
 
----
-
-## 4 C99 è¯­è¨€ç‰¹æ€§æ”¯æŒ
-
-### 4.1 ç±»å‹ç³»ç»Ÿ
-
-| ç‰¹æ€§ | çŠ¶æ€ |
-| --- | :---: |
-| `void/char/short/int/long/long long` + `signed/unsigned` | âœ“ |
-| `_Bool` / `<stdbool.h>` | âœ“ |
-| `float` / `double`ï¼ˆå››åˆ™è¿ç®—ã€æ¯”è¾ƒã€è½¬æ¢ï¼›`double` çœŸ 64 ä½ç²¾åº¦ï¼‰ | âœ“ |
-| ä¸€ç»´/å¤šç»´æ•°ç»„ã€æŒ‡é’ˆã€å‡½æ•°æŒ‡é’ˆ | âœ“ |
-| æ•°ç»„é€€åŒ–ä¸ºæŒ‡é’ˆ | âœ“ |
-| æ•°ç»„ç»´åº¦æ”¯æŒå¸¸é‡è¡¨è¾¾å¼ `int arr[SIZE+2]` / `int arr[3*sizeof(int)]` | âœ“ |
-| `struct` / `union`ï¼ˆå« `.`/`->`ï¼‰ | âœ“ |
-| åŒ¿å struct/union å­—æ®µæå‡ï¼ˆCMSIS å¯„å­˜å™¨å®šä¹‰ï¼‰ | âœ“ |
-| ä½åŸŸ `int flag:3;`ï¼ˆçœŸæ­£ä½æ‰“åŒ…/è§£åŒ…ï¼‰ | âœ“ |
-| æŸ”æ€§æ•°ç»„æˆå‘˜ `char data[];` | âœ“ |
-| `enum` / `typedef` | âœ“ |
-| `const/volatile/restrict/inline` | âœ“ |
-| `static/extern/auto/register` | âœ“ |
-| å‡½æ•°å†… `static` å±€éƒ¨å˜é‡æŒä¹…åŒ– | âœ“ |
-| å¼ºåˆ¶ç±»å‹è½¬æ¢ `(type)expr` | âœ“ |
-| `sizeof(type)` / `sizeof expr` | âœ“ |
-| å®Œæ•´éšå¼ç±»å‹è½¬æ¢ + æ•´æ•°æå‡ï¼ˆusual arithmetic conversionsï¼‰ | âœ“ |
-
-### 4.2 è¿ç®—ç¬¦
-
-å…¨éƒ¨ C99 è¿ç®—ç¬¦ï¼šç®—æœ¯ `+ - * / %`ã€æ¯”è¾ƒ `== != < > <= >=`ã€é€»è¾‘ `&& || !`ï¼ˆçŸ­è·¯ï¼‰ã€ä½ `& | ^ ~ << >>`ã€èµ‹å€¼ `=` ä¸å…¨éƒ¨å¤åˆèµ‹å€¼ã€`++ --`ã€`?:`ã€`,`ã€`&`å–åœ°å€ / `*`è§£å¼•ç”¨ã€`.`/`->`ã€`sizeof`ã€‚
-
-**é™¤æ³•/å–æ¨¡**ï¼šæœ‰ç¬¦å·èµ° `__aeabi_idiv/idivmod`ï¼Œæ— ç¬¦å·èµ° `__aeabi_uidiv/uidivmod`ã€‚
-
-**64 ä½è¿ç®—**ï¼š`long long` è¿ç®—èµ° `__aeabi_ladd/lsub/lmul/ldiv/ldivmod`ã€‚
-
-**éšå¼ç±»å‹è½¬æ¢**ï¼šå®Œæ•´å®ç° usual arithmetic conversions ä¸æ•´æ•°æå‡ï¼Œunsigned/signed æ··åˆæŒ‰ ARM ABI è§„åˆ™å¤„ç†ã€‚
-
-### 4.3 è¯­å¥
-
-`if/else`ã€`while/do-while/for`ã€`switch/case/default`ï¼ˆæ”¯æŒ `case` å¸¸é‡è¡¨è¾¾å¼ï¼‰ã€`break/continue/return`ã€`goto`+æ ‡ç­¾ã€C99 å—å†…ä»»æ„ä½ç½®å£°æ˜ã€`for(int i=0;...)`ã€‚
-
-### 4.4 å‡½æ•°
-
-å®šä¹‰ã€å£°æ˜ã€è°ƒç”¨ã€é€’å½’ã€å¤šäº 4 ä¸ªå‚æ•°ï¼ˆä¸¥æ ¼ AAPCSï¼Œå¤šä½™èµ°æ ˆï¼‰ã€åŸå‹æ£€æŸ¥ã€å˜å‚ `...`ã€å¤šæ–‡ä»¶åˆ†åˆ«ç¼–è¯‘+é“¾æ¥ã€**ç»“æ„ä½“æŒ‰å€¼ä¼ é€’/è¿”å›**ï¼ˆé€šè¿‡éšè—æŒ‡é’ˆå‚æ•°ï¼‰ã€`printf` å‚æ•°ä¸æˆªæ–­ï¼ˆ64 ä½ `long long` æ­£ç¡®ä¼ é€’ï¼‰ã€‚
-
-### 4.5 åˆå§‹åŒ–
-
-| åˆå§‹åŒ–æ–¹å¼ | çŠ¶æ€ |
-| --- | :---: |
-| æ ‡é‡ `int x = 42;` | âœ“ |
-| èšåˆ `int a[] = {1,2,3};` | âœ“ |
-| åµŒå¥—èšåˆ `int m[2][3] = {{1,2,3},{4,5,6}};` | âœ“ |
-| æŒ‡å®šåˆå§‹åŒ– `.x=1, [2]=5` | âœ“ |
-| å­—ç¬¦ä¸² `char s[] = "hi";` | âœ“ |
-| å¤åˆå­—é¢é‡ `(int[]){1,2,3}` | âœ“ |
-| ç»“æ„ä½“æŒ‰å€¼ `struct P p = {1, 2};` | âœ“ |
-| å…¨å±€å˜é‡éå­—é¢é‡åˆå€¼ï¼ˆå¸¸é‡è¡¨è¾¾å¼æŠ˜å  `eval_const_expr`ï¼‰ | âœ“ |
-
-### 4.6 é¢„å¤„ç†
-
-å¯¹è±¡å®ã€å‡½æ•°å®ï¼ˆ`#` å­—ç¬¦ä¸²åŒ–ã€`##` ä¸²æ¥ï¼‰ã€`#if/#elif/#else/#endif/#ifdef/#ifndef`ã€`#undef/#error/#warning/#pragma`ã€åµŒå¥— `#include`ï¼ˆâ‰¤8 å±‚ï¼‰ã€`-I` æœç´¢è·¯å¾„ã€`__VA_ARGS__`ã€é¢„å®šä¹‰å® `__FILE__/__LINE__/__STDC__/__ARK_CC__`ã€‚
-
-`#pragma pack(n)` / `#pragma pack(push,n)` / `#pragma pack(pop)` æ§åˆ¶ç»“æ„ä½“å¯¹é½ã€‚
-
-armcc å…¼å®¹é¢„å®šä¹‰å®ï¼š`__ARMCC_VERSION`ã€`__arm__`ã€`__thumb__`ã€`__TARGET_ARCH_7_M`ã€`__TARGET_ARCH_7E_M`ã€`__TARGET_FPU_VFP`ã€`__BIG_ENDIAN`ã€`__LITTLE_ENDIAN__`ã€`__sizeof_int`ã€`__sizeof_ptr`ï¼ˆè¯¦è§ç¬¬ 5 ç« ï¼‰ã€‚
+ÅäÖÃÀà²ÎÊı£¨`-O/-g/-f/-fno-/-config`£©µÄÓÅÏÈ¼¶Îª£º**ÃüÁîĞĞ > ÅäÖÃÎÄ¼ş > ±àÒëÆÚÄ¬ÈÏ**£¨Ïê¼ûµÚ 7 ÕÂ£©¡£
 
 ---
 
-## 5 ARM Compiler 5 å…¼å®¹æ‰©å±•
+## 4 C99 ÓïÑÔÌØĞÔÖ§³Ö
 
-arkcc å…¼å®¹ ARM Compiler 5 (armcc) çš„å¸¸ç”¨å…³é”®å­—ã€`__attribute__`ã€`#pragma`ã€é¢„å®šä¹‰å®ä¸å†…è”æ±‡ç¼–ï¼Œä¾¿äºç›´æ¥ç¼–è¯‘ CMSIS/HAL é£æ ¼çš„åµŒå…¥å¼æºç ã€‚
+### 4.1 ÀàĞÍÏµÍ³
 
-### 5.1 å…³é”®å­—æ€»è§ˆ
+| ÌØĞÔ | ×´Ì¬ |
+| --- | :---: |
+| `void/char/short/int/long/long long` + `signed/unsigned` | ? |
+| `_Bool` / `<stdbool.h>` | ? |
+| `float` / `double`£¨ËÄÔòÔËËã¡¢±È½Ï¡¢×ª»»£»`double` Õæ 64 Î»¾«¶È£© | ? |
+| `_Complex` ¸´Êı£¨`_Complex double`/`_Complex float`£¬Í¸´« gcc£¬`sizeof(_Complex double)==16`£© | ? |
+| ¿í×Ö·û `wchar_t` + `L"..."` ¿í×Ö·û´® + `L'...'` ¿í×Ö·û×ÖÃæÁ¿ | ? |
+| Ò»Î¬/¶àÎ¬Êı×é¡¢Ö¸Õë¡¢º¯ÊıÖ¸Õë | ? |
+| Êı×éÍË»¯ÎªÖ¸Õë | ? |
+| Êı×éÎ¬¶ÈÖ§³Ö³£Á¿±í´ïÊ½ `int arr[SIZE+2]` / `int arr[3*sizeof(int)]` | ? |
+| ±ä³¤Êı×é VLA `int a[n]`£¨`IR_ALLOCA` Õ»¶¯Ì¬·ÖÅä£¬8 ×Ö½Ú¶ÔÆë£© | ? |
+| `struct` / `union`£¨º¬ `.`/`->`£© | ? |
+| ÄäÃû struct/union ×Ö¶ÎÌáÉı£¨CMSIS ¼Ä´æÆ÷¶¨Òå£© | ? |
+| Î»Óò `int flag:3;`£¨ÕæÕıÎ»´ò°ü/½â°ü£© | ? |
+| ÈáĞÔÊı×é³ÉÔ± `char data[];` | ? |
+| `enum` / `typedef` | ? |
+| `const/volatile/restrict/inline` | ? |
+| `static/extern/auto/register` | ? |
+| º¯ÊıÄÚ `static` ¾Ö²¿±äÁ¿³Ö¾Ã»¯ | ? |
+| Ç¿ÖÆÀàĞÍ×ª»» `(type)expr` | ? |
+| `sizeof(type)` / `sizeof expr` | ? |
+| ÍêÕûÒşÊ½ÀàĞÍ×ª»» + ÕûÊıÌáÉı£¨usual arithmetic conversions£© | ? |
 
-| å…³é”®å­— | æ”¯æŒ | è¯´æ˜ |
+### 4.2 ÔËËã·û
+
+È«²¿ C99 ÔËËã·û£ºËãÊõ `+ - * / %`¡¢±È½Ï `== != < > <= >=`¡¢Âß¼­ `&& || !`£¨¶ÌÂ·£©¡¢Î» `& | ^ ~ << >>`¡¢¸³Öµ `=` ÓëÈ«²¿¸´ºÏ¸³Öµ¡¢`++ --`¡¢`?:`¡¢`,`¡¢`&`È¡µØÖ· / `*`½âÒıÓÃ¡¢`.`/`->`¡¢`sizeof`¡£
+
+**³ı·¨/È¡Ä£**£ºÓĞ·ûºÅ×ß `__aeabi_idiv/idivmod`£¬ÎŞ·ûºÅ×ß `__aeabi_uidiv/uidivmod`¡£
+
+**64 Î»ÔËËã**£º`long long` ÔËËã×ß `__aeabi_ladd/lsub/lmul/ldiv/ldivmod`¡£
+
+**ÒşÊ½ÀàĞÍ×ª»»**£ºÍêÕûÊµÏÖ usual arithmetic conversions ÓëÕûÊıÌáÉı£¬unsigned/signed »ìºÏ°´ ARM ABI ¹æÔò´¦Àí¡£
+
+### 4.3 Óï¾ä
+
+`if/else`¡¢`while/do-while/for`¡¢`switch/case/default`£¨Ö§³Ö `case` ³£Á¿±í´ïÊ½£©¡¢`break/continue/return`¡¢`goto`+±êÇ©¡¢C99 ¿éÄÚÈÎÒâÎ»ÖÃÉùÃ÷¡¢`for(int i=0;...)`¡£
+
+### 4.4 º¯Êı
+
+¶¨Òå¡¢ÉùÃ÷¡¢µ÷ÓÃ¡¢µİ¹é¡¢¶àÓÚ 4 ¸ö²ÎÊı£¨ÑÏ¸ñ AAPCS£¬¶àÓà×ßÕ»£©¡¢Ô­ĞÍ¼ì²é¡¢±ä²Î `...`¡¢¶àÎÄ¼ş·Ö±ğ±àÒë+Á´½Ó¡¢**½á¹¹Ìå°´Öµ´«µİ/·µ»Ø**£¨Í¨¹ıÒş²ØÖ¸Õë²ÎÊı£©¡¢`printf` ²ÎÊı²»½Ø¶Ï£¨64 Î» `long long` ÕıÈ·´«µİ£©¡£
+
+### 4.5 ³õÊ¼»¯
+
+| ³õÊ¼»¯·½Ê½ | ×´Ì¬ |
+| --- | :---: |
+| ±êÁ¿ `int x = 42;` | ? |
+| ¾ÛºÏ `int a[] = {1,2,3};` | ? |
+| Ç¶Ì×¾ÛºÏ `int m[2][3] = {{1,2,3},{4,5,6}};` | ? |
+| Ö¸¶¨³õÊ¼»¯ `.x=1, [2]=5` | ? |
+| ×Ö·û´® `char s[] = "hi";` | ? |
+| ¸´ºÏ×ÖÃæÁ¿ `(int[]){1,2,3}` | ? |
+| ½á¹¹Ìå°´Öµ `struct P p = {1, 2};` | ? |
+| È«¾Ö±äÁ¿·Ç×ÖÃæÁ¿³õÖµ£¨³£Á¿±í´ïÊ½ÕÛµş `eval_const_expr`£© | ? |
+
+### 4.6 Ô¤´¦Àí
+
+¶ÔÏóºê¡¢º¯Êıºê£¨`#` ×Ö·û´®»¯¡¢`##` ´®½Ó£©¡¢`#if/#elif/#else/#endif/#ifdef/#ifndef`¡¢`#undef/#error/#warning/#pragma`¡¢Ç¶Ì× `#include`£¨¡Ü8 ²ã£©¡¢`-I` ËÑË÷Â·¾¶¡¢`__VA_ARGS__`¡¢Ô¤¶¨Òåºê `__FILE__/__LINE__/__STDC__/__ARK_CC__`¡¢**ÈıÔª×é trigraph**£¨9 ¸ö C99 ÈıÔª×é£º`??=`¡ú`#`¡¢`??(`¡ú`[`¡¢`??/`¡ú`\`¡¢`??)`¡ú`]`¡¢`??'`¡ú`^`¡¢`??<`¡ú`{`¡¢`??>`¡ú`}`¡¢`??!`¡ú`|`¡¢`??-`¡ú`~`£¬ÔÚ´Ê·¨·ÖÎöÇ°Ìæ»»£©¡£
+
+`#pragma pack(n)` / `#pragma pack(push,n)` / `#pragma pack(pop)` ¿ØÖÆ½á¹¹Ìå¶ÔÆë¡£
+
+armcc ¼æÈİÔ¤¶¨Òåºê£º`__ARMCC_VERSION`¡¢`__arm__`¡¢`__thumb__`¡¢`__TARGET_ARCH_7_M`¡¢`__TARGET_ARCH_7E_M`¡¢`__TARGET_FPU_VFP`¡¢`__BIG_ENDIAN`¡¢`__LITTLE_ENDIAN__`¡¢`__sizeof_int`¡¢`__sizeof_ptr`£¨Ïê¼ûµÚ 5 ÕÂ£©¡£
+
+---
+
+## 5 ARM Compiler 5 ¼æÈİÀ©Õ¹
+
+arkcc ¼æÈİ ARM Compiler 5 (armcc) µÄ³£ÓÃ¹Ø¼ü×Ö¡¢`__attribute__`¡¢`#pragma`¡¢Ô¤¶¨ÒåºêÓëÄÚÁª»ã±à£¬±ãÓÚÖ±½Ó±àÒë CMSIS/HAL ·ç¸ñµÄÇ¶ÈëÊ½Ô´Âë¡£
+
+### 5.1 ¹Ø¼ü×Ö×ÜÀÀ
+
+| ¹Ø¼ü×Ö | Ö§³Ö | ËµÃ÷ |
 | --- | :---: | --- |
-| `__svc(n)` | âœ“ | ç”Ÿæˆ `SVC #n` |
-| `__irq` | âœ“ | ä¸­æ–­åºè¨€ `PUSH {r0-r3,r12,lr}` / ç»“è¯­ `POP {r0-r3,r12,pc}` |
-| `__weak` | âœ“ | å¼±ç¬¦å· `.weak <name>` |
-| `__naked` | âœ“ | æ— åºè¨€/ç»“è¯­ |
-| `__packed` | âœ“ | ç‹¬ç«‹å…³é”®å­—å½¢å¼ï¼ˆç´§å‡‘å¸ƒå±€ï¼‰ |
-| `__align(n)` | âœ“ | çœŸæ­£ç”Ÿæ•ˆçš„å¯¹é½æ§åˆ¶ |
-| `__at(addr)` | âœ“ | ç»å¯¹åœ°å€ |
-| `__forceinline` | âœ“ | è§£æï¼ˆå¼ºåˆ¶å†…è”æç¤ºï¼‰ |
-| `__softfp` | âœ“ | è§£æï¼ˆè½¯æµ®ç‚¹è°ƒç”¨çº¦å®šæç¤ºï¼‰ |
-| `__asm` | âœ“ | æ•´å‡½æ•°ä½“æ±‡ç¼–ï¼ˆè§ 5.8ï¼‰ |
+| `__svc(n)` | ? | Éú³É `SVC #n` |
+| `__irq` | ? | ÖĞ¶ÏĞòÑÔ `PUSH {r0-r3,r12,lr}` / ½áÓï `POP {r0-r3,r12,pc}` |
+| `__weak` | ? | Èõ·ûºÅ `.weak <name>` |
+| `__naked` | ? | ÎŞĞòÑÔ/½áÓï |
+| `__packed` | ? | ¶ÀÁ¢¹Ø¼ü×ÖĞÎÊ½£¨½ô´Õ²¼¾Ö£© |
+| `__align(n)` | ? | ÕæÕıÉúĞ§µÄ¶ÔÆë¿ØÖÆ |
+| `__at(addr)` | ? | ¾ø¶ÔµØÖ· |
+| `__forceinline` | ? | ½âÎö£¨Ç¿ÖÆÄÚÁªÌáÊ¾£© |
+| `__softfp` | ? | ½âÎö£¨Èí¸¡µãµ÷ÓÃÔ¼¶¨ÌáÊ¾£© |
+| `__asm` | ? | Õûº¯ÊıÌå»ã±à£¨¼û 5.8£© |
 
-### 5.2 `__svc(n)` SVC å£°æ˜
+### 5.2 `__svc(n)` SVC ÉùÃ÷
 
 ```c
 int32  __svc ( 0x10 ) svcrt_call_dev_io(uint32 *p);
@@ -204,61 +227,61 @@ void   __svc ( 0x11 ) svcrt_call_task_ctrl(uint32 fn, uint32 p);
 uint32 __svc ( 0x12 ) svcrt_call_sys_info(uint32 fn);
 ```
 
-ARM åç«¯ç”Ÿæˆ `SVC #n`ï¼ˆå‚æ•°èµ° r0ï¼Œè¿”å›å€¼ r0ï¼‰ã€‚
+ARM ºó¶ËÉú³É `SVC #n`£¨²ÎÊı×ß r0£¬·µ»ØÖµ r0£©¡£
 
-### 5.3 `__irq` ä¸­æ–­å‡½æ•°
+### 5.3 `__irq` ÖĞ¶Ïº¯Êı
 
 ```c
 __irq void TIM2_IRQHandler(void) {
-    /* è‡ªåŠ¨ç”Ÿæˆ PUSH {r0-r3,r12,lr} / POP {r0-r3,r12,pc} */
+    /* ×Ô¶¯Éú³É PUSH {r0-r3,r12,lr} / POP {r0-r3,r12,pc} */
 }
 ```
 
-### 5.4 `__weak` å¼±ç¬¦å·
+### 5.4 `__weak` Èõ·ûºÅ
 
 ```c
 __weak void Default_Handler(void) { }
 ```
 
-ARM åç«¯ç”Ÿæˆ `.weak Default_Handler`ã€‚
+ARM ºó¶ËÉú³É `.weak Default_Handler`¡£
 
-### 5.5 `__naked` è£¸å‡½æ•°
+### 5.5 `__naked` Âãº¯Êı
 
 ```c
 __naked void boot_jump(void) {
-    /* æ— åºè¨€/ç»“è¯­ï¼Œä¸ç”Ÿæˆ PUSH/POP */
+    /* ÎŞĞòÑÔ/½áÓï£¬²»Éú³É PUSH/POP */
 }
 ```
 
-### 5.6 `__packed` ä¸ `__align`
+### 5.6 `__packed` Óë `__align`
 
-`__packed` å¯ä½œä¸ºç‹¬ç«‹å…³é”®å­—ä½¿ç”¨ï¼ˆä¸ `__attribute__((packed))` ç­‰ä»·ï¼‰ï¼š
+`__packed` ¿É×÷Îª¶ÀÁ¢¹Ø¼ü×ÖÊ¹ÓÃ£¨Óë `__attribute__((packed))` µÈ¼Û£©£º
 
 ```c
 __packed struct P { char a; int b; };   /* sizeof = 5 */
 ```
 
-`__align(n)` ä¸ `__attribute__((aligned(n)))` å‡çœŸæ­£ç”Ÿæ•ˆï¼š
+`__align(n)` Óë `__attribute__((aligned(n)))` ¾ùÕæÕıÉúĞ§£º
 
 ```c
-__align(8) int buf[4];                  /* 8 å­—èŠ‚å¯¹é½ */
+__align(8) int buf[4];                  /* 8 ×Ö½Ú¶ÔÆë */
 struct S { int x; } __attribute__((aligned(16)));
 ```
 
-### 5.7 `__at(addr)` ç»å¯¹åœ°å€
+### 5.7 `__at(addr)` ¾ø¶ÔµØÖ·
 
-ä¸‰ç§ç­‰ä»·å†™æ³•ï¼ŒæŠŠå˜é‡/å‡½æ•°æ”¾åˆ°æŒ‡å®šåœ°å€ï¼š
+ÈıÖÖµÈ¼ÛĞ´·¨£¬°Ñ±äÁ¿/º¯Êı·Åµ½Ö¸¶¨µØÖ·£º
 
 ```c
-__at(0x20000000) int shared_flag;                       /* å…³é”®å­—å½¢å¼ */
-__attribute__((at(0x20000004))) int ring_buf[8];        /* å±æ€§å½¢å¼ */
+__at(0x20000000) int shared_flag;                       /* ¹Ø¼ü×ÖĞÎÊ½ */
+__attribute__((at(0x20000004))) int ring_buf[8];        /* ÊôĞÔĞÎÊ½ */
 #pragma location=0x0800F000
-const char boot_sig[16] = "ARKCC-BOOT";                 /* pragma å½¢å¼ */
+const char boot_sig[16] = "ARKCC-BOOT";                 /* pragma ĞÎÊ½ */
 ```
 
-### 5.8 `__asm` æ•´å‡½æ•°ä½“æ±‡ç¼–
+### 5.8 `__asm` Õûº¯ÊıÌå»ã±à
 
-armcc é£æ ¼çš„æ•´å‡½æ•°ä½“æ±‡ç¼–ï¼Œå‡½æ•°ä½“ç”±æ±‡ç¼–å­—ç¬¦ä¸²æ„æˆï¼Œç›´æ¥é€ä¼ åˆ°ç”Ÿæˆçš„ `.s`ï¼š
+armcc ·ç¸ñµÄÕûº¯ÊıÌå»ã±à£¬º¯ÊıÌåÓÉ»ã±à×Ö·û´®¹¹³É£¬Ö±½ÓÍ¸´«µ½Éú³ÉµÄ `.s`£º
 
 ```c
 __asm void NOP(void) {
@@ -272,7 +295,7 @@ __asm void enable_irq(void) {
 }
 ```
 
-é€‚ç”¨äº startup æ–‡ä»¶ã€å‘é‡è¡¨ã€åº•å±‚åŸå­æ“ä½œç­‰æ— æ³•ç”¨ C è¡¨è¾¾çš„åœºæ™¯ã€‚
+ÊÊÓÃÓÚ startup ÎÄ¼ş¡¢ÏòÁ¿±í¡¢µ×²ãÔ­×Ó²Ù×÷µÈÎŞ·¨ÓÃ C ±í´ïµÄ³¡¾°¡£
 
 ### 5.9 `__forceinline` / `__softfp`
 
@@ -281,74 +304,74 @@ __forceinline static int add(int a, int b) { return a + b; }
 __softfp float fast_fma(float a, float b, float c);
 ```
 
-ä¸¤è€…å‡è¢«è§£æå¹¶é€ä¼ ï¼Œ`__forceinline` ä½œä¸ºå†…è”æç¤ºï¼Œ`__softfp` æ ‡è®°è½¯æµ®ç‚¹è°ƒç”¨çº¦å®šã€‚
+Á½Õß¾ù±»½âÎö²¢Í¸´«£¬`__forceinline` ×÷ÎªÄÚÁªÌáÊ¾£¬`__softfp` ±ê¼ÇÈí¸¡µãµ÷ÓÃÔ¼¶¨¡£
 
-### 5.10 `__attribute__` æ‰©å±•
+### 5.10 `__attribute__` À©Õ¹
 
-| å±æ€§ | æ”¯æŒ | è¯´æ˜ |
+| ÊôĞÔ | Ö§³Ö | ËµÃ÷ |
 | --- | :---: | --- |
-| `section("name")` | âœ“ | `.section` æŒ‡ä»¤ |
-| `aligned(n)` | âœ“ | å¯¹é½æ§åˆ¶ |
-| `packed` | âœ“ | ç´§å‡‘å¸ƒå±€ |
-| `noreturn` | âœ“ | ä¸è¿”å› |
-| `weak` | âœ“ | å¼±ç¬¦å· |
-| `naked` | âœ“ | è£¸å‡½æ•° |
-| `interrupt` | âœ“ | ä¸­æ–­å‡½æ•° |
-| `used` | âœ“ | é˜²æ­¢ç¬¦å·è¢«é“¾æ¥å™¨è£æ‰ |
-| `unused` | âœ“ | æŠ‘åˆ¶æœªä½¿ç”¨è­¦å‘Š |
-| `alias("target")` | âœ“ | å‡½æ•°åˆ«å |
-| `constructor` | âœ“ | ARM åç«¯ç”Ÿæˆ `.init_array`ï¼Œmain å‰æ‰§è¡Œ |
-| `destructor` | âœ“ | ARM åç«¯ç”Ÿæˆ `.fini_array`ï¼Œmain åæ‰§è¡Œ |
-| `deprecated` | âœ“ | é€ä¼ å¼ƒç”¨æ ‡è®° |
-| `format(printf,...)` | âœ“ | é€ä¼  printf æ ¼å¼æ£€æŸ¥ |
+| `section("name")` | ? | `.section` Ö¸Áî |
+| `aligned(n)` | ? | ¶ÔÆë¿ØÖÆ |
+| `packed` | ? | ½ô´Õ²¼¾Ö |
+| `noreturn` | ? | ²»·µ»Ø |
+| `weak` | ? | Èõ·ûºÅ |
+| `naked` | ? | Âãº¯Êı |
+| `interrupt` | ? | ÖĞ¶Ïº¯Êı |
+| `used` | ? | ·ÀÖ¹·ûºÅ±»Á´½ÓÆ÷²Ãµô |
+| `unused` | ? | ÒÖÖÆÎ´Ê¹ÓÃ¾¯¸æ |
+| `alias("target")` | ? | º¯Êı±ğÃû |
+| `constructor` | ? | ARM ºó¶ËÉú³É `.init_array`£¬main Ç°Ö´ĞĞ |
+| `destructor` | ? | ARM ºó¶ËÉú³É `.fini_array`£¬main ºóÖ´ĞĞ |
+| `deprecated` | ? | Í¸´«ÆúÓÃ±ê¼Ç |
+| `format(printf,...)` | ? | Í¸´« printf ¸ñÊ½¼ì²é |
 
-ç¤ºä¾‹ï¼š
+Ê¾Àı£º
 
 ```c
-__attribute__((used)) int retain_me = 1;             /* é˜²è£å‰ª */
-__attribute__((unused)) static int dbg;              /* æŠ‘åˆ¶è­¦å‘Š */
-void foo(void) __attribute__((alias("foo_impl")));   /* åˆ«å */
-__attribute__((constructor)) void early_init(void) { /* main å‰è¿è¡Œ */
-    /* åˆå§‹åŒ–ç¡¬ä»¶ */
+__attribute__((used)) int retain_me = 1;             /* ·À²Ã¼ô */
+__attribute__((unused)) static int dbg;              /* ÒÖÖÆ¾¯¸æ */
+void foo(void) __attribute__((alias("foo_impl")));   /* ±ğÃû */
+__attribute__((constructor)) void early_init(void) { /* main Ç°ÔËĞĞ */
+    /* ³õÊ¼»¯Ó²¼ş */
 }
 __attribute__((deprecated("use new_api"))) void old_api(void);
 __attribute__((format(printf, 1, 2))) void logf(const char *fmt, ...);
 ```
 
-### 5.11 å†…è”æ±‡ç¼–
+### 5.11 ÄÚÁª»ã±à
 
-æ”¯æŒåŸºæœ¬æ ¼å¼ä¸æ‰©å±•æ ¼å¼ï¼ˆæ“ä½œæ•°/çº¦æŸ/clobberï¼‰ï¼š
+Ö§³Ö»ù±¾¸ñÊ½ÓëÀ©Õ¹¸ñÊ½£¨²Ù×÷Êı/Ô¼Êø/clobber£©£º
 
 ```c
-/* åŸºæœ¬æ ¼å¼ */
+/* »ù±¾¸ñÊ½ */
 asm volatile("nop");
 asm("bkpt #0");
 
-/* æ‰©å±•æ ¼å¼ï¼šæ“ä½œæ•°/çº¦æŸ/clobber */
+/* À©Õ¹¸ñÊ½£º²Ù×÷Êı/Ô¼Êø/clobber */
 asm volatile("msr control,%0" : : "r"(val) : "memory");
 asm volatile("mrs %0, primask" : "=r"(primask));
 ```
 
-åç«¯å¤„ç†ï¼š
+ºó¶Ë´¦Àí£º
 
-- **C åç«¯**ï¼šå®Œæ•´æ”¯æŒæ“ä½œæ•°é€ä¼ ï¼ŒæŠŠå†…è”æ±‡ç¼–åŸæ ·åµŒå…¥ç”Ÿæˆçš„ `.gen.c`ï¼Œç”± host gcc æ±‡ç¼–ã€‚
-- **ARM åç«¯**ï¼šæ–‡æœ¬é€ä¼ ï¼ŒæŠŠæ±‡ç¼–å­—ç¬¦ä¸²ç›´æ¥å†™å…¥ `.s`ã€‚
+- **C ºó¶Ë**£ºÍêÕûÖ§³Ö²Ù×÷ÊıÍ¸´«£¬°ÑÄÚÁª»ã±àÔ­ÑùÇ¶ÈëÉú³ÉµÄ `.gen.c`£¬ÓÉ host gcc »ã±à¡£
+- **ARM ºó¶Ë**£ºÎÄ±¾Í¸´«£¬°Ñ»ã±à×Ö·û´®Ö±½ÓĞ´Èë `.s`¡£
 
-### 5.12 `#pragma` æŒ‡ä»¤
+### 5.12 `#pragma` Ö¸Áî
 
-| pragma | æ”¯æŒ | è¯´æ˜ |
+| pragma | Ö§³Ö | ËµÃ÷ |
 | --- | :---: | --- |
-| `pack(n)` / `pack(push,n)` / `pack(pop)` | âœ“ | ç»“æ„ä½“å¯¹é½æ§åˆ¶ |
-| `anon_unions` | âœ“ | åŒ¿å union å…¼å®¹ |
-| `location=addr` | âœ“ | ç»å¯¹åœ°å€ |
-| `diag_suppress` | âœ“ | è¯Šæ–­æŠ‘åˆ¶ |
-| `arm` / `thumb` | âœ“ | æŒ‡ä»¤é›†åˆ‡æ¢æç¤º |
-| `import(__use_no_semihosting)` | âœ“ | åŠä¸»æœºç¦ç”¨ |
-| `push` / `pop` | âœ“ | ç¼–è¯‘é€‰é¡¹æ ˆ |
-| `O0` / `O2` / `O3` | âœ“ | ä¼˜åŒ–ç­‰çº§æç¤º |
-| `optimize` | âœ“ | ä¼˜åŒ–æ§åˆ¶ |
+| `pack(n)` / `pack(push,n)` / `pack(pop)` | ? | ½á¹¹Ìå¶ÔÆë¿ØÖÆ |
+| `anon_unions` | ? | ÄäÃû union ¼æÈİ |
+| `location=addr` | ? | ¾ø¶ÔµØÖ· |
+| `diag_suppress` | ? | Õï¶ÏÒÖÖÆ |
+| `arm` / `thumb` | ? | Ö¸Áî¼¯ÇĞ»»ÌáÊ¾ |
+| `import(__use_no_semihosting)` | ? | °ëÖ÷»ú½ûÓÃ |
+| `push` / `pop` | ? | ±àÒëÑ¡ÏîÕ» |
+| `O0` / `O2` / `O3` | ? | ÓÅ»¯µÈ¼¶ÌáÊ¾ |
+| `optimize` | ? | ÓÅ»¯¿ØÖÆ |
 
-ç¤ºä¾‹ï¼š
+Ê¾Àı£º
 
 ```c
 #pragma pack(1)
@@ -359,7 +382,7 @@ struct Packed { char a; int b; };   /* sizeof = 5 */
 struct Reg {
     union { struct { unsigned a:1; unsigned b:1; }; unsigned v; };
 };
-#pragma anon_unions   /* é»˜è®¤å³æ”¯æŒï¼Œpragma ç”¨äºæ˜¾å¼å…¼å®¹ armcc */
+#pragma anon_unions   /* Ä¬ÈÏ¼´Ö§³Ö£¬pragma ÓÃÓÚÏÔÊ½¼æÈİ armcc */
 
 #pragma diag_suppress 1, 2, 3
 #pragma arm
@@ -370,48 +393,48 @@ struct Reg {
 #pragma pop
 ```
 
-### 5.13 é¢„å®šä¹‰å®
+### 5.13 Ô¤¶¨Òåºê
 
-| å® | å€¼/è¯´æ˜ |
+| ºê | Öµ/ËµÃ÷ |
 | --- | --- |
-| `__ARMCC_VERSION` | armcc ç‰ˆæœ¬å· |
-| `__arm__` | ARM æ¨¡å¼æ ‡è¯† |
-| `__thumb__` | Thumb æ¨¡å¼æ ‡è¯† |
-| `__TARGET_ARCH_7_M` | Cortex-M æ¶æ„æ ‡è¯†ï¼ˆv7-Mï¼‰ |
-| `__TARGET_ARCH_7E_M` | Cortex-M æ¶æ„æ ‡è¯†ï¼ˆv7E-Mï¼Œå« DSPï¼‰ |
-| `__TARGET_FPU_VFP` | VFP æ ‡è¯† |
-| `__BIG_ENDIAN` | å¤§ç«¯æ¨¡å¼ |
-| `__LITTLE_ENDIAN__` | å°ç«¯æ¨¡å¼ |
-| `__sizeof_int` | `int` å­—èŠ‚æ•° |
-| `__sizeof_ptr` | æŒ‡é’ˆå­—èŠ‚æ•° |
+| `__ARMCC_VERSION` | armcc °æ±¾ºÅ |
+| `__arm__` | ARM Ä£Ê½±êÊ¶ |
+| `__thumb__` | Thumb Ä£Ê½±êÊ¶ |
+| `__TARGET_ARCH_7_M` | Cortex-M ¼Ü¹¹±êÊ¶£¨v7-M£© |
+| `__TARGET_ARCH_7E_M` | Cortex-M ¼Ü¹¹±êÊ¶£¨v7E-M£¬º¬ DSP£© |
+| `__TARGET_FPU_VFP` | VFP ±êÊ¶ |
+| `__BIG_ENDIAN` | ´ó¶ËÄ£Ê½ |
+| `__LITTLE_ENDIAN__` | Ğ¡¶ËÄ£Ê½ |
+| `__sizeof_int` | `int` ×Ö½ÚÊı |
+| `__sizeof_ptr` | Ö¸Õë×Ö½ÚÊı |
 
-å¦å¤– arkcc è‡ªèº«æä¾› `__ARK_CC__`ã€`__FILE__`ã€`__LINE__`ã€`__STDC__` ç­‰æ ‡å‡†é¢„å®šä¹‰å®ã€‚
+ÁíÍâ arkcc ×ÔÉíÌá¹© `__ARK_CC__`¡¢`__FILE__`¡¢`__LINE__`¡¢`__STDC__` µÈ±ê×¼Ô¤¶¨Òåºê¡£
 
-### 5.14 åŒ¿å struct/union å­—æ®µæå‡
+### 5.14 ÄäÃû struct/union ×Ö¶ÎÌáÉı
 
-æ”¯æŒ CMSIS å¯„å­˜å™¨å®šä¹‰å¸¸ç”¨çš„åŒ¿å struct/unionï¼Œå­—æ®µç›´æ¥æå‡åˆ°å¤–å±‚ä½œç”¨åŸŸï¼š
+Ö§³Ö CMSIS ¼Ä´æÆ÷¶¨Òå³£ÓÃµÄÄäÃû struct/union£¬×Ö¶ÎÖ±½ÓÌáÉıµ½Íâ²ã×÷ÓÃÓò£º
 
 ```c
 typedef struct {
     union {
-        __IO uint32_t SR;          /* æ•´ä½“è®¿é—® */
+        __IO uint32_t SR;          /* ÕûÌå·ÃÎÊ */
         struct {
-            __IO uint32_t CTS:1;   /* ä½è®¿é—® */
+            __IO uint32_t CTS:1;   /* Î»·ÃÎÊ */
             __IO uint32_t TXE:1;
         };
     };
 } USART_TypeDef;
 
 USART_Type* uart = (USART_TypeDef*)0x40011000;
-uart->SR = 0;        /* ç›´æ¥è®¿é—® union æˆå‘˜ */
-uart->TXE = 1;       /* ç›´æ¥è®¿é—®åŒ¿å struct æˆå‘˜ */
+uart->SR = 0;        /* Ö±½Ó·ÃÎÊ union ³ÉÔ± */
+uart->TXE = 1;       /* Ö±½Ó·ÃÎÊÄäÃû struct ³ÉÔ± */
 ```
 
 ---
 
-## 6 å¤šåç«¯æ¶æ„
+## 6 ¶àºó¶Ë¼Ü¹¹
 
-### 6.1 åç«¯æ¥å£ï¼ˆ`include/backend.h`ï¼‰
+### 6.1 ºó¶Ë½Ó¿Ú£¨`include/backend.h`£©
 
 ```c
 typedef struct ArkBackend {
@@ -422,40 +445,230 @@ typedef struct ArkBackend {
 } ArkBackend;
 ```
 
-### 6.2 å·²å®ç°çš„åç«¯
+### 6.2 ÒÑÊµÏÖµÄºó¶Ë
 
-| åç«¯ | ç›®å½• | ç”¨é€” |
+| ºó¶Ë | Ä¿Â¼ | ÓÃÍ¾ |
 | --- | --- | --- |
-| `arm` | `src/backend/arm/` | STM32 Cortex-Mï¼ˆThumb-2 + è½¯æµ®ç‚¹ + æ®µåˆ†ç¦» + ä½åŸŸï¼‰ |
-| `c` | `src/backend/c/` | IR â†’ C æºï¼ˆhost æµ‹è¯•ï¼‰ |
-| `x86_64` | `src/backend/x86_64/` | GAS æ±‡ç¼– |
-| `riscv32` | `src/backend/riscv32/` | RV32I æ±‡ç¼– |
+| `arm` | `src/backend/arm/` | STM32 Cortex-M£¨Thumb-2 + Èí¸¡µã/Ó²¼ş FPU + ¶Î·ÖÀë + Î»Óò + DWARF£© |
+| `c` | `src/backend/c/` | IR ¡ú C Ô´£¨host ²âÊÔ£© |
+| `x86_64` | `src/backend/x86_64/` | GAS »ã±à |
+| `riscv32` | `src/backend/riscv32/` | RV32I »ã±à |
 
-æ³¨å†Œè¡¨ï¼š`src/backend/registry.c`ã€‚
+×¢²á±í£º`src/backend/registry.c`¡£
 
-### 6.3 ARM åç«¯ä»£ç ç”Ÿæˆ
+### 6.3 ARM ºó¶Ë´úÂëÉú³É
 
-| åŠŸèƒ½ | ç”Ÿæˆæ–¹å¼ |
+| ¹¦ÄÜ | Éú³É·½Ê½ |
 | --- | --- |
-| 32 ä½ç«‹å³æ•° | `MOVW` + `MOVT` |
-| æ•´æ•°é™¤æ³• | `BL __aeabi_idiv/uidiv/idivmod/uidivmod` |
-| 64 ä½è¿ç®— | `BL __aeabi_ladd/lsub/lmul/ldiv/ldivmod` |
-| å•ç²¾åº¦æµ®ç‚¹ | `BL __aeabi_fadd/fsub/fmul/fdiv/f2iz/i2f/fcmpeq/...` |
-| åŒç²¾åº¦æµ®ç‚¹ | `BL __aeabi_dadd/dsub/dmul/ddiv/...`ï¼ˆ`double` çœŸ 64 ä½ç²¾åº¦ï¼‰ |
-| ä½åŸŸå­˜å– | `LDR/STR + LSL/LSR/AND/BIC/ORR` |
-| å†…å­˜æ‹·è´ | `BL memcpy`ï¼ˆç»“æ„ä½“èµ‹å€¼/æŒ‰å€¼ä¼ é€’ï¼‰ |
-| ä¸­æ–­å‡½æ•° | `PUSH {r0-r3,r12,lr}` / `POP {r0-r3,r12,pc}` |
-| å¼±ç¬¦å· | `.weak <name>` |
-| ä¸¥æ ¼ AAPCS | >4 å‚æ•°èµ°æ ˆï¼ˆGETARG/CALL æ­£ç¡®å¤„ç†ï¼‰ |
-| constructor/destructor | `.init_array` / `.fini_array` æ®µ |
-| ç»å¯¹åœ°å€ | `__at` / `__attribute__((at))` / `#pragma location` |
-| å…¨å±€å˜é‡ | `.data` / `.bss` / `.rodata` æ®µåˆ†ç¦» |
+| 32 Î»Á¢¼´Êı | `MOVW` + `MOVT` |
+| ÕûÊı³ı·¨ | `BL __aeabi_idiv/uidiv/idivmod/uidivmod` |
+| 64 Î»ÔËËã | `BL __aeabi_ladd/lsub/lmul/ldiv/ldivmod` |
+| µ¥¾«¶È¸¡µã£¨Èí¸¡µã£© | `BL __aeabi_fadd/fsub/fmul/fdiv/f2iz/i2f/fcmpeq/...` |
+| Ë«¾«¶È¸¡µã£¨Èí¸¡µã£© | `BL __aeabi_dadd/dsub/dmul/ddiv/...`£¨`double` Õæ 64 Î»¾«¶È£© |
+| Ó²¼ş FPU£¨`enable_fpu_hw=1`£© | VFP Ô­ÉúÖ¸Áî `VADD.F32/F64`¡¢`VSUB`¡¢`VMUL`¡¢`VDIV`¡¢`VCVT`¡¢`VCMP` µÈ£¬Ìæ´ú `__aeabi_*` Èí¸¡µã×® |
+| VLA ¶¯Ì¬Õ»·ÖÅä | `IR_ALLOCA` ¡ú `ADD/BIC sp` 8 ×Ö½Ú¶ÔÆë + `SUB sp, sp, r0` ·ÖÅä£¬Ñ¹ÈëÊ×µØÖ· |
+| Î»Óò´æÈ¡ | `LDR/STR + LSL/LSR/AND/BIC/ORR` |
+| ÄÚ´æ¿½±´ | `BL memcpy`£¨½á¹¹Ìå¸³Öµ/°´Öµ´«µİ£© |
+| ÖĞ¶Ïº¯Êı | `PUSH {r0-r3,r12,lr}` / `POP {r0-r3,r12,pc}` |
+| Èõ·ûºÅ | `.weak <name>` |
+| ÑÏ¸ñ AAPCS | >4 ²ÎÊı×ßÕ»£¨GETARG/CALL ÕıÈ·´¦Àí£© |
+| constructor/destructor | `.init_array` / `.fini_array` ¶Î |
+| ¾ø¶ÔµØÖ· | `__at` / `__attribute__((at))` / `#pragma location` |
+| È«¾Ö±äÁ¿ | `.data` / `.bss` / `.rodata` ¶Î·ÖÀë |
+| DWARF µ÷ÊÔĞÅÏ¢£¨`-g` »ò `enable_dwarf=1`£© | `.file`¡¢`.type fn, %function`¡¢`.cfi_startproc/.cfi_endproc`¡¢`.loc 1 <line>`¡¢`.size fn, .-fn` |
+
+Ó²¼ş FPU ÓëÈí¸¡µã¶şÑ¡Ò»£ºµ± `g_config.enable_fpu_hw=1`£¨Ä¬ÈÏ£©Ê±£¬¸¡µãËÄÔòÔËËã/±È½Ï/×ª»»Ö±½ÓÓÃ VFP Ö¸Áî£»·ñÔò»ØÍËµ½ `__aeabi_*` Èí¸¡µã×®¡£Ïê¼ûµÚ 7 ÕÂÅäÖÃÏµÍ³¡£
 
 ---
 
-## 7 åœ¨ Windows ä¸Šåšæµ‹è¯•
+## 7 ÅäÖÃÏµÍ³
 
-### 7.1 c åç«¯å·¥ä½œæµ
+arkcc ÒıÈëÈı²ãÅäÖÃÏµÍ³£¬¿ÉÔÚ±àÒëÆÚ¡¢ÔËĞĞÊ±ÅäÖÃÎÄ¼ş¡¢ÃüÁîĞĞÈı¸ö²ãÃæ²ÃÇĞÌØĞÔÓë¿ª¹Ø¡£ÓÅÏÈ¼¶£º**ÃüÁîĞĞ > ÅäÖÃÎÄ¼ş > ±àÒëÆÚÄ¬ÈÏ**¡£
+
+### 7.1 Èı²ãÅäÖÃÓëÓÅÏÈ¼¶
+
+| ²ã¼¶ | ÔØÌå | ×÷ÓÃ | ÎÄ¼ş |
+| --- | --- | --- | --- |
+| ±àÒëÆÚ | `ARKCC_FEATURE_*` ºê | ¾ö¶¨ arkcc ×ÔÉí±àÒë½øÄÄĞ©¹¦ÄÜ | `include/arkcc_config.h` |
+| ÔËĞĞÊ± | INI ÅäÖÃÎÄ¼ş | ±àÒëÓÃ»§´úÂëÊ±½øÒ»²½¿ª¹Ø | `arkcc.cfg`£¨»ò `-config <file>`£© |
+| ÃüÁîĞĞ | `-O/-g/-f/-fno-` | ¸²¸ÇÎÄ¼şÉèÖÃ | `src/main.c` µ÷ÓÃ `config_apply_args` |
+
+Æô¶¯Á÷³Ì£¨`src/main.c`£©£º
+
+1. `config_init()` ÓÃ `ARKCC_FEATURE_*` ºê³õÊ¼»¯ `g_config` Îª±àÒëÆÚÄ¬ÈÏ£»
+2. ²éÕÒ `-config <file>` »òÄ¬ÈÏ `arkcc.cfg`£¬´æÔÚÔò `config_load_file()` ½âÎö¸²¸Ç£»
+3. `config_apply_args()` É¨Ãè `-O/-g/-fxxx/-fno-xxx`£¬¸²¸ÇÎÄ¼şÉèÖÃ¡£
+
+`-v` ÏêÏ¸Ä£Ê½»áµ÷ÓÃ `config_print()` ´òÓ¡µ±Ç° `g_config` È«²¿×Ö¶Îµ½ stderr¡£
+
+### 7.2 ±àÒëÆÚÌØĞÔ¿ª¹Ø£¨`include/arkcc_config.h`£©
+
+12 ¸ö `ARKCC_FEATURE_*` ºê£¬ÖµÎª 1 ±íÊ¾±àÒë½ø arkcc£º
+
+| ºê | Ä¬ÈÏ | ËµÃ÷ |
+| --- | :---: | --- |
+| `ARKCC_FEATURE_VLA` | 1 | ±ä³¤Êı×é `int a[n]` |
+| `ARKCC_FEATURE_COMPLEX` | 1 | `_Complex` ¸´Êı |
+| `ARKCC_FEATURE_WCHAR` | 1 | ¿í×Ö·û `wchar_t` / `L"..."` |
+| `ARKCC_FEATURE_TRIGRAPH` | 1 | ÈıÔª×é `??=` µÈ |
+| `ARKCC_FEATURE_FPU_HW` | 1 | Ó²¼ş FPU Ö¸Áî£¨VFP£© |
+| `ARKCC_FEATURE_DWARF` | 1 | DWARF µ÷ÊÔĞÅÏ¢ |
+| `ARKCC_FEATURE_OPT_CONSTFOLD` | 1 | ³£Á¿ÕÛµş |
+| `ARKCC_FEATURE_OPT_DCE` | 1 | ËÀ´úÂëÏû³ı |
+| `ARKCC_FEATURE_OPT_REGALLOC` | 0 | ¼Ä´æÆ÷·ÖÅä£¨ÊµÑéĞÔ£¬Ä¬ÈÏ¹Ø£© |
+| `ARKCC_FEATURE_ARMCC_ASM_FUNC` | 1 | `__asm` º¯ÊıÌå |
+| `ARKCC_FEATURE_ARMCC_PRAGMA` | 1 | `#pragma` ¼æÈİ |
+| `ARKCC_FEATURE_ARMCC_KEYWORDS` | 1 | `__irq/__weak/__naked` µÈ |
+
+²ÃÇĞ·½·¨£ºÔÚ±àÒë arkcc Ê±°Ñ¶ÔÓ¦ºê¸ÄÎª 0 ¼´¿É£¬Ïà¹Ø´úÂëÓÃ `#if ARKCC_FEATURE_XXX` ÊØ»¤¡£
+
+### 7.3 ÔËĞĞÊ±ÅäÖÃÎÄ¼ş£¨`arkcc.cfg`£¬INI ¸ñÊ½£©
+
+Æô¶¯Ê±×Ô¶¯¼ÓÔØµ±Ç°Ä¿Â¼ÏÂµÄ `arkcc.cfg`£¬Ò²¿ÉÓÃ `-config <file>` Ö¸¶¨¡£¸ñÊ½Îª `[features]` Óë `[general]` Á½¸ö¶Î£¬¼üÖµ `key = value`£¬²¼¶ûÖµ½ÓÊÜ `0/1/true/false`£¨·ÇÁãÊı×ÖÊÓÎªÕæ£©¡£
+
+```ini
+# Ark C Compiler Ä¬ÈÏÔËĞĞÊ±ÅäÖÃ
+# ÓÅÏÈ¼¶£ºÃüÁîĞĞ > ÅäÖÃÎÄ¼ş > ±àÒëÆÚÄ¬ÈÏ£¨ARKCC_FEATURE_*£©
+
+[features]
+# Ç°¶ËÓïÑÔÌØĞÔ
+vla          = 1
+complex      = 1
+wchar        = 1
+trigraph     = 1
+
+# ºó¶Ë´úÂëÉú³É
+fpu_hw       = 1
+dwarf        = 1
+
+# ÓÅ»¯ Pass
+opt_constfold = 1
+opt_dce       = 1
+opt_regalloc  = 0
+
+[general]
+# ÓÅ»¯¼¶±ğ£º0=ÎŞ, 1=»ù´¡, 2=¼¤½ø
+opt_level   = 0
+# µ÷ÊÔĞÅÏ¢£º0=ÎŞ, 1=DWARF
+debug_info  = 0
+```
+
+| ¶Î | ¼ü | ¶ÔÓ¦ `g_config` ×Ö¶Î |
+| --- | --- | --- |
+| `[features]` | `vla` | `enable_vla` |
+| | `complex` | `enable_complex` |
+| | `wchar` | `enable_wchar` |
+| | `trigraph` | `enable_trigraph` |
+| | `fpu_hw` | `enable_fpu_hw` |
+| | `dwarf` | `enable_dwarf` |
+| | `opt_constfold` | `enable_opt_constfold` |
+| | `opt_dce` | `enable_opt_dce` |
+| | `opt_regalloc` | `enable_opt_regalloc` |
+| `[general]` | `opt_level` | `opt_level`£¨0/1/2£© |
+| | `debug_info` | `debug_info`£¨0/1£© |
+
+### 7.4 ÃüÁîĞĞ²ÎÊı
+
+| ²ÎÊı | ×÷ÓÃ |
+| --- | --- |
+| `-O0` / `-O1` / `-O2` | ÓÅ»¯¼¶±ğ£¬¸²¸Ç `opt_level` |
+| `-g` | ¿ªÆô DWARF µ÷ÊÔĞÅÏ¢£¬µÈ¼Û `debug_info=1` |
+| `-f<feature>` | ¿ªÆôÌØĞÔ£¬`<feature>` È¡ `vla/complex/wchar/trigraph/fpu_hw/dwarf/opt_constfold/opt_dce/...` |
+| `-fno-<feature>` | ¹Ø±ÕÌØĞÔ |
+| `-config <file>` | Ö¸¶¨ÅäÖÃÎÄ¼şÂ·¾¶ |
+
+Ê¾Àı£º
+
+```bash
+# ¹Ø±ÕÓ²¼ş FPU£¬¿ªÆô -O1 ÓÅ»¯
+arkcc app.c -target arm -fno-fpu_hw -O1 -S -o app.s
+
+# ÓÃ×Ô¶¨ÒåÅäÖÃÎÄ¼ş²¢Éú³Éµ÷ÊÔĞÅÏ¢
+arkcc app.c -config myarkcc.cfg -g -target arm -o app.bin
+
+# Ö»¿ª³£Á¿ÕÛµş£¬¹Ø DCE
+arkcc app.c -target c -fopt_constfold -fno-opt_dce -o app.gen.c
+```
+
+### 7.5 `ArkccConfig` ½á¹¹Ìå£¨`include/config.h`£©
+
+ÔËĞĞÊ±ÅäÖÃ¼¯ÖĞ´æÓÚÈ«¾Ö `g_config`£º
+
+```c
+typedef struct {
+    int enable_vla;
+    int enable_complex;
+    int enable_wchar;
+    int enable_trigraph;
+    int enable_fpu_hw;
+    int enable_dwarf;
+    int enable_opt_constfold;
+    int enable_opt_dce;
+    int enable_opt_regalloc;
+    int opt_level;          /* 0=ÎŞÓÅ»¯, 1=»ù´¡, 2=¼¤½ø */
+    int debug_info;         /* 0=ÎŞ, 1=DWARF */
+    const char *config_file; /* ÅäÖÃÎÄ¼şÂ·¾¶ */
+} ArkccConfig;
+
+extern ArkccConfig g_config;
+```
+
+API£º`config_init()` / `config_load_file(path)` / `config_apply_args(argc,argv)` / `config_print()`£¬ÊµÏÖ¼û `src/config.c`¡£
+
+---
+
+## 8 ÓÅ»¯ Pass
+
+`src/opt.c` + `include/opt.h` ÊµÏÖ IR ¼¶ÓÅ»¯£¬ÔËĞĞÊ±»úÎª irgen Íê³Éºó¡¢ºó¶Ë´úÂëÉú³ÉÇ°¡£¸÷ Pass Í¬Ê±ÊÜ±àÒëÆÚ `ARKCC_FEATURE_OPT_*` ºêÓëÔËĞĞÊ± `g_config.enable_opt_*` / `opt_level` ÊØ»¤¡£
+
+Èë¿Ú£º
+
+```c
+void opt_run(IrProgram *prog, int level);
+```
+
+`level` È¡×Ô `g_config.opt_level`£¨`-O0/-O1/-O2`£©¡£`level >= 1` Ê±ÆôÓÃ³£Á¿ÕÛµş + DCE£»`level == 2` Ä¿Ç°Í¬ 1¡£¸÷ Pass ÄÚ²¿ÔÙ°´ `g_config.enable_opt_*` ¶ş´ÎÊØ»¤¡£
+
+### 8.1 ³£Á¿ÕÛµş£¨`opt_constfold_func`£©
+
+Æ¥ÅäÕ»Ê½ IR ÖĞµÄÈıÁ¬Ä£Ê½£º
+
+```
+PUSH_INT a
+PUSH_INT b
+BINARY op      ; aux µÍ 8 Î»Îª TOK_xxx£¬0x100 Î»ÎªÎŞ·ûºÅ±ê¼Ç
+```
+
+ÕÛµşÎªµ¥Ìõ `PUSH_INT (a op b)`£¬ºóÁ½ÌõÖÃ `IR_NOP`£¬ÔÙÍ³Ò»Ñ¹Ëõ¡£
+
+- Ö§³ÖÈ«²¿ËãÊõ/±È½Ï/Âß¼­/Î»ÔËËã·û£»
+- **³ıÁã/Ä£Áã²»ÕÛµş**£¨±£ÁôÔËĞĞÊ±ĞĞÎª£©£»
+- ¶àÌËÉ¨ÃèÖÁ²»¶¯µã£¨ÉÏÏŞ 8 ÌË£©£¬Ö§³Ö¼¶ÁªÕÛµş `(1+2)*3`¡£
+
+### 8.2 ËÀ´úÂëÏû³ı£¨`opt_dce_func`£©
+
+É¾³ı²»¿É´ïÖ¸Áî£ºÓöµ½ `IR_RETURN` / `IR_JMP` / `IR_JMP_NAMED` ºó£¬µ½ÏÂÒ»¸ö `IR_LABEL` / `IR_LABEL_NAMED` Ö®Ç°µÄÖ¸ÁîÈ«²¿ÖÃ `IR_NOP`£¬ÔÙÑ¹Ëõ¡£±£Áô `IR_FUNC_BEGIN` / `IR_FUNC_END` ²»¶¯¡£
+
+### 8.3 Ê¹ÓÃ·½·¨
+
+```bash
+# Ä¬ÈÏ£¨opt_level=0£©²»ÓÅ»¯
+arkcc app.c -target c -o app.gen.c
+
+# -O1 ÆôÓÃ³£Á¿ÕÛµş + DCE
+arkcc app.c -target c -O1 -o app.gen.c
+
+# ½ö³£Á¿ÕÛµş£¬¹Ø DCE
+arkcc app.c -target c -O1 -fno-opt_dce -o app.gen.c
+```
+
+ÑéÖ¤²âÊÔ£º`examples/test_opt.c`£¨ÆÚÍûÍË³öÂë 42£©¡£
+
+---
+
+## 9 ÔÚ Windows ÉÏ×ö²âÊÔ
+
+### 7.1 c ºó¶Ë¹¤×÷Á÷
 
 ```powershell
 .\arkcc.exe examples\struct_test.c -target c -S -o out.gen.c
@@ -463,7 +676,7 @@ gcc out.gen.c -o out.exe
 .\out.exe
 ```
 
-### 7.2 å¤šæ–‡ä»¶é“¾æ¥
+### 9.2 ¶àÎÄ¼şÁ´½Ó
 
 ```powershell
 .\arkcc.exe main.c -target c -S -o main.gen.c
@@ -471,85 +684,85 @@ gcc out.gen.c -o out.exe
 gcc main.gen.c lib.gen.c -o app.exe
 ```
 
-### 7.3 æ±‡ç¼–æ–‡ä»¶
+### 7.3 »ã±àÎÄ¼ş
 
 ```powershell
 .\arkcc.exe examples\test_hello.s -target arm -o hello.bin
 ```
 
-### 7.4 è‡ªåŠ¨åŒ–æµ‹è¯•
+### 7.4 ×Ô¶¯»¯²âÊÔ
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File examples\run_tests.ps1
 ```
 
-49 ä¸ªæµ‹è¯•ï¼šARM æ±‡ç¼–ç”Ÿæˆ + C åç«¯ç¼–è¯‘è¿è¡Œï¼Œå…¨éƒ¨é€šè¿‡ã€‚
+56 ¸ö²âÊÔ£ºARM »ã±àÉú³É + C ºó¶Ë±àÒëÔËĞĞ£¬È«²¿Í¨¹ı¡£
 
 ---
 
-## 8 STM32H743 + Keil MDK å·¥ç¨‹
+## 10 STM32H743 + Keil MDK ¹¤³Ì
 
-å·¥ç¨‹ä½äº `mdk/STM32H743_ArkCC/`ã€‚
+¹¤³ÌÎ»ÓÚ `mdk/STM32H743_ArkCC/`¡£
 
-| é¡¹ | å€¼ |
+| Ïî | Öµ |
 | --- | --- |
-| èŠ¯ç‰‡ | STM32H743VIT6ï¼ˆCortex-M7, 2 MB Flash, 1 MB SRAMï¼‰ |
-| ç¼–è¯‘å™¨ | ARM Compiler 6 (armclang) |
-| ä»…é›†æˆ ARM åç«¯ | èŠ‚çœ Flash |
-| Scatter | `.ark_heap`/`.ark_code` æ®µæ˜ å°„åˆ° AXI SRAM |
+| Ğ¾Æ¬ | STM32H743VIT6£¨Cortex-M7, 2 MB Flash, 1 MB SRAM£© |
+| ±àÒëÆ÷ | ARM Compiler 6 (armclang) |
+| ½ö¼¯³É ARM ºó¶Ë | ½ÚÊ¡ Flash |
+| Scatter | `.ark_heap`/`.ark_code` ¶ÎÓ³Éäµ½ AXI SRAM |
 
-è¯¦è§å·¥ç¨‹ç›®å½•ä¸‹çš„ `README.md`ã€‚
-
----
-
-## 9 ä»£ç ç»„ç»‡ä¸ç§»æ¤æŒ‡å—
-
-### 9.1 å¹³å°æŠ½è±¡å±‚
-
-ä»…ä¸¤ä¸ªæ¥å£ï¼š
-- `platform.h`ï¼š`ark_log()` / `ark_abort()`
-- `flash_fs.h`ï¼š`fs_read_file()`
-
-### 9.2 ç§»æ¤åˆ°æ–°å¹³å°
-
-1. å¤åˆ¶ `port/host/` ä¸º `port/<myplat>/`
-2. å®ç°è¾“å‡ºå’Œæ–‡ä»¶è¯»å–
-3. åŠ å…¥æ„å»ºè„šæœ¬
-
-ä¸éœ€è¦ç¢° `src/`ã€‚
+Ïê¼û¹¤³ÌÄ¿Â¼ÏÂµÄ `README.md`¡£
 
 ---
 
-## 10 æ‰©å±•å¼€å‘æŒ‡å—
+## 11 ´úÂë×éÖ¯ÓëÒÆÖ²Ö¸ÄÏ
 
-### 10.1 æ–°å¢å…³é”®å­—
+### 11.1 Æ½Ì¨³éÏó²ã
 
-1. `common.h` åŠ  `TOK_XXX`
-2. `lexer.c` çš„ `g_keywords[]` åŠ æ˜ å°„
-3. `parser.c` æ¥ä½
+½öÁ½¸ö½Ó¿Ú£º
+- `platform.h`£º`ark_log()` / `ark_abort()`
+- `flash_fs.h`£º`fs_read_file()`
 
-### 10.2 æ–°å¢ IR æŒ‡ä»¤
+### 11.2 ÒÆÖ²µ½ĞÂÆ½Ì¨
 
-1. `common.h` åŠ  `IR_XXX`
-2. `ir.c` çš„ `ir_op_name()` åŠ åå­—
-3. `irgen.c` å‘å‡º
-4. å„åç«¯çš„ switch case åŠ å¤„ç†
+1. ¸´ÖÆ `port/host/` Îª `port/<myplat>/`
+2. ÊµÏÖÊä³öºÍÎÄ¼ş¶ÁÈ¡
+3. ¼ÓÈë¹¹½¨½Å±¾
 
-### 10.3 æ–°å¢åç«¯
+²»ĞèÒªÅö `src/`¡£
+
+---
+
+## 12 À©Õ¹¿ª·¢Ö¸ÄÏ
+
+### 12.1 ĞÂÔö¹Ø¼ü×Ö
+
+1. `common.h` ¼Ó `TOK_XXX`
+2. `lexer.c` µÄ `g_keywords[]` ¼ÓÓ³Éä
+3. `parser.c` ½Ó×¡
+
+### 10.2 ĞÂÔö IR Ö¸Áî
+
+1. `common.h` ¼Ó `IR_XXX`
+2. `ir.c` µÄ `ir_op_name()` ¼ÓÃû×Ö
+3. `irgen.c` ·¢³ö
+4. ¸÷ºó¶ËµÄ switch case ¼Ó´¦Àí
+
+### 12.3 ĞÂÔöºó¶Ë
 
 1. `mkdir src/backend/<name>`
-2. å®ç° `backend_<name>.c`
-3. `backend.h` å£°æ˜
-4. `registry.c` æ³¨å†Œ
+2. ÊµÏÖ `backend_<name>.c`
+3. `backend.h` ÉùÃ÷
+4. `registry.c` ×¢²á
 5. `make`
 
 ---
 
-## 11 æ ‡å‡†åº“å­é›†
+## 13 ±ê×¼¿â×Ó¼¯
 
-ç›®å½•ï¼š`stdlib/include/` ä¸ `stdlib/src/`
+Ä¿Â¼£º`stdlib/include/` Óë `stdlib/src/`
 
-| å¤´æ–‡ä»¶ | æä¾› |
+| Í·ÎÄ¼ş | Ìá¹© |
 | --- | --- |
 | `stdint.h` | `int8_t..int64_t / uint8_t..uint64_t` |
 | `stdbool.h` | `bool true false` |
@@ -558,26 +771,26 @@ powershell -ExecutionPolicy Bypass -File examples\run_tests.ps1
 | `string.h` | `strlen strcmp strcpy memset memcpy memmove memcmp` |
 | `stdio.h` | `printf puts putchar` |
 | `stdlib.h` | `abort exit malloc free` |
-| `math.h` | `M_PI` ç­‰å¸¸é‡ + `fabs sqrt floor ceil fmod sin cos pow` |
+| `math.h` | `M_PI` µÈ³£Á¿ + `fabs sqrt floor ceil fmod sin cos pow` |
 | `setjmp.h` | `jmp_buf setjmp longjmp` |
 
-### 11.1 STM32 å·¥ç¨‹é“¾æ¥ `printf` / `putchar`
+### 13.1 STM32 ¹¤³ÌÁ´½Ó `printf` / `putchar`
 
-C åç«¯èµ°å®¿ä¸» libcï¼Œæ— éœ€é¢å¤–æ–‡ä»¶ã€‚**ARM åç«¯åœ¨ STM32 ç­‰è£¸æœºå¹³å°**éœ€è¦æŠŠ
-ä»¥ä¸‹æºæ–‡ä»¶åŠ å…¥å·¥ç¨‹ï¼š
+C ºó¶Ë×ßËŞÖ÷ libc£¬ÎŞĞè¶îÍâÎÄ¼ş¡£**ARM ºó¶ËÔÚ STM32 µÈÂã»úÆ½Ì¨**ĞèÒª°Ñ
+ÒÔÏÂÔ´ÎÄ¼ş¼ÓÈë¹¤³Ì£º
 
-| æºæ–‡ä»¶ | ä½œç”¨ |
+| Ô´ÎÄ¼ş | ×÷ÓÃ |
 | --- | --- |
-| `stdlib/src/printf.c` | ç²¾ç®€ç‰ˆ `printf`ï¼Œæ”¯æŒ `%d/%u/%x/%X/%s/%c/%p/%%` + å®½åº¦/0 å¡«å……ï¼›64 ä½ `long long` å‚æ•°ä¸æˆªæ–­ |
-| `stdlib/src/putchar_default.c` | `putchar` å¼±é»˜è®¤å®ç°ï¼ˆä»€ä¹ˆä¹Ÿä¸åšï¼‰ |
+| `stdlib/src/printf.c` | ¾«¼ò°æ `printf`£¬Ö§³Ö `%d/%u/%x/%X/%s/%c/%p/%%` + ¿í¶È/0 Ìî³ä£»64 Î» `long long` ²ÎÊı²»½Ø¶Ï |
+| `stdlib/src/putchar_default.c` | `putchar` ÈõÄ¬ÈÏÊµÏÖ£¨Ê²Ã´Ò²²»×ö£© |
 | `stdlib/src/string.c` | `memcpy/memset/memmove/memcmp/strlen/strcpy/strcmp` |
-| `stdlib/src/math.c` | å¯é€‰ï¼Œæä¾› `sin/cos/sqrt/pow/fabs/floor/ceil/fmod` |
-| `stdlib/src/setjmp.c` | host æµ‹è¯•ç”¨å¯ç§»æ¤ç®€åŒ–å®ç°ï¼›ARM è£¸æœºéœ€æ±‡ç¼–å®ç° |
+| `stdlib/src/math.c` | ¿ÉÑ¡£¬Ìá¹© `sin/cos/sqrt/pow/fabs/floor/ceil/fmod` |
+| `stdlib/src/setjmp.c` | host ²âÊÔÓÃ¿ÉÒÆÖ²¼ò»¯ÊµÏÖ£»ARM Âã»úĞè»ã±àÊµÏÖ |
 
-`putchar` é‡å®šå‘åˆ° UART çš„ç¤ºä¾‹ï¼š
+`putchar` ÖØ¶¨Ïòµ½ UART µÄÊ¾Àı£º
 
 ```c
-/* main.c ä¸­æä¾›å¼ºç¬¦å·ï¼Œè¦†ç›– putchar_default.c ä¸­çš„å¼±å®šä¹‰ */
+/* main.c ÖĞÌá¹©Ç¿·ûºÅ£¬¸²¸Ç putchar_default.c ÖĞµÄÈõ¶¨Òå */
 int putchar(int c) {
     while (!(USART1->SR & USART_SR_TXE)) ;
     USART1->DR = (uint8_t)c;
@@ -585,119 +798,146 @@ int putchar(int c) {
 }
 ```
 
-### 11.2 `math.c` ç²¾åº¦è¯´æ˜
+### 13.2 `math.c` ¾«¶ÈËµÃ÷
 
-`stdlib/src/math.c` æä¾›æ§åˆ¶ç®—æ³•å¸¸ç”¨çš„åŸºç¡€å‡½æ•°ï¼š
+`stdlib/src/math.c` Ìá¹©¿ØÖÆËã·¨³£ÓÃµÄ»ù´¡º¯Êı£º
 
-- `fabs`ï¼šç²¾ç¡®
-- `sqrt`ï¼šç‰›é¡¿è¿­ä»£ 20 æ¬¡ï¼Œç›¸å¯¹è¯¯å·® < 1e-12
-- `floor/ceil`ï¼šä»…å¯¹ `[-LONG_MAX, LONG_MAX]` èŒƒå›´æœ‰æ•ˆ
-- `fmod`ï¼šä»…å¯¹å¸¸ç”¨èŒƒå›´æœ‰æ•ˆ
-- `sin/cos`ï¼šæ³°å‹’å±•å¼€ï¼Œé€‚ç”¨äºæ§åˆ¶ç®—æ³•å¸¸è§„ç²¾åº¦åœºæ™¯
-- `pow`ï¼šåŸºäº `exp/log` çš„ç®€åŒ–å®ç°
+- `fabs`£º¾«È·
+- `sqrt`£ºÅ£¶Ùµü´ú 20 ´Î£¬Ïà¶ÔÎó²î < 1e-12
+- `floor/ceil`£º½ö¶Ô `[-LONG_MAX, LONG_MAX]` ·¶Î§ÓĞĞ§
+- `fmod`£º½ö¶Ô³£ÓÃ·¶Î§ÓĞĞ§
+- `sin/cos`£ºÌ©ÀÕÕ¹¿ª£¬ÊÊÓÃÓÚ¿ØÖÆËã·¨³£¹æ¾«¶È³¡¾°
+- `pow`£º»ùÓÚ `exp/log` µÄ¼ò»¯ÊµÏÖ
 
-`M_PI` ç­‰å¸¸ç”¨å¸¸é‡åœ¨ `math.h` ä¸­æ˜¾å¼å®šä¹‰ã€‚éœ€è¦ `tan/exp/log/atan` ç­‰æ›´é«˜ç²¾åº¦å‡½æ•°ï¼Œè¯·æ”¹ç”¨ **newlib** æˆ– **CMSIS DSP**ã€‚
+`M_PI` µÈ³£ÓÃ³£Á¿ÔÚ `math.h` ÖĞÏÔÊ½¶¨Òå¡£ĞèÒª `tan/exp/log/atan` µÈ¸ü¸ß¾«¶Èº¯Êı£¬Çë¸ÄÓÃ **newlib** »ò **CMSIS DSP**¡£
 
-### 11.3 `setjmp.c` è¯´æ˜
+### 13.3 `setjmp.c` ËµÃ÷
 
-- `setjmp.h` å®šä¹‰ `jmp_buf`ï¼ˆ`int[20]`ï¼Œ80 å­—èŠ‚ï¼Œè¶³å¤Ÿä¿å­˜ ARM çš„ r4-r11ã€spã€lrã€pcï¼‰ã€‚
-- `stdlib/src/setjmp.c` æ˜¯ host æµ‹è¯•ç”¨çš„å¯ç§»æ¤ç®€åŒ–å®ç°ï¼Œè½¬å‘åˆ°å®¿ä¸» `setjmp/longjmp`ã€‚
-- **ARM è£¸æœºç›®æ ‡**éœ€è¦æ±‡ç¼–å®ç°ï¼šä¿å­˜ r4-r11ã€spã€lr ç­‰åˆ° `jmp_buf`ï¼Œ`longjmp` æ—¶æ¢å¤å¹¶è·³è½¬ã€‚`stdlib/src/setjmp.c` ä¸è¦†ç›– ARM åœºæ™¯ã€‚
-- ç¼–è¯‘å™¨æŠŠ `setjmp/longjmp` å½“ä½œæ™®é€šå‡½æ•°è°ƒç”¨å¤„ç†ï¼Œæ— éœ€ç‰¹æ®Š IRã€‚
-
----
-
-## 12 å¸¸è§é—®é¢˜ FAQ
-
-**Q1ï¼šèƒ½ç¼–è¯‘ Keil/MDK å†™çš„ STM32 å·¥ç¨‹å—ï¼Ÿ**
-Aï¼šæ”¯æŒ C99 + å®Œæ•´ armcc å…¼å®¹æ‰©å±•ï¼ˆ`__svc/__irq/__weak/__naked/__packed/__align/__at/__forceinline/__asm` å‡½æ•°ä½“/å…¨å¥— `__attribute__`/å…¨å¥— `#pragma`/é¢„å®šä¹‰å®/åŒ¿å unionï¼‰ã€‚HAL/CMSIS å¯„å­˜å™¨å®šä¹‰ã€startup æ–‡ä»¶ã€ä¸­æ–­å‘é‡è¡¨å‡å¯ç›´æ¥ç¼–è¯‘ã€‚
-
-**Q2ï¼š`__irq` å‡½æ•°æ€ä¹ˆç”Ÿæˆï¼Ÿ**
-Aï¼šARM åç«¯è‡ªåŠ¨ç”Ÿæˆä¸­æ–­åºè¨€ `PUSH {r0-r3,r12,lr}` å’Œç»“è¯­ `POP {r0-r3,r12,pc}`ã€‚
-
-**Q3ï¼šæµ®ç‚¹åœ¨ STM32 ä¸Šæ€ä¹ˆå·¥ä½œï¼Ÿ**
-Aï¼šé€šè¿‡ `__aeabi_f*` è½¯æµ®ç‚¹æ¡©ï¼ˆå•ç²¾åº¦ï¼‰å’Œ `__aeabi_d*` åŒç²¾åº¦æ¡©ï¼ˆ`double` çœŸ 64 ä½ç²¾åº¦ï¼‰ã€‚éœ€è¦é“¾æ¥ newlib è½¯æµ®ç‚¹åº“æˆ–è‡ªè¡Œå®ç°æ¡©å‡½æ•°ã€‚
-
-**Q4ï¼š`.s` æ–‡ä»¶æ€ä¹ˆç¼–è¯‘ï¼Ÿ**
-Aï¼š`arkcc file.s -target arm -o file.bin`ï¼Œè·³è¿‡å‰ç«¯ç›´æ¥æ±‡ç¼–ã€‚
-
-**Q5ï¼šç»“æ„ä½“æŒ‰å€¼ä¼ é€’æ€ä¹ˆå®ç°ï¼Ÿ**
-Aï¼šé€šè¿‡éšè—æŒ‡é’ˆå‚æ•°â€”â€”è°ƒç”¨æ–¹åœ¨æ ˆä¸Šåˆ†é…ç©ºé—´ï¼Œä¼ åœ°å€ç»™è¢«è°ƒæ–¹ã€‚
-
-**Q6ï¼š`__asm void fn() {...}` æ•´å‡½æ•°ä½“æ±‡ç¼–æ€ä¹ˆç”¨ï¼Ÿ**
-Aï¼šå‡½æ•°ä½“ç”±æ±‡ç¼–å­—ç¬¦ä¸²æ„æˆï¼Œç›´æ¥é€ä¼ åˆ°ç”Ÿæˆçš„ `.s`ã€‚é€‚ç”¨äº startupã€å‘é‡è¡¨ã€åº•å±‚åŸå­æ“ä½œã€‚è¯¦è§ 5.8ã€‚
-
-**Q7ï¼š`constructor`/`destructor` å±æ€§æ€ä¹ˆç”Ÿæ•ˆï¼Ÿ**
-Aï¼šARM åç«¯æŠŠ `constructor` å‡½æ•°æŒ‡é’ˆæ”¾å…¥ `.init_array` æ®µï¼Œ`destructor` æ”¾å…¥ `.fini_array` æ®µã€‚C è¿è¡Œæ—¶ï¼ˆå¦‚ `__libc_init_array`ï¼‰ä¼šåœ¨ `main` å‰åéå†æ‰§è¡Œã€‚
-
-**Q8ï¼šå¤šäº 4 ä¸ªå‚æ•°çš„å‡½æ•°è°ƒç”¨ç¬¦åˆ AAPCS å—ï¼Ÿ**
-Aï¼šç¬¦åˆã€‚ä¸¥æ ¼ AAPCSï¼Œå‰ 4 ä¸ªå‚æ•°èµ° r0-r3ï¼Œå¤šä½™å‚æ•°èµ°æ ˆï¼ŒGETARG/CALL æ­£ç¡®å¤„ç†ã€‚
+- `setjmp.h` ¶¨Òå `jmp_buf`£¨`int[20]`£¬80 ×Ö½Ú£¬×ã¹»±£´æ ARM µÄ r4-r11¡¢sp¡¢lr¡¢pc£©¡£
+- `stdlib/src/setjmp.c` ÊÇ host ²âÊÔÓÃµÄ¿ÉÒÆÖ²¼ò»¯ÊµÏÖ£¬×ª·¢µ½ËŞÖ÷ `setjmp/longjmp`¡£
+- **ARM Âã»úÄ¿±ê**ĞèÒª»ã±àÊµÏÖ£º±£´æ r4-r11¡¢sp¡¢lr µÈµ½ `jmp_buf`£¬`longjmp` Ê±»Ö¸´²¢Ìø×ª¡£`stdlib/src/setjmp.c` ²»¸²¸Ç ARM ³¡¾°¡£
+- ±àÒëÆ÷°Ñ `setjmp/longjmp` µ±×÷ÆÕÍ¨º¯Êıµ÷ÓÃ´¦Àí£¬ÎŞĞèÌØÊâ IR¡£
 
 ---
 
-## 13 å·²çŸ¥é™åˆ¶
+## 14 ³£¼ûÎÊÌâ FAQ
 
-- VLAï¼ˆè¿è¡Œæ—¶å˜é•¿æ•°ç»„ï¼‰ï¼šä¸æ”¯æŒ
-- ç¡¬ä»¶ FPU æŒ‡ä»¤ï¼ˆVFP/NEONï¼‰ï¼šæœªä½¿ç”¨ï¼Œèµ°è½¯æµ®ç‚¹ï¼ˆ`__aeabi_f*`/`__aeabi_d*` æ¡©ï¼‰
-- `_Complex/_Imaginary`ï¼šä¸æ”¯æŒ
-- å®½å­—ç¬¦ / trigraphï¼šä¸æ”¯æŒ
-- DWARF è°ƒè¯•ä¿¡æ¯ï¼šä¸ç”Ÿæˆ
-- ä¼˜åŒ– Passï¼šæ— ï¼ˆæ‰€æœ‰ä»£ç ç›´æ¥ç”Ÿæˆï¼‰
-- æ‰©å±•å†…è”æ±‡ç¼–çš„æ“ä½œæ•°æ›¿æ¢ï¼šC åç«¯å®Œæ•´é€ä¼ ï¼ŒARM åç«¯ä»…æ–‡æœ¬é€ä¼ 
-- ARM åç«¯èšåˆå…¨å±€åˆå§‹åŒ–ï¼šé¢„ç•™ `.zero` ç©ºé—´ï¼Œè¿è¡Œæ—¶ç”± main ä¸­ä»£ç åˆå§‹åŒ–
-- `setjmp/longjmp` åœ¨ ARM è£¸æœºç›®æ ‡éœ€æ±‡ç¼–å®ç°ï¼ˆhost æµ‹è¯•ç”¨ `stdlib/src/setjmp.c` å¯ç§»æ¤ç‰ˆæœ¬ï¼‰
+**Q1£ºÄÜ±àÒë Keil/MDK Ğ´µÄ STM32 ¹¤³ÌÂğ£¿**
+A£ºÖ§³Ö C99 + ÍêÕû armcc ¼æÈİÀ©Õ¹£¨`__svc/__irq/__weak/__naked/__packed/__align/__at/__forceinline/__asm` º¯ÊıÌå/È«Ì× `__attribute__`/È«Ì× `#pragma`/Ô¤¶¨Òåºê/ÄäÃû union£©¡£HAL/CMSIS ¼Ä´æÆ÷¶¨Òå¡¢startup ÎÄ¼ş¡¢ÖĞ¶ÏÏòÁ¿±í¾ù¿ÉÖ±½Ó±àÒë¡£
 
-v0.5.0 å·²è§£å†³çš„æ—§é™åˆ¶ï¼ˆä»…ä¾›å‚è€ƒï¼‰ï¼š
+**Q2£º`__irq` º¯ÊıÔõÃ´Éú³É£¿**
+A£ºARM ºó¶Ë×Ô¶¯Éú³ÉÖĞ¶ÏĞòÑÔ `PUSH {r0-r3,r12,lr}` ºÍ½áÓï `POP {r0-r3,r12,pc}`¡£
 
-- ~~ARM åç«¯ `double` ç²¾åº¦~~ï¼šå·²æ”¯æŒ `__aeabi_d*` åŒç²¾åº¦æ¡©ï¼Œ`double` çœŸ 64 ä½ç²¾åº¦
-- ~~éšå¼ç±»å‹è½¬æ¢~~ï¼šå·²å®Œæ•´å®ç° usual arithmetic conversions + æ•´æ•°æå‡
-- ~~å…¨å±€å˜é‡åˆå€¼å¸¸é‡è¡¨è¾¾å¼~~ï¼šå·²æ”¯æŒå¸¸é‡è¡¨è¾¾å¼æŠ˜å ï¼ˆ`eval_const_expr`ï¼‰ï¼Œå«å­—é¢é‡ç®—æœ¯ã€`sizeof`ã€ä¸€å…ƒ/äºŒå…ƒ/ä¸‰ç›®ã€enum
-- ~~æ•°ç»„ç»´åº¦ä»…æ”¯æŒå­—é¢é‡~~ï¼šå·²æ”¯æŒå¸¸é‡è¡¨è¾¾å¼ç»´åº¦ï¼ˆ`int arr[SIZE+2]`ã€`int arr[3*sizeof(int)]`ï¼‰
-- ~~`printf` 64 ä½å‚æ•°æˆªæ–­~~ï¼šå·²ä¿®å¤ï¼Œ`long long` æ­£ç¡®ä¼ é€’
-- ~~`>4` å‚æ•°è°ƒç”¨çº¦å®š~~ï¼šå·²å®ç°ä¸¥æ ¼ AAPCSï¼Œå¤šä½™å‚æ•°èµ°æ ˆ
+**Q3£º¸¡µãÔÚ STM32 ÉÏÔõÃ´¹¤×÷£¿**
+A£ºÄ¬ÈÏ×ßÓ²¼ş FPU£¨VFP Ö¸Áî `VADD.F32/F64`/`VMUL`/`VCVT`/`VCMP` µÈ£©£»ÓÃ `-fno-fpu_hw` »òÅäÖÃ `fpu_hw=0` ¿É»ØÍËµ½ `__aeabi_f*`/`__aeabi_d*` Èí¸¡µã×®£¨`double` Õæ 64 Î»¾«¶È£©£¬ĞèÁ´½Ó newlib Èí¸¡µã¿â»ò×ÔĞĞÊµÏÖ×®º¯Êı¡£
+
+**Q4£º`.s` ÎÄ¼şÔõÃ´±àÒë£¿**
+A£º`arkcc file.s -target arm -o file.bin`£¬Ìø¹ıÇ°¶ËÖ±½Ó»ã±à¡£
+
+**Q5£º½á¹¹Ìå°´Öµ´«µİÔõÃ´ÊµÏÖ£¿**
+A£ºÍ¨¹ıÒş²ØÖ¸Õë²ÎÊı¡ª¡ªµ÷ÓÃ·½ÔÚÕ»ÉÏ·ÖÅä¿Õ¼ä£¬´«µØÖ·¸ø±»µ÷·½¡£
+
+**Q6£º`__asm void fn() {...}` Õûº¯ÊıÌå»ã±àÔõÃ´ÓÃ£¿**
+A£ºº¯ÊıÌåÓÉ»ã±à×Ö·û´®¹¹³É£¬Ö±½ÓÍ¸´«µ½Éú³ÉµÄ `.s`¡£ÊÊÓÃÓÚ startup¡¢ÏòÁ¿±í¡¢µ×²ãÔ­×Ó²Ù×÷¡£Ïê¼û 5.8¡£
+
+**Q7£º`constructor`/`destructor` ÊôĞÔÔõÃ´ÉúĞ§£¿**
+A£ºARM ºó¶Ë°Ñ `constructor` º¯ÊıÖ¸Õë·ÅÈë `.init_array` ¶Î£¬`destructor` ·ÅÈë `.fini_array` ¶Î¡£C ÔËĞĞÊ±£¨Èç `__libc_init_array`£©»áÔÚ `main` Ç°ºó±éÀúÖ´ĞĞ¡£
+
+**Q8£º¶àÓÚ 4 ¸ö²ÎÊıµÄº¯Êıµ÷ÓÃ·ûºÏ AAPCS Âğ£¿**
+A£º·ûºÏ¡£ÑÏ¸ñ AAPCS£¬Ç° 4 ¸ö²ÎÊı×ß r0-r3£¬¶àÓà²ÎÊı×ßÕ»£¬GETARG/CALL ÕıÈ·´¦Àí¡£
+
+**Q9£ºÔõÃ´¿ªÆôÓÅ»¯£¿**
+A£º`-O1` ÆôÓÃ IR ¼¶³£Á¿ÕÛµş + ËÀ´úÂëÏû³ı£¨`src/opt.c`£©£»`-O0` ¹Ø±Õ¡£Ò²¿ÉÔÚ `arkcc.cfg` ÖĞÉè `opt_level=1`¡£Ïê¼ûµÚ 8 ÕÂ¡£
+
+**Q10£ºÔõÃ´Éú³Éµ÷ÊÔĞÅÏ¢£¿**
+A£º¼Ó `-g`£¬ARM ºó¶Ë»á·¢Éä DWARF Î±Ö¸Áî£¨`.file/.loc/.cfi_startproc/.cfi_endproc/.size`£©¡£Ò²¿ÉÔÚ `arkcc.cfg` ÖĞÉè `debug_info=1` »ò `dwarf=1`¡£
+
+**Q11£ºÔõÃ´²ÃÇĞÌØĞÔ£¿**
+A£ºÈı²ãÅäÖÃ£¨Ïê¼ûµÚ 7 ÕÂ£©£º±àÒëÆÚ¸Ä `include/arkcc_config.h` µÄ `ARKCC_FEATURE_*` ºê£»ÔËĞĞÊ±¸Ä `arkcc.cfg`£»ÃüÁîĞĞÓÃ `-fno-<feature>`¡£ÀıÈç `-fno-fpu_hw` ¹ØÓ²¼ş FPU£¬`-fno-vla` ¹Ø±ä³¤Êı×é¡£
+
+**Q12£ºVLA ±ä³¤Êı×éÔõÃ´ÊµÏÖ£¿**
+A£º`int a[n]` Í¨¹ı `IR_ALLOCA` ÔÚÕ»ÉÏ¶¯Ì¬·ÖÅä£¨8 ×Ö½Ú¶ÔÆë£¬`SUB sp, sp, r0`£©£¬Ñ¹ÈëÊ×µØÖ·¹©ºóĞø·ÃÎÊ¡£
+
+**Q13£º`_Complex` ¸´ÊıÔõÃ´´¦Àí£¿**
+A£º½âÎö `_Complex double`/`_Complex float` ÀàĞÍ²¢Í¸´«¸øºó¶Ë£¨C ºó¶Ë½»¸ø host gcc£¬`sizeof(_Complex double)==16`£©¡£
 
 ---
 
-## 14 é™„å½•ï¼šå†…éƒ¨æ•°æ®æµ
+## 15 ÒÑÖªÏŞÖÆ
+
+arkcc v0.6.0 ÒÑÊµÏÖÍêÕû C99 + armcc ¼æÈİ£¬Ê£ÓàÏŞÖÆ¾ùÎª±ßÔµ³¡¾°£º
+
+- À©Õ¹ÄÚÁª»ã±àµÄ²Ù×÷ÊıÌæ»»£ºC ºó¶ËÍêÕûÍ¸´«£¬ARM ºó¶Ë½öÎÄ±¾Í¸´«
+- ARM ºó¶Ë¾ÛºÏÈ«¾Ö³õÊ¼»¯£ºÔ¤Áô `.zero` ¿Õ¼ä£¬ÔËĞĞÊ±ÓÉ main ÖĞ´úÂë³õÊ¼»¯
+- `setjmp/longjmp` ÔÚ ARM Âã»úÄ¿±êĞè»ã±àÊµÏÖ£¨host ²âÊÔÓÃ `stdlib/src/setjmp.c` ¿ÉÒÆÖ²°æ±¾£©
+- `_Imaginary` ĞéÊıÀàĞÍ£ºÎ´ÊµÏÖ£¨`_Complex` ¸´ÊıÒÑÖ§³Ö£©
+- ¼Ä´æÆ÷·ÖÅä Pass£ºÊµÑéĞÔ£¬Ä¬ÈÏ¹Ø±Õ£¨`ARKCC_FEATURE_OPT_REGALLOC=0`£©
+
+v0.6.0 ÒÑ½â¾öµÄ¾ÉÏŞÖÆ£¨½ö¹©²Î¿¼£©£º
+
+- ~~VLA£¨ÔËĞĞÊ±±ä³¤Êı×é£©~~£ºÒÑÖ§³Ö£¬`IR_ALLOCA` Õ»¶¯Ì¬·ÖÅä
+- ~~Ó²¼ş FPU Ö¸Áî£¨VFP£©~~£ºÒÑÖ§³Ö£¬`VADD/VMUL/VCVT/VCMP` µÈÔ­ÉúÖ¸Áî£¬Ä¬ÈÏ¿ªÆô
+- ~~`_Complex` ¸´Êı~~£ºÒÑÖ§³Ö£¬Í¸´«¸ø gcc
+- ~~¿í×Ö·û / trigraph~~£ºÒÑÖ§³Ö `wchar_t`/`L"..."`/`L'...'` + 9 ¸ö C99 ÈıÔª×é
+- ~~DWARF µ÷ÊÔĞÅÏ¢~~£ºÒÑÖ§³Ö `-g` Éú³É `.file/.loc/.cfi/.size`
+- ~~ÓÅ»¯ Pass~~£ºÒÑÖ§³Ö `-O1` ³£Á¿ÕÛµş + ËÀ´úÂëÏû³ı£¨`src/opt.c`£©
+
+v0.5.0 ÒÑ½â¾öµÄ¾ÉÏŞÖÆ£¨½ö¹©²Î¿¼£©£º
+
+- ~~ARM ºó¶Ë `double` ¾«¶È~~£ºÒÑÖ§³Ö `__aeabi_d*` Ë«¾«¶È×®£¬`double` Õæ 64 Î»¾«¶È
+- ~~ÒşÊ½ÀàĞÍ×ª»»~~£ºÒÑÍêÕûÊµÏÖ usual arithmetic conversions + ÕûÊıÌáÉı
+- ~~È«¾Ö±äÁ¿³õÖµ³£Á¿±í´ïÊ½~~£ºÒÑÖ§³Ö³£Á¿±í´ïÊ½ÕÛµş£¨`eval_const_expr`£©£¬º¬×ÖÃæÁ¿ËãÊõ¡¢`sizeof`¡¢Ò»Ôª/¶şÔª/ÈıÄ¿¡¢enum
+- ~~Êı×éÎ¬¶È½öÖ§³Ö×ÖÃæÁ¿~~£ºÒÑÖ§³Ö³£Á¿±í´ïÊ½Î¬¶È£¨`int arr[SIZE+2]`¡¢`int arr[3*sizeof(int)]`£©
+- ~~`printf` 64 Î»²ÎÊı½Ø¶Ï~~£ºÒÑĞŞ¸´£¬`long long` ÕıÈ·´«µİ
+- ~~`>4` ²ÎÊıµ÷ÓÃÔ¼¶¨~~£ºÒÑÊµÏÖÑÏ¸ñ AAPCS£¬¶àÓà²ÎÊı×ßÕ»
+
+---
+
+## 16 ¸½Â¼£ºÄÚ²¿Êı¾İÁ÷
 
 ```
-æºä»£ç  .c / .s
+Ô´´úÂë .c / .s
    |
    v
-(.s? ----> ç›´æ¥ assemble ----> .bin)
+(.s? ----> Ö±½Ó assemble ----> .bin)
    |
    v
-+--------+      #include å±•å¼€ã€#define æ›¿æ¢ã€æ¡ä»¶ç¼–è¯‘ã€#pragma pack
++--------+      #include Õ¹¿ª¡¢#define Ìæ»»¡¢Ìõ¼ş±àÒë¡¢#pragma pack¡¢trigraph Ìæ»»
 | preproc|
 +--------+
    |
    v
-+--------+      å­—ç¬¦ -> Token
++--------+      ×Ö·û -> Token
 | lexer  |
 +--------+
    |
    v
-+--------+      é€’å½’ä¸‹é™ï¼Œå»º ASTï¼ˆå« __irq/__weak/__svc/__packed/__align/__at/__asm/__attribute__ï¼‰
++--------+      µİ¹éÏÂ½µ£¬½¨ AST£¨º¬ __irq/__weak/__svc/__packed/__align/__at/__asm/__attribute__£©
 | parser |
 +--------+
    |
    v
-+--------+      ç¬¦å·è¡¨ã€ç±»å‹æ¨å¯¼ã€ä½åŸŸå¸ƒå±€ã€å±æ€§æ³¨å†Œ
++--------+      ·ûºÅ±í¡¢ÀàĞÍÍÆµ¼¡¢Î»Óò²¼¾Ö¡¢ÊôĞÔ×¢²á
 |  sema  |
 +--------+
    |
    v
-+--------+      AST -> æ ˆå¼ IRï¼ˆIR_DIV/IR_64BINARY/IR_MEMCPY/IR_SVC ç­‰ï¼‰
++--------+      AST -> Õ»Ê½ IR£¨IR_DIV/IR_64BINARY/IR_MEMCPY/IR_SVC/IR_ALLOCA µÈ£©
 | irgen  |
 +--------+
    |
    v
++--------+      IR ¼¶ÓÅ»¯£¨-O1£©£º³£Á¿ÕÛµş + ËÀ´úÂëÏû³ı
+|  opt   |
++--------+
+   |
+   v
 +-----------+
-| backend.* |--- emit_asm  -> æ–‡æœ¬æ±‡ç¼– / .gen.c
-|           |--- assemble  -> æœºå™¨ç ï¼ˆarm å®Œæ•´å®ç°ï¼‰
-|           |--- link      -> BL é‡å®šä½ï¼ˆarmï¼‰
+| backend.* |--- emit_asm  -> ÎÄ±¾»ã±à / .gen.c£¨¿ÉÑ¡ DWARF µ÷ÊÔĞÅÏ¢ + Ó²¼ş FPU£©
+|           |--- assemble  -> »úÆ÷Âë£¨arm ÍêÕûÊµÏÖ£©
+|           |--- link      -> BL ÖØ¶¨Î»£¨arm£©
 +-----------+
    |
    v
-.bin / .S / .gen.c / è·³è½¬æ‰§è¡Œ
+.bin / .S / .gen.c / Ìø×ªÖ´ĞĞ
 ```

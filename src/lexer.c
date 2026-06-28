@@ -13,6 +13,9 @@
 #include "lexer.h"
 #include "memory.h"
 #include "platform.h"
+#include "config.h"
+#include "arkcc_config.h"
+#include "type.h"
 
 static Token lexer_read_token(Lexer *lex);
 
@@ -146,6 +149,9 @@ static Keyword g_keywords[] = {
     {"__at",          TOK_AT},         /* ARM Compiler 5 绝对地址定位关键字 */
     {"__softfp",      TOK_SOFTFP},     /* ARM Compiler 5 软浮点 ABI */
     {"__forceinline", TOK_FORCEINLINE},/* ARM Compiler 5 强制内联 */
+    /* B4: _Complex 关键字（C99）*/
+    {"_Complex",      TOK_COMPLEX},
+    {"__complex__",   TOK_COMPLEX},
     /* __asm 词法上仍归为 TOK_ASM；parser 通过上下文区分内联 asm 语句与
      * armcc 风格整函数体汇编（__asm void fn(){...}）。 */
     {0, TOK_EOF}
@@ -243,6 +249,56 @@ static Token lexer_read_token(Lexer *lex) {
     c = *lex->p;
 
     if (c == '\0') { tk = make_token(TOK_EOF, line); tk.src_start = start; return tk; }
+
+#if ARKCC_FEATURE_WCHAR
+    /* B2: 宽字符串 L"..." 与宽字符 L'...'。
+     * 编译期 + 运行时双重守护。L 后紧跟 " 或 ' 才视为宽字面量；
+     * 否则按普通标识符处理（如变量名 L）。 */
+    if (g_config.enable_wchar && c == 'L' &&
+        (lex->p[1] == '"' || lex->p[1] == '\'')) {
+        if (lex->p[1] == '"') {
+            /* 宽字符串：复用 TOK_STR，value 置 1 作为宽字符串标记 */
+            Token t = make_token(TOK_STR, line);
+            int cap = 32, len = 0;
+            char *buf = (char *)mem_pool_alloc(cap);
+            lex->p += 2; /* 跳过 L" */
+            while (*lex->p && *lex->p != '"') {
+                int ch;
+                if (*lex->p == '\\' && lex->p[1]) {
+                    lex->p++;
+                    ch = read_escape(&lex->p);
+                } else {
+                    ch = (unsigned char)*lex->p;
+                    lex->p++;
+                }
+                if (len + 1 >= cap) {
+                    int nc = cap * 2;
+                    buf = (char *)mem_realloc(buf, cap, nc);
+                    cap = nc;
+                }
+                buf[len++] = (char)ch;
+            }
+            if (*lex->p == '"') lex->p++;
+            buf[len] = 0;
+            t.str = buf;
+            t.value = 1;  /* 宽字符串标记 */
+            return t;
+        } else {
+            /* 宽字符 L'...'：C 语义下为整型常量，按 TOK_NUM 返回 */
+            int val = 0;
+            lex->p += 2; /* 跳过 L' */
+            if (*lex->p == '\\') {
+                lex->p++;
+                val = read_escape(&lex->p);
+            } else if (*lex->p) {
+                val = (unsigned char)*lex->p;
+                lex->p++;
+            }
+            if (*lex->p == '\'') lex->p++;
+            return make_number(val, line);
+        }
+    }
+#endif
 
     /* 标识符 / 关键字 */
     if (is_alpha(c)) {
