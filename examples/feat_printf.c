@@ -1,5 +1,5 @@
-/* feat_printf.c — printf 各种格式（c 后端透传给宿主 libc）
- * 期望：返回 0；运行时输出多行
+/* feat_printf.c - printf various formats (C backend passes through to host libc)
+ * Expected: returns 0; runtime prints multiple lines
  */
 int main(void) {
     int n = 42;

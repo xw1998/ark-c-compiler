@@ -1,5 +1,5 @@
-/* feat_float.c — 浮点四则运算 + 比较
- * 期望退出码：42
+/* feat_float.c - Floating-point arithmetic + comparison
+ * Expected exit code: 42
  */
 int main(void) {
     double a = 3.5;

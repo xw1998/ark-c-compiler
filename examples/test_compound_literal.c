@@ -1,5 +1,5 @@
-/* test_compound_literal.c — 复合字面量（C99）
- * 期望退出码：3
+/* test_compound_literal.c - Compound literals (C99)
+ * Expected exit code: 3
  */
 int main(void) {
     int *p = (int[]){1, 2, 3};

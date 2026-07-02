@@ -1,5 +1,5 @@
-/* test_nested_init.c — 嵌套聚合初始化
- * 期望退出码：6
+/* test_nested_init.c - Nested aggregate initialization
+ * Expected exit code: 6
  */
 int matrix[2][3] = {{1, 2, 3}, {4, 5, 6}};
 

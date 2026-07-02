@@ -6,27 +6,30 @@
 
 typedef struct {
     const char *input_path;
-    const char *output_path;  /* NULL = 推导默认 */
+    const char *output_path;  /* NULL = derive default */
     int         emit_asm;     /* -S */
     int         verbose;
-    const char *target;       /* -target <name>；NULL = 默认 */
+    const char *target;       /* -target <name>; NULL = default */
     const char *include_dirs[16];
     int         include_dir_count;
     int         list_backends;
-    /* === 0.3.0 扩展 === */
-    int         compile_only;     /* -c 仅生成对象文件 */
-    int         preprocess_only;  /* -E 仅输出预处理结果 */
-    int         link_mode;        /* -link 链接多个对象 */
-    const char *link_inputs[32];  /* -link 输入 */
+    /* === 0.3.0 additions === */
+    int         compile_only;     /* -c: generate object file only */
+    int         preprocess_only;  /* -E: output preprocessor result only */
+    int         link_mode;        /* -link: link multiple objects */
+    const char *link_inputs[32];  /* -link inputs */
     int         link_input_count;
-    int         opt_level;        /* -O0/-O1/-O2，目前接受但忽略 */
-    int         debug_info;       /* -g 接受但忽略 */
+    int         opt_level;        /* -O0/-O1/-O2: accepted but currently ignored */
+    int         debug_info;       /* -g: accepted but ignored */
     int         no_unused_warn;   /* -Wno-unused */
-    /* === 0.6.0 扩展：armcc 5 兼容 === */
-    const char *cpu;            /* --cpu/-mcpu 目标 CPU 名（如 Cortex-M4） */
-    int         gen_depend;     /* -MMD/--depend 生成依赖文件 */
-    const char *depend_file;    /* -MF 依赖文件输出路径 */
-    int         split_sections; /* -ffunction-sections/--split_sections 每函数一段 */
+    /* === 0.6.0 additions: armcc 5 compatibility === */
+    const char *cpu;            /* --cpu/-mcpu target CPU name (e.g. Cortex-M4) */
+    int         gen_depend;     /* -MMD/--depend: generate dependency file */
+    const char *depend_file;    /* -MF dependency file output path */
+    int         split_sections; /* -ffunction-sections/--split_sections: one section per function */
+    /* === 0.7.0 additions: scatter/linker script support === */
+    const char *scatter_file;  /* --scatter <file>: ARM scatter .sct file */
+    const char *linker_script; /* -T <file>: GNU ld linker script .ld file */
 } ArkOptions;
 
 int ark_compile(const ArkOptions *opts);

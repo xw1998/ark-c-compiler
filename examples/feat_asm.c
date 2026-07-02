@@ -1,5 +1,5 @@
-/* feat_asm.c — 内联汇编（透传给宿主 gcc）
- * 期望退出码：0（成功执行 nop）
+/* feat_asm.c - Inline assembly (passed through to host gcc)
+ * Expected exit code: 0 (successful nop)
  */
 int main(void) {
     asm volatile("nop");

@@ -1,5 +1,5 @@
 /* Ark C Compiler - symtab.h
- * 符号表：支持作用域嵌套，hash + 链表实现。
+ * Symbol table: supports scope nesting, hash + linked-list implementation.
  */
 #ifndef ARK_SYMTAB_H
 #define ARK_SYMTAB_H
@@ -24,21 +24,21 @@ typedef struct Symbol {
     char          *name;
     Type          *type;
     int            scope_level;
-    int            offset;       /* 局部变量为相对 fp 的偏移；全局/枚举常量另作用 */
+    int            offset;       /* local var: offset relative to fp; global/enum const: other use */
     int            is_defined;
     int            param_count;
     int            is_variadic;
     int            is_static;
     int            is_extern;
     int            enum_value;
-    int            svc_num;      /* __svc(n) 编号；0 表示非 SVC 函数 */
-    int            smc_num;      /* __smc(n) 编号；0 表示非 SMC 函数 */
-    int            is_irq;       /* __irq 中断函数 */
-    int            is_weak;      /* __weak 弱符号 */
-    int            is_naked;     /* __naked 裸函数 */
+    int            svc_num;      /* __svc(n) number; 0 means non-SVC function */
+    int            smc_num;      /* __smc(n) number; 0 means non-SMC function */
+    int            is_irq;       /* __irq interrupt function */
+    int            is_weak;      /* __weak weak symbol */
+    int            is_naked;     /* __naked naked function */
     int            is_used;      /* __attribute__((used)) */
     int            is_unused;    /* __attribute__((unused)) */
-    int            is_asm_func;  /* __asm 整函数体 */
+    int            is_asm_func;  /* __asm whole-function body */
     int            forceinline;  /* __forceinline */
     char          *alias_target; /* __attribute__((alias("xxx"))) */
     struct Symbol *next;
@@ -50,6 +50,8 @@ void    sym_leave_scope(void);
 int     sym_current_scope(void);
 Symbol *sym_find(const char *name);
 Symbol *sym_find_current(const char *name);
+Symbol *sym_find_typedef(const char *name);
+Symbol *sym_find_tag(const char *name);
 Symbol *sym_add(SymKind kind, const char *name, Type *type, int offset);
 int     sym_is_typedef(const char *name);
 

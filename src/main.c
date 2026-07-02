@@ -1,6 +1,6 @@
 /* Ark C Compiler - main (host)
- * 用法：arkcc <file.c> [-o output] [-S] [-v] [-target name] [-I dir] [--list-backends]
- *       新增：-c / -E / -link a.o b.o / -O0|1|2 / -g / -Wno-unused
+ * Usage: arkcc <file.c> [-o output] [-S] [-v] [-target name] [-I dir] [--list-backends]
+ *       Added: -c / -E / -link a.o b.o / -O0|1|2 / -g / -Wno-unused
  *             -config <file> / -f<feature> / -fno-<feature>
  *             --enum_is_int / --dollar / --dwarf2 / --dwarf3 / --scatter <file>
  */
@@ -35,12 +35,16 @@ static void usage(void) {
         "  -MMD               generate dependency file; alias: --depend\n"
         "  -MF <file>         dependency output path (use with -MMD)\n"
         "  -ffunction-sections  one section per function; alias: --split_sections\n"
+        "  --scatter <file>   ARM scatter .sct file (parsed and converted to .ld when -S is used)\n"
+        "  -T <file>          GNU ld linker script .ld (alias: --linker-script; converted to .sct with -S)\n"
+        "  -config <file>     load arkcc INI config file (overrides defaults; see arkcc.cfg)\n"
+        "  -profile <name>    select build profile (host_full/stm32_min/cross_compile)\n"
         "  --list-backends    print available backends and exit\n"
         "  -h, --help         this message\n",
         ARK_VERSION);
 }
 
-/* 检查文件是否存在（可读） */
+/* Check if file exists (readable) */
 static int file_exists(const char *path) {
     FILE *fp = fopen(path, "r");
     if (!fp) return 0;
@@ -70,6 +74,8 @@ static void reset_opts(ArkOptions *o) {
     o->gen_depend = 0;
     o->depend_file = 0;
     o->split_sections = 0;
+    o->scatter_file = 0;
+    o->linker_script = 0;
 }
 
 int main(int argc, char **argv) {
@@ -81,10 +87,10 @@ int main(int argc, char **argv) {
 
     if (argc < 2) { usage(); return 1; }
 
-    /* ---- 配置系统初始化（优先级：命令行 > 配置文件 > 编译期默认）---- */
-    /* 1) 用编译期 ARKCC_FEATURE_* 宏初始化 g_config */
+    /* ---- Config system initialization (priority: command-line > config file > compile-time defaults) ---- */
+    /* 1) Initialize g_config with compile-time ARKCC_FEATURE_* macros */
     config_init();
-    /* 2) 查找 -config <file> 或默认 arkcc.cfg，加载配置文件 */
+    /* 2) Find -config <file> or default arkcc.cfg, load config file */
     for (i = 1; i < argc; i++) {
         const char *a = argv[i];
         if (strcmp(a, "-config") == 0 && i + 1 < argc) {
@@ -96,7 +102,7 @@ int main(int argc, char **argv) {
     if (!cfg_loaded && file_exists("arkcc.cfg")) {
         config_load_file("arkcc.cfg");
     }
-    /* 3) 扫描命令行 -O/-g/-fxxx/-fno-xxx，覆盖文件设置 */
+    /* 3) Scan command line -O/-g/-fxxx/-fno-xxx, override file settings */
     config_apply_args(argc, argv);
 
     for (i = 1; i < argc; i++) {
@@ -108,13 +114,13 @@ int main(int argc, char **argv) {
         else if (strcmp(a, "-g") == 0)       opts.debug_info = 1;
         else if (strncmp(a, "-O", 2) == 0)   opts.opt_level = (a[2] >= '0' && a[2] <= '9') ? (a[2] - '0') : 0;
         else if (strcmp(a, "-Wno-unused") == 0) opts.no_unused_warn = 1;
-        else if (strncmp(a, "-W", 2) == 0)   { /* 接受未知 -W*，忽略 */ }
+        else if (strncmp(a, "-W", 2) == 0)   { /* Accept unknown -W*, ignore */ }
         else if (strcmp(a, "-config") == 0 && i + 1 < argc) {
-            /* 已在前面处理过，跳过路径参数 */
+            /* Already handled above, skip path argument */
             i++;
         }
         else if (a[0] == '-' && a[1] == 'f') {
-            /* -fxxx / -fno-xxx：已由 config_apply_args 处理，此处静默接受 */
+            /* -fxxx / -fno-xxx: already handled by config_apply_args, silently accepted here */
         }
         else if (strcmp(a, "--enum_is_int") == 0 || strcmp(a, "-fenum-is-int") == 0 ||
                  strcmp(a, "--dollar") == 0 ||
@@ -128,14 +134,22 @@ int main(int argc, char **argv) {
                  strcmp(a, "--locale") == 0 || strcmp(a, "--multibyte_chars") == 0 ||
                  strcmp(a, "--data_reorder") == 0 || strcmp(a, "--diag_style") == 0 ||
                  strcmp(a, "--remove_unneeded_entities") == 0) {
-            /* armcc 5 兼容选项：已由 config_apply_args 处理或静默忽略 */
+            /* armcc 5 compatible options: already handled by config_apply_args or silently ignored */
         }
         else if (strcmp(a, "--scatter") == 0 && i + 1 < argc) {
-            /* --scatter <file>：已由 config_apply_args 记录路径，此处跳过参数 */
+            /* --scatter <file>: path already recorded by config_apply_args into g_config;
+             * we also mirror it into opts so ark_compile can consume it. */
+            opts.scatter_file = argv[i + 1];
             i++;
         }
+        else if ((strcmp(a, "-T") == 0 || strcmp(a, "--linker-script") == 0 ||
+                  strcmp(a, "--script") == 0) && i + 1 < argc) {
+            /* -T <file> / --linker-script <file>: GNU ld linker script (.ld).
+             * Stored in opts so the backend can emit address-aware section placement. */
+            opts.linker_script = argv[++i];
+        }
         else if (strcmp(a, "--fpu") == 0 && i + 1 < argc) {
-            /* --fpu <name>：已由 config_apply_args 处理，此处跳过参数 */
+            /* --fpu <name>: already handled by config_apply_args, skip argument here */
             i++;
         }
         else if (strcmp(a, "-o") == 0 && i + 1 < argc) {
@@ -164,7 +178,7 @@ int main(int argc, char **argv) {
         }
         else if (strcmp(a, "-link") == 0) {
             opts.link_mode = 1;
-            /* 收集后续非 -o/非选项参数作为输入 */
+            /* Collect following non -o/non-option arguments as inputs */
             while (i + 1 < argc) {
                 const char *nx = argv[i + 1];
                 if (nx[0] == '-') break;
@@ -192,16 +206,12 @@ int main(int argc, char **argv) {
         return 1;
     }
 #if ARKCC_FEATURE_SCATTER
-    /* --scatter <file>：解析 ARM scatter 加载描述文件，校验语法并记录区域。
-     * 解析结果当前仅打印到日志（arkcc 不内置链接器），供调试与未来扩展。 */
+    /* Parse --scatter <file> (ARM .sct) and/or -T <file> (GNU ld .ld) into a
+     * ScatterDesc. The parsed regions are consumed by ark_compile (passed via
+     * opts.scatter_file / opts.linker_script) so the ARM backend can place
+     * sections at scatter-defined addresses and emit a matching linker script. */
     if (g_config.scatter_file) {
-        ScatterDesc sd;
-        sd.load_regions = 0;
-        sd.error_count = 0;
-        if (scatter_parse_file(g_config.scatter_file, &sd) == 0) {
-            if (opts.verbose) scatter_dump(&sd);
-        }
-        scatter_free(&sd);
+        opts.scatter_file = g_config.scatter_file;
     }
 #endif
     rc = ark_compile(&opts);

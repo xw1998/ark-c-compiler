@@ -1,5 +1,5 @@
-/* struct_test.c — struct、-> 与 sizeof
- * 期望退出码：3 + 4 = 7 + sizeof(Point)（=8）= 15
+/* struct_test.c - struct, -> and sizeof
+ * Expected exit code: 3 + 4 = 7 + sizeof(Point)(=8) = 15
  */
 struct Point {
     int x;

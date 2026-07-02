@@ -1,8 +1,9 @@
-/* test_constructor.c — __attribute__((constructor/destructor))
- * 验证编译器能解析并透传给 gcc / 生成 .init_array 条目。
- * 期望退出码：0（构造函数空实现，main 直接返回 0）
+/* test_constructor.c - __attribute__((constructor/destructor))
+ * Verifies the compiler can parse these and pass them through to gcc /
+ * generate .init_array entries.
+ * Expected exit code: 0 (constructor body is empty; main returns 0)
  */
-__attribute__((constructor)) void my_init(void) { /* 空实现，验证编译通过 */ }
-__attribute__((destructor))  void my_fini(void) { /* 空实现 */ }
+__attribute__((constructor)) void my_init(void) { /* empty body, verify it compiles */ }
+__attribute__((destructor))  void my_fini(void) { /* empty body */ }
 
 int main(void) { return 0; }

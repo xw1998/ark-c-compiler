@@ -1,5 +1,5 @@
-/* test_int_types.c — armcc 定宽整数类型测试
- * 期望退出码：10
+/* test_int_types.c - armcc fixed-width integer type test
+ * Expected exit code: 10
  */
 int main(void) {
     __int8 a = 1;

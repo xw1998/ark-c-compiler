@@ -1,5 +1,5 @@
-/* feat_svc.c — __svc 声明（ARM Compiler 5 兼容）
- * ARM 后端应生成 SVC #0x10 等指令
+/* feat_svc.c - __svc declaration (ARM Compiler 5 compatible)
+ * The ARM backend should emit instructions like SVC #0x10
  */
 typedef int int32;
 typedef unsigned int uint32;
@@ -13,7 +13,7 @@ int32  __svc ( 0x15 ) svcrt_call_sync_ctrl(uint32 *p);
 int main(void) {
     uint32 info = 0;
     uint32 ptr = 0;
-    /* 调用 SVC 函数（在 ARM 上会触发 SVC 异常） */
+    /* Call SVC functions (on ARM this triggers an SVC exception) */
     info = svcrt_call_sys_info(1);
     svcrt_call_dev_io(&ptr);
     return 0;

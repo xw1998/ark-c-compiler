@@ -1,9 +1,10 @@
 /* Ark C Compiler - type
- * 类型系统实现。多数复合类型走内存池分配。
+ * Type system implementation. Most composite types are allocated from the memory pool.
  */
 #include "type.h"
 #include "memory.h"
 #include "config.h"
+#include <stdio.h>
 
 static Type ty_void   = { TYPE_VOID,   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 static Type ty_char   = { TYPE_CHAR,   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
@@ -19,7 +20,7 @@ static Type ty_ushort = { TYPE_SHORT,  0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 };
 static Type ty_uint   = { TYPE_INT,    0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 };
 static Type ty_ulong  = { TYPE_LONG,   0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 };
 static Type ty_ullong = { TYPE_LLONG,  0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 };
-/* B2: wchar_t —— 宿主/C 后端透传给 gcc，按 4 字节无符号整数处理 */
+/* B2: wchar_t - passed through to gcc by host/C backend, treated as 4-byte unsigned integer */
 static Type ty_wchar  = { TYPE_WCHAR,  0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 };
 
 Type *type_void(void)   { return &ty_void;  }
@@ -76,10 +77,10 @@ Type *type_func(Type *ret, Type **params, int pc, int variadic) {
     return t;
 }
 
-/* B2: wchar_t —— 与宿主 int 同尺寸，4 字节无符号 */
+/* B2: wchar_t - same size as host int, 4-byte unsigned */
 Type *type_wchar(void) { return &ty_wchar; }
 
-/* B4: _Complex —— base 指向 float/double；大小为 2*base */
+/* B4: _Complex - base points to float/double; size is 2*base */
 Type *type_complex(Type *base) {
     Type *t = (Type *)mem_pool_alloc(sizeof(Type));
     t->kind = TYPE_COMPLEX;
@@ -87,8 +88,8 @@ Type *type_complex(Type *base) {
     return t;
 }
 
-/* #pragma pack(n) 全局对齐控制：>0 时限制结构体字段自然对齐不超过此值。
- * 0 表示恢复默认（按各字段自然对齐）。 */
+/* #pragma pack(n) global alignment control: when >0, limits struct field natural alignment to no more than this value.
+ * 0 means restore default (natural alignment per field). */
 static int g_pack_align = 0;
 
 void type_set_pack(int n) { g_pack_align = n; }
@@ -100,21 +101,23 @@ void type_struct_add_field(Type *st, const char *name, Type *ft) {
     int fs = type_size(ft);
     int cur = st->size;
     int pack_val = 0;
-    int is_flex = 0;  /* 柔性数组成员：ft 是 size==0 的数组，不计入 sizeof */
-    /* #pragma pack 与 __attribute__((packed)) 都会收紧对齐：
-     *   pack_val = g_pack_align；若 is_packed 则强制为 1（packed 优先收紧）。
-     * 字段对齐取 min(自然对齐, pack_val)。 */
+    int is_flex = 0;  /* Flexible array member: ft is an array with size==0, not counted in sizeof */
+    /* Union members all start at offset 0; only struct fields accumulate offsets. */
+    if (st->kind == TYPE_UNION) cur = 0;
+    /* Both #pragma pack and __attribute__((packed)) tighten alignment:
+     *   pack_val = g_pack_align; if is_packed, force to 1 (packed takes precedence).
+     * Field alignment is min(natural alignment, pack_val). */
     if (g_pack_align > 0) pack_val = g_pack_align;
     if (st->is_packed)    pack_val = 1;
     if (pack_val > 0 && al > pack_val) al = pack_val;
     if (al < 1) al = 1;
-    /* 检测柔性数组成员：数组类型且 size==0 */
+    /* Detect flexible array member: array type with size==0 */
     if (ft && ft->kind == TYPE_ARRAY && ft->size == 0) {
         is_flex = 1;
     }
-    /* 记录 pack 到 align_override，供 type_size/type_align 收紧整体对齐 */
+    /* Record pack into align_override, so type_size/type_align can tighten overall alignment */
     if (pack_val > 0 && st->align_override == 0) st->align_override = pack_val;
-    /* 字段对齐 */
+    /* Field alignment */
     cur = (cur + al - 1) & ~(al - 1);
     f->name = mem_strdup(name ? name : "");
     f->type = ft;
@@ -122,7 +125,7 @@ void type_struct_add_field(Type *st, const char *name, Type *ft) {
     f->bit_offset = 0;
     f->bit_width = 0;
     f->next = 0;
-    /* 追加到链尾，保持声明顺序 */
+    /* Append to tail of list, preserving declaration order */
     if (!st->fields) {
         st->fields = f;
     } else {
@@ -134,17 +137,17 @@ void type_struct_add_field(Type *st, const char *name, Type *ft) {
         if (!is_flex && fs > st->size) st->size = fs;
     } else {
         if (!is_flex) st->size = cur + fs;
-        /* 柔性数组成员不增加结构体大小，但 offset 仍记录其起始位置 */
+        /* Flexible array member does not increase struct size, but offset still records its start position */
     }
 }
 
 void type_struct_add_bitfield(Type *st, const char *name, Type *ft, int width) {
-    /* 位域实现：同类位域尽量共用同一存储单元，紧凑排列。
-     *   - unit_bits = sizeof(ft) * 8 为一个存储单元的位数
-     *   - 若上一个字段是同类型位域且剩余位数足够，则接在其后
-     *   - 否则在新对齐偏移处开辟新存储单元
-     * 字段 offset 指向存储单元起点；bit_offset 为单元内位偏移；
-     * bit_width 为位宽（>0 表示位域）。irgen 据此发 IR_LOAD_FLD/IR_STORE_FLD。 */
+    /* Bitfield implementation: same-type bitfields share a storage unit where possible, packed tightly.
+     *   - unit_bits = sizeof(ft) * 8 is the number of bits in a storage unit
+     *   - If the previous field is a same-type bitfield with enough remaining bits, append after it
+     *   - Otherwise open a new storage unit at a new aligned offset
+     * Field offset points to the storage unit start; bit_offset is the in-unit bit offset;
+     * bit_width is the bit width (>0 indicates a bitfield). irgen emits IR_LOAD_FLD/IR_STORE_FLD accordingly. */
     int unit_sz   = type_size(ft);
     int unit_bits = unit_sz * 8;
     int unit_al   = type_align(ft);
@@ -160,26 +163,26 @@ void type_struct_add_bitfield(Type *st, const char *name, Type *ft, int width) {
     if (pack_val > 0 && st->align_override == 0) st->align_override = pack_val;
     if (unit_al < 1) unit_al = 1;
 
-    /* width <= 0 视为非法/占位，按普通字段处理以保持兼容 */
+    /* width <= 0 is treated as invalid/placeholder, handled as a normal field for compatibility */
     if (width <= 0) {
         type_struct_add_field(st, name, ft);
         return;
     }
-    /* 位宽不能超过存储单元位数 */
+    /* Bit width cannot exceed storage unit bit count */
     if (width > unit_bits) width = unit_bits;
 
-    /* 找最后一个字段 */
+    /* Find the last field */
     if (st->fields) {
         last = st->fields;
         while (last->next) last = last->next;
     }
-    /* 尝试与上一个同类位域共用存储单元 */
+    /* Try to share a storage unit with the previous same-type bitfield */
     if (last && last->bit_width > 0 && last->type == ft &&
         last->bit_offset + last->bit_width + width <= unit_bits) {
         cur_off = last->offset;
         bit_off = last->bit_offset + last->bit_width;
     } else {
-        /* 新存储单元：对齐当前 size 到 unit_al */
+        /* New storage unit: align current size to unit_al */
         cur_off = st->size;
         cur_off = (cur_off + unit_al - 1) & ~(unit_al - 1);
         bit_off = 0;
@@ -206,12 +209,12 @@ void type_struct_add_bitfield(Type *st, const char *name, Type *ft, int width) {
     }
 }
 
-/* 匿名 struct/union 字段提升：把 child 内每个具名字段以"父结构 size 对齐
- * 后的基址 + 字段相对偏移"为新偏移，加入 parent 字段链尾。
- *   - 对齐：父结构当前 size 按 child 的对齐 align(child) 圆整后，作为基址。
- *   - 字段：保留原 bit_offset/bit_width。
- *   - parent 大小：基址 + child 大小。
- * union 情况：parent 大小取 max(原 size, child 大小)。 */
+/* Anonymous struct/union field promotion: add each named field in child with
+ * "base address (parent size aligned) + field relative offset" as the new offset, to the parent field list tail.
+ *   - Alignment: round parent's current size up to align(child), as the base address.
+ *   - Fields: preserve original bit_offset/bit_width.
+ *   - parent size: base + child size.
+ * For unions: parent size = max(original size, child size). */
 void type_struct_add_anonymous(Type *parent, Type *child) {
     int base;
     int al = 1;
@@ -220,8 +223,8 @@ void type_struct_add_anonymous(Type *parent, Type *child) {
     if (!parent || !child) return;
     al = type_align(child);
     if (al < 1) al = 1;
-    /* UNION 中所有成员都从偏移 0 开始（重叠存储）；
-     * STRUCT 中按当前 size 对齐后追加 */
+    /* In UNION, all members start at offset 0 (overlapping storage);
+     * in STRUCT, append after aligning current size */
     if (parent->kind == TYPE_UNION) {
         base = 0;
     } else {
@@ -254,6 +257,17 @@ void type_struct_add_anonymous(Type *parent, Type *child) {
     }
 }
 
+/* Pointer size for the selected backend. Defaults to 4 (32-bit ARM/RISC-V).
+ * The C backend overrides this to sizeof(void*) (8 on 64-bit hosts) because
+ * generated code runs on the host, where pointers are 8 bytes. Without this,
+ * argv[i] (char**) would compute argv+i*4 and load 4 bytes, corrupting the
+ * pointer and crashing with STATUS_ACCESS_VIOLATION. */
+static int g_ptr_size = 4;
+
+void type_set_ptr_size(int bytes) {
+    if (bytes == 4 || bytes == 8) g_ptr_size = bytes;
+}
+
 int type_size(Type *t) {
     if (!t) return 4;
     switch (t->kind) {
@@ -266,16 +280,16 @@ int type_size(Type *t) {
         case TYPE_LLONG:  return 8;
         case TYPE_FLOAT:  return 4;
         case TYPE_DOUBLE: return 8;
-        case TYPE_PTR:    return 4;
+        case TYPE_PTR:    return g_ptr_size;
         case TYPE_WCHAR:  return 4;  /* B2 */
-        case TYPE_COMPLEX: return 2 * type_size(t->base); /* B4: 实部+虚部 */
+        case TYPE_COMPLEX: return 2 * type_size(t->base); /* B4: real + imaginary parts */
         case TYPE_ARRAY:  return type_size(t->base) * (t->size > 0 ? t->size : 1);
         case TYPE_STRUCT: {
-            /* 总大小按最大字段对齐补齐。
-             * #pragma pack / __attribute__((packed)) 通过 align_override 收紧
-             * 整体对齐（pack_val 较小），这里把字段自然对齐上限截到该值，
-             * 使结构体尾部补齐也遵循紧凑对齐。aligned(N) 放大对齐由
-             * type_align 直接返回 align_override 负责，此处不放大以保持已有行为。 */
+            /* Total size is padded to the maximum field alignment.
+             * #pragma pack / __attribute__((packed)) tighten overall alignment via align_override
+             * (smaller pack_val); here we cap field natural alignment to that value,
+             * so struct tail padding also follows the tight alignment. aligned(N) widening is
+             * handled by type_align returning align_override directly; not widened here to preserve existing behavior. */
             int max_align = 1, s = t->size;
             StructField *f;
             for (f = t->fields; f; f = f->next) {
@@ -290,9 +304,9 @@ int type_size(Type *t) {
         }
         case TYPE_UNION:  return t->size;
         case TYPE_ENUM:
-            /* --enum_is_int / -fenum-is-int：强制枚举为 int（4 字节）。
-             * armcc 默认会按枚举值范围选择最小类型；arkcc 始终使用 int，
-             * 因此无论开关与否都返回 4。开关仅用于兼容 armcc 命令行。 */
+            /* --enum_is_int / -fenum-is-int: force enum to int (4 bytes).
+             * armcc by default picks the smallest type based on enum value range; arkcc always uses int,
+             * so it returns 4 regardless of the switch. The switch only exists for armcc CLI compatibility. */
             (void)g_config.enum_is_int;
             return 4;
         case TYPE_FUNC:   return 4;
@@ -310,6 +324,7 @@ int type_align(Type *t) {
         case TYPE_SHORT:  return 2;
         case TYPE_LLONG:
         case TYPE_DOUBLE: return 8;
+        case TYPE_PTR:    return g_ptr_size; /* pointer is naturally aligned */
         case TYPE_COMPLEX: return type_align(t->base); /* B4 */
         case TYPE_ARRAY:  return type_align(t->base);
         case TYPE_STRUCT:
@@ -342,7 +357,7 @@ int type_is_integer(Type *t) {
            t->kind == TYPE_INT  || t->kind == TYPE_LONG  ||
            t->kind == TYPE_LLONG|| t->kind == TYPE_BOOL  ||
            t->kind == TYPE_ENUM ||
-           t->kind == TYPE_WCHAR;  /* B2: wchar_t 是整型 */
+           t->kind == TYPE_WCHAR;  /* B2: wchar_t is an integer type */
 }
 
 int type_is_arith(Type *t) {

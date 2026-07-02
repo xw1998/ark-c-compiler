@@ -1,12 +1,12 @@
 /* Ark C Compiler - ARM (Thumb-2) backend
- * 把 IR 翻译为文本 Thumb-2 汇编。原 src/codegen.c 的内容搬到这里。
+ * Translates IR into textual Thumb-2 assembly. Moved here from the former src/codegen.c.
  *
- * 调用约定（与本编译器配套使用）：
- *   - 参数 0..3 通过 r0..r3 传入；多余参数走栈（与运行时约定一致，
- *     由 IR_CALL 的 val 字段指示参数个数）。
- *   - r6 = 局部变量基址（fp，指向局部变量区低地址）。
- *   - 序言:  PUSH {r5,r6,r7,lr}; SUB sp,sp,#N; MOV r6, sp
- *   - 收尾:  POP {r0}; MOV sp,r6; ADD sp,sp,#N; POP {r5,r6,r7,pc}
+ * Calling convention (used together with this compiler):
+ *   - Arguments 0..3 passed in r0..r3; extra arguments go on the stack (consistent
+ *     with the runtime convention, indicated by the val field of IR_CALL).
+ *   - r6 = local variable base (fp, pointing to the low address of the local var area).
+ *   - Prologue:  PUSH {r5,r6,r7,lr}; SUB sp,sp,#N; MOV r6, sp
+ *   - Epilogue:  POP {r0}; MOV sp,r6; ADD sp,sp,#N; POP {r5,r6,r7,pc}
  */
 #include "backend.h"
 #include "codegen.h"
@@ -16,7 +16,7 @@
 #include "config.h"
 #include "arkcc_config.h"
 
-/* --- 内部 helper: 输出常用指令片段 --- */
+/* --- Internal helpers: emit common instruction fragments --- */
 static void emit_line(AsmBuffer *b, const char *s) {
     asmbuf_puts(b, "    ");
     asmbuf_puts(b, s);
@@ -51,12 +51,12 @@ static void emit_pop_r0(AsmBuffer *b)  { emit_line(b, "POP {r0}");  }
 static void emit_pop_r1(AsmBuffer *b)  { emit_line(b, "POP {r1}");  }
 
 #if ARKCC_FEATURE_FPU_HW
-/* 硬件 VFP 浮点路径辅助函数。
- * 约定：浮点值在栈上以整数位模式存放（单精度=1 槽，双精度=2 槽低/高）。
- * 弹出操作数到 r0/r1（单）或 r0/r1+r2/r3（双），经 VMOV 送入 VFP 寄存器，
- * 执行 VFP 运算后用 VMOV 取回 r0（单）或 r0/r1（双）压栈。 */
+/* Hardware VFP floating-point path helpers.
+ * Convention: floating-point values are stored on the stack as integer bit patterns (single=1 slot, double=2 slots low/high).
+ * Pop operands to r0/r1 (single) or r0/r1+r2/r3 (double), move them into VFP registers via VMOV,
+ * perform the VFP operation, then move the result back to r0 (single) or r0/r1 (double) and push. */
 
-/* 单精度二元运算：弹出 b(s1)、a(s0)，发射 VOP.F32 s0,s0,s1，结果 s0 压栈。 */
+/* Single-precision binary op: pop b(s1), a(s0), emit VOP.F32 s0,s0,s1, push result s0. */
 static void emit_vfp_f32_binop(AsmBuffer *b, const char *vop) {
     emit_pop_r1(b); emit_pop_r0(b);
     emit_line(b, "VMOV s0, r0");
@@ -68,7 +68,7 @@ static void emit_vfp_f32_binop(AsmBuffer *b, const char *vop) {
     emit_push_r0(b);
 }
 
-/* 双精度二元运算：弹出 b(d1)、a(d0)，发射 VOP.F64 d0,d0,d1，结果 d0 压栈。 */
+/* Double-precision binary op: pop b(d1), a(d0), emit VOP.F64 d0,d0,d1, push result d0. */
 static void emit_vfp_f64_binop(AsmBuffer *b, const char *vop) {
     emit_line(b, "POP {r3}");  /* b_high */
     emit_line(b, "POP {r2}");  /* b_low  */
@@ -106,10 +106,10 @@ static void emit_b_label(AsmBuffer *b, const char *op, const char *fn, int n) {
     asmbuf_putc(b, '\n');
 }
 
-/* 发射两元运算。aux 高位 0x100 标记无符号比较/右移：
- *   - TOK_LT/GT/LE/GE：无符号时用 LO/HI/LS/HS 条件替代 LT/GT/LE/GE
- *   - TOK_SHR：无符号时用 LSR（逻辑右移）替代 ASR（算术右移）
- * ARM Thumb-2 条件码：LO=CC(3), HI(8), LS(9), HS=CS(2) */
+/* Emit binary operation. The high bit 0x100 of aux marks unsigned comparison/shift-right:
+ *   - TOK_LT/GT/LE/GE: when unsigned, use LO/HI/LS/HS conditions instead of LT/GT/LE/GE
+ *   - TOK_SHR: when unsigned, use LSR (logical shift right) instead of ASR (arithmetic shift right)
+ * ARM Thumb-2 condition codes: LO=CC(3), HI(8), LS(9), HS=CS(2) */
 static void emit_binary(AsmBuffer *b, int op) {
     int is_unsigned = (op & 0x100) != 0;
     int base_op = op & ~0x100;
@@ -128,7 +128,7 @@ static void emit_binary(AsmBuffer *b, int op) {
         case (int)TOK_BXOR:  emit_line(b, "EOR r0, r1");     break;
         case (int)TOK_SHL:   emit_line(b, "LSL r0, r1");     break;
         case (int)TOK_SHR:
-            /* 无符号用 LSR（逻辑右移），有符号用 ASR（算术右移） */
+            /* Unsigned uses LSR (logical shift right), signed uses ASR (arithmetic shift right) */
             emit_line(b, is_unsigned ? "LSR r0, r1" : "ASR r0, r1");
             break;
         case (int)TOK_EQ:
@@ -199,11 +199,11 @@ static void emit_prologue(AsmBuffer *b, const char *fn_name, int local_size,
     asmbuf_puts(b, ":\n");
     if (dbg) emit_line(b, ".cfi_startproc");
     if (is_naked) {
-        /* __naked：不生成任何序言，函数体由用户全权负责 */
+        /* __naked: emit no prologue; the function body is entirely the user's responsibility */
         return;
     }
     if (is_irq) {
-        /* __irq：保存 ISR 可能破坏的全部 caller-saved 寄存器 */
+        /* __irq: save all caller-saved registers that an ISR may clobber */
         emit_line(b, "PUSH {r0, r1, r2, r3, r12, lr}");
     } else {
         emit_line(b, "PUSH {r5, r6, r7, lr}");
@@ -219,7 +219,7 @@ static void emit_prologue(AsmBuffer *b, const char *fn_name, int local_size,
 static void emit_epilogue_return(AsmBuffer *b, int local_size,
                                  int is_irq, int is_naked) {
     if (is_naked) {
-        /* __naked：仅返回，不恢复栈/寄存器 */
+        /* __naked: just return, do not restore stack/registers */
         emit_line(b, "BX lr");
         return;
     }
@@ -252,7 +252,7 @@ static char *codegen_arm(IrProgram *prog) {
     asmbuf_puts(&buf, ".text\n\n");
 
 #if ARKCC_FEATURE_DWARF
-    /* DWARF：声明源文件，供后续 .loc 1 <line> 引用 */
+    /* DWARF: declare the source file for later .loc 1 <line> references */
     if (dbg && prog->source_file) {
         asmbuf_puts(&buf, ".file 1 \"");
         asmbuf_puts(&buf, prog->source_file);
@@ -260,7 +260,7 @@ static char *codegen_arm(IrProgram *prog) {
     }
 #endif
 
-    /* 字符串字面量段 */
+    /* String literal section */
     if (prog->string_count > 0) {
         int i;
         asmbuf_puts(&buf, ".section .rodata\n");
@@ -285,11 +285,11 @@ static char *codegen_arm(IrProgram *prog) {
         asmbuf_puts(&buf, ".text\n\n");
     }
 
-    /* 浮点常量段：同时发射单精度(.L_flt_<i>)与双精度(.L_dbl_<i>)位模式。
-     * IR_PUSH_FLOAT 的 aux 高位 0x200 决定加载哪个：
-     *   - 0x200 未设：单精度，4 字节，走 __aeabi_f* 系列
-     *   - 0x200 已设：双精度，8 字节，走 __aeabi_d* 系列
-     * 统一用 double 存储，单精度版按 (float) 截断。 */
+    /* Floating-point constant section: emit both single-precision (.L_flt_<i>) and double-precision (.L_dbl_<i>) bit patterns.
+     * The high bit 0x200 of IR_PUSH_FLOAT aux determines which to load:
+     *   - 0x200 not set: single-precision, 4 bytes, uses __aeabi_f* family
+     *   - 0x200 set: double-precision, 8 bytes, uses __aeabi_d* family
+     * Stored uniformly as double; the single-precision version is truncated via (float). */
     if (prog->float_count > 0) {
         int i;
         asmbuf_puts(&buf, ".section .rodata\n");
@@ -300,7 +300,7 @@ static char *codegen_arm(IrProgram *prog) {
             char hex[9];
             int k;
             const char *hd = "0123456789abcdef";
-            /* 单精度：float 位模式（4 字节） */
+            /* Single-precision: float bit pattern (4 bytes) */
             u.f = (float)prog->floats[i];
             bits = u.u;
             for (k = 7; k >= 0; k--) { hex[k] = hd[bits & 0xF]; bits >>= 4; }
@@ -310,7 +310,7 @@ static char *codegen_arm(IrProgram *prog) {
             asmbuf_puts(&buf, ":\n    .word 0x");
             asmbuf_puts(&buf, hex);
             asmbuf_putc(&buf, '\n');
-            /* 双精度：double 位模式（8 字节，小端序：低位在前） */
+            /* Double-precision: double bit pattern (8 bytes, little-endian: low word first) */
             du.d = prog->floats[i];
             asmbuf_puts(&buf, ".L_dbl_");
             asmbuf_int(&buf, i);
@@ -340,7 +340,7 @@ static char *codegen_arm(IrProgram *prog) {
         int local_size = f->local_size;
         int i;
 
-        /* alias 函数：输出 .global / .set 指令，不生成函数体 */
+        /* alias function: emit .global / .set directives, do not generate a function body */
         if (f->alias_target) {
             asmbuf_puts(&buf, ".global ");
             asmbuf_puts(&buf, f->name);
@@ -353,8 +353,8 @@ static char *codegen_arm(IrProgram *prog) {
             continue;
         }
 
-        /* --split_sections/-ffunction-sections：每个函数独立段 .text.<name>，
-         * 便于链接器死代码消除（--gc-sections）。alias 函数不生成段（仅 .set）。 */
+        /* --split_sections/-ffunction-sections: each function gets its own section .text.<name>,
+         * so the linker can dead-strip unused code (--gc-sections). alias functions do not generate a section (only .set). */
         if (g_config.split_sections && !f->alias_target) {
             asmbuf_puts(&buf, ".section .text.");
             asmbuf_puts(&buf, f->name);
@@ -364,17 +364,17 @@ static char *codegen_arm(IrProgram *prog) {
         asmbuf_puts(&buf, f->name);
         asmbuf_putc(&buf, '\n');
         if (f->is_weak) {
-            /* __weak：在标签前声明弱符号，允许链接时被同名强符号覆盖 */
+            /* __weak: declare weak symbol before the label, allows override by a same-name strong symbol at link time */
             asmbuf_puts(&buf, ".weak ");
             asmbuf_puts(&buf, f->name);
             asmbuf_putc(&buf, '\n');
         }
         if (f->is_used) {
-            /* __attribute__((used))：仅注释标记；.global 已确保符号导出 */
+            /* __attribute__((used)): comment marker only; .global already ensures symbol export */
             asmbuf_puts(&buf, "@ __attribute__((used))\n");
         }
 #if ARKCC_FEATURE_ARMCC_KEYWORDS
-        /* armcc 5 兼容函数修饰符：仅注释标记（ARM 后端不改变调用约定）。
+        /* armcc 5 compatibility function modifiers: comment markers only (ARM backend does not change calling convention).
          *   __value_in_regs / __pure / __interwork / __smc(n) / __global_reg(n) */
         if (f->is_value_in_regs) asmbuf_puts(&buf, "@ __value_in_regs\n");
         if (f->is_pure)          asmbuf_puts(&buf, "@ __pure\n");
@@ -391,17 +391,17 @@ static char *codegen_arm(IrProgram *prog) {
             asmbuf_puts(&buf, ")\n");
         }
 #endif
-        /* __asm 整函数体：发射 label 与用户原始汇编，跳过 prologue/epilogue */
+        /* __asm whole-function body: emit label and user's raw assembly, skip prologue/epilogue */
         if (f->is_asm_func) {
             asmbuf_puts(&buf, f->name);
             asmbuf_puts(&buf, ":\n");
             if (f->asm_body) {
                 const char *s = f->asm_body;
-                /* 原文按行复制；前置缩进让 GAS 友好 */
+                /* Copy text line by line; add leading indent for GAS friendliness */
                 int line_start = 1;
                 while (*s) {
                     if (line_start) {
-                        /* 跳过行首空白以便重新缩进 */
+                        /* Skip leading whitespace so we can re-indent */
                         while (*s == ' ' || *s == '\t' || *s == '\r') s++;
                         if (*s == 0) break;
                         if (*s == '\n') { asmbuf_putc(&buf, '\n'); s++; continue; }
@@ -431,7 +431,7 @@ static char *codegen_arm(IrProgram *prog) {
         for (i = 0; i < f->code_count; i++) {
             IrInst *I = &f->code[i];
 #if ARKCC_FEATURE_DWARF
-            /* DWARF：行号变化时发射 .loc 1 <line> */
+            /* DWARF: emit .loc 1 <line> when the line number changes */
             if (dbg && I->line != 0 && I->line != cur_line) {
                 cur_line = I->line;
                 asmbuf_puts(&buf, ".loc 1 ");
@@ -444,13 +444,13 @@ static char *codegen_arm(IrProgram *prog) {
                 case IR_FUNC_END:
                     break;
                 case IR_GETARG: {
-                    /* AAPCS：前 4 参数在 r0-r3，第 5+ 参数在调用方栈上。
-                     * 栈布局（从 r6 = 帧指针向上）：
-                     *   [r6 + 0 .. local_size-1]            本帧局部变量
-                     *   [r6 + local_size + 0..15]           保存的 r5/r6/r7/lr
-                     *   [r6 + local_size + 16 + k*4]        第 5+k 个参数
-                     * arg_idx < 4：直接从 r{arg_idx} 存入本帧；
-                     * arg_idx >= 4：从调用方栈槽加载后存入本帧。 */
+                    /* AAPCS: first 4 args in r0-r3, args 5+ on caller's stack.
+                     * Stack layout (upward from r6 = frame pointer):
+                     *   [r6 + 0 .. local_size-1]            this frame's local variables
+                     *   [r6 + local_size + 0..15]           saved r5/r6/r7/lr
+                     *   [r6 + local_size + 16 + k*4]        the (5+k)th argument
+                     * arg_idx < 4: store directly from r{arg_idx} into this frame;
+                     * arg_idx >= 4: load from caller's stack slot, then store into this frame. */
                     int arg_idx = I->aux;
                     if (arg_idx < 4) {
                         asmbuf_puts(&buf, "    STR r");
@@ -499,8 +499,8 @@ static char *codegen_arm(IrProgram *prog) {
                     emit_push_r0(&buf);
                     break;
                 case IR_PUSH_GLOBAL_ADDR:
-                    /* 仅取全局符号地址（不dereference），用于数组/结构体衰退
-                     * 以及复合字面量等场景。 */
+                    /* Take the global symbol address only (no dereference), for array/struct decay
+                     * and compound literal scenarios. */
                     asmbuf_puts(&buf, "    LDR r0, =");
                     asmbuf_puts(&buf, I->name);
                     asmbuf_putc(&buf, '\n');
@@ -520,6 +520,14 @@ static char *codegen_arm(IrProgram *prog) {
                     emit_pop_r0(&buf);
                     emit_push_r0(&buf);
                     emit_push_r0(&buf);
+                    break;
+                case IR_SWAP:
+                    /* Pop top two values and push them back in swapped order.
+                     * r0 = top, r1 = next -> push r0, push r1 */
+                    emit_pop_r0(&buf);
+                    asmbuf_puts(&buf, "    POP {r1}\n");
+                    emit_push_r0(&buf);
+                    asmbuf_puts(&buf, "    PUSH {r1}\n");
                     break;
                 case IR_STORE:
                     emit_pop_r0(&buf);
@@ -542,17 +550,17 @@ static char *codegen_arm(IrProgram *prog) {
                     } else if (es == 2 && !packed) {
                         emit_line(&buf, "LDRSH r0, [r0, #0]");
                     } else if (packed) {
-                        /* __packed 指针未对齐访问：按字节加载后拼装。
+                        /* __packed pointer unaligned access: load byte by byte then assemble.
                          * es==2: LDRB x2 + LSL + ORR
-                         * es==4: LDRB x4 + LSL + ORR 链
-                         * r0=地址，r2/r3 为临时寄存器 */
+                         * es==4: LDRB x4 + LSL + ORR chain
+                         * r0=address, r2/r3 are scratch registers */
                         if (es == 2) {
                             emit_line(&buf, "LDRB r2, [r0, #0]");
                             emit_line(&buf, "LDRB r3, [r0, #1]");
                             emit_line(&buf, "LSL r3, r3, #8");
                             emit_line(&buf, "ORR r0, r2, r3");
                         } else {
-                            /* 默认按 4 字节处理（es>=4 取低 4 字节） */
+                            /* Default to 4-byte handling (es>=4 takes the low 4 bytes) */
                             emit_line(&buf, "LDRB r2, [r0, #0]");
                             emit_line(&buf, "LDRB r3, [r0, #1]");
                             emit_line(&buf, "LSL r3, r3, #8");
@@ -580,8 +588,8 @@ static char *codegen_arm(IrProgram *prog) {
                     } else if (es == 2 && !packed) {
                         emit_line(&buf, "STRH r0, [r1, #0]");
                     } else if (packed) {
-                        /* __packed 指针未对齐存储：按字节写入。
-                         * r0=值，r1=地址，r2 为临时寄存器 */
+                        /* __packed pointer unaligned store: write byte by byte.
+                         * r0=value, r1=address, r2 is a scratch register */
                         if (es == 2) {
                             emit_line(&buf, "STRB r0, [r1, #0]");
                             emit_line(&buf, "LSR r2, r0, #8");
@@ -648,24 +656,24 @@ static char *codegen_arm(IrProgram *prog) {
                     emit_line(&buf, "CMP r0, r1");
                     emit_b_label(&buf, "BEQ", f->name, I->aux);
                     break;
-                /* === 浮点运算：ARM 软浮点 ABI ===
-                 * aux 高位 0x200 标记双精度（double）：
-                 *   - 单精度(float)：参数走 r0/r1，结果在 r0，栈占 1 槽(4B)，走 __aeabi_f*
-                 *   - 双精度(double)：参数走 r0/r1+r2/r3，结果在 r0/r1，栈占 2 槽(8B)，走 __aeabi_d*
-                 * lr 已由函数序言保存，体内 BL 可自由覆盖 lr。 */
+                /* === Floating-point ops: ARM soft-float ABI ===
+                 * The high bit 0x200 of aux marks double-precision (double):
+                 *   - single (float): args in r0/r1, result in r0, 1 stack slot (4B), uses __aeabi_f*
+                 *   - double (double): args in r0/r1+r2/r3, result in r0/r1, 2 stack slots (8B), uses __aeabi_d*
+                 * lr is already saved by the prologue; BL inside the body may freely clobber lr. */
                 case IR_PUSH_FLOAT: {
                     int is_dbl = (I->aux & 0x200) != 0;
                     if (is_dbl) {
-                        /* 双精度：加载 8 字节，压 2 槽（低位先入栈） */
+                        /* Double-precision: load 8 bytes, push 2 slots (low word pushed first) */
                         asmbuf_puts(&buf, "    LDR r0, =.L_dbl_");
                         asmbuf_int(&buf, I->val);
                         asmbuf_putc(&buf, '\n');
-                        emit_line(&buf, "LDR r1, [r0]");       /* 低位 */
-                        emit_line(&buf, "LDR r2, [r0, #4]");   /* 高位 */
-                        asmbuf_puts(&buf, "    PUSH {r1}\n");  /* 低位先入栈 */
-                        asmbuf_puts(&buf, "    PUSH {r2}\n");  /* 高位后入栈(顶) */
+                        emit_line(&buf, "LDR r1, [r0]");       /* low word */
+                        emit_line(&buf, "LDR r2, [r0, #4]");   /* high word */
+                        asmbuf_puts(&buf, "    PUSH {r1}\n");  /* low word pushed first */
+                        asmbuf_puts(&buf, "    PUSH {r2}\n");  /* high word pushed last (on top) */
                     } else {
-                        /* 单精度：从浮点常量池加载 32 位 float 位模式到 r0 */
+                        /* Single-precision: load 32-bit float bit pattern from the float constant pool into r0 */
                         asmbuf_puts(&buf, "    LDR r0, =.L_flt_");
                         asmbuf_int(&buf, I->val);
                         asmbuf_putc(&buf, '\n');
@@ -771,12 +779,12 @@ static char *codegen_arm(IrProgram *prog) {
                     break;
                 }
                 case IR_F2I: {
-                    /* float/double -> int（向零截断） */
+                    /* float/double -> int (truncation toward zero) */
                     int is_dbl = (I->aux & 0x200) != 0;
 #if ARKCC_FEATURE_FPU_HW
                     if (g_config.enable_fpu_hw) {
                         if (is_dbl) {
-                            /* double: 弹出 d0，VCVT.S32.F64 s0,d0，取回 r0 */
+                            /* double: pop d0, VCVT.S32.F64 s0,d0, move back to r0 */
                             emit_line(&buf, "POP {r1}");  /* high */
                             emit_line(&buf, "POP {r0}");  /* low */
                             emit_line(&buf, "VMOV s0, r0");
@@ -837,8 +845,8 @@ static char *codegen_arm(IrProgram *prog) {
                     break;
                 }
                 case IR_FCMP: {
-                    /* aux 指示比较种类（低 8 位）+ 精度标志(0x200)；
-                     * __aeabi_fcmpeq 与 __aeabi_dcmpeq 等系列返回 0/1 */
+                    /* aux encodes the comparison kind (low 8 bits) + precision flag (0x200);
+                     * __aeabi_fcmpeq and __aeabi_dcmpeq family return 0/1 */
                     int op = I->aux & ~0x200;
                     int is_dbl = (I->aux & 0x200) != 0;
 #if ARKCC_FEATURE_FPU_HW
@@ -903,25 +911,25 @@ static char *codegen_arm(IrProgram *prog) {
                     asmbuf_puts(&buf, "    BL ");
                     asmbuf_puts(&buf, helper);
                     asmbuf_putc(&buf, '\n');
-                    /* NE 用 fcmpeq/dcmpeq 后翻转低位 */
+                    /* NE: use fcmpeq/dcmpeq then flip the low bit */
                     if (op == (int)TOK_NE) emit_line(&buf, "EOR r0, r0, #1");
                     emit_push_r0(&buf);
                     break;
                     }
                 }
                 case IR_ASM:
-                    /* 内联汇编原样写出。
-                     * 扩展形式 '@' 前缀（来自 irgen 拼接）：跳过引号写模板内容，
-                     * 忽略 outputs/inputs/clobbers；同时把 %0/%1/... 替换为
-                     * r0/r1/...（AAPCS 操作数编号对应寄存器，armcc 风格替换）。 */
+                    /* Inline assembly written out as-is.
+                     * Extended form with '@' prefix (assembled by irgen): skip past the quote and write the template,
+                     * ignoring outputs/inputs/clobbers; also replace %0/%1/... with
+                     * r0/r1/... (AAPCS operand index maps to register, armcc-style substitution). */
                     if (I->name && I->name[0] == '@') {
                         const char *s = I->name + 1;
-                        /* 跳过空白找首个 '"' */
+                        /* Skip whitespace to find the first '"' */
                         while (*s == ' ' || *s == '\t') s++;
                         if (*s == '"') {
                             s++;
                             asmbuf_puts(&buf, "    ");
-                            /* 复制模板内容（处理 \n / \t 转义），遇到未转义 '"' 结束 */
+                            /* Copy template content (handle \n / \t escapes), stop at an unescaped '"' */
                             while (*s && *s != '"') {
                                 if (*s == '\\' && s[1]) {
                                     if (s[1] == 'n') { asmbuf_putc(&buf, '\n'); asmbuf_puts(&buf, "    "); }
@@ -931,7 +939,7 @@ static char *codegen_arm(IrProgram *prog) {
                                     else asmbuf_putc(&buf, s[1]);
                                     s += 2;
                                 } else if (*s == '%' && s[1] >= '0' && s[1] <= '3') {
-                                    /* 扩展内联汇编操作数替换：%0→r0, %1→r1, ... */
+                                    /* Extended inline asm operand substitution: %0 -> r0, %1 -> r1, ... */
                                     asmbuf_putc(&buf, 'r');
                                     asmbuf_putc(&buf, s[1]);
                                     s += 2;
@@ -949,12 +957,12 @@ static char *codegen_arm(IrProgram *prog) {
                     }
                     break;
                 case IR_CALL: {
-                    /* AAPCS：前 4 参数走 r0-r3，第 5+ 参数走栈。
-                     * 栈式 IR 把所有参数压栈（arg0 在栈顶），这里弹出前 4 个
-                     * 到 r0-r3，剩余 stack_args 个留在栈上供被调用方读取。
-                     * 调用返回后由调用方清理栈上参数（caller cleanup）。
-                     * 注意：stack_args 为奇数时 SP 在 BL 处仅 4 字节对齐，
-                     * 这是栈式 IR 模型的已知简化（偶数参数完全合规）。 */
+                    /* AAPCS: first 4 args go in r0-r3, args 5+ go on the stack.
+                     * The stack-based IR pushes all args onto the stack (arg0 on top); here we pop the first 4
+                     * into r0-r3, leaving the remaining stack_args on the stack for the callee to read.
+                     * After the call the caller cleans up the stack args (caller cleanup).
+                     * Note: when stack_args is odd, SP is only 4-byte aligned at BL;
+                     * this is a known simplification of the stack-based IR model (even arg counts are fully compliant). */
                     int n = I->val;
                     int k;
                     int reg_args = (n > 4) ? 4 : n;
@@ -967,7 +975,7 @@ static char *codegen_arm(IrProgram *prog) {
                     asmbuf_puts(&buf, "    BL ");
                     asmbuf_puts(&buf, I->name);
                     asmbuf_putc(&buf, '\n');
-                    /* 清理栈上参数 */
+                    /* Clean up stack arguments */
                     if (stack_args > 0) {
                         asmbuf_puts(&buf, "    ADD sp, sp, #");
                         asmbuf_int(&buf, stack_args * 4);
@@ -977,7 +985,7 @@ static char *codegen_arm(IrProgram *prog) {
                     break;
                 }
                 case IR_SVC: {
-                    /* __svc(n) — 参数已在栈顶，弹到 r0 后执行 SVC */
+                    /* __svc(n) - args are on top of stack, pop to r0 then execute SVC */
                     int n = I->val;
                     emit_pop_r0(&buf);
                     asmbuf_puts(&buf, "    SVC #");
@@ -988,7 +996,7 @@ static char *codegen_arm(IrProgram *prog) {
                 }
 #if ARKCC_FEATURE_ARMCC_KEYWORDS
                 case IR_SMC: {
-                    /* __smc(n) — 安全监控调用；参数已在栈顶，弹到 r0 后执行 SMC */
+                    /* __smc(n) - secure monitor call; args are on top of stack, pop to r0 then execute SMC */
                     int n = I->val;
                     emit_pop_r0(&buf);
                     asmbuf_puts(&buf, "    SMC #");
@@ -998,8 +1006,8 @@ static char *codegen_arm(IrProgram *prog) {
                     break;
                 }
 #endif
-                /* === 整数除法/取模：通过 ARM EABI 软除法 helper 实现 ===
-                 * 栈顶为除数(r1)，次顶为被除数(r0)，结果压回 r0。 */
+                /* === Integer divide/modulo: implemented via ARM EABI soft-division helpers ===
+                 * Top of stack is the divisor (r1), next is the dividend (r0); result pushed back to r0. */
                 case IR_DIV:
                     emit_pop_r1(&buf);
                     emit_pop_r0(&buf);
@@ -1014,14 +1022,14 @@ static char *codegen_arm(IrProgram *prog) {
                     asmbuf_puts(&buf, "    BL ");
                     asmbuf_puts(&buf, I->aux ? "__aeabi_uidivmod" : "__aeabi_idivmod");
                     asmbuf_putc(&buf, '\n');
-                    emit_line(&buf, "MOV r0, r1"); /* 余数在 r1 */
+                    emit_line(&buf, "MOV r0, r1"); /* remainder is in r1 */
                     emit_push_r0(&buf);
                     break;
-                /* === 64 位运算：值占两栈槽，低位先入栈、高位后入栈(高位在顶) ===
-                 * 调用 __aeabi_l* helper：a 在 r0/r1(低/高)，b 在 r2/r3(低/高)，
-                 * 结果在 r0/r1(低/高)。弹出顺序先 b(r3 高/r2 低) 再 a(r1 高/r0 低)。 */
+                /* === 64-bit ops: value occupies two stack slots, low word pushed first, high word pushed last (high word on top) ===
+                 * Call __aeabi_l* helpers: a in r0/r1 (low/high), b in r2/r3 (low/high),
+                 * result in r0/r1 (low/high). Pop order: b first (r3 high / r2 low), then a (r1 high / r0 low). */
                 case IR_64PUSH:
-                    /* val=高32位, aux=低32位；低位先入栈 */
+                    /* val=high 32 bits, aux=low 32 bits; low word pushed first */
                     emit_mov_imm(&buf, 0, I->aux);
                     emit_push_r0(&buf);
                     emit_mov_imm(&buf, 0, I->val);
@@ -1049,17 +1057,17 @@ static char *codegen_arm(IrProgram *prog) {
                         asmbuf_putc(&buf, '\n');
                     }
                     if (is_mod) {
-                        /* __aeabi_ldivmod: 商在 r0/r1，余数在 r2/r3；取余数到 r0/r1 */
+                        /* __aeabi_ldivmod: quotient in r0/r1, remainder in r2/r3; take remainder to r0/r1 */
                         emit_line(&buf, "MOV r0, r2");
                         emit_line(&buf, "MOV r1, r3");
                     }
-                    emit_push_r0(&buf);                 /* 结果低 32 位 */
-                    asmbuf_puts(&buf, "    PUSH {r1}\n"); /* 结果高 32 位 */
+                    emit_push_r0(&buf);                 /* result low 32 bits */
+                    asmbuf_puts(&buf, "    PUSH {r1}\n"); /* result high 32 bits */
                     break;
                 }
                 case IR_64CMP: {
-                    /* __aeabi_lcmp 返回 -1/0/1 (a<b/a==b/a>b) 在 r0；
-                     * 据此用条件 MOV 得到 0/1 比较结果。 */
+                    /* __aeabi_lcmp returns -1/0/1 (a<b / a==b / a>b) in r0;
+                     * use conditional MOV to produce a 0/1 comparison result. */
                     int op = I->aux;
                     emit_line(&buf, "POP {r3}");
                     emit_line(&buf, "POP {r2}");
@@ -1080,15 +1088,15 @@ static char *codegen_arm(IrProgram *prog) {
                     emit_push_r0(&buf);
                     break;
                 }
-                /* === 内存拷贝：栈顶为目标地址，次顶为源地址；BL memcpy === */
+                /* === Memory copy: top of stack is destination address, next is source; BL memcpy === */
                 case IR_MEMCPY:
                     emit_pop_r0(&buf);                 /* dst */
                     emit_pop_r1(&buf);                 /* src */
-                    emit_mov_imm(&buf, 2, I->val);     /* n 字节 */
+                    emit_mov_imm(&buf, 2, I->val);     /* n bytes */
                     emit_line(&buf, "BL memcpy");
                     break;
-                /* === 位域存储/读取 ===
-                 * val=位偏移, aux=位宽。掩码 = (1<<bw)-1。 */
+                /* === Bitfield store/load ===
+                 * val=bit offset, aux=bit width. mask = (1<<bw)-1. */
                 case IR_STORE_FLD: {
                     int bit_off = I->val;
                     int bw = I->aux;
@@ -1096,7 +1104,7 @@ static char *codegen_arm(IrProgram *prog) {
                     emit_pop_r0(&buf);                 /* value */
                     emit_pop_r1(&buf);                 /* addr */
                     emit_mov_imm(&buf, 2, (int)mask);  /* r2 = mask */
-                    emit_line(&buf, "AND r0, r2");      /* 截断值到 bw 位 */
+                    emit_line(&buf, "AND r0, r2");      /* truncate value to bw bits */
                     if (bit_off > 0) {
                         asmbuf_puts(&buf, "    LSL r0, r0, #");
                         asmbuf_int(&buf, bit_off);
@@ -1106,8 +1114,8 @@ static char *codegen_arm(IrProgram *prog) {
                         asmbuf_putc(&buf, '\n');
                     }
                     emit_line(&buf, "LDR r3, [r1]");
-                    emit_line(&buf, "BIC r3, r2");      /* 清旧位 */
-                    emit_line(&buf, "ORR r3, r0");      /* 写新位 */
+                    emit_line(&buf, "BIC r3, r2");      /* clear old bits */
+                    emit_line(&buf, "ORR r3, r0");      /* set new bits */
                     emit_line(&buf, "STR r3, [r1]");
                     break;
                 }
@@ -1123,7 +1131,7 @@ static char *codegen_arm(IrProgram *prog) {
                         asmbuf_putc(&buf, '\n');
                     }
                     emit_mov_imm(&buf, 2, (int)mask);
-                    emit_line(&buf, "AND r0, r2");      /* 截断到 bw 位 */
+                    emit_line(&buf, "AND r0, r2");      /* truncate to bw bits */
                     emit_push_r0(&buf);
                     break;
                 }
@@ -1131,24 +1139,24 @@ static char *codegen_arm(IrProgram *prog) {
                     emit_epilogue_return(&buf, local_size, f->is_irq, f->is_naked);
                     break;
                 case IR_ALLOCA: {
-                    /* B3: VLA 动态栈分配。弹栈取字节数（已在 r0），
-                     * 按 8 字节对齐下调 sp，压入分配区首地址。
-                     * ARM 测试仅做汇编生成检查；运行时语义由 C 后端承担。 */
-                    emit_pop_r0(&buf);                  /* r0 = 字节数 */
+                    /* B3: VLA dynamic stack allocation. Pop the byte count (now in r0),
+                     * 8-byte align by rounding down sp, and push the start address of the allocated region.
+                     * ARM tests only check assembly generation; runtime semantics are handled by the C backend. */
+                    emit_pop_r0(&buf);                  /* r0 = byte count */
                     emit_line(&buf, "ADD r0, r0, #7");
-                    emit_line(&buf, "BIC r0, r0, #7");  /* 8 字节对齐 */
-                    emit_line(&buf, "SUB sp, sp, r0");  /* 分配 */
-                    emit_push_r0(&buf);                 /* 占位：保持栈平衡 */
+                    emit_line(&buf, "BIC r0, r0, #7");  /* 8-byte align */
+                    emit_line(&buf, "SUB sp, sp, r0");  /* allocate */
+                    emit_push_r0(&buf);                 /* placeholder: keep stack balanced */
                     emit_line(&buf, "MOV r0, sp");
-                    emit_line(&buf, "ADD sp, sp, #4");  /* 撤销占位 */
-                    emit_push_r0(&buf);                 /* 压入首地址 */
+                    emit_line(&buf, "ADD sp, sp, #4");  /* undo placeholder */
+                    emit_push_r0(&buf);                 /* push start address */
                     break;
                 }
-                /* === 0.7.0：SIMD 并行运算（Cortex-M4/M7 DSP 指令）===
-                 * 栈语义：弹 r1（右操作数）、弹 r0（左操作数），
-                 * 执行并行运算后压回 r0。SADD16/SSUB16/SADD8/SSUB8
-                 * 均为 ARMv6TE+ DSP 扩展指令，对 32 位寄存器内的
-                 * 多个带符号子字并行做加/减。 */
+                /* === 0.7.0: SIMD parallel ops (Cortex-M4/M7 DSP instructions) ===
+                 * Stack semantics: pop r1 (right operand), pop r0 (left operand),
+                 * perform the parallel op and push r0 back. SADD16/SSUB16/SADD8/SSUB8
+                 * are ARMv6TE+ DSP extension instructions that add/subtract multiple
+                 * signed sub-words within a 32-bit register in parallel. */
                 case IR_SIMD_ADD16:
                     emit_pop_r1(&buf);
                     emit_pop_r0(&buf);
@@ -1193,9 +1201,9 @@ static char *codegen_arm(IrProgram *prog) {
         }
         asmbuf_putc(&buf, '\n');
 
-        /* __attribute__((constructor/destructor))：在 .init_array/.fini_array
-         * 中登记函数地址，C 运行时启动代码会在 main 前/后遍历调用。
-         * armcc/MDK 使用 .init_array（而非 .ctors），与 ARMCC5 一致。 */
+        /* __attribute__((constructor/destructor)): register the function address in .init_array/.fini_array;
+         * the C runtime startup code iterates and calls them before/after main.
+         * armcc/MDK uses .init_array (not .ctors), consistent with ARMCC5. */
         if (f->is_constructor && !f->alias_target) {
             asmbuf_puts(&buf, ".section .init_array, \"aw\"\n");
             asmbuf_puts(&buf, ".align 2\n");
@@ -1214,24 +1222,24 @@ static char *codegen_arm(IrProgram *prog) {
         }
     }
 
-    /* 全局变量：按是否初始化分到 .data/.bss/.rodata，自定义段优先。
-     * 聚合初始化（init_aggregate 是 C 源码片段）无法直接转字节，
-     * 仅预留空间；其值由 main 中的运行时初始化代码（IR_STORE 等）写入。
-     * extern 全局不在此处定义，仅作引用。 */
+    /* Globals: assigned to .data/.bss/.rodata based on initialization; custom sections take priority.
+     * Aggregate initialization (init_aggregate is a C source snippet) cannot be directly converted to bytes,
+     * so only space is reserved; the value is written at runtime by initialization code in main (IR_STORE etc.).
+     * extern globals are not defined here, only referenced. */
     if (prog->global_count > 0) {
         int gi;
-        int cur_sec = 0;  /* 0=.text, 1=.data, 2=.bss, 3=.rodata, 4=自定义 */
+        int cur_sec = 0;  /* 0=.text, 1=.data, 2=.bss, 3=.rodata, 4=custom */
         for (gi = 0; gi < prog->global_count; gi++) {
             IrGlobal *g = prog->globals[gi];
             int sz;
             int want_sec = 0;
             const char *want_custom = 0;
             if (g->is_extern) continue;
-            /* __at(addr)：把符号直接定义为绝对地址常量（不分配存储）。
+            /* __at(addr): define the symbol directly as an absolute address constant (no storage allocated).
              *   .global name
              *   .set name, 0xADDR
-             * 这样所有 LDR rN, =name 加载的就是 MMIO 物理地址，
-             * 后续 LDR/STR [rN] 即触达外设寄存器。 */
+             * This way every LDR rN, =name loads the MMIO physical address,
+             * and subsequent LDR/STR [rN] accesses the peripheral register. */
             if (g->has_at) {
                 if (!g->is_static) {
                     asmbuf_puts(&buf, ".global ");
@@ -1254,7 +1262,7 @@ static char *codegen_arm(IrProgram *prog) {
             }
             sz = g->type ? type_size(g->type) : 4;
             if (sz <= 0) sz = 4;
-            /* 选择段：自定义段 > 无初始化(.bss) > const(.rodata) > .data */
+            /* Choose section: custom section > no-init (.bss) > const (.rodata) > .data */
             if (g->section) {
                 want_custom = g->section;
             } else if (!g->has_init) {
@@ -1265,8 +1273,8 @@ static char *codegen_arm(IrProgram *prog) {
                 want_sec = 1;
             }
 #if ARKCC_FEATURE_ARMCC_KEYWORDS
-            /* __thread 线程局部存储：改用 .tbss(无初始化)/.tdata(有初始化)。
-             * 这两个段由加载器在每线程上下文中单独实例化。 */
+            /* __thread thread-local storage: use .tbss (no init) / .tdata (has init) instead.
+             * These two sections are instantiated per-thread by the loader in each thread context. */
             if (g->is_tls) {
                 if (!g->has_init || g->init_aggregate) {
                     want_sec = 5;  /* .tbss */
@@ -1275,7 +1283,7 @@ static char *codegen_arm(IrProgram *prog) {
                 }
             }
 #endif
-            /* 切换段（与当前段不同才发出段指令） */
+            /* Switch section (only emit section directive if different from current) */
             if (want_custom) {
                 asmbuf_puts(&buf, ".section \"");
                 asmbuf_puts(&buf, want_custom);
@@ -1291,13 +1299,13 @@ static char *codegen_arm(IrProgram *prog) {
 #endif
                 cur_sec = want_sec;
             }
-            /* 符号属性 + 标签 */
+            /* Symbol attributes + label */
             if (!g->is_static) {
                 asmbuf_puts(&buf, ".global ");
                 asmbuf_puts(&buf, g->name);
                 asmbuf_putc(&buf, '\n');
             }
-            /* 对齐：__align(n) / aligned(n) 优先；否则默认 4 字节 */
+            /* Alignment: __align(n) / aligned(n) takes priority; otherwise default 4 bytes */
             if (g->align_bytes > 4) {
                 asmbuf_puts(&buf, ".balign ");
                 asmbuf_int(&buf, g->align_bytes);
@@ -1307,14 +1315,14 @@ static char *codegen_arm(IrProgram *prog) {
             }
             asmbuf_puts(&buf, g->name);
             asmbuf_puts(&buf, ":\n");
-            /* 数据 */
+            /* Data */
             if (!g->has_init || g->init_aggregate) {
-                /* 零初始化或聚合（运行时初始化）：预留空间 */
+                /* Zero-init or aggregate (initialized at runtime): reserve space */
                 asmbuf_puts(&buf, "    .zero ");
                 asmbuf_int(&buf, sz);
                 asmbuf_putc(&buf, '\n');
             } else if (g->is_float) {
-                /* 浮点初始化：转单精度位模式（与 IR_PUSH_FLOAT 一致） */
+                /* Float initialization: convert to single-precision bit pattern (consistent with IR_PUSH_FLOAT) */
                 union { float f; unsigned int u; } u;
                 unsigned int bits;
                 char hex[9];
@@ -1328,7 +1336,7 @@ static char *codegen_arm(IrProgram *prog) {
                 asmbuf_puts(&buf, hex);
                 asmbuf_putc(&buf, '\n');
             } else if (g->init_str) {
-                /* 字符串数组初始化：与 IR_PUSH_STR 一致的转义 */
+                /* String array initialization: same escaping as IR_PUSH_STR */
                 int slen = ark_strlen(g->init_str);
                 int k;
                 asmbuf_puts(&buf, "    .asciz \"");
@@ -1351,14 +1359,14 @@ static char *codegen_arm(IrProgram *prog) {
                     }
                 }
                 asmbuf_puts(&buf, "\"\n");
-                /* 多余空间补零（如 char[10] = "hi"） */
+                /* Pad remaining space with zeros (e.g. char[10] = "hi") */
                 if (slen + 1 < sz) {
                     asmbuf_puts(&buf, "    .zero ");
                     asmbuf_int(&buf, sz - (slen + 1));
                     asmbuf_putc(&buf, '\n');
                 }
             } else {
-                /* 标量初始化 */
+                /* Scalar initialization */
                 asmbuf_puts(&buf, "    .word ");
                 asmbuf_int(&buf, g->init_int);
                 asmbuf_putc(&buf, '\n');
@@ -1369,19 +1377,19 @@ static char *codegen_arm(IrProgram *prog) {
                 }
             }
         }
-        /* 恢复 .text 段，便于后续手动追加 */
+        /* Restore .text section for later manual appending */
         asmbuf_puts(&buf, ".text\n\n");
     }
 #if ARKCC_FEATURE_DWARF_FULL
-    /* DWARF 调试信息（--dwarf2/--dwarf3 启用）：
-     * 发射 .debug_info/.debug_abbrev/.debug_line 三个节，记录编译单元、
-     * 函数符号与行号映射，供 GDB/LLDB 单步调试。这里采用 DWARF v2 子集，
-     * 仅写编译单元头 + 每函数 DIE + 行号程序；不记录变量位置（简化实现）。
-     * 详细类型信息由 DW_FORM_ref4 引用 .debug_abbrev 中预定义的 DW_TAG。 */
+    /* DWARF debug info (enabled by --dwarf2/--dwarf3):
+     * Emit .debug_info/.debug_abbrev/.debug_line sections recording the compilation unit,
+     * function symbols and line number maps, for GDB/LLDB single-stepping. Uses a DWARF v2 subset:
+     * only the CU header + per-function DIE + line number program; no variable location info (simplified).
+     * Detailed type info references predefined DW_TAGs in .debug_abbrev via DW_FORM_ref4. */
     if (g_config.dwarf_version >= 2) {
         int fi2;
         const char *fname = prog->source_file ? prog->source_file : "input.c";
-        /* .debug_abbrev：缩写表，定义 DIE 的 tag/属性形式 */
+        /* .debug_abbrev: abbreviation table, defines DIE tag/attribute forms */
         asmbuf_puts(&buf, ".section .debug_abbrev,\"\",%progbits\n");
         asmbuf_puts(&buf, ".balign 4\n");
         asmbuf_puts(&buf, "    .byte 1\n");              /* abbrev code 1 */
@@ -1398,10 +1406,10 @@ static char *codegen_arm(IrProgram *prog) {
         asmbuf_puts(&buf, "    .byte 18\n  .byte 1\n");  /* DW_AT_high_pc, DW_FORM_addr */
         asmbuf_puts(&buf, "    .byte 0\n  .byte 0\n");   /* end attr/end form */
         asmbuf_puts(&buf, "    .byte 0\n");              /* end abbrev table */
-        /* .debug_info：编译单元 + 每函数 DIE */
+        /* .debug_info: compilation unit + per-function DIE */
         asmbuf_puts(&buf, ".section .debug_info,\"\",%progbits\n");
         asmbuf_puts(&buf, ".balign 4\n");
-        asmbuf_puts(&buf, "    .word 0\n");              /* unit_length（占位，简化） */
+        asmbuf_puts(&buf, "    .word 0\n");              /* unit_length (placeholder, simplified) */
         asmbuf_puts(&buf, "    .half 2\n");              /* DWARF version 2 */
         asmbuf_puts(&buf, "    .word 0\n");              /* debug_abbrev_offset */
         asmbuf_puts(&buf, "    .byte 4\n");              /* address_size */
@@ -1425,10 +1433,10 @@ static char *codegen_arm(IrProgram *prog) {
             asmbuf_puts(&buf, "_end\n");                 /* high_pc */
         }
         asmbuf_puts(&buf, "    .byte 0\n");              /* end DIE list */
-        /* .debug_line：行号程序（仅文件名表 + 结束 entry） */
+        /* .debug_line: line number program (file name table + end entry only) */
         asmbuf_puts(&buf, ".section .debug_line,\"\",%progbits\n");
         asmbuf_puts(&buf, ".balign 4\n");
-        asmbuf_puts(&buf, "    .word 0\n");              /* unit_length（占位） */
+        asmbuf_puts(&buf, "    .word 0\n");              /* unit_length (placeholder) */
         asmbuf_puts(&buf, "    .half 2\n");              /* DWARF version 2 */
         asmbuf_puts(&buf, "    .word 0\n");              /* header_length */
         asmbuf_puts(&buf, "    .byte 4\n");              /* minimum_instruction_length */
@@ -1453,7 +1461,7 @@ static char *codegen_arm(IrProgram *prog) {
     return buf.buf;
 }
 
-/* === 极简 Thumb-2 文本汇编器 === */
+/* === Minimal Thumb-2 text assembler === */
 typedef struct AsmLabel { char *name; int addr; } AsmLabel;
 typedef struct AsmRef   { int pc; char *name; int type; } AsmRef;
 
@@ -1599,7 +1607,7 @@ static int op_size_a(const char *op) {
     return 2;
 }
 
-/* 前向声明：pass1 中需要据此判断 PUSH/POP 是 T1 还是 T2 编码 */
+/* Forward declaration: needed in pass1 to decide whether PUSH/POP is T1 or T2 encoded */
 static int parse_reglist_a(const char **p, int *has_lr, int *has_pc);
 
 static void pass1_a(ArmAsm *a) {
@@ -1625,14 +1633,14 @@ static void pass1_a(ArmAsm *a) {
             if (n == 0) { skip_to_eol_a(&p); continue; }
         }
         if (first[0] == '.') {
-            /* 伪指令忽略 */
+            /* Pseudo-directives ignored */
         } else if (strieq_a(first, "PUSH") || strieq_a(first, "POP")) {
-            /* PUSH/POP 可能是 16 位 T1（仅 r0-r7 + lr/pc）或 32 位 T2
-             * （含 r8-r12）；按寄存器列表决定大小，保证 pass1 偏移正确。 */
+            /* PUSH/POP may be 16-bit T1 (r0-r7 + lr/pc only) or 32-bit T2
+             * (includes r8-r12); size determined by the register list to keep pass1 offsets correct. */
             int has_lr = 0, has_pc = 0;
             int list = parse_reglist_a(&p, &has_lr, &has_pc);
             (void)has_lr; (void)has_pc;
-            if (list & 0x1F00) pc += 4;  /* T2：含 r8-r12 */
+            if (list & 0x1F00) pc += 4;  /* T2: includes r8-r12 */
             else               pc += 2;  /* T1 */
         } else {
             pc += op_size_a(first);
@@ -1724,7 +1732,7 @@ static void pass2_a(ArmAsm *a) {
             int list = parse_reglist_a(&p, &has_lr, &has_pc);
             (void)has_pc;
             if (list & 0x1F00) {
-                /* T2 STMDB SP!：可编码 r0-r12 + lr */
+                /* T2 STMDB SP!: can encode r0-r12 + lr */
                 unsigned w2 = (unsigned)(has_lr ? 0x4000 : 0) | (unsigned)(list & 0x1FFF);
                 out16(a, 0xE92D); out16(a, w2);
             } else {
@@ -1736,7 +1744,7 @@ static void pass2_a(ArmAsm *a) {
             int list = parse_reglist_a(&p, &has_lr, &has_pc);
             (void)has_lr;
             if (list & 0x1F00) {
-                /* T2 LDMIA SP!：可编码 r0-r12 + pc */
+                /* T2 LDMIA SP!: can encode r0-r12 + pc */
                 unsigned w2 = (unsigned)(has_pc ? 0x8000 : 0) | (unsigned)(list & 0x1FFF);
                 out16(a, 0xE8BD); out16(a, w2);
             } else {
@@ -1864,7 +1872,7 @@ static void pass2_a(ArmAsm *a) {
             eat_comma_a(&p); rm = parse_reg_a(&p);
             skip_space_a(&p);
             if (*p == ',') {
-                /* LSL rd, rm, #imm5 (T1 立即数移位) */
+                /* LSL rd, rm, #imm5 (T1 immediate shift) */
                 p++; skip_space_a(&p);
                 if (*p == '#') {
                     int imm = parse_imm_a(&p) & 0x1F;
@@ -1874,7 +1882,7 @@ static void pass2_a(ArmAsm *a) {
                     out16(a, 0x4080 | ((rm2 & 7) << 3) | (rd & 7));
                 }
             } else {
-                /* LSL rd, rm (T1 寄存器移位) */
+                /* LSL rd, rm (T1 register shift) */
                 out16(a, 0x4080 | ((rm & 7) << 3) | (rd & 7));
             }
         }
@@ -1883,7 +1891,7 @@ static void pass2_a(ArmAsm *a) {
             eat_comma_a(&p); rm = parse_reg_a(&p);
             skip_space_a(&p);
             if (*p == ',') {
-                /* LSR rd, rm, #imm5 (T1 立即数移位; imm5=0 表示 32) */
+                /* LSR rd, rm, #imm5 (T1 immediate shift; imm5=0 means 32) */
                 p++; skip_space_a(&p);
                 if (*p == '#') {
                     int imm = parse_imm_a(&p);
@@ -1894,7 +1902,7 @@ static void pass2_a(ArmAsm *a) {
                     out16(a, 0x40C0 | ((rm2 & 7) << 3) | (rd & 7));
                 }
             } else {
-                /* LSR rd, rm (T1 寄存器移位) */
+                /* LSR rd, rm (T1 register shift) */
                 out16(a, 0x40C0 | ((rm & 7) << 3) | (rd & 7));
             }
         }
@@ -1904,7 +1912,7 @@ static void pass2_a(ArmAsm *a) {
             out16(a, 0x4100 | ((rm & 7) << 3) | (rd & 7));
         }
         else if (strieq_a(first, "BIC")) {
-            /* BIC rd, rm 或 BIC rd, rn, rm (T1: rd = rd AND NOT rm) */
+            /* BIC rd, rm or BIC rd, rn, rm (T1: rd = rd AND NOT rm) */
             int rd = parse_reg_a(&p); int rm;
             eat_comma_a(&p); rm = parse_reg_a(&p);
             skip_space_a(&p);
@@ -1943,7 +1951,7 @@ static void pass2_a(ArmAsm *a) {
             int imm = 0;
             eat_comma_a(&p);
             if (*p == '=') {
-                /* LDR rd, =label —— 简化处理：仅占位为 NOP */
+                /* LDR rd, =label - simplified: placeholder NOP only */
                 skip_to_eol_a(&p);
                 out16(a, 0xBF00);
                 if (*p == '\n') p++;

@@ -1,12 +1,14 @@
-/* test_fpu_hw.c — 硬件 FPU 路径（VFP）验证
+/* test_fpu_hw.c - Hardware FPU path (VFP) verification
  *
- * 当 g_config.enable_fpu_hw=1 时，ARM 后端使用 VFP 原生指令
- * (VADD.F32/VMUL.F32/VCVT 等) 而非 __aeabi_f* 软浮点桩。
+ * When g_config.enable_fpu_hw=1, the ARM backend uses native VFP
+ * instructions (VADD.F32/VMUL.F32/VCVT etc.) instead of __aeabi_f*
+ * soft-float stubs.
  *
- * 本测试在 C 后端验证语义正确性，ARM 后端仅做汇编生成检查
- * （run_tests.ps1 对所有 .c 都会跑 -target arm -S -o nul）。
+ * This test verifies semantics on the C backend; the ARM backend only
+ * checks assembly generation (run_tests.ps1 runs -target arm -S -o nul
+ * for every .c file).
  *
- * 期望退出码：40  (1.5 + 2.5 = 4.0, 4.0 * 10 = 40)
+ * Expected exit code: 40  (1.5 + 2.5 = 4.0, 4.0 * 10 = 40)
  */
 float add_f(float a, float b) { return a + b; }
 

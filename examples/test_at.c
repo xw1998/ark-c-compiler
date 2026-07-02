@@ -1,14 +1,14 @@
-/* test_at.c - __at(addr) / __attribute__((at(N))) / #pragma location 解析验证。
- * host 上不验证 MMIO 行为：仅确认编译通过、main 返回 0。
+/* test_at.c - __at(addr) / __attribute__((at(N))) / #pragma location parsing verification.
+ * On host we do not verify MMIO behavior: just confirm it compiles and main returns 0.
  */
 
-/* GNU 风格 */
+/* GNU style */
 static int gnu_at_var __attribute__((at(0x20000100)));
 
-/* ARM Compiler 5 风格 */
+/* ARM Compiler 5 style */
 static int armcc_at_var __at(0x20000200);
 
-/* #pragma location=N 风格 */
+/* #pragma location=N style */
 #pragma location=0x20000300
 static int pragma_at_var;
 

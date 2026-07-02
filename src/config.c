@@ -1,11 +1,11 @@
 /* Ark C Compiler - config
- * 运行时配置：把编译期默认 / 配置文件 / 命令行三处来源的开关合并到 g_config。
+ * Runtime configuration: merge defaults / config file / command-line switches into g_config.
  *
- * 优先级：命令行 > 配置文件 > 编译期默认（ARKCC_FEATURE_*）。
- *   - config_init            : 用宏默认值填充 g_config。
- *   - config_load_file(path) : 解析 INI 风格 arkcc.cfg，覆盖默认值。
- *   - config_apply_args      : 扫描 argv 中的 -O/-g/-fxxx/-fno-xxx，
- *                              覆盖文件设置（最高优先级）。
+ * Priority: command-line > config file > compile-time defaults (ARKCC_FEATURE_*).
+ *   - config_init            : fill g_config with macro defaults.
+ *   - config_load_file(path) : parse INI-style arkcc.cfg, override defaults.
+ *   - config_apply_args      : scan argv for -O/-g/-fxxx/-fno-xxx,
+ *                              override file settings (highest priority).
  */
 #include "config.h"
 #include "platform.h"
@@ -13,8 +13,8 @@
 
 ArkccConfig g_config;
 
-/* 把字符串值（"0"/"1"/"true"/"false" 等）转成 int 0/1。
- * 解析失败时返回 0。 */
+/* Convert string value ("0"/"1"/"true"/"false" etc.) to int 0/1.
+ * Returns 0 on parse failure. */
 static int parse_bool(const char *s) {
     if (!s || !*s) return 0;
     if (s[0] == '0' && s[1] == 0) return 0;
@@ -30,7 +30,7 @@ static int parse_bool(const char *s) {
         (s[3] == 's' || s[3] == 'S') &&
         (s[4] == 'e' || s[4] == 'E') &&
         s[5] == 0) return 0;
-    /* 非零数字视为真 */
+    /* Non-zero digits are treated as true */
     if (s[0] >= '0' && s[0] <= '9') return 1;
     return 0;
 }
@@ -62,9 +62,9 @@ void config_init(void) {
     g_config.debug_info           = 0;
     g_config.split_sections       = 0;
     g_config.config_file          = 0;
-    /* 0.6.x：armcc 5 兼容运行时开关默认值 */
+    /* 0.6.x: armcc 5 compatible runtime switch defaults */
     g_config.enum_is_int          = 0;
-    g_config.dollar_in_identifiers= 1;  /* armcc 默认支持 $ 标识符 */
+    g_config.dollar_in_identifiers= 1;  /* armcc supports $ in identifiers by default */
     g_config.signed_chars         = 0;
     g_config.unsigned_chars       = 0;
     g_config.wchar16              = 0;
@@ -74,8 +74,8 @@ void config_init(void) {
     g_config.fpu_type             = 0;
 }
 
-/* 把 "key=value" 应用到 g_config。section 为当前 INI 段名（"features"/"general"）。
- * 未知键静默忽略——配置文件可包含本编译器尚未识别的项。 */
+/* Apply "key=value" to g_config. section is the current INI section name ("features"/"general").
+ * Unknown keys are silently ignored - the config file may contain items not yet recognized. */
 static void apply_kv(const char *section, const char *key, const char *val) {
     if (!key || !val) return;
     if (ark_streq(section, "features")) {
@@ -113,8 +113,8 @@ void config_load_file(const char *path) {
     int i;
     char *line_start;
     if (!path) return;
-    /* 用 fs_read_file 一次性读取整个配置文件（host=stdio，STM32=W25Q Flash）。
-     * 失败时静默回退到编译期默认值。 */
+    /* Read the entire config file at once via fs_read_file (host=stdio, STM32=W25Q Flash).
+     * Silently fall back to compile-time defaults on failure. */
     len = fs_read_file(path, cfg_buf, (int)sizeof(cfg_buf) - 1);
     if (len < 0) {
         ark_log("[config] cannot open config file '%s' (ignored)\n", path);
@@ -122,7 +122,7 @@ void config_load_file(const char *path) {
     }
     cfg_buf[len] = 0;
     g_config.config_file = path;
-    /* 逐行解析：手动按 \n 切分。CR/LF 一并处理。 */
+    /* Parse line by line: split by \n manually. Handle CR/LF too. */
     line_start = cfg_buf;
     for (i = 0; i <= len; i++) {
         if (i == len || cfg_buf[i] == '\n') {
@@ -131,21 +131,21 @@ void config_load_file(const char *path) {
             char *val;
             char *eq;
             char *end;
-            /* 截断当前行 */
+            /* Truncate current line */
             if (i < len) cfg_buf[i] = 0;
-            /* 去掉行尾 \r */
+            /* Strip trailing \r */
             {
                 int ll = (int)(&cfg_buf[i] - p);
                 while (ll > 0 && (p[ll-1] == '\r')) { p[ll-1] = 0; ll--; }
             }
-            /* 跳过前导空白 */
+            /* Skip leading whitespace */
             while (*p == ' ' || *p == '\t') p++;
-            /* 空行/注释 */
+            /* Empty line / comment */
             if (*p == 0 || *p == ';' || *p == '#') {
                 line_start = &cfg_buf[i + 1];
                 continue;
             }
-            /* 段名 [section] */
+            /* Section name [section] */
             if (*p == '[') {
                 char *q = p + 1;
                 char *e = q;
@@ -167,14 +167,14 @@ void config_load_file(const char *path) {
                 continue;
             }
             *eq = 0;
-            /* 去掉 key 尾空白 */
+            /* Strip trailing whitespace from key */
             end = eq;
             while (end > p && (end[-1] == ' ' || end[-1] == '\t')) { end--; *end = 0; }
             key = p;
             val = eq + 1;
-            /* 跳过 val 前空白 */
+            /* Skip leading whitespace in val */
             while (*val == ' ' || *val == '\t') val++;
-            /* 去掉 val 尾空白 */
+            /* Strip trailing whitespace from val */
             {
                 char *ve = val;
                 while (*ve) ve++;
@@ -186,25 +186,25 @@ void config_load_file(const char *path) {
     }
 }
 
-/* 命令行识别以下参数并更新 g_config：
+/* Command line recognizes the following arguments and updates g_config:
  *   -O0/-O1/-O2/-O3  : opt_level
  *   -g               : debug_info=1
- *   -fno-<feature>   : 关闭某个 feature
- *   -f<feature>      : 打开某个 feature
- *   -config <file>   : 配置文件路径（仅记录，不在此加载；由 main 处理）
+ *   -fno-<feature>   : disable a feature
+ *   -f<feature>      : enable a feature
+ *   -config <file>   : config file path (recorded only, not loaded here; main handles it)
  *
- * feature 名称：vla/complex/wchar/trigraph/fpu/fpu_hw/dwarf/opt-constfold/
+ * Feature names: vla/complex/wchar/trigraph/fpu/fpu_hw/dwarf/opt-constfold/
  *               opt-dce/opt-regalloc/constfold/dce/regalloc
- * 不识别的参数原样不动（main 仍会处理 -o/-target/-I 等）。
+ * Unrecognized arguments are left untouched (main still handles -o/-target/-I etc.).
  *
- * 0.6.x 新增 armcc 5 风格 --xxx 选项（多数静默接受）：
+ * 0.6.x adds armcc 5 style --xxx options (most silently accepted):
  *   --enum_is_int / -fenum-is-int / --dollar / --signed_chars / --unsigned_chars
  *   --wchar16 / --wchar32 / --dwarf2 / --dwarf3 / --scatter <file> / --fpu <name>
  *   --thumb / --arm / --remarks / --autoinline / --no_autoinline
  *   --vectorize / --no_vectorize / --split_sections / --library_type
  *   --locale / --multibyte_chars / --data_reorder / --diag_style
  *   --remove_unneeded_entities
- *   --cpp : 报错"不支持 C++"
+ *   --cpp : error "C++ not supported"
  */
 void config_apply_args(int argc, char **argv) {
     int i;
@@ -215,7 +215,7 @@ void config_apply_args(int argc, char **argv) {
         if (a[0] == '-' && a[1] == 'O' && a[2] >= '0' && a[2] <= '9' && a[3] == 0) {
             g_config.opt_level = a[2] - '0';
             if (g_config.opt_level > 2) g_config.opt_level = 2;
-            /* -O2 自动启用内联与向量化 */
+            /* -O2 auto-enables inlining and vectorization */
             if (g_config.opt_level >= 2) {
                 g_config.enable_opt_inline    = 1;
                 g_config.enable_opt_vectorize = 1;
@@ -227,17 +227,17 @@ void config_apply_args(int argc, char **argv) {
             continue;
         }
         if (ark_streq(a, "-config") && i + 1 < argc) {
-            /* 仅记录路径，加载由 main 在调用 config_apply_args 之前完成 */
+            /* Record path only; loading is done by main before calling config_apply_args */
             g_config.config_file = argv[i + 1];
             i++;
             continue;
         }
-        /* --cpp：arkcc 不支持 C++，明确报错 */
+        /* --cpp: arkcc does not support C++; report error explicitly */
         if (ark_streq(a, "--cpp")) {
             ark_log("[arkcc] error: C++ (--cpp) is not supported\n");
             continue;
         }
-        /* 0.6.x：armcc 5 风格 --xxx 选项 */
+        /* 0.6.x: armcc 5 style --xxx options */
         if (ark_streq(a, "--enum_is_int") || ark_streq(a, "-fenum-is-int")) {
             g_config.enum_is_int = 1;
             continue;
@@ -276,13 +276,13 @@ void config_apply_args(int argc, char **argv) {
         if (ark_streq(a, "--fpu") && i + 1 < argc) {
             const char *name = argv[i + 1];
             g_config.fpu_type = name;
-            /* 简化：none → 关 FPU；其他 → 开 FPU */
+            /* Simplified: none -> disable FPU; others -> enable FPU */
             if (ark_streq(name, "none")) g_config.enable_fpu_hw = 0;
             else                          g_config.enable_fpu_hw = 1;
             i++;
             continue;
         }
-        /* 静默接受的 armcc 5 选项（不影响代码生成） */
+        /* Silently accepted armcc 5 options (no effect on code generation) */
         if (ark_streq(a, "--thumb") || ark_streq(a, "--arm") ||
             ark_streq(a, "--remarks") ||
             ark_streq(a, "--library_type") || ark_streq(a, "--locale") ||
@@ -291,7 +291,7 @@ void config_apply_args(int argc, char **argv) {
             ark_streq(a, "--remove_unneeded_entities")) {
             continue;
         }
-        /* --autoinline / --no_autoinline：开启/关闭自动内联 */
+        /* --autoinline / --no_autoinline: enable/disable auto inlining */
         if (ark_streq(a, "--autoinline")) {
             g_config.enable_opt_inline = 1;
             continue;
@@ -300,7 +300,7 @@ void config_apply_args(int argc, char **argv) {
             g_config.enable_opt_inline = 0;
             continue;
         }
-        /* --vectorize / --no_vectorize：开启/关闭自动向量化 */
+        /* --vectorize / --no_vectorize: enable/disable auto vectorization */
         if (ark_streq(a, "--vectorize")) {
             g_config.enable_opt_vectorize = 1;
             continue;
@@ -342,7 +342,7 @@ void config_apply_args(int argc, char **argv) {
                 g_config.split_sections                 = enable;
             else if (ark_streq(name, "enum-is-int"))   g_config.enum_is_int          = enable;
             else if (ark_streq(name, "dollar"))        g_config.dollar_in_identifiers= enable;
-            /* 未识别 -fxxx：忽略，不报错（避免与 gcc 风格的 -fxxx 冲突） */
+            /* Unrecognized -fxxx: ignore silently (avoid conflict with gcc-style -fxxx) */
         }
     }
 }

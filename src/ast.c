@@ -1,5 +1,5 @@
 /* Ark C Compiler - ast
- * AST 节点构造函数实现。
+ * AST ???????????
  */
 #include "ast.h"
 #include "memory.h"
@@ -13,7 +13,7 @@ AstNode *ast_new(AstNodeKind kind, int line) {
     return n;
 }
 
-AstNode *ast_num(int val, int line) {
+AstNode *ast_num(long long val, int line) {
     AstNode *n = ast_new(AST_NUM, line);
     n->type = type_int();
     n->u.num_val = val;
@@ -85,18 +85,22 @@ AstNode *ast_block(int line) {
     AstNode *n = ast_new(AST_BLOCK, line);
     n->u.block.stmts = 0;
     n->u.block.stmt_count = 0;
+    n->u.block.stmt_capacity = 0;
     n->u.block.is_decl_list = 0;
     return n;
 }
 
 void block_add_stmt(AstNode *block, AstNode *stmt) {
     int count = block->u.block.stmt_count;
-    AstNode **arr = (AstNode **)mem_realloc(
-        block->u.block.stmts,
-        count * (int)sizeof(AstNode *),
-        (count + 1) * (int)sizeof(AstNode *));
-    arr[count] = stmt;
-    block->u.block.stmts = arr;
+    if (count >= block->u.block.stmt_capacity) {
+        int nc = block->u.block.stmt_capacity ? block->u.block.stmt_capacity * 2 : 8;
+        block->u.block.stmts = (AstNode **)mem_realloc(
+            block->u.block.stmts,
+            block->u.block.stmt_capacity * (int)sizeof(AstNode *),
+            nc * (int)sizeof(AstNode *));
+        block->u.block.stmt_capacity = nc;
+    }
+    block->u.block.stmts[count] = stmt;
     block->u.block.stmt_count = count + 1;
 }
 

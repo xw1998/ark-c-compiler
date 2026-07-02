@@ -1,27 +1,27 @@
-/* test_const_fold.c — 全局变量非字面量初值 / 常量表达式折叠
+/* test_const_fold.c - Global variable non-literal initializer / constant expression folding
  *
- * 验证 eval_const_expr 在以下场景的编译期求值：
- *   - 全局标量初值：int g_x = 1 + 2 * 3;            -> 7
- *   - 宏展开后折叠：int g_dim = SIZE + 2;            -> 7
- *   - 数组维度含表达式：int g_buf[SIZE + 2];          -> 7 个 int
- *   - sizeof(type) 折叠：int g_sz = sizeof(int)*(SIZE+2); -> 28
- *   - 局部常量表达式：int local = (10 - 3) * 2;       -> 14
+ * Verifies eval_const_expr evaluates the following at compile time:
+ *   - Global scalar initializer: int g_x = 1 + 2 * 3;            -> 7
+ *   - Fold after macro expansion: int g_dim = SIZE + 2;            -> 7
+ *   - Array dimension with expression: int g_buf[SIZE + 2];        -> 7 ints
+ *   - sizeof(type) folding: int g_sz = sizeof(int)*(SIZE+2);       -> 28
+ *   - Local constant expression: int local = (10 - 3) * 2;        -> 14
  *
- * 注意：不对变量取 sizeof（如 sizeof(g_buf)），因为解析期无法
- * 解析全局变量类型，arkcc 仅支持 sizeof(type) 与 sizeof(expr) 的
- * 类型已知情形。
+ * Note: We do not take sizeof a variable (e.g. sizeof(g_buf)) because
+ * global variable types cannot be resolved at parse time; arkcc only
+ * supports sizeof(type) and sizeof(expr) where the type is known.
  *
- * 期望退出码：7 + 7 + 14 + 99 = 127 */
+ * Expected exit code: 7 + 7 + 14 + 99 = 127 */
 #define SIZE 5
 
-int g_x   = 1 + 2 * 3;                  /* 7：算术折叠 */
-int g_dim = SIZE + 2;                    /* 7：宏展开后折叠 */
-int g_sz  = sizeof(int) * (SIZE + 2);    /* 4 * 7 = 28：sizeof(type) + 折叠 */
-int g_buf[SIZE + 2];                     /* 7 ints：数组维度常量表达式 */
+int g_x   = 1 + 2 * 3;                  /* 7: arithmetic folding */
+int g_dim = SIZE + 2;                    /* 7: fold after macro expansion */
+int g_sz  = sizeof(int) * (SIZE + 2);    /* 4 * 7 = 28: sizeof(type) + folding */
+int g_buf[SIZE + 2];                     /* 7 ints: array dimension constant expression */
 
 int main(void) {
-    int local = (10 - 3) * 2;           /* 14：局部常量表达式 */
-    (void)g_sz;                          /* 仅验证其能编译期求值，不参与返回 */
+    int local = (10 - 3) * 2;           /* 14: local constant expression */
+    (void)g_sz;                          /* just verify it compiles; not part of return value */
     g_buf[g_dim - 1] = 99;              /* g_buf[6] = 99 */
     return g_x + g_dim + local + g_buf[6];  /* 7 + 7 + 14 + 99 = 127 */
 }

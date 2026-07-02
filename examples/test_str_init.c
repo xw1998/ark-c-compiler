@@ -1,8 +1,8 @@
-/* test_str_init.c — 字符串初始化数组
- * 期望退出码：'h' + 'i' + 0 = 104 + 105 + 0 = 209
+/* test_str_init.c - String-initialized array
+ * Expected exit code: 'h' + 'i' + 0 = 104 + 105 + 0 = 209
  */
 char greeting[] = "hello";   /* sizeof = 6 */
-char buf[10] = "hi";         /* 其余 = 0 */
+char buf[10] = "hi";         /* remainder = 0 */
 
 int main(void) {
     int a = greeting[0];      /* 'h' = 104 */

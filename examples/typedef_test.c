@@ -1,5 +1,5 @@
-/* typedef_test.c — typedef + 复合类型别名 + sizeof
- * 期望：11 + 22 = 33
+/* typedef_test.c - typedef + composite type alias + sizeof
+ * Expected: 11 + 22 = 33
  */
 typedef int i32;
 typedef struct Pair {

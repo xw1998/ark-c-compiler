@@ -1,5 +1,5 @@
 /* Ark C Compiler - compiler
- * 顶层流水线：preproc -> lex -> parse -> sema -> irgen -> backend(emit/assemble/link)。
+ * Top-level pipeline: preproc -> lex -> parse -> sema -> irgen -> backend(emit/assemble/link).
  */
 #include "compiler.h"
 #include "platform.h"
@@ -16,11 +16,13 @@
 #include "config.h"
 #include "arkcc_config.h"
 #include "opt.h"
+#include "scatter.h"
+#include <stdio.h>
 
-/* 缓冲区大小可由编译期覆盖：
- *   host 默认 128KB/512KB/256KB；STM32 移植可缩到 32KB/128KB/64KB。
- * -c / -link 模式的输出累积缓冲区同理（STM32 上这两种模式通常不用，
- * 可通过 -D 将其设为很小的值以节省 SRAM）。 */
+/* Buffer sizes can be overridden at compile time:
+ *   host defaults 128KB/512KB/256KB; STM32 port may shrink to 32KB/128KB/64KB.
+ * -c / -link mode output accumulation buffers work the same way (these two modes are
+ * usually unused on STM32; set them very small via -D to save SRAM). */
 #ifndef ARK_SRC_BUF_SIZE
 #define ARK_SRC_BUF_SIZE  (128 * 1024)
 #endif
@@ -95,13 +97,13 @@ int ark_compile(const ArkOptions *opts) {
     if (!opts) return ARK_ERR_ARG;
     if (opts->list_backends) { ark_backend_list(); return ARK_OK; }
 
-    /* -link 模式：合并多个 .ark_obj（自定义最简格式：原始文本对象拼接） */
+    /* -link mode: merge multiple .ark_obj (custom minimal format: raw text object concatenation) */
     if (opts->link_mode) {
         const char *out_path = opts->output_path ? opts->output_path : "a.out.c";
         int li;
         char buf[64 * 1024];
-        /* 由于 fs_write_file 一次写整块，先把链接结果累积到 out_buf。
-         * 大小由 ARK_LINK_BUF_SIZE 控制（STM32 上可设为很小）。 */
+        /* Since fs_write_file writes a whole block at once, accumulate link results into out_buf first.
+         * Size is controlled by ARK_LINK_BUF_SIZE (can be very small on STM32). */
         static char out_buf[ARK_LINK_BUF_SIZE];
         int out_len = 0;
         for (li = 0; li < opts->link_input_count; li++) {
@@ -112,17 +114,17 @@ int ark_compile(const ArkOptions *opts) {
                 ark_log("[arkcc] cannot read object '%s'\n", opts->link_inputs[li]);
                 return ARK_ERR_IO;
             }
-            /* 简单跳过对象头 "ARKOBJ\n" 与可选的 #include 块（如果存在） */
+            /* Skip the object header "ARKOBJ\n" and optional #include block (if present) */
             p = buf;
             rem = n;
             if (rem >= 7 && p[0] == 'A' && p[1] == 'R' && p[2] == 'K' &&
                 p[3] == 'O' && p[4] == 'B' && p[5] == 'J' && p[6] == '\n') {
                 p += 7; rem -= 7;
             }
-            /* 只在第一个对象保留 #include 块；其余跳过到首个 typedef 之后即可。
-             * 这里简化：把每个对象的全部内容直接拼接，重复的 #include 不会引起 gcc 错误。 */
+            /* Keep #include block only in the first object; others skip past the first typedef.
+             * Simplified here: just concatenate every object's full content; duplicate #includes won't cause gcc errors. */
             if (li > 0) {
-                /* 跳过开头空行 */
+                /* Skip leading blank lines */
                 while (rem > 0 && (*p == '\n' || *p == '\r')) { p++; rem--; }
             }
             if (out_len + rem + 1 > (int)sizeof(out_buf)) {
@@ -145,7 +147,7 @@ int ark_compile(const ArkOptions *opts) {
 
     if (!opts->input_path) return ARK_ERR_ARG;
 
-    /* 检测 .s / .S 汇编文件：直接交给后端 assemble，跳过前端流水线 */
+    /* Detect .s / .S assembly files: hand directly to backend assemble, skip frontend pipeline */
     {
         int inlen = ark_strlen(opts->input_path);
         if (inlen >= 2 &&
@@ -171,13 +173,13 @@ int ark_compile(const ArkOptions *opts) {
             asm_text = g_asm;
 
             if (opts->emit_asm) {
-                /* -S 模式：原样输出汇编文本 */
+                /* -S mode: output assembly text as-is */
                 if (opts->output_path && !ark_streq(opts->output_path, "-") &&
                     !ark_streq(opts->output_path, "nul") && !ark_streq(opts->output_path, "NUL")) {
                     return write_text(opts->output_path, asm_text);
                 } else if (!opts->output_path ||
                            ark_streq(opts->output_path, "-")) {
-                    /* 写入标准输出（fs_write_file 处理 "-" 路径） */
+                    /* Write to stdout (fs_write_file handles the "-" path) */
                     if (fs_write_file("-", (const unsigned char *)asm_text, asm_len) != asm_len)
                         return ARK_ERR_IO;
                 }
@@ -212,15 +214,15 @@ int ark_compile(const ArkOptions *opts) {
     mem_pool_reset();
     preproc_reset();
     preproc_set_main_file(opts->input_path);
-    /* 内置头文件路径优先级最低，先把用户指定的 -I 加入 */
+    /* Built-in header search paths have lowest priority; add user-specified -I dirs first */
     for (i = 0; i < opts->include_dir_count; i++) {
         preproc_add_include_dir(opts->include_dirs[i]);
     }
     preproc_add_include_dir("stdlib/include");
 
-    /* --cpu/-mcpu：根据目标 CPU 覆盖默认（M7）的预定义宏与 FPU/DSP 开关。
-     * 必须在 preproc_process 之前调用，使后续预处理看到正确的
-     * __TARGET_ARCH_* / __TARGET_FEATURE_DSP / __TARGET_FPU_VFP 等宏。 */
+    /* --cpu/-mcpu: override default (M7) predefined macros and FPU/DSP switches based on target CPU.
+     * Must be called before preproc_process so later preprocessing sees the correct
+     * __TARGET_ARCH_* / __TARGET_FEATURE_DSP / __TARGET_FPU_VFP macros. */
     if (opts->cpu) {
         const CpuInfo *cpu = cpu_lookup(opts->cpu);
         if (!cpu) {
@@ -229,7 +231,7 @@ int ark_compile(const ArkOptions *opts) {
             return ARK_ERR_ARG;
         }
         cpu_apply_predefines(cpu);
-        /* 不支持 FPU 的 CPU 自动关闭硬件 FPU 代码生成 */
+        /* CPUs without FPU support automatically disable hardware FPU codegen */
         if (!cpu->has_fpu) g_config.enable_fpu_hw = 0;
         if (opts->verbose) {
             ark_log("[arkcc] cpu=%s arch_m=%d dsp=%d fpu=%d\n",
@@ -237,8 +239,8 @@ int ark_compile(const ArkOptions *opts) {
         }
     }
 
-    /* --split_sections/-ffunction-sections：把运行时开关同步到 g_config，
-     * 供 ARM/C 后端在每个函数前生成独立段。 */
+    /* --split_sections/-ffunction-sections: sync runtime switch to g_config,
+     * so ARM/C backends emit a separate section before each function. */
     if (opts->split_sections) g_config.split_sections = 1;
 
     src_len = fs_read_file(opts->input_path, g_src, ARK_SRC_BUF_SIZE);
@@ -246,18 +248,17 @@ int ark_compile(const ArkOptions *opts) {
         ark_log("[arkcc] cannot read '%s'\n", opts->input_path);
         return ARK_ERR_IO;
     }
-
     preprocessed = preproc_process(g_src);
 
-    /* -MMD/--depend：生成依赖文件（Makefile 风格，gcc -MMD 兼容）。
-     * 格式："<output>: <source> <header1> <header2> ...\n"
-     * 输出路径由 -MF 指定，否则默认 "<input>.d"。 */
+    /* -MMD/--depend: generate dependency file (Makefile style, gcc -MMD compatible).
+     * Format: "<output>: <source> <header1> <header2> ...\n"
+     * Output path is given by -MF, otherwise defaults to "<input>.d". */
     if (opts->gen_depend) {
         const char *incs[64];
         int ninc = preproc_get_included_files(incs, 64);
         char dep_path[512];
         const char *dep_target;
-        /* 推导输出目标名：优先用 -o（去掉扩展名加 .o），否则 <input>.o */
+        /* Derive output target name: prefer -o (strip extension and add .o), otherwise <input>.o */
         char obj_name[512];
         if (opts->output_path) {
             int ol = ark_strlen(opts->output_path);
@@ -269,14 +270,14 @@ int ark_compile(const ArkOptions *opts) {
             if (dot < 0) dot = ol;
             for (k = 0; k < dot && k < (int)sizeof(obj_name) - 3; k++) obj_name[k] = opts->output_path[k];
             obj_name[dot] = 0;
-            /* 默认加 .o 扩展名（除非 -S 输出 .s） */
+            /* Default to .o extension (unless -S outputs .s) */
             if (opts->emit_asm) {
                 obj_name[dot] = '.'; obj_name[dot+1] = 's'; obj_name[dot+2] = 0;
             } else {
                 obj_name[dot] = '.'; obj_name[dot+1] = 'o'; obj_name[dot+2] = 0;
             }
         } else {
-            /* 从 input_path 推导 */
+            /* Derive from input_path */
             int il = ark_strlen(opts->input_path);
             int dot = -1; int k;
             for (k = il - 1; k >= 0; k--) {
@@ -287,7 +288,7 @@ int ark_compile(const ArkOptions *opts) {
             for (k = 0; k < dot && k < (int)sizeof(obj_name) - 3; k++) obj_name[k] = opts->input_path[k];
             obj_name[dot] = '.'; obj_name[dot+1] = 'o'; obj_name[dot+2] = 0;
         }
-        /* 依赖文件路径：-MF 指定，否则 <input>.d */
+        /* Dependency file path: -MF specifies, otherwise <input>.d */
         if (opts->depend_file) {
             dep_target = opts->depend_file;
         } else {
@@ -302,18 +303,18 @@ int ark_compile(const ArkOptions *opts) {
             dep_path[dot] = '.'; dep_path[dot+1] = 'd'; dep_path[dot+2] = 0;
             dep_target = dep_path;
         }
-        /* 构造依赖文件内容："<obj>: <source> <h1> <h2> ...\n" */
+        /* Build dependency file content: "<obj>: <source> <h1> <h2> ...\n" */
         {
             static char dep_buf[8192];
             int dl = 0;
             int k;
-            /* 输出目标 */
+            /* Output target */
             for (k = 0; obj_name[k] && dl < (int)sizeof(dep_buf) - 1; k++) dep_buf[dl++] = obj_name[k];
             dep_buf[dl++] = ':';
             dep_buf[dl++] = ' ';
-            /* 源文件 */
+            /* Source file */
             for (k = 0; opts->input_path[k] && dl < (int)sizeof(dep_buf) - 1; k++) dep_buf[dl++] = opts->input_path[k];
-            /* 依赖的头文件 */
+            /* Dependent header files */
             for (k = 0; k < ninc && dl < (int)sizeof(dep_buf) - 2; k++) {
                 dep_buf[dl++] = ' ';
                 {
@@ -330,7 +331,7 @@ int ark_compile(const ArkOptions *opts) {
         }
     }
 
-    /* -E 仅预处理 */
+    /* -E preprocess only */
     if (opts->preprocess_only) {
         const char *target = opts->output_path ? opts->output_path : "-";
         int e_len = ark_strlen(preprocessed);
@@ -349,34 +350,35 @@ int ark_compile(const ArkOptions *opts) {
     }
     if (opts->verbose) ark_log("[arkcc] target=%s, source=%d bytes\n", be->name, src_len);
 
+    /* Set pointer size for the selected backend BEFORE parsing/sema/irgen so
+     * struct layout and array indexing use the correct pointer width.
+     * The C backend runs on the host (8-byte pointers on 64-bit); ARM/RISC-V32
+     * use 4-byte pointers; x86_64 uses 8-byte pointers. */
+    type_set_ptr_size(be->pointer_size);
     lexer_init(&lex, preprocessed);
     ast = parse_program(&lex);
     if (!ast) {
         ark_log("[arkcc] parse failed\n");
         return ARK_ERR_PARSE;
     }
-    if (opts->verbose) ark_log("[arkcc] parse OK\n");
 
     sema_errs = sema_check(ast);
     if (sema_errs > 0) {
         ark_log("[arkcc] %d semantic error(s)\n", sema_errs);
         return ARK_ERR_SEMA;
     }
-    if (opts->verbose) ark_log("[arkcc] sema OK\n");
 
     ir = irgen_program(ast);
     if (!ir) return ARK_ERR_IRGEN;
-    ir->source_file = opts->input_path;  /* 供 DWARF .file/.loc 使用 */
-    if (opts->verbose) ark_log("[arkcc] irgen OK (%d funcs)\n", ir->func_count);
+    ir->source_file = opts->input_path;  /* Used for DWARF .file/.loc */
 
-    /* IR 级优化：常量折叠 + 死代码消除。
-     * 编译期由 ARKCC_FEATURE_OPT_* 守护，运行时由 g_config / opt_level 守护。 */
+    /* IR-level optimization: constant folding + dead code elimination.
+     * Compile-time guarded by ARKCC_FEATURE_OPT_*, runtime guarded by g_config / opt_level. */
 #if ARKCC_FEATURE_OPT_CONSTFOLD || ARKCC_FEATURE_OPT_DCE
     {
         int lvl = opts->opt_level;
         if (lvl < g_config.opt_level) lvl = g_config.opt_level;
         opt_run(ir, lvl);
-        if (opts->verbose) ark_log("[arkcc] opt OK (level %d)\n", lvl);
     }
 #endif
 
@@ -384,11 +386,11 @@ int ark_compile(const ArkOptions *opts) {
     if (asm_len < 0) return ARK_ERR_CODEGEN;
     g_asm[asm_len] = 0;
 
-    /* -c 模式：生成 .ark_obj（仅 C 后端：把生成的 C 源码贴一个简易头）。 */
+    /* -c mode: generate .ark_obj (C backend only: prepend a simple header to generated C source). */
     if (opts->compile_only) {
         char outpath[512];
         const char *target;
-        /* 对象格式：固定 7 字节头 "ARKOBJ\n" + g_asm 正文 */
+        /* Object format: fixed 7-byte header "ARKOBJ\n" + g_asm body */
         static char obj_buf[ARK_OBJ_BUF_SIZE];
         int ol = 0;
         const char *hdr = "ARKOBJ\n";
@@ -420,12 +422,53 @@ int ark_compile(const ArkOptions *opts) {
             int rc = write_text(opts->output_path, g_asm);
             if (rc != ARK_OK) return rc;
         } else if (opts->output_path && (ark_streq(opts->output_path, "nul") || ark_streq(opts->output_path, "NUL"))) {
-            /* 丢弃输出 */
+            /* Discard output */
         } else {
-            /* 写入标准输出（fs_write_file 处理 "-" 路径） */
+            /* Write to stdout (fs_write_file handles the "-" path) */
             if (fs_write_file("-", (const unsigned char *)g_asm, asm_len) != asm_len)
                 return ARK_ERR_IO;
         }
+#if ARKCC_FEATURE_SCATTER
+        /* If the user supplied a scatter .sct or a GNU ld .ld file, emit the
+         * converted counterpart next to the assembly output. This lets a user
+         * feed arkcc an .sct and get a matching .ld for arm-none-eabi-ld, or
+         * feed an .ld and get a .sct for armlink. The converted file name is
+         * <output_without_ext>.ld or <output_without_ext>.sct respectively. */
+        if (opts->scatter_file || opts->linker_script) {
+            ScatterDesc sd;
+            sd.load_regions = 0;
+            sd.error_count = 0;
+            if (opts->scatter_file &&
+                scatter_parse_file(opts->scatter_file, &sd) == 0) {
+                /* .sct -> .ld */
+                static char ld_buf[8192];
+                int ln = scatter_to_ld_script(&sd, ld_buf, (int)sizeof(ld_buf) - 1);
+                if (ln > 0) {
+                    char ld_path[512];
+                    const char *out_base = opts->output_path ? opts->output_path : opts->input_path;
+                    if (derive_output(out_base, ld_path, sizeof(ld_path), ".ld") == 0) {
+                        write_text(ld_path, ld_buf);
+                        if (opts->verbose) ark_log("[arkcc] wrote linker script %s\n", ld_path);
+                    }
+                }
+                scatter_free(&sd);
+            } else if (opts->linker_script &&
+                       linker_script_parse_file(opts->linker_script, &sd) == 0) {
+                /* .ld -> .sct */
+                static char sct_buf[8192];
+                int sn = scatter_to_sct_file(&sd, sct_buf, (int)sizeof(sct_buf) - 1);
+                if (sn > 0) {
+                    char sct_path[512];
+                    const char *out_base = opts->output_path ? opts->output_path : opts->input_path;
+                    if (derive_output(out_base, sct_path, sizeof(sct_path), ".sct") == 0) {
+                        write_text(sct_path, sct_buf);
+                        if (opts->verbose) ark_log("[arkcc] wrote scatter file %s\n", sct_path);
+                    }
+                }
+                scatter_free(&sd);
+            }
+        }
+#endif
         return ARK_OK;
     }
 
@@ -481,5 +524,7 @@ int ark_compile_and_run(const char *path) {
     o.gen_depend = 0;
     o.depend_file = 0;
     o.split_sections = 0;
+    o.scatter_file = 0;
+    o.linker_script = 0;
     return ark_compile(&o);
 }

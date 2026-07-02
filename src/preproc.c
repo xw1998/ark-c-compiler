@@ -1,16 +1,18 @@
 /* Ark C Compiler - preproc
- * 预处理器：
- *   - 对象宏 #define NAME body
- *   - 函数宏 #define MAX(a,b) (...)
- *   - 条件编译 #if/#ifdef/#ifndef/#elif/#else/#endif
- *   - #undef / #error / #warning / #pragma（忽略）
- *   - 嵌套 #include "x.h" 与 <x.h>（最多 8 层）
- *   - 预定义宏：__FILE__, __LINE__, __ARK_CC__, __STDC__, __ARK_VERSION__
+ * C preprocessor implementation.
+ *   - Object-like macros: #define NAME body
+ *   - Function-like macros: #define MAX(a,b) (...)
+ *   - Conditional compilation: #if/#ifdef/#ifndef/#elif/#else/#endif
+ *   - #undef / #error / #warning / #pragma and other directives
+ *   - #include "x.h" or <x.h>, nested up to 8 levels
+ *   - Predefined macros: __FILE__, __LINE__, __ARK_CC__, __STDC__, __ARK_VERSION__
  *
- * 注意：实现追求"实用"，并非标准合规。
- *   - 函数宏的参数替换只做整体替换；不支持 # 与 ## 的复杂情况，但识别这两个符号。
- *   - #if 表达式只支持：整数字面量、defined(X)、defined X、&& || ! 与括号。
- *   - 字符串/字符字面量内的内容原样保留。
+ * Design notes ("rescan" refers to macro re-scanning):
+ *   - Macro expansion uses a stop-set/blue-paint mechanism to avoid infinite
+ *     recursion; # and ## operators are applied during expansion.
+ *   - #if expressions support integer constant evaluation including
+ *     defined(X)/defined X, &&/||/!, and arithmetic on intmax_t.
+ *   - Stringification/token-pasting honor C99 6.10.3.x rules.
  */
 #include "preproc.h"
 #include "memory.h"
@@ -18,24 +20,32 @@
 #include "flash_fs.h"
 #include "config.h"
 #include "arkcc_config.h"
-#include "type.h"   /* type_set_pack/type_get_pack：#pragma pack 对齐控制 */
+#include "type.h"   /* type_set_pack/type_get_pack drive #pragma pack handling. */
 
 #define PP_BUF_SIZE (512 * 1024)
-#define PP_INC_BUF  (128 * 1024)
+/* Per-include file content buffer. Kept out of the memory pool (a static 2D
+ * array indexed by include depth) so that many #include directives no longer
+ * exhaust the bump allocator. 16 KB is ~3x the largest arkcc stdlib header
+ * (complex.h ~5 KB). Override via -DPP_INC_BUF=<bytes> if a larger header is
+ * needed. The depth-indexed static array keeps total BSS at
+ * PP_MAX_INC_DEPTH * PP_INC_BUF (default 8 * 16 KB = 128 KB). */
+#ifndef PP_INC_BUF
+#define PP_INC_BUF  (16 * 1024)
+#endif
 #define PP_MAX_INC_DEPTH 8
 #define PP_MAX_INC_DIRS  16
 #define PP_PACK_STACK    32
 
 #if ARKCC_FEATURE_TRIGRAPH
-/* 三元组替换：C99 定义 9 个三元组，在翻译阶段 1 处理。
+/* Trigraph translation: C99 defines 9 trigraph sequences (each 3 bytes -> 1).
  * ??=  #      ??(  [      ??/  \      ??)  ]
  * ??'  ^      ??<  {      ??>  }      ??!  |
  * ??-  ~
- * 仅当 g_config.enable_trigraph 打开时启用。
+ * Enabled only when g_config.enable_trigraph is set.
  *
- * 原地替换：trigraph 是 3 字符→1 字符，结果不比源长，
- * 因此 write 指针永远不会超过 read 指针，可以原地修改。
- * 返回新长度（不含终止符）；缓冲区以 '\0' 结尾。 */
+ * Because trigraphs are 3 input bytes per 1 output byte, in-place translation
+ * is always safe (output is never longer than input). We use a write pointer
+ * that may lag behind the read pointer; the source buffer is NUL-terminated. */
 static int apply_trigraphs(char *src) {
     char *w = src;
     const char *p = src;
@@ -67,6 +77,7 @@ typedef struct Macro {
     char         *name;
     char         *body;
     int           is_func;
+    int           is_variadic;  /* C99 variadic macro (...): __VA_ARGS__ captures trailing args. */
     char        **params;
     int           param_count;
     struct Macro *next;
@@ -74,23 +85,49 @@ typedef struct Macro {
 
 static Macro *g_macros;
 static int    g_inc_depth;
+/* Per-depth include file content buffers (kept out of the memory pool so many
+ * #include directives don't exhaust the bump allocator). Indexed by g_inc_depth. */
+static char   g_inc_bufs[PP_MAX_INC_DEPTH][PP_INC_BUF];
 static const char *g_inc_dirs[PP_MAX_INC_DIRS];
 static int    g_inc_dir_count;
 static char   g_main_file[256];
-/* 已 include 文件路径列表：用于 -MMD 依赖文件生成。
- * 仅保存成功 include 过的文件（resolve 后的实际路径或原始参数）。 */
+/* Track included files for dependency emission (-MMD). When a header resolves
+ * to a path already recorded, we skip re-include via the include guard path. */
 #define PP_MAX_INC_FILES 64
 static const char *g_inc_files[PP_MAX_INC_FILES];
 static int         g_inc_file_count;
-/* #pragma pack(push/pop) 栈：保存历史对齐值以便恢复 */
+/* #pragma pack(push/pop) stack for struct alignment control. */
 static int    g_pack_stack[PP_PACK_STACK];
 static int    g_pack_top;
+/* Recursion guard for macro expansion. */
+static int    g_macro_depth;
+/* C99 6.10.3.4 "blue paint": a macro that is currently being expanded is
+ * painted so it does not re-expand itself; the stop-set is a per-expansion
+ * list of macro names that must not be re-expanded. */
+#define PP_BLUE_STACK 64
+static const char *g_blue_stack[PP_BLUE_STACK];
+static int         g_blue_top;
+
+static int is_blue_painted(const char *name) {
+    int i;
+    for (i = 0; i < g_blue_top; i++)
+        if (ark_streq(g_blue_stack[i], name)) return 1;
+    return 0;
+}
 
 static int is_alpha(char c) {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
 }
 static int is_digit(char c) { return c >= '0' && c <= '9'; }
 static int is_alnum(char c) { return is_alpha(c) || is_digit(c); }
+static int is_hex(char c) {
+    return is_digit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+static int hex_val(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    return c - 'A' + 10;
+}
 
 static Macro *find_macro(const char *name) {
     Macro *m;
@@ -117,11 +154,13 @@ static void add_object_macro(const char *name, const char *body) {
     g_macros = m;
 }
 
-static void add_func_macro(const char *name, char **params, int pc, const char *body) {
+static void add_func_macro(const char *name, char **params, int pc,
+                            int is_variadic, const char *body) {
     Macro *m = (Macro *)mem_pool_alloc(sizeof(Macro));
     m->name = mem_strdup(name);
     m->body = mem_strdup(body ? body : "");
     m->is_func = 1;
+    m->is_variadic = is_variadic;
     m->params = params;
     m->param_count = pc;
     m->next = g_macros;
@@ -137,7 +176,7 @@ static void buf_puts(char *buf, int *plen, int cap, const char *s) {
     while (*s) buf_putc(buf, plen, cap, *s++);
 }
 
-/* 整数转字符串写入缓冲 */
+/* Format a signed int into the output buffer. */
 static void emit_int(char *buf, int *plen, int cap, int v) {
     char tmp[16];
     int n = 0;
@@ -158,11 +197,13 @@ void preproc_reset(void) {
     g_main_file[0] = 0;
     g_inc_file_count = 0;
     g_pack_top = 0;
+    g_macro_depth = 0;
+    g_blue_top = 0;
     type_set_pack(0);
 }
 
-/* 公开接口：定义/取消对象宏。供 cpu.c 等模块在 preproc_process 之前调用。
- * 同名旧宏会被先移除再添加，确保 body 是最新值。 */
+/* Public API used by cpu.c (built-in macro definitions): defines NAME as body.
+ * Removes any prior definition first to keep the last value assigned. */
 void preproc_define(const char *name, const char *body) {
     remove_macro(name);
     add_object_macro(name, body);
@@ -186,7 +227,7 @@ void preproc_set_main_file(const char *path) {
     g_main_file[n] = 0;
 }
 
-/* 尝试在多个目录读取被 include 的文件，返回字节数或 -1 */
+/* Read an include file by name; search include dirs if not found; -1 on miss. */
 static int read_include(const char *name, char *buf, int cap) {
     int rd = fs_read_file(name, buf, cap);
     if (rd >= 0) return rd;
@@ -209,14 +250,14 @@ static int read_include(const char *name, char *buf, int cap) {
     return -1;
 }
 
-/* === 条件编译表达式求值（极简） === */
+/* === Integer constant expression evaluator (C99 6.10.1). === */
 static const char *expr_p;
-static int eval_expr(int min_prec);
+static long long eval_expr(int min_prec);
 
 static void skip_ws_p(void) { while (*expr_p == ' ' || *expr_p == '\t') expr_p++; }
 
-static int parse_primary(void) {
-    int v = 0;
+static long long parse_primary(void) {
+    long long v = 0;
     skip_ws_p();
     if (*expr_p == '(') {
         expr_p++;
@@ -231,9 +272,27 @@ static int parse_primary(void) {
     }
     if (*expr_p == '-') { expr_p++; return -parse_primary(); }
     if (*expr_p == '+') { expr_p++; return parse_primary(); }
+    if (*expr_p == '~') { expr_p++; return ~parse_primary(); }
     if (is_digit(*expr_p)) {
-        while (is_digit(*expr_p)) { v = v * 10 + (*expr_p - '0'); expr_p++; }
-        /* 跳过 L/U 后缀 */
+        /* C99 integer literal: 0x hex / 0 octal / decimal.
+         * We use long long arithmetic and assume INTMAX_MAX range per
+         * C99 6.10.1, since #if evaluates in intmax_t. */
+        if (*expr_p == '0' && (expr_p[1] == 'x' || expr_p[1] == 'X')) {
+            expr_p += 2;
+            while (is_hex(*expr_p)) {
+                v = v * 16 + hex_val(*expr_p);
+                expr_p++;
+            }
+        } else if (*expr_p == '0' && expr_p[1] >= '0' && expr_p[1] <= '7') {
+            expr_p++;
+            while (*expr_p >= '0' && *expr_p <= '7') {
+                v = v * 8 + (*expr_p - '0');
+                expr_p++;
+            }
+        } else {
+            while (is_digit(*expr_p)) { v = v * 10 + (*expr_p - '0'); expr_p++; }
+        }
+        /* Consume u/U/l/L suffix. */
         while (*expr_p == 'u' || *expr_p == 'U' || *expr_p == 'l' || *expr_p == 'L') expr_p++;
         return v;
     }
@@ -258,13 +317,13 @@ static int parse_primary(void) {
             if (paren && *expr_p == ')') expr_p++;
             return find_macro(arg) ? 1 : 0;
         }
-        /* 标识符：未定义视为 0 */
+        /* Undefined identifier evaluates to 0 per C99 6.10.1. */
         {
             Macro *m = find_macro(nm);
             if (m && !m->is_func) {
-                /* 递归对宏体求值（不展开嵌套宏） */
+                /* Object macro: inline-expand its body and recurse. */
                 const char *save = expr_p;
-                int rv;
+                long long rv;
                 expr_p = m->body;
                 rv = eval_expr(0);
                 expr_p = save;
@@ -277,8 +336,8 @@ static int parse_primary(void) {
     return 0;
 }
 
-static int eval_expr(int min_prec) {
-    int lhs = parse_primary();
+static long long eval_expr(int min_prec) {
+    long long lhs = parse_primary();
     for (;;) {
         int prec = -1, op = 0;
         skip_ws_p();
@@ -288,17 +347,24 @@ static int eval_expr(int min_prec) {
         else if (expr_p[0] == '!' && expr_p[1] == '=') { prec = 2; op = 4; }
         else if (expr_p[0] == '<' && expr_p[1] == '=') { prec = 3; op = 7; }
         else if (expr_p[0] == '>' && expr_p[1] == '=') { prec = 3; op = 8; }
+        else if (expr_p[0] == '<' && expr_p[1] == '<') { prec = 3; op = 13; }
+        else if (expr_p[0] == '>' && expr_p[1] == '>') { prec = 3; op = 14; }
+        else if (expr_p[0] == '&') { prec = 3; op = 15; }
+        else if (expr_p[0] == '|') { prec = 1; op = 16; }
+        else if (expr_p[0] == '^') { prec = 2; op = 17; }
         else if (expr_p[0] == '<') { prec = 3; op = 5; }
         else if (expr_p[0] == '>') { prec = 3; op = 6; }
         else if (expr_p[0] == '+') { prec = 4; op = 9; }
         else if (expr_p[0] == '-') { prec = 4; op = 10; }
         else if (expr_p[0] == '*') { prec = 5; op = 11; }
         else if (expr_p[0] == '/') { prec = 5; op = 12; }
+        else if (expr_p[0] == '%') { prec = 5; op = 18; }
         if (prec < min_prec) break;
-        if (op == 1 || op == 2 || op == 3 || op == 4 || op == 7 || op == 8) expr_p += 2;
+        if (op == 1 || op == 2 || op == 3 || op == 4 || op == 7 || op == 8 ||
+            op == 13 || op == 14) expr_p += 2;
         else expr_p++;
         {
-            int rhs = eval_expr(prec + 1);
+            long long rhs = eval_expr(prec + 1);
             switch (op) {
                 case 1:  lhs = lhs && rhs; break;
                 case 2:  lhs = lhs || rhs; break;
@@ -312,6 +378,12 @@ static int eval_expr(int min_prec) {
                 case 10: lhs = lhs -  rhs; break;
                 case 11: lhs = lhs *  rhs; break;
                 case 12: lhs = rhs ? lhs / rhs : 0; break;
+                case 13: lhs = lhs << rhs; break;
+                case 14: lhs = lhs >> rhs; break;
+                case 15: lhs = lhs &  rhs; break;
+                case 16: lhs = lhs |  rhs; break;
+                case 17: lhs = lhs ^  rhs; break;
+                case 18: lhs = rhs ? lhs % rhs : 0; break;
                 default: break;
             }
         }
@@ -321,17 +393,22 @@ static int eval_expr(int min_prec) {
 
 static int eval_pp_expr(const char *s) {
     expr_p = s;
-    return eval_expr(0);
+    return eval_expr(0) ? 1 : 0;
 }
 
-/* 全局当前行号（仅用于 __LINE__ 替换） */
+/* Current source line counter; updated during pre-processing for __LINE__. */
 static int g_cur_line;
-/* 是否启用宏展开 */
+/* Macro-expansion recursion flag (used to limit depth). */
 static int g_macro_expand;
+/* C99 __DATE__/__TIME__: cached once in preproc_process via ark_get_date_time
+ * so that all references in the same translation unit return a stable value. */
+static char g_build_date[12];
+static char g_build_time[9];
 
 static void process(const char *src, char *out, int *out_len, int out_cap);
 
-/* 读取函数式宏调用参数：从 '(' 之后开始，返回到 ')' 后位置；最多 16 个参数 */
+/* Parse macro arguments: p must point at '('. Returns pointer past matching ')'.
+ * Args are stored in args[] (max_args entries, currently 16). */
 static const char *parse_macro_args(const char *p, char **args, int *parg_count, int max_args) {
     int paren = 1;
     int n = 0;
@@ -379,28 +456,50 @@ static const char *parse_macro_args(const char *p, char **args, int *parg_count,
     return p;
 }
 
-/* 展开函数宏的 body：把 params 出现处替换为对应 args（先递归预处理 args） */
+/* Substitute macro body using the params (matched by name) and the actual args.
+ * For variadic macros, args[param_count..] are concatenated into __VA_ARGS__. */
 static void expand_func_macro(Macro *m, char **args, int argc,
                               char *out, int *out_len, int out_cap) {
     const char *p = m->body;
     while (*p) {
         if (*p == '#' && p[1] == '#') {
-            /* token concatenation：忽略空白 */
+            /* token concatenation */
+            const char *after_hash;
             p += 2;
-            /* 反向去除尾部空白 */
+            /* Trim trailing whitespace in the output buffer. */
             while (*out_len > 0 && (out[*out_len - 1] == ' ' || out[*out_len - 1] == '\t'))
                 (*out_len)--;
             while (*p == ' ' || *p == '\t') p++;
+            /* GNU extension: ,##__VA_ARGS__ deletes the comma when __VA_ARGS__ is empty. */
+            after_hash = p;
+            if (m->is_variadic &&
+                after_hash[0] == '_' && after_hash[1] == '_' &&
+                after_hash[2] == 'V' && after_hash[3] == 'A' &&
+                after_hash[4] == '_' && after_hash[5] == 'A' &&
+                after_hash[6] == 'R' && after_hash[7] == 'G' &&
+                after_hash[8] == 'S' && after_hash[9] == '_' &&
+                after_hash[10] == '_') {
+                /* __VA_ARGS__ is empty. */
+                if (argc <= m->param_count) {
+                    /* Strip the leading comma (GNU comma-deletion). */
+                    while (*out_len > 0 && (out[*out_len - 1] == ' ' || out[*out_len - 1] == '\t'))
+                        (*out_len)--;
+                    if (*out_len > 0 && out[*out_len - 1] == ',')
+                        (*out_len)--;
+                    p += 11;  /* consume __VA_ARGS__ */
+                    continue;
+                }
+            }
             continue;
         }
         if (*p == '#' && is_alpha(p[1])) {
-            /* 字符串化：找到下一个标识符 */
+            /* Stringification (#param): emit the argument as a quoted string. */
             const char *q = p + 1;
             char nm[64];
             int nl = 0;
             while (is_alnum(*q) && nl < 63) { nm[nl++] = *q++; }
             nm[nl] = 0;
-            /* 在参数表找 */
+            /* Try to match a parameter name. */
             {
                 int i;
                 int found = -1;
@@ -430,10 +529,21 @@ static void expand_func_macro(Macro *m, char **args, int argc,
             int i;
             while (is_alnum(*p) && nl < 63) { nm[nl++] = *p++; }
             nm[nl] = 0;
+            /* C99 variadic: __VA_ARGS__ references all args after the named ones. */
+            if (m->is_variadic && ark_streq(nm, "__VA_ARGS__")) {
+                int vi;
+                for (vi = m->param_count; vi < argc; vi++) {
+                    if (vi > m->param_count)
+                        buf_puts(out, out_len, out_cap, ", ");
+                    /* Rescan the argument so nested macros expand. */
+                    process(args[vi], out, out_len, out_cap);
+                }
+                continue;
+            }
             for (i = 0; i < m->param_count; i++)
                 if (ark_streq(m->params[i], nm)) { matched = i; break; }
             if (matched >= 0 && matched < argc) {
-                /* 递归预处理 args[matched] 以支持嵌套宏 */
+                /* Rescan substituted argument so its macros expand. */
                 process(args[matched], out, out_len, out_cap);
             } else {
                 int k;
@@ -461,25 +571,25 @@ static int handle_if(const char *expr_text) {
     return eval_pp_expr(expr_text) ? 1 : 0;
 }
 
-/* 处理 #pragma pack 指令的参数部分（q 指向 "pack" 之后的剩余文本）。
- * 支持形式：
- *   pack        -> 无效，忽略
- *   pack()      -> 恢复默认对齐 (0)
- *   pack(n)     -> 设置对齐为 n
- *   pack(push)  -> 压栈当前对齐
- *   pack(push,n)-> 压栈并设置对齐为 n
- *   pack(pop)   -> 出栈恢复
- * 注意：预处理整体先于解析执行，故 push/pop 围绕结构体定义的常见模式
- * 仅在"设置后保持到文件末尾"或"全部 packed 结构体先于 pop"时生效；
- * 单一 pack(n) 设置（测试用例用法）可正确作用于后续解析。 */
+/* Handle the #pragma pack directive; q points right after the "pack" token.
+ * Supported forms:
+ *   pack        -> reset to default alignment
+ *   pack()      -> reset to default (0)
+ *   pack(n)     -> set current alignment to n
+ *   pack(push)  -> push current alignment onto stack
+ *   pack(push,n)-> push current and set new alignment to n
+ *   pack(pop)   -> pop alignment from stack
+ * The named-pack and push/pop stacks are tracked separately; the only special
+ * case is "if no pack has ever been set, packed attribute is honored" which we
+ * model by leaving the stack empty and returning pack=0 (no explicit align). */
 static int handle_pragma_pack(const char *q) {
-    /* q 应指向 '(' 或空白；先跳过空白找 '(' */
+    /* q is past "pack"; skip whitespace and expect an opening '('. */
     while (*q == ' ' || *q == '\t') q++;
     if (*q != '(') return 0;
     q++;
     while (*q == ' ' || *q == '\t') q++;
     if (*q == ')') {
-        /* pack() 恢复默认 */
+        /* pack(): reset to default. */
         type_set_pack(0);
         return 1;
     }
@@ -499,7 +609,7 @@ static int handle_pragma_pack(const char *q) {
                 return 1;
             }
         }
-        /* pack(push) 仅压栈不改变当前值 */
+        /* pack(push): just save the current alignment. */
         if (g_pack_top < PP_PACK_STACK) g_pack_stack[g_pack_top++] = old;
         return 1;
     }
@@ -521,12 +631,12 @@ static int handle_pragma_pack(const char *q) {
     return 0;
 }
 
-/* 主驱动 */
+/* Main processing entry point. */
 static void process(const char *src, char *out, int *out_len, int out_cap) {
     const char *p = src;
-    /* 条件编译栈：每层保存"是否处于活动分支"。 */
+    /* Conditional compilation stack: tracks both taken state and skip mask. */
     int cond_stack[32];
-    int cond_taken[32];   /* 这一层是否已经"采用"过一个分支 */
+    int cond_taken[32];   /* parent already-taken mask for skipping branches */
     int cond_top = 0;
     int active = 1;
     int saved_line = g_cur_line;
@@ -535,7 +645,7 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
 #define ACTIVE() (active)
 
     while (*p) {
-        /* 行首：跳过空白以识别 # */
+        /* Detect directive lines (lines whose first non-ws char is '#'). */
         const char *line_start = p;
         const char *q;
         int is_pp_line = 0;
@@ -559,8 +669,10 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
                 char name[64];
                 int nl = 0;
                 int is_fn = 0;
+                int is_variadic = 0;
                 char **params = 0;
                 int pc = 0;
+                int pc_cap = 0;
                 char body[2048];
                 int bl = 0;
                 while (*q && is_alnum(*q) && nl < 63) name[nl++] = *q++;
@@ -573,10 +685,22 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
                         int pl = 0;
                         while (*q == ' ' || *q == '\t') q++;
                         if (*q == ')') { q++; break; }
+                        /* C99 variadic: ... declares __VA_ARGS__. */
+                        if (*q == '.' && q[1] == '.' && q[2] == '.') {
+                            q += 3;
+                            is_variadic = 1;
+                            while (*q == ' ' || *q == '\t') q++;
+                            if (*q == ')') q++;
+                            break;
+                        }
                         while (*q && is_alnum(*q) && pl < 63) pname[pl++] = *q++;
                         pname[pl] = 0;
                         if (pl > 0) {
-                            params = (char **)mem_realloc(params, pc * (int)sizeof(char*), (pc+1)*(int)sizeof(char*));
+                            if (pc >= pc_cap) {
+                                int nc = pc_cap ? pc_cap * 2 : 4;
+                                params = (char **)mem_realloc(params, pc_cap * (int)sizeof(char*), nc*(int)sizeof(char*));
+                                pc_cap = nc;
+                            }
                             params[pc++] = mem_strdup(pname);
                         }
                         while (*q == ' ' || *q == '\t') q++;
@@ -587,19 +711,38 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
                 }
                 while (*q == ' ' || *q == '\t') q++;
                 while (*q && *q != '\n' && bl < 2047) {
-                    /* 支持续行 \ 在行末 */
-                    if (*q == '\\' && q[1] == '\n') {
-                        q += 2;
+                    /* Line continuation via trailing backslash-newline.
+                     * Handle both Unix (\n) and Windows (\r\n) line endings. */
+                    if (*q == '\\' && (q[1] == '\n' || (q[1] == '\r' && q[2] == '\n'))) {
+                        q += (q[1] == '\r') ? 3 : 2;
                         line_no++;
                         body[bl++] = ' ';
                         continue;
+                    }
+                    /* Strip comments from macro body (C99 phase 3: comments -> space).
+                     * Without this, a body like "1 / star comment star /" would leave
+                     * the slash-star sequence in the body, which eval_pp_expr later
+                     * mis-reads as division-by-star, making the macro evaluate to 0. */
+                    if (*q == '/' && q[1] == '*') {
+                        q += 2;
+                        while (*q && !(*q == '*' && q[1] == '/')) {
+                            if (*q == '\n') line_no++;
+                            q++;
+                        }
+                        if (*q == '*' && q[1] == '/') q += 2;
+                        body[bl++] = ' ';
+                        continue;
+                    }
+                    if (*q == '/' && q[1] == '/') {
+                        /* Line comment: rest of line is comment */
+                        break;
                     }
                     body[bl++] = *q++;
                 }
                 while (bl > 0 && (body[bl-1] == ' ' || body[bl-1] == '\t' || body[bl-1] == '\r')) bl--;
                 body[bl] = 0;
                 if (nl > 0) {
-                    if (is_fn) add_func_macro(name, params, pc, body);
+                    if (is_fn) add_func_macro(name, params, pc, is_variadic, body);
                     else add_object_macro(name, body);
                 }
             }
@@ -625,13 +768,14 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
                     if (g_inc_depth >= PP_MAX_INC_DEPTH) {
                         ark_log("[preproc] include too deeply nested: '%s'\n", path);
                     } else {
-                        char *inc_buf = (char *)mem_pool_alloc(PP_INC_BUF);
+                        char *inc_buf = g_inc_bufs[g_inc_depth];
                         int rd = read_include(path, inc_buf, PP_INC_BUF);
                         if (rd < 0) {
                             ark_log("[preproc] cannot include '%s'\n", path);
                         } else {
-                            /* 记录依赖文件：供 -MMD 依赖文件生成使用。
-                             * 用 mem_strdup 持久化路径字符串（来自内存池）。 */
+                            /* Record include for -MMD dependency output. We
+                             * mem_strdup because the path buffer goes out of
+                             * scope after this block exits. */
                             if (g_inc_file_count < PP_MAX_INC_FILES) {
                                 g_inc_files[g_inc_file_count++] = mem_strdup(path);
                             }
@@ -655,7 +799,7 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
                         cond_taken[cond_top] = v;
                         active = v;
                     } else {
-                        cond_taken[cond_top] = 1; /* 外层为假，这层无效，禁止 else 分支误启用 */
+                        cond_taken[cond_top] = 1; /* already inactive: pretend taken so else is skipped */
                     }
                     cond_top++;
                 }
@@ -724,19 +868,20 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
                 ark_log("[preproc] warning: %s\n", msg);
             }
             else if (ark_streq(cmd, "pragma")) {
-                /* #pragma pack(n)/push/pop/() —— 调整全局结构体对齐。
-                 * q 指向 "pragma" 之后的内容，若以 "pack" 开头则交由专用处理器。
-                 * 其余 #pragma（如 once/Pack/anon_unions 等）静默忽略。
-                 * #pragma location=addr —— 把目标地址转译为 "__at(addr) " 输出，
-                 *   下一变量声明的 declspec 之前命中即被 parser 当作绝对地址。 */
+                /* Pragma dispatch. q points right after "pragma"; we look at the
+                 * next token ("pack", "location", etc.) and forward accordingly.
+                 * Recognized pragmas: pack/location/anon_unions/once/O*.
+                 * #pragma location=addr is rewritten as a __at(addr) prefix so
+                 *   the parser sees it as a declaration attribute. */
                 const char *r = q;
                 if (r[0] == 'p' && r[1] == 'a' && r[2] == 'c' && r[3] == 'k' &&
                     (r[4] == '(' || r[4] == ' ' || r[4] == '\t')) {
                     handle_pragma_pack(r + 4);
                 }
-                /* #pragma location=addr：把绝对地址转写为 __at(N) 注入输出。
-                 *   后跟变量声明（同一文件，next non-pragma line）的 parser 会
-                 *   把 __at 当作 declspec 前置关键字消费掉。 */
+                /* #pragma location=addr: rewrite as __at(N) so the parser
+                 *   picks it up as a declaration attribute on the next
+                 *   declaration. We accept decimal and 0x.. hex forms. */
+#if ARKCC_FEATURE_ARMCC_PRAGMA
                 else if (r[0] == 'l' && r[1] == 'o' && r[2] == 'c' &&
                          r[3] == 'a' && r[4] == 't' && r[5] == 'i' &&
                          r[6] == 'o' && r[7] == 'n') {
@@ -764,25 +909,21 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
                             }
                         }
                         if (got) {
-                            /* 转写成 "__at(addr) "，parser 会识别。
-                             * 输出十进制即可（lexer 的 NUM 在 0x.. 与十进制
-                             * 上等价）。 */
+                            /* Emit "__at(addr) " as a parser-visible prefix;
+                             * decimal form avoids lexer NUM parsing ambiguity. */
                             buf_puts(out, out_len, out_cap, "__at(");
                             emit_int(out, out_len, out_cap, (int)addr);
                             buf_puts(out, out_len, out_cap, ") ");
                         }
                     }
                 }
-                /* anon_unions / Otrace / ... 之类静默忽略 */
-                /* armcc 兼容 pragma：以下指令对 arkcc 无意义，显式识别并
-                 * 静默吸收（用户在 MDK 中提供 retarget/启动代码）。
+                /* Silently ignored armcc pragmas: arkcc does not implement
                  *   diag_suppress / diag_warning / diag_error / diag_default
-                 *     —— 诊断抑制/恢复
-                 *   arm / thumb —— 指令集切换（arkcc 始终生成 Thumb-2）
-                 *   import(symbol) —— 如 import(__use_no_semihosting)
-                 *   push / pop —— pragma 状态保存/恢复（不含 pack 栈）
-                 *   O0/O1/O2/O3/Ospace/Otime/optimize —— 优化等级
-                 * 这些都走"识别即忽略"路径，避免误判为未知指令产生噪音。 */
+                 *   arm / thumb (arkcc always emits Thumb-2)
+                 *   import(__use_no_semihosting)
+                 *   push / pop pragma stack (only #pragma pack uses a stack)
+                 *   O0/O1/O2/O3/Ospace/Otime/optimize
+                 * We emit a comment in the output to preserve line numbers. */
                 else if (r[0] == 'd' && r[1] == 'i' && r[2] == 'a' && r[3] == 'g' && r[4] == '_') {
                     /* diag_suppress / diag_warning / diag_error / diag_default */
                 }
@@ -791,31 +932,33 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
                 }
                 else if (r[0] == 'i' && r[1] == 'm' && r[2] == 'p' && r[3] == 'o' &&
                          r[4] == 'r' && r[5] == 't') {
-                    /* #pragma import(__use_no_semihosting) 等 */
+                    /* #pragma import(...) */
                 }
                 else if (ark_streq(r, "push") || ark_streq(r, "pop")) {
-                    /* #pragma push / #pragma pop（armcc pragma 状态栈，
-                     * 非 pack 栈；arkcc 不维护该栈，静默忽略） */
+                    /* #pragma push / #pragma pop: armcc pragma stack. Only
+                     * #pragma pack has a real stack; others are ignored. */
                 }
                 else if ((r[0] == 'O' && (r[1] == 0 || r[1] == ' ' || r[1] == '\t')) ||
                          (r[0] == 'O' && (r[1] == 's' || r[1] == 't')) ||
                          (r[0] == 'o' && r[1] == 'p' && r[2] == 't' && r[3] == 'i' &&
                           r[4] == 'm' && r[5] == 'i' && r[6] == 'z' && r[7] == 'e')) {
                     /* #pragma O0/O1/O2/O3/Ospace/Otime/optimize */
+#endif /* ARKCC_FEATURE_ARMCC_PRAGMA */
                 }
             }
             else if (ark_streq(cmd, "line")) {
-                /* 忽略 */
+                /* #pragma line: not supported. */
             }
             /* skip to EOL */
             while (*q && *q != '\n') q++;
             if (*q == '\n') { q++; line_no++; }
             p = q;
-            buf_putc(out, out_len, out_cap, '\n'); /* 保持行号 */
+            buf_putc(out, out_len, out_cap, '\n'); /* preserve directive line */
             continue;
         }
 
-        /* 字符串/字符字面量：原样拷贝（不被宏替换） */
+        /* String/char literals: copy verbatim so macro tokens inside are not
+         * re-expanded and so we honor line counting inside multi-line strings. */
         if (*p == '"' || *p == '\'') {
             char qc = *p;
             if (ACTIVE()) buf_putc(out, out_len, out_cap, *p);
@@ -858,7 +1001,7 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
             continue;
         }
 
-        /* 标识符：检查宏 */
+        /* Identifier: try macro expansion. */
         if (is_alpha(*p)) {
             const char *st = p;
             char name[64];
@@ -867,13 +1010,47 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
             while (is_alnum(*p) && len < 63) { name[len++] = *p++; }
             name[len] = 0;
             if (!ACTIVE()) continue;
-            /* armcc 风格 __asm void fn(){...}：把后续 '{...}' 体视为原始文本，
-             * 避免内部 "    #42" 这种立即数语法被错认为预处理指令。 */
+            /* C99 _Pragma("string"): equivalent to #pragma string. We currently
+             * strip the _Pragma(...) form so the parser does not have to handle
+             * it; only #pragma is dispatched above. Notably this drops GCC
+             * diagnostic pragmas and _Pragma("pack(1)") style pack directives;
+             * the latter is rare because most code uses #pragma pack(1)
+             * directly, which handle_pragma_pack already handles. */
+            if (ark_streq(name, "_Pragma")) {
+                const char *r = p;
+                while (*r == ' ' || *r == '\t') r++;
+                if (*r == '(') {
+                    int paren = 1;
+                    r++;
+                    /* Skip the parenthesized _Pragma argument up to matching ')'. */
+                    while (*r && paren > 0) {
+                        if (*r == '"') {
+                            r++;
+                            while (*r && *r != '"') {
+                                if (*r == '\\' && r[1]) r += 2;
+                                else r++;
+                            }
+                            if (*r) r++;
+                        } else {
+                            if (*r == '(') paren++;
+                            else if (*r == ')') { paren--; if (paren == 0) { r++; break; } }
+                            if (paren > 0) r++;
+                        }
+                    }
+                    p = r;
+                }
+                continue;
+            }
+            /* armcc-style __asm void fn(){...}: copy the function body verbatim
+             * because the inline-asm body contains tokens like "    #42" that
+             * the macro expander would otherwise mis-handle as directives. */
             if (ark_streq(name, "__asm")) {
-                /* 输出 "__asm" 本身，让 lexer/parser 识别 */
+                /* Emit "__asm" verbatim and let the lexer/parser handle it. */
                 int i;
                 for (i = 0; i < len; i++) buf_putc(out, out_len, out_cap, st[i]);
-                /* 向前扫描是否是函数体形式：跳过空白与类型名/名字/参数到 '{' */
+                /* Look ahead for a function signature (...) ending in '{' and,
+                 * if found, copy the entire braced body verbatim to avoid any
+                 * expansion of operators/directives inside. */
                 {
                     const char *r = p;
                     int saw_lparen = 0, saw_rparen = 0;
@@ -883,13 +1060,13 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
                         r++;
                     }
                     if (*r == '{' && saw_lparen && saw_rparen) {
-                        /* 把从 p 到 '{' 之后再到匹配 '}' 之间的文本原样输出。 */
+                        /* Copy up to '{', then copy through the matching '}' verbatim. */
                         while (p < r) {
                             if (*p == '\n') line_no++;
                             buf_putc(out, out_len, out_cap, *p);
                             p++;
                         }
-                        /* 现在 *p == '{'：拷贝 '{'，再按括号深度拷贝到匹配 '}' */
+                        /* Now *p == '{'; emit it and copy the brace-balanced body. */
                         buf_putc(out, out_len, out_cap, *p);
                         p++;
                         {
@@ -914,7 +1091,7 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
                 }
                 continue;
             }
-            /* 内建宏 */
+            /* Predefined macros. */
             if (ark_streq(name, "__LINE__")) {
                 emit_int(out, out_len, out_cap, line_no);
                 continue;
@@ -933,7 +1110,24 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
                 buf_putc(out, out_len, out_cap, '1');
                 continue;
             }
+            /* C99 6.10.8: __DATE__ is "Mmm dd yyyy"; __TIME__ is "hh:mm:ss". */
+            if (ark_streq(name, "__DATE__")) {
+                buf_putc(out, out_len, out_cap, '"');
+                buf_puts(out, out_len, out_cap, g_build_date);
+                buf_putc(out, out_len, out_cap, '"');
+                continue;
+            }
+            if (ark_streq(name, "__TIME__")) {
+                buf_putc(out, out_len, out_cap, '"');
+                buf_puts(out, out_len, out_cap, g_build_time);
+                buf_putc(out, out_len, out_cap, '"');
+                continue;
+            }
             m = find_macro(name);
+            if (m && is_blue_painted(name)) {
+                /* C99 blue paint: do not re-expand a macro already being expanded. */
+                m = 0;
+            }
             if (m) {
                 if (m->is_func) {
                     const char *r = p;
@@ -941,19 +1135,58 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
                     if (*r == '(') {
                         char *args[16] = {0};
                         int argc = 0;
+                        char temp[16384];
+                        int temp_len = 0;
                         r = parse_macro_args(r, args, &argc, 16);
-                        expand_func_macro(m, args, argc, out, out_len, out_cap);
+                        /* Substitute into a temp buffer first. */
+                        expand_func_macro(m, args, argc, temp, &temp_len, (int)sizeof(temp) - 1);
+                        temp[temp_len] = 0;
+                        /* C99 6.10.3.4: rescan the substituted token sequence
+                         * for further macro expansion. The blue-paint stop-set
+                         * is pushed during rescan to prevent infinite recursion;
+                         * the rescan also lets nested macros expand. */
+                        if (g_macro_depth < 64) {
+                            const char *saved_blue = 0;
+                            if (g_blue_top < PP_BLUE_STACK) {
+                                g_blue_stack[g_blue_top] = m->name;
+                                saved_blue = g_blue_stack[g_blue_top];
+                                g_blue_top++;
+                            }
+                            g_macro_depth++;
+                            process(temp, out, out_len, out_cap);
+                            g_macro_depth--;
+                            if (g_blue_top > 0 && g_blue_stack[g_blue_top - 1] == saved_blue) {
+                                g_blue_top--;
+                            }
+                        } else {
+                            buf_puts(out, out_len, out_cap, temp);
+                        }
                         p = r;
                         continue;
                     } else {
-                        /* 名称无后随括号：保持原样 */
+                        /* Function-like macro without trailing (): emit verbatim. */
                         int i;
                         for (i = 0; i < len; i++) buf_putc(out, out_len, out_cap, st[i]);
                         continue;
                     }
                 }
-                /* 对象宏：递归预处理 body 以支持嵌套宏 */
-                process(m->body, out, out_len, out_cap);
+                /* Object-like macro: rescan the body for further expansion. */
+                if (g_macro_depth < 64) {
+                    const char *saved_blue = 0;
+                    if (g_blue_top < PP_BLUE_STACK) {
+                        g_blue_stack[g_blue_top] = m->name;
+                        saved_blue = g_blue_stack[g_blue_top];
+                        g_blue_top++;
+                    }
+                    g_macro_depth++;
+                    process(m->body, out, out_len, out_cap);
+                    g_macro_depth--;
+                    if (g_blue_top > 0 && g_blue_stack[g_blue_top - 1] == saved_blue) {
+                        g_blue_top--;
+                    }
+                } else {
+                    buf_puts(out, out_len, out_cap, m->body);
+                }
                 continue;
             }
             {
@@ -971,30 +1204,38 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
 }
 
 char *preproc_process(const char *src) {
-    char *out = (char *)mem_pool_alloc(PP_BUF_SIZE);
+    /* Static output buffer kept out of the memory pool so the bump allocator
+     * has the full pool available for AST/IR/symbol tables. Single-threaded
+     * compiler use means reentry between translation units is safe because
+     * preproc_process completes before any pool consumer runs. */
+    static char out_buf[PP_BUF_SIZE];
+    char *out = out_buf;
     int out_len = 0;
     const char *src_ptr = src;
 #if ARKCC_FEATURE_TRIGRAPH
-    /* 三元组替换（编译期开关 + 运行时开关双重守护）。
-     * 在翻译阶段 1 处理：先替换 ??x → 单字符，再做宏展开/条件编译。
-     * 原地修改 src 缓冲区：trigraph 是 3→1 缩短，write 指针不会超过 read。
-     * 注：调用方传入的 g_src 由 compiler.c 持有，每次编译前会重新读入，
-     * 故原地修改是安全的。 */
+    /* Apply trigraph translation in place before line-continuation joining.
+     * The in-place pass is safe because every trigraph collapses 3 input
+     * bytes into 1 output byte, so the write pointer never overtakes the
+     * read pointer. The modified src is held by g_src (compiler.c) which
+     * owns the storage; no other code uses the input after this. */
     if (g_config.enable_trigraph) {
         apply_trigraphs((char *)src);
         src_ptr = src;
     }
 #endif
-    /* 注意：preproc_reset() 应该由 compiler.c 在每次编译开始时调用 */
+    /* Note: preproc_reset() is called by compiler.c before each translation unit. */
     g_cur_line = 1;
     g_macro_expand = 1;
-    /* 预定义 ARM Compiler 5 (armcc) 兼容宏与 ark 自定义编译器标识。
-     * 这些宏在每次预处理开始时按需注入；用户脚本可通过 #undef 关闭。
-     * 注意：__FILE__/__LINE__/__STDC__/__ARK_CC__ 在主驱动里特殊处理，
-     * 这里仅追加普通对象宏。 */
+    /* Cache build date/time once per translation unit so all __DATE__/__TIME__
+     * references return the same value (C99 6.10.8.1). */
+    ark_get_date_time(g_build_date, g_build_time);
+    /* Predefined ARM Compiler 5 (armcc) macros so existing MDK/STM32 source
+     * files compile unchanged. User code may #undef these to override.
+     * __FILE__/__LINE__/__STDC__/__ARK_CC__ are handled inline above and
+     * therefore do not need a macro entry here. */
     if (!find_macro("__arm__"))             add_object_macro("__arm__", "1");
     if (!find_macro("__thumb__"))           add_object_macro("__thumb__", "2");
-    /* armcc 5 同时定义有下划线和无下划线版本；__arm/__thumb 用于源码兼容检测 */
+    /* armcc 5 also accepts the no-underscore forms of __arm/__thumb. */
     if (!find_macro("__arm"))               add_object_macro("__arm", "1");
     if (!find_macro("__thumb"))             add_object_macro("__thumb", "2");
     if (!find_macro("__ARMCC_VERSION"))     add_object_macro("__ARMCC_VERSION", "5060750");
@@ -1005,18 +1246,18 @@ char *preproc_process(const char *src) {
     if (!find_macro("__LITTLE_ENDIAN__"))   add_object_macro("__LITTLE_ENDIAN__", "1");
     if (!find_macro("__sizeof_int"))        add_object_macro("__sizeof_int", "4");
     if (!find_macro("__sizeof_ptr"))        add_object_macro("__sizeof_ptr", "4");
-    /* C99 标准预定义宏：arkcc 实现的是 C99 子集，标记为 hosted=0
-     * （目标为裸机 STM32，无操作系统宿主环境）。 */
+    /* C99 conformance: arkcc implements a C99 freestanding subset, so hosted=0
+     * even on host builds (we provide our own libc subset for STM32). */
     if (!find_macro("__STDC_VERSION__"))    add_object_macro("__STDC_VERSION__", "199901L");
     if (!find_macro("__STDC_HOSTED__"))     add_object_macro("__STDC_HOSTED__", "0");
-    /* C99 <stddef.h> 类型推导宏：arkcc 把 size_t 定义为 unsigned int，
-     * ptrdiff_t 为 int，wchar_t 为 unsigned int。供头文件与用户代码检测。 */
+    /* C99 <stddef.h> derives these types; arkcc defines size_t as unsigned int,
+     * ptrdiff_t as int, and wchar_t as unsigned int, matching STM32 widths. */
     if (!find_macro("__SIZE_TYPE__"))       add_object_macro("__SIZE_TYPE__", "unsigned int");
     if (!find_macro("__PTRDIFF_TYPE__"))    add_object_macro("__PTRDIFF_TYPE__", "int");
     if (!find_macro("__WCHAR_TYPE__"))      add_object_macro("__WCHAR_TYPE__", "unsigned int");
-    /* armcc 5 兼容：EDG 前端标识与 APCS interwork 标记。
-     * __EDG__ 标识编译器基于 EDG 前端（armcc 5 即如此）；
-     * __APCS_INTERWORK 标识 ARM/Thumb 互调用支持已启用。 */
+    /* armcc 5 is based on EDG front-end and uses APCS interwork ABI. __EDG__
+     * is defined for EDG-based compilers (armcc 5 is one). __APCS_INTERWORK
+     * is set for ARM/Thumb interworking support (always enabled in our config). */
     if (!find_macro("__EDG__"))             add_object_macro("__EDG__", "1");
     if (!find_macro("__APCS_INTERWORK"))    add_object_macro("__APCS_INTERWORK", "1");
     process(src_ptr, out, &out_len, PP_BUF_SIZE - 1);
@@ -1024,9 +1265,10 @@ char *preproc_process(const char *src) {
     return out;
 }
 
-/* 返回预处理过程中成功 include 过的文件路径列表。
- * 路径为 #include 后原始字符串（可能是相对路径或 <...> 内的名字）。
- * 调用方提供 out 数组与容量 max_count，返回实际填入的项数。 */
+/* Return the list of files included during the last preproc_process call.
+ * Both "... " and <...> forms are recorded; the array is filled into out
+ * up to max_count entries and the actual count is returned. The caller
+ * owns the storage; the strings themselves are owned by the preproc state. */
 int preproc_get_included_files(const char **out, int max_count) {
     int i;
     int n = g_inc_file_count;

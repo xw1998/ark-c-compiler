@@ -1,9 +1,11 @@
-/* stdlib/src/putchar_default.c - putchar 弱默认实现
+/* stdlib/src/putchar_default.c - weak default putchar implementation
  *
- * 当 STM32/ARM 工程未提供自定义 putchar 时，链接此弱定义避免链接失败。
- * 它什么也不做，仅返回输入字符。
+ * When an STM32/ARM project does not provide a custom putchar, linking this
+ * weak definition avoids link failure. It does nothing and just returns the
+ * input character.
  *
- * 用户工程提供自己的强 putchar（指向 UART/ITM）即可覆盖：
+ * A user project can provide its own strong putchar (pointing at UART/ITM)
+ * to override it:
  *   int putchar(int c) { while (!(USART1->SR & TXE)) ; USART1->DR = c; return c; }
  */
 __attribute__((weak)) int putchar(int c) {

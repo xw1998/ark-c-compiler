@@ -9,9 +9,9 @@
 typedef unsigned int size_t;
 typedef int          ptrdiff_t;
 
-/* B2: wchar_t 宽字符类型。C 后端生成代码会再 #include <wchar.h>，
- * 由 gcc 的 wchar.h 重新定义 wchar_t；此处定义供 arkcc 自身类型推导使用。
- * 与 ARM 平台一致：32 位无符号整数。 */
+/* B2: wchar_t wide-character type. The C backend re-includes <wchar.h>,
+ * where gcc's wchar.h redefines wchar_t; this definition is for arkcc's own
+ * type deduction. Matches the ARM platform: 32-bit unsigned integer. */
 #ifndef __cplusplus
 typedef unsigned int wchar_t;
 #endif

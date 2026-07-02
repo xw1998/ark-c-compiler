@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 
-# 切换到项目根目录
+# Switch to the project root directory
 Set-Location (Split-Path -Parent $PSScriptRoot)
 
 if (-not (Test-Path .\arkcc.exe)) {
@@ -16,7 +16,7 @@ foreach ($f in $examples) {
     $base = $f.BaseName
     Write-Host "===== $($f.Name) ====="
 
-    # arm 后端：仅做语法 + 汇编生成检查
+    # ARM backend: syntax + assembly generation check only
     & .\arkcc.exe $f.FullName -target arm -S -o nul
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  [arm] FAILED"
@@ -25,10 +25,11 @@ foreach ($f in $examples) {
     }
     Write-Host "  [arm] asm OK"
 
-    # c 后端：生成 + gcc 编译 + 运行
-    # test_asm_func.c 含 ARM 汇编，无法被 host gcc 汇编；只做 ARM 后端检查。
-    # test_asm_operand.c 含本地变量名（result/x），C 后端把它们存到 frame[]
-    #   而非 C 局部变量，故 __asm__ 操作数无法在 gcc 上参与编译；同样仅 ARM。
+    # C backend: emit + gcc compile + run
+    # test_asm_func.c contains ARM assembly that host gcc cannot assemble; ARM-only check.
+    # test_asm_operand.c uses local variable names (result/x); the C backend stores them
+    #   in frame[] rather than as C locals, so __asm__ operands cannot be compiled by
+    #   gcc; also ARM-only.
     if ($base -eq "test_asm_func" -or $base -eq "test_asm_operand") {
         Write-Host "  [c]   skipped (ARM-only test)"
         $passed++
@@ -42,7 +43,8 @@ foreach ($f in $examples) {
         $failed++
         continue
     }
-    # gcc 失败时（如多文件测试缺 main）会向 stderr 输出，临时放宽错误策略
+    # When gcc fails (e.g. multi-file tests missing main) it writes to stderr;
+    # temporarily relax the error policy.
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     $proc = Start-Process -FilePath gcc -ArgumentList "-O2","-w",$genc,"-o",$exe -NoNewWindow -Wait -PassThru -RedirectStandardError NUL

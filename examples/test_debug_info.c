@@ -1,19 +1,19 @@
-/* test_debug_info.c — DWARF 调试信息生成检查
+/* test_debug_info.c - DWARF debug information generation check
  *
- * 当 g_config.enable_dwarf=1 或 g_config.debug_info=1 时，ARM 后端
- * 在汇编输出中发射 GNU as 风格的 DWARF 指令：
+ * When g_config.enable_dwarf=1 or g_config.debug_info=1, the ARM backend
+ * emits GNU as-style DWARF directives in assembly output:
  *   .file 1 "<src>.c"
  *   .type main, %function
  *   .cfi_startproc / .cfi_endproc
  *   .loc 1 <line>
  *   .size main, .-main
  *
- * 本测试仅作为编译目标存在：run_tests.ps1 会对它运行
+ * This test only exists as a build target: run_tests.ps1 runs
  *   arkcc examples\test_debug_info.c -target arm -S -o nul
- * 以及
+ * and
  *   arkcc examples\test_debug_info.c -target c -o test_debug_info.gen.c
- * 后再 gcc 编译运行，期望退出码 0。
+ * then compiles and runs it with gcc, expecting exit code 0.
  *
- * 期望退出码：0
+ * Expected exit code: 0
  */
 int main(void) { return 0; }

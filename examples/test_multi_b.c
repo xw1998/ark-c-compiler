@@ -1,5 +1,5 @@
-/* test_multi_b.c — 与 test_multi_a.c 一起验证多文件链接
- * 期望退出码：3
+/* test_multi_b.c - Together with test_multi_a.c, verifies multi-file linkage
+ * Expected exit code: 3
  */
 extern int g_counter;
 extern void inc_counter(void);

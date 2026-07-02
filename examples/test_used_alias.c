@@ -1,5 +1,5 @@
-/* test_used_alias.c ¡ª __attribute__((used / alias)) ²âÊÔ
- * ÆÚÍûÍË³öÂë£º42
+/* test_used_alias.c - __attribute__((used / alias)) test
+ * Expected exit code: 42
  */
 void Default_Handler(void) __attribute__((used));
 void Default_Handler(void) { }

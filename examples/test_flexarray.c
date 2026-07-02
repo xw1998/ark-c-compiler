@@ -1,5 +1,5 @@
-/* test_flexarray.c — 柔性数组成员（C99）
- * 期望退出码：4（sizeof(struct Packet) == 4，data[] 不计入）
+/* test_flexarray.c - Flexible array member (C99)
+ * Expected exit code: 4 (sizeof(struct Packet) == 4, data[] not counted)
  */
 struct Packet {
     int len;

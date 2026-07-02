@@ -1,14 +1,14 @@
 /* Ark C Compiler - flash_fs_stm32
- * 基于 W25Q SPI Flash 的文件系统实现（占位伪代码）。
+ * W25Q SPI Flash based filesystem implementation (placeholder / pseudo-code).
  *
- * 该实现假设 Flash 头部存有一个 32 字节/项的文件索引表：
+ * This implementation assumes the Flash header holds a file index table with 32-byte entries:
  *   struct FileEntry { char name[24]; uint32_t offset; uint32_t size; };
- * 用户上位机工具负责构造并烧录此索引。
+ * A host-side tool is responsible for building and flashing this index.
  */
 #include "flash_fs.h"
 #include "platform.h"
 
-/* 移植时由 BSP 提供： */
+/* Provided by the BSP when porting: */
 extern void W25Q_Read(unsigned int addr, unsigned char *buf, unsigned int len);
 
 #define MAX_FILES   32
@@ -54,16 +54,33 @@ int fs_read_file(const char *path, char *buf, int max_len) {
     return -1;
 }
 
-/* STM32 上：写入 Flash 或返回给调用者。
- * 占位实现：通过回调或全局指针返回编译结果。
- * 用户移植时替换为 Flash 编程或 RAM 拷贝。 */
+/* List all files on the flash FS to UART via ark_log.
+ * Returns the number of files found. */
+int fs_list_files(void) {
+    int i;
+    int count = 0;
+    ensure_table();
+    for (i = 0; i < MAX_FILES; i++) {
+        if (s_table[i].name[0] == 0) continue;
+        ark_log("  %-24s  %u bytes\r\n", (int)s_table[i].name, (int)s_table[i].size);
+        count++;
+    }
+    if (count == 0) {
+        ark_log("  (no files found)\r\n");
+    }
+    return count;
+}
+
+/* On STM32: write to Flash or return to the caller.
+ * Placeholder implementation: returns the compilation result via callback or a global pointer.
+ * When porting, replace this with Flash programming or a RAM copy. */
 extern void arkcc_on_output(const unsigned char *data, int len);
 
 int fs_write_file(const char *path, const unsigned char *data, int len) {
     (void)path;
     if (!data || len < 0) return -1;
-    /* path 为 "-" 或任何路径：统一通过回调返回编译结果。
-     * 移植者可在此判断 path 并写入 W25Q 对应区域。 */
+    /* path is "-" or any path: uniformly return the compilation result via callback.
+     * Porters can inspect path here and write to the corresponding W25Q region. */
     arkcc_on_output(data, len);
     return len;
 }

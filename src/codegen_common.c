@@ -1,5 +1,6 @@
-/* Ark C Compiler - codegen 共用工具
- * AsmBuffer：自增长字符串拼接缓冲，所有后端都用。
+/* Ark C Compiler - codegen common utilities
+ * AsmBuffer: a lightweight dynamic byte buffer used by all backends
+ * to accumulate emitted assembly or generated C source.
  */
 #include "codegen.h"
 #include "memory.h"
@@ -38,14 +39,14 @@ void asmbuf_puts(AsmBuffer *b, const char *s) {
     b->buf[b->len] = 0;
 }
 
-void asmbuf_int(AsmBuffer *b, int v) {
-    char tmp[16];
+void asmbuf_int(AsmBuffer *b, long long v) {
+    char tmp[24];
     int neg = 0;
     int n = 0;
     int i;
-    unsigned int x;
-    if (v < 0) { neg = 1; x = (unsigned int)(-v); }
-    else x = (unsigned int)v;
+    unsigned long long x;
+    if (v < 0) { neg = 1; x = (unsigned long long)(-v); }
+    else x = (unsigned long long)v;
     if (x == 0) tmp[n++] = '0';
     while (x) {
         tmp[n++] = (char)('0' + (int)(x % 10));

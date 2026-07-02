@@ -1,6 +1,6 @@
 /* Ark C Compiler - memory
- * Bump Allocator 实现 + 简易工具函数。
- * 注意：所有分配在编译结束后通过 mem_pool_reset 一次性释放。
+ * Bump allocator implementation + simple utility functions.
+ * Note: all allocations are released at once via mem_pool_reset after compilation ends.
  */
 #include "memory.h"
 #include "platform.h"
@@ -18,14 +18,14 @@ int mem_pool_used(void) {
 
 void *mem_pool_alloc(int size) {
     if (size <= 0) size = 1;
-    size = (size + 7) & ~7; /* 8 字节对齐，兼容 64-bit host 指针 */
+    size = (size + 7) & ~7; /* 8-byte aligned, compatible with 64-bit host pointers */
     if (g_offset + size > ARK_POOL_SIZE) {
         ark_abort("memory pool exhausted");
         return 0;
     }
     void *p = &g_pool[g_offset];
     g_offset += size;
-    /* 清零 */
+    /* Zero fill */
     {
         unsigned char *q = (unsigned char *)p;
         int i;
@@ -72,13 +72,44 @@ char *mem_strndup(const char *s, int n) {
 }
 
 void *mem_realloc(void *old_ptr, int old_size, int new_size) {
-    void *p = mem_pool_alloc(new_size);
-    int copy = old_size < new_size ? old_size : new_size;
-    int i;
-    unsigned char *src = (unsigned char *)old_ptr;
-    unsigned char *dst = (unsigned char *)p;
-    if (old_ptr && old_size > 0) {
-        for (i = 0; i < copy; i++) dst[i] = src[i];
+    /* Bump-allocator in-place extension: if old_ptr is the most recent
+     * allocation, we can extend (or shrink) it without copying. This turns
+     * repeated single-element growth (e.g. parse_program's decls array,
+     * block statement lists, struct field lists) from O(N^2) pool usage
+     * into O(N), which previously exhausted the 1 MB pool on ~500-decl files.
+     * old_size is the logical size the caller passed previously; mem_pool_alloc
+     * rounds up to 8 bytes, so we compare against the aligned old size. */
+    if (old_ptr && old_size > 0 && new_size > 0) {
+        int aligned_old = (old_size + 7) & ~7;
+        int aligned_new = (new_size + 7) & ~7;
+        unsigned char *end = (unsigned char *)old_ptr + aligned_old;
+        if (end == &g_pool[g_offset]) {
+            /* Last allocation: adjust the bump pointer in place */
+            int delta = aligned_new - aligned_old;
+            if (g_offset + delta <= ARK_POOL_SIZE) {
+                g_offset += delta;
+                /* Zero newly exposed bytes (shrinking leaves them, which is fine) */
+                if (delta > 0) {
+                    unsigned char *q = end;
+                    int i;
+                    for (i = 0; i < delta; i++) q[i] = 0;
+                }
+                return old_ptr;
+            }
+        }
     }
-    return p;
+    /* Fallback: allocate fresh storage and copy. The old allocation remains
+     * in the pool (bump allocator cannot reclaim), so callers should prefer
+     * the in-place path above by growing the same array repeatedly. */
+    {
+        void *p = mem_pool_alloc(new_size);
+        int copy = old_size < new_size ? old_size : new_size;
+        int i;
+        unsigned char *src = (unsigned char *)old_ptr;
+        unsigned char *dst = (unsigned char *)p;
+        if (old_ptr && old_size > 0) {
+            for (i = 0; i < copy; i++) dst[i] = src[i];
+        }
+        return p;
+    }
 }

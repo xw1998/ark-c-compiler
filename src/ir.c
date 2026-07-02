@@ -3,11 +3,12 @@
  */
 #include "ir.h"
 #include "memory.h"
+#include <stdio.h>
 
 #define IR_INIT_CAP 64
 
-/* 当前发射行号；irgen 在每次 ir_emit 前设置，ir.c 拷贝到 IrInst.line。
- * 默认 0 表示行号未知（非 irgen 路径）。 */
+/* ???????????irgen ????? ir_emit ??????ir.c ?????? IrInst.line??
+ * ??? 0 ???????????? irgen ??????? */
 int g_ir_cur_line = 0;
 
 IrFunc *ir_func_new(const char *name) {
@@ -33,7 +34,7 @@ IrFunc *ir_func_new(const char *name) {
     f->is_deprecated = 0;
     f->alias_target = 0;
     f->asm_body = 0;
-    /* 0.6.x：armcc 5 兼容函数修饰符默认值 */
+    /* 0.6.x??armcc 5 ???????????????? */
     f->is_value_in_regs = 0;
     f->is_pure = 0;
     f->is_const_attr = 0;
@@ -47,7 +48,7 @@ IrFunc *ir_func_new(const char *name) {
     return f;
 }
 
-void ir_emit(IrFunc *f, IrOp op, int val, const char *name, int aux) {
+void ir_emit(IrFunc *f, IrOp op, long long val, const char *name, int aux) {
     if (f->code_count >= f->code_capacity) {
         int nc = f->code_capacity * 2;
         f->code = (IrInst *)mem_realloc(f->code,
@@ -59,7 +60,7 @@ void ir_emit(IrFunc *f, IrOp op, int val, const char *name, int aux) {
         IrInst *I = &f->code[f->code_count++];
         I->op = op;
         I->val = val;
-        I->name = name ? mem_strdup(name) : 0;
+        I->name = name;
         I->aux = aux;
         I->line = g_ir_cur_line;
     }
@@ -69,13 +70,19 @@ IrProgram *ir_program_new(void) {
     IrProgram *p = (IrProgram *)mem_pool_alloc(sizeof(IrProgram));
     p->funcs = 0;
     p->func_count = 0;
+    p->func_capacity = 0;
     p->strings = 0;
     p->string_count = 0;
+    p->string_capacity = 0;
     p->globals = 0;
     p->global_count = 0;
+    p->global_capacity = 0;
     p->floats = 0;
     p->float_count = 0;
     p->float_capacity = 0;
+    p->complexes = 0;
+    p->complex_count = 0;
+    p->complex_capacity = 0;
     p->source_file = 0;
     return p;
 }
@@ -94,11 +101,30 @@ int ir_program_add_float(IrProgram *prog, double v) {
     return n;
 }
 
+int ir_program_add_complex(IrProgram *prog, double re, double im) {
+    int n = prog->complex_count;
+    if (n >= prog->complex_capacity) {
+        int nc = prog->complex_capacity == 0 ? 8 : prog->complex_capacity * 2;
+        prog->complexes = (IrComplexVal *)mem_realloc(prog->complexes,
+            prog->complex_capacity * (int)sizeof(IrComplexVal),
+            nc * (int)sizeof(IrComplexVal));
+        prog->complex_capacity = nc;
+    }
+    prog->complexes[n].re = re;
+    prog->complexes[n].im = im;
+    prog->complex_count = n + 1;
+    return n;
+}
+
 void ir_program_add(IrProgram *prog, IrFunc *func) {
     int n = prog->func_count;
-    prog->funcs = (IrFunc **)mem_realloc(prog->funcs,
-        n * (int)sizeof(IrFunc *),
-        (n + 1) * (int)sizeof(IrFunc *));
+    if (n >= prog->func_capacity) {
+        int nc = prog->func_capacity == 0 ? 8 : prog->func_capacity * 2;
+        prog->funcs = (IrFunc **)mem_realloc(prog->funcs,
+            prog->func_capacity * (int)sizeof(IrFunc *),
+            nc * (int)sizeof(IrFunc *));
+        prog->func_capacity = nc;
+    }
     prog->funcs[n] = func;
     prog->func_count = n + 1;
 }
@@ -115,9 +141,13 @@ int ir_program_add_string(IrProgram *prog, const char *data, int len) {
         for (i = 0; i < len; i++) s->data[i] = data[i];
         s->data[len] = 0;
     }
-    prog->strings = (IrString **)mem_realloc(prog->strings,
-        n * (int)sizeof(IrString *),
-        (n + 1) * (int)sizeof(IrString *));
+    if (n >= prog->string_capacity) {
+        int nc = prog->string_capacity == 0 ? 8 : prog->string_capacity * 2;
+        prog->strings = (IrString **)mem_realloc(prog->strings,
+            prog->string_capacity * (int)sizeof(IrString *),
+            nc * (int)sizeof(IrString *));
+        prog->string_capacity = nc;
+    }
     prog->strings[n] = s;
     prog->string_count = n + 1;
     return n;
@@ -143,15 +173,32 @@ IrGlobal *ir_program_add_global(IrProgram *prog, const char *name, Type *t) {
     g->align_bytes = 0;
     g->is_used = 0;
     g->is_unused = 0;
-    /* 0.6.x：TLS / 全局寄存器变量默认值 */
+    /* 0.6.x??TLS / ??????????????? */
     g->is_tls = 0;
     g->global_reg = -1;
-    prog->globals = (IrGlobal **)mem_realloc(prog->globals,
-        n * (int)sizeof(IrGlobal *),
-        (n + 1) * (int)sizeof(IrGlobal *));
+    if (n >= prog->global_capacity) {
+        int nc = prog->global_capacity == 0 ? 8 : prog->global_capacity * 2;
+        prog->globals = (IrGlobal **)mem_realloc(prog->globals,
+            prog->global_capacity * (int)sizeof(IrGlobal *),
+            nc * (int)sizeof(IrGlobal *));
+        prog->global_capacity = nc;
+    }
     prog->globals[n] = g;
     prog->global_count = n + 1;
     return g;
+}
+
+/* Find an existing IrGlobal by name. Returns 0 if not found. */
+IrGlobal *ir_program_find_global(IrProgram *prog, const char *name) {
+    int i;
+    if (!prog || !name) return 0;
+    for (i = 0; i < prog->global_count; i++) {
+        if (prog->globals[i] && prog->globals[i]->name &&
+            ark_streq(prog->globals[i]->name, name)) {
+            return prog->globals[i];
+        }
+    }
+    return 0;
 }
 
 const char *ir_op_name(IrOp op) {

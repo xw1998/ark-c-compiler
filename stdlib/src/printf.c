@@ -1,29 +1,31 @@
-/* stdlib/src/printf.c - Ark C Compiler 嵌入式精简版 printf
+/* stdlib/src/printf.c - Ark C Compiler embedded minimal printf
  *
- * 用途：ARM 后端在 STM32 等裸机平台没有 libc 时使用。
- *       C 后端走宿主 libc，不需要 include 本文件。
+ * Purpose: used by the ARM backend on bare-metal platforms such as STM32
+ *          when there is no libc. The C backend uses the host libc and does
+ *          not need to include this file.
  *
- * 支持格式串：
- *   %d %i  — 十进制整数（int）
- *   %u     — 十进制无符号整数（unsigned）
- *   %x %X  — 十六进制无符号整数（小写/大写）
- *   %p     — 指针（输出 "0x" + 8 位 0 填充十六进制）
- *   %s     — 字符串
- *   %c     — 单字符
- *   %%     — 字面量 %
- *   宽度与 '0' 填充：%5d / %05d / %08x
+ * Supported format specifiers:
+ *   %d %i  - decimal integer (int)
+ *   %u     - decimal unsigned integer (unsigned)
+ *   %x %X  - hexadecimal unsigned integer (lower/upper case)
+ *   %p     - pointer (outputs "0x" + 8-digit zero-padded hex)
+ *   %s     - string
+ *   %c     - single character
+ *   %%     - literal %
+ *   Width and '0' padding: %5d / %05d / %08x
  *
- * 不支持：%f %lf（浮点）、%lld（长整型）、动态精度等。
+ * Not supported: %f %lf (float), %lld (long long), dynamic precision, etc.
  *
- * 输出依赖：用户/平台层提供 int putchar(int c)，本文件作为弱依赖引用。
- * STM32 工程通常将 putchar 重定向到 UART/ITM。
+ * Output dependency: the user/platform layer provides int putchar(int c);
+ * this file references it as a weak dependency.
+ * STM32 projects typically redirect putchar to UART/ITM.
  */
 #include <stdarg.h>
 
 extern int putchar(int c);
 
 static void print_str(const char *s) {
-    if (!s) { /* 安全：避免 NULL 解引用 */
+    if (!s) { /* safety: avoid NULL dereference */
         const char *n = "(null)";
         while (*n) putchar(*n++);
         return;
@@ -31,8 +33,10 @@ static void print_str(const char *s) {
     while (*s) putchar(*s++);
 }
 
-/* 把 long 按 base 进制转字符串再输出，支持负数（仅 base==10 视作有符号）。
- * width/pad: 宽度不足时左侧用 pad 字符（' ' 或 '0'）补齐。 */
+/* Convert long to string in the given base and print it; supports negative
+ * numbers (only base==10 is treated as signed).
+ * width/pad: when width is insufficient, left-pad with the pad character
+ * (' ' or '0'). */
 static void print_int(long n, int base, int upper, int width, char pad) {
     char buf[24];
     int  i = 0;
@@ -86,7 +90,7 @@ int printf(const char *fmt, ...) {
                 case '%':
                     putchar('%'); break;
                 default:
-                    /* 未知格式：原样输出 %X，保持调试可见 */
+                    /* Unknown format: output %X as-is to keep it visible for debugging */
                     putchar('%');
                     putchar(*fmt);
                     break;

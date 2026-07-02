@@ -1,35 +1,196 @@
 /* Ark C Compiler - arkcc_config.h
- * 编译期特性开关：决定 arkcc 自身编译进哪些功能。
- * 运行时通过 g_config.enable_xxx 在编译用户代码时进一步守护。
+ * Compile-time feature switches: decide which features are compiled into arkcc itself.
+ * At runtime, g_config.enable_xxx further guards features when compiling user code.
+ *
+ * === Profile-based trimming ===
+ * Define ARKCC_PROFILE to one of:
+ *   ARKCC_PROFILE_HOST_FULL      - full host compiler (default): all backends, all features
+ *   ARKCC_PROFILE_STM32_MIN     - STM32 self-hosted: only ARM backend, trimmed features
+ *   ARKCC_PROFILE_CROSS_COMPILE - Windows cross-compiler for STM32: ARM+C backend, full features
+ *
+ * If ARKCC_PROFILE is undefined, defaults to ARKCC_PROFILE_HOST_FULL.
+ *
+ * IMPORTANT: Trimming only affects arkcc's own compilation. The trimmed arkcc still
+ *   compiles STM32 user code correctly because core armcc compatibility (keywords,
+ *   pragmas, scatter parsing) is always retained. The trim removes unused backends
+ *   and optional optimizations, NOT language features needed for STM32 code.
  */
 #ifndef ARKCC_CONFIG_H
 #define ARKCC_CONFIG_H
 
-/* ===== 编译期特性开关（决定 arkcc 自身编译进哪些功能）===== */
+/* ===========================================================================
+ * 1. Profile selection
+ * ========================================================================= */
+#ifndef ARKCC_PROFILE
+#define ARKCC_PROFILE ARKCC_PROFILE_HOST_FULL
+#endif
 
-/* 前端语言特性 */
-#define ARKCC_FEATURE_VLA          1   /* 变长数组 int a[n] */
-#define ARKCC_FEATURE_COMPLEX      1   /* _Complex 复数 */
-#define ARKCC_FEATURE_WCHAR        1   /* 宽字符 wchar_t / L"..." */
-#define ARKCC_FEATURE_TRIGRAPH     1   /* 三元组 ??= 等 */
+#define ARKCC_PROFILE_HOST_FULL      0
+#define ARKCC_PROFILE_STM32_MIN      1
+#define ARKCC_PROFILE_CROSS_COMPILE  2
 
-/* 后端代码生成 */
-#define ARKCC_FEATURE_FPU_HW       1   /* 硬件 FPU 指令（VFP） */
-#define ARKCC_FEATURE_DWARF        1   /* DWARF 调试信息 */
+/* ===========================================================================
+ * 2. Backend selection (controlled by profile; overridable via -D)
+ *
+ * A backend is enabled if its ARKCC_BACKEND_<NAME> macro is 1.
+ * The Makefile/MDK project picks the right set via -DARKCC_PROFILE=...
+ * or by overriding individual ARKCC_BACKEND_* macros.
+ * ========================================================================= */
+#ifndef ARKCC_BACKEND_ARM
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_BACKEND_ARM      1   /* STM32 self-hosted: ARM backend mandatory */
+# elif ARKCC_PROFILE == ARKCC_PROFILE_CROSS_COMPILE
+#   define ARKCC_BACKEND_ARM      1   /* Cross-compile to ARM for STM32 */
+# else
+#   define ARKCC_BACKEND_ARM      1
+# endif
+#endif
+#ifndef ARKCC_BACKEND_X86_64
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_BACKEND_X86_64   0   /* Trim x86_64 on STM32 */
+# elif ARKCC_PROFILE == ARKCC_PROFILE_CROSS_COMPILE
+#   define ARKCC_BACKEND_X86_64   0
+# else
+#   define ARKCC_BACKEND_X86_64   1
+# endif
+#endif
+#ifndef ARKCC_BACKEND_RISCV32
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_BACKEND_RISCV32  0   /* Trim RISC-V on STM32 */
+# elif ARKCC_PROFILE == ARKCC_PROFILE_CROSS_COMPILE
+#   define ARKCC_BACKEND_RISCV32  0
+# else
+#   define ARKCC_BACKEND_RISCV32  1
+# endif
+#endif
+#ifndef ARKCC_BACKEND_C
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_BACKEND_C        0   /* Trim C backend on STM32 */
+# elif ARKCC_PROFILE == ARKCC_PROFILE_CROSS_COMPILE
+#   define ARKCC_BACKEND_C        1   /* Keep C backend for host-side debugging */
+# else
+#   define ARKCC_BACKEND_C        1
+# endif
+#endif
 
-/* 优化 Pass */
-#define ARKCC_FEATURE_OPT_CONSTFOLD 1  /* 常量折叠 */
-#define ARKCC_FEATURE_OPT_DCE       1  /* 死代码消除 */
-#define ARKCC_FEATURE_OPT_REGALLOC  0  /* 寄存器分配（实验性，默认关） */
-#define ARKCC_FEATURE_OPT_INLINE    1  /* 自动函数内联 */
-#define ARKCC_FEATURE_OPT_VECTORIZE 1  /* 自动向量化 */
+/* ===========================================================================
+ * 3. Frontend language features
+ *
+ * These are ALWAYS enabled because STM32 user code depends on them.
+ * Trimming them would break arkcc's ability to compile STM32 programs.
+ * ========================================================================= */
+#define ARKCC_FEATURE_VLA          1   /* variable-length array int a[n] */
+#define ARKCC_FEATURE_COMPLEX      1   /* _Complex */
+#define ARKCC_FEATURE_WCHAR        1   /* wide character wchar_t / L"..." */
+#define ARKCC_FEATURE_TRIGRAPH     1   /* trigraph ??= etc. */
 
-/* armcc 兼容（默认全开，可裁切） */
-#define ARKCC_FEATURE_ARMCC_ASM_FUNC  1  /* __asm 函数体 */
-#define ARKCC_FEATURE_ARMCC_PRAGMA    1  /* #pragma 兼容 */
-#define ARKCC_FEATURE_ARMCC_KEYWORDS  1  /* __irq/__weak/__naked 等 */
-#define ARKCC_FEATURE_ENUM_IS_INT     1  /* --enum_is_int / -fenum-is-int */
-#define ARKCC_FEATURE_SCATTER         1  /* scatter 加载描述文件解析 */
-#define ARKCC_FEATURE_DWARF_FULL      1  /* 完整 .debug_info/.debug_abbrev/.debug_line */
+/* ===========================================================================
+ * 4. Backend code generation features
+ * ========================================================================= */
+#ifndef ARKCC_FEATURE_FPU_HW
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_FPU_HW    1   /* STM32H743 has VFPv5-D16 FPU */
+# else
+#   define ARKCC_FEATURE_FPU_HW    1
+# endif
+#endif
+#ifndef ARKCC_FEATURE_DWARF
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_DWARF     0   /* Trim DWARF debug info on STM32 to save Flash */
+# else
+#   define ARKCC_FEATURE_DWARF     1
+# endif
+#endif
+#ifndef ARKCC_FEATURE_DWARF_FULL
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_DWARF_FULL 0   /* No full DWARF tables on STM32 */
+# else
+#   define ARKCC_FEATURE_DWARF_FULL 1
+# endif
+#endif
+
+/* ===========================================================================
+ * 5. Optimization passes
+ * ========================================================================= */
+#ifndef ARKCC_FEATURE_OPT_CONSTFOLD
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_OPT_CONSTFOLD 1   /* Keep constant folding (cheap) */
+# else
+#   define ARKCC_FEATURE_OPT_CONSTFOLD 1
+# endif
+#endif
+#ifndef ARKCC_FEATURE_OPT_DCE
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_OPT_DCE       1   /* Keep dead code elimination (cheap) */
+# else
+#   define ARKCC_FEATURE_OPT_DCE        1
+# endif
+#endif
+#ifndef ARKCC_FEATURE_OPT_REGALLOC
+# define ARKCC_FEATURE_OPT_REGALLOC  0   /* Register allocation: experimental, default off */
+#endif
+#ifndef ARKCC_FEATURE_OPT_INLINE
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_OPT_INLINE    0   /* Trim auto-inline on STM32 (costs Flash) */
+# else
+#   define ARKCC_FEATURE_OPT_INLINE    1
+# endif
+#endif
+#ifndef ARKCC_FEATURE_OPT_VECTORIZE
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_OPT_VECTORIZE 0   /* Trim SIMD vectorization on STM32 */
+# else
+#   define ARKCC_FEATURE_OPT_VECTORIZE 1
+# endif
+#endif
+
+/* ===========================================================================
+ * 6. ARMCC 5 compatibility
+ *
+ * These are ALWAYS enabled: STM32 user code (CMSIS, HAL, startup) depends on
+ * armcc 5 syntax (__irq, __weak, __packed, __asm, #pragma pack, scatter .sct).
+ * Trimming these would break compilation of STM32 programs.
+ * ========================================================================= */
+#define ARKCC_FEATURE_ARMCC_ASM_FUNC  1   /* __asm function body */
+#define ARKCC_FEATURE_ARMCC_PRAGMA    1   /* #pragma compatibility */
+#define ARKCC_FEATURE_ARMCC_KEYWORDS  1   /* __irq/__weak/__naked etc. */
+#define ARKCC_FEATURE_ENUM_IS_INT     1   /* --enum_is_int / -fenum-is-int */
+#define ARKCC_FEATURE_SCATTER         1   /* scatter load description file parsing */
+
+/* ===========================================================================
+ * 7. Runtime memory budget (tunable per profile)
+ *
+ * These are pool/buffer sizes for arkcc's own arena allocator.
+ * STM32 profile uses smaller pools to fit in RAM budget.
+ * Override via -DARK_POOL_SIZE=... etc. on the command line if needed.
+ * ========================================================================= */
+#ifndef ARK_POOL_SIZE
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARK_POOL_SIZE          (256 * 1024)    /* 256 KB arena for STM32 */
+# else
+#   define ARK_POOL_SIZE          (64 * 1024 * 1024)  /* 64 MB for host */
+# endif
+#endif
+#ifndef ARK_SRC_BUF_SIZE
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARK_SRC_BUF_SIZE       (32 * 1024)     /* 32 KB source buffer */
+# else
+#   define ARK_SRC_BUF_SIZE       (1024 * 1024)   /* 1 MB source buffer */
+# endif
+#endif
+#ifndef ARK_ASM_BUF_SIZE
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARK_ASM_BUF_SIZE      (128 * 1024)     /* 128 KB asm buffer */
+# else
+#   define ARK_ASM_BUF_SIZE      (8 * 1024 * 1024)  /* 8 MB asm buffer */
+# endif
+#endif
+#ifndef ARK_CODE_BUF_SIZE
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARK_CODE_BUF_SIZE     (64 * 1024)      /* 64 KB code buffer */
+# else
+#   define ARK_CODE_BUF_SIZE     (4 * 1024 * 1024)  /* 4 MB code buffer */
+# endif
+#endif
 
 #endif /* ARKCC_CONFIG_H */

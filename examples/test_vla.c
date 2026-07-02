@@ -1,4 +1,4 @@
-/* VLA 变长数组测试 */
+/* VLA variable-length array test */
 int sum_vla(int n) {
     int a[n];  /* VLA */
     int i, s = 0;

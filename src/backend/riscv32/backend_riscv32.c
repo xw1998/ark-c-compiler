@@ -1,8 +1,10 @@
 /* Ark C Compiler - RISC-V (RV32I) backend
  *
- * 输出 GAS 语法的 RV32I 汇编。assemble 阶段是 stub，由用户后续 `as -march=rv32i`。
+ * Emits GAS-syntax RV32I assembly. The assemble stage is a stub; the user
+ * subsequently runs `as -march=rv32i`.
  *
- * 调用约定：参数 a0..a7；栈帧 fp = s0；本后端按 4 字节槽对待全部局部值。
+ * Calling convention: arguments a0..a7; stack frame fp = s0; this backend
+ * treats all local values as 4-byte slots.
  */
 #include "backend.h"
 #include "codegen.h"
@@ -22,7 +24,7 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
     asmbuf_puts(&buf, "# Ark C Compiler - generated RV32I assembly\n");
     asmbuf_puts(&buf, "    .option nopic\n    .text\n");
 
-    /* 字符串池 */
+    /* String pool */
     if (prog->string_count > 0) {
         int i;
         asmbuf_puts(&buf, "    .section .rodata\n");
@@ -47,7 +49,7 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
         asmbuf_puts(&buf, "    .text\n");
     }
 
-    /* 全局 */
+    /* Globals */
     {
         int i;
         if (prog->global_count) asmbuf_puts(&buf, "    .data\n");
@@ -132,6 +134,9 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                     break;
                 case IR_DUP:
                     asmbuf_puts(&buf, "    lw t0, 0(sp)\n    addi sp, sp, -4\n    sw t0, 0(sp)\n");
+                    break;
+                case IR_SWAP:
+                    asmbuf_puts(&buf, "    lw t0, 0(sp)\n    lw t1, 4(sp)\n    sw t1, 0(sp)\n    sw t0, 4(sp)\n");
                     break;
                 case IR_STORE:
                     asmbuf_puts(&buf, "    lw t0, 0(sp)\n    addi sp, sp, 4\n    sw t0, -");

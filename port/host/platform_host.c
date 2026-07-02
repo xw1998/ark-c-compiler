@@ -1,11 +1,57 @@
 /* Ark C Compiler - platform_host
- * Host 平台抽象层实现：基于 stdio。
- * 这是唯一允许使用 printf/fprintf/exit 的文件之一。
+ * Host ??????????????? stdio??
+ * ?????????????? printf/fprintf/exit ?????????
  */
 #include "platform.h"
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdlib.h>
+#include <time.h>
+
+/* C99 ?????? __DATE__/__TIME__ ?????????????????
+ * ????? "Mmm dd yyyy" / "hh:mm:ss" ???? strftime ?????? */
+void ark_get_date_time(char *date_buf, char *time_buf) {
+    static const char *mon_names[] = {
+        "Jan","Feb","Mar","Apr","May","Jun",
+        "Jul","Aug","Sep","Oct","Nov","Dec"
+    };
+    time_t t = time(0);
+    struct tm *lt = localtime(&t);
+    if (lt) {
+        int day = lt->tm_mday;
+        int yr  = lt->tm_year + 1900;
+        const char *m = mon_names[lt->tm_mon % 12];
+        /* "Mmm dd yyyy" - day ?????? 2 ?? */
+        date_buf[0] = m[0]; date_buf[1] = m[1]; date_buf[2] = m[2];
+        date_buf[3] = ' ';
+        date_buf[4] = (day < 10) ? ' ' : (char)('0' + day / 10);
+        date_buf[5] = (char)('0' + day % 10);
+        date_buf[6] = ' ';
+        date_buf[7]  = (char)('0' + (yr / 1000) % 10);
+        date_buf[8]  = (char)('0' + (yr / 100) % 10);
+        date_buf[9]  = (char)('0' + (yr / 10) % 10);
+        date_buf[10] = (char)('0' + yr % 10);
+        date_buf[11] = 0;
+        /* "hh:mm:ss" */
+        time_buf[0] = (char)('0' + lt->tm_hour / 10);
+        time_buf[1] = (char)('0' + lt->tm_hour % 10);
+        time_buf[2] = ':';
+        time_buf[3] = (char)('0' + lt->tm_min / 10);
+        time_buf[4] = (char)('0' + lt->tm_min % 10);
+        time_buf[5] = ':';
+        time_buf[6] = (char)('0' + lt->tm_sec / 10);
+        time_buf[7] = (char)('0' + lt->tm_sec % 10);
+        time_buf[8] = 0;
+    } else {
+        const char *d = "Jan  1 1970";
+        const char *tn = "00:00:00";
+        int i;
+        for (i = 0; i < 11; i++) date_buf[i] = d[i];
+        date_buf[11] = 0;
+        for (i = 0; i < 8; i++) time_buf[i] = tn[i];
+        time_buf[8] = 0;
+    }
+}
 
 void ark_log(const char *fmt, ...) {
     va_list args;

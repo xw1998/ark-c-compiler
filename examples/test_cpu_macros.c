@@ -1,9 +1,10 @@
-/* test_cpu_macros.c — 无下划线预定义宏测试
- * 验证 armcc 兼容的 __arm / __thumb 无下划线宏存在。
- * 期望退出码：0
+/* test_cpu_macros.c - Non-underscore predefined macro test
+ * Verifies that armcc-compatible __arm / __thumb macros without trailing
+ * underscore exist.
+ * Expected exit code: 0
  */
 int main(void) {
-    /* 验证无下划线宏存在 */
+    /* Verify the non-underscore macros exist */
 #ifdef __arm
     return 0;
 #else

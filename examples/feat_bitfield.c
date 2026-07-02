@@ -1,5 +1,5 @@
-/* feat_bitfield.c — 位域结构体
- * 期望：b.flag=1 + b.kind=3 = 4
+/* feat_bitfield.c - Bitfield struct
+ * Expected: b.flag=1 + b.kind=3 = 4
  */
 struct Bits {
     unsigned int flag : 1;

@@ -1,4 +1,4 @@
-/* ¿í×Ö·û²âÊÔ£ºwchar_t + L"..." + L'...' */
+/* Wide character test: wchar_t + L"..." + L'...' */
 #include <stddef.h>
 
 int main(void) {

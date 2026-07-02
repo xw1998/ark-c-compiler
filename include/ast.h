@@ -1,5 +1,5 @@
 /* Ark C Compiler - ast.h
- * 抽象语法树节点定义与构造接口。
+ * ????????????????????
  */
 #ifndef ARK_AST_H
 #define ARK_AST_H
@@ -13,9 +13,9 @@ struct AstNode {
     AstNodeKind kind;
     Type       *type;
     int         line;
-    double      fval;     /* 浮点字面量；仅当 type 为 float/double 且 kind=AST_NUM 时有意义 */
+    double      fval;     /* ???????????????? type ? float/double ?? kind=AST_NUM ??????? */
     union {
-        int   num_val;
+        long long num_val;
         char *name;
         struct { AstNode *left; AstNode *right; int op; } binary;
         struct { AstNode *operand; int op; int is_postfix; } unary;
@@ -23,7 +23,7 @@ struct AstNode {
         struct { AstNode *cond; AstNode *then_stmt; AstNode *else_stmt; } if_stmt;
         struct { AstNode *cond; AstNode *body; } while_stmt;
         struct { AstNode *init; AstNode *cond; AstNode *step; AstNode *body; } for_stmt;
-        struct { AstNode **stmts; int stmt_count; int is_decl_list; } block;
+        struct { AstNode **stmts; int stmt_count; int stmt_capacity; int is_decl_list; } block;
         struct {
             char    *name;
             Type    *ret_type;
@@ -33,28 +33,28 @@ struct AstNode {
             int      is_external;
             int      is_static;
             int      is_variadic;
-            int      svc_num;     /* __svc(n) 编号；0 表示非 SVC 函数 */
-            int      is_irq;      /* __irq 中断函数 */
-            int      is_weak;     /* __weak 弱符号 */
-            int      is_naked;    /* __naked 裸函数 */
-            int      pack_align;  /* #pragma pack 对齐值；0=默认 */
+            int      svc_num;     /* __svc(n) ????0 ????? SVC ???? */
+            int      is_irq;      /* __irq ??????? */
+            int      is_weak;     /* __weak ?????? */
+            int      is_naked;    /* __naked ???? */
+            int      pack_align;  /* #pragma pack ???????0=??? */
             int      is_used;     /* __attribute__((used)) */
             int      is_unused;   /* __attribute__((unused)) */
-            int      is_asm_func; /* __asm 整函数体 */
+            int      is_asm_func; /* __asm ???????? */
             int      forceinline; /* __forceinline */
             int      is_softfp;   /* __softfp */
             int      is_constructor; /* __attribute__((constructor)) */
             int      is_destructor;  /* __attribute__((destructor)) */
             int      is_deprecated;  /* __attribute__((deprecated)) */
             char    *alias_target;/* __attribute__((alias("xxx"))) */
-            char    *asm_body;    /* __asm 函数体的原始汇编文本 */
-            /* 0.6.x：armcc 5 兼容函数修饰符（多数仅语义标记，不影响代码生成） */
+            char    *asm_body;    /* __asm ??????????????? */
+            /* 0.6.x??armcc 5 ????????????????????????????????????????? */
             int      is_value_in_regs; /* __value_in_regs */
             int      is_pure;          /* __pure / __attribute__((pure)) */
             int      is_const_attr;    /* __attribute__((const)) */
-            int      is_interwork;     /* __interwork（静默忽略）*/
-            int      smc_num;          /* __smc(n) 编号；-1=未使用 */
-            int      global_reg;       /* __global_reg(n) 寄存器号；-1=未使用 */
+            int      is_interwork;     /* __interwork??????????*/
+            int      smc_num;          /* __smc(n) ????-1=????? */
+            int      global_reg;       /* __global_reg(n) ????????-1=????? */
         } func;
         struct {
             char    *name;
@@ -63,27 +63,27 @@ struct AstNode {
             int      is_global;
             int      is_static;
             int      is_extern;
-            int      is_const;   /* const 限定符（用于 .rodata 段选择） */
-            char    *section;    /* __attribute__((section("..."))) 自定义段；0=默认 */
-            unsigned at_addr;    /* __at(addr) / #pragma location=addr；0=未指定 */
-            int      has_at;     /* at_addr 是否有效 */
-            int      align_bytes;/* __align(n) / __attribute__((aligned(n)))；0=默认 */
+            int      is_const;   /* const ??????????? .rodata ????? */
+            char    *section;    /* __attribute__((section("..."))) ????????0=??? */
+            unsigned at_addr;    /* __at(addr) / #pragma location=addr??0=????? */
+            int      has_at;     /* at_addr ??????? */
+            int      align_bytes;/* __align(n) / __attribute__((aligned(n)))??0=??? */
             int      is_used;    /* __attribute__((used)) */
             int      is_unused;  /* __attribute__((unused)) */
-            int      is_vla;     /* B3: 变长数组标记；var_type 为指针，vla_size_expr 为元素个数表达式 */
-            AstNode *vla_size_expr; /* B3: VLA 元素个数运行时表达式 */
-            /* 0.6.x：TLS / 全局寄存器变量 */
-            int      is_tls;     /* __thread 线程局部存储 */
-            int      global_reg; /* __global_reg(n) 寄存器号；-1=未使用 */
+            int      is_vla;     /* B3: ?????????var_type ????vla_size_expr ???????????? */
+            AstNode *vla_size_expr; /* B3: VLA ???????????????? */
+            /* 0.6.x??TLS / ??????????? */
+            int      is_tls;     /* __thread ???????? */
+            int      global_reg; /* __global_reg(n) ????????-1=????? */
         } var;
         struct { AstNode *array; AstNode *index; } array_access;
-        struct { char *name; AstNode **args; int arg_count; AstNode *callee; } call;
-        struct { AstNode **decls; int decl_count; } program;
+        struct { char *name; AstNode **args; int arg_count; int arg_capacity; AstNode *callee; } call;
+        struct { AstNode **decls; int decl_count; int decl_capacity; } program;
         struct { AstNode *obj; char *member; int is_arrow; int offset; } member;
         struct { AstNode *expr; AstNode *body; AstNode **cases; int case_count; AstNode *default_case; } switch_stmt;
         struct { int value; AstNode *stmt; int label_id; } case_stmt;
         struct { char *name; AstNode *stmt; } label_stmt;
-        struct { AstNode **items; int item_count; } init_list;       /* AST_INIT_LIST */
+        struct { AstNode **items; int item_count; int item_capacity; } init_list;       /* AST_INIT_LIST */
         struct { char *field; int index; int has_field; int has_index; AstNode *value; } init_field; /* AST_INIT_FIELD */
         struct { char *text; char *outputs; char *inputs; char *clobbers; int is_volatile; } asm_stmt;
         struct { Type *lit_type; AstNode *init; } compound_lit;      /* AST_COMPOUND_LITERAL */
@@ -91,7 +91,7 @@ struct AstNode {
 };
 
 AstNode *ast_new(AstNodeKind kind, int line);
-AstNode *ast_num(int val, int line);
+AstNode *ast_num(long long val, int line);
 AstNode *ast_str(const char *content, int line);
 AstNode *ast_var(const char *name, int line);
 AstNode *ast_binary(int op, AstNode *left, AstNode *right, int line);

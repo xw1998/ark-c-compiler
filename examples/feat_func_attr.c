@@ -1,5 +1,5 @@
-/* feat_func_attr.c — __func__、__noreturn__、unused
- * 期望：__func__ 字符串长度 4（"main"）+ 1 = 5
+/* feat_func_attr.c - __func__, __noreturn__, unused
+ * Expected: __func__ string length 4 ("main") + 1 = 5
  */
 static int unused_helper(void) __attribute__((unused));
 static int unused_helper(void) { return 0; }

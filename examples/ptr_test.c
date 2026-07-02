@@ -1,5 +1,5 @@
-/* ptr_test.c — 指针、数组与取地址
- * 期望：a[3] = 30
+/* ptr_test.c - Pointers, arrays and address-of
+ * Expected: a[3] = 30
  */
 int main(void) {
     int a[5];

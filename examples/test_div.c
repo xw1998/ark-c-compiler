@@ -1,7 +1,7 @@
-/* test_div.c — 有符号/无符号除法与取模
- * 验证 IR_DIV/IR_MOD 的 aux 位（有符号 vs 无符号）。
- * 期望退出码：100
- *   17/5 = 3, 17%5 = 2, 17u/3u = 5, 合计 3+2+5+90 = 100
+/* test_div.c - Signed/unsigned division and modulo
+ * Verifies the aux bit (signed vs unsigned) of IR_DIV/IR_MOD.
+ * Expected exit code: 100
+ *   17/5 = 3, 17%5 = 2, 17u/3u = 5, total 3+2+5+90 = 100
  */
 int main(void) {
     int a = 17;

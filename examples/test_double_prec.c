@@ -1,16 +1,18 @@
-/* test_double_prec.c — double 真 64 位精度（host 端验证）
+/* test_double_prec.c - double true 64-bit precision (host-side verification)
  *
- * 2^40 = 1099511627776，远超 float 的 24 位尾数（最大精确整数 2^24）。
- *   - double（53 位尾数）：2^40 + 1 可精确表示，故 b > a
- *   - float（24 位尾数）：2^40 + 1 == 2^40，b == a
+ * 2^40 = 1099511627776, far beyond the 24-bit mantissa of float
+ * (largest exactly representable integer is 2^24).
+ *   - double (53-bit mantissa): 2^40 + 1 is exactly representable, so b > a
+ *   - float  (24-bit mantissa): 2^40 + 1 == 2^40, so b == a
  *
- * C 后端用 double 存储浮点，应保留精度；ARM 后端经 0x200 双精度标志
- * 走 __aeabi_d* 系列，同样保留 64 位精度。
+ * The C backend stores floats in double, preserving precision; the ARM
+ * backend uses the 0x200 double-precision flag and goes through the
+ * __aeabi_d* family, also preserving 64-bit precision.
  *
- * 期望退出码：77 */
+ * Expected exit code: 77 */
 int main(void) {
     double a = 1099511627776.0;   /* 2^40 */
-    double b = a + 1.0;           /* 双精度下 b > a；单精度下 b == a */
-    if (b > a) return 77;         /* 双精度保留：通过 */
+    double b = a + 1.0;           /* double precision: b > a; single precision: b == a */
+    if (b > a) return 77;         /* double precision preserved: pass */
     return 1;
 }

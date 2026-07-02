@@ -1,12 +1,13 @@
 /* Ark C Compiler - stdlib/src/string.c
- * 极简 C 库字符串/内存函数实现，面向裸机（MDK / arkcc ARM 后端）。
+ * Minimal C library string/memory function implementation for bare metal
+ * (MDK / arkcc ARM backend).
  *
- * 适用场景：当工程使用 arkcc 生成的 .s 文件被 MDK 链接，且不链接 keil
- * arm 标准库时，可把本文件加入工程获得 memcpy/memset/memmove/memcmp/
- * strlen/strcpy/strcmp 的最简实现。
+ * Use case: when a project links arkcc-generated .s files via MDK and does
+ * not link the Keil ARM standard library, add this file to the project to get
+ * minimal implementations of memcpy/memset/memmove/memcmp/strlen/strcpy/strcmp.
  *
- * 注意：不会被 Makefile 默认编译；host 测试使用系统 libc。
- *      代码风格遵循 C99，可被 armcc/gcc 直接编译。
+ * Note: not compiled by the Makefile by default; host tests use the system libc.
+ *       Code style follows C99 and can be compiled directly by armcc/gcc.
  */
 #include <stddef.h>
 #include <string.h>
@@ -27,7 +28,7 @@ void *memset(void *dst, int c, size_t n) {
 void *memmove(void *dst, const void *src, size_t n) {
     unsigned char *d = (unsigned char *)dst;
     const unsigned char *s = (const unsigned char *)src;
-    /* 处理重叠：若 dst > src 且区间重叠，倒序复制。 */
+    /* Handle overlap: if dst > src and ranges overlap, copy backwards. */
     if (d == s || n == 0) return dst;
     if (d < s || d >= s + n) {
         while (n--) *d++ = *s++;

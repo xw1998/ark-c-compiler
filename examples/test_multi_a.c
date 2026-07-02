@@ -1,5 +1,5 @@
-/* test_multi_a.c — 多 .c 链接（C 后端）支持验证之一
- * 期望与 test_multi_b.c 一起链接后返回 3。
+/* test_multi_a.c - Multi-.c linkage (C backend) support verification, file 1
+ * Expected to return 3 after linking with test_multi_b.c.
  */
 int g_counter = 0;
 void inc_counter(void) { g_counter++; }

@@ -1,5 +1,5 @@
-/* feat_div.c — 整数除法、取模、大立即数
- * 期望：100 / 7 = 14；100 % 7 = 2；14 + 2 + 84 = 100
+/* feat_div.c - Integer division, modulo, large immediates
+ * Expected: 100 / 7 = 14; 100 % 7 = 2; 14 + 2 + 84 = 100
  */
 int main(void) {
     int a = 100;

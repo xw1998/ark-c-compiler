@@ -1,11 +1,13 @@
 /* Ark C Compiler - x86_64 (System V ABI) backend
  *
- * 输出 GAS 语法 x86_64 汇编。本后端的目标是"语法正确、人类可读、
- * 可继续用 GNU as 汇编"，所以 assemble 阶段是 stub（透传文本）。
+ * Emits GAS-syntax x86_64 assembly. The goal of this backend is "syntactically
+ * correct, human-readable, and can be further assembled by GNU as", so the
+ * assemble stage is a stub (passes through text).
  *
- * 调用约定：参数通过 rdi, rsi, rdx, rcx, r8, r9 传递；其余走栈。
- * 使用一个 push/pop 的虚拟运算栈（与 IR 完全一致），整数都按 8 字节处理。
- * 局部变量与参数通过 %rbp 的负偏移访问。
+ * Calling convention: arguments are passed via rdi, rsi, rdx, rcx, r8, r9;
+ * the rest go on the stack. Uses a push/pop virtual operand stack (identical
+ * to the IR); integers are all treated as 8-byte. Local variables and
+ * parameters are accessed via negative offsets from %rbp.
  */
 #include "backend.h"
 #include "codegen.h"
@@ -70,7 +72,7 @@ static int x86_emit(IrProgram *prog, char *out, int cap) {
             asmbuf_puts(&buf, "ark_str_");
             asmbuf_int(&buf, s->id);
             asmbuf_puts(&buf, ":\n    .asciz ");
-            /* intel_syntax 下仍可用 .asciz "..." */
+            /* .asciz "..." still works under intel_syntax */
             emit_str_literal_x(&buf, s->data, s->len);
             asmbuf_putc(&buf, '\n');
         }
@@ -156,6 +158,9 @@ static int x86_emit(IrProgram *prog, char *out, int cap) {
                     break;
                 case IR_DUP:
                     asmbuf_puts(&buf, "    mov rax, [rsp]\n    push rax\n");
+                    break;
+                case IR_SWAP:
+                    asmbuf_puts(&buf, "    pop rax\n    pop rcx\n    push rax\n    push rcx\n");
                     break;
                 case IR_STORE:
                     asmbuf_puts(&buf, "    pop rax\n    mov QWORD PTR [rbp-");
@@ -269,7 +274,7 @@ static int x86_emit(IrProgram *prog, char *out, int cap) {
                 case IR_CALL: {
                     int n = I->val;
                     int k;
-                    /* 弹出 n 个参数到 rdi..r9 */
+                    /* Pop n arguments into rdi..r9 */
                     for (k = 0; k < n && k < 6; k++) {
                         asmbuf_puts(&buf, "    pop ");
                         asmbuf_puts(&buf, arg_reg(k));

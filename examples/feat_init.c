@@ -1,6 +1,6 @@
-/* feat_init.c — 聚合 + 指定初始化 + 字符串数组初始化
- * 期望退出码：1+2+3+4+5 + 12 + 'h' = 15+12+104 = 131？
- * 实测我们用 sum + greeting_len + first_char 简化为 15 + 5 + 'h'(=104) = 124
+/* feat_init.c - Aggregate + designated initialization + string array init
+ * Expected exit code: 1+2+3+4+5 + 12 + 'h' = 15+12+104 = 131?
+ * Actually we use sum + greeting_len + first_char, simplified to 15 + 5 + 'h'(=104) = 124
  */
 int main(void) {
     int a[5] = {1, 2, 3, 4, 5};

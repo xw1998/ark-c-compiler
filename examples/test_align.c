@@ -1,5 +1,5 @@
-/* test_align.c — __align(n) 对齐测试
- * 期望退出码：1（即对齐生效）
+/* test_align.c - __align(n) alignment test
+ * Expected exit code: 1 (i.e. alignment takes effect)
  */
 __align(16) static int aligned_buf[4];
 

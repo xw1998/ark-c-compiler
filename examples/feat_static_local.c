@@ -1,5 +1,5 @@
-/* feat_static_local.c — 函数内 static 变量
- * 期望：static counter 调用 3 次后值 = 3，返回 3
+/* feat_static_local.c - Function-local static variable
+ * Expected: static counter equals 3 after 3 calls, returns 3
  */
 int counter(void) {
     static int c = 0;

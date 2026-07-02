@@ -1,28 +1,28 @@
 /* Ark C Compiler - MDK STM32H743 - bsp_w25q
- * W25Q128 SPI Flash 驱动实现（基于 HAL_SPI_TransmitReceive）。
+ * W25Q128 SPI Flash driver implementation (based on HAL_SPI_TransmitReceive).
  *
- * 接线（默认 SPI1）:
+ * Wiring (default SPI1):
  *   PA5  -> SCK
  *   PA6  -> MISO
  *   PA7  -> MOSI
- *   PA4  -> CS（由本驱动手动控制）
+ *   PA4  -> CS (manually controlled by this driver)
  *
- * 注意：本文件只关心 SPI 收发；SPI1 与 GPIO 的时钟使能、引脚
- * 复用、SPI 模式参数由 main.c 的 MX_SPI1_Init 完成。
+ * Note: this file only handles SPI transfers; enabling the SPI1/GPIO clocks,
+ * pin alternate-function setup, and SPI mode parameters are done in MX_SPI1_Init in main.c.
  */
 #include "bsp_w25q.h"
 #include "stm32h7xx.h"
 
-/* 由 main.c 提供 */
+/* Provided by main.c */
 extern SPI_HandleTypeDef hspi1;
 
-/* W25Q 命令字 */
+/* W25Q command bytes */
 #define W25Q_CMD_READ_DATA   0x03U
 #define W25Q_CMD_JEDEC_ID    0x9FU
 #define W25Q_CMD_READ_STATUS 0x05U
 
-/* CS 引脚控制 —— 使用 BSRR 直接置/复位 PA4。
- * 真实工程建议用 HAL_GPIO_WritePin。
+/* CS pin control -- set/reset PA4 directly via BSRR.
+ * For real projects, HAL_GPIO_WritePin is recommended.
  */
 static void W25Q_CS_Low(void)  { GPIOA->BSRR = (uint32_t)(1U << (4 + 16)); }
 static void W25Q_CS_High(void) { GPIOA->BSRR = (uint32_t)(1U << 4); }
@@ -34,7 +34,7 @@ static int spi_xfer(uint8_t *tx, uint8_t *rx, uint16_t n) {
 }
 
 int W25Q_Init(void) {
-    /* 拉高 CS，读一次 JEDEC ID 用于验证 */
+    /* Pull CS high, then read the JEDEC ID once for verification */
     W25Q_CS_High();
     HAL_Delay(1);
     (void)W25Q_ReadJedecID();
@@ -66,7 +66,7 @@ void W25Q_Read(unsigned int addr, unsigned char *buf, unsigned int len) {
     W25Q_CS_Low();
     (void)spi_xfer(hdr_tx, hdr_rx, 4);
 
-    /* 分块收数据，避免一次 DMA 超长 */
+    /* Receive data in chunks to avoid an overly long single DMA transfer */
     remain = len;
     while (remain > 0U) {
         unsigned int chunk = (remain > 256U) ? 256U : remain;

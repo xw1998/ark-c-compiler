@@ -1,5 +1,5 @@
-/* goto_test.c ¡ª goto + label
- * ÆÚÍû£ºÑ­»· 0..9£¬sum = 45
+/* goto_test.c - goto + label
+ * Expected: loop 0..9, sum = 45
  */
 int main(void) {
     int i = 0;

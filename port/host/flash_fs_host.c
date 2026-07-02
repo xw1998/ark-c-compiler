@@ -1,5 +1,5 @@
 /* Ark C Compiler - flash_fs_host
- * Host 端基于 stdio 的文件读取实现。
+ * Host-side stdio-based file read implementation.
  */
 #include "flash_fs.h"
 #include "platform.h"
@@ -21,7 +21,7 @@ int fs_read_file(const char *path, char *buf, int max_len) {
 int fs_write_file(const char *path, const unsigned char *data, int len) {
     int wr;
     if (!path || !data || len < 0) return -1;
-    /* "-" 表示标准输出（-E / -S 默认行为） */
+    /* "-" means stdout (default behavior of -E / -S) */
     if (path[0] == '-' && path[1] == 0) {
         wr = (int)fwrite(data, 1, (size_t)len, stdout);
         fflush(stdout);
@@ -35,4 +35,10 @@ int fs_write_file(const char *path, const unsigned char *data, int len) {
         if (wr != len) return -1;
         return wr;
     }
+}
+
+/* Host-side stub: no flash FS listing on host. */
+int fs_list_files(void) {
+    ark_log("[flash_fs] fs_list_files: not implemented on host\r\n");
+    return 0;
 }

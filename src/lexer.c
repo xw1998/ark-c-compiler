@@ -1,14 +1,14 @@
 /* Ark C Compiler - lexer
- * 词法分析器实现。
+ * Lexical analyzer for the C99 source language.
  *
- * 支持要点：
- *   - 全套 C99 关键字（含 _Bool/inline/restrict）
- *   - 八进制 0755、十六进制 0xFF、整数后缀 u/U/l/L
- *   - 浮点字面量：1.5、1.5e-3、.5、1.5f
- *   - 字符串与字符的完整转义：\n \t \r \\ \' \" \0 \xNN \NNN \a \b \f \v
- *   - 相邻字符串字面量拼接
- *   - 注释 // 与块注释
- *   - . / -> / ...
+ * Features:
+ *   - C99 keywords including _Bool/inline/restrict.
+ *   - Numeric literals: octal 0755, hex 0xFF, decimal with suffixes u/U/l/L.
+ *   - Floating literals: 1.5, 1.5e-3, .5, 1.5f.
+ *   - Escape sequences in char/string literals: \n \t \r \\ \' \" \0 \xNN \NNN \a \b \f \v.
+ *   - Wide char/string literals with the L prefix.
+ *   - Line comments // and block comments.
+ *   - Operators: . / -> / ...
  */
 #include "lexer.h"
 #include "memory.h"
@@ -19,19 +19,44 @@
 
 static Token lexer_read_token(Lexer *lex);
 
-/* 包装 lexer_read_token：在调用前记录当前位置作为 token 起点，
- * 供 parser 抓取原始源码片段（如 __asm 函数体）。 */
+/* Encode Unicode codepoint cp as UTF-8 into buf; returns byte length.
+ * Caller must ensure buf has at least 4 bytes available. */
+static int utf8_encode(unsigned int cp, char *buf) {
+    if (cp < 0x80u) {
+        buf[0] = (char)cp;
+        return 1;
+    } else if (cp < 0x800u) {
+        buf[0] = (char)(0xC0 | (cp >> 6));
+        buf[1] = (char)(0x80 | (cp & 0x3F));
+        return 2;
+    } else if (cp < 0x10000u) {
+        buf[0] = (char)(0xE0 | (cp >> 12));
+        buf[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        buf[2] = (char)(0x80 | (cp & 0x3F));
+        return 3;
+    } else {
+        buf[0] = (char)(0xF0 | (cp >> 18));
+        buf[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+        buf[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        buf[3] = (char)(0x80 | (cp & 0x3F));
+        return 4;
+    }
+}
+
+/* Wrapper around lexer_read_token: ensures every returned token has a
+ * src_start so the parser can report errors correctly (especially __asm). */
 static Token lexer_read_token_with_pos(Lexer *lex) {
     const char *p_before;
     Token t;
-    /* 跳过空白与注释，定位到 token 第一个字符 */
-    /* 复用 lexer_read_token 内的 skip 逻辑会导致重复跳过，因此这里手动
-     * 在 lexer_read_token 里设置 src_start；为简化，直接调用并在 token
-     * src_start 上写入：lexer_read_token 在 EOF 分支已写入，其余分支
-     * 由本函数补充——我们记下调用前 p 的位置（包含空白）但 token
-     * 实际起点在跳过空白后，因此先 inline 跳空白。 */
+    /* Skip whitespace and comments before scanning the next token. */
+    /* We do not let lexer_read_token do the skipping itself, because
+     * lexer_read_token only sets src_start when it actually consumes bytes.
+     * If lexer_read_token hits EOF right after skipping, the returned token's
+     * src_start would be stale. By skipping here and capturing p_before, the
+     * next token's src_start always points at the first byte of the token,
+     * which is essential for inline-asm source-range tracking. */
     {
-        /* 复制 skip_ws_and_comments 的轻量版本：仅前移 p */
+        /* Inline skip_ws_and_comments to advance p here. */
         while (*lex->p) {
             char c = *lex->p;
             if (c == ' ' || c == '\t' || c == '\r') lex->p++;
@@ -64,8 +89,9 @@ static int is_hex(char c) {
 }
 static int is_oct(char c) { return c >= '0' && c <= '7'; }
 
-/* 标识符字符判定：$ 在 --dollar 启用时也视为标识符字符。
- * 用于支持 ARMCC 风格带 $ 的标识符（如 $count）。 */
+/* Identifier rules: $ is allowed when --dollar is set; otherwise standard.
+ * This matches ARMCC behavior where $ is a valid identifier character
+ * (e.g. $count is a common symbol name). */
 static int is_ident_start(char c) {
     if (is_alpha(c)) return 1;
 #if ARKCC_FEATURE_ARMCC_KEYWORDS
@@ -94,11 +120,11 @@ static int hex_val(char c) {
 static Token make_token(TokenKind kind, int line) {
     Token t;
     t.kind = kind; t.value = 0; t.fvalue = 0.0; t.str = 0; t.line = line;
-    t.src_start = 0;
+    t.src_start = 0; t.is_imag = 0;
     return t;
 }
 
-static Token make_number(int val, int line) {
+static Token make_number(long long val, int line) {
     Token t = make_token(TOK_NUM, line);
     t.value = val;
     return t;
@@ -110,7 +136,7 @@ static Token make_ident(const char *start, int len, int line) {
     return t;
 }
 
-/* 关键字表 */
+/* Keyword table */
 typedef struct { const char *s; TokenKind k; } Keyword;
 
 static Keyword g_keywords[] = {
@@ -126,7 +152,7 @@ static Keyword g_keywords[] = {
     {"break",    TOK_BREAK},
     {"continue", TOK_CONTINUE},
     {"do",       TOK_DO},
-    /* C99 扩展 */
+    /* C99 stdint keywords */
     {"short",    TOK_SHORT},
     {"long",     TOK_LONG},
     {"signed",   TOK_SIGNED},
@@ -151,7 +177,7 @@ static Keyword g_keywords[] = {
     {"case",     TOK_CASE},
     {"default",  TOK_DEFAULT},
     {"goto",     TOK_GOTO},
-    /* 0.3.0 GNU 扩展关键字 */
+    /* 0.3.0 GNU extended keywords */
     {"__attribute__", TOK_ATTRIBUTE},
     {"asm",           TOK_ASM},
     {"__asm",         TOK_ASM},
@@ -161,20 +187,20 @@ static Keyword g_keywords[] = {
     {"__volatile__",  TOK_VOLATILE},
     {"__const",       TOK_CONST},
     {"__restrict",    TOK_RESTRICT},
-    {"__svc",         TOK_SVC},     /* ARM Compiler 5 SVC 声明 */
-    {"__irq",         TOK_IRQ},     /* ARM Compiler 5 中断函数 */
-    {"__weak",        TOK_WEAK},    /* ARM Compiler 5 弱符号 */
-    {"__naked",       TOK_NAKED},   /* ARM Compiler 5 裸函数 */
-    {"__packed",      TOK_PACKED_KW},  /* ARM Compiler 5 紧凑结构关键字 */
-    {"__align",       TOK_ALIGN_KW},   /* ARM Compiler 5 对齐关键字 */
-    {"__at",          TOK_AT},         /* ARM Compiler 5 绝对地址定位关键字 */
-    {"__softfp",      TOK_SOFTFP},     /* ARM Compiler 5 软浮点 ABI */
-    {"__forceinline", TOK_FORCEINLINE},/* ARM Compiler 5 强制内联 */
-    /* B4: _Complex 关键字（C99）*/
+    {"__svc",         TOK_SVC},     /* ARM Compiler 5 SVC instruction keyword */
+    {"__irq",         TOK_IRQ},     /* ARM Compiler 5 interrupt handler keyword */
+    {"__weak",        TOK_WEAK},    /* ARM Compiler 5 weak symbol keyword */
+    {"__naked",       TOK_NAKED},   /* ARM Compiler 5 naked function keyword */
+    {"__packed",      TOK_PACKED_KW},  /* ARM Compiler 5 packed attribute keyword */
+    {"__align",       TOK_ALIGN_KW},   /* ARM Compiler 5 alignment keyword */
+    {"__at",          TOK_AT},         /* ARM Compiler 5 absolute address placement */
+    {"__softfp",      TOK_SOFTFP},     /* ARM Compiler 5 software floating-point ABI */
+    {"__forceinline", TOK_FORCEINLINE},/* ARM Compiler 5 force-inline keyword */
+    /* B4: _Complex support (C99) */
     {"_Complex",      TOK_COMPLEX},
     {"__complex__",   TOK_COMPLEX},
 #if ARKCC_FEATURE_ARMCC_KEYWORDS
-    /* 0.6.x：armcc 5 兼容关键字。受编译期开关守护，可裁切。 */
+    /* 0.6.x: armcc 5 specific keywords; map to internal token kinds. */
     {"__value_in_regs", TOK_VALUE_IN_REGS},
     {"__thread",        TOK_THREAD},
     {"__global_reg",    TOK_GLOBAL_REG},
@@ -192,9 +218,11 @@ static Keyword g_keywords[] = {
     {"__nothrow",       TOK_NOTHROW},
     {"__deprecated",    TOK_DEPRECATED_KW},
     {"__may_alias",     TOK_MAY_ALIAS},
+    {"__declspec",      TOK_DECLSPEC},   /* MSVC-style attribute keyword */
 #endif
-    /* __asm 词法上仍归为 TOK_ASM；parser 通过上下文区分内联 asm 语句与
-     * armcc 风格整函数体汇编（__asm void fn(){...}）。 */
+    /* __asm is treated as TOK_ASM; the parser handles the operand syntax for
+     * both basic and extended asm forms, including armcc-style
+     * __asm void fn(){...} naked function bodies. */
     {0, TOK_EOF}
 };
 
@@ -238,8 +266,9 @@ static void skip_ws_and_comments(Lexer *lex) {
     }
 }
 
-/* 处理 \xNN \NNN \n \t 等单个转义字符，返回处理后的字符值，并推进 *pp。
- * pp 指向 '\' 后的字符位置（即第一个转义说明字符）。
+/* Parse escape sequences: \xNN, \NNN, \n, \t, etc. (also simple \uXXXX and
+ * \UXXXXXXXX). We return the byte value to insert; the caller handles
+ * multi-byte UTF-8 encoding if the source uses \u/\U UCN escapes.
  */
 static int read_escape(const char **pp) {
     char e = **pp;
@@ -292,17 +321,19 @@ static Token lexer_read_token(Lexer *lex) {
     if (c == '\0') { tk = make_token(TOK_EOF, line); tk.src_start = start; return tk; }
 
 #if ARKCC_FEATURE_WCHAR
-    /* B2: 宽字符串 L"..." 与宽字符 L'...'。
-     * 编译期 + 运行时双重守护。L 后紧跟 " 或 ' 才视为宽字面量；
-     * 否则按普通标识符处理（如变量名 L）。 */
+    /* B2: Wide string literal L"..." or wide char literal L'...'.
+     * The prefix L is a single identifier char, so we look ahead: if L is
+     * followed by " or ', treat it as a wide literal and consume both.
+     * Otherwise fall through to identifier scanning.
+     */
     if (g_config.enable_wchar && c == 'L' &&
         (lex->p[1] == '"' || lex->p[1] == '\'')) {
         if (lex->p[1] == '"') {
-            /* 宽字符串：复用 TOK_STR，value 置 1 作为宽字符串标记 */
+            /* Wide string literal; emit TOK_STR with value=1 (wide flag). */
             Token t = make_token(TOK_STR, line);
             int cap = 32, len = 0;
             char *buf = (char *)mem_pool_alloc(cap);
-            lex->p += 2; /* 跳过 L" */
+            lex->p += 2; /* consume L" */
             while (*lex->p && *lex->p != '"') {
                 int ch;
                 if (*lex->p == '\\' && lex->p[1]) {
@@ -322,12 +353,13 @@ static Token lexer_read_token(Lexer *lex) {
             if (*lex->p == '"') lex->p++;
             buf[len] = 0;
             t.str = buf;
-            t.value = 1;  /* 宽字符串标记 */
+            t.value = 1;  /* wide-string flag */
             return t;
         } else {
-            /* 宽字符 L'...'：C 语义下为整型常量，按 TOK_NUM 返回 */
+            /* Wide char literal L'...': C does not have a distinct token kind,
+             * so we emit TOK_NUM with the codepoint value. */
             int val = 0;
-            lex->p += 2; /* 跳过 L' */
+            lex->p += 2; /* consume L' */
             if (*lex->p == '\\') {
                 lex->p++;
                 val = read_escape(&lex->p);
@@ -341,37 +373,161 @@ static Token lexer_read_token(Lexer *lex) {
     }
 #endif
 
-    /* 标识符 / 关键字 */
-    if (is_ident_start(c)) {
-        int len, kw;
-        while (is_ident_char(*lex->p)) lex->p++;
-        len = (int)(lex->p - start);
-        kw = check_keyword(start, len);
-        if (kw >= 0) return make_token((TokenKind)kw, line);
-        return make_ident(start, len, line);
+    /* Identifier / keyword scan, also handles C99 UCN escapes: \uXXXX \UXXXXXXXX. */
+    if (is_ident_start(c) || (c == '\\' && (lex->p[1] == 'u' || lex->p[1] == 'U'))) {
+        char *buf;
+        int cap = 32, blen = 0;
+        int kw;
+        buf = (char *)mem_pool_alloc(cap);
+        /* First char: is_ident_start already validated plain chars; only UCN
+         * needs special handling for the first character. */
+        if (c == '\\') {
+            /* UCN will be processed in the loop below; nothing to add here. */
+        } else {
+            buf[blen++] = c;
+            lex->p++;  /* consume first identifier character */
+        }
+        while (1) {
+            char ch = *lex->p;
+            if (is_ident_char(ch)) {
+                if (blen + 1 >= cap) { int nc = cap * 2; buf = (char *)mem_realloc(buf, cap, nc); cap = nc; }
+                buf[blen++] = ch;
+                lex->p++;
+            } else if (ch == '\\' && (lex->p[1] == 'u' || lex->p[1] == 'U')) {
+                unsigned int cp = 0;
+                int ndigits, i;
+                char kind = lex->p[1];
+                lex->p += 2;  /* consume \u or \U */
+                ndigits = (kind == 'u') ? 4 : 8;
+                for (i = 0; i < ndigits; i++) {
+                    if (!is_hex(lex->p[i])) break;
+                    cp = cp * 16 + (unsigned int)hex_val(lex->p[i]);
+                }
+                if (i == ndigits) {
+                    lex->p += ndigits;
+                    /* Encode the codepoint as UTF-8 into the buffer. */
+                    if (cp < 0x80u) {
+                        if (blen + 1 >= cap) { int nc = cap * 2; buf = (char *)mem_realloc(buf, cap, nc); cap = nc; }
+                        buf[blen++] = (char)cp;
+                    } else if (cp < 0x800u) {
+                        if (blen + 2 >= cap) { int nc = cap * 2; buf = (char *)mem_realloc(buf, cap, nc); cap = nc; }
+                        buf[blen++] = (char)(0xC0 | (cp >> 6));
+                        buf[blen++] = (char)(0x80 | (cp & 0x3F));
+                    } else if (cp < 0x10000u) {
+                        if (blen + 3 >= cap) { int nc = cap * 2; buf = (char *)mem_realloc(buf, cap, nc); cap = nc; }
+                        buf[blen++] = (char)(0xE0 | (cp >> 12));
+                        buf[blen++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+                        buf[blen++] = (char)(0x80 | (cp & 0x3F));
+                    } else {
+                        if (blen + 4 >= cap) { int nc = cap * 2; buf = (char *)mem_realloc(buf, cap, nc); cap = nc; }
+                        buf[blen++] = (char)(0xF0 | (cp >> 18));
+                        buf[blen++] = (char)(0x80 | ((cp >> 12) & 0x3F));
+                        buf[blen++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+                        buf[blen++] = (char)(0x80 | (cp & 0x3F));
+                    }
+                } else {
+                    /* Malformed UCN: preserve the literal escape text. */
+                    if (blen + 2 + i >= cap) { int nc = cap * 2 + 2 + i; buf = (char *)mem_realloc(buf, cap, nc); cap = nc; }
+                    buf[blen++] = '\\';
+                    buf[blen++] = kind;
+                    { int j; for (j = 0; j < i; j++) buf[blen++] = lex->p[j]; }
+                    lex->p += i;
+                }
+            } else {
+                break;
+            }
+        }
+        buf[blen] = 0;
+        kw = check_keyword(buf, blen);
+        if (kw >= 0) {
+            Token t = make_token((TokenKind)kw, line);
+            t.src_start = start;
+            return t;
+        }
+        {
+            Token t = make_token(TOK_IDENT, line);
+            t.str = buf;
+            t.src_start = start;
+            return t;
+        }
     }
 
-    /* 数字（含浮点） */
+    /* Numeric literal scan. */
     if (is_digit(c) || (c == '.' && is_digit(lex->p[1]))) {
         int is_float = 0;
-        int val = 0;
+        long long val = 0;
         double fval = 0.0;
 
         if (c == '0' && (lex->p[1] == 'x' || lex->p[1] == 'X')) {
-            /* 十六进制 */
+            /* Hex literal: may be integer or hex float (C99 6.4.4.2). */
+            const char *q;
+            int is_hfloat = 0;
+            long long ipart = 0;
+            double fpart = 0.0, fscale = 1.0;
+            int exp_neg = 0, exp_v = 0, has_exp = 0;
+            double fval;
             lex->p += 2;
             while (is_hex(*lex->p)) {
-                val = val * 16 + hex_val(*lex->p);
+                ipart = ipart * 16 + hex_val(*lex->p);
                 lex->p++;
             }
-            /* 跳过整数后缀 */
+            if (*lex->p == '.') {
+                is_hfloat = 1;
+                lex->p++;
+                while (is_hex(*lex->p)) {
+                    fpart = fpart * 16.0 + (double)hex_val(*lex->p);
+                    fscale *= 16.0;
+                    lex->p++;
+                }
+            }
+            if (*lex->p == 'p' || *lex->p == 'P') {
+                is_hfloat = 1;
+                lex->p++;
+                if (*lex->p == '+') lex->p++;
+                else if (*lex->p == '-') { exp_neg = 1; lex->p++; }
+                while (is_digit(*lex->p)) {
+                    exp_v = exp_v * 10 + (*lex->p - '0');
+                    lex->p++;
+                }
+                has_exp = 1;
+            }
+            if (is_hfloat) {
+                double e = 1.0;
+                int i;
+                fval = (double)ipart + fpart / fscale;
+                for (i = 0; i < exp_v; i++) e *= 2.0;
+                if (has_exp) {
+                    if (exp_neg) fval /= e; else fval *= e;
+                }
+                while (*lex->p == 'f' || *lex->p == 'F' ||
+                       *lex->p == 'l' || *lex->p == 'L') lex->p++;
+                if (*lex->p == 'i' || *lex->p == 'I' ||
+                    *lex->p == 'j' || *lex->p == 'J') {
+                    lex->p++;
+                    {
+                        Token t = make_token(TOK_FCONST, line);
+                        t.fvalue = fval;
+                        t.value = (int)fval;
+                        t.is_imag = 1;
+                        return t;
+                    }
+                }
+                {
+                    Token t = make_token(TOK_FCONST, line);
+                    t.fvalue = fval;
+                    t.value = (int)fval;
+                    return t;
+                }
+            }
+            val = ipart;
+            /* Consume integer suffix u/U/l/L. */
             while (*lex->p == 'u' || *lex->p == 'U' ||
                    *lex->p == 'l' || *lex->p == 'L') lex->p++;
             return make_number(val, line);
         }
 
         if (c == '0' && is_oct(lex->p[1])) {
-            /* 八进制 */
+            /* Octal literal. */
             lex->p++;
             while (is_oct(*lex->p)) {
                 val = val * 8 + (*lex->p - '0');
@@ -382,7 +538,7 @@ static Token lexer_read_token(Lexer *lex) {
             return make_number(val, line);
         }
 
-        /* 十进制整数或浮点 */
+        /* Decimal integer literal. */
         while (is_digit(*lex->p)) {
             val = val * 10 + (*lex->p - '0');
             lex->p++;
@@ -399,7 +555,7 @@ static Token lexer_read_token(Lexer *lex) {
             while (is_digit(*lex->p)) lex->p++;
         }
         if (is_float) {
-            /* 解析浮点：用简单累乘法 */
+            /* Parse decimal float by re-scanning from start. */
             const char *q = start;
             double sign = 1.0;
             double intp = 0.0, fracp = 0.0, frac_scale = 1.0;
@@ -424,12 +580,33 @@ static Token lexer_read_token(Lexer *lex) {
             }
             fval = sign * (intp + fracp / frac_scale);
             if (has_exp) {
-                double e = 1.0;
-                for (i = 0; i < exp_v; i++) e *= 10.0;
-                if (exp_neg) fval /= e; else fval *= e;
+                /* C99 requires correct rounding for subnormal range values
+                 * (e.g. 1e-320). Direct integer pow of 10^exp is unreliable
+                 * at extreme magnitudes:
+                 *   10^320 overflows to +inf, so fval/inf = 0;
+                 *   pow(10,-320) may return a subnormal value.
+                 * Use host pow() to inherit its subnormal handling. */
+                double e;
+                extern double pow(double, double);
+                e = pow(10.0, (double)(exp_neg ? -exp_v : exp_v));
+                fval *= e;
             }
             if (*lex->p == 'f' || *lex->p == 'F' ||
                 *lex->p == 'l' || *lex->p == 'L') lex->p++;
+            /* C99 imaginary suffix: the i/I/j/J suffix sets is_imag=1.
+             * For example, 1.0i becomes the pure imaginary 0+1i literal,
+             * which the parser converts into a TYPE_COMPLEX AST_NUM node. */
+            if (*lex->p == 'i' || *lex->p == 'I' ||
+                *lex->p == 'j' || *lex->p == 'J') {
+                lex->p++;
+                {
+                    Token t = make_token(TOK_FCONST, line);
+                    t.fvalue = fval;
+                    t.value = (int)fval;
+                    t.is_imag = 1;
+                    return t;
+                }
+            }
             {
                 Token t = make_token(TOK_FCONST, line);
                 t.fvalue = fval;
@@ -437,13 +614,13 @@ static Token lexer_read_token(Lexer *lex) {
                 return t;
             }
         }
-        /* 整数后缀 */
+        /* Consume integer suffix u/U/l/L. */
         while (*lex->p == 'u' || *lex->p == 'U' ||
                *lex->p == 'l' || *lex->p == 'L') lex->p++;
         return make_number(val, line);
     }
 
-    /* 字符字面量 */
+    /* Character literal. */
     if (c == '\'') {
         int val = 0;
         lex->p++;
@@ -458,18 +635,48 @@ static Token lexer_read_token(Lexer *lex) {
         return make_number(val, line);
     }
 
-    /* 字符串字面量（含相邻拼接） */
+    /* String literal; adjacent "..." segments are concatenated per C99. */
     if (c == '"') {
         Token t = make_token(TOK_STR, line);
         int cap = 32, len = 0;
         char *buf = (char *)mem_pool_alloc(cap);
         for (;;) {
-            lex->p++; /* 跳过开引号 */
+            lex->p++; /* consume opening quote " */
             while (*lex->p && *lex->p != '"') {
                 int ch;
                 if (*lex->p == '\\' && lex->p[1]) {
-                    lex->p++;
-                    ch = read_escape(&lex->p);
+                    /* C99 UCN: \uXXXX \UXXXXXXXX is encoded as UTF-8 bytes. */
+                    if (lex->p[1] == 'u' || lex->p[1] == 'U') {
+                        unsigned int cp = 0;
+                        int ndigits, i;
+                        char kind = lex->p[1];
+                        char ub[4];
+                        int ulen;
+                        lex->p += 2;
+                        ndigits = (kind == 'u') ? 4 : 8;
+                        for (i = 0; i < ndigits; i++) {
+                            if (!is_hex(lex->p[i])) break;
+                            cp = cp * 16 + (unsigned int)hex_val(lex->p[i]);
+                        }
+                        if (i == ndigits) {
+                            lex->p += ndigits;
+                            ulen = utf8_encode(cp, ub);
+                            if (len + ulen + 1 >= cap) {
+                                int nc = cap * 2;
+                                while (len + ulen + 1 >= nc) nc *= 2;
+                                buf = (char *)mem_realloc(buf, cap, nc);
+                                cap = nc;
+                            }
+                            for (i = 0; i < ulen; i++) buf[len++] = ub[i];
+                            continue;
+                        }
+                        /* Malformed UCN: emit the literal 'u' or 'U' byte. */
+                        ch = (int)kind;
+                        lex->p++;  /* consume the 'u' or 'U' */
+                    } else {
+                        lex->p++;
+                        ch = read_escape(&lex->p);
+                    }
                 } else {
                     ch = (unsigned char)*lex->p;
                     lex->p++;
@@ -482,7 +689,7 @@ static Token lexer_read_token(Lexer *lex) {
                 buf[len++] = (char)ch;
             }
             if (*lex->p == '"') lex->p++;
-            /* 相邻字符串拼接 */
+            /* Skip whitespace between adjacent string literals (concatenation). */
             {
                 const char *q = lex->p;
                 while (*q == ' ' || *q == '\t' || *q == '\r' || *q == '\n') {

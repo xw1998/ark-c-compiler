@@ -1,7 +1,7 @@
-/* test_asm_operand.c - 扩展内联汇编操作数透传验证（仅 C 后端有效）。
- * ARM 后端只能解析模板，操作数被忽略，无法运行。
+/* test_asm_operand.c - Extended inline-asm operand pass-through verification (C backend only).
+ * The ARM backend only parses the template and ignores operands, so it cannot run.
  *
- * read_x(42) 期望返回 42：__asm__ 把 x 拷到 result 通过 mov 指令。
+ * read_x(42) is expected to return 42: __asm__ copies x to result via a mov insn.
  */
 
 static int read_x(int x) {

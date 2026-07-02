@@ -1,4 +1,4 @@
-/* string_test.c ¡ª ×Ö·û´®¡¢printf¡¢strlen */
+/* string_test.c - Strings, printf, strlen */
 #include <stdio.h>
 #include <string.h>
 

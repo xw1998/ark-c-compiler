@@ -1,14 +1,19 @@
 /* Ark C Compiler - memory.h
- * Bump Allocator（碰撞分配器），用作 AST/IR/符号表内存池。
+ * Bump allocator, used as the memory pool for AST/IR/symbol tables.
  */
 #ifndef ARK_MEMORY_H
 #define ARK_MEMORY_H
 
 #include "common.h"
 
-/* 默认 1MB 内存池（host），编译期可重定义 */
+/* Default 8MB memory pool (host); redefinable at compile time.
+ * The pool backs all AST/IR/symbol allocations via a bump allocator that
+ * never frees until mem_pool_reset. 8MB gives headroom for large files
+ * with many #include directives (observed peak ~4.0MB for a 48KB test with
+ * 20 includes: ~2.7MB parse + ~0.1MB sema + ~1.2MB irgen).
+ * STM32 overrides via -DARK_POOL_SIZE=262144. */
 #ifndef ARK_POOL_SIZE
-#define ARK_POOL_SIZE (1024 * 1024)
+#define ARK_POOL_SIZE (8 * 1024 * 1024)
 #endif
 
 void  mem_pool_reset(void);

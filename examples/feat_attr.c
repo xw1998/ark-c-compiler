@@ -1,5 +1,5 @@
-/* feat_attr.c ¡ª __attribute__((packed/aligned))
- * ÆÚÍûÍË³öÂë£º7
+/* feat_attr.c - __attribute__((packed/aligned))
+ * Expected exit code: 7
  */
 struct __attribute__((packed)) PackedS {
     char a;

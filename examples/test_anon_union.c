@@ -1,6 +1,6 @@
-/* test_anon_union.c - 匿名 union/struct 字段提升验证。
- * Timer 中：CR / EN(位域) / IE(位域) 在外层直接可访问；
- * 写入 EN=1, IE=1 后 CR 应为 3。
+/* test_anon_union.c - Anonymous union/struct field promotion verification.
+ * In Timer: CR / EN(bitfield) / IE(bitfield) are accessible at the outer level;
+ * after writing EN=1, IE=1, CR should be 3.
  */
 typedef struct {
     union {

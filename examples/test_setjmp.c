@@ -1,5 +1,5 @@
-/* test_setjmp.c — setjmp/longjmp 非局部跳转
- * 期望退出码：42
+/* test_setjmp.c - setjmp/longjmp non-local jump
+ * Expected exit code: 42
  */
 #include <setjmp.h>
 

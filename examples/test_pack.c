@@ -1,6 +1,6 @@
-/* test_pack.c — #pragma pack 对齐控制与位域
- * 验证 #pragma pack(push,1)/pop 改变结构体布局，位域读取正确。
- * 期望退出码：100
+/* test_pack.c - #pragma pack alignment control and bitfields
+ * Verifies #pragma pack(push,1)/pop changes struct layout and bitfield reads are correct.
+ * Expected exit code: 100
  *   p.c=1 + p.i=90 + bt.a=5 + bt.b=4 = 100
  */
 #pragma pack(push, 1)

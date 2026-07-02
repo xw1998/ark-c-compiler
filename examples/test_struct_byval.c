@@ -1,5 +1,5 @@
-/* test_struct_byval.c — 结构体按值传递/返回
- * 期望退出码：10
+/* test_struct_byval.c - Struct pass-by-value / return-by-value
+ * Expected exit code: 10
  */
 struct P { int x, y; };
 

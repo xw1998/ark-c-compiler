@@ -1,5 +1,5 @@
 /* Ark C Compiler - irgen.h
- * ´Ó AST Éú³É IR¡£
+ * Generate IR from AST.
  */
 #ifndef ARK_IRGEN_H
 #define ARK_IRGEN_H

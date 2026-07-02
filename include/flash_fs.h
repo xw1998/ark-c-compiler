@@ -1,20 +1,25 @@
 /* Ark C Compiler - flash_fs.h
- * 文件系统抽象层：编译器统一通过 fs_read_file 读源代码。
- * Host 端用 stdio 实现；STM32 端用 W25Q SPI Flash 实现。
+ * Filesystem abstraction layer: the compiler reads source code uniformly via fs_read_file.
+ * Host uses stdio; STM32 uses W25Q SPI Flash.
  */
 #ifndef ARK_FLASH_FS_H
 #define ARK_FLASH_FS_H
 
 #include "common.h"
 
-/* 读取整个文件到 buf。返回实际字节数；失败返回 -1。
- * 若文件大于 max_len-1，截断并保证 buf 末尾 '\0'。
+/* Read the entire file into buf. Returns byte count read; -1 on failure.
+ * If file is larger than max_len-1, it is truncated and buf is guaranteed NUL-terminated.
  */
 int fs_read_file(const char *path, char *buf, int max_len);
 
-/* 写二进制数据到输出文件/Flash。返回写入字节数；失败返回 -1。
- * path 为 "-" 时输出到标准输出（host）或回调（STM32）。
+/* Write binary data to output file/Flash. Returns bytes written; -1 on failure.
+ * path "-" means stdout (host) or callback (STM32).
  */
 int fs_write_file(const char *path, const unsigned char *data, int len);
+
+/* List all files on the flash FS (STM32 only; prints via ark_log).
+ * Returns the number of files found.
+ */
+int fs_list_files(void);
 
 #endif /* ARK_FLASH_FS_H */

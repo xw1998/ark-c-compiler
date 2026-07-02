@@ -1,5 +1,5 @@
-/* enum_test.c ¡ª enum + switch/case + break
- * ÆÚÍûÍË³öÂë£º21
+/* enum_test.c - enum + switch/case + break
+ * Expected exit code: 21
  */
 enum Color {
     RED = 1,

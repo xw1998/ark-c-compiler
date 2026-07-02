@@ -1,8 +1,9 @@
 /* Ark C Compiler - common.h
- * 公共类型、Token 种类、AST 节点种类、IR 操作枚举与错误处理宏。
+ * Common types, Token kinds, AST node kinds, IR op enums and error-handling macros.
  *
- * 注意：TokenKind 中 TOK_PLUS..TOK_SHR_ASSIGN 的数值会被 codegen/irgen
- * 当作运算符 op-id 使用。新增 token 必须追加到枚举末尾，不要插队。
+ * Note: In TokenKind, the numeric values of TOK_PLUS..TOK_SHR_ASSIGN are used by
+ * codegen/irgen as operator op-ids. New tokens MUST be appended to the end of the
+ * enum; never insert into the middle.
  */
 #ifndef ARK_COMMON_H
 #define ARK_COMMON_H
@@ -12,7 +13,7 @@
 
 #define ARK_VERSION "0.2.0"
 
-/* 错误码 */
+/* Error codes */
 #define ARK_OK              0
 #define ARK_ERR_IO          -1
 #define ARK_ERR_LEX         -2
@@ -25,21 +26,21 @@
 #define ARK_ERR_OOM         -9
 #define ARK_ERR_ARG         -10
 
-/* Token 种类 */
+/* Token kinds */
 typedef enum {
     TOK_EOF = 0,
 
-    /* C89 关键字 */
+    /* C89 keywords */
     TOK_INT, TOK_CHAR, TOK_VOID, TOK_RETURN,
     TOK_IF, TOK_ELSE, TOK_WHILE, TOK_FOR,
     TOK_BREAK, TOK_CONTINUE, TOK_DO,
 
-    /* 字面量与标识符 */
+    /* Literals and identifiers */
     TOK_NUM,
     TOK_STR,
     TOK_IDENT,
 
-    /* 运算符 */
+    /* Operators */
     TOK_PLUS, TOK_MINUS, TOK_MUL, TOK_DIV, TOK_MOD,
     TOK_ASSIGN,
     TOK_EQ, TOK_NE,
@@ -48,17 +49,17 @@ typedef enum {
     TOK_BAND, TOK_BOR, TOK_BXOR, TOK_BNOT,
     TOK_SHL, TOK_SHR,
 
-    /* 复合赋值 */
+    /* Compound assignment */
     TOK_ADD_ASSIGN, TOK_SUB_ASSIGN,
     TOK_MUL_ASSIGN, TOK_DIV_ASSIGN,
     TOK_MOD_ASSIGN,
     TOK_AND_ASSIGN, TOK_OR_ASSIGN, TOK_XOR_ASSIGN,
     TOK_SHL_ASSIGN, TOK_SHR_ASSIGN,
 
-    /* 自增自减 */
+    /* Increment / decrement */
     TOK_INC, TOK_DEC,
 
-    /* 分隔符 */
+    /* Punctuation / separators */
     TOK_LPAREN, TOK_RPAREN,
     TOK_LBRACE, TOK_RBRACE,
     TOK_LBRACKET, TOK_RBRACKET,
@@ -67,8 +68,8 @@ typedef enum {
 
     TOK_HASH,
 
-    /* === 以下为 0.2.0 新增，必须保持在末尾 === */
-    /* C99 关键字 */
+    /* === Below: 0.2.0 additions, MUST stay at end === */
+    /* C99 keywords */
     TOK_SHORT, TOK_LONG, TOK_SIGNED, TOK_UNSIGNED,
     TOK_FLOAT, TOK_DOUBLE,
     TOK_BOOL,             /* _Bool */
@@ -78,32 +79,32 @@ typedef enum {
     TOK_SIZEOF,
     TOK_SWITCH, TOK_CASE, TOK_DEFAULT,
     TOK_GOTO,
-    TOK_FCONST,           /* 浮点字面量（值放在 t.fvalue） */
+    TOK_FCONST,           /* float literal (value in t.fvalue) */
 
-    /* 成员访问 */
+    /* Member access */
     TOK_DOT, TOK_ARROW,
-    /* 变参省略号 */
+    /* Variadic ellipsis */
     TOK_ELLIPSIS,
 
-    /* === 0.3.0 新增（必须保持在末尾） === */
+    /* === 0.3.0 additions (MUST stay at end) === */
     TOK_ATTRIBUTE,        /* __attribute__ */
     TOK_ASM,              /* asm / __asm / __asm__ */
-    TOK_FUNC_NAME,        /* __func__ -> 由 lexer 直接产生为字符串字面量；保留枚举占位 */
-    TOK_SVC,              /* __svc (ARM Compiler 5 SVC 声明) */
-    TOK_IRQ,              /* __irq (ARM Compiler 5 中断函数) */
-    TOK_WEAK,             /* __weak (ARM Compiler 5 弱符号) */
-    TOK_NAKED,            /* __naked (ARM Compiler 5 裸函数) */
-    TOK_PACKED_KW,        /* __packed (ARM Compiler 5 紧凑结构) */
-    TOK_ALIGN_KW,         /* __align(n) (ARM Compiler 5 对齐) */
-    TOK_AT,               /* __at(addr) (ARM Compiler 5 绝对地址) */
+    TOK_FUNC_NAME,        /* __func__ -> lexer emits it as a string literal; enum placeholder kept */
+    TOK_SVC,              /* __svc (ARM Compiler 5 SVC declaration) */
+    TOK_IRQ,              /* __irq (ARM Compiler 5 interrupt function) */
+    TOK_WEAK,             /* __weak (ARM Compiler 5 weak symbol) */
+    TOK_NAKED,            /* __naked (ARM Compiler 5 naked function) */
+    TOK_PACKED_KW,        /* __packed (ARM Compiler 5 packed struct) */
+    TOK_ALIGN_KW,         /* __align(n) (ARM Compiler 5 alignment) */
+    TOK_AT,               /* __at(addr) (ARM Compiler 5 absolute address) */
     TOK_SOFTFP,           /* __softfp */
     TOK_FORCEINLINE,      /* __forceinline */
-    TOK_ASM_FN,           /* __asm 函数体 (ARM Compiler 5) */
+    TOK_ASM_FN,           /* __asm function body (ARM Compiler 5) */
 
-    /* === 0.5.x 新增（B4：_Complex 关键字）=== */
+    /* === 0.5.x additions (B4: _Complex keyword) === */
     TOK_COMPLEX,          /* _Complex */
 
-    /* === 0.6.x 新增：armcc 5 兼容关键字（受 ARKCC_FEATURE_ARMCC_KEYWORDS 守护）=== */
+    /* === 0.6.x additions: armcc 5 compatibility keywords (guarded by ARKCC_FEATURE_ARMCC_KEYWORDS) === */
     TOK_VALUE_IN_REGS,    /* __value_in_regs */
     TOK_THREAD,           /* __thread */
     TOK_GLOBAL_REG,       /* __global_reg */
@@ -114,18 +115,19 @@ typedef enum {
     TOK_INT32,            /* __int32 */
     TOK_INT16,            /* __int16 */
     TOK_INT8,             /* __int8 */
-    TOK_TYPEDEF_KW,       /* __typedef（等价 typedef）*/
+    TOK_TYPEDEF_KW,       /* __typedef (equivalent to typedef) */
     TOK_ARGS,             /* __args */
     TOK_RETURN_KW,        /* __return */
     TOK_TP_SOFT,          /* __tp_soft */
     TOK_NOTHROW,          /* __nothrow */
-    TOK_DEPRECATED_KW,    /* __deprecated（关键字形式）*/
+    TOK_DEPRECATED_KW,    /* __deprecated (keyword form) */
     TOK_MAY_ALIAS,        /* __may_alias */
+    TOK_DECLSPEC,         /* __declspec (MSVC-style attribute) */
 
     TOK__SENTINEL
 } TokenKind;
 
-/* AST 节点种类 */
+/* AST node kinds */
 typedef enum {
     AST_PROGRAM = 0,
     AST_FUNC_DEF,
@@ -149,30 +151,30 @@ typedef enum {
     AST_FUNC_CALL,
     AST_EXPR_STMT,
 
-    /* === 0.2.0 新增 === */
-    AST_STR,           /* 字符串字面量；u.name 保存内容（已解转义） */
-    AST_CAST,          /* (T)expr；u.unary.operand = expr，node->type 即目标类型 */
-    AST_MEMBER,        /* expr.member 或 expr->member */
-    AST_SIZEOF,        /* sizeof(T) 或 sizeof(expr)；u.num_val = 字节数 */
+    /* === 0.2.0 additions === */
+    AST_STR,           /* string literal; u.name holds content (escapes resolved) */
+    AST_CAST,          /* (T)expr; u.unary.operand = expr, node->type is target type */
+    AST_MEMBER,        /* expr.member or expr->member */
+    AST_SIZEOF,        /* sizeof(T) or sizeof(expr); u.num_val = byte count */
     AST_SWITCH,
     AST_CASE,
     AST_DEFAULT,
     AST_GOTO,
     AST_LABEL,
-    AST_COMMA,         /* 逗号表达式 */
-    AST_TYPEDEF,       /* 顶层 typedef，无运行时含义 */
+    AST_COMMA,         /* comma expression */
+    AST_TYPEDEF,       /* top-level typedef; no runtime meaning */
 
-    /* === 0.3.0 新增 === */
+    /* === 0.3.0 additions === */
     AST_INIT_LIST,     /* { e1, e2, .field=ev, [i]=ev } */
-    AST_INIT_FIELD,    /* .field = expr 或 [index] = expr 之初始化项 */
-    AST_ASM,           /* 内联汇编 */
+    AST_INIT_FIELD,    /* .field = expr or [index] = expr initializer item */
+    AST_ASM,           /* inline assembly */
     AST_COMPOUND_LITERAL, /* (T){...} */
 
-    /* === 0.4.0 新增 === */
-    AST_ASM_FUNC       /* __asm void fn(...) { ... } 整函数体汇编 */
+    /* === 0.4.0 additions === */
+    AST_ASM_FUNC       /* __asm void fn(...) { ... } whole-function-body assembly */
 } AstNodeKind;
 
-/* IR 操作 */
+/* IR operations */
 typedef enum {
     IR_NOP = 0,
     IR_PUSH_INT,
@@ -196,52 +198,55 @@ typedef enum {
     IR_ARG,
     IR_GETARG,
 
-    /* === 0.2.0 新增 === */
-    IR_PUSH_STR,       /* name = 字符串内容；val = strpool 索引 */
-    IR_PUSH_GLOBAL,    /* name = 全局变量名 */
-    IR_STORE_GLOBAL,   /* name = 全局变量名 */
-    IR_DUP,            /* 栈顶复制 */
-    IR_LABEL_NAMED,    /* name = 用户标签 */
-    IR_JMP_NAMED,      /* name = 用户标签 */
-    IR_CMP_JMP_EQ,     /* 出栈一个值与立即数 val 比较，相等则跳到 aux 标签 */
+    /* === 0.2.0 additions === */
+    IR_PUSH_STR,       /* name = string content; val = strpool index */
+    IR_PUSH_GLOBAL,    /* name = global variable name */
+    IR_STORE_GLOBAL,   /* name = global variable name */
+    IR_DUP,            /* duplicate stack top */
+    IR_LABEL_NAMED,    /* name = user-defined label */
+    IR_JMP_NAMED,      /* name = user-defined label */
+    IR_CMP_JMP_EQ,     /* pop a value, compare with immediate val, jump to aux label if equal */
 
-    /* === 0.3.0 新增 === */
-    IR_PUSH_FLOAT,     /* aux 索引到 program->floats[]；C 后端按 double 处理 */
-    IR_FADD,           /* 浮点四则 */
+    /* === 0.3.0 additions === */
+    IR_PUSH_FLOAT,     /* aux indexes program->floats[]; C backend treats as double */
+    IR_FADD,           /* float arithmetic */
     IR_FSUB,
     IR_FMUL,
     IR_FDIV,
     IR_FCMP,           /* aux = TOK_EQ / TOK_NE / TOK_LT ... */
-    IR_F2I,            /* 浮点 -> 整数 */
-    IR_I2F,            /* 整数 -> 浮点 */
-    IR_ASM,            /* 内联汇编片段；name = 模板原文 */
-    IR_SVC,            /* ARM SVC 指令；val = SVC 编号 */
-    IR_DIV,            /* 整数除法；aux=0 有符号, aux=1 无符号 */
-    IR_MOD,            /* 取模；aux=0 有符号, aux=1 无符号 */
-    IR_64BINARY,       /* 64 位二元运算；aux = TOK_xxx */
-    IR_64PUSH,         /* 推入 64 位立即数；val=高32位, aux=低32位 */
-    IR_64CMP,          /* 64 位比较；aux = TOK_xxx */
-    IR_64F2I,          /* 64 位浮点 -> 64 位整数 */
-    IR_64I2F,          /* 64 位整数 -> 64 位浮点 */
-    IR_MEMCPY,         /* 内存拷贝；val=字节数（结构体赋值/按值传递） */
-    IR_STORE_FLD,      /* 位域存储；val=位偏移, aux=位宽 */
-    IR_LOAD_FLD,       /* 位域读取；val=位偏移, aux=位宽 */
-    IR_PUSH_GLOBAL_ADDR, /* 取全局变量地址；name = 全局变量名（不加载值） */
-    IR_ALLOCA,         /* B3: VLA 动态栈分配；弹出字节数，压入分配区首地址 */
-    IR_SMC,            /* __smc(n) Secure Monitor Call；val=SMC 编号 */
+    IR_F2I,            /* float -> int */
+    IR_I2F,            /* int -> float */
+    IR_ASM,            /* inline assembly fragment; name = raw template text */
+    IR_SVC,            /* ARM SVC instruction; val = SVC number */
+    IR_DIV,            /* integer division; aux=0 signed, aux=1 unsigned */
+    IR_MOD,            /* modulo; aux=0 signed, aux=1 unsigned */
+    IR_64BINARY,       /* 64-bit binary op; aux = TOK_xxx */
+    IR_64PUSH,         /* push 64-bit immediate; val=high32, aux=low32 */
+    IR_64CMP,          /* 64-bit compare; aux = TOK_xxx */
+    IR_64F2I,          /* 64-bit float -> 64-bit int */
+    IR_64I2F,          /* 64-bit int -> 64-bit float */
+    IR_MEMCPY,         /* memory copy; val=byte count (struct assignment / pass-by-value) */
+    IR_STORE_FLD,      /* bitfield store; val=bit offset, aux=bit width */
+    IR_LOAD_FLD,       /* bitfield load; val=bit offset, aux=bit width */
+    IR_PUSH_GLOBAL_ADDR, /* take address of global; name = global var name (no value load) */
+    IR_ALLOCA,         /* B3: VLA dynamic stack alloc; pops byte count, pushes region base */
+    IR_SMC,            /* __smc(n) Secure Monitor Call; val=SMC number */
 
-    /* === 0.7.0 新增：SIMD 并行运算（Cortex-M4/M7 DSP 指令）===
-     * 栈语义与 IR_BINARY 一致：弹出右操作数 r1、左操作数 r0，
-     * 按通道并行运算后压回 r0。
-     *   IR_SIMD_ADD16 / SUB16：2x16 位带符号通道
-     *   IR_SIMD_ADD8  / SUB8  ：4x8  位带符号通道 */
+    /* === 0.7.0 additions: SIMD parallel ops (Cortex-M4/M7 DSP instructions) ===
+     * Stack semantics same as IR_BINARY: pop right operand r1, left operand r0,
+     * perform per-lane parallel op, push result r0 back.
+     *   IR_SIMD_ADD16 / SUB16: 2x16-bit signed lanes
+     *   IR_SIMD_ADD8  / SUB8  : 4x8-bit signed lanes */
     IR_SIMD_ADD16,
     IR_SIMD_SUB16,
     IR_SIMD_ADD8,
-    IR_SIMD_SUB8
+    IR_SIMD_SUB8,
+
+    /* === 0.7.1 additions === */
+    IR_SWAP            /* swap top two stack values: [a, b] -> [b, a] */
 } IrOp;
 
-/* 简单字符串比较，避免依赖 string.h */
+/* Simple string comparison to avoid depending on string.h */
 int ark_streq(const char *a, const char *b);
 int ark_strlen(const char *s);
 

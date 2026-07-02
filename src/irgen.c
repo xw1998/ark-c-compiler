@@ -1,12 +1,12 @@
 /* Ark C Compiler - irgen
- * AST -> 栈式 IR。
+ * AST -> ?? IR??
  *
- * 函数调用约定（与后端配合）：
- *   - 参数 0..N-1 在调用前依次以 PUSH 入虚栈；IR_CALL n 让后端把栈顶 n 个值
- *     依次取到对应寄存器/栈参中（顺序按 arg0..argN-1）。
- *   - 局部变量与参数在函数序言里通过 GETARG 复制到栈帧槽。
- *   - 字符串字面量通过字符串池 + IR_PUSH_STR 引用。
- *   - 全局变量通过 IR_PUSH_GLOBAL / IR_STORE_GLOBAL 引用。
+ * ???????????????????????
+ *   - ???? 0..N-1 ???????????? PUSH ???????IR_CALL n ????????? n ???
+ *     ???????????????/?????????? arg0..argN-1????
+ *   - ?????????????????????????? GETARG ??????????
+ *   - ????????????????????? + IR_PUSH_STR ??????
+ *   - ????????? IR_PUSH_GLOBAL / IR_STORE_GLOBAL ??????
  */
 #include "irgen.h"
 #include "symtab.h"
@@ -16,9 +16,10 @@
 #include "sema.h"
 #include "config.h"
 #include "arkcc_config.h"
+#include <stdio.h>   /* snprintf?????? sb_putf ?????????????? */
 
-/* 内部缓冲区，用于把 AST 初始化列表序列化成 C 源码片段。
- * 64 KB 足够普通示例使用。 */
+/* ???????????????? AST ????????????????? C ????????
+ * 64 KB ????????????? */
 typedef struct StrBuf {
     char *data;
     int   len;
@@ -36,37 +37,20 @@ static void sb_putc(StrBuf *b, char c) {
     b->data[b->len] = 0;
 }
 static void sb_puts(StrBuf *b, const char *s) { while (*s) sb_putc(b, *s++); }
-static void sb_putd(StrBuf *b, int v) {
-    char tmp[16]; int n = 0; unsigned u; int neg = 0; int i;
-    if (v < 0) { neg = 1; u = (unsigned)(-v); } else u = (unsigned)v;
+static void sb_putd(StrBuf *b, long long v) {
+    char tmp[24]; int n = 0; unsigned long long u; int neg = 0; int i;
+    if (v < 0) { neg = 1; u = (unsigned long long)(-v); } else u = (unsigned long long)v;
     if (u == 0) tmp[n++] = '0';
     while (u) { tmp[n++] = (char)('0' + u % 10); u /= 10; }
     if (neg) sb_putc(b, '-');
     for (i = n - 1; i >= 0; i--) sb_putc(b, tmp[i]);
 }
 static void sb_putf(StrBuf *b, double v) {
-    /* 用最朴素的方式输出浮点：整数部分+'.' +9 位小数。 */
-    int neg = 0;
-    if (v < 0) { neg = 1; v = -v; }
-    if (neg) sb_putc(b, '-');
-    {
-        long long ip = (long long)v;
-        sb_putd(b, (int)ip);
-        sb_putc(b, '.');
-        v = v - (double)ip;
-        {
-            int k;
-            for (k = 0; k < 6; k++) {
-                v *= 10.0;
-                {
-                    int d = (int)v;
-                    if (d > 9) d = 9;
-                    sb_putc(b, (char)('0' + d));
-                    v -= (double)d;
-                }
-            }
-        }
-    }
+    /* ?? %.17g ???????????????????????????????
+     * ?????????????????? 1e-10???????????? 1e100???? */
+    char tmp[64];
+    snprintf(tmp, sizeof(tmp), "%.17g", v);
+    sb_puts(b, tmp);
 }
 static void sb_putstr_lit(StrBuf *b, const char *s) {
     sb_putc(b, '"');
@@ -94,7 +78,7 @@ static void sb_putstr_lit(StrBuf *b, const char *s) {
     sb_putc(b, '"');
 }
 
-/* 把 AST 表达式以 C 源码形式追加到 sb，仅支持常量表达式与简单运算。 */
+/* ?? AST ??????? C ?????????? sb?????????????????????? */
 static void serialize_const_expr(StrBuf *b, AstNode *n) {
     if (!n) { sb_puts(b, "0"); return; }
     switch (n->kind) {
@@ -142,9 +126,16 @@ static void serialize_const_expr(StrBuf *b, AstNode *n) {
             sb_putd(b, n->u.num_val);
             break;
         case AST_VAR:
-            /* 引用全局变量或枚举常量：直接输出名字 */
-            if (n->u.name) sb_puts(b, n->u.name);
-            else sb_putd(b, 0);
+            /* If the name refers to a function defined in this translation
+             * unit, the C backend emits it as ark_<name>; we must match that
+             * prefix here so function pointers in global initializers
+             * (e.g. Backend g_arm_backend = { ..., arm_emit, ... }) resolve
+             * to the generated ark_arm_emit symbol. */
+            if (n->u.name) {
+                Symbol *s = sym_find(n->u.name);
+                if (s && s->kind == SYM_FUNC) sb_puts(b, "ark_");
+                sb_puts(b, n->u.name);
+            } else sb_putd(b, 0);
             break;
         default:
             sb_putd(b, 0);
@@ -179,8 +170,8 @@ static void serialize_init(StrBuf *b, AstNode *n) {
     serialize_const_expr(b, n);
 }
 
-/* 把字符串字面量初始化 char a[]="..." 转成 init list（让 C 后端友好地直接保留字符串语法）。
- * 我们仅在序列化时按字符串字面量原样输出。 */
+/* ?????????????????? char a[]="..." ??? init list???? C ????????????????????????
+ * ??????????????????????????????????? */
 
 typedef struct {
     IrProgram *prog;
@@ -189,8 +180,8 @@ typedef struct {
     int        max_size;
     int        break_label;
     int        cont_label;
-    /* switch 编译期信息 */
-    int       *case_labels;     /* 每个 case 值对应的标签号 */
+    /* switch ????????? */
+    int       *case_labels;     /* ??? case ?????????? */
     int       *case_values;
     int        case_count;
     int        default_label;
@@ -200,13 +191,13 @@ typedef struct {
 static void irgen_stmt(IrGen *g, AstNode *node);
 static void irgen_expr(IrGen *g, AstNode *node);
 static void irgen_lvalue_addr(IrGen *g, AstNode *node);
-/* 递归聚合初始化：将 init_list 中的标量值写入栈偏移 off 处的 t 实例。
- * 支持 C99 嵌套初始化列表、designated initializer（.field / [idx]）。 */
+/* ????????????? init_list ???????????????? off ???? t ?????
+ * ??? C99 ?????????????designated initializer??.field / [idx]???? */
 static void irgen_local_aggregate_init(IrGen *g, int off, Type *t, AstNode *init_list);
-/* C99 复合字面量 (type){...}：登记为匿名全局 ark_cl_<n>，返回其名字。
- * 多次引用同一字面量会各自登记独立全局（符合 C99 语义：每次出现都是新对象）。 */
+/* C99 ?????????? (type){...}????????????? ark_cl_<n>?????????????
+ * ????????????????????????????????? C99 ????????????????????? */
 static const char *irgen_compound_literal(IrGen *g, AstNode *node);
-/* 全局复合字面量计数器：进程级唯一，确保多函数多次出现名字不冲突。 */
+/* ?????????????????????????????????????????????????????? */
 static int g_compound_lit_counter = 0;
 
 static int alloc_label(IrGen *g) {
@@ -214,8 +205,8 @@ static int alloc_label(IrGen *g) {
 }
 
 static int alloc_local(IrGen *g, int size) {
-    /* 统一按 8 字节对齐分配槽位：保证 long long / double 位模式完整存放，
-     * 避免 Windows LLP64 下 long=4 与 double=8 共用 union 时的高位丢失。 */
+    /* ???? 8 ????????????????? long long / double ????????????
+     * ???? Windows LLP64 ?? long=4 ?? double=8 ???? union ??????????? */
     int s = (size + 7) & ~7;
     int off;
     if (s <= 0) s = 8;
@@ -225,9 +216,9 @@ static int alloc_local(IrGen *g, int size) {
     return off;
 }
 
-/* 为函数内 static 局部变量构造全局化名字：ark_sl_<func>_<var>。
- * 不同函数的同名 static 局部互不冲突，且与用户定义的全局名隔开。
- * 返回的缓冲区来自内存池，整个编译期有效。 */
+/* ??????? static ????????????????????ark_sl_<func>_<var>??
+ * ???????????? static ???????????????????????????????????
+ * ??????????????????????????????????? */
 static char *static_local_name(const char *func, const char *var) {
     int nf = (int)ark_strlen(func);
     int nv = (int)ark_strlen(var);
@@ -242,7 +233,7 @@ static char *static_local_name(const char *func, const char *var) {
     return buf;
 }
 
-/* 第一遍遍历 switch body，收集 case/default 对应的标签号 */
+/* ???????? switch body????? case/default ????????? */
 typedef struct CaseList {
     int *labels;
     int *values;
@@ -276,7 +267,7 @@ static void collect_cases(IrGen *g, AstNode *node, CaseList *cl) {
         return;
     }
     if (node->kind == AST_SWITCH) {
-        return; /* 嵌套 switch 由其自身处理 */
+        return; /* ??? switch ???????????? */
     }
     if (node->kind == AST_BLOCK) {
         int i;
@@ -311,7 +302,7 @@ IrProgram *irgen_program(AstNode *prog) {
     int i;
     sym_init();
 
-    /* 第一遍：登记所有函数与全局变量 */
+    /* ???????????????????????? */
     for (i = 0; i < prog->u.program.decl_count; i++) {
         AstNode *d = prog->u.program.decls[i];
         if (d->kind == AST_FUNC_DEF || d->kind == AST_FUNC_DECL ||
@@ -329,7 +320,8 @@ IrProgram *irgen_program(AstNode *prog) {
                 if (d->kind == AST_FUNC_DEF || d->kind == AST_ASM_FUNC) s->is_defined = 1;
             }
         } else if (d->kind == AST_VAR_DECL && d->u.var.is_global) {
-            if (!sym_find(d->u.var.name)) {
+            Symbol *existing = sym_find(d->u.var.name);
+            if (!existing) {
                 IrGlobal *gv = ir_program_add_global(out, d->u.var.name, d->u.var.var_type);
                 Symbol *s = sym_add(SYM_GLOBAL, d->u.var.name, d->u.var.var_type, 0);
                 (void)s;
@@ -356,7 +348,7 @@ IrProgram *irgen_program(AstNode *prog) {
                             gv->init_float = iv->fval;
                         }
                     } else if (iv->kind == AST_STR) {
-                        /* char a[]="hello" 或 char *p="..." */
+                        /* char a[]="hello" ?? char *p="..." */
                         gv->has_init = 1;
                         gv->init_str = iv->u.name;
                     } else if (iv->kind == AST_INIT_LIST) {
@@ -365,18 +357,18 @@ IrProgram *irgen_program(AstNode *prog) {
                         gv->has_init = 1;
                         gv->init_aggregate = sb.data;
                     } else if (iv->kind == AST_COMPOUND_LITERAL) {
-                        /* 顶层复合字面量初始化全局：展开其 init 列表 */
+                        /* ?????????????????????????? init ???? */
                         StrBuf sb; sb_init(&sb);
                         serialize_init(&sb, iv->u.compound_lit.init);
                         gv->has_init = 1;
                         gv->init_aggregate = sb.data;
                     } else {
-                        /* 非字面量表达式初值：先尝试常量求值
-                         * (sizeof, 1+2, 字面量算术运算等)。
-                         * 求值成功则按整型字面量存入 init_int，让 ARM 后端
-                         * 能正确生成 .word 数据；C 后端走 init_aggregate
-                         * 透传源码（含 enum 引用等）。 */
-                        int cv = 0;
+                        /* ?????????????????????????????
+                         * (sizeof, 1+2, ???????????????)??
+                         * ?????????????????????? init_int???? ARM ???
+                         * ????????? .word ?????C ????? init_aggregate
+                         * ???????? enum ???????? */
+                        long long cv = 0;
                         gv->has_init = 1;
                         if (eval_const_expr(iv, &cv)) {
                             gv->init_int = cv;
@@ -387,16 +379,28 @@ IrProgram *irgen_program(AstNode *prog) {
                         }
                     }
                 }
+            } else if (!d->u.var.is_extern) {
+                /* A definition follows an earlier extern declaration
+                 * (e.g. header has `extern T x;`, source has `T x;`).
+                 * Clear is_extern on the existing IrGlobal so the C
+                 * backend emits a definition, not an extern prototype. */
+                IrGlobal *eg = ir_program_find_global(out, d->u.var.name);
+                if (eg) {
+                    eg->is_extern = 0;
+                    eg->is_const  = d->u.var.is_const;
+                    eg->section   = d->u.var.section;
+                }
             }
         } else if (d->kind == AST_TYPEDEF) {
             if (d->u.var.name) sym_add(SYM_TYPEDEF, d->u.var.name, d->u.var.var_type, 0);
         } else if (d->kind == AST_BLOCK) {
-            /* 多变量声明 */
+            /* ????????? */
             int j;
             for (j = 0; j < d->u.block.stmt_count; j++) {
                 AstNode *c = d->u.block.stmts[j];
                 if (c->kind == AST_VAR_DECL && c->u.var.is_global) {
-                    if (!sym_find(c->u.var.name)) {
+                    Symbol *existing_c = sym_find(c->u.var.name);
+                    if (!existing_c) {
                         IrGlobal *gc = ir_program_add_global(out, c->u.var.name, c->u.var.var_type);
                         sym_add(SYM_GLOBAL, c->u.var.name, c->u.var.var_type, 0);
                         gc->is_static = c->u.var.is_static;
@@ -435,7 +439,7 @@ IrProgram *irgen_program(AstNode *prog) {
                                 gc->has_init = 1;
                                 gc->init_aggregate = sb.data;
                             } else {
-                                int cv = 0;
+                                long long cv = 0;
                                 gc->has_init = 1;
                                 if (eval_const_expr(iv, &cv)) {
                                     gc->init_int = cv;
@@ -446,6 +450,13 @@ IrProgram *irgen_program(AstNode *prog) {
                                 }
                             }
                         }
+                    } else if (!c->u.var.is_extern) {
+                        IrGlobal *eg = ir_program_find_global(out, c->u.var.name);
+                        if (eg) {
+                            eg->is_extern = 0;
+                            eg->is_const  = c->u.var.is_const;
+                            eg->section   = c->u.var.section;
+                        }
                     }
                 }
             }
@@ -455,9 +466,10 @@ IrProgram *irgen_program(AstNode *prog) {
     for (i = 0; i < prog->u.program.decl_count; i++) {
         AstNode *d = prog->u.program.decls[i];
         if (d->kind == AST_ASM_FUNC) {
-            /* __asm 函数体：构造一个仅持有 asm_body 的 IrFunc，
-             * 不生成任何 IR 指令；后端按 naked 风格直接发射汇编。 */
+            /* __asm ???????????????????? asm_body ?? IrFunc??
+             * ?????????? IR ??????? naked ??????????? */
             IrFunc *fn = ir_func_new(d->u.func.name);
+            fn->ret_type = d->u.func.ret_type;
             fn->param_count = d->u.func.param_count;
             fn->is_static = d->u.func.is_static;
             fn->is_asm_func = 1;
@@ -481,9 +493,10 @@ IrProgram *irgen_program(AstNode *prog) {
             continue;
         }
         if (d->kind == AST_FUNC_DECL) {
-            /* 仅声明带 alias_target 的函数也要生成 IrFunc，让后端发出别名指令 */
+            /* ???????? alias_target ??????????? IrFunc????????????????? */
             if (d->u.func.alias_target) {
                 IrFunc *fn = ir_func_new(d->u.func.name);
+                fn->ret_type = d->u.func.ret_type;
                 fn->param_count = d->u.func.param_count;
                 fn->is_static = d->u.func.is_static;
                 fn->is_used = d->u.func.is_used;
@@ -510,11 +523,12 @@ IrProgram *irgen_program(AstNode *prog) {
             int j;
             g.prog = out;
             g.fn = ir_func_new(d->u.func.name);
+            g.fn->ret_type = d->u.func.ret_type;
             g.fn->param_count = d->u.func.param_count;
             g.fn->is_variadic = d->u.func.is_variadic;
             g.fn->is_static = d->u.func.is_static;
-            /* 传播 ARM Compiler 5 函数属性到 IrFunc，供后端生成
-             * __attribute__((weak/naked)) 与 __irq 注释。 */
+            /* ???? ARM Compiler 5 ????????? IrFunc???????????
+             * __attribute__((weak/naked)) ?? __irq ???? */
             g.fn->is_irq   = d->u.func.is_irq;
             g.fn->is_weak  = d->u.func.is_weak;
             g.fn->is_naked = d->u.func.is_naked;
@@ -558,6 +572,16 @@ IrProgram *irgen_program(AstNode *prog) {
                 }
                 ir_emit(g.fn, IR_GETARG, off, pp->u.var.name, j);
             }
+            /* For variadic functions, also store all 8 args (a0..a7) at a
+             * fixed frame region (ARK_VA_ARG_BASE..+64) so va_start/va_arg
+             * can access the variadic tail. The named-param area above keeps
+             * its own offsets for direct named access. */
+            if (d->u.func.is_variadic) {
+                int k;
+                for (k = 0; k < 8; k++) {
+                    ir_emit(g.fn, IR_GETARG, 8000 + k * 8, 0, k);
+                }
+            }
             irgen_stmt(&g, d->u.func.body);
             ir_emit(g.fn, IR_PUSH_INT, 0, 0, 0);
             ir_emit(g.fn, IR_RETURN, 0, 0, 0);
@@ -570,13 +594,13 @@ IrProgram *irgen_program(AstNode *prog) {
     return out;
 }
 
-/* 递归聚合初始化：将 init_list 中的标量值写入栈偏移 off 处的 t 实例。
- * 支持 C99 嵌套初始化列表与 designated initializer。
- *   - 数组：每个 item 按 [idx] 或位置写入 off + idx*elem_sz；
- *     若 item 本身是 INIT_LIST，按元素类型递归。
- *   - 结构体：每个 item 按 .field 或位置写入 off + field->offset；
- *     若 item 本身是 INIT_LIST，按字段类型递归。
- * 调用者应先清零整个区域，本函数仅覆盖显式初始化的元素。 */
+/* ????????????? init_list ???????????????? off ???? t ?????
+ * ??? C99 ????????????? designated initializer??
+ *   - ??????? item ?? [idx] ?????????? off + idx*elem_sz??
+ *     ?? item ?????? INIT_LIST?????????????
+ *   - ???????? item ?? .field ?????????? off + field->offset??
+ *     ?? item ?????? INIT_LIST?????????????
+ * ?????????????????????????????????????????????? */
 static void irgen_local_aggregate_init(IrGen *g, int off, Type *t, AstNode *init_list) {
     int i;
     if (!init_list || init_list->kind != AST_INIT_LIST || !t) return;
@@ -598,7 +622,7 @@ static void irgen_local_aggregate_init(IrGen *g, int off, Type *t, AstNode *init
                 irgen_local_aggregate_init(g, off + idx * elem_sz, elem_t, val);
             } else {
                 irgen_expr(g, val);
-                ir_emit(g->fn, IR_STORE, off + idx * elem_sz, 0, 0);
+                ir_emit(g->fn, IR_STORE, off + idx * elem_sz, 0, elem_sz);
             }
         }
     } else if (t->kind == TYPE_STRUCT || t->kind == TYPE_UNION) {
@@ -610,7 +634,7 @@ static void irgen_local_aggregate_init(IrGen *g, int off, Type *t, AstNode *init
             if (!it) continue;
             if (it->u.init_field.has_field) {
                 target = type_find_field(t, it->u.init_field.field);
-                /* designated 后，positional cursor 跳到 target 之后 */
+                /* designated ??positional cursor ???? target ??? */
                 if (target) {
                     StructField *p = t->fields;
                     while (p && p != target) p = p->next;
@@ -625,31 +649,33 @@ static void irgen_local_aggregate_init(IrGen *g, int off, Type *t, AstNode *init
             if (val->kind == AST_INIT_LIST) {
                 irgen_local_aggregate_init(g, off + target->offset, target->type, val);
             } else {
+                int fsz = type_size(target->type);
+                if (fsz <= 0) fsz = 4;
                 irgen_expr(g, val);
-                ir_emit(g->fn, IR_STORE, off + target->offset, 0, 0);
+                ir_emit(g->fn, IR_STORE, off + target->offset, 0, fsz);
             }
         }
     }
-    /* 标量类型不应作为聚合初始化目标；忽略 */
+    /* ??????????????????????????? */
 }
 
-/* C99 复合字面量 (type){...}：登记为匿名全局，返回其名字。
- *   - 数组/结构体类型：把 init 序列化为 C 源码片段存入 init_aggregate
- *   - 标量类型 (int){42} 等：用 init_int 存储常量值
- * 后端按普通全局处理；引用时通过 PUSH_GLOBAL_ADDR 取地址。
- * 数组在多数上下文里 decay 为指针，所以 irgen_expr 也以地址作为其 rvalue。 */
+/* C99 ?????????? (type){...}?????????????????????????
+ *   - ????/??????????? init ??????? C ?????????? init_aggregate
+ *   - ???????? (int){42} ????? init_int ????????
+ * ??????????????????????? PUSH_GLOBAL_ADDR ??????
+ * ????????????????? decay ???????? irgen_expr ?????????? rvalue?? */
 static const char *irgen_compound_literal(IrGen *g, AstNode *node) {
     char namebuf[32];
     IrGlobal *gv;
     Type *t = node->u.compound_lit.lit_type;
     AstNode *init = node->u.compound_lit.init;
-    /* 生成唯一名字 ark_cl_<n> */
+    /* ??????????? ark_cl_<n> */
     {
         int n = g_compound_lit_counter++;
         int i = 0;
         const char *pfx = "ark_cl_";
         while (*pfx) namebuf[i++] = *pfx++;
-        /* 数字转字符串 */
+        /* ?????????? */
         {
             char tmp[16]; int tn = 0; unsigned u = (unsigned)n;
             if (u == 0) tmp[tn++] = '0';
@@ -659,7 +685,7 @@ static const char *irgen_compound_literal(IrGen *g, AstNode *node) {
         namebuf[i] = 0;
     }
     gv = ir_program_add_global(g->prog, namebuf, t);
-    gv->is_static = 1;  /* 复合字面量不暴露到链接器 */
+    gv->is_static = 1;  /* ??????????????????????? */
     if (init) {
         if (init->kind == AST_INIT_LIST) {
             StrBuf sb; sb_init(&sb);
@@ -688,12 +714,12 @@ static const char *irgen_compound_literal(IrGen *g, AstNode *node) {
 
 static void irgen_stmt(IrGen *g, AstNode *node) {
     if (!node) return;
-    g_ir_cur_line = node->line;  /* 供 DWARF .loc 使用 */
+    g_ir_cur_line = node->line;
     switch (node->kind) {
         case AST_BLOCK: {
             int i;
             int saved_bp = g->bp;
-            /* 声明块（逗号分隔的局部变量声明）不创建嵌套作用域 */
+            /* ?????????????????????????????????????????? */
             if (!node->u.block.is_decl_list) sym_enter_scope();
             for (i = 0; i < node->u.block.stmt_count; i++) {
                 irgen_stmt(g, node->u.block.stmts[i]);
@@ -707,15 +733,14 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
             int off;
             Symbol *s;
             if (node->u.var.is_extern) {
-                /* 跳过：仅声明 */
                 break;
             }
             if (!node->u.var.name) break;
             if (node->u.var.is_static) {
-                /* static 局部变量：提升为函数级全局，名字 mangle 为
-                 * ark_sl_<func>_<var>，跨调用持久保存。符号标记 is_static=1
-                 * 并以 SYM_GLOBAL 注册，使 AST_VAR/AST_ASSIGN 走 PUSH_GLOBAL/
-                 * STORE_GLOBAL 路径；符号名仍用原名以便 sym_find 命中。 */
+                /* static ???????????????????????????? mangle ?
+                 * ark_sl_<func>_<var>???????????????????? is_static=1
+                 * ???? SYM_GLOBAL ???? AST_VAR/AST_ASSIGN ?? PUSH_GLOBAL/
+                 * STORE_GLOBAL ?????????????????????? sym_find ?????? */
                 char *mangled = static_local_name(g->fn->name, node->u.var.name);
                 IrGlobal *gv = ir_program_add_global(g->prog, mangled, node->u.var.var_type);
                 gv->is_static = 1;
@@ -745,7 +770,7 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
                         gv->has_init = 1;
                         gv->init_aggregate = sb.data;
                     } else {
-                        int cv = 0;
+                        long long cv = 0;
                         gv->has_init = 1;
                         if (eval_const_expr(iv, &cv)) {
                             gv->init_int = cv;
@@ -764,21 +789,21 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
             s = sym_add(SYM_VAR, node->u.var.name, node->u.var.var_type, off);
             (void)s;
 #if ARKCC_FEATURE_VLA
-            /* B3: 变长数组。var_type 已是带 is_vla 标记的指针；
-             * 槽位存放指向动态分配区的指针（4 字节）。
-             * 运行时：求值元素个数 * 元素大小 → IR_ALLOCA → 存指针到槽。 */
+            /* B3: ??????var_type ????? is_vla ???????
+             * ??????????????????????4 ??????
+             * ???????????????? * ?????? ?? IR_ALLOCA ?? ???????? */
             if (node->u.var.is_vla && g_config.enable_vla) {
                 Type *elem_t = node->u.var.var_type->base;
                 int elem_sz = type_size(elem_t);
                 if (elem_sz <= 0) elem_sz = 4;
-                /* 元素个数 */
+                /* ?????? */
                 irgen_expr(g, node->u.var.vla_size_expr);
-                /* * 元素大小 → 字节数 */
+                /* * ?????? ?? ????? */
                 ir_emit(g->fn, IR_PUSH_INT, elem_sz, 0, 0);
                 ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_MUL);
-                /* 动态分配，压入首地址 */
+                /* ?????????????? */
                 ir_emit(g->fn, IR_ALLOCA, 0, 0, 0);
-                /* 存入槽位 */
+                /* ??????? */
                 ir_emit(g->fn, IR_STORE, off, 0, 0);
                 break;
             }
@@ -786,20 +811,20 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
             if (node->u.var.init) {
                 AstNode *iv = node->u.var.init;
                 if (iv->kind == AST_INIT_LIST) {
-                    /* 局部聚合初始化：先清零整个区间，再递归写入显式初始化的元素。
-                     * 递归支持 C99 嵌套初始化列表与 designated initializer。 */
+                    /* ????????????????????????????????????????????????
+                     * ?????? C99 ????????????? designated initializer?? */
                     int total = sz;
                     int k;
                     for (k = 0; k < total; k += 4) {
                         ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
-                        ir_emit(g->fn, IR_STORE, off + k, 0, 0);
+                        ir_emit(g->fn, IR_STORE, off + k, 0, 4);
                     }
                     irgen_local_aggregate_init(g, off, node->u.var.var_type, iv);
                 } else if (iv->kind == AST_STR && node->u.var.var_type &&
                            node->u.var.var_type->kind == TYPE_ARRAY) {
-                    /* char a[]="..."：调用 memcpy(frame+off, str, n)
-                     * 调用约定：irgen 反向 push 参数，c 后端 stk[--sp]=arg0。
-                     * 所以正向写法：push arg2, push arg1, push arg0。 */
+                    /* char a[]="..."?????? memcpy(frame+off, str, n)
+                     * ?????????irgen ???? push ??????c ??? stk[--sp]=arg0??
+                     * ??????????????push arg2, push arg1, push arg0?? */
                     const char *s2 = iv->u.name;
                     int slen = ark_strlen(s2);
                     int total = type_size(node->u.var.var_type);
@@ -809,12 +834,12 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
                     if (arr_len <= 0) arr_len = slen + 1;
                     copy_n = slen + 1;
                     if (copy_n > arr_len) copy_n = arr_len;
-                    /* 先清零 */
+                    /* ???????? 4 ??????????? 8 ??? long long ???w??? */
                     for (kk = 0; kk < total; kk += 4) {
                         ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
-                        ir_emit(g->fn, IR_STORE, off + kk, 0, 0);
+                        ir_emit(g->fn, IR_STORE, off + kk, 0, 4);
                     }
-                    /* push n, src, dst（最后压栈的成为 arg0=dst） */
+                    /* push n, src, dst??????????? arg0=dst?? */
                     ir_emit(g->fn, IR_PUSH_INT, copy_n, 0, 0);
                     {
                         int id = ir_program_add_string(g->prog, s2, slen);
@@ -823,9 +848,42 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
                     ir_emit(g->fn, IR_PUSH_ADDR, off, 0, 0);
                     ir_emit(g->fn, IR_CALL, 3, "memcpy", 0);
                     ir_emit(g->fn, IR_POP, 0, 0, 0);
+                } else if (node->u.var.var_type &&
+                           (node->u.var.var_type->kind == TYPE_STRUCT ||
+                            node->u.var.var_type->kind == TYPE_UNION)) {
+                    /* Struct/union init from a non-init-list expression.
+                     * For small aggregates (<= 8 bytes), irgen_expr pushes the
+                     * value as a long long bit pattern (covers AST_FUNC_CALL
+                     * returns and AST_VAR struct-to-struct copy). Store it
+                     * directly via IR_STORE; memcpy cannot be used because
+                     * rvalues have no address (treating the value as a pointer
+                     * caused STATUS_ACCESS_VIOLATION).
+                     * For larger aggregates (> 8 bytes), require an lvalue
+                     * source so we can take its address via irgen_lvalue_addr
+                     * (handles AST_COMPOUND_LITERAL, AST_UNARY(*), AST_MEMBER,
+                     * AST_ARRAY_ACCESS and AST_VAR of array type).
+                     * Exception: AST_FUNC_CALL returning a struct is an rvalue
+                     * but the C backend stores the result at frame+8176 and
+                     * pushes its ADDRESS (not the value). Use irgen_expr to get
+                     * the address, then IR_MEMCPY to copy to the destination. */
+                    int struct_sz = type_size(node->u.var.var_type);
+                    if (struct_sz <= 0) struct_sz = 4;
+                    if (iv && iv->kind == AST_FUNC_CALL) {
+                        /* Struct-returning function: irgen_expr pushes the
+                         * address of the result. Use IR_MEMCPY for all sizes. */
+                        irgen_expr(g, iv);                        /* push src addr */
+                        ir_emit(g->fn, IR_PUSH_ADDR, off, 0, 0);  /* push dst addr */
+                        ir_emit(g->fn, IR_MEMCPY, struct_sz, 0, 0);
+                    } else if (struct_sz <= 8) {
+                        irgen_expr(g, iv);
+                        ir_emit(g->fn, IR_STORE, off, 0, 8);
+                    } else {
+                        irgen_lvalue_addr(g, iv);                 /* push src addr */
+                        ir_emit(g->fn, IR_PUSH_ADDR, off, 0, 0);  /* push dst addr */
+                        ir_emit(g->fn, IR_MEMCPY, struct_sz, 0, 0);
+                    }
                 } else {
                     irgen_expr(g, iv);
-                    /* 浮点 -> 整数 赋值需插入 IR_F2I；反向插入 IR_I2F */
                     {
                         Type *st = iv ? iv->type : 0;
                         Type *dt = node->u.var.var_type;
@@ -835,8 +893,25 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
                         int di = dt && type_is_integer(dt);
                         if (sf && di)      ir_emit(g->fn, IR_F2I, 0, 0, 0);
                         else if (si && df) ir_emit(g->fn, IR_I2F, 0, 0, 0);
+                        if (dt && dt->kind == TYPE_BOOL) {
+                            ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
+                            ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_NE);
+                        }
                     }
-                    ir_emit(g->fn, IR_STORE, off, node->u.var.name, 0);
+                    {
+                        int store_aux = 0;
+                        if (node->u.var.var_type) {
+                            switch (node->u.var.var_type->kind) {
+                                case TYPE_CHAR:  store_aux = 1; break;
+                                case TYPE_SHORT: store_aux = 2; break;
+                                case TYPE_INT:
+                                case TYPE_ENUM:  store_aux = 4; break;
+                                case TYPE_COMPLEX: store_aux = 16; break;
+                                default:         store_aux = 0; break;
+                            }
+                        }
+                        ir_emit(g->fn, IR_STORE, off, node->u.var.name, store_aux);
+                    }
                 }
             }
             break;
@@ -846,10 +921,27 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
                 sym_add(SYM_TYPEDEF, node->u.var.name, node->u.var.var_type, 0);
             break;
         case AST_RETURN:
-            if (node->u.unary.operand)
-                irgen_expr(g, node->u.unary.operand);
-            else
+            if (node->u.unary.operand) {
+                /* Struct/union return by value (> 8 bytes): the C backend
+                 * stores the result at frame+8176 and returns a pointer.
+                 * Push the ADDRESS of the struct (not its truncated value).
+                 * For AST_FUNC_CALL, irgen_expr already pushes the result
+                 * pointer (the callee returns frame+8176 address). */
+                Type *rt = node->u.unary.operand->type;
+                if (!rt) rt = g->fn->ret_type;
+                if (rt && (rt->kind == TYPE_STRUCT || rt->kind == TYPE_UNION) &&
+                    type_size(rt) > 8) {
+                    if (node->u.unary.operand->kind == AST_FUNC_CALL) {
+                        irgen_expr(g, node->u.unary.operand);
+                    } else {
+                        irgen_lvalue_addr(g, node->u.unary.operand);
+                    }
+                } else {
+                    irgen_expr(g, node->u.unary.operand);
+                }
+            } else {
                 ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
+            }
             ir_emit(g->fn, IR_RETURN, 0, 0, 0);
             break;
         case AST_IF: {
@@ -951,16 +1043,23 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
             g->switch_end_label = end_l;
             g->break_label = end_l;
 
-            /* 求 switch(expr) 的值 */
-            irgen_expr(g, node->u.switch_stmt.expr);
-            for (i = 0; i < cl.count; i++) {
-                /* DUP 然后比较 */
-                ir_emit(g->fn, IR_DUP, 0, 0, 0);
-                ir_emit(g->fn, IR_PUSH_INT, cl.values[i], 0, 0);
-                ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_EQ);
-                ir_emit(g->fn, IR_JNZ, cl.labels[i], 0, 0);
+            /* Evaluate switch(expr) once and store in a temp local so the
+             * dispatch loop doesn't leak the value onto the stack VM.
+             * Each case comparison reloads the temp; after JNZ the stack
+             * is balanced regardless of whether a case matched.
+             * (Previous DUP-based approach left expr on stack when a case
+             * matched via JNZ, leaking 1 slot per switch execution.) */
+            {
+                int switch_temp = alloc_local(g, 8);
+                irgen_expr(g, node->u.switch_stmt.expr);
+                ir_emit(g->fn, IR_STORE, switch_temp, 0, 0);
+                for (i = 0; i < cl.count; i++) {
+                    ir_emit(g->fn, IR_PUSH_VAR, switch_temp, 0, 0);
+                    ir_emit(g->fn, IR_PUSH_INT, cl.values[i], 0, 0);
+                    ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_EQ);
+                    ir_emit(g->fn, IR_JNZ, cl.labels[i], 0, 0);
+                }
             }
-            ir_emit(g->fn, IR_POP, 0, 0, 0); /* 弹掉 switch 值 */
             if (cl.default_label >= 0) {
                 ir_emit(g->fn, IR_JMP, cl.default_label, 0, 0);
             } else {
@@ -978,16 +1077,16 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
             break;
         }
         case AST_CASE: {
-            /* 输出标签，但要在进入 case 体前弹掉栈顶的 switch 值。
-             * 这里栈顶处于上方"跳过"路径上仍是脏的；我们已经在 switch 顶层
-             * 对未匹配执行了 POP；匹配跳过来时栈顶仍是 switch 值。
-             * 为简化：在每个 case 标签处都 POP 一次（栈顶就是 switch 值）。
-             * 但若 fall-through，则不应重复 POP。本实现接受这个小代价：
-             *   每个 case 起始 POP 一次。 */
+            /* ???????????????? case ???????????? switch ???
+             * ??????????????"????"??????????????????????? switch ????
+             * ???????????? POP??????????????????? switch ???
+             * ????????? case ??????? POP ???????????? switch ?????
+             * ???? fall-through???????? POP????????????????????
+             *   ??? case ??? POP ????? */
             ir_emit(g->fn, IR_LABEL, node->u.case_stmt.label_id, 0, 0);
-            /* 注意：fall-through 时栈是干净的，这里不该 POP。简化：跳到 case
-             * 之前已经把 switch 值留在栈顶；为保证清栈一致，让 switch 头部把
-             * 值放在一个临时位置。简单做法：让每个 case label 之前都跳过 POP。 */
+            /* ???fall-through ??????????????? POP????????? case
+             * ??????? switch ??????????????????????? switch ?????
+             * ?????????????????????????????? case label ???????? POP?? */
             irgen_stmt(g, node->u.case_stmt.stmt);
             break;
         }
@@ -1018,18 +1117,18 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
             }
             break;
         case AST_ASM: {
-            /* 扩展内联汇编：把模板与三段操作数拼成完整 C 表达式串：
+            /* ?????????????????????????????????? C ?????????
              *   "asm_text" : outputs : inputs : clobbers
-             * 让 C 后端透传给 gcc 处理操作数；ARM 后端忽略操作数部分。
-             * 用首字符 '@' 作为"完整扩展形式"的前缀标识，IR_ASM 后端据此分辨：
-             *   - '@' 开头：扩展形式，name 中是 `"text" : outputs : inputs : clobbers`
-             *   - 其他：纯文本，name 即旧式 IR_ASM 单段模板。 */
+             * ?? C ???????? gcc ????????????ARM ????????????????
+             * ??????? '@' ???"??????????"?????????IR_ASM ????????
+             *   - '@' ?????????????name ???? `"text" : outputs : inputs : clobbers`
+             *   - ?????????????name ????? IR_ASM ???????^ */
             const char *text = node->u.asm_stmt.text ? node->u.asm_stmt.text : "";
             const char *outs = node->u.asm_stmt.outputs;
             const char *ins  = node->u.asm_stmt.inputs;
             const char *clb  = node->u.asm_stmt.clobbers;
             if (outs || ins || clb) {
-                /* 拼接扩展形式，引号转义模板字符串 */
+                /* ?????????????????????????? */
                 StrBuf sb; sb_init(&sb);
                 sb_putc(&sb, '@');
                 sb_putstr_lit(&sb, text);
@@ -1057,9 +1156,9 @@ static void irgen_lvalue_addr(IrGen *g, AstNode *node) {
     if (node->kind == AST_VAR) {
         Symbol *s = sym_find(node->u.name);
         if (s && s->kind == SYM_GLOBAL) {
-            /* 全局变量取地址：发 PUSH_GLOBAL_ADDR，后端以变量地址入栈。
-             * 替代旧的 PUSH_INT 0 占位（C 后端会忽略 name，导致地址为 0）。
-             * static 局部变量被提升为全局，引用时用 mangle 后的名字 */
+            /* ?????????????? PUSH_GLOBAL_ADDR??????????????????
+             * ?????? PUSH_INT 0 ?????C ??????? name????????? 0????
+             * static ????????????????????????? mangle ??????? */
             const char *gname = node->u.name;
             if (s->is_static) gname = static_local_name(g->fn->name, node->u.name);
             ir_emit(g->fn, IR_PUSH_GLOBAL_ADDR, 0, gname, 0);
@@ -1071,8 +1170,8 @@ static void irgen_lvalue_addr(IrGen *g, AstNode *node) {
         return;
     }
     if (node->kind == AST_COMPOUND_LITERAL) {
-        /* 复合字面量是 lvalue；其"地址"即匿名全局的地址。
-         * irgen_compound_literal 会登记全局并返回其名字。 */
+        /* ???????????? lvalue????"???"??????????????
+         * irgen_compound_literal ??????????????????? */
         const char *gname = irgen_compound_literal(g, node);
         ir_emit(g->fn, IR_PUSH_GLOBAL_ADDR, 0, gname, 0);
         return;
@@ -1110,6 +1209,12 @@ static void irgen_lvalue_addr(IrGen *g, AstNode *node) {
         AstNode *obj = node->u.member.obj;
         if (node->u.member.is_arrow) {
             irgen_expr(g, obj);
+        } else if (obj->kind == AST_FUNC_CALL) {
+            /* Function call returning a struct: irgen_expr pushes the
+             * result pointer (address of the struct at frame+8176 in
+             * the callee). Treat like arrow ? add member offset to
+             * this pointer to get the member address. */
+            irgen_expr(g, obj);
         } else {
             irgen_lvalue_addr(g, obj);
         }
@@ -1120,10 +1225,10 @@ static void irgen_lvalue_addr(IrGen *g, AstNode *node) {
     ark_log("[irgen] line %d: invalid lvalue\n", node->line);
 }
 
-/* 查找 AST_MEMBER 节点对应的位域信息。
- * AST_MEMBER 节点本身不带 bit_offset/bit_width（见 ast.h），需根据 obj 类型
- * 重新到结构体字段链中查找。返回 1 表示是位域，0 表示非位域或查找失败。
- * 输出：*pbit_off = 单元内位偏移；*pbit_width = 位宽。 */
+/* ???? AST_MEMBER ????????????????
+ * AST_MEMBER ????????? bit_offset/bit_width???? ast.h????????? obj ????
+ * ????????????????????????? 1 ?????????0 ?????????????????
+ * ?????*pbit_off = ???????????*pbit_width = ?????? */
 static int member_bitfield_info(AstNode *node, int *pbit_off, int *pbit_width) {
     AstNode *obj = node->u.member.obj;
     Type *st = 0;
@@ -1147,13 +1252,26 @@ static void irgen_expr(IrGen *g, AstNode *node) {
         ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
         return;
     }
-    g_ir_cur_line = node->line;  /* 供 DWARF .loc 使用 */
+    g_ir_cur_line = node->line;  /* ?? DWARF .loc ??? */
     switch (node->kind) {
         case AST_NUM:
+            if (node->type && node->type->kind == TYPE_COMPLEX) {
+                /* C99 ??????????num_val=-1 ????????? (0, fval)??
+                 * ????????????? (fval, 0)??
+                 * ?????????????????? IR_PUSH_FLOAT + aux 0x600??double+complex?????? */
+                double re, im;
+                if (node->u.num_val == -1) { re = 0.0; im = node->fval; }
+                else { re = node->fval; im = 0.0; }
+                {
+                    int cid = ir_program_add_complex(g->prog, re, im);
+                    ir_emit(g->fn, IR_PUSH_FLOAT, cid, 0, cid | 0x600);
+                }
+                break;
+            }
             if (node->type && (node->type->kind == TYPE_FLOAT || node->type->kind == TYPE_DOUBLE)) {
                 int fid = ir_program_add_float(g->prog, node->fval);
-                /* aux 高位 0x200 标记 double 精度：ARM 后端据此发射 64 位常量。
-                 * val 仍为浮点常量池索引。 */
+                /* aux ???? 0x200 ??? double ?????ARM ???????? 64 ????????
+                 * val ????????????????? */
                 int is_dbl = (node->type->kind == TYPE_DOUBLE);
                 ir_emit(g->fn, IR_PUSH_FLOAT, fid, 0, fid | (is_dbl ? 0x200 : 0));
             } else {
@@ -1164,8 +1282,8 @@ static void irgen_expr(IrGen *g, AstNode *node) {
             int slen = ark_strlen(node->u.name);
             int id = ir_program_add_string(g->prog, node->u.name, slen);
 #if ARKCC_FEATURE_WCHAR
-            /* B2: 宽字符串（node->type 为 wchar_t*）→ 标记 IrString，
-             * C 后端据此发射 L"..." 与 wchar_t 数组。 */
+            /* B2: ?????????node->type ? wchar_t*???? ??? IrString??
+             * C ???????? L"..." ?? wchar_t ???? */
             if (g_config.enable_wchar && node->type &&
                 node->type->kind == TYPE_PTR &&
                 node->type->base && node->type->base->kind == TYPE_WCHAR) {
@@ -1179,10 +1297,10 @@ static void irgen_expr(IrGen *g, AstNode *node) {
             ir_emit(g->fn, IR_PUSH_INT, node->u.num_val, 0, 0);
             break;
         case AST_COMPOUND_LITERAL: {
-            /* C99 复合字面量：登记为匿名全局。
-             *   - 数组/结构体：rvalue 为 decay 后的指针（即首元素地址），
-             *     故发 PUSH_GLOBAL_ADDR；
-             *   - 标量：rvalue 即标量值，发 PUSH_GLOBAL 加载其内容。 */
+            /* C99 ????????????????????????
+             *   - ????/?????rvalue ? decay ???????????????????
+             *     ??? PUSH_GLOBAL_ADDR??
+             *   - ??????rvalue ??????????? PUSH_GLOBAL ??????????? */
             const char *gname = irgen_compound_literal(g, node);
             if (node->type &&
                 (node->type->kind == TYPE_ARRAY ||
@@ -1201,7 +1319,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                 break;
             }
             if (s->kind == SYM_GLOBAL) {
-                /* static 局部变量被提升为全局，引用时用 mangle 后的名字 */
+                /* static ????????????????????????? mangle ??????? */
                 const char *gname = node->u.name;
                 if (s->is_static) gname = static_local_name(g->fn->name, node->u.name);
                 ir_emit(g->fn, IR_PUSH_GLOBAL, 0, gname, 0);
@@ -1210,16 +1328,34 @@ static void irgen_expr(IrGen *g, AstNode *node) {
             } else if (s->type && s->type->kind == TYPE_ARRAY) {
                 ir_emit(g->fn, IR_PUSH_ADDR, s->offset, node->u.name, 0);
             } else {
-                ir_emit(g->fn, IR_PUSH_VAR, s->offset, node->u.name, 0);
+                /* ??????????????? aux??????????????????????/???????
+                 * ???????????????? remquo ?? int*??????? int ?????????????
+                 * ????????? 4 ?????? 8 ????????? 4 ?????????????
+                 * ??????????? aux=0??8 ????????????????????????????????????
+                 * long/llong/ptr ??? 8 ????aux=0 ??????
+                 * aux ?? 8 ?? = ?????1/2/4????bit8 (0x100) = ???????? */
+                int aux = 0;
+                if (s->type) {
+                    int uns = s->type->is_unsigned ? 0x100 : 0;
+                    switch (s->type->kind) {
+                        case TYPE_CHAR:  aux = 1 | uns; break;
+                        case TYPE_SHORT: aux = 2 | uns; break;
+                        case TYPE_INT:
+                        case TYPE_ENUM:  aux = 4 | uns; break;
+                        case TYPE_COMPLEX: aux = 16; break;
+                        default:         aux = 0; break;
+                    }
+                }
+                ir_emit(g->fn, IR_PUSH_VAR, s->offset, node->u.name, aux);
             }
             break;
         }
         case AST_CAST:
             irgen_expr(g, node->u.unary.operand);
-            /* 浮点 <-> 整数 转换：根据源/目标类型发出 IR_F2I / IR_I2F。
-             * aux 高位 0x200 标记 double 精度，让 ARM 后端选择
-             * __aeabi_d2iz / __aeabi_i2d 等双精度助手而非单精度版本。
-             * F2I 看源类型是否 double；I2F 看目标类型是否 double。 */
+            /* ???? <-> ???? ??????????/?????????? IR_F2I / IR_I2F??
+             * aux ???? 0x200 ??? double ??????? ARM ??????
+             * __aeabi_d2iz / __aeabi_i2d ???????????????????????
+             * F2I ?????????? double??I2F ???????????? double?? */
             {
                 Type *src_t = node->u.unary.operand ? node->u.unary.operand->type : 0;
                 Type *dst_t = node->type;
@@ -1235,7 +1371,13 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                     int is_dbl = (dst_t->kind == TYPE_DOUBLE);
                     ir_emit(g->fn, IR_I2F, 0, 0, is_dbl ? 0x200 : 0);
                 }
-                /* 同类（int→int / float→float / 涉及指针）不做转换 */
+                /* complex -> real????????????????????? IR_F2I ??? 0x400 ????
+                 * ????? C ??????????? creal()????????? aux ????????????? */
+                if (src_t && src_t->kind == TYPE_COMPLEX &&
+                    dst_t && (dst_t->kind == TYPE_FLOAT || dst_t->kind == TYPE_DOUBLE || type_is_integer(dst_t))) {
+                    ir_emit(g->fn, IR_F2I, 0, 0, 0x400);  /* 0x400=complex->real ???? */
+                }
+                /* ???int??int / float??float / ??p?????????? */
             }
             break;
         case AST_COMMA:
@@ -1274,26 +1416,26 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                 int is_llong = 0;
                 int is_unsigned = 0;
                 int is_double = 0;
-                int aux_op = op;  /* 发给后端的运算符，可附加高位标志 */
+                int aux_op = op;  /* ?????????????????????????? */
                 Type *lt = node->u.binary.left ? node->u.binary.left->type : 0;
                 Type *rt = node->u.binary.right ? node->u.binary.right->type : 0;
                 if ((lt && (lt->kind == TYPE_FLOAT || lt->kind == TYPE_DOUBLE)) ||
                     (rt && (rt->kind == TYPE_FLOAT || rt->kind == TYPE_DOUBLE))) {
                     is_float = 1;
-                    /* 双精度判定：任一操作数为 double 即按 double 运算 */
+                    /* ????????????????????? double ???? double ???? */
                     if ((lt && lt->kind == TYPE_DOUBLE) ||
                         (rt && rt->kind == TYPE_DOUBLE)) {
                         is_double = 1;
                     }
                 }
                 if (!is_float) {
-                    /* C99 通常算术转换 (6.3.1.8)：
-                     *   - 算术/比较运算：两侧提升到公共类型，符号性由公共类型决定。
-                     *   - 移位运算：仅对左操作数做整型提升，符号性由提升后的左操作数决定。
-                     * irgen 不显式插入转换指令——只要 sema 正确设置了 is_unsigned 标志，
-                     * 后端即可据此选择有符号/无符号除法、比较条件、移位方式。 */
+                    /* C99 ?????????? (6.3.1.8)??
+                     *   - ????/??????????????????????????????????????????????
+                     *   - ???????????????????????????????????????????????????????????
+                     * irgen ??????????????????? sema ????????? is_unsigned ?????
+                     * ?????????????????/???????????????????????????? */
                     if (op == (int)TOK_SHL || op == (int)TOK_SHR) {
-                        /* 移位：usual_arith_conv(lt, 0) 退化为 promote_integer(lt) */
+                        /* ??????usual_arith_conv(lt, 0) ???? promote_integer(lt) */
                         Type *pl = usual_arith_conv(lt, 0);
                         is_unsigned = pl && pl->is_unsigned;
                     } else {
@@ -1302,8 +1444,46 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         is_llong = common && common->kind == TYPE_LLONG;
                     }
                 }
-                irgen_expr(g, node->u.binary.left);
-                irgen_expr(g, node->u.binary.right);
+                /* C99 ???????????????????? TYPE_COMPLEX ?????????????
+                 * ???????????????????????????=0????????????????
+                 * 8 ????????? 8 ???????????????
+                 * aux 0x600 = double(0x200) + complex(0x400)?????? IR_FADD/FSUB/FMUL/FDIV?? */
+                {
+                    int is_complex = 0;
+                    if (lt && lt->kind == TYPE_COMPLEX) is_complex = 1;
+                    if (rt && rt->kind == TYPE_COMPLEX) is_complex = 1;
+                    irgen_expr(g, node->u.binary.left);
+                    if (is_complex && lt && lt->kind != TYPE_COMPLEX) {
+                        /* ???????????????0x600=float??complex??0x700=int??complex */
+                        if (lt->kind == TYPE_FLOAT || lt->kind == TYPE_DOUBLE)
+                            ir_emit(g->fn, IR_I2F, 0, 0, 0x600);
+                        else
+                            ir_emit(g->fn, IR_I2F, 0, 0, 0x700);
+                    }
+                    irgen_expr(g, node->u.binary.right);
+                    if (is_complex && rt && rt->kind != TYPE_COMPLEX) {
+                        if (rt->kind == TYPE_FLOAT || rt->kind == TYPE_DOUBLE)
+                            ir_emit(g->fn, IR_I2F, 0, 0, 0x600);
+                        else
+                            ir_emit(g->fn, IR_I2F, 0, 0, 0x700);
+                    }
+                    if (is_complex && (op == (int)TOK_PLUS || op == (int)TOK_MINUS ||
+                                       op == (int)TOK_MUL || op == (int)TOK_DIV)) {
+                        IrOp fop = IR_FADD;
+                        switch (op) {
+                            case (int)TOK_PLUS:  fop = IR_FADD; break;
+                            case (int)TOK_MINUS: fop = IR_FSUB; break;
+                            case (int)TOK_MUL:   fop = IR_FMUL; break;
+                            case (int)TOK_DIV:   fop = IR_FDIV; break;
+                        }
+                        ir_emit(g->fn, fop, 0, 0, op | 0x600);
+                        break;  /* ???? AST_BINARY ???? */
+                    }
+                    if (is_complex && (op == (int)TOK_EQ || op == (int)TOK_NE)) {
+                        ir_emit(g->fn, IR_FCMP, 0, 0, op | 0x600);
+                        break;
+                    }
+                }
                 if (is_float) {
                     IrOp fop = IR_FADD;
                     switch (op) {
@@ -1317,29 +1497,32 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                             fop = IR_FCMP; break;
                         default: fop = IR_FADD; break;
                     }
-                    /* aux 高位 0x200 标记 double 精度：ARM 后端据此选择
-                     * __aeabi_dadd / __aeabi_fadd 等；C 后端按 double 存储。 */
+                    /* aux ???? 0x200 ??? double ?????ARM ????????
+                     * __aeabi_dadd / __aeabi_fadd ???C ???? double ????? */
                     ir_emit(g->fn, fop, 0, 0, op | (is_double ? 0x200 : 0));
                 } else if (is_llong) {
-                    /* 64 位运算：C 后端同 IR_BINARY（槽位已是 long long）；
-                     * ARM 后端弹出 4 槽做 64 位运算再压 2 槽。 */
+                    /* 64 ??????C ???? IR_BINARY?????????? long long????
+                     * ARM ?????? 4 ???? 64 ????????? 2 ??? */
                     int is_cmp = (op == (int)TOK_EQ || op == (int)TOK_NE ||
                                   op == (int)TOK_LT || op == (int)TOK_GT ||
                                   op == (int)TOK_LE || op == (int)TOK_GE);
                     if (is_cmp) {
-                        ir_emit(g->fn, IR_64CMP, 0, 0, op);
+                        /* ?? 32 ?? IR_BINARY ?????? aux ???? (0x100) ?????????????
+                         * ???????? (unsigned long long) ?????????? (?? ULLONG_MAX
+                         * ???? = -1) ????????????????????? LLONG_MAX?? */
+                        ir_emit(g->fn, IR_64CMP, 0, 0, op | (is_unsigned ? 0x100 : 0));
                     } else {
-                        ir_emit(g->fn, IR_64BINARY, 0, 0, op);
+                        ir_emit(g->fn, IR_64BINARY, 0, 0, op | (is_unsigned ? 0x100 : 0));
                     }
                 } else if (op == (int)TOK_DIV || op == (int)TOK_MOD) {
-                    /* 整数除法/取模：专用 IR_DIV/IR_MOD，aux=1 表示无符号。
-                     * 让 ARM 后端选择 __aeabi_idiv / __aeabi_uidiv。 */
+                    /* ????????/??????? IR_DIV/IR_MOD??aux=1 ?????????
+                     * ?? ARM ?????? __aeabi_idiv / __aeabi_uidiv?? */
                     IrOp dop = (op == (int)TOK_DIV) ? IR_DIV : IR_MOD;
                     ir_emit(g->fn, dop, 0, 0, is_unsigned ? 1 : 0);
                 } else {
-                    /* 对无符号比较(TOK_LT/GT/LE/GE)和右移(TOK_SHR)在 aux 高位(0x100)
-                     * 编码无符号标志，让后端选择无符号比较条件 / 逻辑右移。
-                     * EQ/NE 为位相等比较，有符号/无符号结果一致，无需编码。 */
+                    /* ?????????(TOK_LT/GT/LE/GE)??????(TOK_SHR)?? aux ????(0x100)
+                     * ???????????????????????????????? / ????????
+                     * EQ/NE ???????????????/?????????????????? */
                     if (is_unsigned && (op == (int)TOK_LT || op == (int)TOK_GT ||
                                         op == (int)TOK_LE || op == (int)TOK_GE ||
                                         op == (int)TOK_SHR)) {
@@ -1358,7 +1541,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                 int packed_aux = 0;
                 irgen_expr(g, node->u.unary.operand);
                 ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
-                /* __packed 指针解引用：aux 0x400 标记按字节访问未对齐内存 */
+                /* __packed ?????????aux 0x400 ??????????????????? */
                 if (node->u.unary.operand->type &&
                     node->u.unary.operand->type->kind == TYPE_PTR &&
                     node->u.unary.operand->type->is_packed) {
@@ -1372,8 +1555,8 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                     Symbol *s = sym_find(operand->u.name);
                     if (!s) { ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0); break; }
                     if (s->kind == SYM_GLOBAL) {
-                        /* 全局/static 局部自增自减：走 PUSH_GLOBAL/STORE_GLOBAL。
-                         * static 局部用 mangle 后的名字，避免写到 frame[0]。 */
+                        /* ???/static ?????????????? PUSH_GLOBAL/STORE_GLOBAL??
+                         * static ????? mangle ???????????????? frame[0]?? */
                         const char *gname = operand->u.name;
                         if (s->is_static) gname = static_local_name(g->fn->name, operand->u.name);
                         if (node->u.unary.is_postfix) {
@@ -1403,11 +1586,58 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         ir_emit(g->fn, IR_PUSH_VAR, s->offset, operand->u.name, 0);
                     }
                 } else {
-                    irgen_expr(g, operand);
+                    /* General lvalue: *ptr, arr[i], s.f, p->f, etc.
+                     * Use irgen_lvalue_addr to get the address, then
+                     * load/increment/store through it. The AST_VAR path
+                     * above handles the common simple-variable case; this
+                     * path handles all other lvalue kinds. */
+                    int elem_sz = type_size(operand->type ? operand->type : type_int());
+                    int packed_aux = 0;
+                    if (elem_sz <= 0) elem_sz = 4;
+                    /* __packed pointer unaligned access for *ptr */
+                    if (operand->kind == AST_UNARY && operand->u.unary.op == (int)TOK_MUL &&
+                        operand->u.unary.operand->type &&
+                        operand->u.unary.operand->type->kind == TYPE_PTR &&
+                        operand->u.unary.operand->type->is_packed) {
+                        packed_aux = 0x400;
+                    }
+                    if (node->u.unary.is_postfix) {
+                        /* Postfix: result = old value; store new value as side effect.
+                         * Stack trace: [addr] -> [addr,addr] -> [addr,old] ->
+                         * [old,addr] -> [old,addr,addr] -> [old,addr,val] ->
+                         * [old,addr,val,delta] -> [old,addr,new] -> [old,new] -> [old] */
+                        irgen_lvalue_addr(g, operand);
+                        ir_emit(g->fn, IR_DUP, 0, 0, 0);
+                        ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
+                        ir_emit(g->fn, IR_LOAD_IDX, elem_sz, 0, packed_aux);
+                        ir_emit(g->fn, IR_SWAP, 0, 0, 0);
+                        ir_emit(g->fn, IR_DUP, 0, 0, 0);
+                        ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
+                        ir_emit(g->fn, IR_LOAD_IDX, elem_sz, 0, packed_aux);
+                        ir_emit(g->fn, IR_PUSH_INT, delta, 0, 0);
+                        ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_PLUS);
+                        ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, packed_aux);
+                        ir_emit(g->fn, IR_POP, 0, 0, 0);
+                    } else {
+                        /* Prefix: result = new value; store new value as side effect.
+                         * Stack trace: [addr] -> [addr,addr] -> [addr,val] ->
+                         * [addr,val,delta] -> [addr,new] -> [new] */
+                        irgen_lvalue_addr(g, operand);
+                        ir_emit(g->fn, IR_DUP, 0, 0, 0);
+                        ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
+                        ir_emit(g->fn, IR_LOAD_IDX, elem_sz, 0, packed_aux);
+                        ir_emit(g->fn, IR_PUSH_INT, delta, 0, 0);
+                        ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_PLUS);
+                        ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, packed_aux);
+                    }
                 }
             } else {
+                /* val=1 ??????????????? C ??????????????
+                 * ??????????? 0-x???????????????????????????????????? */
+                int is_float = node->type &&
+                    (node->type->kind == TYPE_FLOAT || node->type->kind == TYPE_DOUBLE);
                 irgen_expr(g, node->u.unary.operand);
-                ir_emit(g->fn, IR_UNARY, 0, 0, op);
+                ir_emit(g->fn, IR_UNARY, is_float ? 1 : 0, 0, op);
             }
             break;
         }
@@ -1415,22 +1645,29 @@ static void irgen_expr(IrGen *g, AstNode *node) {
             AstNode *L = node->u.binary.left;
             int op = node->u.binary.op;
             if (op == (int)TOK_ASSIGN) {
-                /* 结构体/联合体整体赋值：用 IR_MEMCPY 按字节拷贝。
-                 * IR_MEMCPY 栈语义：顶=dst, 次顶=src，弹出二者。
-                 * 赋值表达式结果留 dst 地址（语句语境由 AST_EXPR_STMT 弹掉）。 */
+                /* ????/???????????????? IR_MEMCPY ??????????
+                 * IR_MEMCPY ????????=dst, ????=src???????????
+                 * ????????????? dst ???????????? AST_EXPR_STMT ???????? */
                 if (L->type && (L->type->kind == TYPE_STRUCT || L->type->kind == TYPE_UNION)) {
                     int sz = type_size(L->type);
                     if (sz <= 0) sz = 4;
-                    irgen_lvalue_addr(g, L);                      /* [dst] 保留作结果 */
-                    irgen_lvalue_addr(g, node->u.binary.right);   /* [dst, src] */
-                    irgen_lvalue_addr(g, L);                      /* [dst, src, dst] 顶=dst */
-                    ir_emit(g->fn, IR_MEMCPY, sz, 0, 0);          /* 弹 dst+src，留 [dst] */
+                    irgen_lvalue_addr(g, L);                      /* [dst] */
+                    /* RHS of struct assignment: if it's a function call returning
+                     * a struct, irgen_expr pushes the result address (C backend
+                     * stores at frame+8176). Otherwise take the lvalue address. */
+                    if (node->u.binary.right && node->u.binary.right->kind == AST_FUNC_CALL) {
+                        irgen_expr(g, node->u.binary.right);     /* [dst, src] */
+                    } else {
+                        irgen_lvalue_addr(g, node->u.binary.right);   /* [dst, src] */
+                    }
+                    irgen_lvalue_addr(g, L);                      /* [dst, src, dst] */
+                    ir_emit(g->fn, IR_MEMCPY, sz, 0, 0);          /* pops src,dst; pushes dst */
                     break;
                 }
                 if (L->kind == AST_VAR) {
                     Symbol *s = sym_find(L->u.name);
                     irgen_expr(g, node->u.binary.right);
-                    /* 浮点 <-> 整数 赋值需插入转换指令 */
+                    /* ???? <-> ???? ?????????????? */
                     {
                         AstNode *rv = node->u.binary.right;
                         Type *st = rv ? rv->type : 0;
@@ -1441,6 +1678,11 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         int di = dt && type_is_integer(dt);
                         if (sf && di)      ir_emit(g->fn, IR_F2I, 0, 0, 0);
                         else if (si && df) ir_emit(g->fn, IR_I2F, 0, 0, 0);
+                        /* _Bool ??Z????C99 6.3.1.2?? */
+                        if (dt && dt->kind == TYPE_BOOL) {
+                            ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
+                            ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_NE);
+                        }
                     }
                     if (s && s->kind == SYM_GLOBAL) {
                         const char *gname = L->u.name;
@@ -1448,7 +1690,18 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         ir_emit(g->fn, IR_DUP, 0, 0, 0);
                         ir_emit(g->fn, IR_STORE_GLOBAL, 0, gname, 0);
                     } else if (s) {
-                        ir_emit(g->fn, IR_STORE, s->offset, L->u.name, 0);
+                        int store_aux = 0;
+                        if (s && s->type) {
+                            switch (s->type->kind) {
+                                case TYPE_CHAR:  store_aux = 1; break;
+                                case TYPE_SHORT: store_aux = 2; break;
+                                case TYPE_INT:
+                                case TYPE_ENUM:  store_aux = 4; break;
+                                case TYPE_COMPLEX: store_aux = 16; break;
+                                default:         store_aux = 0; break;
+                            }
+                        }
+                        ir_emit(g->fn, IR_STORE, s->offset, L->u.name, store_aux);
                         ir_emit(g->fn, IR_PUSH_VAR, s->offset, L->u.name, 0);
                     }
                 } else if (L->kind == AST_ARRAY_ACCESS) {
@@ -1458,7 +1711,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                     if (arr->type && (arr->type->kind == TYPE_ARRAY || arr->type->kind == TYPE_PTR))
                         elem_sz = type_size(arr->type->base);
                     if (elem_sz <= 0) elem_sz = 4;
-                    /* __packed 指针下标存储：aux 0x400 标记按字节访问 */
+                    /* __packed ???????????aux 0x400 ?????????? */
                     if (arr->type && arr->type->kind == TYPE_PTR && arr->type->is_packed) {
                         packed_aux = 0x400;
                     }
@@ -1471,7 +1724,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                     if (elem_sz <= 0) elem_sz = 4;
                     irgen_expr(g, L->u.unary.operand);
                     irgen_expr(g, node->u.binary.right);
-                    /* __packed 指针存储：aux 0x400 标记按字节访问未对齐内存 */
+                    /* __packed ???????aux 0x400 ??????????????????? */
                     if (L->u.unary.operand->type &&
                         L->u.unary.operand->type->kind == TYPE_PTR &&
                         L->u.unary.operand->type->is_packed) {
@@ -1481,8 +1734,8 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                 } else if (L->kind == AST_MEMBER) {
                     int bo, bw;
                     if (member_bitfield_info(L, &bo, &bw)) {
-                        /* 位域赋值：IR_STORE_FLD 弹出 value(顶) 与 addr(次顶)，
-                         * 按位宽掩码写入存储单元，不回压。先存后读以拿到截断后的值。 */
+                        /* ???????IR_STORE_FLD ???? value(??) ?? addr(????)??
+                         * ?????????????????????????????????????????????? */
                         irgen_lvalue_addr(g, L);                      /* [addr] */
                         irgen_expr(g, node->u.binary.right);          /* [addr, value] */
                         ir_emit(g->fn, IR_STORE_FLD, bo, 0, bw);      /* [] */
@@ -1525,11 +1778,83 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         ir_emit(g->fn, IR_DUP, 0, 0, 0);
                         ir_emit(g->fn, IR_STORE_GLOBAL, 0, gname, 0);
                     } else if (s) {
+                        int store_aux = 0;
+                        if (s && s->type) {
+                            switch (s->type->kind) {
+                                case TYPE_CHAR:  store_aux = 1; break;
+                                case TYPE_SHORT: store_aux = 2; break;
+                                case TYPE_INT:
+                                case TYPE_ENUM:  store_aux = 4; break;
+                                case TYPE_COMPLEX: store_aux = 16; break;
+                                default:         store_aux = 0; break;
+                            }
+                        }
                         ir_emit(g->fn, IR_PUSH_VAR, s->offset, L->u.name, 0);
                         irgen_expr(g, node->u.binary.right);
                         ir_emit(g->fn, IR_BINARY, 0, 0, bop);
-                        ir_emit(g->fn, IR_STORE, s->offset, L->u.name, 0);
+                        ir_emit(g->fn, IR_STORE, s->offset, L->u.name, store_aux);
                         ir_emit(g->fn, IR_PUSH_VAR, s->offset, L->u.name, 0);
+                    }
+                } else if (L->kind == AST_UNARY && L->u.unary.op == (int)TOK_MUL) {
+                    /* *ptr OP= val : load old, compute new, store back, leave new on stack.
+                     * Uses IR_SWAP to reorder [new, new, addr] -> [new, addr, new]
+                     * so STORE_IDX pops (new, addr) and leaves [new] as result. */
+                    int elem_sz = type_size(L->type ? L->type : type_int());
+                    int packed_aux = 0;
+                    if (elem_sz <= 0) elem_sz = 4;
+                    if (L->u.unary.operand->type &&
+                        L->u.unary.operand->type->kind == TYPE_PTR &&
+                        L->u.unary.operand->type->is_packed) {
+                        packed_aux = 0x400;
+                    }
+                    irgen_lvalue_addr(g, L);                       /* [addr] */
+                    ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);           /* [addr, 0] */
+                    ir_emit(g->fn, IR_LOAD_IDX, elem_sz, 0, packed_aux); /* [old_val] */
+                    irgen_expr(g, node->u.binary.right);            /* [old_val, rhs] */
+                    ir_emit(g->fn, IR_BINARY, 0, 0, bop);           /* [new_val] */
+                    ir_emit(g->fn, IR_DUP, 0, 0, 0);               /* [new_val, new_val] */
+                    irgen_lvalue_addr(g, L);                       /* [new_val, new_val, addr] */
+                    ir_emit(g->fn, IR_SWAP, 0, 0, 0);              /* [new_val, addr, new_val] */
+                    ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, packed_aux); /* [new_val] */
+                } else if (L->kind == AST_ARRAY_ACCESS) {
+                    /* arr[i] OP= val */
+                    AstNode *arr = L->u.array_access.array;
+                    int elem_sz = 4;
+                    int packed_aux = 0;
+                    if (arr->type && (arr->type->kind == TYPE_ARRAY || arr->type->kind == TYPE_PTR))
+                        elem_sz = type_size(arr->type->base);
+                    if (elem_sz <= 0) elem_sz = 4;
+                    if (arr->type && arr->type->kind == TYPE_PTR && arr->type->is_packed) {
+                        packed_aux = 0x400;
+                    }
+                    irgen_lvalue_addr(g, L);                       /* [addr] */
+                    ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);           /* [addr, 0] */
+                    ir_emit(g->fn, IR_LOAD_IDX, elem_sz, 0, packed_aux); /* [old_val] */
+                    irgen_expr(g, node->u.binary.right);            /* [old_val, rhs] */
+                    ir_emit(g->fn, IR_BINARY, 0, 0, bop);           /* [new_val] */
+                    ir_emit(g->fn, IR_DUP, 0, 0, 0);               /* [new_val, new_val] */
+                    irgen_lvalue_addr(g, L);                       /* [new_val, new_val, addr] */
+                    ir_emit(g->fn, IR_SWAP, 0, 0, 0);              /* [new_val, addr, new_val] */
+                    ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, packed_aux); /* [new_val] */
+                } else if (L->kind == AST_MEMBER) {
+                    int bo, bw;
+                    if (member_bitfield_info(L, &bo, &bw)) {
+                        /* Bitfield compound-assign requires read-mask-modify-write;
+                         * too complex for now, fall back to no-op. */
+                        ark_log("[irgen] line %d: compound-assign on bitfield unsupported\n", node->line);
+                        ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
+                    } else {
+                        int elem_sz = type_size(L->type ? L->type : type_int());
+                        if (elem_sz <= 0) elem_sz = 4;
+                        irgen_lvalue_addr(g, L);                       /* [addr] */
+                        ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);           /* [addr, 0] */
+                        ir_emit(g->fn, IR_LOAD_IDX, elem_sz, 0, 0);     /* [old_val] */
+                        irgen_expr(g, node->u.binary.right);            /* [old_val, rhs] */
+                        ir_emit(g->fn, IR_BINARY, 0, 0, bop);           /* [new_val] */
+                        ir_emit(g->fn, IR_DUP, 0, 0, 0);               /* [new_val, new_val] */
+                        irgen_lvalue_addr(g, L);                       /* [new_val, new_val, addr] */
+                        ir_emit(g->fn, IR_SWAP, 0, 0, 0);              /* [new_val, addr, new_val] */
+                        ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, 0);    /* [new_val] */
                     }
                 } else {
                     ark_log("[irgen] line %d: compound-assign target unsupported\n", node->line);
@@ -1541,22 +1866,84 @@ static void irgen_expr(IrGen *g, AstNode *node) {
         case AST_FUNC_CALL: {
             int i;
             int n = node->u.call.arg_count;
-            Symbol *s = sym_find(node->u.call.name);
+            int is_indirect = (node->u.call.name && node->u.call.name[0] == '?');
+            Symbol *s = is_indirect ? 0 : sym_find(node->u.call.name);
+
+            /* C99 ????????????????????????? IR?????? 8??????????
+             * ??????????? .c ????????16????????? IR_CALL ?? long long(8???)
+             * ????????????????????????????????????? */
+            if (s && n == 1) {
+                const char *fn = node->u.call.name;
+                if (ark_streq(fn, "creal") || ark_streq(fn, "crealf") || ark_streq(fn, "creall")) {
+                    irgen_expr(g, node->u.call.args[0]);
+                    ir_emit(g->fn, IR_F2I, 0, 0, 0x400);  /* 0x400=???? */
+                    break;
+                }
+                if (ark_streq(fn, "cimag") || ark_streq(fn, "cimagf") || ark_streq(fn, "cimagl")) {
+                    irgen_expr(g, node->u.call.args[0]);
+                    ir_emit(g->fn, IR_I2F, 0, 0, 0x400);  /* 0x400=???? */
+                    break;
+                }
+                if (ark_streq(fn, "conj") || ark_streq(fn, "conjf") || ark_streq(fn, "conjl")) {
+                    irgen_expr(g, node->u.call.args[0]);
+                    ir_emit(g->fn, IR_UNARY, 0, 0, (int)TOK_BNOT | 0x400); /* ???????? */
+                    break;
+                }
+                if (ark_streq(fn, "cabs") || ark_streq(fn, "cabsf") || ark_streq(fn, "cabsl")) {
+                    irgen_expr(g, node->u.call.args[0]);
+                    ir_emit(g->fn, IR_F2I, 0, 0, 0x500);  /* 0x500=?? cabs */
+                    break;
+                }
+                if (ark_streq(fn, "carg") || ark_streq(fn, "cargf") || ark_streq(fn, "cargl")) {
+                    irgen_expr(g, node->u.call.args[0]);
+                    ir_emit(g->fn, IR_I2F, 0, 0, 0x500);  /* 0x500=????? carg */
+                    break;
+                }
+                if (ark_streq(fn, "cexp") || ark_streq(fn, "cexpf") || ark_streq(fn, "cexpl")) {
+                    irgen_expr(g, node->u.call.args[0]);
+                    ir_emit(g->fn, IR_FADD, 0, 0, 0x500);  /* 0x500=??????? cexp */
+                    break;
+                }
+            }
+
             for (i = n - 1; i >= 0; i--) {
                 irgen_expr(g, node->u.call.args[i]);
             }
-            /* __svc(n) 函数：生成 SVC 指令而非 BL */
+            /* Indirect call: push the function pointer (callee) last so it
+             * becomes aa[0] when the C backend pops. n includes the pointer. */
+            if (is_indirect && node->u.call.callee) {
+                irgen_expr(g, node->u.call.callee);
+                n = n + 1;
+            }
+            /* __svc(n) ?????????? SVC ?????? BL */
             if (s && s->svc_num != 0) {
                 ir_emit(g->fn, IR_SVC, s->svc_num, node->u.call.name, 0);
             }
 #if ARKCC_FEATURE_ARMCC_KEYWORDS
-            /* __smc(n) 函数：生成 SMC 指令而非 BL */
+            /* __smc(n) ?????????? SMC ?????? BL */
             else if (s && s->smc_num >= 0) {
                 ir_emit(g->fn, IR_SMC, s->smc_num, node->u.call.name, 0);
             }
 #endif
             else {
-                ir_emit(g->fn, IR_CALL, n, node->u.call.name, 0);
+                /* Encode argument types into aux bitmask so the C backend can emit
+                 * the correct cast for each variadic argument (long long vs double).
+                 * bit i (i=0..7) = 1 if arg i is float/double (default-promoted to
+                 * double when passed to a variadic function); 0 otherwise (int/ptr).
+                 * Without this, printf("%g", x) would receive a long long bit
+                 * pattern in an integer register while the callee reads XMM, causing
+                 * garbage output or a crash on x86_64 MS-ABI hosts. */
+                int argmask = 0;
+                int max_args = n > 8 ? 8 : n;
+                for (i = 0; i < max_args; i++) {
+                    AstNode *arg = node->u.call.args[i];
+                    if (arg && arg->type &&
+                        (arg->type->kind == TYPE_FLOAT ||
+                         arg->type->kind == TYPE_DOUBLE)) {
+                        argmask |= (1 << i);
+                    }
+                }
+                ir_emit(g->fn, IR_CALL, n, node->u.call.name, argmask);
             }
             break;
         }
@@ -1564,10 +1951,10 @@ static void irgen_expr(IrGen *g, AstNode *node) {
             int elem_sz;
             int packed_aux = 0;
             AstNode *arr = node->u.array_access.array;
-            /* 推断下标结果的类型：若 arr 是数组/指针，结果即元素类型。
-             * 当结果是数组类型时（如 matrix[1] 仍是 int[3]），按 C 语义
-             * 衰退为指向首元素的指针——只把地址压栈，不做 IR_LOAD_IDX。
-             * 否则按标量元素读取：地址 + 0 偏移，按元素大小加载。 */
+            /* ?????????????????? arr ??????/????????????????
+             * ???????????????????? matrix[1] ???? int[3]?????? C ????
+             * ??????????????????????????????? IR_LOAD_IDX??
+             * ????????????????? + 0 ????????????????? */
             if (!node->type && arr && arr->type &&
                 (arr->type->kind == TYPE_ARRAY || arr->type->kind == TYPE_PTR)) {
                 node->type = arr->type->base;
@@ -1581,7 +1968,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
             else
                 elem_sz = type_size(node->type ? node->type : type_int());
             if (elem_sz <= 0) elem_sz = 4;
-            /* __packed 指针下标读取：aux 0x400 标记按字节访问未对齐内存 */
+            /* __packed ???????????aux 0x400 ??????????????????? */
             if (arr->type && arr->type->kind == TYPE_PTR && arr->type->is_packed) {
                 packed_aux = 0x400;
             }
@@ -1593,10 +1980,15 @@ static void irgen_expr(IrGen *g, AstNode *node) {
         case AST_MEMBER: {
             int bo, bw;
             if (member_bitfield_info(node, &bo, &bw)) {
-                /* 位域读取：irgen_lvalue_addr 推入存储单元地址（已含字段偏移），
-                 * IR_LOAD_FLD 弹出地址，按 (bit_offset, bit_width) 提取位域值。 */
+                /* ????????irgen_lvalue_addr ??????????????????????????
+                 * IR_LOAD_FLD ??????????? (bit_offset, bit_width) ?????????? */
                 irgen_lvalue_addr(g, node);
                 ir_emit(g->fn, IR_LOAD_FLD, bo, 0, bw);
+            } else if (node->type && node->type->kind == TYPE_ARRAY) {
+                /* ????????????????? data[]??????????????????????????
+                 * ??????????? IR_LOAD_IDX???? AST_ARRAY_ACCESS ???????????
+                 * ????????????????????????????????????????????????????????? */
+                irgen_lvalue_addr(g, node);
             } else {
                 int elem_sz = type_size(node->type ? node->type : type_int());
                 if (elem_sz <= 0) elem_sz = 4;

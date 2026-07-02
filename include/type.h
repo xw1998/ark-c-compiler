@@ -1,5 +1,5 @@
 /* Ark C Compiler - type.h
- * 类型系统：基础类型 + 指针 + 数组 + 结构体/联合体 + 函数类型。
+ * Type system: basic types + pointer + array + struct/union + function types.
  */
 #ifndef ARK_TYPE_H
 #define ARK_TYPE_H
@@ -22,32 +22,32 @@ typedef enum {
     TYPE_UNION,
     TYPE_FUNC,
     TYPE_ENUM,
-    TYPE_WCHAR,     /* 宽字符 wchar_t（B2） */
-    TYPE_COMPLEX    /* _Complex 复数（B4）：base 指向 float/double */
+    TYPE_WCHAR,     /* wide character wchar_t (B2) */
+    TYPE_COMPLEX    /* _Complex (B4): base points to float/double */
 } ValueType;
 
 typedef struct StructField {
     char               *name;
     struct Type        *type;
     int                 offset;
-    int                 bit_offset;   /* 位域起始位（仅 packed 信息透传） */
-    int                 bit_width;    /* 位域宽度；0 表示非位域 */
+    int                 bit_offset;   /* bitfield start bit (packed info passthrough only) */
+    int                 bit_width;    /* bitfield width; 0 means non-bitfield */
     struct StructField *next;
 } StructField;
 
 typedef struct Type {
     ValueType    kind;
-    struct Type *base;       /* PTR/ARRAY 的元素类型；FUNC 的返回类型；COMPLEX 的实数类型 */
-    int          size;       /* 数组长度；struct/union 的总字节数 */
+    struct Type *base;       /* PTR/ARRAY element type; FUNC return type; COMPLEX real type */
+    int          size;       /* array length; struct/union total byte count */
     int          is_unsigned;
-    int          is_variadic;/* 函数：是否可变参 */
+    int          is_variadic;/* function: whether variadic */
     char        *tag;        /* struct/union/enum tag */
-    StructField *fields;     /* struct/union 字段链 */
-    struct Type **params;    /* 函数参数类型数组 */
+    StructField *fields;     /* struct/union field linked list */
+    struct Type **params;    /* function parameter type array */
     int          param_count;
     int          is_packed;       /* __attribute__((packed)) */
-    int          align_override;  /* __attribute__((aligned(N))) 显式对齐，0=默认 */
-    int          is_vla;          /* 变长数组标记（B3）：运行时分配 */
+    int          align_override;  /* __attribute__((aligned(N))) explicit alignment, 0=default */
+    int          is_vla;          /* variable-length array flag (B3): runtime allocated */
 } Type;
 
 Type *type_void(void);
@@ -70,26 +70,31 @@ Type *type_struct(const char *tag, int is_union);
 Type *type_enum(const char *tag);
 Type *type_func(Type *ret, Type **params, int pc, int variadic);
 Type *type_wchar(void);                       /* B2: wchar_t */
-Type *type_complex(Type *base);               /* B4: _Complex base（base 为 float/double）*/
+Type *type_complex(Type *base);               /* B4: _Complex base (base is float/double) */
 
 void  type_struct_add_field(Type *st, const char *name, Type *ft);
 void  type_struct_add_bitfield(Type *st, const char *name, Type *ft, int width);
-/* 匿名 struct/union 字段提升：把 child 中所有具名字段以其相对偏移
- * 复制到 parent 中（相对偏移加上 parent 当前 size 决定的基址）。
- * child 本身视为一个匿名块占用空间，parent->size 增加 child 大小。
- * 用于支持 CMSIS 大量使用的匿名 struct/union 嵌套。 */
+/* Anonymous struct/union field promotion: copy all named fields from child
+ * into parent (relative offset added to the base determined by parent's current size).
+ * The child itself occupies space as an anonymous block; parent->size increases by child size.
+ * Used to support the anonymous struct/union nesting heavily used by CMSIS. */
 void  type_struct_add_anonymous(Type *parent, Type *child);
 
 int   type_size(Type *t);
 int   type_align(Type *t);
 int   type_equal(Type *a, Type *b);
+/* Override pointer size/alignment for the selected backend.
+ * Defaults to 4 (32-bit targets); the C backend sets 8 on 64-bit hosts
+ * because generated code runs on the host where pointers are 8 bytes.
+ * Must be called before parsing/sema/irgen so struct layout matches. */
+void  type_set_ptr_size(int bytes);
 int   type_is_scalar(Type *t);
 int   type_is_integer(Type *t);
 int   type_is_arith(Type *t);
 
 StructField *type_find_field(Type *t, const char *name);
 
-/* #pragma pack(n) 全局对齐控制 */
+/* #pragma pack(n) global alignment control */
 void type_set_pack(int n);
 int  type_get_pack(void);
 

@@ -1,11 +1,12 @@
 /* Ark C Compiler - backend registry
- * 串起所有可用后端。新增后端时，只需在 g_backends[] 添加一行。
+ * Wires up all available backends. To add a new backend, just add a line to g_backends[].
  *
- * 后端可由编译期宏裁剪：
+ * Backends can be trimmed via compile-time macros:
  *   ARKCC_BACKEND_ARM / ARKCC_BACKEND_X86_64 /
  *   ARKCC_BACKEND_RISCV32 / ARKCC_BACKEND_C
- * 默认全部启用（host）；STM32 移植可通过 -D 覆盖关闭不用的后端，
- * 此时 Makefile 不再编译对应 backend_xxx.c 也不会产生链接错误。
+ * All are enabled by default (host); STM32 ports can disable unused backends via -D,
+ * in which case the Makefile no longer compiles the corresponding backend_xxx.c and
+ * no link errors occur.
  */
 #include "backend.h"
 #include "platform.h"
@@ -57,7 +58,7 @@ const ArkBackend *ark_backend_find(const char *name) {
 
 const ArkBackend *ark_backend_default(void) {
     registry_init();
-    /* 默认 ARM，保留原行为 */
+    /* Default to ARM, preserve original behavior */
     return g_backends[0];
 }
 

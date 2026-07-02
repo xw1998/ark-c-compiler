@@ -1,10 +1,10 @@
-/* Ark C Compiler - STM32 入口点
- * 在 STM32 上调用 arkcc 编译源文件。
+/* Ark C Compiler - STM32 entry point
+ * Invokes arkcc on the STM32 to compile source files.
  *
- * 使用方式：
- * 1. 源文件预先烧录到 W25Q SPI Flash
- * 2. STM32 上电后调用 arkcc_stm32_compile("main.c")
- * 3. 编译结果通过回调返回（写入 Flash 或直接执行）
+ * Usage:
+ * 1. Source file is pre-flashed to the W25Q SPI Flash
+ * 2. After STM32 power-on, call arkcc_stm32_compile("main.c")
+ * 3. Compilation result is returned via callback (written to Flash or executed directly)
  */
 #include "compiler.h"
 #include "platform.h"
@@ -12,8 +12,8 @@
 #include "flash_fs.h"
 #include "common.h"
 
-/* 编译结果回调：用户实现（写 Flash / 直接执行 / 通过 UART 传输）。
- * weak 语义允许用户在工程中覆盖；默认实现通过 UART 输出 hex dump。 */
+/* Compile result callback: implemented by the user (write to Flash / execute directly / stream over UART).
+ * weak semantics allow the user to override it in their project; the default implementation dumps hex over UART. */
 __attribute__((weak)) void arkcc_on_output(const unsigned char *data, int len) {
     int i;
     for (i = 0; i < len; i++) {
@@ -30,14 +30,14 @@ __attribute__((weak)) void arkcc_on_output(const unsigned char *data, int len) {
     ark_log("\n");
 }
 
-/* STM32 编译入口。
- * source_file 为 W25Q Flash 中的源文件名（fs_read_file 会查文件表）。
- * 返回 ark_compile 的错误码（ARK_OK=0 表示成功）。 */
+/* STM32 compile entry point.
+ * source_file is the source filename in W25Q Flash (fs_read_file looks it up in the file table).
+ * Returns ark_compile's error code (ARK_OK=0 on success). */
 int arkcc_stm32_compile(const char *source_file) {
     ArkOptions opts;
     int i;
-    /* 手动初始化结构体，避免依赖 memset（裸机环境无 libc）。
-     * 与 main.c 的 reset_opts 等价。 */
+    /* Initialize the struct manually to avoid depending on memset (bare-metal has no libc).
+     * Equivalent to reset_opts in main.c. */
     opts.input_path = source_file;
     opts.output_path = 0;
     opts.emit_asm = 0;
@@ -55,10 +55,10 @@ int arkcc_stm32_compile(const char *source_file) {
     opts.debug_info = 0;
     opts.no_unused_warn = 0;
 
-    /* 用编译期默认值初始化 g_config；不调用 config_load_file
-     * （STM32 上配置文件路径通常不存在）。 */
+    /* Initialize g_config with compile-time defaults; do not call config_load_file
+     * (the config file path typically does not exist on STM32). */
     config_init();
-    /* STM32H743 默认开启硬件 FPU 与基础优化 */
+    /* STM32H743: enable hardware FPU and basic optimization by default */
     g_config.enable_fpu_hw = 1;
     g_config.opt_level = 1;
 
