@@ -30,6 +30,9 @@ typedef struct {
     /* === 0.7.0 additions: scatter/linker script support === */
     const char *scatter_file;  /* --scatter <file>: ARM scatter .sct file */
     const char *linker_script; /* -T <file>: GNU ld linker script .ld file */
+    /* === 0.7.1 additions: -D command-line macro defines === */
+    const char *pre_defines[64]; /* -DNAME or -DNAME=VALUE entries */
+    int         pre_define_count;
 } ArkOptions;
 
 int ark_compile(const ArkOptions *opts);

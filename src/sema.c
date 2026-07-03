@@ -236,8 +236,30 @@ static void sema_func(AstNode *node) {
             return;
         }
         if (existing->is_defined && node->u.func.body) {
-            err(node, "function redefinition");
-            return;
+            /* armcc __weak redefinition rule: a weak definition can be
+             * overridden by a later non-weak definition of the same name.
+             * Multiple weak definitions are allowed (first wins). A weak
+             * redefinition of an already-defined non-weak function is
+             * silently ignored. Two non-weak definitions remain an error. */
+            if (!existing->is_weak && !node->u.func.is_weak) {
+                err(node, "function redefinition");
+                return;
+            }
+            if (!existing->is_weak && node->u.func.is_weak) {
+                /* Existing non-weak, new weak: ignore new weak definition. */
+                return;
+            }
+            if (existing->is_weak && !node->u.func.is_weak) {
+                /* Override weak definition: clear is_defined/is_weak so the
+                 * new non-weak body will be installed below as the canonical
+                 * definition. irgen skips the discarded weak AST node by
+                 * detecting symbol.is_weak != ast.is_weak. */
+                existing->is_defined = 0;
+                existing->is_weak = 0;
+            } else {
+                /* Both weak: ignore the new definition (first wins). */
+                return;
+            }
         }
         s = existing;
     } else {
@@ -304,6 +326,16 @@ static void sema_decl(AstNode *node) {
             if (!name) return;
             existing = sym_find_current(name);
             if (existing) {
+                /* Parser pre-registers globals as SYM_VAR at parse time so
+                 * sizeof(var)/sizeof(var[i]) can be resolved. Upgrade it to
+                 * SYM_GLOBAL here (the canonical kind for downstream irgen). */
+                if (existing->kind == SYM_VAR) {
+                    existing->kind = SYM_GLOBAL;
+                    existing->is_extern = node->u.var.is_extern;
+                    node->u.var.is_global = 1;
+                    if (node->u.var.init) sema_expr(node->u.var.init);
+                    break;
+                }
                 /* Allow extern declaration after any prior declaration (redundant but legal).
                  * Allow definition after extern declaration (standard header/source pattern).
                  * Only error on actual redefinition (two non-extern definitions). */

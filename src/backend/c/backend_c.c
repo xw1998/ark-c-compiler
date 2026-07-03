@@ -557,85 +557,189 @@ static int c_type_is_aggregate(Type *t) {
     return t->kind == TYPE_ARRAY || t->kind == TYPE_STRUCT || t->kind == TYPE_UNION;
 }
 
-/* Compute the maximum stack depth (sp value) for an IR function by simulating
- * the stack effects of each instruction linearly. This is used to size the
- * stk[] array in the generated C code instead of a fixed 256-slot limit.
- * Jumps/labels are handled by tracking sp at each label and using the maximum
- * across all entry paths. */
-static int compute_max_sp(IrFunc *f) {
-    int sp = 0;
-    int max_sp = 1; /* minimum 1 to avoid zero-size array */
-    int i;
-    for (i = 0; i < f->code_count; i++) {
-        IrInst *I = &f->code[i];
-        int delta = 0;
-        switch (I->op) {
-            case IR_PUSH_INT:
-            case IR_PUSH_VAR:
-            case IR_PUSH_ADDR:
-            case IR_PUSH_STR:
-            case IR_PUSH_GLOBAL:
-            case IR_PUSH_GLOBAL_ADDR:
-            case IR_PUSH_FLOAT:
-            case IR_64PUSH:
-            case IR_DUP:
-                delta = 1;
-                break;
-            case IR_POP:
-            case IR_STORE:
-            case IR_STORE_GLOBAL:
-            case IR_JZ:
-            case IR_JNZ:
-            case IR_RETURN:
-            case IR_BINARY:
-            case IR_FADD:
-            case IR_FSUB:
-            case IR_FMUL:
-            case IR_FDIV:
-            case IR_FCMP:
-            case IR_DIV:
-            case IR_MOD:
-            case IR_64BINARY:
-            case IR_64CMP:
-            case IR_LOAD_IDX:
-            case IR_STORE_IDX:
-            case IR_STORE_FLD:
-            case IR_SIMD_ADD16:
-            case IR_SIMD_SUB16:
-            case IR_SIMD_ADD8:
-            case IR_SIMD_SUB8:
-                delta = -1;
-                break;
-            case IR_UNARY:
-            case IR_F2I:
-            case IR_I2F:
-            case IR_64F2I:
-            case IR_64I2F:
-            case IR_ALLOCA:
-            case IR_SVC:
-            case IR_LOAD_FLD:
-            case IR_SWAP:
-                delta = 0;
-                break;
-            case IR_CALL: {
-                int n = (int)I->val;
-                if (n > MAX_CALL_ARGS) n = MAX_CALL_ARGS;
-                delta = -(n) + 1; /* pop n args, push 1 result */
-                break;
-            }
-            case IR_MEMCPY:
-                delta = -2; /* pop dst, src */
-                break;
-            case IR_CMP_JMP_EQ:
-                delta = 0; /* peeks; on match pops and jumps, but we conservatively assume 0 */
-                break;
-            default:
-                delta = 0;
-                break;
+/* Compute the stack-effect delta of a single IR instruction.
+ * Positive = pushes, negative = pops, zero = no net change. */
+static int ir_stack_delta(IrInst *I) {
+    switch (I->op) {
+        case IR_PUSH_INT:
+        case IR_PUSH_VAR:
+        case IR_PUSH_ADDR:
+        case IR_PUSH_STR:
+        case IR_PUSH_GLOBAL:
+        case IR_PUSH_GLOBAL_ADDR:
+        case IR_PUSH_FLOAT:
+        case IR_64PUSH:
+        case IR_DUP:
+            return 1;
+        case IR_POP:
+        case IR_STORE:
+        case IR_STORE_GLOBAL:
+        case IR_JZ:
+        case IR_JNZ:
+        case IR_RETURN:
+        case IR_BINARY:
+        case IR_FADD:
+        case IR_FSUB:
+        case IR_FMUL:
+        case IR_FDIV:
+        case IR_FCMP:
+        case IR_DIV:
+        case IR_MOD:
+        case IR_64BINARY:
+        case IR_64CMP:
+        case IR_LOAD_IDX:
+        case IR_STORE_IDX:
+        case IR_STORE_FLD:
+        case IR_SIMD_ADD16:
+        case IR_SIMD_SUB16:
+        case IR_SIMD_ADD8:
+        case IR_SIMD_SUB8:
+            return -1;
+        case IR_UNARY:
+        case IR_F2I:
+        case IR_I2F:
+        case IR_64F2I:
+        case IR_64I2F:
+        case IR_ALLOCA:
+        case IR_SVC:
+        case IR_LOAD_FLD:
+        case IR_SWAP:
+        case IR_JMP:
+        case IR_JMP_NAMED:
+        case IR_LABEL:
+        case IR_LABEL_NAMED:
+        case IR_CMP_JMP_EQ:
+            return 0;
+        case IR_CALL: {
+            int n = (int)I->val;
+            if (n > MAX_CALL_ARGS) n = MAX_CALL_ARGS;
+            return -(n) + 1; /* pop n args, push 1 result */
         }
-        sp += delta;
-        if (sp > max_sp) max_sp = sp;
-        if (sp < 0) sp = 0; /* safety clamp */
+        case IR_MEMCPY:
+            return -2; /* pop dst, src */
+        default:
+            return 0;
+    }
+}
+
+/* Compute the maximum stack depth (sp value) for an IR function.
+ * Uses fixpoint iteration to correctly handle jumps: a forward jump may
+ * skip over POP instructions, so the sp at a label reached via a jump can
+ * be HIGHER than the sp at that label reached via the fall-through path.
+ * The linear-only approach underestimates stk[] in such cases, causing
+ * stack overflow at runtime in the generated C code. */
+#define MAX_LABELS_FOR_SP  4096
+static int compute_max_sp(IrFunc *f) {
+    /* Collect named labels and assign them indices after numeric labels. */
+    int named_count = 0;
+    char *named_names[256];
+    int i;
+    int total_labels;
+    int label_sp_stack[MAX_LABELS_FOR_SP];
+    int *label_sp = label_sp_stack;
+    int max_sp = 1;
+    int iter;
+
+    for (i = 0; i < f->code_count && named_count < 256; i++) {
+        if (f->code[i].op == IR_LABEL_NAMED) {
+            char *name = f->code[i].name;
+            int found = 0, j;
+            for (j = 0; j < named_count; j++) {
+                if (named_names[j] && name && ark_streq(named_names[j], name)) {
+                    found = 1; break;
+                }
+            }
+            if (!found) named_names[named_count++] = name;
+        }
+    }
+
+    total_labels = f->label_count + named_count;
+    if (total_labels < 1) total_labels = 1;
+    /* If too many labels, fall back to linear scan (overestimate is safe). */
+    if (total_labels > MAX_LABELS_FOR_SP) {
+        int sp = 0;
+        max_sp = 1;
+        for (i = 0; i < f->code_count; i++) {
+            int delta = ir_stack_delta(&f->code[i]);
+            sp += delta;
+            if (sp > max_sp) max_sp = sp;
+            if (sp < 0) sp = 0;
+        }
+        return max_sp;
+    }
+    for (i = 0; i < total_labels; i++) label_sp[i] = -1;
+
+    /* Fixpoint iteration: repeat until sp at labels stabilizes. */
+    for (iter = 0; iter < 32; iter++) {
+        int sp = 0;
+        int changed = 0;
+        max_sp = 1;
+
+        for (i = 0; i < f->code_count; i++) {
+            IrInst *I = &f->code[i];
+            int delta = ir_stack_delta(I);
+            int jmp_tgt = -1;
+            int jmp_sp = 0;
+
+            switch (I->op) {
+                case IR_LABEL:
+                    if (label_sp[(int)I->val] > sp) sp = label_sp[(int)I->val];
+                    break;
+                case IR_LABEL_NAMED: {
+                    int j;
+                    for (j = 0; j < named_count; j++) {
+                        if (named_names[j] && I->name &&
+                            ark_streq(named_names[j], I->name)) {
+                            int idx = f->label_count + j;
+                            if (label_sp[idx] > sp) sp = label_sp[idx];
+                            break;
+                        }
+                    }
+                    break;
+                }
+                case IR_JMP:
+                    jmp_tgt = (int)I->val;
+                    jmp_sp = sp; /* JMP does not pop */
+                    break;
+                case IR_JMP_NAMED: {
+                    int j;
+                    for (j = 0; j < named_count; j++) {
+                        if (named_names[j] && I->name &&
+                            ark_streq(named_names[j], I->name)) {
+                            jmp_tgt = f->label_count + j;
+                            jmp_sp = sp;
+                            break;
+                        }
+                    }
+                    break;
+                }
+                case IR_JZ:
+                case IR_JNZ:
+                    /* JZ/JNZ pop the condition, then jump with sp-1. */
+                    jmp_tgt = (int)I->val;
+                    jmp_sp = sp - 1;
+                    break;
+                case IR_CMP_JMP_EQ:
+                    /* On match, peeks then pops 1 and jumps. Conservatively
+                     * assume the jump path has sp-1. */
+                    jmp_tgt = I->aux;
+                    jmp_sp = sp - 1;
+                    break;
+                default:
+                    break;
+            }
+
+            if (jmp_tgt >= 0 && jmp_tgt < total_labels && jmp_sp > label_sp[jmp_tgt]) {
+                label_sp[jmp_tgt] = jmp_sp;
+                changed = 1;
+            }
+
+            sp += delta;
+            if (sp > max_sp) max_sp = sp;
+            if (sp < 0) sp = 0;
+        }
+
+        if (!changed) break;
     }
     return max_sp;
 }
@@ -1734,17 +1838,22 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
                     break;
                 case IR_RETURN: {
                     /* Struct/union return by value (> 8 bytes): the stack top
-                     * is a pointer to the struct (either a local lvalue address
-                     * from irgen_lvalue_addr, or a pointer returned by another
-                     * struct-returning function). Copy the struct to frame+8176
-                     * and return a pointer to it so the caller can memcpy. */
+                     * is a pointer to the struct. Copy the struct to a *static*
+                     * ret buffer and return its address so the caller can memcpy.
+                     * We use static (not `frame + 8176`) because `frame` is a
+                     * local stack array; returning its address is UB ¡ª after
+                     * the callee returns, the stack frame is destroyed and the
+                     * caller's memcpy reads garbage. This was the root cause of
+                     * the bootstrap crash when Token (40 bytes) was returned
+                     * by lexer_peek/next. Single-threaded compiler use makes
+                     * the static buffer safe (no re-entrancy). */
                     Type *rt = f->ret_type;
                     if (rt && (rt->kind == TYPE_STRUCT || rt->kind == TYPE_UNION) &&
                         type_size(rt) > 8) {
                         int rsz = type_size(rt);
-                        asmbuf_puts(&buf, "{ long long _ret_addr = stk[--sp].i; memcpy(frame + 8176, (void*)(intptr_t)_ret_addr, ");
+                        asmbuf_puts(&buf, "{ static char _ark_ret_buf[256]; long long _ret_addr = stk[--sp].i; memcpy(_ark_ret_buf, (void*)(intptr_t)_ret_addr, ");
                         asmbuf_int(&buf, rsz);
-                        asmbuf_puts(&buf, "); return (long long)(intptr_t)(frame + 8176); }");
+                        asmbuf_puts(&buf, "); return (long long)(intptr_t)_ark_ret_buf; }");
                     } else {
                         asmbuf_puts(&buf, "return (long long)stk[--sp].i;");
                     }

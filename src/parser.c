@@ -198,6 +198,10 @@ static int   g_decl_packed_ptr;
 static AstNode *g_vla_size_expr;
 static int   g_attr_is_softfp;
 static int   g_attr_is_forceinline;
+/* armcc-style __asm function body that appears inside the declaration specifier
+ * (e.g. `static __inline __asm uint32_t __REV16(...)`). Set by parse_declspec
+ * when TOK_ASM is followed by a type token, read and reset by parse_top_decl. */
+static int   g_decl_is_asm_fn;
 /* constructor/destructor/deprecated: function attributes, written by parse_attribute,
  * read and reset by parse_top_decl when constructing the function node. */
 static int   g_attr_is_constructor;
@@ -549,6 +553,10 @@ static void infer_array_size_from_init(Type *t, AstNode *init) {
                 } else {
                     pos++;
                 }
+            } else {
+                /* Non-field item: plain value or nested init list (e.g.
+                 * struct array {{...},{...}}). Each item counts as one element. */
+                pos++;
             }
         }
         if (pos > sz) sz = pos;
@@ -729,6 +737,9 @@ static Type *parse_declspec(Parser *p, int *p_storage, int *p_is_typedef) {
     g_decl_packed_ptr = 0;
     /* Reset the declspec-local function modifier accumulator; parse_top_decl reads it back. */
     g_func_mods_declspec = 0;
+    /* Reset asm-fn marker; will be set if TOK_ASM appears between storage class
+     * keywords and the base type (e.g. `static __inline __asm uint32_t fn()`). */
+    g_decl_is_asm_fn = 0;
     /* Parse keywords until no more match */
     for (;;) {
         tok = lexer_peek(p->lex);
@@ -743,6 +754,24 @@ static Type *parse_declspec(Parser *p, int *p_storage, int *p_is_typedef) {
                 lexer_advance(p->lex);
                 saw_kw = 1;
                 continue;
+            case TOK_ASM:
+                /* armcc-style __asm function body inside declspec:
+                 *   static __inline __asm uint32_t __REV16(uint32_t value) { ... }
+                 * Distinguish from __asm("...") statement or __asm { ... } block
+                 * by looking ahead: if next token can start a type (basic type token
+                 * or typedef identifier), treat __asm as a function qualifier and
+                 * continue parsing the type. Otherwise exit (handled by caller). */
+                {
+                    Token t2 = lexer_peek2(p->lex);
+                    if (is_basic_type_token(t2.kind) ||
+                        (t2.kind == TOK_IDENT && sym_is_typedef(t2.str))) {
+                        g_decl_is_asm_fn = 1;
+                        lexer_advance(p->lex);  /* Consume __asm */
+                        saw_kw = 1;
+                        continue;
+                    }
+                    goto done;
+                }
             case TOK_PACKED_KW:
                 /* ARM Compiler 5 style: __packed appears in declspec.
                  * For struct/union types, equivalent to __attribute__((packed));
@@ -1055,16 +1084,20 @@ static AstNode *parse_enum(Parser *p) {
             if (nt.kind != TOK_IDENT) { perror_at(p, "expected enum name"); lexer_advance(p->lex); continue; }
             lexer_advance(p->lex);
             if (lexer_peek(p->lex).kind == TOK_ASSIGN) {
-                Token vt;
+                /* C99 6.7.2.2: enum values are integer constant expressions.
+                 * Support full constant expressions including !ID (e.g. SET = !RESET),
+                 * bitwise/arithmetic ops, etc. parse_cond_expr + eval_const_expr
+                 * handles these; previous enum consts are already in the symbol table. */
                 lexer_advance(p->lex);
-                vt = lexer_peek(p->lex);
-                if (vt.kind == TOK_NUM) { next_val = vt.value; lexer_advance(p->lex); }
-                else if (vt.kind == TOK_MINUS && lexer_peek2(p->lex).kind == TOK_NUM) {
-                    lexer_advance(p->lex);
-                    next_val = -lexer_peek(p->lex).value;
-                    lexer_advance(p->lex);
+                {
+                    AstNode *ce = parse_cond_expr(p);
+                    long long cv = 0;
+                    if (ce && eval_const_expr(ce, &cv)) {
+                        next_val = (int)cv;
+                    } else {
+                        perror_at(p, "expected enum value (constant expression)");
+                    }
                 }
-                else perror_at(p, "expected enum value (simple int)");
             }
             {
                 Symbol *s = sym_add(SYM_ENUM_CONST, nt.str, type_int(), 0);
@@ -1131,6 +1164,19 @@ static Type *parse_declarator(Parser *p, Type *base, char **out_name) {
     if (lexer_peek(p->lex).kind == TOK_IDENT) {
         if (out_name) *out_name = mem_strdup(lexer_peek(p->lex).str);
         lexer_advance(p->lex);
+    }
+    /* armcc/GCC register binding: `register T name __asm("reg")`.
+     * Skip the __asm("regname") clause - we don't honor register binding
+     * (would require backend support for specific register allocation). */
+    if (lexer_peek(p->lex).kind == TOK_ASM) {
+        lexer_advance(p->lex);
+        if (lexer_peek(p->lex).kind == TOK_LPAREN) {
+            lexer_advance(p->lex);
+            while (lexer_peek(p->lex).kind != TOK_RPAREN &&
+                   lexer_peek(p->lex).kind != TOK_EOF)
+                lexer_advance(p->lex);
+            if (lexer_peek(p->lex).kind == TOK_RPAREN) lexer_advance(p->lex);
+        }
     }
     /* Array dimensions (multi-dimensional supported) */
     {
@@ -1333,6 +1379,10 @@ static AstNode *parse_top_decl(Parser *p) {
     /* Pick up function modifier keywords (irq/weak/naked/softfp/forceinline) that appeared
      * inside the declaration specifier, e.g. `static __forceinline int func()`. */
     func_mods |= g_func_mods_declspec;
+    /* Pick up __asm function-body marker set by parse_declspec when __asm appears
+     * between storage class keywords and the return type
+     * (e.g. `static __inline __asm uint32_t __REV16(...)`). */
+    is_asm_fn |= g_decl_is_asm_fn;
     decl_is_const = g_decl_is_const;
     decl_section = g_attr_section;
     if (g_attr_align_bytes && !decl_align) decl_align = g_attr_align_bytes;
@@ -1623,6 +1673,11 @@ static AstNode *parse_top_decl(Parser *p) {
             }
             /* Deduce unspecified array dimension */
             infer_array_size_from_init(t, init);
+            /* Register global var in parser symtab so that sizeof(var) and
+             * sizeof(var[i]) can be resolved at parse time (e.g. the
+             * sizeof(g_cpu_table)/sizeof(g_cpu_table[0]) array-count idiom
+             * in cpu.c). sema_decl upgrades this SYM_VAR entry to SYM_GLOBAL. */
+            sym_add(SYM_VAR, name, t, 0);
             {
                 AstNode *n = ast_var_decl(name, t, init, line);
                 n->u.var.is_global = 1;
@@ -1657,6 +1712,8 @@ static AstNode *parse_top_decl(Parser *p) {
                         init2 = parse_initializer(p);
                     }
                     infer_array_size_from_init(t2, init2);
+                    /* Register subsequent same-line global vars too, for sizeof lookup. */
+                    if (nm2) sym_add(SYM_VAR, nm2, t2, 0);
                     if (nm2) {
                         AstNode *n2 = ast_var_decl(nm2, t2, init2, line);
                         n2->u.var.is_global = 1;
@@ -2155,6 +2212,18 @@ static AstNode *parse_unary_expr(Parser *p) {
                 } else if (e && e->kind == AST_VAR) {
                     Symbol *sym = sym_find(e->u.name);
                     if (sym && sym->type) s = type_size(sym->type);
+                } else if (e && e->kind == AST_ARRAY_ACCESS) {
+                    /* sizeof(arr[i]): resolve arr's type from symtab, then
+                     * take the element type. Without this, sizeof returns
+                     * the default 4 (breaks sizeof(g_cpu_table)/sizeof(g_cpu_table[0])
+                     * array-count idiom in cpu.c). */
+                    AstNode *arr = e->u.array_access.array;
+                    if (arr && arr->kind == AST_VAR) {
+                        Symbol *sym = sym_find(arr->u.name);
+                        if (sym && sym->type && sym->type->kind == TYPE_ARRAY) {
+                            s = type_size(sym->type->base);
+                        }
+                    }
                 }
                 if (s <= 0) s = 4;
                 return ast_sizeof_val(s, line);

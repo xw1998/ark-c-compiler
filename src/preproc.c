@@ -25,14 +25,23 @@
 #define PP_BUF_SIZE (512 * 1024)
 /* Per-include file content buffer. Kept out of the memory pool (a static 2D
  * array indexed by include depth) so that many #include directives no longer
- * exhaust the bump allocator. 16 KB is ~3x the largest arkcc stdlib header
- * (complex.h ~5 KB). Override via -DPP_INC_BUF=<bytes> if a larger header is
- * needed. The depth-indexed static array keeps total BSS at
- * PP_MAX_INC_DEPTH * PP_INC_BUF (default 8 * 16 KB = 128 KB). */
+ * exhaust the bump allocator. STM32 vendor headers (e.g. stm32f401xe.h) can
+ * exceed 600 KB, so the host profile uses a 1 MB buffer per include depth.
+ * Override via -DPP_INC_BUF=<bytes> if a larger header is needed. */
 #ifndef PP_INC_BUF
-#define PP_INC_BUF  (16 * 1024)
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define PP_INC_BUF  (16 * 1024)        /* 16 KB per include for STM32 */
+# else
+#   define PP_INC_BUF  (1024 * 1024)      /* 1 MB per include for host */
+# endif
 #endif
-#define PP_MAX_INC_DEPTH 8
+/* Maximum #include nesting depth. STM32 HAL/CMSIS chains go deeper than 8
+ * (main.c -> main.h -> stm32f4xx_hal.h -> stm32f4xx_hal_conf.h -> core_cm4.h
+ *  -> cmsis_compiler.h -> cmsis_gcc.h -> stdint.h -> ...). Bump to 32 on host.
+ * Override via -DPP_MAX_INC_DEPTH=<n> for tighter embedded builds. */
+#ifndef PP_MAX_INC_DEPTH
+#define PP_MAX_INC_DEPTH 32
+#endif
 #define PP_MAX_INC_DIRS  16
 #define PP_PACK_STACK    32
 
@@ -645,6 +654,16 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
 #define ACTIVE() (active)
 
     while (*p) {
+        /* C99 phase 2: line continuation (backslash-newline) is removed
+         * before any other processing. This applies to all code, not just
+         * macro definitions (e.g. multi-line if statements in HAL sources). */
+        if (*p == '\\' && (p[1] == '\n' || (p[1] == '\r' && p[2] == '\n'))) {
+            p += (p[1] == '\r') ? 3 : 2;
+            line_no++;
+            if (ACTIVE()) buf_putc(out, out_len, out_cap, ' ');
+            continue;
+        }
+
         /* Detect directive lines (lines whose first non-ws char is '#'). */
         const char *line_start = p;
         const char *q;
@@ -673,7 +692,7 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
                 char **params = 0;
                 int pc = 0;
                 int pc_cap = 0;
-                char body[2048];
+                char body[16384];
                 int bl = 0;
                 while (*q && is_alnum(*q) && nl < 63) name[nl++] = *q++;
                 name[nl] = 0;
@@ -710,7 +729,7 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
                     }
                 }
                 while (*q == ' ' || *q == '\t') q++;
-                while (*q && *q != '\n' && bl < 2047) {
+                while (*q && *q != '\n' && bl < 16383) {
                     /* Line continuation via trailing backslash-newline.
                      * Handle both Unix (\n) and Windows (\r\n) line endings. */
                     if (*q == '\\' && (q[1] == '\n' || (q[1] == '\r' && q[2] == '\n'))) {
@@ -738,6 +757,18 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
                         break;
                     }
                     body[bl++] = *q++;
+                }
+                /* If macro body was truncated (exceeded buffer), consume the rest of
+                 * the macro definition (including line continuations) to avoid emitting
+                 * the remaining body as regular code. */
+                while (*q) {
+                    if (*q == '\\' && (q[1] == '\n' || (q[1] == '\r' && q[2] == '\n'))) {
+                        q += (q[1] == '\r') ? 3 : 2;
+                        line_no++;
+                        continue;
+                    }
+                    if (*q == '\n') break;
+                    q++;
                 }
                 while (bl > 0 && (body[bl-1] == ' ' || body[bl-1] == '\t' || body[bl-1] == '\r')) bl--;
                 body[bl] = 0;
@@ -790,7 +821,16 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
                 int v = 0;
                 char expr[512];
                 int el = 0;
-                while (*q && *q != '\n' && el < 511) expr[el++] = *q++;
+                while (*q && *q != '\n' && el < 511) {
+                    /* Line continuation: backslash-newline joins lines */
+                    if (*q == '\\' && (q[1] == '\n' || (q[1] == '\r' && q[2] == '\n'))) {
+                        q += (q[1] == '\r') ? 3 : 2;
+                        line_no++;
+                        expr[el++] = ' ';
+                        continue;
+                    }
+                    expr[el++] = *q++;
+                }
                 expr[el] = 0;
                 if (cond_top < 32) {
                     cond_stack[cond_top] = ACTIVE();
@@ -831,7 +871,15 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
                     } else if (outer) {
                         char expr[512]; int el = 0;
                         int v;
-                        while (*q && *q != '\n' && el < 511) expr[el++] = *q++;
+                        while (*q && *q != '\n' && el < 511) {
+                            if (*q == '\\' && (q[1] == '\n' || (q[1] == '\r' && q[2] == '\n'))) {
+                                q += (q[1] == '\r') ? 3 : 2;
+                                line_no++;
+                                expr[el++] = ' ';
+                                continue;
+                            }
+                            expr[el++] = *q++;
+                        }
                         expr[el] = 0;
                         v = handle_if(expr);
                         cond_taken[cond_top - 1] = v;
@@ -949,8 +997,30 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
             else if (ark_streq(cmd, "line")) {
                 /* #pragma line: not supported. */
             }
-            /* skip to EOL */
-            while (*q && *q != '\n') q++;
+            // skip to EOL, but properly consume multi-line slash-star comments
+            // that started on the directive line (e.g. ARM HAL style
+            //   #endif slash-star LSI_VALUE star-slash slash-star-bang-bla multi-line star-slash
+            // Without this, an unclosed slash-star on the directive line would
+            // leak the comment body into the output as raw text.
+            {
+                while (*q) {
+                    if (*q == '/' && q[1] == '*') {
+                        q += 2;
+                        while (*q && !(*q == '*' && q[1] == '/')) {
+                            if (*q == '\n') line_no++;
+                            q++;
+                        }
+                        if (*q) q += 2;
+                    } else if (*q == '/' && q[1] == '/') {
+                        while (*q && *q != '\n') q++;
+                        break;
+                    } else if (*q == '\n') {
+                        break;
+                    } else {
+                        q++;
+                    }
+                }
+            }
             if (*q == '\n') { q++; line_no++; }
             p = q;
             buf_putc(out, out_len, out_cap, '\n'); /* preserve directive line */
@@ -1239,6 +1309,9 @@ char *preproc_process(const char *src) {
     if (!find_macro("__arm"))               add_object_macro("__arm", "1");
     if (!find_macro("__thumb"))             add_object_macro("__thumb", "2");
     if (!find_macro("__ARMCC_VERSION"))     add_object_macro("__ARMCC_VERSION", "5060750");
+    /* armcc 5 also defines __CC_ARM (selector used by CMSIS cmsis_compiler.h
+     * to distinguish armcc 4/5 from armclang 6+ which only sets __ARMCC_VERSION). */
+    if (!find_macro("__CC_ARM"))            add_object_macro("__CC_ARM", "1");
     if (!find_macro("__TARGET_ARCH_7_M"))   add_object_macro("__TARGET_ARCH_7_M", "1");
     if (!find_macro("__TARGET_ARCH_7E_M"))  add_object_macro("__TARGET_ARCH_7E_M", "1");
     if (!find_macro("__TARGET_FPU_VFP"))    add_object_macro("__TARGET_FPU_VFP", "1");

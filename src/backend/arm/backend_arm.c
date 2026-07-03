@@ -967,6 +967,43 @@ static char *codegen_arm(IrProgram *prog) {
                     int k;
                     int reg_args = (n > 4) ? 4 : n;
                     int stack_args = (n > 4) ? (n - 4) : 0;
+
+                    /* armcc intrinsic functions: emit inline instruction instead of BL.
+                     * Arguments (if any) are already on the stack; pop and discard them. */
+                    if (ark_streq(I->name, "__nop") ||
+                        ark_streq(I->name, "__isb") ||
+                        ark_streq(I->name, "__dsb") ||
+                        ark_streq(I->name, "__dmb") ||
+                        ark_streq(I->name, "__memory_changed") ||
+                        ark_streq(I->name, "__disable_irq") ||
+                        ark_streq(I->name, "__enable_irq") ||
+                        ark_streq(I->name, "__wfi") ||
+                        ark_streq(I->name, "__wfe") ||
+                        ark_streq(I->name, "__sev")) {
+                        for (k = 0; k < reg_args; k++) {
+                            asmbuf_puts(&buf, "    POP {r");
+                            asmbuf_int(&buf, k);
+                            asmbuf_puts(&buf, "}\n");
+                        }
+                        if (stack_args > 0) {
+                            asmbuf_puts(&buf, "    ADD sp, sp, #");
+                            asmbuf_int(&buf, stack_args * 4);
+                            asmbuf_putc(&buf, '\n');
+                        }
+                        if (ark_streq(I->name, "__nop"))         asmbuf_puts(&buf, "    NOP\n");
+                        else if (ark_streq(I->name, "__isb"))    asmbuf_puts(&buf, "    ISB SY\n");
+                        else if (ark_streq(I->name, "__dsb"))    asmbuf_puts(&buf, "    DSB SY\n");
+                        else if (ark_streq(I->name, "__dmb"))    asmbuf_puts(&buf, "    DMB SY\n");
+                        else if (ark_streq(I->name, "__memory_changed")) ; /* compiler barrier: no-op */
+                        else if (ark_streq(I->name, "__disable_irq")) asmbuf_puts(&buf, "    CPSID i\n");
+                        else if (ark_streq(I->name, "__enable_irq"))  asmbuf_puts(&buf, "    CPSIE i\n");
+                        else if (ark_streq(I->name, "__wfi"))    asmbuf_puts(&buf, "    WFI\n");
+                        else if (ark_streq(I->name, "__wfe"))   asmbuf_puts(&buf, "    WFE\n");
+                        else if (ark_streq(I->name, "__sev"))   asmbuf_puts(&buf, "    SEV\n");
+                        emit_push_r0(&buf);
+                        break;
+                    }
+
                     for (k = 0; k < reg_args; k++) {
                         asmbuf_puts(&buf, "    POP {r");
                         asmbuf_int(&buf, k);

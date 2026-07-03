@@ -39,6 +39,7 @@ static void usage(void) {
         "  -T <file>          GNU ld linker script .ld (alias: --linker-script; converted to .sct with -S)\n"
         "  -config <file>     load arkcc INI config file (overrides defaults; see arkcc.cfg)\n"
         "  -profile <name>    select build profile (host_full/stm32_min/cross_compile)\n"
+        "  -D<name>[=<val>]   define macro (e.g. -DFOO=1 or -D FOO)\n"
         "  --list-backends    print available backends and exit\n"
         "  -h, --help         this message\n",
         ARK_VERSION);
@@ -76,6 +77,8 @@ static void reset_opts(ArkOptions *o) {
     o->split_sections = 0;
     o->scatter_file = 0;
     o->linker_script = 0;
+    for (i = 0; i < 64; i++) o->pre_defines[i] = 0;
+    o->pre_define_count = 0;
 }
 
 int main(int argc, char **argv) {
@@ -191,6 +194,16 @@ int main(int argc, char **argv) {
         else if (strcmp(a, "-h") == 0 || strcmp(a, "--help") == 0) {
             usage();
             return 0;
+        }
+        else if (strcmp(a, "-D") == 0 && i + 1 < argc) {
+            /* -D NAME or -D NAME=VALUE: space-separated form */
+            if (opts.pre_define_count < 64)
+                opts.pre_defines[opts.pre_define_count++] = argv[++i];
+        }
+        else if (strncmp(a, "-D", 2) == 0 && a[2] != 0) {
+            /* -DNAME or -DNAME=VALUE: attached form */
+            if (opts.pre_define_count < 64)
+                opts.pre_defines[opts.pre_define_count++] = a + 2;
         }
         else if (a[0] == '-') {
             fprintf(stderr, "[arkcc] unknown option: %s\n", a);

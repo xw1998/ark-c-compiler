@@ -239,6 +239,28 @@ int ark_compile(const ArkOptions *opts) {
         }
     }
 
+    /* -DNAME[=VALUE]: register command-line macro defines before preprocessing.
+     * Each entry is parsed: optional '=VALUE' suffix becomes the macro body;
+     * without '=', the macro body is "1". */
+    for (i = 0; i < opts->pre_define_count; i++) {
+        const char *e = opts->pre_defines[i];
+        const char *eq = 0;
+        int j;
+        for (j = 0; e[j]; j++) { if (e[j] == '=') { eq = e + j; break; } }
+        if (eq) {
+            /* NAME=VALUE: copy NAME to a temp buffer (not pooled; lives through preproc) */
+            static char name_buf[256];
+            int nl = (int)(eq - e);
+            int k;
+            if (nl >= (int)sizeof(name_buf)) nl = (int)sizeof(name_buf) - 1;
+            for (k = 0; k < nl; k++) name_buf[k] = e[k];
+            name_buf[nl] = 0;
+            preproc_define(name_buf, eq + 1);
+        } else {
+            preproc_define(e, "1");
+        }
+    }
+
     /* --split_sections/-ffunction-sections: sync runtime switch to g_config,
      * so ARM/C backends emit a separate section before each function. */
     if (opts->split_sections) g_config.split_sections = 1;
@@ -526,5 +548,7 @@ int ark_compile_and_run(const char *path) {
     o.split_sections = 0;
     o.scatter_file = 0;
     o.linker_script = 0;
+    for (i = 0; i < 64; i++) o.pre_defines[i] = 0;
+    o.pre_define_count = 0;
     return ark_compile(&o);
 }

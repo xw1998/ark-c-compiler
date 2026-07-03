@@ -302,12 +302,15 @@ IrProgram *irgen_program(AstNode *prog) {
     int i;
     sym_init();
 
-    /* ???????????????????????? */
+    /* Pre-pass: register all function/global symbols so cross-references
+     * resolve correctly. Also handles armcc __weak override: a non-weak
+     * definition overrides a prior weak definition of the same name. */
     for (i = 0; i < prog->u.program.decl_count; i++) {
         AstNode *d = prog->u.program.decls[i];
         if (d->kind == AST_FUNC_DEF || d->kind == AST_FUNC_DECL ||
             d->kind == AST_ASM_FUNC) {
-            if (!sym_find(d->u.func.name)) {
+            Symbol *existing = sym_find(d->u.func.name);
+            if (!existing) {
                 Symbol *s = sym_add(SYM_FUNC, d->u.func.name, d->u.func.ret_type, 0);
                 s->param_count = d->u.func.param_count;
                 s->is_variadic = d->u.func.is_variadic;
@@ -318,6 +321,22 @@ IrProgram *irgen_program(AstNode *prog) {
                 s->smc_num = d->u.func.smc_num;
 #endif
                 if (d->kind == AST_FUNC_DEF || d->kind == AST_ASM_FUNC) s->is_defined = 1;
+                if (d->u.func.is_weak) s->is_weak = 1;
+            } else {
+                /* armcc __weak override: non-weak definition replaces weak. */
+                if (existing->is_weak && !d->u.func.is_weak &&
+                    (d->kind == AST_FUNC_DEF || d->kind == AST_ASM_FUNC)) {
+                    existing->is_weak = 0;
+                }
+                /* If existing was a non-weak declaration and the actual
+                 * definition is __weak, propagate the weak attribute to
+                 * the symbol (mirrors sema's "if (node->is_weak) s->is_weak = 1").
+                 * Without this, irgen's weak-skip check would wrongly discard
+                 * the definition (symbol.is_weak=0 != ast.is_weak=1). */
+                else if (!existing->is_weak && d->u.func.is_weak &&
+                         (d->kind == AST_FUNC_DEF || d->kind == AST_ASM_FUNC)) {
+                    existing->is_weak = 1;
+                }
             }
         } else if (d->kind == AST_VAR_DECL && d->u.var.is_global) {
             Symbol *existing = sym_find(d->u.var.name);
@@ -466,9 +485,16 @@ IrProgram *irgen_program(AstNode *prog) {
     for (i = 0; i < prog->u.program.decl_count; i++) {
         AstNode *d = prog->u.program.decls[i];
         if (d->kind == AST_ASM_FUNC) {
-            /* __asm ???????????????????? asm_body ?? IrFunc??
-             * ?????????? IR ??????? naked ??????????? */
-            IrFunc *fn = ir_func_new(d->u.func.name);
+            IrFunc *fn;
+            /* armcc __weak override: skip if this weak asm func was
+             * overridden by a non-weak definition (see AST_FUNC_DEF above). */
+            {
+                Symbol *fsym = sym_find(d->u.func.name);
+                if (fsym && !!fsym->is_weak != !!d->u.func.is_weak) {
+                    continue;
+                }
+            }
+            fn = ir_func_new(d->u.func.name);
             fn->ret_type = d->u.func.ret_type;
             fn->param_count = d->u.func.param_count;
             fn->is_static = d->u.func.is_static;
@@ -521,6 +547,17 @@ IrProgram *irgen_program(AstNode *prog) {
         if (d->kind == AST_FUNC_DEF) {
             IrGen g;
             int j;
+            /* armcc __weak override: skip IR generation for a weak definition
+             * that has been overridden by a non-weak definition of the same
+             * name. Detected by symbol.is_weak != ast.is_weak (the symbol's
+             * is_weak was cleared in the pre-pass when the non-weak override
+             * was seen). */
+            {
+                Symbol *fsym = sym_find(d->u.func.name);
+                if (fsym && !!fsym->is_weak != !!d->u.func.is_weak) {
+                    continue;
+                }
+            }
             g.prog = out;
             g.fn = ir_func_new(d->u.func.name);
             g.fn->ret_type = d->u.func.ret_type;

@@ -13,7 +13,7 @@
  * 20 includes: ~2.7MB parse + ~0.1MB sema + ~1.2MB irgen).
  * STM32 overrides via -DARK_POOL_SIZE=262144. */
 #ifndef ARK_POOL_SIZE
-#define ARK_POOL_SIZE (8 * 1024 * 1024)
+#define ARK_POOL_SIZE (64 * 1024 * 1024)
 #endif
 
 void  mem_pool_reset(void);
