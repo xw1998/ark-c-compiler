@@ -1,4 +1,4 @@
-/* Ark C Compiler - x86_64 (System V ABI) backend
+﻿/* Ark C Compiler - x86_64 (System V ABI) backend
  *
  * Emits GAS-syntax x86_64 assembly. The goal of this backend is "syntactically
  * correct, human-readable, and can be further assembled by GNU as", so the
@@ -145,7 +145,7 @@ static int x86_emit(IrProgram *prog, char *out, int cap) {
                 case IR_FUNC_END:
                     break;
                 case IR_GETARG:
-                    asmbuf_puts(&buf, "    mov QWORD PTR [rbp-");
+                    asmbuf_puts(&buf, "    mov [rbp-");
                     asmbuf_int(&buf, 8 + I->val);
                     asmbuf_puts(&buf, "], ");
                     asmbuf_puts(&buf, arg_reg(I->aux));
@@ -162,7 +162,7 @@ static int x86_emit(IrProgram *prog, char *out, int cap) {
                     asmbuf_puts(&buf, "]\n    push rax\n");
                     break;
                 case IR_PUSH_VAR:
-                    asmbuf_puts(&buf, "    push QWORD PTR [rbp-");
+                    asmbuf_puts(&buf, "    push qword ptr [rbp-");
                     asmbuf_int(&buf, 8 + I->val);
                     asmbuf_puts(&buf, "]\n");
                     break;
@@ -172,12 +172,12 @@ static int x86_emit(IrProgram *prog, char *out, int cap) {
                     asmbuf_puts(&buf, "]\n    push rax\n");
                     break;
                 case IR_PUSH_GLOBAL:
-                    asmbuf_puts(&buf, "    mov rax, QWORD PTR [rip+");
+                    asmbuf_puts(&buf, "    mov rax, [rip+");
                     asmbuf_puts(&buf, I->name);
                     asmbuf_puts(&buf, "]\n    push rax\n");
                     break;
                 case IR_STORE_GLOBAL:
-                    asmbuf_puts(&buf, "    pop rax\n    mov QWORD PTR [rip+");
+                    asmbuf_puts(&buf, "    pop rax\n    mov [rip+");
                     asmbuf_puts(&buf, I->name);
                     asmbuf_puts(&buf, "], rax\n");
                     break;
@@ -191,21 +191,21 @@ static int x86_emit(IrProgram *prog, char *out, int cap) {
                     asmbuf_puts(&buf, "    pop rax\n    pop rcx\n    push rax\n    push rcx\n");
                     break;
                 case IR_STORE:
-                    asmbuf_puts(&buf, "    pop rax\n    mov QWORD PTR [rbp-");
+                    asmbuf_puts(&buf, "    pop rax\n    mov [rbp-");
                     asmbuf_int(&buf, 8 + I->val);
                     asmbuf_puts(&buf, "], rax\n");
                     break;
                 case IR_LOAD_IDX:
                     asmbuf_puts(&buf, "    pop rcx\n    pop rax\n");
-                    if (I->val == 1) asmbuf_puts(&buf, "    movsx rax, BYTE PTR [rax+rcx]\n");
+                    if (I->val == 1) asmbuf_puts(&buf, "    movsx rax, byte ptr [rax+rcx]\n");
                     else { asmbuf_puts(&buf, "    imul rcx, "); asmbuf_int(&buf, I->val);
-                           asmbuf_puts(&buf, "\n    mov eax, DWORD PTR [rax+rcx]\n    movsx rax, eax\n"); }
+                           asmbuf_puts(&buf, "\n    mov eax, dword ptr [rax+rcx]\n    movsx rax, eax\n"); }
                     asmbuf_puts(&buf, "    push rax\n");
                     break;
                 case IR_STORE_IDX:
                     asmbuf_puts(&buf, "    pop rdx\n    pop rax\n");
-                    if (I->val == 1) asmbuf_puts(&buf, "    mov BYTE PTR [rax], dl\n");
-                    else asmbuf_puts(&buf, "    mov DWORD PTR [rax], edx\n");
+                    if (I->val == 1) asmbuf_puts(&buf, "    mov byte ptr [rax], dl\n");
+                    else asmbuf_puts(&buf, "    mov dword ptr [rax], edx\n");
                     asmbuf_puts(&buf, "    push rdx\n");
                     break;
                 case IR_BINARY: {
@@ -302,15 +302,42 @@ static int x86_emit(IrProgram *prog, char *out, int cap) {
                 case IR_CALL: {
                     int n = I->val;
                     int k;
-                    /* Pop n arguments into rdi..r9 */
-                    for (k = 0; k < n && k < 6; k++) {
+                    int reg_args = (n > 6) ? 6 : n;
+                    int stack_args = (n > 6) ? (n - 6) : 0;
+                    /* SysV ABI requires rsp 16-byte aligned at call instruction.
+                     * Our push/pop stack means rsp is 8 mod 16 after prologue
+                     * (push rbp). Each push subtracts 8. We need to compute
+                     * alignment before popping register args.
+                     * Strategy: pop reg args, then if stack_args is odd, the
+                     * total pushed args (reg_args + stack_args) parity determines
+                     * if we need padding. */
+                    /* Pop register args from stack (they were pushed in reverse) */
+                    for (k = 0; k < reg_args; k++) {
                         asmbuf_puts(&buf, "    pop ");
                         asmbuf_puts(&buf, arg_reg(k));
                         asmbuf_putc(&buf, '\n');
                     }
-                    asmbuf_puts(&buf, "    xor eax, eax\n    call ");
-                    asmbuf_puts(&buf, I->name);
-                    asmbuf_puts(&buf, "\n    push rax\n");
+                    /* Stack args (args 7+) are already on the stack in correct
+                     * order. After popping reg args, stack_args items remain.
+                     * SysV: caller pushes stack args, callee reads [rbp+16+].
+                     * We need 16-byte alignment at call. If stack_args is odd,
+                     * sub rsp, 8 before call, add rsp, 8 after. */
+                    if (stack_args > 0) {
+                        /* stack_args are on stack; need to align rsp to 16 */
+                        asmbuf_puts(&buf, "    sub rsp, 8\n");
+                        asmbuf_puts(&buf, "    xor eax, eax\n    call ");
+                        asmbuf_puts(&buf, I->name);
+                        asmbuf_puts(&buf, "\n    add rsp, 8\n");
+                        /* clean up stack_args (caller cleanup) */
+                        asmbuf_puts(&buf, "    add rsp, ");
+                        asmbuf_int(&buf, stack_args * 8);
+                        asmbuf_putc(&buf, '\n');
+                    } else {
+                        asmbuf_puts(&buf, "    xor eax, eax\n    call ");
+                        asmbuf_puts(&buf, I->name);
+                        asmbuf_putc(&buf, '\n');
+                    }
+                    asmbuf_puts(&buf, "    push rax\n");
                     break;
                 }
                 case IR_RETURN:
@@ -602,7 +629,7 @@ static int x86_emit(IrProgram *prog, char *out, int cap) {
                     int bw = I->aux;
                     unsigned mask = (bw >= 32) ? 0xFFFFFFFFu : ((1u << bw) - 1u);
                     asmbuf_puts(&buf, "    pop rax\n    pop rcx\n");  /* value, addr */
-                    asmbuf_puts(&buf, "    mov edx, DWORD PTR [rcx]\n");
+                    asmbuf_puts(&buf, "    mov edx, dword ptr [rcx]\n");
                     asmbuf_puts(&buf, "    and eax, ");
                     asmbuf_int(&buf, (int)mask);
                     asmbuf_puts(&buf, "\n");
@@ -620,7 +647,7 @@ static int x86_emit(IrProgram *prog, char *out, int cap) {
                         asmbuf_int(&buf, (int)(~mask));
                         asmbuf_puts(&buf, "\n    or eax, edx\n");
                     }
-                    asmbuf_puts(&buf, "    mov DWORD PTR [rcx], eax\n    push rax\n");
+                    asmbuf_puts(&buf, "    mov dword ptr [rcx], eax\n    push rax\n");
                     break;
                 }
 
@@ -630,7 +657,7 @@ static int x86_emit(IrProgram *prog, char *out, int cap) {
                     int bit_off = I->val;
                     int bw = I->aux;
                     unsigned mask = (bw >= 32) ? 0xFFFFFFFFu : ((1u << bw) - 1u);
-                    asmbuf_puts(&buf, "    pop rax\n    mov eax, DWORD PTR [rax]\n");
+                    asmbuf_puts(&buf, "    pop rax\n    mov eax, dword ptr [rax]\n");
                     if (bit_off > 0) {
                         asmbuf_puts(&buf, "    shr eax, ");
                         asmbuf_int(&buf, bit_off);
@@ -723,3 +750,6 @@ static const ArkBackend g_x86_backend = {
 const ArkBackend *ark_backend_x86_64(void) {
     return &g_x86_backend;
 }
+
+
+
