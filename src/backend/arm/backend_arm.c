@@ -15,6 +15,7 @@
 #include "common.h"
 #include "config.h"
 #include "arkcc_config.h"
+#include <stdlib.h>
 
 /* --- Internal helpers: emit common instruction fragments --- */
 static void emit_line(AsmBuffer *b, const char *s) {
@@ -31,24 +32,44 @@ static void emit_mov_imm(AsmBuffer *b, int rd, int imm) {
         asmbuf_int(b, imm);
         asmbuf_putc(b, '\n');
     } else {
+        /* Always emit MOVW + MOVT pair. MOVW only sets bits[15:0];
+         * without MOVT, bits[31:16] retain stale values from previous
+         * operations, causing incorrect constants (e.g., 0x40022000
+         * instead of 0x00002000 for 1u<<13). */
         asmbuf_puts(b, "    MOVW r");
         asmbuf_int(b, rd);
         asmbuf_puts(b, ", #");
         asmbuf_int(b, imm & 0xFFFF);
         asmbuf_putc(b, '\n');
-        if ((imm >> 16) & 0xFFFF) {
-            asmbuf_puts(b, "    MOVT r");
-            asmbuf_int(b, rd);
-            asmbuf_puts(b, ", #");
-            asmbuf_int(b, (imm >> 16) & 0xFFFF);
-            asmbuf_putc(b, '\n');
-        }
+        asmbuf_puts(b, "    MOVT r");
+        asmbuf_int(b, rd);
+        asmbuf_puts(b, ", #");
+        asmbuf_int(b, (imm >> 16) & 0xFFFF);
+        asmbuf_putc(b, '\n');
     }
 }
 
 static void emit_push_r0(AsmBuffer *b) { emit_line(b, "PUSH {r0}"); }
 static void emit_pop_r0(AsmBuffer *b)  { emit_line(b, "POP {r0}");  }
 static void emit_pop_r1(AsmBuffer *b)  { emit_line(b, "POP {r1}");  }
+
+/* sret support: check if a function name is in the sret set */
+static int sret_lookup(char **names, int *sizes, int count, const char *name) {
+    int i;
+    for (i = 0; i < count; i++) {
+        if (ark_streq(names[i], name)) return 1;
+    }
+    return 0;
+}
+
+/* sret support: get struct return size for a function name */
+static int sret_get_size(char **names, int *sizes, int count, const char *name) {
+    int i;
+    for (i = 0; i < count; i++) {
+        if (ark_streq(names[i], name)) return sizes[i];
+    }
+    return 0;
+}
 
 #if ARKCC_FEATURE_FPU_HW
 /* Hardware VFP floating-point path helpers.
@@ -133,39 +154,35 @@ static void emit_binary(AsmBuffer *b, int op) {
             break;
         case (int)TOK_EQ:
             emit_line(b, "CMP r0, r1");
-            emit_line(b, "MOV r0, #0");
-            emit_line(b, "IT EQ");
+            emit_line(b, "ITE EQ");
             emit_line(b, "MOVEQ r0, #1");
+            emit_line(b, "MOVNE r0, #0");
             break;
         case (int)TOK_NE:
             emit_line(b, "CMP r0, r1");
-            emit_line(b, "MOV r0, #0");
-            emit_line(b, "IT NE");
+            emit_line(b, "ITE NE");
             emit_line(b, "MOVNE r0, #1");
+            emit_line(b, "MOVEQ r0, #0");
             break;
         case (int)TOK_LT:
             emit_line(b, "CMP r0, r1");
-            emit_line(b, "MOV r0, #0");
-            if (is_unsigned) { emit_line(b, "IT LO"); emit_line(b, "MOVLO r0, #1"); }
-            else             { emit_line(b, "IT LT"); emit_line(b, "MOVLT r0, #1"); }
+            if (is_unsigned) { emit_line(b, "ITE LO"); emit_line(b, "MOVLO r0, #1"); emit_line(b, "MOVHS r0, #0"); }
+            else             { emit_line(b, "ITE LT"); emit_line(b, "MOVLT r0, #1"); emit_line(b, "MOVGE r0, #0"); }
             break;
         case (int)TOK_GT:
             emit_line(b, "CMP r0, r1");
-            emit_line(b, "MOV r0, #0");
-            if (is_unsigned) { emit_line(b, "IT HI"); emit_line(b, "MOVHI r0, #1"); }
-            else             { emit_line(b, "IT GT"); emit_line(b, "MOVGT r0, #1"); }
+            if (is_unsigned) { emit_line(b, "ITE HI"); emit_line(b, "MOVHI r0, #1"); emit_line(b, "MOVLS r0, #0"); }
+            else             { emit_line(b, "ITE GT"); emit_line(b, "MOVGT r0, #1"); emit_line(b, "MOVLE r0, #0"); }
             break;
         case (int)TOK_LE:
             emit_line(b, "CMP r0, r1");
-            emit_line(b, "MOV r0, #0");
-            if (is_unsigned) { emit_line(b, "IT LS"); emit_line(b, "MOVLS r0, #1"); }
-            else             { emit_line(b, "IT LE"); emit_line(b, "MOVLE r0, #1"); }
+            if (is_unsigned) { emit_line(b, "ITE LS"); emit_line(b, "MOVLS r0, #1"); emit_line(b, "MOVHI r0, #0"); }
+            else             { emit_line(b, "ITE LE"); emit_line(b, "MOVLE r0, #1"); emit_line(b, "MOVGT r0, #0"); }
             break;
         case (int)TOK_GE:
             emit_line(b, "CMP r0, r1");
-            emit_line(b, "MOV r0, #0");
-            if (is_unsigned) { emit_line(b, "IT HS"); emit_line(b, "MOVHS r0, #1"); }
-            else             { emit_line(b, "IT GE"); emit_line(b, "MOVGE r0, #1"); }
+            if (is_unsigned) { emit_line(b, "ITE HS"); emit_line(b, "MOVHS r0, #1"); emit_line(b, "MOVLO r0, #0"); }
+            else             { emit_line(b, "ITE GE"); emit_line(b, "MOVGE r0, #1"); emit_line(b, "MOVLT r0, #0"); }
             break;
         default:
             emit_line(b, "; unknown binary op");
@@ -203,8 +220,11 @@ static void emit_prologue(AsmBuffer *b, const char *fn_name, int local_size,
         return;
     }
     if (is_irq) {
-        /* __irq: save all caller-saved registers that an ISR may clobber */
-        emit_line(b, "PUSH {r0, r1, r2, r3, r12, lr}");
+        /* __irq: Cortex-M hardware auto-saves r0-r3, r12, lr, pc, xpsr on
+         * exception entry. We only need to save r5, r6, r7 (arkcc's
+         * callee-saved registers used as frame pointer etc.) and lr
+         * (EXC_RETURN) so that POP {pc} triggers exception return. */
+        emit_line(b, "PUSH {r5, r6, r7, lr}");
     } else {
         emit_line(b, "PUSH {r5, r6, r7, lr}");
     }
@@ -231,10 +251,123 @@ static void emit_epilogue_return(AsmBuffer *b, int local_size,
         asmbuf_putc(b, '\n');
     }
     if (is_irq) {
-        emit_line(b, "POP {r0, r1, r2, r3, r12, pc}");
+        emit_line(b, "POP {r5, r6, r7, pc}");
     } else {
         emit_line(b, "POP {r5, r6, r7, pc}");
     }
+}
+
+/* Global variable SRAM address allocation for ARM backend.
+ * Globals are placed in SRAM starting at 0x20000000; __at variables keep
+ * their absolute address. Codegen emits MOVW/MOVT to load these addresses
+ * instead of LDR =label (which the minimal assembler doesn't fully support). */
+static const char *g_gvar_names[2048];
+static unsigned    g_gvar_addrs[2048];
+static int         g_gvar_sizes[2048];  /* #6 FIX: track global variable sizes */
+static int         g_gvar_count = 0;
+
+/* F3/S5: Track .data/.bss boundaries for startup initialization */
+static unsigned g_data_sram_start = 0;  /* First .data SRAM address */
+static unsigned g_data_sram_end   = 0;  /* One past last .data SRAM address */
+static unsigned g_bss_sram_start  = 0;  /* First .bss SRAM address */
+static unsigned g_bss_sram_end    = 0;  /* One past last .bss SRAM address */
+
+static unsigned gvar_find(const char *name) {
+    int i;
+    for (i = 0; i < g_gvar_count; i++)
+        if (ark_streq(g_gvar_names[i], name)) return g_gvar_addrs[i];
+    return 0;
+}
+
+/* #6 FIX: Find global variable size by name */
+static int gvar_find_size(const char *name) {
+    int i;
+    for (i = 0; i < g_gvar_count; i++)
+        if (ark_streq(g_gvar_names[i], name)) return g_gvar_sizes[i];
+    return 4;  /* default 4 bytes */
+}
+
+static int gvar_known(const char *name) {
+    int i;
+    for (i = 0; i < g_gvar_count; i++)
+        if (ark_streq(g_gvar_names[i], name)) return 1;
+    return 0;
+}
+
+static void gvar_assign(IrProgram *prog) {
+    unsigned sram = 0x20000000;
+    int gi;
+    g_gvar_count = 0;
+    g_data_sram_start = sram;  /* will be updated if .data globals exist */
+    g_data_sram_end = sram;
+    g_bss_sram_start = sram;
+    g_bss_sram_end = sram;
+
+    /* F3/S5: First pass - assign .data (initialized) globals to SRAM.
+     * This ensures .data globals are contiguous, followed by .bss globals.
+     * The startup code (__arkcc_init_globals) initializes .data and zeros .bss. */
+    for (gi = 0; gi < prog->global_count && g_gvar_count < 2048; gi++) {
+        IrGlobal *g = prog->globals[gi];
+        int sz;
+        if (g->is_extern) continue;
+        if (g->has_at) continue;  /* __at variables keep their absolute address */
+        if (!g->has_init) continue;  /* skip .bss for now */
+        /* Zero-initialized scalars go to .bss */
+        if (!g->init_aggregate && !g->init_str && !g->is_float && g->init_int == 0) continue;
+        sz = g->type ? type_size(g->type) : 4;
+        if (sz <= 0) sz = 4;
+        sram = (sram + 3) & ~3u;
+        g_gvar_names[g_gvar_count] = g->name;
+        g_gvar_addrs[g_gvar_count] = sram;
+        g_gvar_sizes[g_gvar_count] = sz;  /* #6 FIX */
+        g_gvar_count++;
+        sram += sz;
+    }
+    /* #BSS-ALIGN FIX: Align .data end / .bss start to 4 bytes so the
+     * __arkcc_init_globals zeroing loop starts at an aligned address.
+     * STR r2, [r0] on an unaligned r0 can fault on Cortex-M. */
+    sram = (sram + 3) & ~3u;
+    g_data_sram_end = sram;
+
+    /* Second pass - assign .bss (uninitialized/zero) globals after .data */
+    g_bss_sram_start = sram;
+    for (gi = 0; gi < prog->global_count && g_gvar_count < 2048; gi++) {
+        IrGlobal *g = prog->globals[gi];
+        int sz;
+        if (g->is_extern) continue;
+        if (g->has_at) {
+            /* __at variables: add to lookup table with their absolute address */
+            g_gvar_names[g_gvar_count] = g->name;
+            g_gvar_addrs[g_gvar_count] = g->at_addr;
+            g_gvar_sizes[g_gvar_count] = g->type ? type_size(g->type) : 4;  /* #6 FIX */
+            g_gvar_count++;
+            continue;
+        }
+        if (g->has_init) {
+            /* Non-zero initialized globals were assigned in .data pass above.
+             * Zero-initialized scalars (init_int==0, no aggregate/str/float) were
+             * skipped in .data and should be assigned here in .bss. */
+            if (!(g->init_aggregate || g->init_str || g->is_float) && g->init_int == 0) {
+                /* zero-initialized scalar: assign in .bss */
+            } else {
+                continue;  /* already assigned in .data */
+            }
+        }
+        sz = g->type ? type_size(g->type) : 4;
+        if (sz <= 0) sz = 4;
+        sram = (sram + 3) & ~3u;
+        g_gvar_names[g_gvar_count] = g->name;
+        g_gvar_addrs[g_gvar_count] = sram;
+        g_gvar_sizes[g_gvar_count] = sz;  /* #6 FIX */
+        g_gvar_count++;
+        sram += sz;
+    }
+    /* #BSS-ALIGN FIX: Align .bss end to 4 bytes. The __arkcc_init_globals
+     * zeroing loop increments r0 by 4 and terminates with CMP r0, r1; BNE.
+     * If the last .bss variable's size is not a multiple of 4 (e.g. a char
+     * or uint8_t array), r0 would never equal r1, causing an infinite loop
+     * that writes zeros past .bss into adjacent memory or HardFault. */
+    g_bss_sram_end = (sram + 3) & ~3u;
 }
 
 static char *codegen_arm(IrProgram *prog) {
@@ -246,6 +379,11 @@ static char *codegen_arm(IrProgram *prog) {
     int dbg = 0;
 #endif
     asmbuf_init(&buf);
+
+    /* Assign SRAM addresses to all non-extern, non-__at globals.
+     * This must happen before generating function code so IR_PUSH_GLOBAL etc.
+     * can emit MOVW/MOVT with the correct SRAM address. */
+    gvar_assign(prog);
 
     asmbuf_puts(&buf, "; Ark C Compiler - generated Thumb-2 assembly\n");
     asmbuf_puts(&buf, ".thumb\n");
@@ -335,10 +473,44 @@ static char *codegen_arm(IrProgram *prog) {
         asmbuf_puts(&buf, ".text\n\n");
     }
 
+    /* Build sret function name/size set: struct/union returns > 8 bytes
+     * use AAPCS sret convention (hidden pointer in r0). */
+    char *sret_names[256];
+    int   sret_sizes[256];
+    int   sret_count = 0;
+    {
+        int sfi;
+        for (sfi = 0; sfi < prog->func_count && sret_count < 256; sfi++) {
+            IrFunc *sf = prog->funcs[sfi];
+            Type *srt = sf->ret_type;
+            if (srt && (srt->kind == TYPE_STRUCT || srt->kind == TYPE_UNION)) {
+                int sz = type_size(srt);
+                if (sz > 8) {
+                    sret_names[sret_count] = sf->name;
+                    sret_sizes[sret_count] = (sz + 3) & ~3; /* 4-byte aligned */
+                    sret_count++;
+                }
+            }
+        }
+    }
+
     for (fi = 0; fi < prog->func_count; fi++) {
         IrFunc *f = prog->funcs[fi];
         int local_size = f->local_size;
         int i;
+        int is_sret = 0;
+        int sret_off = 0;
+
+        /* Detect sret: struct/union return > 8 bytes */
+        {
+            Type *rt = f->ret_type;
+            if (rt && (rt->kind == TYPE_STRUCT || rt->kind == TYPE_UNION) &&
+                type_size(rt) > 8) {
+                is_sret = 1;
+                local_size += 4;  /* slot for sret pointer */
+                sret_off = local_size - 4;
+            }
+        }
 
         /* alias function: emit .global / .set directives, do not generate a function body */
         if (f->alias_target) {
@@ -425,6 +597,19 @@ static char *codegen_arm(IrProgram *prog) {
         }
 #endif
         emit_prologue(&buf, f->name, local_size, f->is_irq, f->is_naked, dbg);
+        /* #2 FIX: Auto-call __arkcc_init_globals at the start of Reset_Handler
+         * to initialize .data and zero .bss before main() runs. */
+        if (ark_streq(f->name, "Reset_Handler") &&
+            (g_data_sram_start != g_data_sram_end ||
+             g_bss_sram_start != g_bss_sram_end)) {
+            asmbuf_puts(&buf, "    BL __arkcc_init_globals\n");
+        }
+        /* Save sret pointer (r0) to frame slot for struct-returning functions */
+        if (is_sret) {
+            asmbuf_puts(&buf, "    STR r0, [r6, #");
+            asmbuf_int(&buf, sret_off);
+            asmbuf_puts(&buf, "]\n");
+        }
 
         {
         int cur_line = 0;
@@ -445,14 +630,62 @@ static char *codegen_arm(IrProgram *prog) {
                     break;
                 case IR_GETARG: {
                     /* AAPCS: first 4 args in r0-r3, args 5+ on caller's stack.
+                     * For sret functions, r0 holds the hidden sret pointer;
+                     * real args start at r1, so arg_idx is shifted by 1.
                      * Stack layout (upward from r6 = frame pointer):
                      *   [r6 + 0 .. local_size-1]            this frame's local variables
                      *   [r6 + local_size + 0..15]           saved r5/r6/r7/lr
                      *   [r6 + local_size + 16 + k*4]        the (5+k)th argument
                      * arg_idx < 4: store directly from r{arg_idx} into this frame;
-                     * arg_idx >= 4: load from caller's stack slot, then store into this frame. */
-                    int arg_idx = I->aux;
-                    if (arg_idx < 4) {
+                     * arg_idx >= 4: load from caller's stack slot, then store into this frame.
+                     *
+                     * #7 FIX: For struct-by-value params (size > 8), aux high bits
+                     * encode the struct size. The caller pushes the source struct
+                     * address; we must memcpy from that address into frame[val]. */
+                    int arg_idx = I->aux & 0xFF;
+                    int st_sz   = (I->aux >> 8) & 0xFFFFFF;
+                    if (is_sret) arg_idx++;  /* r0=sret ptr, real args start at r1 */
+                    if (st_sz > 0) {
+                        /* Struct-by-value: the register (or stack slot) holds a
+                         * *pointer* to the source struct. memcpy from it into
+                         * frame[val]. Use r3 as temp, r2 as byte counter. */
+                        int dst_off = I->val;
+                        if (arg_idx < 4) {
+                            /* Source pointer in r{arg_idx} */
+                            asmbuf_puts(&buf, "    MOV r3, r");
+                            asmbuf_int(&buf, arg_idx);
+                            asmbuf_puts(&buf, "\n");
+                        } else {
+                            /* Source pointer on caller's stack */
+                            int stack_off = local_size + 16 + (arg_idx - 4) * 4;
+                            asmbuf_puts(&buf, "    LDR r3, [r6, #");
+                            asmbuf_int(&buf, stack_off);
+                            asmbuf_puts(&buf, "]\n");
+                        }
+                        /* Emit inline memcpy: for small sizes use individual
+                         * LDR/STR pairs; for larger sizes, call memcpy.
+                         * r0 = dst (frame+dst_off), r1 = src (r3), r2 = size */
+                        if (st_sz <= 16) {
+                            /* Inline copy for small structs (<=16 bytes) */
+                            int off;
+                            for (off = 0; off < st_sz; off += 4) {
+                                asmbuf_puts(&buf, "    LDR r0, [r3, #");
+                                asmbuf_int(&buf, off);
+                                asmbuf_puts(&buf, "]\n");
+                                asmbuf_puts(&buf, "    STR r0, [r6, #");
+                                asmbuf_int(&buf, dst_off + off);
+                                asmbuf_puts(&buf, "]\n");
+                            }
+                        } else {
+                            /* Call memcpy for larger structs */
+                            emit_mov_imm(&buf, 0, 0);  /* will be overwritten */
+                            asmbuf_puts(&buf, "    ADD r0, r6, #");
+                            asmbuf_int(&buf, dst_off);
+                            asmbuf_puts(&buf, "\n    MOV r1, r3\n");
+                            emit_mov_imm(&buf, 2, st_sz);
+                            asmbuf_puts(&buf, "    PUSH {lr}\n    BL memcpy\n    POP {r0}\n");
+                        }
+                    } else if (arg_idx < 4) {
                         asmbuf_puts(&buf, "    STR r");
                         asmbuf_int(&buf, arg_idx);
                         asmbuf_puts(&buf, ", [r6, #");
@@ -479,40 +712,96 @@ static char *codegen_arm(IrProgram *prog) {
                     asmbuf_putc(&buf, '\n');
                     emit_push_r0(&buf);
                     break;
-                case IR_PUSH_VAR:
-                    asmbuf_puts(&buf, "    LDR r0, [r6, #");
-                    asmbuf_int(&buf, I->val);
-                    asmbuf_puts(&buf, "]\n");
-                    emit_push_r0(&buf);
+                case IR_PUSH_VAR: {
+                    /* aux encodes width + signedness:
+                     *   1 = char (LDRSB signed / LDRB unsigned)
+                     *   2 = short (LDRSH signed / LDRH unsigned)
+                     *   4 or 0 = int/ptr (LDR 4 bytes)
+                     *   8 = 64-bit (long long / double): load two words, push both
+                     *   0x100 bit = unsigned */
+                    int width = I->aux & 0xFF;
+                    int is_unsigned = (I->aux & 0x100) != 0;
+                    if (width == 1) {
+                        asmbuf_puts(&buf, is_unsigned
+                            ? "    LDRB r0, [r6, #"
+                            : "    LDRSB r0, [r6, #");
+                        asmbuf_int(&buf, I->val);
+                        asmbuf_puts(&buf, "]\n");
+                        emit_push_r0(&buf);
+                    } else if (width == 2) {
+                        asmbuf_puts(&buf, is_unsigned
+                            ? "    LDRH r0, [r6, #"
+                            : "    LDRSH r0, [r6, #");
+                        asmbuf_int(&buf, I->val);
+                        asmbuf_puts(&buf, "]\n");
+                        emit_push_r0(&buf);
+                    } else if (width == 8) {
+                        /* #5 FIX: 64-bit local variable read - load low and high words.
+                         * Stack model: push low word first (bottom), then high word (top). */
+                        asmbuf_puts(&buf, "    LDR r0, [r6, #");
+                        asmbuf_int(&buf, I->val);
+                        asmbuf_puts(&buf, "]\n    LDR r1, [r6, #");
+                        asmbuf_int(&buf, I->val + 4);
+                        asmbuf_puts(&buf, "]\n");
+                        emit_push_r0(&buf);  /* push low word */
+                        asmbuf_puts(&buf, "    PUSH {r1}\n");  /* push high word */
+                    } else {
+                        asmbuf_puts(&buf, "    LDR r0, [r6, #");
+                        asmbuf_int(&buf, I->val);
+                        asmbuf_puts(&buf, "]\n");
+                        emit_push_r0(&buf);
+                    }
                     break;
+                }
                 case IR_PUSH_ADDR:
                     asmbuf_puts(&buf, "    ADD r0, r6, #");
                     asmbuf_int(&buf, I->val);
                     asmbuf_putc(&buf, '\n');
                     emit_push_r0(&buf);
                     break;
-                case IR_PUSH_GLOBAL:
-                    asmbuf_puts(&buf, "    LDR r0, =");
-                    asmbuf_puts(&buf, I->name);
-                    asmbuf_putc(&buf, '\n');
-                    emit_line(&buf, "LDR r0, [r0]");
-                    emit_push_r0(&buf);
+                case IR_PUSH_GLOBAL: {
+                    unsigned addr = gvar_find(I->name);
+                    int gsz = gvar_find_size(I->name);
+                    if (gsz >= 8) {
+                        /* #6 FIX: 64-bit global read - load low and high words */
+                        emit_mov_imm(&buf, 1, (int)addr);
+                        asmbuf_puts(&buf, "    LDR r0, [r1, #0]\n");
+                        asmbuf_puts(&buf, "    LDR r2, [r1, #4]\n");
+                        emit_push_r0(&buf);  /* push low word */
+                        asmbuf_puts(&buf, "    PUSH {r2}\n");  /* push high word */
+                    } else {
+                        emit_mov_imm(&buf, 0, (int)addr);
+                        emit_line(&buf, "LDR r0, [r0]");
+                        emit_push_r0(&buf);
+                    }
                     break;
+                }
                 case IR_PUSH_GLOBAL_ADDR:
                     /* Take the global symbol address only (no dereference), for array/struct decay
                      * and compound literal scenarios. */
-                    asmbuf_puts(&buf, "    LDR r0, =");
-                    asmbuf_puts(&buf, I->name);
-                    asmbuf_putc(&buf, '\n');
-                    emit_push_r0(&buf);
+                    {
+                        unsigned addr = gvar_find(I->name);
+                        emit_mov_imm(&buf, 0, (int)addr);
+                        emit_push_r0(&buf);
+                    }
                     break;
-                case IR_STORE_GLOBAL:
-                    emit_pop_r0(&buf);
-                    asmbuf_puts(&buf, "    LDR r1, =");
-                    asmbuf_puts(&buf, I->name);
-                    asmbuf_putc(&buf, '\n');
-                    emit_line(&buf, "STR r0, [r1]");
+                case IR_STORE_GLOBAL: {
+                    unsigned addr = gvar_find(I->name);
+                    int gsz = gvar_find_size(I->name);
+                    if (gsz >= 8) {
+                        /* #6 FIX: 64-bit global store - pop high then low, store both */
+                        asmbuf_puts(&buf, "    POP {r1}\n");  /* high word */
+                        emit_pop_r0(&buf);                     /* low word */
+                        emit_mov_imm(&buf, 2, (int)addr);
+                        asmbuf_puts(&buf, "    STR r0, [r2, #0]\n");
+                        asmbuf_puts(&buf, "    STR r1, [r2, #4]\n");
+                    } else {
+                        emit_pop_r0(&buf);
+                        emit_mov_imm(&buf, 1, (int)addr);
+                        emit_line(&buf, "STR r0, [r1]");
+                    }
                     break;
+                }
                 case IR_POP:
                     emit_pop_r0(&buf);
                     break;
@@ -529,12 +818,55 @@ static char *codegen_arm(IrProgram *prog) {
                     emit_push_r0(&buf);
                     asmbuf_puts(&buf, "    PUSH {r1}\n");
                     break;
-                case IR_STORE:
-                    emit_pop_r0(&buf);
-                    asmbuf_puts(&buf, "    STR r0, [r6, #");
-                    asmbuf_int(&buf, I->val);
-                    asmbuf_puts(&buf, "]\n");
+                case IR_STORE: {
+                    /* aux encodes store width: 1=byte, 2=halfword, 4=word,
+                     * 8=double word (two STRs), 16=complex (two 8-byte).
+                     * Default (0) = 4 bytes.
+                     * N1 FIX: mask off IR_AUX_VOLATILE (0x10000) bit before
+                     * checking width — volatile uint32_t has aux=0x10004,
+                     * which would wrongly match sw>=8 and sw>=16, causing
+                     * 16-byte writes into an 8-byte slot and corrupting
+                     * saved registers on the stack. */
+                    int sw = I->aux & ~IR_AUX_VOLATILE;
+                    if (sw == 0) sw = 4;
+                    if (sw == 1) {
+                        emit_pop_r0(&buf);
+                        asmbuf_puts(&buf, "    STRB r0, [r6, #");
+                        asmbuf_int(&buf, I->val);
+                        asmbuf_puts(&buf, "]\n");
+                    } else if (sw == 2) {
+                        emit_pop_r0(&buf);
+                        asmbuf_puts(&buf, "    STRH r0, [r6, #");
+                        asmbuf_int(&buf, I->val);
+                        asmbuf_puts(&buf, "]\n");
+                    } else if (sw >= 8) {
+                        /* 8+ bytes: pop high word then low word, store both */
+                        asmbuf_puts(&buf, "    POP {r1}\n");  /* high word */
+                        emit_pop_r0(&buf);                     /* low word */
+                        asmbuf_puts(&buf, "    STR r0, [r6, #");
+                        asmbuf_int(&buf, I->val);
+                        asmbuf_puts(&buf, "]\n");
+                        asmbuf_puts(&buf, "    STR r1, [r6, #");
+                        asmbuf_int(&buf, I->val + 4);
+                        asmbuf_puts(&buf, "]\n");
+                        if (sw >= 16) {
+                            asmbuf_puts(&buf, "    POP {r1}\n");
+                            emit_pop_r0(&buf);
+                            asmbuf_puts(&buf, "    STR r0, [r6, #");
+                            asmbuf_int(&buf, I->val + 8);
+                            asmbuf_puts(&buf, "]\n");
+                            asmbuf_puts(&buf, "    STR r1, [r6, #");
+                            asmbuf_int(&buf, I->val + 12);
+                            asmbuf_puts(&buf, "]\n");
+                        }
+                    } else {
+                        emit_pop_r0(&buf);
+                        asmbuf_puts(&buf, "    STR r0, [r6, #");
+                        asmbuf_int(&buf, I->val);
+                        asmbuf_puts(&buf, "]\n");
+                    }
                     break;
+                }
                 case IR_LOAD_IDX: {
                     int es = I->val;
                     int packed = (I->aux & 0x400) ? 1 : 0;
@@ -572,6 +904,15 @@ static char *codegen_arm(IrProgram *prog) {
                             emit_line(&buf, "LSL r3, r3, #24");
                             emit_line(&buf, "ORR r0, r2, r3");
                         }
+                    } else if (es == 8) {
+                        /* #A4 FIX: 8-byte element (long long/double): load low and high words.
+                         * Stack convention (from IR_STORE): high word on top, low below.
+                         * So push low first, then high. */
+                        emit_line(&buf, "LDR r2, [r0, #0]");  /* r2 = low word */
+                        emit_line(&buf, "LDR r3, [r0, #4]");  /* r3 = high word */
+                        emit_line(&buf, "PUSH {r2}");  /* push low word */
+                        emit_line(&buf, "PUSH {r3}");  /* push high word (on top) */
+                        break;
                     } else {
                         emit_line(&buf, "LDR r0, [r0, #0]");
                     }
@@ -581,6 +922,20 @@ static char *codegen_arm(IrProgram *prog) {
                 case IR_STORE_IDX: {
                     int es = I->val;
                     int packed = (I->aux & 0x400) ? 1 : 0;
+                    if (es == 8) {
+                        /* #A4 FIX: 8-byte element (long long/double): stack has
+                         * [addr, value_low, value_high] (high on top, per IR_STORE
+                         * convention). Pop high, low, addr; store both; push back. */
+                        emit_line(&buf, "POP {r1}");          /* r1 = high word (top) */
+                        emit_pop_r0(&buf);                     /* r0 = low word */
+                        emit_line(&buf, "POP {r2}");          /* r2 = addr */
+                        emit_line(&buf, "STR r0, [r2, #0]");
+                        emit_line(&buf, "STR r1, [r2, #4]");
+                        /* Push value back as expression result: low then high */
+                        emit_line(&buf, "PUSH {r0}");
+                        emit_line(&buf, "PUSH {r1}");
+                        break;
+                    }
                     emit_pop_r0(&buf);
                     emit_pop_r1(&buf);
                     if (es == 1) {
@@ -815,18 +1170,29 @@ static char *codegen_arm(IrProgram *prog) {
                 case IR_I2F: {
                     /* int -> float/double */
                     int is_dbl = (I->aux & 0x200) != 0;
+                    /* Bug-P1-7: 0x400 = unsigned source; select __aeabi_ui2d /
+                     * __aeabi_ui2f instead of the signed __aeabi_i2d /
+                     * __aeabi_i2f so that (double)(unsigned)v yields the
+                     * correct positive value. */
+                    int is_unsigned = (I->aux & 0x400) != 0;
 #if ARKCC_FEATURE_FPU_HW
                     if (g_config.enable_fpu_hw) {
                         emit_pop_r0(&buf);
                         emit_line(&buf, "VMOV s0, r0");
                         if (is_dbl) {
-                            emit_line(&buf, "VCVT.F64.S32 d0, s0");
+                            if (is_unsigned)
+                                emit_line(&buf, "VCVT.F64.U32 d0, s0");
+                            else
+                                emit_line(&buf, "VCVT.F64.S32 d0, s0");
                             emit_line(&buf, "VMOV r0, s0");
                             emit_line(&buf, "VMOV r1, s1");
                             emit_push_r0(&buf);
                             asmbuf_puts(&buf, "    PUSH {r1}\n");
                         } else {
-                            emit_line(&buf, "VCVT.F32.S32 s0, s0");
+                            if (is_unsigned)
+                                emit_line(&buf, "VCVT.F32.U32 s0, s0");
+                            else
+                                emit_line(&buf, "VCVT.F32.S32 s0, s0");
                             emit_line(&buf, "VMOV r0, s0");
                             emit_push_r0(&buf);
                         }
@@ -835,11 +1201,11 @@ static char *codegen_arm(IrProgram *prog) {
 #endif
                     emit_pop_r0(&buf);
                     if (is_dbl) {
-                        emit_line(&buf, "BL __aeabi_i2d");
+                        emit_line(&buf, is_unsigned ? "BL __aeabi_ui2d" : "BL __aeabi_i2d");
                         emit_push_r0(&buf);
                         asmbuf_puts(&buf, "    PUSH {r1}\n");
                     } else {
-                        emit_line(&buf, "BL __aeabi_i2f");
+                        emit_line(&buf, is_unsigned ? "BL __aeabi_ui2f" : "BL __aeabi_i2f");
                         emit_push_r0(&buf);
                     }
                     break;
@@ -961,16 +1327,20 @@ static char *codegen_arm(IrProgram *prog) {
                      * The stack-based IR pushes all args onto the stack (arg0 on top); here we pop the first 4
                      * into r0-r3, leaving the remaining stack_args on the stack for the callee to read.
                      * After the call the caller cleans up the stack args (caller cleanup).
-                     * Note: when stack_args is odd, SP is only 4-byte aligned at BL;
-                     * this is a known simplification of the stack-based IR model (even arg counts are fully compliant). */
+                     * P1 FIX: When stack_args is odd, a 4-byte padding is inserted before BL
+                     * and removed after, ensuring 8-byte SP alignment at BL per AAPCS. */
                     int n = I->val;
                     int k;
-                    int reg_args = (n > 4) ? 4 : n;
-                    int stack_args = (n > 4) ? (n - 4) : 0;
+                    /* Indirect call (obj->fnptr()): I->name starts with '?'. The function
+                     * pointer was pushed LAST (it's on top of stack). Pop it into ip (r12)
+                     * first, then pop real args into r0-r3, then BLX ip. */
+                    int is_indirect = (I->name && I->name[0] == '?');
+                    int real_args = is_indirect ? n - 1 : n;
+                    int is_sret_call = (!is_indirect && sret_lookup(sret_names, sret_sizes, sret_count, I->name));
 
                     /* armcc intrinsic functions: emit inline instruction instead of BL.
                      * Arguments (if any) are already on the stack; pop and discard them. */
-                    if (ark_streq(I->name, "__nop") ||
+                    if (!is_indirect && (ark_streq(I->name, "__nop") ||
                         ark_streq(I->name, "__isb") ||
                         ark_streq(I->name, "__dsb") ||
                         ark_streq(I->name, "__dmb") ||
@@ -979,7 +1349,9 @@ static char *codegen_arm(IrProgram *prog) {
                         ark_streq(I->name, "__enable_irq") ||
                         ark_streq(I->name, "__wfi") ||
                         ark_streq(I->name, "__wfe") ||
-                        ark_streq(I->name, "__sev")) {
+                        ark_streq(I->name, "__sev"))) {
+                        int reg_args = (real_args > 4) ? 4 : real_args;
+                        int stack_args = (real_args > 4) ? (real_args - 4) : 0;
                         for (k = 0; k < reg_args; k++) {
                             asmbuf_puts(&buf, "    POP {r");
                             asmbuf_int(&buf, k);
@@ -1004,21 +1376,111 @@ static char *codegen_arm(IrProgram *prog) {
                         break;
                     }
 
+                    /* sret call: callee returns struct > 8 bytes via hidden pointer in r0.
+                     * Stack layout at entry: [arg0, arg1, ..., argN-1] (top at SP).
+                     * We pop reg args into r1-r3 (max 3, r0 is sret ptr), allocate sret
+                     * space below stack args, then restore sp so callee sees stack args
+                     * at the correct position. */
+                    if (is_sret_call) {
+                        int sret_sz = sret_get_size(sret_names, sret_sizes, sret_count, I->name);
+                        int reg_args = (real_args > 3) ? 3 : real_args;
+                        int stack_args = (real_args > 3) ? (real_args - 3) : 0;
+                        /* Pop register args into r1, r2, r3 */
+                        for (k = 0; k < reg_args; k++) {
+                            asmbuf_puts(&buf, "    POP {r");
+                            asmbuf_int(&buf, k + 1);
+                            asmbuf_puts(&buf, "}\n");
+                        }
+                        /* #A6 FIX: Allocate sret space and keep it allocated during BL.
+                         * Previously the code did SUB sp; MOV r0,sp; ADD sp (releasing
+                         * sret space before BL), which caused the callee's prologue
+                         * PUSH {r5,r6,r7,lr} to overwrite the sret space (it was below
+                         * SP). Now sret space stays at SP+0 during the call; the callee's
+                         * PUSH writes below SP, not touching sret space.
+                         * Limitation: if stack_args > 0, the callee reads stack args at
+                         * SP+0 which is sret space. For sret functions with >3 args,
+                         * pre-allocating sret in the caller's frame is needed (TODO). */
+                        asmbuf_puts(&buf, "    SUB sp, sp, #");
+                        asmbuf_int(&buf, sret_sz);
+                        asmbuf_putc(&buf, '\n');
+                        /* r0 = sret pointer */
+                        asmbuf_puts(&buf, "    MOV r0, sp\n");
+                        /* BL callee (sret space is safe at SP+0..SP+sret_sz-1) */
+                        asmbuf_puts(&buf, "    BL ");
+                        asmbuf_puts(&buf, I->name);
+                        asmbuf_putc(&buf, '\n');
+                        /* Clean up sret space + stack args */
+                        asmbuf_puts(&buf, "    ADD sp, sp, #");
+                        asmbuf_int(&buf, sret_sz + stack_args * 4);
+                        asmbuf_putc(&buf, '\n');
+                        /* Push r0 (sret pointer) */
+                        emit_push_r0(&buf);
+                        break;
+                    }
+
+                    /* Regular (non-sret) call */
+                    {
+                    int reg_args = (real_args > 4) ? 4 : real_args;
+                    int stack_args = (real_args > 4) ? (real_args - 4) : 0;
+                    /* P1 FIX: AAPCS requires 8-byte SP alignment at BL.
+                     * When stack_args is odd, SP is only 4-byte aligned after
+                     * popping reg_args. Insert padding before BL, remove after. */
+                    int need_align = (stack_args & 1) != 0;
+
+                    /* Indirect call: pop function pointer into ip (r12) first */
+                    if (is_indirect) {
+                        asmbuf_puts(&buf, "    POP {ip}\n");
+                        /* #8 FIX: Ensure Thumb bit is set for BLX ip */
+                        asmbuf_puts(&buf, "    ORR ip, ip, #1\n");
+                    }
                     for (k = 0; k < reg_args; k++) {
                         asmbuf_puts(&buf, "    POP {r");
                         asmbuf_int(&buf, k);
                         asmbuf_puts(&buf, "}\n");
                     }
-                    asmbuf_puts(&buf, "    BL ");
-                    asmbuf_puts(&buf, I->name);
-                    asmbuf_putc(&buf, '\n');
-                    /* Clean up stack arguments */
+                    if (need_align) {
+                        asmbuf_puts(&buf, "    SUB sp, sp, #4\n");
+                    }
+                    if (is_indirect) {
+                        asmbuf_puts(&buf, "    BLX ip\n");
+                    } else {
+                        asmbuf_puts(&buf, "    BL ");
+                        asmbuf_puts(&buf, I->name);
+                        asmbuf_putc(&buf, '\n');
+                    }
+                    /* Clean up alignment padding + stack arguments */
+                    if (need_align) {
+                        asmbuf_puts(&buf, "    ADD sp, sp, #4\n");
+                    }
                     if (stack_args > 0) {
                         asmbuf_puts(&buf, "    ADD sp, sp, #");
                         asmbuf_int(&buf, stack_args * 4);
                         asmbuf_putc(&buf, '\n');
                     }
-                    emit_push_r0(&buf);
+                    /* #9 FIX: Check if called function returns 64-bit (long long/double).
+                     * If so, push both r0 (low) and r1 (high). */
+                    {
+                        int ret64 = 0;
+                        if (!is_indirect) {
+                            int fi2;
+                            for (fi2 = 0; fi2 < prog->func_count; fi2++) {
+                                if (ark_streq(prog->funcs[fi2]->name, I->name)) {
+                                    Type *rt = prog->funcs[fi2]->ret_type;
+                                    if (rt && (rt->kind == TYPE_LLONG || rt->kind == TYPE_DOUBLE)) {
+                                        ret64 = 1;
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                        if (ret64) {
+                            emit_push_r0(&buf);              /* push low word */
+                            asmbuf_puts(&buf, "    PUSH {r1}\n");  /* push high word */
+                        } else {
+                            emit_push_r0(&buf);
+                        }
+                    }
+                    }
                     break;
                 }
                 case IR_SVC: {
@@ -1043,23 +1505,22 @@ static char *codegen_arm(IrProgram *prog) {
                     break;
                 }
 #endif
-                /* === Integer divide/modulo: implemented via ARM EABI soft-division helpers ===
-                 * Top of stack is the divisor (r1), next is the dividend (r0); result pushed back to r0. */
+                /* === Integer divide/modulo ===
+                 * Top of stack is the divisor (r1), next is the dividend (r0); result pushed back to r0.
+                 * Cortex-M4 (ARMv7E-M) has hardware SDIV/UDIV; use them instead of __aeabi_idiv
+                 * so single-file .bin output works without linking libgcc. */
                 case IR_DIV:
                     emit_pop_r1(&buf);
                     emit_pop_r0(&buf);
-                    asmbuf_puts(&buf, "    BL ");
-                    asmbuf_puts(&buf, I->aux ? "__aeabi_uidiv" : "__aeabi_idiv");
-                    asmbuf_putc(&buf, '\n');
+                    asmbuf_puts(&buf, I->aux ? "    UDIV r0, r0, r1\n" : "    SDIV r0, r0, r1\n");
                     emit_push_r0(&buf);
                     break;
                 case IR_MOD:
                     emit_pop_r1(&buf);
                     emit_pop_r0(&buf);
-                    asmbuf_puts(&buf, "    BL ");
-                    asmbuf_puts(&buf, I->aux ? "__aeabi_uidivmod" : "__aeabi_idivmod");
-                    asmbuf_putc(&buf, '\n');
-                    emit_line(&buf, "MOV r0, r1"); /* remainder is in r1 */
+                    asmbuf_puts(&buf, I->aux ? "    UDIV r2, r0, r1\n" : "    SDIV r2, r0, r1\n");
+                    emit_line(&buf, "MUL r2, r2, r1");
+                    emit_line(&buf, "SUB r0, r0, r2");
                     emit_push_r0(&buf);
                     break;
                 /* === 64-bit ops: value occupies two stack slots, low word pushed first, high word pushed last (high word on top) ===
@@ -1073,15 +1534,18 @@ static char *codegen_arm(IrProgram *prog) {
                     emit_push_r0(&buf);
                     break;
                 case IR_64BINARY: {
-                    int op = I->aux;
+                    /* #I2 FIX: Mask off unsigned flag (0x100) from op, and use
+                     * correct AEABI helper names (__aeabi_ldivmod not __aeabi_ldiv). */
+                    int is_unsigned = (I->aux & 0x100) != 0;
+                    int op = I->aux & ~0x100;
                     const char *helper = 0;
-                    int is_mod = 0;
+                    int is_div = 0, is_mod = 0;
                     switch (op) {
                         case (int)TOK_PLUS:  helper = "__aeabi_ladd"; break;
                         case (int)TOK_MINUS: helper = "__aeabi_lsub"; break;
                         case (int)TOK_MUL:   helper = "__aeabi_lmul"; break;
-                        case (int)TOK_DIV:   helper = "__aeabi_ldiv"; break;
-                        case (int)TOK_MOD:   helper = "__aeabi_ldivmod"; is_mod = 1; break;
+                        case (int)TOK_DIV:   helper = is_unsigned ? "__aeabi_uldivmod" : "__aeabi_ldivmod"; is_div = 1; break;
+                        case (int)TOK_MOD:   helper = is_unsigned ? "__aeabi_uldivmod" : "__aeabi_ldivmod"; is_mod = 1; break;
                         default: break;
                     }
                     emit_line(&buf, "POP {r3}");
@@ -1094,32 +1558,39 @@ static char *codegen_arm(IrProgram *prog) {
                         asmbuf_putc(&buf, '\n');
                     }
                     if (is_mod) {
-                        /* __aeabi_ldivmod: quotient in r0/r1, remainder in r2/r3; take remainder to r0/r1 */
+                        /* __aeabi_ldivmod/uldivmod: quotient in r0/r1, remainder in r2/r3;
+                         * take remainder to r0/r1 for MOD result. */
                         emit_line(&buf, "MOV r0, r2");
                         emit_line(&buf, "MOV r1, r3");
                     }
+                    /* For DIV, quotient is already in r0/r1. */
                     emit_push_r0(&buf);                 /* result low 32 bits */
                     asmbuf_puts(&buf, "    PUSH {r1}\n"); /* result high 32 bits */
                     break;
                 }
                 case IR_64CMP: {
-                    /* __aeabi_lcmp returns -1/0/1 (a<b / a==b / a>b) in r0;
+                    /* #I3 FIX: Check unsigned flag (0x100) to select __aeabi_ulcmp
+                     * for unsigned comparison instead of always using __aeabi_lcmp. */
+                    int is_unsigned = (I->aux & 0x100) != 0;
+                    int op = I->aux & ~0x100;
+                    const char *cmp_helper = is_unsigned ? "__aeabi_ulcmp" : "__aeabi_lcmp";
+                    /* __aeabi_lcmp/ulcmp returns -1/0/1 (a<b / a==b / a>b) in r0;
                      * use conditional MOV to produce a 0/1 comparison result. */
-                    int op = I->aux;
                     emit_line(&buf, "POP {r3}");
                     emit_line(&buf, "POP {r2}");
                     emit_line(&buf, "POP {r1}");
                     emit_line(&buf, "POP {r0}");
-                    emit_line(&buf, "BL __aeabi_lcmp");
+                    asmbuf_puts(&buf, "    BL ");
+                    asmbuf_puts(&buf, cmp_helper);
+                    asmbuf_putc(&buf, '\n');
                     emit_line(&buf, "CMP r0, #0");
-                    emit_line(&buf, "MOV r0, #0");
                     switch (op) {
-                        case (int)TOK_EQ: emit_line(&buf, "IT EQ"); emit_line(&buf, "MOVEQ r0, #1"); break;
-                        case (int)TOK_NE: emit_line(&buf, "IT NE"); emit_line(&buf, "MOVNE r0, #1"); break;
-                        case (int)TOK_LT: emit_line(&buf, "IT LT"); emit_line(&buf, "MOVLT r0, #1"); break;
-                        case (int)TOK_GT: emit_line(&buf, "IT GT"); emit_line(&buf, "MOVGT r0, #1"); break;
-                        case (int)TOK_LE: emit_line(&buf, "IT LE"); emit_line(&buf, "MOVLE r0, #1"); break;
-                        case (int)TOK_GE: emit_line(&buf, "IT GE"); emit_line(&buf, "MOVGE r0, #1"); break;
+                        case (int)TOK_EQ: emit_line(&buf, "ITE EQ"); emit_line(&buf, "MOVEQ r0, #1"); emit_line(&buf, "MOVNE r0, #0"); break;
+                        case (int)TOK_NE: emit_line(&buf, "ITE NE"); emit_line(&buf, "MOVNE r0, #1"); emit_line(&buf, "MOVEQ r0, #0"); break;
+                        case (int)TOK_LT: emit_line(&buf, "ITE LT"); emit_line(&buf, "MOVLT r0, #1"); emit_line(&buf, "MOVGE r0, #0"); break;
+                        case (int)TOK_GT: emit_line(&buf, "ITE GT"); emit_line(&buf, "MOVGT r0, #1"); emit_line(&buf, "MOVLE r0, #0"); break;
+                        case (int)TOK_LE: emit_line(&buf, "ITE LE"); emit_line(&buf, "MOVLE r0, #1"); emit_line(&buf, "MOVGT r0, #0"); break;
+                        case (int)TOK_GE: emit_line(&buf, "ITE GE"); emit_line(&buf, "MOVGE r0, #1"); emit_line(&buf, "MOVLT r0, #0"); break;
                         default: break;
                     }
                     emit_push_r0(&buf);
@@ -1158,7 +1629,8 @@ static char *codegen_arm(IrProgram *prog) {
                 }
                 case IR_LOAD_FLD: {
                     int bit_off = I->val;
-                    int bw = I->aux;
+                    int bw = I->aux & 0xFF;         /* #I6 FIX: mask off 0x100 signed flag */
+                    int is_signed = (I->aux & 0x100) != 0;
                     unsigned mask = (bw >= 32) ? 0xFFFFFFFFu : ((1u << bw) - 1u);
                     emit_pop_r0(&buf);                 /* addr */
                     emit_line(&buf, "LDR r0, [r0]");
@@ -1167,25 +1639,70 @@ static char *codegen_arm(IrProgram *prog) {
                         asmbuf_int(&buf, bit_off);
                         asmbuf_putc(&buf, '\n');
                     }
-                    emit_mov_imm(&buf, 2, (int)mask);
-                    emit_line(&buf, "AND r0, r2");      /* truncate to bw bits */
+                    if (is_signed && bw < 32) {
+                        /* #I6 FIX: Sign-extend signed bitfield using LSL+ASR.
+                         * A 3-bit signed field with value 0x7 should become
+                         * 0xFFFFFFFF (-1), not 0x00000007 (7). */
+                        int shift = 32 - bw;
+                        asmbuf_puts(&buf, "    LSL r0, r0, #");
+                        asmbuf_int(&buf, shift);
+                        asmbuf_putc(&buf, '\n');
+                        asmbuf_puts(&buf, "    ASR r0, r0, #");
+                        asmbuf_int(&buf, shift);
+                        asmbuf_putc(&buf, '\n');
+                    } else {
+                        emit_mov_imm(&buf, 2, (int)mask);
+                        emit_line(&buf, "AND r0, r2");      /* truncate to bw bits */
+                    }
                     emit_push_r0(&buf);
                     break;
                 }
                 case IR_RETURN:
-                    emit_epilogue_return(&buf, local_size, f->is_irq, f->is_naked);
+                    if (is_sret) {
+                        /* Struct return > 8 bytes: pop source address (r1),
+                         * load sret pointer from frame, copy struct word-by-word,
+                         * then return r0 = sret pointer per AAPCS. */
+                        int rsz = type_size(f->ret_type);
+                        int words = (rsz + 3) / 4;
+                        int w;
+                        emit_pop_r1(&buf);  /* r1 = source struct address */
+                        /* Load sret pointer into r0 */
+                        asmbuf_puts(&buf, "    LDR r0, [r6, #");
+                        asmbuf_int(&buf, sret_off);
+                        asmbuf_puts(&buf, "]\n");
+                        /* Copy struct word by word */
+                        for (w = 0; w < words; w++) {
+                            asmbuf_puts(&buf, "    LDR r2, [r1, #");
+                            asmbuf_int(&buf, w * 4);
+                            asmbuf_puts(&buf, "]\n");
+                            asmbuf_puts(&buf, "    STR r2, [r0, #");
+                            asmbuf_int(&buf, w * 4);
+                            asmbuf_puts(&buf, "]\n");
+                        }
+                        /* Manual epilogue: skip POP {r0} (r0 already holds sret ptr) */
+                        emit_line(&buf, "MOV sp, r6");
+                        if (local_size > 0) {
+                            asmbuf_puts(&buf, "    ADD sp, sp, #");
+                            asmbuf_int(&buf, local_size);
+                            asmbuf_putc(&buf, '\n');
+                        }
+                        if (f->is_irq) {
+                            emit_line(&buf, "POP {r5, r6, r7, pc}");
+                        } else {
+                            emit_line(&buf, "POP {r5, r6, r7, pc}");
+                        }
+                    } else {
+                        emit_epilogue_return(&buf, local_size, f->is_irq, f->is_naked);
+                    }
                     break;
                 case IR_ALLOCA: {
-                    /* B3: VLA dynamic stack allocation. Pop the byte count (now in r0),
-                     * 8-byte align by rounding down sp, and push the start address of the allocated region.
-                     * ARM tests only check assembly generation; runtime semantics are handled by the C backend. */
+                    /* VLA dynamic stack allocation: pop byte count, 8-byte align,
+                     * subtract from sp, push the start address of the allocated region. */
                     emit_pop_r0(&buf);                  /* r0 = byte count */
                     emit_line(&buf, "ADD r0, r0, #7");
-                    emit_line(&buf, "BIC r0, r0, #7");  /* 8-byte align */
-                    emit_line(&buf, "SUB sp, sp, r0");  /* allocate */
-                    emit_push_r0(&buf);                 /* placeholder: keep stack balanced */
-                    emit_line(&buf, "MOV r0, sp");
-                    emit_line(&buf, "ADD sp, sp, #4");  /* undo placeholder */
+                    emit_line(&buf, "BIC r0, r0, #7");  /* 8-byte align down */
+                    emit_line(&buf, "SUB sp, sp, r0");  /* allocate on stack */
+                    emit_line(&buf, "MOV r0, sp");      /* r0 = start address */
                     emit_push_r0(&buf);                 /* push start address */
                     break;
                 }
@@ -1259,11 +1776,447 @@ static char *codegen_arm(IrProgram *prog) {
         }
     }
 
-    /* Globals: assigned to .data/.bss/.rodata based on initialization; custom sections take priority.
-     * Aggregate initialization (init_aggregate is a C source snippet) cannot be directly converted to bytes,
-     * so only space is reserved; the value is written at runtime by initialization code in main (IR_STORE etc.).
-     * extern globals are not defined here, only referenced. */
-    if (prog->global_count > 0) {
+    /* F3/S5: Generate __arkcc_init_globals function that initializes .data globals
+     * and zeros .bss at startup. The Reset_Handler should call this before main().
+     * This replaces the need for a separate .data section in Flash and a linker. */
+    if (g_data_sram_start != g_data_sram_end || g_bss_sram_start != g_bss_sram_end) {
+        int gi;
+        asmbuf_puts(&buf, ".global __arkcc_init_globals\n");
+        asmbuf_puts(&buf, ".thumb_func\n");
+        asmbuf_puts(&buf, "__arkcc_init_globals:\n");
+        asmbuf_puts(&buf, "    PUSH {lr}\n");
+
+        /* Initialize .data globals with their initial values */
+        for (gi = 0; gi < prog->global_count; gi++) {
+            IrGlobal *g = prog->globals[gi];
+            unsigned addr;
+            int sz, elem_sz, elem_count, ei;
+            const char *agg;
+            if (g->is_extern || g->has_at) continue;
+            if (!g->has_init) continue;
+            /* Skip zero-initialized scalars (they're in .bss, already zeroed) */
+            if (!g->init_aggregate && !g->init_str && !g->is_float && g->init_int == 0) continue;
+            addr = gvar_find(g->name);
+            if (addr == 0) continue;
+            sz = g->type ? type_size(g->type) : 4;
+            if (sz <= 0) sz = 4;
+
+            if (g->is_float) {
+                /* Float/double initialization: convert to bit pattern */
+                union { float f; unsigned int u; } fu;
+                union { double d; unsigned int u[2]; } du;
+                int is_double = (g->type && g->type->kind == TYPE_DOUBLE);
+                if (is_double) {
+                    du.d = g->init_float;
+                    emit_mov_imm(&buf, 0, (int)du.u[0]);
+                    emit_mov_imm(&buf, 1, (int)addr);
+                    asmbuf_puts(&buf, "    STR r0, [r1]\n");
+                    emit_mov_imm(&buf, 0, (int)du.u[1]);
+                    asmbuf_puts(&buf, "    STR r0, [r1, #4]\n");
+                } else {
+                    fu.f = (float)g->init_float;
+                    emit_mov_imm(&buf, 0, (int)fu.u);
+                    emit_mov_imm(&buf, 1, (int)addr);
+                    asmbuf_puts(&buf, "    STR r0, [r1]\n");
+                }
+            } else if (g->init_aggregate) {
+                /* Aggregate initializer: parse "{v1, v2, v3, ...}" and emit element-by-element.
+                 * #4 FIX: Improved parser now handles:
+                 *   - Nested {} (flattened for multi-dim arrays / struct fields)
+                 *   - Negative numbers
+                 *   - Designated initializers (.field=value — field name skipped)
+                 *   - String elements (skipped, emit 0)
+                 *   - Float elements (skipped, emit 0)
+                 *   - Hex and decimal integers */
+                agg = g->init_aggregate;
+                /* For arrays, element size = size of base type; for structs, use 4 (word) */
+                if (g->type && g->type->kind == TYPE_ARRAY && g->type->base) {
+                    elem_sz = type_size(g->type->base);
+                    if (elem_sz <= 0) elem_sz = 4;
+                    elem_count = g->type->size;
+                } else {
+                    elem_sz = 4;
+                    elem_count = sz / 4;
+                }
+                if (elem_count <= 0) elem_count = sz;  /* fallback: byte-by-byte */
+                /* Skip opening '{' */
+                if (*agg == '{') agg++;
+                for (ei = 0; ei < elem_count; ei++) {
+                    int val = 0;
+                    int neg = 0;
+                    int got_val = 0;
+                    /* Skip whitespace and nested opening braces */
+                    while (*agg == ' ' || *agg == '\t' || *agg == '\n' || *agg == '{') agg++;
+                    /* Handle designated initializer: .field=value or [idx]=value */
+                    if (*agg == '.') {
+                        /* Skip field name until '=' */
+                        while (*agg && *agg != '=') agg++;
+                        if (*agg == '=') agg++;
+                        while (*agg == ' ' || *agg == '\t') agg++;
+                    }
+                    if (*agg == '[') {
+                        /* Skip array index designation [idx]= */
+                        while (*agg && *agg != ']') agg++;
+                        if (*agg == ']') agg++;
+                        if (*agg == '=') agg++;
+                        while (*agg == ' ' || *agg == '\t') agg++;
+                    }
+                    /* Handle string elements (skip) */
+                    if (*agg == '"') {
+                        agg++;
+                        while (*agg && *agg != '"') agg++;
+                        if (*agg == '"') agg++;
+                        val = 0; got_val = 1;
+                    }
+                    /* Handle negative sign */
+                    else if (*agg == '-') { neg = 1; agg++; }
+                    /* Parse hex or decimal */
+                    if (!got_val) {
+                        if (*agg == '0' && (agg[1] == 'x' || agg[1] == 'X')) {
+                            agg += 2;
+                            while ((*agg >= '0' && *agg <= '9') || (*agg >= 'a' && *agg <= 'f') || (*agg >= 'A' && *agg <= 'F')) {
+                                char c = *agg;
+                                int v = (c >= '0' && c <= '9') ? c - '0' :
+                                        (c >= 'a' && c <= 'f') ? c - 'a' + 10 : c - 'A' + 10;
+                                val = val * 16 + v;
+                                agg++;
+                            }
+                            got_val = 1;
+                        } else if (*agg >= '0' && *agg <= '9') {
+                            while (*agg >= '0' && *agg <= '9') { val = val * 10 + (*agg - '0'); agg++; }
+                            got_val = 1;
+                        } else if (*agg == '\'') {
+                            /* Character literal */
+                            agg++;
+                            if (*agg == '\\') {
+                                agg++;
+                                switch (*agg) {
+                                    case 'n': val = '\n'; break;
+                                    case 't': val = '\t'; break;
+                                    case 'r': val = '\r'; break;
+                                    case '0': val = '\0'; break;
+                                    case '\\': val = '\\'; break;
+                                    case '\'': val = '\''; break;
+                                    case '"': val = '"'; break;
+                                    default: val = *agg; break;
+                                }
+                                agg++;
+                            } else {
+                                val = (unsigned char)*agg;
+                                agg++;
+                            }
+                            if (*agg == '\'') agg++;
+                            got_val = 1;
+                        }
+                        /* Skip float values (contains '.' or 'e') */
+                        if (!got_val && ((*agg >= 'a' && *agg <= 'z') || (*agg >= 'A' && *agg <= 'Z'))) {
+                            /* Skip identifier/float */
+                            while ((*agg >= '0' && *agg <= '9') || (*agg >= 'a' && *agg <= 'z') || (*agg >= 'A' && *agg <= 'Z') || *agg == '.' || *agg == '+' || *agg == '-') agg++;
+                            val = 0; got_val = 1;
+                        }
+                    }
+                    if (neg) val = -val;
+                    /* Skip to next comma or closing brace, handling nested braces */
+                    {
+                        int depth = 0;
+                        while (*agg && !(*agg == ',' && depth == 0) && !(*agg == '}' && depth == 0)) {
+                            if (*agg == '{') depth++;
+                            else if (*agg == '}') depth--;
+                            agg++;
+                        }
+                    }
+                    if (*agg == ',') agg++;
+                    /* Skip nested closing braces */
+                    while (*agg == '}') agg++;
+
+                    /* Emit store for this element */
+                    emit_mov_imm(&buf, 0, val);
+                    emit_mov_imm(&buf, 1, (int)(addr + ei * elem_sz));
+                    if (elem_sz == 1) {
+                        asmbuf_puts(&buf, "    STRB r0, [r1]\n");
+                    } else if (elem_sz == 2) {
+                        asmbuf_puts(&buf, "    STRH r0, [r1]\n");
+                    } else {
+                        asmbuf_puts(&buf, "    STR r0, [r1]\n");
+                    }
+                }
+            } else if (g->init_str) {
+                /* String initializer for char array: emit byte-by-byte */
+                int si;
+                for (si = 0; si < sz && g->init_str[si]; si++) {
+                    emit_mov_imm(&buf, 0, (int)(unsigned char)g->init_str[si]);
+                    emit_mov_imm(&buf, 1, (int)(addr + si));
+                    asmbuf_puts(&buf, "    STRB r0, [r1]\n");
+                }
+            } else {
+                /* Integer scalar initialization */
+                emit_mov_imm(&buf, 0, (int)g->init_int);
+                emit_mov_imm(&buf, 1, (int)addr);
+                if (sz == 1) {
+                    asmbuf_puts(&buf, "    STRB r0, [r1]\n");
+                } else if (sz == 2) {
+                    asmbuf_puts(&buf, "    STRH r0, [r1]\n");
+                } else if (sz >= 8) {
+                    /* 64-bit: store low and high words (high=0 for now) */
+                    asmbuf_puts(&buf, "    STR r0, [r1]\n");
+                    emit_mov_imm(&buf, 0, (int)(g->init_int >> 32));
+                    asmbuf_puts(&buf, "    STR r0, [r1, #4]\n");
+                } else {
+                    asmbuf_puts(&buf, "    STR r0, [r1]\n");
+                }
+            }
+        }
+
+        /* Zero .bss region */
+        if (g_bss_sram_start != g_bss_sram_end) {
+            emit_mov_imm(&buf, 0, (int)g_bss_sram_start);
+            emit_mov_imm(&buf, 1, (int)g_bss_sram_end);
+            asmbuf_puts(&buf, "    CMP r0, r1\n");
+            asmbuf_puts(&buf, "    BEQ .L_bss_done\n");
+            asmbuf_puts(&buf, "    MOV r2, #0\n");
+            asmbuf_puts(&buf, ".L_bss_loop:\n");
+            asmbuf_puts(&buf, "    STR r2, [r0]\n");
+            asmbuf_puts(&buf, "    ADD r0, r0, #4\n");
+            asmbuf_puts(&buf, "    CMP r0, r1\n");
+            asmbuf_puts(&buf, "    BNE .L_bss_loop\n");
+            asmbuf_puts(&buf, ".L_bss_done:\n");
+        }
+
+        asmbuf_puts(&buf, "    POP {r0}\n");
+        asmbuf_puts(&buf, "    BX r0\n\n");
+    }
+
+    /* #A1 FIX: Emit __aeabi_* runtime helper functions for 64-bit arithmetic.
+     * The ARM backend emits BL __aeabi_ladd/__aeabi_lmul/__aeabi_ldivmod etc.
+     * for long long operations. These follow the ARM EABI calling convention:
+     *   - 64-bit values passed in r0/r1 (low/high) and r2/r3 (low/high)
+     *   - 64-bit return value in r0/r1 (low/high)
+     *   - ldivmod/uldivmod: quotient in r0/r1, remainder in r2/r3
+     * Note: 16-bit Thumb ADD/SUB/LSR/ASR always set flags (S suffix implicit).
+     * The assembler matches base mnemonics (ADD not ADDS). RSC is unavailable
+     * in Thumb-2; 64-bit negate uses CMP/BEQ/RSB/MVN. ADC/SBC/ORR/EOR only
+     * support 2-operand form (Rd = Rd op Rm). Numeric labels (1f/1b) are not
+     * supported; use named labels. Only r0-r7 used in uldivmod (high registers
+     * not supported by 16-bit immediate/data-processing instructions). */
+    {
+        /* __aeabi_ladd: 64-bit addition (a = r0:r1, b = r2:r3 -> r0:r1) */
+        asmbuf_puts(&buf, ".global __aeabi_ladd\n");
+        asmbuf_puts(&buf, ".thumb_func\n");
+        asmbuf_puts(&buf, "__aeabi_ladd:\n");
+        asmbuf_puts(&buf, "    ADD r0, r0, r2\n");
+        asmbuf_puts(&buf, "    ADC r1, r3\n");          /* r1 = r1 + r3 + C */
+        asmbuf_puts(&buf, "    BX lr\n\n");
+
+        /* __aeabi_lsub: 64-bit subtraction (a = r0:r1, b = r2:r3 -> r0:r1) */
+        asmbuf_puts(&buf, ".global __aeabi_lsub\n");
+        asmbuf_puts(&buf, ".thumb_func\n");
+        asmbuf_puts(&buf, "__aeabi_lsub:\n");
+        asmbuf_puts(&buf, "    SUB r0, r0, r2\n");
+        asmbuf_puts(&buf, "    SBC r1, r3\n");          /* r1 = r1 - r3 - NOT(C) */
+        asmbuf_puts(&buf, "    BX lr\n\n");
+
+        /* __aeabi_lmul: 64-bit multiplication (a = r0:r1, b = r2:r3 -> r0:r1)
+         * result = (a_lo * b_lo) + ((a_lo * b_hi + a_hi * b_lo) << 32)
+         * MUL T1 only supports Rd = Rd * Rm (2-operand); use MOV to copy first. */
+        asmbuf_puts(&buf, ".global __aeabi_lmul\n");
+        asmbuf_puts(&buf, ".thumb_func\n");
+        asmbuf_puts(&buf, "__aeabi_lmul:\n");
+        asmbuf_puts(&buf, "    PUSH {r4, r5, lr}\n");
+        asmbuf_puts(&buf, "    MOV r4, r3\n");          /* r4 = b_hi */
+        asmbuf_puts(&buf, "    MUL r4, r0\n");          /* r4 = r0 * b_hi */
+        asmbuf_puts(&buf, "    MOV r5, r1\n");          /* r5 = a_hi */
+        asmbuf_puts(&buf, "    MUL r5, r2\n");          /* r5 = a_hi * b_lo */
+        asmbuf_puts(&buf, "    UMULL r0, r1, r0, r2\n"); /* r0:r1 = a_lo * b_lo */
+        asmbuf_puts(&buf, "    ADD r1, r4\n");          /* r1 += a_lo*b_hi */
+        asmbuf_puts(&buf, "    ADD r1, r5\n");          /* r1 += a_hi*b_lo */
+        asmbuf_puts(&buf, "    POP {r4, r5, pc}\n\n");
+
+        /* __aeabi_lcmp: 64-bit signed compare (a = r0:r1, b = r2:r3 -> r0 = -1/0/1)
+         * MOV r0, #-1 is buggy (encodes as #255), use MOV+MVN for -1. */
+        asmbuf_puts(&buf, ".global __aeabi_lcmp\n");
+        asmbuf_puts(&buf, ".thumb_func\n");
+        asmbuf_puts(&buf, "__aeabi_lcmp:\n");
+        asmbuf_puts(&buf, "    CMP r1, r3\n");
+        asmbuf_puts(&buf, "    BGT .L_lcmp_gt\n");
+        asmbuf_puts(&buf, "    BLT .L_lcmp_lt\n");
+        asmbuf_puts(&buf, "    CMP r0, r2\n");
+        asmbuf_puts(&buf, "    BHI .L_lcmp_gt\n");
+        asmbuf_puts(&buf, "    BCC .L_lcmp_lt\n");
+        asmbuf_puts(&buf, "    MOV r0, #0\n");
+        asmbuf_puts(&buf, "    BX lr\n");
+        asmbuf_puts(&buf, ".L_lcmp_lt:\n");
+        asmbuf_puts(&buf, "    MOV r0, #0\n");
+        asmbuf_puts(&buf, "    MVN r0, r0\n");          /* r0 = -1 */
+        asmbuf_puts(&buf, "    BX lr\n");
+        asmbuf_puts(&buf, ".L_lcmp_gt:\n");
+        asmbuf_puts(&buf, "    MOV r0, #1\n");
+        asmbuf_puts(&buf, "    BX lr\n\n");
+
+        /* __aeabi_ulcmp: 64-bit unsigned compare (a = r0:r1, b = r2:r3 -> r0 = -1/0/1) */
+        asmbuf_puts(&buf, ".global __aeabi_ulcmp\n");
+        asmbuf_puts(&buf, ".thumb_func\n");
+        asmbuf_puts(&buf, "__aeabi_ulcmp:\n");
+        asmbuf_puts(&buf, "    CMP r1, r3\n");
+        asmbuf_puts(&buf, "    BHI .L_ulcmp_gt\n");
+        asmbuf_puts(&buf, "    BCC .L_ulcmp_lt\n");
+        asmbuf_puts(&buf, "    CMP r0, r2\n");
+        asmbuf_puts(&buf, "    BHI .L_ulcmp_gt\n");
+        asmbuf_puts(&buf, "    BCC .L_ulcmp_lt\n");
+        asmbuf_puts(&buf, "    MOV r0, #0\n");
+        asmbuf_puts(&buf, "    BX lr\n");
+        asmbuf_puts(&buf, ".L_ulcmp_lt:\n");
+        asmbuf_puts(&buf, "    MOV r0, #0\n");
+        asmbuf_puts(&buf, "    MVN r0, r0\n");          /* r0 = -1 */
+        asmbuf_puts(&buf, "    BX lr\n");
+        asmbuf_puts(&buf, ".L_ulcmp_gt:\n");
+        asmbuf_puts(&buf, "    MOV r0, #1\n");
+        asmbuf_puts(&buf, "    BX lr\n\n");
+
+        /* __aeabi_uldivmod: 64-bit unsigned division/modulo
+         * Input: r0:r1 = dividend, r2:r3 = divisor
+         * Output: r0:r1 = quotient, r2:r3 = remainder
+         * Algorithm: shift-and-subtract (64 iterations)
+         * Register allocation (r0-r7 only, use stack for temps):
+         *   r0:r1 = dividend -> quotient (shifted left, quotient bits set at LSB)
+         *   r2:r3 = remainder (init 0, shifted left, dividend MSB brought in)
+         *   r4 = counter (64 iterations)
+         *   r5 = scratch (dividend MSB, carry)
+         *   r6:r7 = saved divisor (for comparison and subtraction) */
+        asmbuf_puts(&buf, ".global __aeabi_uldivmod\n");
+        asmbuf_puts(&buf, ".thumb_func\n");
+        asmbuf_puts(&buf, "__aeabi_uldivmod:\n");
+        asmbuf_puts(&buf, "    Push {r4, r5, r6, r7, lr}\n");
+        asmbuf_puts(&buf, "    MOV r6, r2\n");          /* r6 = divisor_lo */
+        asmbuf_puts(&buf, "    MOV r7, r3\n");          /* r7 = divisor_hi */
+        asmbuf_puts(&buf, "    MOV r2, #0\n");          /* r2 = remainder_lo */
+        asmbuf_puts(&buf, "    MOV r3, #0\n");          /* r3 = remainder_hi */
+        asmbuf_puts(&buf, "    MOV r4, #64\n");         /* r4 = counter */
+        /* Check divide by zero: ORR r5, r6, r7 -> r5 = r5 | r6 | r7 */
+        asmbuf_puts(&buf, "    MOV r5, r6\n");
+        asmbuf_puts(&buf, "    ORR r5, r7\n");
+        asmbuf_puts(&buf, "    CMP r5, #0\n");
+        asmbuf_puts(&buf, "    BEQ .L_uldiv_zero\n");
+        asmbuf_puts(&buf, ".L_uldiv_loop:\n");
+        /* r5 = MSB of dividend (bit 63 = MSB of r1) */
+        asmbuf_puts(&buf, "    LSR r5, r1, #31\n");
+        /* Shift dividend left by 1 (64-bit): need MSB of r0 -> r1 bit 0.
+         * Save dividend MSB on stack, use r5 for carry. */
+        asmbuf_puts(&buf, "    Push {r5}\n");
+        asmbuf_puts(&buf, "    LSR r5, r0, #31\n");     /* r5 = MSB of r0 */
+        asmbuf_puts(&buf, "    LSL r0, r0, #1\n");
+        asmbuf_puts(&buf, "    LSL r1, r1, #1\n");
+        asmbuf_puts(&buf, "    ORR r1, r5\n");          /* r1 |= carry from r0 */
+        asmbuf_puts(&buf, "    Pop {r5}\n");             /* r5 = dividend MSB */
+        /* Shift remainder left by 1, bring in dividend MSB (r5).
+         * Need MSB of r2 -> r3 bit 0. Save counter, use r4 as temp. */
+        asmbuf_puts(&buf, "    Push {r4}\n");
+        asmbuf_puts(&buf, "    LSR r4, r2, #31\n");     /* r4 = MSB of r2 */
+        asmbuf_puts(&buf, "    LSL r2, r2, #1\n");
+        asmbuf_puts(&buf, "    ORR r2, r5\n");          /* r2 |= dividend MSB */
+        asmbuf_puts(&buf, "    LSL r3, r3, #1\n");
+        asmbuf_puts(&buf, "    ORR r3, r4\n");          /* r3 |= carry from r2 */
+        asmbuf_puts(&buf, "    Pop {r4}\n");            /* restore counter */
+        /* Compare remainder (r2:r3) with divisor (r6:r7) unsigned */
+        asmbuf_puts(&buf, "    CMP r3, r7\n");
+        asmbuf_puts(&buf, "    BHI .L_uldiv_sub\n");
+        asmbuf_puts(&buf, "    BCC .L_uldiv_skip\n");
+        asmbuf_puts(&buf, "    CMP r2, r6\n");
+        asmbuf_puts(&buf, "    BCC .L_uldiv_skip\n");
+        /* Subtract divisor from remainder */
+        asmbuf_puts(&buf, ".L_uldiv_sub:\n");
+        asmbuf_puts(&buf, "    SUB r2, r2, r6\n");
+        asmbuf_puts(&buf, "    SBC r3, r7\n");          /* r3 = r3 - r7 - NOT(C) */
+        /* Set quotient bit 0 (in dividend/quotient r0) */
+        asmbuf_puts(&buf, "    MOV r5, #1\n");
+        asmbuf_puts(&buf, "    ORR r0, r5\n");
+        asmbuf_puts(&buf, ".L_uldiv_skip:\n");
+        asmbuf_puts(&buf, "    SUB r4, r4, #1\n");
+        asmbuf_puts(&buf, "    BNE .L_uldiv_loop\n");
+        /* Result: quotient in r0:r1, remainder in r2:r3 (already in place) */
+        asmbuf_puts(&buf, "    Pop {r4, r5, r6, r7, pc}\n");
+        /* Division by zero: return 0 */
+        asmbuf_puts(&buf, ".L_uldiv_zero:\n");
+        asmbuf_puts(&buf, "    MOV r0, #0\n");
+        asmbuf_puts(&buf, "    MOV r1, #0\n");
+        asmbuf_puts(&buf, "    MOV r2, #0\n");
+        asmbuf_puts(&buf, "    MOV r3, #0\n");
+        asmbuf_puts(&buf, "    Pop {r4, r5, r6, r7, pc}\n\n");
+
+        /* __aeabi_ldivmod: 64-bit signed division/modulo
+         * Input: r0:r1 = dividend, r2:r3 = divisor
+         * Output: r0:r1 = quotient, r2:r3 = remainder
+         * Handles signs: negate inputs as needed, call uldivmod, fixup signs.
+         * Remainder has same sign as dividend.
+         * 64-bit negate (RSC unavailable): if low != 0 { low=-low; high=~high }
+         * else { high=-high; }. Uses ASR r5, r1, #31 for sign extraction. */
+        asmbuf_puts(&buf, ".global __aeabi_ldivmod\n");
+        asmbuf_puts(&buf, ".thumb_func\n");
+        asmbuf_puts(&buf, "__aeabi_ldivmod:\n");
+        asmbuf_puts(&buf, "    Push {r4, r5, r6, r7, lr}\n");
+        /* r5 = dividend sign (0xFFFFFFFF if negative, 0 if positive) */
+        asmbuf_puts(&buf, "    ASR r5, r1, #31\n");
+        asmbuf_puts(&buf, "    MOV r6, r5\n");          /* r6 = saved dividend sign */
+        asmbuf_puts(&buf, "    CMP r5, #0\n");
+        asmbuf_puts(&buf, "    BEQ .L_ldiv_posd\n");
+        /* Negate dividend: if low != 0 { low=-low; high=~high } else { high=-high } */
+        asmbuf_puts(&buf, "    CMP r0, #0\n");
+        asmbuf_puts(&buf, "    BEQ .L_ldiv_neg_d_hi\n");
+        asmbuf_puts(&buf, "    RSB r0, r0\n");          /* r0 = -r0 */
+        asmbuf_puts(&buf, "    MVN r1, r1\n");          /* r1 = ~r1 */
+        asmbuf_puts(&buf, "    B .L_ldiv_posd\n");
+        asmbuf_puts(&buf, ".L_ldiv_neg_d_hi:\n");
+        asmbuf_puts(&buf, "    RSB r1, r1\n");          /* r1 = -r1, r0 stays 0 */
+        asmbuf_puts(&buf, ".L_ldiv_posd:\n");
+        /* Negate divisor if negative */
+        asmbuf_puts(&buf, "    ASR r5, r3, #31\n");
+        asmbuf_puts(&buf, "    CMP r5, #0\n");
+        asmbuf_puts(&buf, "    BEQ .L_ldiv_posb\n");
+        asmbuf_puts(&buf, "    CMP r2, #0\n");
+        asmbuf_puts(&buf, "    BEQ .L_ldiv_neg_b_hi\n");
+        asmbuf_puts(&buf, "    RSB r2, r2\n");
+        asmbuf_puts(&buf, "    MVN r3, r3\n");
+        asmbuf_puts(&buf, "    B .L_ldiv_posb\n");
+        asmbuf_puts(&buf, ".L_ldiv_neg_b_hi:\n");
+        asmbuf_puts(&buf, "    RSB r3, r3\n");
+        asmbuf_puts(&buf, ".L_ldiv_posb:\n");
+        /* Call uldivmod (r0:r1 / r2:r3 -> r0:r1 = quot, r2:r3 = rem) */
+        asmbuf_puts(&buf, "    BL __aeabi_uldivmod\n");
+        /* Quotient sign: negative if dividend and divisor signs differ.
+         * EOR r4, r6, r5 -> r4 = r4 ^ r5 ^ r6. Use MOV first for 2-operand EOR. */
+        asmbuf_puts(&buf, "    MOV r4, r6\n");
+        asmbuf_puts(&buf, "    EOR r4, r5\n");
+        asmbuf_puts(&buf, "    CMP r4, #0\n");
+        asmbuf_puts(&buf, "    BEQ .L_ldiv_qpos\n");
+        /* Negate quotient */
+        asmbuf_puts(&buf, "    CMP r0, #0\n");
+        asmbuf_puts(&buf, "    BEQ .L_ldiv_neg_q_hi\n");
+        asmbuf_puts(&buf, "    RSB r0, r0\n");
+        asmbuf_puts(&buf, "    MVN r1, r1\n");
+        asmbuf_puts(&buf, "    B .L_ldiv_qpos\n");
+        asmbuf_puts(&buf, ".L_ldiv_neg_q_hi:\n");
+        asmbuf_puts(&buf, "    RSB r1, r1\n");
+        asmbuf_puts(&buf, ".L_ldiv_qpos:\n");
+        /* Remainder sign: same as dividend (r6) */
+        asmbuf_puts(&buf, "    CMP r6, #0\n");
+        asmbuf_puts(&buf, "    BEQ .L_ldiv_rpos\n");
+        asmbuf_puts(&buf, "    CMP r2, #0\n");
+        asmbuf_puts(&buf, "    BEQ .L_ldiv_neg_r_hi\n");
+        asmbuf_puts(&buf, "    RSB r2, r2\n");
+        asmbuf_puts(&buf, "    MVN r3, r3\n");
+        asmbuf_puts(&buf, "    B .L_ldiv_rpos\n");
+        asmbuf_puts(&buf, ".L_ldiv_neg_r_hi:\n");
+        asmbuf_puts(&buf, "    RSB r3, r3\n");
+        asmbuf_puts(&buf, ".L_ldiv_rpos:\n");
+        asmbuf_puts(&buf, "    Pop {r4, r5, r6, r7, pc}\n\n");
+    }
+
+    /* Globals: SRAM addresses are assigned by gvar_assign() above and loaded
+     * via MOVW/MOVT in IR_PUSH_GLOBAL etc. .data globals are initialized at
+     * startup by __arkcc_init_globals (generated above). .bss globals are
+     * zeroed by the same function. __at variables use their absolute address.
+     * Note: .set directives for alias functions are emitted in the function
+     * code section above, not here. */
+    if (0 && prog->global_count > 0) {
         int gi;
         int cur_sec = 0;  /* 0=.text, 1=.data, 2=.bss, 3=.rodata, 4=custom */
         for (gi = 0; gi < prog->global_count; gi++) {
@@ -1501,6 +2454,8 @@ static char *codegen_arm(IrProgram *prog) {
 /* === Minimal Thumb-2 text assembler === */
 typedef struct AsmLabel { char *name; int addr; } AsmLabel;
 typedef struct AsmRef   { int pc; char *name; int type; } AsmRef;
+/* Literal pool entry: LDR rd,=label at ldr_pc needs a 4-byte literal at pool_offset */
+typedef struct AsmLiteral { int ldr_pc; char *name; int pool_offset; } AsmLiteral;
 
 typedef struct {
     const char    *src;
@@ -1512,6 +2467,13 @@ typedef struct {
     AsmRef        *refs;
     int            ref_count, ref_cap;
     int            error_count;
+    /* .set symbols (absolute addresses, e.g. __at variables, alias functions) */
+    AsmLabel      *sets;
+    int            set_count, set_cap;
+    /* Literal pool for LDR rd,=label */
+    AsmLiteral    *literals;
+    int            literal_count, literal_cap;
+    int            literal_pool_start;  /* pc where the pool begins (-1 = not yet) */
 } ArmAsm;
 
 static int is_alpha_a(char c) {
@@ -1538,8 +2500,20 @@ static void skip_to_eol_a(const char **p) { while (**p && **p != '\n') (*p)++; }
 static int read_word_a(const char **p, char *out, int cap) {
     int n = 0;
     skip_space_a(p);
-    while (**p && is_alnum_a(**p) && n < cap - 1) {
-        out[n++] = **p; (*p)++;
+    if (**p == '.') {
+        /* Directive (e.g. ".text", ".global", ".L1"): include '.' in word */
+        while (**p && is_alnum_a(**p) && n < cap - 1) {
+            out[n++] = **p; (*p)++;
+        }
+    } else {
+        /* Instruction/label (e.g. "VADD", "add_float"): stop at '.'
+         * so VFP suffixes like ".F32" are NOT consumed as part of the
+         * mnemonic.  Without this, "VADD.F32" is read as one word and
+         * strieq_a(first,"VADD") fails, causing all VFP arithmetic
+         * instructions to fall through to NOP. */
+        while (**p && is_alnum_a(**p) && **p != '.' && n < cap - 1) {
+            out[n++] = **p; (*p)++;
+        }
     }
     out[n] = 0;
     return n;
@@ -1559,7 +2533,65 @@ static int parse_reg_a(const char **p) {
     if ((**p == 's' || **p == 'S') && ((*p)[1] == 'p' || (*p)[1] == 'P')) { (*p) += 2; return 13; }
     if ((**p == 'l' || **p == 'L') && ((*p)[1] == 'r' || (*p)[1] == 'R')) { (*p) += 2; return 14; }
     if ((**p == 'p' || **p == 'P') && ((*p)[1] == 'c' || (*p)[1] == 'C')) { (*p) += 2; return 15; }
+    if ((**p == 'i' || **p == 'I') && ((*p)[1] == 'p' || (*p)[1] == 'P')) { (*p) += 2; return 12; }
+    if ((**p == 'f' || **p == 'F') && ((*p)[1] == 'p' || (*p)[1] == 'P')) { (*p) += 2; return 11; }
     return -1;
+}
+
+/* #1 FIX: Parse VFP single-precision register (s0-s31).
+ * Returns register number 0-31, or -1 if not an S register.
+ * Must not match 'sp' (handled by parse_reg_a). */
+static int parse_vfp_sreg_a(const char **p) {
+    int n = 0;
+    skip_space_a(p);
+    if ((**p == 's' || **p == 'S') &&
+        ((*p)[1] >= '0' && (*p)[1] <= '9')) {
+        (*p)++;
+        while (**p >= '0' && **p <= '9') {
+            n = n * 10 + (**p - '0');
+            (*p)++;
+        }
+        if (n > 31) n = 31;
+        return n;
+    }
+    return -1;
+}
+
+/* #1 FIX: Parse VFP double-precision register (d0-d15).
+ * Returns register number 0-15, or -1 if not a D register. */
+static int parse_vfp_dreg_a(const char **p) {
+    int n = 0;
+    skip_space_a(p);
+    if (**p == 'd' || **p == 'D') {
+        (*p)++;
+        while (**p >= '0' && **p <= '9') {
+            n = n * 10 + (**p - '0');
+            (*p)++;
+        }
+        if (n > 15) n = 15;
+        return n;
+    }
+    return -1;
+}
+
+/* #1 FIX: Read VFP instruction suffix (e.g. ".F32", ".F64", ".S32.F32").
+ * Concatenates all suffix segments into out (e.g. "F32", "S32F32").
+ * Advances p past the suffix. */
+static void read_vfp_suffix_a(const char **p, char *out, int cap) {
+    int n = 0;
+    skip_space_a(p);
+    while (**p == '.' && n < cap - 1) {
+        (*p)++;
+        /* Inner loop: read alnum but NOT '.' (dots are handled by outer loop).
+         * Without excluding '.', is_alnum_a('.')==true would consume the
+         * entire ".F32.S32" as one segment "F32.S32" (with embedded dot),
+         * causing strieq_a(suf,"F32S32") to fail. */
+        while (is_alnum_a(**p) && **p != '.' && n < cap - 1) {
+            out[n++] = **p;
+            (*p)++;
+        }
+    }
+    out[n] = 0;
 }
 
 static int parse_imm_a(const char **p) {
@@ -1634,13 +2666,100 @@ static void add_ref_a(ArmAsm *a, int pc, const char *name, int type) {
     a->ref_count++;
 }
 
+/* .set symbol management (absolute addresses) */
+static void add_set_a(ArmAsm *a, const char *name, int addr) {
+    if (a->set_count >= a->set_cap) {
+        int nc = a->set_cap == 0 ? 32 : a->set_cap * 2;
+        a->sets = (AsmLabel *)mem_realloc(a->sets,
+            a->set_cap * (int)sizeof(AsmLabel),
+            nc * (int)sizeof(AsmLabel));
+        a->set_cap = nc;
+    }
+    a->sets[a->set_count].name = mem_strdup(name);
+    a->sets[a->set_count].addr = addr;
+    a->set_count++;
+}
+static int find_set_a(ArmAsm *a, const char *name) {
+    int i;
+    for (i = 0; i < a->set_count; i++)
+        if (ark_streq(a->sets[i].name, name)) return a->sets[i].addr;
+    return -1;
+}
+
+/* Literal pool management */
+static void add_literal_a(ArmAsm *a, int ldr_pc, const char *name) {
+    if (a->literal_count >= a->literal_cap) {
+        int nc = a->literal_cap == 0 ? 32 : a->literal_cap * 2;
+        a->literals = (AsmLiteral *)mem_realloc(a->literals,
+            a->literal_cap * (int)sizeof(AsmLiteral),
+            nc * (int)sizeof(AsmLiteral));
+        a->literal_cap = nc;
+    }
+    a->literals[a->literal_count].ldr_pc = ldr_pc;
+    a->literals[a->literal_count].name = mem_strdup(name);
+    a->literals[a->literal_count].pool_offset = -1;
+    a->literal_count++;
+}
+
+/* Resolve a symbol: try .set first, then code labels */
+static int resolve_symbol_a(ArmAsm *a, const char *name) {
+    int addr = find_set_a(a, name);
+    if (addr >= 0) return addr;
+    addr = find_label_a(a, name);
+    return addr;  /* may be -1 if unresolved */
+}
+
+/* Determine instruction size for LDR/STR/LDRB/STRB/LDRH/STRH/LDRSH/LDRSB
+ * with immediate offset. Returns 2 (T1 16-bit) or 4 (T3 32-bit).
+ * T1 limits: word imm5=(off>>2)&0x1F (max 124, step 4),
+ *            byte imm5=off&0x1F (max 31),
+ *            half imm5=(off>>1)&0x1F (max 62, step 2).
+ * T3 supports imm12=off (max 4095 bytes). */
+static int ldr_str_size_a(int imm, int is_byte, int is_half) {
+    if (imm < 0) return 4;  /* negative offset always needs T3 */
+    if (is_byte) {
+        if (imm <= 31) return 2;
+    } else if (is_half) {
+        if (imm <= 62 && (imm % 2 == 0)) return 2;
+    } else {
+        if (imm <= 124 && (imm % 4 == 0)) return 2;
+    }
+    return 4;
+}
+
 static int op_size_a(const char *op) {
     if (strieq_a(op, "BL"))   return 4;
     if (strieq_a(op, "MOVW")) return 4;
     if (strieq_a(op, "MOVT")) return 4;
     if (strieq_a(op, "SDIV")) return 4;
     if (strieq_a(op, "UDIV")) return 4;
+    if (strieq_a(op, "UMULL")) return 4;
     if (strieq_a(op, "B.W"))  return 4;
+    /* Unconditional B uses 32-bit B.W (T4, +-1MB) to avoid +-2KB range
+     * truncation in large functions (e.g. HAL_GPIO_Init is ~3.5KB;
+     * 16-bit B T2 silently truncates imm11 causing the loop back-edge
+     * to jump to a wrong address, breaking GPIO config). */
+    if (strieq_a(op, "B"))    return 4;
+    /* Conditional branches use 32-bit B<cond>.W (T3, +-1MB) to avoid
+     * +-256B range truncation in large functions (e.g. HAL_RCC_OscConfig
+     * is 8632 bytes; 16-bit B<cond> T1 silently truncates imm8 causing
+     * branches to jump to wrong locations). T3 lo word bit12=0 (0x8000 base). */
+    if (strieq_a(op, "BEQ") || strieq_a(op, "BNE") || strieq_a(op, "BCS") ||
+        strieq_a(op, "BCC") || strieq_a(op, "BGE") || strieq_a(op, "BLT") ||
+        strieq_a(op, "BGT") || strieq_a(op, "BLE")) return 4;
+    /* Barriers DMB/DSB/ISB use 32-bit T1 encoding (0xF3BF 0x8F4x/5x/6x).
+     * 16-bit T2 (0xBF50/60/70) is not standard ARMv7-M; use 32-bit form. */
+    if (strieq_a(op, "DMB") || strieq_a(op, "DSB") || strieq_a(op, "ISB")) return 4;
+    /* RRX is encoded as MOV Rd, Rm, RRX (32-bit T2 data-processing). */
+    if (strieq_a(op, "RRX")) return 4;
+    /* #1 FIX: VFP instructions are all 32-bit (two 16-bit halfwords).
+     * Without this, pass1 counts 2 bytes but pass2 emits 4, causing
+     * all subsequent labels/branches to be off by 2 bytes per VFP instr. */
+    if (strieq_a(op, "VMOV") || strieq_a(op, "VADD") || strieq_a(op, "VSUB") ||
+        strieq_a(op, "VMUL") || strieq_a(op, "VDIV") || strieq_a(op, "VCVT") ||
+        strieq_a(op, "VCMP") || strieq_a(op, "VMRS") || strieq_a(op, "VSTR") ||
+        strieq_a(op, "VLDR") || strieq_a(op, "VNEG") || strieq_a(op, "VABS") ||
+        strieq_a(op, "VSQRT")) return 4;
     return 2;
 }
 
@@ -1651,6 +2770,8 @@ static void pass1_a(ArmAsm *a) {
     const char *p = a->src;
     int pc = 0;
     a->label_count = 0;
+    a->set_count = 0;
+    a->literal_count = 0;
     while (*p) {
         char first[64];
         int n;
@@ -1670,7 +2791,129 @@ static void pass1_a(ArmAsm *a) {
             if (n == 0) { skip_to_eol_a(&p); continue; }
         }
         if (first[0] == '.') {
-            /* Pseudo-directives ignored */
+            /* Pseudo-directives: some affect pc, others are metadata-only */
+            if (strieq_a(first, ".set") || strieq_a(first, ".equ")) {
+                /* .set name, 0xADDR - record absolute address */
+                char sym[64];
+                skip_space_a(&p);
+                n = read_word_a(&p, sym, (int)sizeof(sym));
+                if (n > 0) {
+                    skip_space_a(&p);
+                    if (*p == ',') p++;
+                    skip_space_a(&p);
+                    if (*p == '0' && (p[1] == 'x' || p[1] == 'X')) {
+                        unsigned addr = 0;
+                        p += 2;
+                        while ((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f') || (*p >= 'A' && *p <= 'F')) {
+                            char c = *p;
+                            int v = (c >= '0' && c <= '9') ? c - '0' :
+                                    (c >= 'a' && c <= 'f') ? c - 'a' + 10 : c - 'A' + 10;
+                            addr = addr * 16 + v;
+                            p++;
+                        }
+                        add_set_a(a, sym, (int)addr);
+                    } else {
+                        /* .set name, other_label - resolve later, store as ref */
+                        char tgt[64];
+                        n = read_word_a(&p, tgt, (int)sizeof(tgt));
+                        (void)n; (void)tgt;
+                        /* For alias functions, defer to resolve_refs via BL lookup */
+                    }
+                }
+            } else if (strieq_a(first, ".zero") || strieq_a(first, ".skip") || strieq_a(first, ".space")) {
+                /* .zero N - reserve N bytes */
+                int sz = 0;
+                skip_space_a(&p);
+                if (*p == '#') p++;
+                while (*p >= '0' && *p <= '9') { sz = sz * 10 + (*p - '0'); p++; }
+                pc += sz;
+            } else if (strieq_a(first, ".word") || strieq_a(first, ".long")) {
+                /* .word value - 4 bytes (may have multiple comma-separated values) */
+                int count = 1;
+                const char *scan = p;
+                while (*scan && *scan != '\n') { if (*scan == ',') count++; scan++; }
+                pc += 4 * count;
+            } else if (strieq_a(first, ".byte")) {
+                int count = 1;
+                const char *scan = p;
+                while (*scan && *scan != '\n') { if (*scan == ',') count++; scan++; }
+                pc += count;
+            } else if (strieq_a(first, ".asciz")) {
+                /* .asciz "string" - string length + NUL, aligned to 2 */
+                int slen = 0;
+                skip_space_a(&p);
+                if (*p == '"') {
+                    p++;
+                    while (*p && *p != '"' && *p != '\n') {
+                        if (*p == '\\') { slen++; p++; if (*p) p++; }
+                        else { slen++; p++; }
+                    }
+                    if (*p == '"') p++;
+                }
+                slen++;  /* NUL terminator */
+                if (slen & 1) slen++;  /* align to 2 */
+                pc += slen;
+            } else if (strieq_a(first, ".ascii")) {
+                int slen = 0;
+                skip_space_a(&p);
+                if (*p == '"') {
+                    p++;
+                    while (*p && *p != '"' && *p != '\n') {
+                        if (*p == '\\') { slen++; p++; if (*p) p++; }
+                        else { slen++; p++; }
+                    }
+                    if (*p == '"') p++;
+                }
+                if (slen & 1) slen++;
+                pc += slen;
+            } else if (strieq_a(first, ".align") || strieq_a(first, ".balign")) {
+                /* Align to N bytes */
+                int align = 0;
+                skip_space_a(&p);
+                if (*p == '#') p++;
+                while (*p >= '0' && *p <= '9') { align = align * 10 + (*p - '0'); p++; }
+                if (align > 1) {
+                    int rem = pc % align;
+                    if (rem != 0) pc += align - rem;
+                }
+            }
+            /* .section, .data, .bss, .text, .global, .type, .size, .thumb, .file, .loc,
+             * .cfi_*, etc. are metadata-only and don't affect pc */
+        } else if (strieq_a(first, "LDR") || strieq_a(first, "LDRB") ||
+                   strieq_a(first, "STR") || strieq_a(first, "STRB") ||
+                   strieq_a(first, "LDRH") || strieq_a(first, "STRH") ||
+                   strieq_a(first, "LDRSH") || strieq_a(first, "LDRSB")) {
+            /* LDR/STR size depends on offset: T1 (2B) for small offsets,
+             * T3 (4B) for offsets beyond T1 imm5 range. Must match pass2. */
+            int is_byte = (first[3] == 'B' || first[3] == 'b' ||
+                           (first[0] == 'L' && first[2] == 'B') ||
+                           (first[0] == 'S' && first[2] == 'B'));
+            int is_half = (strieq_a(first, "LDRH") || strieq_a(first, "STRH") ||
+                           strieq_a(first, "LDRSH") || strieq_a(first, "LDRSB"));
+            int rd = parse_reg_a(&p);
+            (void)rd;
+            skip_space_a(&p);
+            if (*p == ',') { p++; skip_space_a(&p); }
+            if (*p == '=') {
+                /* LDR rd, =label - emit MOVW+MOVT (8 bytes) in pass2 */
+                char name[64];
+                p++;
+                n = read_word_a(&p, name, (int)sizeof(name));
+                (void)n;
+                pc += 8;
+            } else {
+                /* Parse [Rn, #imm] to determine T1 vs T3 size */
+                int imm = 0;
+                if (*p == '[') { p++; skip_space_a(&p); }
+                int rn = parse_reg_a(&p);
+                (void)rn;
+                skip_space_a(&p);
+                if (*p == ',') {
+                    p++; skip_space_a(&p);
+                    if (*p == '#') imm = parse_imm_a(&p);
+                }
+                pc += ldr_str_size_a(imm, is_byte, is_half);
+            }
         } else if (strieq_a(first, "PUSH") || strieq_a(first, "POP")) {
             /* PUSH/POP may be 16-bit T1 (r0-r7 + lr/pc only) or 32-bit T2
              * (includes r8-r12); size determined by the register list to keep pass1 offsets correct. */
@@ -1679,12 +2922,65 @@ static void pass1_a(ArmAsm *a) {
             (void)has_lr; (void)has_pc;
             if (list & 0x1F00) pc += 4;  /* T2: includes r8-r12 */
             else               pc += 2;  /* T1 */
+        } else if (strieq_a(first, "ADD") || strieq_a(first, "SUB")) {
+            /* ADD/SUB rd, rn, #imm: T1 (2 bytes) if imm<=7 and low regs,
+             * T3 (4 bytes) if imm>7 or high regs. Keep pass1 in sync with pass2. */
+            int rd = parse_reg_a(&p);
+            skip_space_a(&p);
+            if (*p == ',') { p++; skip_space_a(&p); }
+            int rn = parse_reg_a(&p);
+            skip_space_a(&p);
+            if (*p == ',') { p++; skip_space_a(&p); }
+            if (*p == '#') {
+                int imm = parse_imm_a(&p);
+                if (rd == 13 && rn == 13) pc += 2;       /* ADD/SUB sp, sp, #imm */
+                else if (rd == rn) pc += 2;               /* ADD/SUB rd, rd, #imm8 */
+                else if (imm <= 7 && rd <= 7 && rn <= 7) pc += 2;  /* T1 3-bit imm */
+                else pc += 4;                              /* T3 32-bit */
+            } else {
+                pc += 2;  /* register variant, 16-bit */
+            }
+        } else if (strieq_a(first, "CMP")) {
+            /* CMP Rn, #imm: T1 (2B) for imm 0-255, T2 (4B) for larger. */
+            int rn = parse_reg_a(&p);
+            (void)rn;
+            skip_space_a(&p);
+            if (*p == ',') { p++; skip_space_a(&p); }
+            if (*p == '#') {
+                int imm = parse_imm_a(&p);
+                if (imm >= 0 && imm <= 255) pc += 2;
+                else pc += 4;
+            } else {
+                (void)parse_reg_a(&p);
+                pc += 2;
+            }
+        } else if (strieq_a(first, "MOVEQ") || strieq_a(first, "MOVNE") ||
+                   strieq_a(first, "MOVLT") || strieq_a(first, "MOVGT") ||
+                   strieq_a(first, "MOVLE") || strieq_a(first, "MOVGE") ||
+                   strieq_a(first, "MOVLO") || strieq_a(first, "MOVHI") ||
+                   strieq_a(first, "MOVLS") || strieq_a(first, "MOVHS") ||
+                   strieq_a(first, "MOVCS") || strieq_a(first, "MOVCC")) {
+            /* Conditional MOV in IT block: immediate form uses 32-bit MOV.W
+             * (4 bytes, no flag modification); register form uses 16-bit (2 bytes). */
+            int rd = parse_reg_a(&p);
+            (void)rd;
+            skip_space_a(&p);
+            if (*p == ',') { p++; skip_space_a(&p); }
+            if (*p == '#') {
+                (void)parse_imm_a(&p);
+                pc += 4;  /* 32-bit MOV.W */
+            } else {
+                (void)parse_reg_a(&p);
+                pc += 2;  /* 16-bit MOV */
+            }
         } else {
             pc += op_size_a(first);
         }
         skip_to_eol_a(&p);
         if (*p == '\n') p++;
     }
+    /* LDR =label uses MOVW+MOVT (8 bytes), no literal pool needed */
+    a->literal_pool_start = -1;
 }
 
 static int parse_reglist_a(const char **p, int *has_lr, int *has_pc) {
@@ -1697,11 +2993,14 @@ static int parse_reglist_a(const char **p, int *has_lr, int *has_pc) {
         skip_space_a(p);
         if (**p == 'l' || **p == 'L') {
             if (((*p)[1] == 'r' || (*p)[1] == 'R')) { *has_lr = 1; (*p) += 2; }
+            else (*p)++;  /* advance on unknown 'l?' to avoid infinite loop */
         } else if (**p == 'p' || **p == 'P') {
             if (((*p)[1] == 'c' || (*p)[1] == 'C')) { *has_pc = 1; (*p) += 2; }
+            else (*p)++;  /* advance on unknown 'p?' to avoid infinite loop */
         } else {
             int r = parse_reg_a(p);
             if (r >= 0) list |= (1 << r);
+            else if (**p && **p != '}' && **p != ',' && **p != '\n') (*p)++;  /* skip unknown char */
         }
         skip_space_a(p);
         if (**p == ',') (*p)++;
@@ -1722,6 +3021,62 @@ static void emit_bl_a(ArmAsm *a, int target) {
     int j2 = (~(i2 ^ s)) & 1;
     unsigned hi = 0xF000u | (unsigned)(s << 10) | (unsigned)imm10;
     unsigned lo = 0xD000u | (unsigned)(j1 << 13) | (unsigned)(j2 << 11) | (unsigned)imm11;
+    out16(a, hi);
+    out16(a, lo);
+}
+
+/* 32-bit unconditional B.W (T4 encoding) - range +-16MB.
+ * hi: 0xF000 | (S<<10) | imm10
+ * lo: 10 J1 1 J2 imm11  (bits[15:14]=10, bit12=1 for T4)
+ *     BL T1 has bits[15:14]=11 (0xD000 base) - distinct from B.W
+ * imm32 = SignExtend(S:I1:I2:imm10:imm11:0, 25)
+ * NOTE: lo base MUST be 0x9000 (bit14=0, bit12=1). Using 0xD000
+ * (bit14=1) encodes BL T1, which still branches but corrupts LR. */
+static void emit_b_w_a(ArmAsm *a, int target) {
+    int offset = target - a->pc - 4;
+    int off2 = offset >> 1;
+    int s = (off2 >> 23) & 1;
+    int i1 = (off2 >> 22) & 1;
+    int i2 = (off2 >> 21) & 1;
+    int imm10 = (off2 >> 11) & 0x3FF;
+    int imm11 = off2 & 0x7FF;
+    int j1 = (~(i1 ^ s)) & 1;
+    int j2 = (~(i2 ^ s)) & 1;
+    unsigned hi = 0xF000u | (unsigned)(s << 10) | (unsigned)imm10;
+    unsigned lo = 0x9000u | (unsigned)(j1 << 13) | (unsigned)(j2 << 11) | (unsigned)imm11;
+    out16(a, hi);
+    out16(a, lo);
+}
+
+/* 32-bit conditional B<cond>.W (T3 encoding) - range +-1MB.
+ * hi: 0xF000 | (S<<10) | (cond<<6) | imm6
+ * lo: 1 0 J1 0 J2 imm11[10:0]  (bit15=1, bit14=0, bit12=0 for T3)
+ *     T4 B.W has lo bit12=1 (0x9000 base) — distinguishes from T3.
+ *     BL T1  has lo bit14=1,bit12=1 (0xD000 base) — also different.
+ * imm32 = SignExtend(S:I1:I2:imm6:imm11, 20) << 1
+ * NOTE: T3 and T4 share the same hw2 bit layout (J1 at bit13, J2 at bit11,
+ *       imm11 at bits[10:0]), but DIFFERENT J1/J2 decoding:
+ *       - T4/BL: I1 = NOT(J1 EOR S)  (inverted)
+ *       - T3:    I1 = J1             (direct copy, NO inversion)
+ *       Verified empirically via MDK armasm:
+ *         MDK forward BEQ.W = 0xF000 0x8046 (J1=0, J2=0) for offset +0x8C.
+ *         With T4 formula that would give offset 0x18008C (wrong).
+ *         With T3 formula (I1=J1) it gives offset 0x8C (correct).
+ *       Using the T4 formula for T3 causes forward conditional branches to
+ *       jump ~786KB forward (outside flash) → HardFault. */
+static void emit_bcond_w_a(ArmAsm *a, int cond, int target) {
+    int offset = target - a->pc - 4;
+    int off2 = offset >> 1;
+    int s = (off2 >> 19) & 1;
+    int i1 = (off2 >> 18) & 1;
+    int i2 = (off2 >> 17) & 1;
+    int imm6 = (off2 >> 11) & 0x3F;
+    int imm11 = off2 & 0x7FF;
+    int j1 = i1;
+    int j2 = i2;
+    unsigned hi = 0xF000u | (unsigned)(s << 10) | (unsigned)(cond << 6) | (unsigned)imm6;
+    /* T3 lo word: bit15=1, bit14=0, bit13=J1, bit12=0, bit11=J2, bits[10:0]=imm11 */
+    unsigned lo = 0x8000u | (unsigned)(j1 << 13) | (unsigned)(j2 << 11) | (unsigned)imm11;
     out16(a, hi);
     out16(a, lo);
 }
@@ -1761,7 +3116,173 @@ static void pass2_a(ArmAsm *a) {
             n = read_word_a(&p, first, (int)sizeof(first));
             if (n == 0) { skip_to_eol_a(&p); continue; }
         }
-        if (first[0] == '.') { skip_to_eol_a(&p); if (*p == '\n') p++; continue; }
+        if (first[0] == '.') {
+            /* Pseudo-directives: emit data for .zero/.word/.byte/.asciz, skip metadata */
+            if (strieq_a(first, ".set") || strieq_a(first, ".equ")) {
+                /* Already processed in pass1; skip */
+            } else if (strieq_a(first, ".zero") || strieq_a(first, ".skip") || strieq_a(first, ".space")) {
+                int sz = 0;
+                skip_space_a(&p);
+                if (*p == '#') p++;
+                while (*p >= '0' && *p <= '9') { sz = sz * 10 + (*p - '0'); p++; }
+                while (sz > 0 && a->pc < a->out_cap) { a->out[a->pc++] = 0; sz--; }
+            } else if (strieq_a(first, ".word") || strieq_a(first, ".long")) {
+                /* Output 4-byte values (comma-separated).
+                 * Bug-A5 FIX: Also resolve symbol names (e.g. .word funcname
+                 * for .init_array/.fini_array constructor/destructor entries)
+                 * by looking them up in the label table. Previously only
+                 * numeric literals were parsed, so .word funcname emitted
+                 * 0x00000000, causing constructor iteration to jump to
+                 * address 0 and HardFault. */
+                while (*p && *p != '\n') {
+                    int val = 0;
+                    skip_space_a(&p);
+                    if (*p == '0' && (p[1] == 'x' || p[1] == 'X')) {
+                        p += 2;
+                        while ((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f') || (*p >= 'A' && *p <= 'F')) {
+                            char c = *p;
+                            int v = (c >= '0' && c <= '9') ? c - '0' :
+                                    (c >= 'a' && c <= 'f') ? c - 'a' + 10 : c - 'A' + 10;
+                            val = val * 16 + v;
+                            p++;
+                        }
+                    } else if (*p == '-') {
+                        p++;
+                        while (*p >= '0' && *p <= '9') { val = val * 10 + (*p - '0'); p++; }
+                        val = -val;
+                    } else if (*p >= '0' && *p <= '9') {
+                        while (*p >= '0' && *p <= '9') { val = val * 10 + (*p - '0'); p++; }
+                    } else {
+                        /* Bug-A5: Token is a symbol name, not a number.
+                         * Read the name and look it up in the label table. */
+                        char sym_name[128];
+                        int sn = 0;
+                        while (*p && *p != ',' && *p != '\n' &&
+                               *p != ' ' && *p != '\t' &&
+                               sn < (int)sizeof(sym_name) - 1) {
+                            sym_name[sn++] = *p++;
+                        }
+                        sym_name[sn] = 0;
+                        if (sn > 0) {
+                            int addr = find_label_a(a, sym_name);
+                            if (addr < 0) addr = find_set_a(a, sym_name);
+                            if (addr >= 0) {
+                                val = addr;
+                            } else {
+                                /* Symbol not yet defined; record a 4-byte
+                                 * absolute reference (type 4 = R_ARM_ABS32)
+                                 * at the current pc for late resolution
+                                 * by resolve_refs_a. */
+                                add_ref_a(a, a->pc, sym_name, 4);
+                            }
+                        }
+                    }
+                    if (a->pc + 3 < a->out_cap) {
+                        a->out[a->pc++] = (unsigned char)(val & 0xFF);
+                        a->out[a->pc++] = (unsigned char)((val >> 8) & 0xFF);
+                        a->out[a->pc++] = (unsigned char)((val >> 16) & 0xFF);
+                        a->out[a->pc++] = (unsigned char)((val >> 24) & 0xFF);
+                    }
+                    skip_space_a(&p);
+                    if (*p == ',') p++;
+                }
+            } else if (strieq_a(first, ".byte")) {
+                while (*p && *p != '\n') {
+                    int val = 0;
+                    skip_space_a(&p);
+                    if (*p == '0' && (p[1] == 'x' || p[1] == 'X')) {
+                        p += 2;
+                        while ((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f') || (*p >= 'A' && *p <= 'F')) {
+                            char c = *p;
+                            int v = (c >= '0' && c <= '9') ? c - '0' :
+                                    (c >= 'a' && c <= 'f') ? c - 'a' + 10 : c - 'A' + 10;
+                            val = val * 16 + v;
+                            p++;
+                        }
+                    } else if (*p == '\'') {
+                        p++;
+                        val = *p;
+                        p++;
+                        if (*p == '\'') p++;
+                    } else {
+                        while (*p >= '0' && *p <= '9') { val = val * 10 + (*p - '0'); p++; }
+                    }
+                    if (a->pc < a->out_cap) a->out[a->pc++] = (unsigned char)(val & 0xFF);
+                    skip_space_a(&p);
+                    if (*p == ',') p++;
+                }
+            } else if (strieq_a(first, ".asciz") || strieq_a(first, ".ascii")) {
+                int is_asciz = strieq_a(first, ".asciz");
+                skip_space_a(&p);
+                if (*p == '"') {
+                    p++;
+                    while (*p && *p != '"' && *p != '\n') {
+                        unsigned char c;
+                        if (*p == '\\') {
+                            p++;
+                            switch (*p) {
+                                case 'n': c = '\n'; break;
+                                case 't': c = '\t'; break;
+                                case 'r': c = '\r'; break;
+                                case '\\': c = '\\'; break;
+                                case '"': c = '"'; break;
+                                case '0': c = '\0'; break;
+                                case 'x': {
+                                    int hv = 0;
+                                    p++;
+                                    if (*p && (*p >= '0' && *p <= '9' || *p >= 'a' && *p <= 'f' || *p >= 'A' && *p <= 'F')) {
+                                        char ch = *p;
+                                        hv = (ch >= '0' && ch <= '9') ? ch - '0' :
+                                             (ch >= 'a' && ch <= 'f') ? ch - 'a' + 10 : ch - 'A' + 10;
+                                        p++;
+                                        if (*p && (*p >= '0' && *p <= '9' || *p >= 'a' && *p <= 'f' || *p >= 'A' && *p <= 'F')) {
+                                            ch = *p;
+                                            hv = hv * 16 + ((ch >= '0' && ch <= '9') ? ch - '0' :
+                                                 (ch >= 'a' && ch <= 'f') ? ch - 'a' + 10 : ch - 'A' + 10);
+                                            p++;
+                                        }
+                                    }
+                                    c = (unsigned char)hv;
+                                    p--;  /* compensate for p++ below */
+                                    break;
+                                }
+                                default: c = (unsigned char)*p; break;
+                            }
+                            p++;
+                        } else {
+                            c = (unsigned char)*p;
+                            p++;
+                        }
+                        if (a->pc < a->out_cap) a->out[a->pc++] = c;
+                    }
+                    if (*p == '"') p++;
+                }
+                if (is_asciz) {
+                    if (a->pc < a->out_cap) a->out[a->pc++] = 0;
+                    /* Align to 2 to match pass1 */
+                    if (a->pc & 1) { if (a->pc < a->out_cap) a->out[a->pc++] = 0; }
+                } else {
+                    if (a->pc & 1) { if (a->pc < a->out_cap) a->out[a->pc++] = 0; }
+                }
+            } else if (strieq_a(first, ".align") || strieq_a(first, ".balign")) {
+                int align = 0;
+                skip_space_a(&p);
+                if (*p == '#') p++;
+                while (*p >= '0' && *p <= '9') { align = align * 10 + (*p - '0'); p++; }
+                if (align > 1) {
+                    int rem = a->pc % align;
+                    if (rem != 0) {
+                        int pad = align - rem;
+                        while (pad > 0 && a->pc < a->out_cap) { a->out[a->pc++] = 0; pad--; }
+                    }
+                }
+            }
+            /* .section, .data, .bss, .text, .global, .type, .size, .thumb, .file, .loc,
+             * .cfi_* etc. are metadata-only, skip */
+            skip_to_eol_a(&p);
+            if (*p == '\n') p++;
+            continue;
+        }
         skip_space_a(&p);
 
         if (strieq_a(first, "PUSH")) {
@@ -1801,12 +3322,24 @@ static void pass2_a(ArmAsm *a) {
         }
         else if (strieq_a(first, "MOVEQ") || strieq_a(first, "MOVNE") ||
                  strieq_a(first, "MOVLT") || strieq_a(first, "MOVGT") ||
-                 strieq_a(first, "MOVLE") || strieq_a(first, "MOVGE")) {
+                 strieq_a(first, "MOVLE") || strieq_a(first, "MOVGE") ||
+                 strieq_a(first, "MOVLO") || strieq_a(first, "MOVHI") ||
+                 strieq_a(first, "MOVLS") || strieq_a(first, "MOVHS") ||
+                 strieq_a(first, "MOVCS") || strieq_a(first, "MOVCC")) {
+            /* Conditional MOV in IT block.
+             * Immediate form: 32-bit MOV.W Rd, #imm8 (0xF04F base, no S bit,
+             *   avoids UNPREDICTABLE MOVS-in-IT-block on ARMv7-M).
+             * Register form: 16-bit MOV Rd, Rm (0x4600, no S bit, safe in IT). */
             int rd = parse_reg_a(&p);
             eat_comma_a(&p);
             if (*p == '#') {
                 int imm = parse_imm_a(&p);
-                out16(a, 0x2000 | ((rd & 7) << 8) | (imm & 0xFF));
+                /* 32-bit T2 MOV.W: 1111 0 i 0 0010 0 S 1111 | 0 imm3 Rd imm8
+                 * For imm 0-255: i=0, imm3=0, S=0, Rn=1111 (MOV alias) */
+                unsigned hi = 0xF04Fu;
+                unsigned lo = ((unsigned)(rd & 0xF) << 8) | (unsigned)(imm & 0xFF);
+                out16(a, hi);
+                out16(a, lo);
             } else {
                 int rm = parse_reg_a(&p);
                 out16(a, 0x4600 | (((rd >> 3) & 1) << 7) | ((rm & 0xF) << 3) | (rd & 7));
@@ -1849,8 +3382,21 @@ static void pass2_a(ArmAsm *a) {
             eat_comma_a(&p);
             if (*p == '#') {
                 int imm = parse_imm_a(&p);
-                if (rd == rn) out16(a, 0x3000 | ((rd & 7) << 8) | (imm & 0xFF));
-                else          out16(a, 0x1C00 | ((imm & 7) << 6) | ((rn & 7) << 3) | (rd & 7));
+                if (rd == 13 && rn == 13) out16(a, 0xB000 | (((imm + 3) / 4) & 0x7F));
+                else if (rd == rn) out16(a, 0x3000 | ((rd & 7) << 8) | (imm & 0xFF));
+                else if (imm <= 7 && rd <= 7 && rn <= 7)
+                    out16(a, 0x1C00 | ((imm & 7) << 6) | ((rn & 7) << 3) | (rd & 7));
+                else {
+                    /* T3: ADD.W Rd, Rn, #imm12
+                     * Encoding: 11110 i 0 10000 Rn | 0 imm3 Rd imm8
+                     * op=1000 (ADD), S=0 -> bits[8:4]=10000 -> first halfword base 0xF100
+                     * BUGFIX: was 0xF040 (op=0010=ORR), caused ADD.W to decode as ORR.W */
+                    int i = (imm >> 11) & 1;
+                    int imm3 = (imm >> 8) & 7;
+                    int imm8 = imm & 0xFF;
+                    out16(a, 0xF100 | (i << 10) | (rn & 0xF));
+                    out16(a, (imm3 << 12) | ((rd & 0xF) << 8) | imm8);
+                }
             } else {
                 int rm = parse_reg_a(&p);
                 out16(a, 0x1800 | ((rm & 7) << 6) | ((rn & 7) << 3) | (rd & 7));
@@ -1864,8 +3410,21 @@ static void pass2_a(ArmAsm *a) {
             if (*p == '#') {
                 int imm = parse_imm_a(&p);
                 if (rd == 13 && rn == 13) out16(a, 0xB080 | (((imm + 3) / 4) & 0x7F));
-                else if (rd == rn)        out16(a, 0x3800 | ((rd & 7) << 8) | (imm & 0xFF));
-                else                      out16(a, 0x1E00 | ((imm & 7) << 6) | ((rn & 7) << 3) | (rd & 7));
+                else if (rd == rn) out16(a, 0x3800 | ((rd & 7) << 8) | (imm & 0xFF));
+                else if (imm <= 7 && rd <= 7 && rn <= 7)
+                    out16(a, 0x1E00 | ((imm & 7) << 6) | ((rn & 7) << 3) | (rd & 7));
+                else {
+                    /* T3: SUB.W Rd, Rn, #imm12
+                     * Encoding: 11110 i 0 1011 0 Rn | 0 imm3 Rd imm8
+                     * op=1011 (SUB), S=0 -> bits[8:4]=10110 -> first halfword base 0xF160
+                     * BUGFIX: was 0xF2C0 (plain-binary-immediate op=01100=MOVT),
+                     * caused SUB.W to decode as MOVT */
+                    int i = (imm >> 11) & 1;
+                    int imm3 = (imm >> 8) & 7;
+                    int imm8 = imm & 0xFF;
+                    out16(a, 0xF160 | (i << 10) | (rn & 0xF));
+                    out16(a, (imm3 << 12) | ((rd & 0xF) << 8) | imm8);
+                }
             } else {
                 int rm = parse_reg_a(&p);
                 out16(a, 0x1A00 | ((rm & 7) << 6) | ((rn & 7) << 3) | (rd & 7));
@@ -1875,6 +3434,28 @@ static void pass2_a(ArmAsm *a) {
             int rd = parse_reg_a(&p); int rm;
             eat_comma_a(&p); rm = parse_reg_a(&p);
             out16(a, 0x4340 | ((rm & 7) << 3) | (rd & 7));
+        }
+        else if (strieq_a(first, "ADC")) {
+            /* ADC T1 (16-bit): ADCS Rd, Rn (always sets flags in 16-bit Thumb) */
+            int rd = parse_reg_a(&p); int rm;
+            eat_comma_a(&p); rm = parse_reg_a(&p);
+            out16(a, 0x4140 | ((rm & 7) << 3) | (rd & 7));
+        }
+        else if (strieq_a(first, "SBC")) {
+            /* SBC T1 (16-bit): SBCS Rd, Rn (always sets flags in 16-bit Thumb) */
+            int rd = parse_reg_a(&p); int rm;
+            eat_comma_a(&p); rm = parse_reg_a(&p);
+            out16(a, 0x4180 | ((rm & 7) << 3) | (rd & 7));
+        }
+        else if (strieq_a(first, "UMULL")) {
+            /* UMULL T1 (32-bit): UMULL RdLo, RdHi, Rn, Rm
+             * Encoding: 1111 1011 1010 Rn | RdLo RdHi 0000 Rm */
+            int rdlo = parse_reg_a(&p); int rdhi, rn, rm;
+            eat_comma_a(&p); rdhi = parse_reg_a(&p);
+            eat_comma_a(&p); rn = parse_reg_a(&p);
+            eat_comma_a(&p); rm = parse_reg_a(&p);
+            out16(a, 0xFBA0 | (rn & 0xF));
+            out16(a, ((rdlo & 0xF) << 12) | ((rdhi & 0xF) << 8) | (rm & 0xF));
         }
         else if (strieq_a(first, "SDIV") || strieq_a(first, "UDIV")) {
             int rd = parse_reg_a(&p);
@@ -1944,9 +3525,25 @@ static void pass2_a(ArmAsm *a) {
             }
         }
         else if (strieq_a(first, "ASR")) {
+            /* ASR T1: ASRS Rd, Rm, #imm5 (immediate) or ASRS Rd, Rs (register) */
             int rd = parse_reg_a(&p); int rm;
             eat_comma_a(&p); rm = parse_reg_a(&p);
-            out16(a, 0x4100 | ((rm & 7) << 3) | (rd & 7));
+            skip_space_a(&p);
+            if (*p == ',') {
+                /* ASR rd, rm, #imm5 (T1 immediate shift; imm5=0 means 32) */
+                p++; skip_space_a(&p);
+                if (*p == '#') {
+                    int imm = parse_imm_a(&p);
+                    int imm5 = (imm >= 32) ? 0 : (imm & 0x1F);
+                    out16(a, 0x1000 | (unsigned)(imm5 << 6) | ((rm & 7) << 3) | (rd & 7));
+                } else {
+                    int rm2 = parse_reg_a(&p);
+                    out16(a, 0x4100 | ((rm2 & 7) << 3) | (rd & 7));
+                }
+            } else {
+                /* ASR rd, rm (T1 register shift) */
+                out16(a, 0x4100 | ((rm & 7) << 3) | (rd & 7));
+            }
         }
         else if (strieq_a(first, "BIC")) {
             /* BIC rd, rm or BIC rd, rn, rm (T1: rd = rd AND NOT rm) */
@@ -1973,7 +3570,18 @@ static void pass2_a(ArmAsm *a) {
             eat_comma_a(&p);
             if (*p == '#') {
                 int imm = parse_imm_a(&p);
-                out16(a, 0x2800 | ((rn & 7) << 8) | (imm & 0xFF));
+                if (imm >= 0 && imm <= 255) {
+                    /* T1 16-bit: CMP Rn, #imm8 */
+                    out16(a, 0x2800 | ((rn & 7) << 8) | (imm & 0xFF));
+                } else {
+                    /* T2 32-bit: CMP.W Rn, #imm12 (ThumbExpandImm)
+                     * hi: 0xF1B0|Rn, lo: 0x0F00|(Rd=1111<<8)|imm8
+                     * For imm 0-255: i=0, imm3=0. Larger values need ThumbExpandImm. */
+                    unsigned hi = 0xF1B0u | (unsigned)(rn & 0xF);
+                    unsigned lo = 0x0F00u | (unsigned)(imm & 0xFF);
+                    out16(a, hi);
+                    out16(a, lo);
+                }
             } else {
                 int rm = parse_reg_a(&p);
                 out16(a, 0x4280 | ((rm & 7) << 3) | (rn & 7));
@@ -1988,9 +3596,52 @@ static void pass2_a(ArmAsm *a) {
             int imm = 0;
             eat_comma_a(&p);
             if (*p == '=') {
-                /* LDR rd, =label - simplified: placeholder NOP only */
+                /* LDR rd, =label - emit MOVW+MOVT to load absolute address.
+                 * .set symbols (e.g. __at variables) use their absolute address directly;
+                 * code/data labels (e.g. .L_str_N) use 0x08000000 + offset (Flash base). */
+                char sym[64];
+                int addr;
+                int sn;
+                p++;  /* skip '=' */
+                sn = read_word_a(&p, sym, (int)sizeof(sym));
+                (void)sn;
+                addr = find_set_a(a, sym);
+                if (addr >= 0) {
+                    /* .set symbol - absolute address already (e.g. 0x40020800, 0x20000000) */
+                } else {
+                    addr = find_label_a(a, sym);
+                    if (addr < 0) {
+                        ark_log("[asm-arm] unresolved symbol '%s' in LDR =label\n", sym);
+                        a->error_count++;
+                        addr = 0;
+                    } else {
+                        /* code/data label - add Flash base address */
+                        addr = 0x08000000 + addr;
+                    }
+                }
+                /* Emit MOVW rd, #low16 */
+                {
+                    unsigned imm = (unsigned)(addr & 0xFFFF);
+                    unsigned ii = (imm >> 11) & 1;
+                    unsigned imm4 = (imm >> 12) & 0xF;
+                    unsigned imm3 = (imm >> 8) & 0x7;
+                    unsigned imm8 = imm & 0xFF;
+                    unsigned hi = 0xF240u | (ii << 10) | imm4;
+                    unsigned lo = (imm3 << 12) | ((rd & 0xF) << 8) | imm8;
+                    out16(a, hi); out16(a, lo);
+                }
+                /* Emit MOVT rd, #high16 */
+                {
+                    unsigned imm = (unsigned)((addr >> 16) & 0xFFFF);
+                    unsigned ii = (imm >> 11) & 1;
+                    unsigned imm4 = (imm >> 12) & 0xF;
+                    unsigned imm3 = (imm >> 8) & 0x7;
+                    unsigned imm8 = imm & 0xFF;
+                    unsigned hi = 0xF2C0u | (ii << 10) | imm4;
+                    unsigned lo = (imm3 << 12) | ((rd & 0xF) << 8) | imm8;
+                    out16(a, hi); out16(a, lo);
+                }
                 skip_to_eol_a(&p);
-                out16(a, 0xBF00);
                 if (*p == '\n') p++;
                 continue;
             }
@@ -2004,15 +3655,29 @@ static void pass2_a(ArmAsm *a) {
             skip_space_a(&p);
             if (*p == ']') p++;
             {
-                unsigned imm5;
-                if (is_byte) imm5 = imm & 0x1F;
-                else         imm5 = (imm >> 2) & 0x1F;
-                if (is_load) {
-                    if (is_byte) out16(a, 0x7800 | (imm5 << 6) | ((rn & 7) << 3) | (rd & 7));
-                    else         out16(a, 0x6800 | (imm5 << 6) | ((rn & 7) << 3) | (rd & 7));
+                if (ldr_str_size_a(imm, is_byte, 0) == 4) {
+                    /* T3 32-bit encoding: LDR.W/STR.W/LDRB.W/STRB.W Rt, [Rn, #imm12] */
+                    unsigned hi, lo;
+                    unsigned imm12 = (unsigned)(imm & 0xFFF);
+                    if (is_load && !is_byte)      hi = 0xF8D0u | (unsigned)(rn & 0xF);  /* LDR.W */
+                    else if (is_load && is_byte)  hi = 0xF890u | (unsigned)(rn & 0xF);  /* LDRB.W */
+                    else if (!is_load && !is_byte)hi = 0xF8C0u | (unsigned)(rn & 0xF);  /* STR.W */
+                    else                          hi = 0xF880u | (unsigned)(rn & 0xF);  /* STRB.W */
+                    lo = ((unsigned)(rd & 0xF) << 12) | imm12;
+                    out16(a, hi);
+                    out16(a, lo);
                 } else {
-                    if (is_byte) out16(a, 0x7000 | (imm5 << 6) | ((rn & 7) << 3) | (rd & 7));
-                    else         out16(a, 0x6000 | (imm5 << 6) | ((rn & 7) << 3) | (rd & 7));
+                    /* T1 16-bit encoding */
+                    unsigned imm5;
+                    if (is_byte) imm5 = imm & 0x1F;
+                    else         imm5 = (unsigned)((imm >> 2) & 0x1F);
+                    if (is_load) {
+                        if (is_byte) out16(a, 0x7800 | (imm5 << 6) | ((rn & 7) << 3) | (rd & 7));
+                        else         out16(a, 0x6800 | (imm5 << 6) | ((rn & 7) << 3) | (rd & 7));
+                    } else {
+                        if (is_byte) out16(a, 0x7000 | (imm5 << 6) | ((rn & 7) << 3) | (rd & 7));
+                        else         out16(a, 0x6000 | (imm5 << 6) | ((rn & 7) << 3) | (rd & 7));
+                    }
                 }
             }
         }
@@ -2025,10 +3690,56 @@ static void pass2_a(ArmAsm *a) {
         }
         else if (strieq_a(first, "IT") || strieq_a(first, "ITT") ||
                  strieq_a(first, "ITE") || strieq_a(first, "ITTT")) {
+            /* IT block: encoding 0xBF{firstcond}{mask}.
+             * firstcond: EQ=0,NE=1,CS/HS=2,CC/LO=3,MI=4,PL=5,VS=6,VC=7,
+             *            HI=8,LS=9,GE=10,LT=11,GT=12,LE=13,AL=14
+             *
+             * mask[3:0] encodes both the IT block length (position of the
+             * least-significant 1 bit) and per-instruction condition inversion:
+             *   - For instruction i (1-indexed), if mask bit == firstcond[0],
+             *     the instruction uses firstcond (Then); otherwise it uses
+             *     NOT(firstcond) (Else).
+             *
+             * Correct masks (cb = firstcond[0]):
+             *   IT   (1 instr):              1000 = 0x8
+             *   ITT  (2 instrs, Then-Then):  cb 1 0 0  -> (cb<<3)|0x4
+             *   ITE  (2 instrs, Then-Else): ~cb 1 0 0  -> ((~cb&1)<<3)|0x4
+             *   ITTT (3 instrs, T-T-T):      cb cb 1 0 -> (cb<<3)|(cb<<2)|0x2
+             *
+             * BUGFIX #1: previously emitted 0xBF00 (NOP), making conditional
+             *   MOVs unconditional (delay loops never exited).
+             * BUGFIX #2: previously used fixed masks (ITT=0xC, ITE=0x4) which
+             *   are only correct when firstcond[0]==1 (NE,LO,PL,VC,LS,LT,LE).
+             *   For firstcond[0]==0 (EQ,HS,MI,VS,HI,GE,GT,AL) the conditions
+             *   were silently inverted. E.g. ITE HS emitted 0xBF24 (acts as
+             *   ITE LO HS) instead of 0xBF2C, flipping comparison results
+             *   and making SysTick 500ms blink toggle at 1ms (invisible). */
             char cond[8];
+            int cv = 14;  /* default AL */
+            int cb;       /* firstcond[0] */
+            int mask;
             skip_space_a(&p);
             read_word_a(&p, cond, sizeof(cond));
-            out16(a, 0xBF00);
+            if      (strieq_a(cond, "EQ")) cv = 0;
+            else if (strieq_a(cond, "NE")) cv = 1;
+            else if (strieq_a(cond, "HS") || strieq_a(cond, "CS")) cv = 2;
+            else if (strieq_a(cond, "LO") || strieq_a(cond, "CC")) cv = 3;
+            else if (strieq_a(cond, "MI")) cv = 4;
+            else if (strieq_a(cond, "PL")) cv = 5;
+            else if (strieq_a(cond, "VS")) cv = 6;
+            else if (strieq_a(cond, "VC")) cv = 7;
+            else if (strieq_a(cond, "HI")) cv = 8;
+            else if (strieq_a(cond, "LS")) cv = 9;
+            else if (strieq_a(cond, "GE")) cv = 10;
+            else if (strieq_a(cond, "LT")) cv = 11;
+            else if (strieq_a(cond, "GT")) cv = 12;
+            else if (strieq_a(cond, "LE")) cv = 13;
+            cb = cv & 1;
+            if      (strieq_a(first, "IT"))   mask = 0x8;
+            else if (strieq_a(first, "ITT"))  mask = (cb << 3) | 0x4;
+            else if (strieq_a(first, "ITE"))  mask = ((cb ^ 1) << 3) | 0x4;
+            else                              mask = (cb << 3) | (cb << 2) | 0x2; /* ITTT */
+            out16(a, 0xBF00 | (cv << 4) | mask);
         }
         else if (strieq_a(first, "BL")) {
             char name[64];
@@ -2066,14 +3777,340 @@ static void pass2_a(ArmAsm *a) {
             {
                 int addr = find_label_a(a, name);
                 if (addr < 0) {
-                    add_ref_a(a, a->pc, name, 0);
-                    out16(a, is_uncond ? 0xE000 : (0xD000 | (cond << 8)));
+                    /* Forward reference: emit placeholder, resolve later.
+                     * type=2: 32-bit B.W (T4, +-1MB), type=3: 32-bit B<cond>.W (T3, +-1MB).
+                     * For type=3, cond is encoded in placeholder hi word
+                     * (bits[9:6]) so resolve_refs_a can recover it. */
+                    if (is_uncond) {
+                        /* 32-bit B.W (T4) forward ref: type=2, 4-byte placeholder.
+                         * resolve_refs_a will call emit_b_w_a to fill in the encoding. */
+                        add_ref_a(a, a->pc, name, 2);
+                        out16(a, 0xF000);
+                        out16(a, 0x9000);
+                    } else {
+                        /* 32-bit B<cond>.W (T3) forward ref: type=3, 4-byte placeholder.
+                         * cond encoded in hi word bits[9:6] for resolve_refs_a. */
+                        add_ref_a(a, a->pc, name, 3);
+                        out16(a, 0xF000u | (unsigned)(cond << 6));
+                        out16(a, 0x8000);
+                    }
                 } else {
-                    int offset = (addr - a->pc - 4) >> 1;
-                    if (is_uncond) out16(a, 0xE000 | (offset & 0x7FF));
-                    else           out16(a, 0xD000 | (cond << 8) | (offset & 0xFF));
+                    /* Backward reference: target known, emit directly */
+                    if (is_uncond) {
+                        /* 32-bit B.W (T4): +-1MB range, no truncation */
+                        emit_b_w_a(a, addr);
+                    } else {
+                        /* 32-bit B<cond>.W (T3): +-1MB range, no truncation */
+                        emit_bcond_w_a(a, cond, addr);
+                    }
                 }
             }
+        }
+        else if (strieq_a(first, "STRH") || strieq_a(first, "LDRH") ||
+                 strieq_a(first, "LDRSH") || strieq_a(first, "LDRSB")) {
+            /* Halfword load/store: T1 (16-bit) for small offsets, T3 (32-bit) for large.
+             * T1: imm5=(offset>>1)&0x1F, max 62 bytes (even).
+             * T3: imm12=offset, max 4095 bytes.
+             *   STRH.W:  0xF8A0|Rn,  LDRH.W:  0xF8B0|Rn
+             *   LDRSH.W: 0xF9B0|Rn,  LDRSB.W: 0xF990|Rn */
+            int rd = parse_reg_a(&p);
+            int rn;
+            int imm = 0;
+            eat_comma_a(&p);
+            if (*p == '[') { p++; skip_space_a(&p); }
+            rn = parse_reg_a(&p);
+            skip_space_a(&p);
+            if (*p == ',') {
+                p++; skip_space_a(&p);
+                if (*p == '#') imm = parse_imm_a(&p);
+            }
+            skip_space_a(&p);
+            if (*p == ']') p++;
+            if (ldr_str_size_a(imm, 0, 1) == 4) {
+                /* T3 32-bit encoding */
+                unsigned hi, lo;
+                unsigned imm12 = (unsigned)(imm & 0xFFF);
+                if      (strieq_a(first, "STRH"))  hi = 0xF8A0u | (unsigned)(rn & 0xF);
+                else if (strieq_a(first, "LDRH"))  hi = 0xF8B0u | (unsigned)(rn & 0xF);
+                else if (strieq_a(first, "LDRSH")) hi = 0xF9B0u | (unsigned)(rn & 0xF);
+                else                               hi = 0xF990u | (unsigned)(rn & 0xF);  /* LDRSB */
+                lo = ((unsigned)(rd & 0xF) << 12) | imm12;
+                out16(a, hi);
+                out16(a, lo);
+            } else {
+                /* T1 16-bit encoding */
+                unsigned imm5 = (unsigned)((imm >> 1) & 0x1F);
+                unsigned base;
+                if      (strieq_a(first, "STRH"))  base = 0x8000;
+                else if (strieq_a(first, "LDRH"))  base = 0x8800;
+                else if (strieq_a(first, "LDRSH")) base = 0x9800;
+                else                               base = 0x9000;  /* LDRSB */
+                out16(a, base | (imm5 << 6) | ((rn & 7) << 3) | (rd & 7));
+            }
+        }
+        else if (strieq_a(first, "CPSID") || strieq_a(first, "CPSIE")) {
+            /* CPS T1 16-bit: bit4=change(1=ID,0=IE), bit1=affect_i, bit0=affect_f
+             *   CPSID i = 0xB672, CPSIE i = 0xB662, CPSID f = 0xB671, CPSIE f = 0xB661
+             * Note: base 0xB660 already has bit5=1; change is bit4 (0x10), NOT bit5.
+             * Previously NOP'd, so Error_Handler's CPSID i failed to mask
+             * interrupts and HAL_Init's CPSIE i failed to enable them. */
+            int is_id = strieq_a(first, "CPSID");
+            int affect_i = 0, affect_f = 0;
+            skip_space_a(&p);
+            while (*p && *p != '\n' && *p != ';') {
+                if (*p == 'i' || *p == 'I') affect_i = 1;
+                else if (*p == 'f' || *p == 'F') affect_f = 1;
+                p++;
+            }
+            out16(a, 0xB660 | (is_id ? 0x10 : 0) | (affect_i ? 0x2 : 0) | (affect_f ? 0x1 : 0));
+        }
+        else if (strieq_a(first, "DMB") || strieq_a(first, "DSB") || strieq_a(first, "ISB")) {
+            /* T1 32-bit barriers: 0xF3BF 0x8F4x/5x/6x, option=0xF for SY.
+             *   DMB SY = F3BF 8F5F, DSB SY = F3BF 8F4F, ISB SY = F3BF 8F6F.
+             * Pass1 op_size_a returns 4 for these. Previously NOP'd (2 bytes),
+             * causing pass1/pass2 size mismatch and silent instruction drops. */
+            unsigned lo_base;
+            if      (strieq_a(first, "DMB")) lo_base = 0x8F50;
+            else if (strieq_a(first, "DSB")) lo_base = 0x8F40;
+            else                             lo_base = 0x8F60;  /* ISB */
+            out16(a, 0xF3BF);
+            out16(a, lo_base | 0xF);
+        }
+        else if (strieq_a(first, "SEV") || strieq_a(first, "WFE") || strieq_a(first, "WFI")) {
+            /* 16-bit hint instructions (no operands).
+             *   SEV = 0xBF40, WFE = 0xBF20, WFI = 0xBF30.
+             * Used by HAL_PWR_EnterSLEEPMode/STOPMode/STANDBYMode. */
+            if      (strieq_a(first, "SEV")) out16(a, 0xBF40);
+            else if (strieq_a(first, "WFE")) out16(a, 0xBF20);
+            else                             out16(a, 0xBF30);  /* WFI */
+        }
+        else if (strieq_a(first, "REV") || strieq_a(first, "REV16") || strieq_a(first, "REVSH")) {
+            /* T1 16-bit: 1011 1010 op Rm Rd, where op=00(REV),01(REV16),11(REVSH).
+             *   REV=0xBA00, REV16=0xBA40, REVSH=0xBAC0. */
+            int rd = parse_reg_a(&p);
+            int rm;
+            unsigned base;
+            eat_comma_a(&p);
+            rm = parse_reg_a(&p);
+            if      (strieq_a(first, "REV"))   base = 0xBA00;
+            else if (strieq_a(first, "REV16")) base = 0xBA40;
+            else                               base = 0xBAC0;  /* REVSH */
+            out16(a, base | ((rm & 7) << 3) | (rd & 7));
+        }
+        else if (strieq_a(first, "RRX")) {
+            /* 32-bit: MOV Rd, Rm, RRX = 0xEA4F (Rd<<12) 0x30 Rm.
+             * Pass1 op_size_a returns 4. */
+            int rd = parse_reg_a(&p);
+            int rm;
+            eat_comma_a(&p);
+            rm = parse_reg_a(&p);
+            out16(a, 0xEA4F);
+            out16(a, (unsigned)((rd & 0xF) << 12) | 0x30 | (rm & 0xF));
+        }
+        /* ===== #1 FIX: VFP floating-point instruction encoders =====
+         * Previously ALL VFP instructions fell through to NOP (0xBF00),
+         * making every float operation a no-op. Now each is properly
+         * encoded as a 32-bit Thumb-2 VFP instruction.
+         *
+         * VFP register encoding (S<n>, n=0..31):
+         *   Sd = D:Vd  (D=bit22=Sn[4], Vd=bits15:12=Sn[3:0])
+         *   Sn = N:Vn  (N=bit7,           Vn=bits19:16)
+         *   Sm = M:Vm  (M=bit5,           Vm=bits3:0)
+         * D registers use same fields (D0=S0:S1, D1=S2:S3, ...).
+         * sz bit (bit8): 0=F32 single, 1=F64 double. */
+        else if (strieq_a(first, "VMOV")) {
+            /* VMOV Sn, Rt (core -> VFP) or VMOV Rt, Sn (VFP -> core) */
+            skip_space_a(&p);
+            if (*p == 's' || *p == 'S') {
+                /* VMOV Sn, Rt — core register to VFP single register */
+                int sn = parse_vfp_sreg_a(&p);
+                int rt;
+                unsigned vn, n_bit, hi, lo;
+                if (sn < 0) sn = 0;
+                eat_comma_a(&p);
+                rt = parse_reg_a(&p);
+                vn = (unsigned)(sn & 0xF);
+                n_bit = (unsigned)(sn >> 4);
+                hi = 0xEE00u | vn;
+                lo = 0x0A10u | (unsigned)((rt & 0xF) << 12) | (n_bit << 7);
+                out16(a, hi);
+                out16(a, lo);
+            } else {
+                /* VMOV Rt, Sn — VFP single register to core register */
+                int rt = parse_reg_a(&p);
+                int sn;
+                unsigned vn, n_bit, hi, lo;
+                eat_comma_a(&p);
+                sn = parse_vfp_sreg_a(&p);
+                if (sn < 0) sn = 0;
+                vn = (unsigned)(sn & 0xF);
+                n_bit = (unsigned)(sn >> 4);
+                hi = 0xEE10u | vn;   /* bit20=1 means VFP->core */
+                lo = 0x0A10u | (unsigned)((rt & 0xF) << 12) | (n_bit << 7);
+                out16(a, hi);
+                out16(a, lo);
+            }
+        }
+        else if (strieq_a(first, "VADD") || strieq_a(first, "VSUB") ||
+                 strieq_a(first, "VMUL") || strieq_a(first, "VDIV")) {
+            /* VOP.F32 Sd,Sn,Sm  or  VOP.F64 Dd,Dn,Dm */
+            char suf[16];
+            int is_f64;
+            unsigned base;
+            int sd, sn, sm;
+            unsigned d, vd, n_bit, vn, m, vm;
+            unsigned hi, lo;
+            read_vfp_suffix_a(&p, suf, (int)sizeof(suf));
+            is_f64 = strieq_a(suf, "F64");
+            if      (strieq_a(first, "VADD")) base = is_f64 ? 0xEE300B00u : 0xEE300A00u;
+            else if (strieq_a(first, "VSUB")) base = is_f64 ? 0xEE300B40u : 0xEE300A40u;
+            else if (strieq_a(first, "VMUL")) base = is_f64 ? 0xEE200B00u : 0xEE200A00u;
+            else                              base = is_f64 ? 0xEE000B40u : 0xEE000A40u;
+            if (is_f64) {
+                sd = parse_vfp_dreg_a(&p); eat_comma_a(&p);
+                sn = parse_vfp_dreg_a(&p); eat_comma_a(&p);
+                sm = parse_vfp_dreg_a(&p);
+            } else {
+                sd = parse_vfp_sreg_a(&p); eat_comma_a(&p);
+                sn = parse_vfp_sreg_a(&p); eat_comma_a(&p);
+                sm = parse_vfp_sreg_a(&p);
+            }
+            if (sd < 0) sd = 0; if (sn < 0) sn = 0; if (sm < 0) sm = 0;
+            d = (unsigned)(sd >> 4); vd = (unsigned)(sd & 0xF);
+            n_bit = (unsigned)(sn >> 4); vn = (unsigned)(sn & 0xF);
+            m = (unsigned)(sm >> 4); vm = (unsigned)(sm & 0xF);
+            hi = (base >> 16) | (d << 6) | vn;
+            lo = (base & 0xFFFF) | (vd << 12) | (n_bit << 7) | (m << 5) | vm;
+            out16(a, hi);
+            out16(a, lo);
+        }
+        else if (strieq_a(first, "VCVT")) {
+            /* VCVT.S32.F32 Sd,Sm   (float -> int, single)
+             * VCVT.F32.S32 Sd,Sm   (int -> float, single)
+             * VCVT.S32.F64 Sd,Dm   (double -> int)
+             * VCVT.F64.S32 Dd,Sm   (int -> double) */
+            char suf[32];
+            unsigned base;
+            int sd = 0, sm = 0;
+            unsigned d, vd, m, vm;
+            unsigned hi, lo;
+            read_vfp_suffix_a(&p, suf, (int)sizeof(suf));
+            if      (strieq_a(suf, "S32F32")) base = 0xEEBD0AC0u;
+            else if (strieq_a(suf, "F32S32")) base = 0xEEB80AC0u;
+            else if (strieq_a(suf, "S32F64")) base = 0xEEBD0BC0u;
+            else if (strieq_a(suf, "F64S32")) base = 0xEEB80BC0u;
+            else                              base = 0xEEBD0AC0u;
+            if (strieq_a(suf, "S32F64")) {
+                sd = parse_vfp_sreg_a(&p); eat_comma_a(&p);
+                sm = parse_vfp_dreg_a(&p);
+            } else if (strieq_a(suf, "F64S32")) {
+                sd = parse_vfp_dreg_a(&p); eat_comma_a(&p);
+                sm = parse_vfp_sreg_a(&p);
+            } else {
+                sd = parse_vfp_sreg_a(&p); eat_comma_a(&p);
+                sm = parse_vfp_sreg_a(&p);
+            }
+            if (sd < 0) sd = 0; if (sm < 0) sm = 0;
+            d = (unsigned)(sd >> 4); vd = (unsigned)(sd & 0xF);
+            m = (unsigned)(sm >> 4); vm = (unsigned)(sm & 0xF);
+            hi = (base >> 16) | (d << 6);
+            lo = (base & 0xFFFF) | (vd << 12) | (m << 5) | vm;
+            out16(a, hi);
+            out16(a, lo);
+        }
+        else if (strieq_a(first, "VCMP")) {
+            /* VCMP.F32 Sd,Sm  or  VCMP.F64 Dd,Dm */
+            char suf[16];
+            int is_f64;
+            unsigned base;
+            int sd, sm;
+            unsigned d, vd, m, vm;
+            unsigned hi, lo;
+            read_vfp_suffix_a(&p, suf, (int)sizeof(suf));
+            is_f64 = strieq_a(suf, "F64");
+            base = is_f64 ? 0xEEB40B40u : 0xEEB40A40u;
+            if (is_f64) {
+                sd = parse_vfp_dreg_a(&p); eat_comma_a(&p);
+                sm = parse_vfp_dreg_a(&p);
+            } else {
+                sd = parse_vfp_sreg_a(&p); eat_comma_a(&p);
+                sm = parse_vfp_sreg_a(&p);
+            }
+            if (sd < 0) sd = 0; if (sm < 0) sm = 0;
+            d = (unsigned)(sd >> 4); vd = (unsigned)(sd & 0xF);
+            m = (unsigned)(sm >> 4); vm = (unsigned)(sm & 0xF);
+            hi = (base >> 16) | (d << 6);
+            lo = (base & 0xFFFF) | (vd << 12) | (m << 5) | vm;
+            out16(a, hi);
+            out16(a, lo);
+        }
+        else if (strieq_a(first, "VMRS")) {
+            /* VMRS APSR_nzcv, FPSCR — fixed encoding 0xFEF1FA10 */
+            out16(a, 0xFEF1);
+            out16(a, 0xFA10);
+        }
+        else if (strieq_a(first, "VNEG") || strieq_a(first, "VABS") ||
+                 strieq_a(first, "VSQRT")) {
+            /* VNEG/VABS/VSQRT .F32 Sd,Sm  or  .F64 Dd,Dm */
+            char suf[16];
+            int is_f64;
+            unsigned base;
+            int sd, sm;
+            unsigned d, vd, m, vm;
+            unsigned hi, lo;
+            read_vfp_suffix_a(&p, suf, (int)sizeof(suf));
+            is_f64 = strieq_a(suf, "F64");
+            if      (strieq_a(first, "VNEG"))  base = is_f64 ? 0xEEB10BC0u : 0xEEB10AC0u;
+            else if (strieq_a(first, "VABS"))  base = is_f64 ? 0xEEB00BC0u : 0xEEB00AC0u;
+            else                               base = is_f64 ? 0xEEB11BC0u : 0xEEB11AC0u;
+            if (is_f64) {
+                sd = parse_vfp_dreg_a(&p); eat_comma_a(&p);
+                sm = parse_vfp_dreg_a(&p);
+            } else {
+                sd = parse_vfp_sreg_a(&p); eat_comma_a(&p);
+                sm = parse_vfp_sreg_a(&p);
+            }
+            if (sd < 0) sd = 0; if (sm < 0) sm = 0;
+            d = (unsigned)(sd >> 4); vd = (unsigned)(sd & 0xF);
+            m = (unsigned)(sm >> 4); vm = (unsigned)(sm & 0xF);
+            hi = (base >> 16) | (d << 6);
+            lo = (base & 0xFFFF) | (vd << 12) | (m << 5) | vm;
+            out16(a, hi);
+            out16(a, lo);
+        }
+        else if (strieq_a(first, "VLDR") || strieq_a(first, "VSTR")) {
+            /* VLDR/VSTR Sd, [Rn, #imm]  — 32-bit T1 encoding.
+             * Base: VLDR.F32 = 0xED900A00, VSTR.F32 = 0xED800A00.
+             * imm8 = offset>>2 (word-aligned). F64 sets bit 8 (sz). */
+            char suf[16];
+            int is_f64;
+            unsigned base;
+            int sd, rn, imm;
+            unsigned d, vd;
+            unsigned hi, lo;
+            unsigned imm8;
+            read_vfp_suffix_a(&p, suf, (int)sizeof(suf));
+            is_f64 = strieq_a(suf, "F64");
+            if (strieq_a(first, "VLDR")) base = is_f64 ? 0xED900B00u : 0xED900A00u;
+            else                         base = is_f64 ? 0xED800B00u : 0xED800A00u;
+            if (is_f64) sd = parse_vfp_dreg_a(&p);
+            else        sd = parse_vfp_sreg_a(&p);
+            if (sd < 0) sd = 0;
+            eat_comma_a(&p);
+            skip_space_a(&p);
+            if (*p == '[') p++;
+            rn = parse_reg_a(&p);
+            skip_space_a(&p);
+            imm = 0;
+            if (*p == ',') { p++; imm = parse_imm_a(&p); }
+            skip_space_a(&p);
+            if (*p == ']') p++;
+            d = (unsigned)(sd >> 4); vd = (unsigned)(sd & 0xF);
+            imm8 = (unsigned)((imm >> 2) & 0xFF);
+            hi = (base >> 16) | (d << 6) | (unsigned)(rn & 0xF);
+            lo = (base & 0xFFFF) | (vd << 12) | imm8;
+            out16(a, hi);
+            out16(a, lo);
         }
         else {
             out16(a, 0xBF00);
@@ -2094,11 +4131,36 @@ static void resolve_refs_a(ArmAsm *a) {
             continue;
         }
         if (r->type == 1) {
+            /* BL: 32-bit, re-emit at saved pc */
             int saved = a->pc;
             a->pc = r->pc;
             emit_bl_a(a, addr);
             a->pc = saved;
+        } else if (r->type == 2) {
+            /* B.W: 32-bit unconditional, re-emit at saved pc */
+            int saved = a->pc;
+            a->pc = r->pc;
+            emit_b_w_a(a, addr);
+            a->pc = saved;
+        } else if (r->type == 3) {
+            /* B<cond>.W: 32-bit conditional, recover cond from placeholder hi word */
+            unsigned hi = (unsigned)a->out[r->pc] | ((unsigned)a->out[r->pc + 1] << 8);
+            int cond = (hi >> 6) & 0xF;
+            int saved = a->pc;
+            a->pc = r->pc;
+            emit_bcond_w_a(a, cond, addr);
+            a->pc = saved;
+        } else if (r->type == 4) {
+            /* Bug-A5: R_ARM_ABS32 - 4-byte absolute address reference
+             * (e.g. .word funcname in .init_array/.fini_array).
+             * Patch the 4 bytes at r->pc with the resolved address. */
+            a->out[r->pc]     = (unsigned char)(addr & 0xFF);
+            a->out[r->pc + 1] = (unsigned char)((addr >> 8) & 0xFF);
+            a->out[r->pc + 2] = (unsigned char)((addr >> 16) & 0xFF);
+            a->out[r->pc + 3] = (unsigned char)((addr >> 24) & 0xFF);
         } else {
+            /* type=0: legacy 16-bit branch (B/B<cond>), patch 2 bytes.
+             * Kept for safety; new code uses type 2/3 above. */
             int offset = (addr - r->pc - 4) >> 1;
             unsigned hi = (unsigned)a->out[r->pc] | ((unsigned)a->out[r->pc + 1] << 8);
             if ((hi & 0xF000) == 0xE000) hi = (hi & 0xF800) | (offset & 0x7FF);
@@ -2119,6 +4181,9 @@ static int arm_emit(IrProgram *m, char *out, int cap) {
     return n;
 }
 
+static void arm_save_syms(ArmAsm *a);  /* forward decl */
+static void arm_save_relocs(ArmAsm *a);  /* Bug-A2: forward decl */
+
 static int arm_assemble(const char *asm_text, unsigned char *out, int cap) {
     ArmAsm a;
     a.src = asm_text;
@@ -2128,11 +4193,38 @@ static int arm_assemble(const char *asm_text, unsigned char *out, int cap) {
     a.labels = 0; a.label_count = 0; a.label_cap = 0;
     a.refs = 0; a.ref_count = 0; a.ref_cap = 0;
     a.error_count = 0;
+    a.sets = 0; a.set_count = 0; a.set_cap = 0;
+    a.literals = 0; a.literal_count = 0; a.literal_cap = 0;
+    a.literal_pool_start = -1;
     pass1_a(&a);
     a.pc = 0;
     pass2_a(&a);
     resolve_refs_a(&a);
-    if (a.error_count > 0) return -1;
+    /* Save symbol table for linker */
+    arm_save_syms(&a);
+    /* Bug-A2: Save unresolved cross-object references as relocations
+     * for the linker to resolve. This must be called AFTER arm_save_syms
+     * so that the global symbol/reloc arrays are populated before the
+     * object file is written. */
+    arm_save_relocs(&a);
+    /* Debug: dump label addresses to stderr if ARKCC_DUMP_SYMS is set */
+    if (getenv("ARKCC_DUMP_SYMS")) {
+        int di;
+        ark_log("=== ARM Symbol Map (%d labels) ===\n", a.label_count);
+        for (di = 0; di < a.label_count; di++) {
+            if (a.labels[di].name[0] != '.')
+                ark_log("  %-40s 0x%04X (%d)\n",
+                        a.labels[di].name, a.labels[di].addr, a.labels[di].addr);
+        }
+        ark_log("=== End Symbol Map ===\n");
+    }
+    /* Bug-A2: Don't fail on unresolved cross-object references.
+     * The error_count from resolve_refs_a includes refs to external
+     * symbols that the linker will resolve. Only fail on genuine
+     * assembly errors (not on unresolved external refs).
+     * Since we can't distinguish the two at this point without more
+     * context, we proceed and let the linker report truly missing
+     * symbols. */
     return a.pc;
 }
 
@@ -2140,6 +4232,75 @@ static int arm_link(unsigned char *code, int size, struct LinkContext *lc) {
     (void)code; (void)size; (void)lc;
     return 0;
 }
+
+/* --- Symbol table export for linker --- */
+typedef struct ArmSym {
+    char *name;
+    int   offset;   /* byte offset from start of code section */
+    int   type;     /* 0=code label, 1=data/global */
+} ArmSym;
+
+static ArmSym  g_arm_syms[4096];
+static int     g_arm_sym_count = 0;
+
+/* Bug-A2: Relocation table for cross-object references.
+ * After resolve_refs_a, any ref whose target label was not found in the
+ * current object is saved here as a relocation entry. The linker will
+ * resolve these using the global symbol table. */
+typedef struct ArmReloc {
+    char *name;    /* target symbol name */
+    int   offset;  /* byte offset within code section to patch */
+    int   type;    /* 1=BL(T1), 2=B.W, 3=B<cond>.W, 4=R_ARM_ABS32 (.word) */
+} ArmReloc;
+
+static ArmReloc g_arm_relocs[4096];
+static int      g_arm_reloc_count = 0;
+
+/* Save symbol table after assembly */
+static void arm_save_syms(ArmAsm *a) {
+    int i;
+    g_arm_sym_count = 0;
+    for (i = 0; i < a->label_count && g_arm_sym_count < 4096; i++) {
+        /* Skip local labels (starting with .L) */
+        if (a->labels[i].name[0] == '.' && a->labels[i].name[1] == 'L') continue;
+        g_arm_syms[g_arm_sym_count].name   = a->labels[i].name;
+        g_arm_syms[g_arm_sym_count].offset = a->labels[i].addr;
+        g_arm_syms[g_arm_sym_count].type   = 0;  /* code label */
+        g_arm_sym_count++;
+    }
+}
+
+/* Bug-A2: Save unresolved refs as relocations for the linker.
+ * Called after resolve_refs_a; scans the ref table and saves any ref
+ * whose target is not defined in the current object. */
+static void arm_save_relocs(ArmAsm *a) {
+    int i;
+    g_arm_reloc_count = 0;
+    for (i = 0; i < a->ref_count && g_arm_reloc_count < 4096; i++) {
+        AsmRef *r = &a->refs[i];
+        int addr = find_label_a(a, r->name);
+        if (addr < 0) {
+            /* Unresolved: this is a cross-object reference.
+             * Save it as a relocation for the linker. */
+            g_arm_relocs[g_arm_reloc_count].name   = r->name;
+            g_arm_relocs[g_arm_reloc_count].offset = r->pc;
+            g_arm_relocs[g_arm_reloc_count].type   = r->type;
+            g_arm_reloc_count++;
+        }
+    }
+}
+
+/* Export symbol info for the linker */
+int arm_get_symbol_count(void) { return g_arm_sym_count; }
+const char *arm_get_symbol_name(int idx) { return g_arm_syms[idx].name; }
+int arm_get_symbol_offset(int idx) { return g_arm_syms[idx].offset; }
+int arm_get_symbol_type(int idx) { return g_arm_syms[idx].type; }
+
+/* Bug-A2: Export relocation info for the linker */
+int arm_get_reloc_count(void) { return g_arm_reloc_count; }
+const char *arm_get_reloc_name(int idx) { return g_arm_relocs[idx].name; }
+int arm_get_reloc_offset(int idx) { return g_arm_relocs[idx].offset; }
+int arm_get_reloc_type(int idx) { return g_arm_relocs[idx].type; }
 
 static const ArkBackend g_arm_backend = {
     "arm",

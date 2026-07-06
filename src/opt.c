@@ -89,6 +89,14 @@ static int eval_binary(long long a, long long b, int aux, long long *out) {
     return 1;
 }
 
+/* #11 FIX: Volatile access protection.
+ * IR_PUSH_VAR / IR_PUSH_GLOBAL / IR_STORE / IR_STORE_GLOBAL with bit
+ * 0x10000 (IR_AUX_VOLATILE) in aux must NOT be eliminated, folded, or
+ * combined by any optimization pass. The constfold pass below only folds
+ * PUSH_INT+PUSH_INT+BINARY patterns and is inherently safe. The DCE pass
+ * only removes unreachable code after RETURN/JMP. Future optimization
+ * passes (load combining, dead store elimination, etc.) MUST check
+ * (I->aux & IR_AUX_VOLATILE) before removing any memory access. */
 void opt_constfold_func(IrFunc *f) {
     int changed = 1;
     int iter = 0;
@@ -161,7 +169,12 @@ void opt_run(IrProgram *prog, int level) {
     }
 #endif
 #if ARKCC_FEATURE_OPT_INLINE
-    if (g_config.enable_opt_inline || level >= 2) {
+    /* N4 FIX: opt_inline must only run at -O2 or above. Previously it ran
+     * whenever g_config.enable_opt_inline was true (which defaults to 1
+     * at host compile time), causing inline expansion even at -O0. This
+     * changes -O0 codegen expectations and is unsafe for the ARM backend
+     * where inline expansion assumes stack-slot parameters (not r0-r3). */
+    if (level >= 2 && g_config.enable_opt_inline) {
         opt_inline(prog);
         /* ?????????? DCE??????????????????? NOP????????????????? */
         if (g_config.enable_opt_dce || level >= 1) {
@@ -218,12 +231,16 @@ typedef struct {
     int can_inline;
 } InlineCandidate;
 
-/* ???????????????????? FUNC_BEGIN/FUNC_END/LABEL/NOP????
- * ??????????????????????? 1=???0=???? */
-static int count_insts_and_check_recursion(IrFunc *f, int *out_count) {
+/* Count real instructions (skipping FUNC_BEGIN/FUNC_END/LABEL/NOP) and detect
+ * direct recursion. Also detects struct-by-value parameters via IR_GETARG's
+ * aux encoding (high 24 bits = struct size > 0); such functions cannot be
+ * inlined because the inline expansion would need to emit a memcpy from the
+ * caller's argument slot, not the simple PUSH_VAR+STORE pattern used here. */
+static int count_insts_and_check_recursion(IrFunc *f, int *out_count, int *out_has_struct_byval) {
     int i;
     int n = 0;
     int recursive = 0;
+    *out_has_struct_byval = 0;
     for (i = 0; i < f->code_count; i++) {
         IrOp op = f->code[i].op;
         if (op == IR_FUNC_BEGIN || op == IR_FUNC_END ||
@@ -231,6 +248,9 @@ static int count_insts_and_check_recursion(IrFunc *f, int *out_count) {
         if (op == IR_CALL && f->code[i].name &&
             ark_streq(f->code[i].name, f->name)) {
             recursive = 1;
+        }
+        if (op == IR_GETARG && (f->code[i].aux >> 8) != 0) {
+            *out_has_struct_byval = 1;
         }
         n++;
     }
@@ -249,7 +269,8 @@ void opt_inline(IrProgram *prog) {
     for (i = 0; i < prog->func_count; i++) {
         IrFunc *f = prog->funcs[i];
         int cnt = 0;
-        int recursive = count_insts_and_check_recursion(f, &cnt);
+        int has_struct_byval = 0;
+        int recursive = count_insts_and_check_recursion(f, &cnt, &has_struct_byval);
         cands[i].func = f;
         cands[i].inst_count = cnt;
         cands[i].can_inline = 0;
@@ -258,6 +279,11 @@ void opt_inline(IrProgram *prog) {
         if (f->is_irq || f->is_naked || f->is_asm_func) continue;
         if (f->is_constructor || f->is_destructor) continue;
         if (f->param_count > 4) continue;
+        /* Struct-by-value parameters use IR_GETARG with (size<<8)|idx encoding
+         * and the callee receives a pointer to the struct (not the value).
+         * The inline expansion below cannot handle the required memcpy, so
+         * skip inlining such functions entirely. */
+        if (has_struct_byval) continue;
         if (f->forceinline) {
             cands[i].can_inline = 1;  /* forceinline ??????????? */
         } else if (cnt <= ARK_INLINE_THRESHOLD) {
@@ -385,9 +411,12 @@ void opt_inline(IrProgram *prog) {
                         break;
                     case IR_GETARG: {
                         /* ???????? r{j} ???? callee ??? off??
-                         * ??????? temp_off_j ????????? L1+off?? */
+                         * ??????? temp_off_j ????????? L1+off??
+                         * aux low 8 bits = arg index; high 24 bits = struct
+                         * size (only present for struct-by-value params, which
+                         * are excluded from inlining above). Mask to be safe. */
                         int callee_off = src->val;
-                        int arg_j = src->aux;
+                        int arg_j = src->aux & 0xFF;
                         dst->op = IR_PUSH_VAR;
                         dst->val = L0 + arg_j * 4;
                         dst->name = 0;

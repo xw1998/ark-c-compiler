@@ -3,7 +3,7 @@
  *
  * Coverage (C99 practical subset):
  *   - Types: void/char/short/int/long/long long/_Bool/float/double/signed/unsigned
- *   - Qualifiers: const/volatile/restrict/inline (parsed and ignored)
+ *   - Qualifiers: const/volatile/restrict/inline (const/volatile preserved in Type; restrict/inline ignored)
  *   - Storage classes: static/extern/auto/register
  *   - struct/union/enum with anonymous definitions, tag references
  *   - typedef
@@ -141,11 +141,14 @@ AstNode *parse_program(Lexer *lex) {
     return prog;
 }
 
-/* Skip all type qualifiers (const/volatile/restrict) */
-static void skip_qualifiers(Parser *p) {
+/* Skip all type qualifiers (const/volatile/restrict).
+ * If saw_volatile/saw_const are non-NULL, report what was seen (F2). */
+static void skip_qualifiers(Parser *p, int *saw_volatile, int *saw_const) {
     for (;;) {
         TokenKind k = lexer_peek(p->lex).kind;
         if (k == TOK_CONST || k == TOK_VOLATILE || k == TOK_RESTRICT || k == TOK_INLINE) {
+            if (k == TOK_VOLATILE && saw_volatile) *saw_volatile = 1;
+            if (k == TOK_CONST && saw_const) *saw_const = 1;
             lexer_advance(p->lex);
         } else if (k == TOK_ATTRIBUTE) {
             parse_attribute(p, 0);
@@ -178,6 +181,7 @@ static int g_attr_is_irq;
  * and reset. const is used for .rodata section selection; section for custom sections. */
 static char *g_attr_section;
 static int   g_decl_is_const;
+static int   g_decl_is_volatile;  /* F2: volatile qualifier seen in declspec */
 /* 0.4.0 added attribute / keyword-driven properties.
  *   - used/unused: prevent linker dead code elimination or suppress unused warnings
  *   - alias("target"): function alias (same address)
@@ -751,6 +755,7 @@ static Type *parse_declspec(Parser *p, int *p_storage, int *p_is_typedef) {
                 continue;
             case TOK_CONST: case TOK_VOLATILE: case TOK_RESTRICT: case TOK_INLINE:
                 if (tok.kind == TOK_CONST) g_decl_is_const = 1;
+                if (tok.kind == TOK_VOLATILE) g_decl_is_volatile = 1;
                 lexer_advance(p->lex);
                 saw_kw = 1;
                 continue;
@@ -960,6 +965,13 @@ done:
         base = type_complex(base);
     }
 #endif
+    /* F2: Apply const/volatile qualifiers to the base type.
+     * Creates a qualified copy to avoid modifying singleton basic types.
+     * The globals remain set so callers (parse_top_decl/parse_local_var_decl)
+     * can still read them for section selection etc. */
+    if (g_decl_is_volatile || g_decl_is_const) {
+        base = type_qualified(base, g_decl_is_volatile, g_decl_is_const);
+    }
     return base;
 }
 
@@ -1125,9 +1137,13 @@ static Type *parse_declarator(Parser *p, Type *base, char **out_name) {
     Type *t = base;
     /* Pointer */
     while (lexer_peek(p->lex).kind == TOK_MUL) {
+        int ptr_vol = 0, ptr_const = 0;
         lexer_advance(p->lex);
-        skip_qualifiers(p);
+        skip_qualifiers(p, &ptr_vol, &ptr_const);
         t = type_pointer(t);
+        /* F2: pointer-level qualifiers (e.g., `int *volatile p`) */
+        if (ptr_vol) t->is_volatile = 1;
+        if (ptr_const) t->is_const = 1;
         /* __packed pointer: mark this pointer type as packed, irgen/ARM backend accordingly
          * uses byte-wise access instead of LDR/STR to avoid unaligned access exceptions.
          * Flag is set at each pointer level (supports __packed int **p etc). */
@@ -1326,7 +1342,7 @@ static AstNode *parse_top_decl(Parser *p) {
     int   func_is_deprecated_kw = 0;
     /* Reset __attribute__-driven function attribute globals to avoid cross-declaration leakage */
     g_attr_is_weak = 0; g_attr_is_naked = 0; g_attr_is_irq = 0;
-    g_attr_section = 0; g_decl_is_const = 0;
+    g_attr_section = 0; g_decl_is_const = 0; g_decl_is_volatile = 0;
     g_attr_is_used = 0; g_attr_is_unused = 0;
     g_attr_alias_target = 0;
     g_attr_align_bytes = 0; g_decl_align_bytes = 0;
@@ -1846,7 +1862,7 @@ static AstNode *parse_statement(Parser *p) {
         Type *base;
         int local_align = 0;
         /* Reset const/section globals to avoid cross-statement leakage */
-        g_decl_is_const = 0; g_attr_section = 0;
+        g_decl_is_const = 0; g_decl_is_volatile = 0; g_attr_section = 0;
         g_attr_align_bytes = 0;
         g_attr_is_used = 0; g_attr_is_unused = 0;
         g_decl_packed_ptr = 0;
@@ -1931,7 +1947,7 @@ static AstNode *parse_statement(Parser *p) {
                 if (is_decl_start(p)) {
                     int sto = 0, td = 0;
                     Type *base;
-                    g_decl_is_const = 0; g_attr_section = 0;
+                    g_decl_is_const = 0; g_decl_is_volatile = 0; g_attr_section = 0;
                     base = parse_declspec(p, &sto, &td);
                     init = parse_local_var_decl(p, base, sto, td);
                     /* parse_local_var_decl already ate ';' */

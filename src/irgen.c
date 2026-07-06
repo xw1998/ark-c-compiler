@@ -408,6 +408,44 @@ IrProgram *irgen_program(AstNode *prog) {
                     eg->is_extern = 0;
                     eg->is_const  = d->u.var.is_const;
                     eg->section   = d->u.var.section;
+                    /* #3 FIX: Process initializer when definition follows extern.
+                     * Previously the initializer was silently dropped, causing
+                     * all .data globals preceded by extern declarations to
+                     * have init_int=0 (e.g. SystemCoreClock=16000000 became 0). */
+                    if (d->u.var.init && !eg->has_init) {
+                        AstNode *iv = d->u.var.init;
+                        if (iv->kind == AST_NUM) {
+                            eg->has_init = 1;
+                            eg->init_int = iv->u.num_val;
+                            if (iv->type && (iv->type->kind == TYPE_FLOAT || iv->type->kind == TYPE_DOUBLE)) {
+                                eg->is_float = 1;
+                                eg->init_float = iv->fval;
+                            }
+                        } else if (iv->kind == AST_STR) {
+                            eg->has_init = 1;
+                            eg->init_str = iv->u.name;
+                        } else if (iv->kind == AST_INIT_LIST) {
+                            StrBuf sb; sb_init(&sb);
+                            serialize_init(&sb, iv);
+                            eg->has_init = 1;
+                            eg->init_aggregate = sb.data;
+                        } else if (iv->kind == AST_COMPOUND_LITERAL) {
+                            StrBuf sb; sb_init(&sb);
+                            serialize_init(&sb, iv->u.compound_lit.init);
+                            eg->has_init = 1;
+                            eg->init_aggregate = sb.data;
+                        } else {
+                            long long cv = 0;
+                            eg->has_init = 1;
+                            if (eval_const_expr(iv, &cv)) {
+                                eg->init_int = cv;
+                            } else {
+                                StrBuf sb; sb_init(&sb);
+                                serialize_const_expr(&sb, iv);
+                                eg->init_aggregate = sb.data;
+                            }
+                        }
+                    }
                 }
             }
         } else if (d->kind == AST_TYPEDEF) {
@@ -475,6 +513,41 @@ IrProgram *irgen_program(AstNode *prog) {
                             eg->is_extern = 0;
                             eg->is_const  = c->u.var.is_const;
                             eg->section   = c->u.var.section;
+                            /* #3 FIX: Process initializer for block-level globals too */
+                            if (c->u.var.init && !eg->has_init) {
+                                AstNode *iv = c->u.var.init;
+                                if (iv->kind == AST_NUM) {
+                                    eg->has_init = 1;
+                                    eg->init_int = iv->u.num_val;
+                                    if (iv->type && (iv->type->kind == TYPE_FLOAT || iv->type->kind == TYPE_DOUBLE)) {
+                                        eg->is_float = 1;
+                                        eg->init_float = iv->fval;
+                                    }
+                                } else if (iv->kind == AST_STR) {
+                                    eg->has_init = 1;
+                                    eg->init_str = iv->u.name;
+                                } else if (iv->kind == AST_INIT_LIST) {
+                                    StrBuf sb; sb_init(&sb);
+                                    serialize_init(&sb, iv);
+                                    eg->has_init = 1;
+                                    eg->init_aggregate = sb.data;
+                                } else if (iv->kind == AST_COMPOUND_LITERAL) {
+                                    StrBuf sb; sb_init(&sb);
+                                    serialize_init(&sb, iv->u.compound_lit.init);
+                                    eg->has_init = 1;
+                                    eg->init_aggregate = sb.data;
+                                } else {
+                                    long long cv = 0;
+                                    eg->has_init = 1;
+                                    if (eval_const_expr(iv, &cv)) {
+                                        eg->init_int = cv;
+                                    } else {
+                                        StrBuf sb; sb_init(&sb);
+                                        serialize_const_expr(&sb, iv);
+                                        eg->init_aggregate = sb.data;
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -567,6 +640,21 @@ IrProgram *irgen_program(AstNode *prog) {
             /* ???? ARM Compiler 5 ????????? IrFunc???????????
              * __attribute__((weak/naked)) ?? __irq ???? */
             g.fn->is_irq   = d->u.func.is_irq;
+            /* Auto-detect ARM interrupt handlers by name suffix.
+             * STM32CubeMX/HAL code doesn't use __irq keyword; without this,
+             * ISRs would use the normal prologue and clobber r0-r3/r12.
+             * Reset_Handler and Default_Handler are entry points, not ISRs. */
+            if (!g.fn->is_irq && g.fn->name) {
+                int nl = ark_strlen(g.fn->name);
+                if (ark_streq(g.fn->name, "Reset_Handler") ||
+                    ark_streq(g.fn->name, "Default_Handler")) {
+                    /* entry point, not ISR */
+                }
+                else if (nl >= 8 && ark_streq(g.fn->name + nl - 8, "_Handler"))
+                    g.fn->is_irq = 1;
+                else if (nl >= 11 && ark_streq(g.fn->name + nl - 11, "_IRQHandler"))
+                    g.fn->is_irq = 1;
+            }
             g.fn->is_weak  = d->u.func.is_weak;
             g.fn->is_naked = d->u.func.is_naked;
             g.fn->is_used  = d->u.func.is_used;
@@ -599,15 +687,26 @@ IrProgram *irgen_program(AstNode *prog) {
             sym_enter_scope();
             for (j = 0; j < d->u.func.param_count; j++) {
                 AstNode *pp = d->u.func.params[j];
-                int sz = type_size(pp->u.var.var_type);
+                Type *ptype = pp->u.var.var_type;
+                int sz = type_size(ptype);
                 int off;
+                int is_struct_val = (ptype &&
+                    (ptype->kind == TYPE_STRUCT || ptype->kind == TYPE_UNION) &&
+                    sz > 8);
                 if (sz <= 0) sz = 4;
                 off = alloc_local(&g, sz);
                 {
-                    Symbol *s = sym_add(SYM_PARAM, pp->u.var.name, pp->u.var.var_type, off);
+                    Symbol *s = sym_add(SYM_PARAM, pp->u.var.name, ptype, off);
                     (void)s;
                 }
-                ir_emit(g.fn, IR_GETARG, off, pp->u.var.name, j);
+                /* For struct-by-value parameters (size > 8), the caller pushes
+                 * the source struct address. Encode size in aux high bits so
+                 * the C backend can emit memcpy(frame+off, src_ptr, size). */
+                if (is_struct_val) {
+                    ir_emit(g.fn, IR_GETARG, off, pp->u.var.name, (sz << 8) | j);
+                } else {
+                    ir_emit(g.fn, IR_GETARG, off, pp->u.var.name, j);
+                }
             }
             /* For variadic functions, also store all 8 args (a0..a7) at a
              * fixed frame region (ARK_VA_ARG_BASE..+64) so va_start/va_arg
@@ -905,16 +1004,24 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
                      * the address, then IR_MEMCPY to copy to the destination. */
                     int struct_sz = type_size(node->u.var.var_type);
                     if (struct_sz <= 0) struct_sz = 4;
-                    if (iv && iv->kind == AST_FUNC_CALL) {
-                        /* Struct-returning function: irgen_expr pushes the
-                         * address of the result. Use IR_MEMCPY for all sizes. */
+                    if (iv && iv->kind == AST_FUNC_CALL && struct_sz > 8) {
+                        /* Large struct from function: C backend stores result
+                         * at frame+8176 and irgen_expr pushes its ADDRESS.
+                         * Use IR_MEMCPY (dst on top, src below) to copy. */
                         irgen_expr(g, iv);                        /* push src addr */
                         ir_emit(g->fn, IR_PUSH_ADDR, off, 0, 0);  /* push dst addr */
                         ir_emit(g->fn, IR_MEMCPY, struct_sz, 0, 0);
                     } else if (struct_sz <= 8) {
+                        /* Small struct (<=8B): irgen_expr pushes the 8-byte
+                         * value (covers AST_FUNC_CALL returning small struct
+                         * and AST_VAR struct-to-struct copy). Store directly
+                         * via IR_STORE; memcpy cannot be used because rvalues
+                         * have no address (treating the value as a pointer
+                         * caused STATUS_ACCESS_VIOLATION). */
                         irgen_expr(g, iv);
                         ir_emit(g->fn, IR_STORE, off, 0, 8);
                     } else {
+                        /* Large struct var-to-var copy: take source address. */
                         irgen_lvalue_addr(g, iv);                 /* push src addr */
                         ir_emit(g->fn, IR_PUSH_ADDR, off, 0, 0);  /* push dst addr */
                         ir_emit(g->fn, IR_MEMCPY, struct_sz, 0, 0);
@@ -936,6 +1043,12 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
                         }
                     }
                     {
+                        /* Bug-N3 FIX: add TYPE_LLONG(8) and TYPE_DOUBLE(8) so
+                         * 64-bit locals and doubles are stored with the right
+                         * width. Without these cases store_aux stayed 0, which
+                         * the ARM backend treats as "default 4 bytes",
+                         * corrupting adjacent locals when storing long long or
+                         * double values. */
                         int store_aux = 0;
                         if (node->u.var.var_type) {
                             switch (node->u.var.var_type->kind) {
@@ -943,9 +1056,13 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
                                 case TYPE_SHORT: store_aux = 2; break;
                                 case TYPE_INT:
                                 case TYPE_ENUM:  store_aux = 4; break;
+                                case TYPE_LLONG:  store_aux = 8; break;
+                                case TYPE_DOUBLE: store_aux = 8; break;
                                 case TYPE_COMPLEX: store_aux = 16; break;
                                 default:         store_aux = 0; break;
                             }
+                            if (node->u.var.var_type->is_volatile)
+                                store_aux |= IR_AUX_VOLATILE;
                         }
                         ir_emit(g->fn, IR_STORE, off, node->u.var.name, store_aux);
                     }
@@ -963,7 +1080,9 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
                  * stores the result at frame+8176 and returns a pointer.
                  * Push the ADDRESS of the struct (not its truncated value).
                  * For AST_FUNC_CALL, irgen_expr already pushes the result
-                 * pointer (the callee returns frame+8176 address). */
+                 * pointer (the callee returns _ark_ret_buf address).
+                 * Small structs (<= 8 bytes) are returned as a value, not
+                 * a pointer; irgen_expr pushes the value directly. */
                 Type *rt = node->u.unary.operand->type;
                 if (!rt) rt = g->fn->ret_type;
                 if (rt && (rt->kind == TYPE_STRUCT || rt->kind == TYPE_UNION) &&
@@ -1356,10 +1475,21 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                 break;
             }
             if (s->kind == SYM_GLOBAL) {
-                /* static ????????????????????????? mangle ??????? */
+                /* static global: keep the name; static local uses mangled name */
                 const char *gname = node->u.name;
                 if (s->is_static) gname = static_local_name(g->fn->name, node->u.name);
-                ir_emit(g->fn, IR_PUSH_GLOBAL, 0, gname, 0);
+                /* Array/struct/union globals must push their base address (no
+                 * dereference): arrays decay to a pointer to their first element,
+                 * and structs/unions are accessed via member operations on their
+                 * address. PUSH_GLOBAL would emit LDR r0,[r0] which loads 4
+                 * bytes of the aggregate's storage as a bogus pointer. */
+                if (s->type && (s->type->kind == TYPE_ARRAY ||
+                                s->type->kind == TYPE_STRUCT ||
+                                s->type->kind == TYPE_UNION)) {
+                    ir_emit(g->fn, IR_PUSH_GLOBAL_ADDR, 0, gname, 0);
+                } else {
+                    ir_emit(g->fn, IR_PUSH_GLOBAL, 0, gname, 0);
+                }
             } else if (s->kind == SYM_ENUM_CONST) {
                 ir_emit(g->fn, IR_PUSH_INT, s->enum_value, 0, 0);
             } else if (s->type && s->type->kind == TYPE_ARRAY) {
@@ -1379,9 +1509,13 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         case TYPE_SHORT: aux = 2 | uns; break;
                         case TYPE_INT:
                         case TYPE_ENUM:  aux = 4 | uns; break;
+                        case TYPE_LLONG: aux = 8 | uns; break;  /* #5 FIX: 64-bit local */
+                        case TYPE_DOUBLE: aux = 8; break;       /* #5 FIX: double local */
                         case TYPE_COMPLEX: aux = 16; break;
                         default:         aux = 0; break;
                     }
+                    /* #11 FIX: Mark volatile variable reads */
+                    if (s->type->is_volatile) aux |= IR_AUX_VOLATILE;
                 }
                 ir_emit(g->fn, IR_PUSH_VAR, s->offset, node->u.name, aux);
             }
@@ -1406,7 +1540,41 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                 }
                 else if (src_int && dst_float) {
                     int is_dbl = (dst_t->kind == TYPE_DOUBLE);
-                    ir_emit(g->fn, IR_I2F, 0, 0, is_dbl ? 0x200 : 0);
+                    /* Bug-P1-7: encode unsigned flag (0x400) so ARM backend
+                     * selects __aeabi_ui2d/__aeabi_ui2f for unsigned sources
+                     * instead of always using the signed __aeabi_i2d/__aeabi_i2f. */
+                    int aux = is_dbl ? 0x200 : 0;
+                    if (src_t->is_unsigned) aux |= 0x400;
+                    ir_emit(g->fn, IR_I2F, 0, 0, aux);
+                }
+                /* Bug-I1: int(32-bit) <-> long long(64-bit) widening/narrowing.
+                 * Stack layout for 64-bit values: low word pushed first, high
+                 * word pushed last (high word on top of stack). */
+                else if (src_int && dst_int) {
+                    int src_size = type_size(src_t);
+                    int dst_size = type_size(dst_t);
+                    if (dst_size == 8 && src_size < 8) {
+                        /* Widen 32-bit int to 64-bit (2 slots). The int value
+                         * is already on the stack as 1 slot; push the high
+                         * word (sign or zero extension) on top. */
+                        if (src_t->is_unsigned) {
+                            /* Zero extend: high word = 0 */
+                            ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
+                        } else {
+                            /* Sign extend: duplicate value, then arithmetic
+                             * shift right by 31 to produce 0 or -1 as the
+                             * high word. */
+                            ir_emit(g->fn, IR_DUP, 0, 0, 0);
+                            ir_emit(g->fn, IR_PUSH_INT, 31, 0, 0);
+                            ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_SHR);
+                        }
+                    }
+                    else if (src_size == 8 && dst_size < 8) {
+                        /* Narrow 64-bit to 32-bit: discard the high word
+                         * (which is on top of stack). */
+                        ir_emit(g->fn, IR_POP, 0, 0, 0);
+                    }
+                    /* same-size int<->int: no-op */
                 }
                 /* complex -> real????????????????????? IR_F2I ??? 0x400 ????
                  * ????? C ??????????? creal()????????? aux ????????????? */
@@ -1688,17 +1856,32 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                 if (L->type && (L->type->kind == TYPE_STRUCT || L->type->kind == TYPE_UNION)) {
                     int sz = type_size(L->type);
                     if (sz <= 0) sz = 4;
+                    if (sz <= 8) {
+                        /* Small struct (<=8B): irgen_expr pushes the 8-byte
+                         * value (covers AST_FUNC_CALL returning small struct
+                         * and AST_VAR struct-to-struct copy). Store the value
+                         * to L's address via IR_STORE_IDX (pops value, then
+                         * addr; stores; pushes value back as expression result).
+                         * Using IR_MEMCPY here would treat the value as a
+                         * pointer and crash with STATUS_ACCESS_VIOLATION. */
+                        irgen_lvalue_addr(g, L);                  /* [dst_addr] */
+                        irgen_expr(g, node->u.binary.right);      /* [dst_addr, value] */
+                        ir_emit(g->fn, IR_STORE_IDX, 8, 0, 0);    /* [value] */
+                        break;
+                    }
+                    /* Large struct: use IR_MEMCPY with addresses.
+                     * RHS of struct assignment: if it's a function call
+                     * returning a struct, irgen_expr pushes the result address
+                     * (C backend stores at frame+8176). Otherwise take the
+                     * lvalue address. */
                     irgen_lvalue_addr(g, L);                      /* [dst] */
-                    /* RHS of struct assignment: if it's a function call returning
-                     * a struct, irgen_expr pushes the result address (C backend
-                     * stores at frame+8176). Otherwise take the lvalue address. */
                     if (node->u.binary.right && node->u.binary.right->kind == AST_FUNC_CALL) {
                         irgen_expr(g, node->u.binary.right);     /* [dst, src] */
                     } else {
                         irgen_lvalue_addr(g, node->u.binary.right);   /* [dst, src] */
                     }
                     irgen_lvalue_addr(g, L);                      /* [dst, src, dst] */
-                    ir_emit(g->fn, IR_MEMCPY, sz, 0, 0);          /* pops src,dst; pushes dst */
+                    ir_emit(g->fn, IR_MEMCPY, sz, 0, 0);          /* pops dst,src; leaves [dst] */
                     break;
                 }
                 if (L->kind == AST_VAR) {
@@ -1737,9 +1920,12 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                                 case TYPE_COMPLEX: store_aux = 16; break;
                                 default:         store_aux = 0; break;
                             }
+                            /* #11 FIX: Mark volatile variable writes */
+                            if (s->type->is_volatile) store_aux |= IR_AUX_VOLATILE;
                         }
                         ir_emit(g->fn, IR_STORE, s->offset, L->u.name, store_aux);
-                        ir_emit(g->fn, IR_PUSH_VAR, s->offset, L->u.name, 0);
+                        ir_emit(g->fn, IR_PUSH_VAR, s->offset, L->u.name,
+                                (s && s->type && s->type->is_volatile) ? IR_AUX_VOLATILE : 0);
                     }
                 } else if (L->kind == AST_ARRAY_ACCESS) {
                     AstNode *arr = L->u.array_access.array;
@@ -1771,13 +1957,16 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                 } else if (L->kind == AST_MEMBER) {
                     int bo, bw;
                     if (member_bitfield_info(L, &bo, &bw)) {
-                        /* ???????IR_STORE_FLD ???? value(??) ?? addr(????)??
-                         * ?????????????????????????????????????????????? */
+                        /* #I6 FIX: Set 0x100 flag for signed bitfields in
+                         * the LOAD_FLD after assignment. */
+                        int fld_aux = bw;
+                        if (L->type && !L->type->is_unsigned)
+                            fld_aux |= 0x100;
                         irgen_lvalue_addr(g, L);                      /* [addr] */
                         irgen_expr(g, node->u.binary.right);          /* [addr, value] */
                         ir_emit(g->fn, IR_STORE_FLD, bo, 0, bw);      /* [] */
                         irgen_lvalue_addr(g, L);                      /* [addr] */
-                        ir_emit(g->fn, IR_LOAD_FLD, bo, 0, bw);       /* [masked_value] */
+                        ir_emit(g->fn, IR_LOAD_FLD, bo, 0, fld_aux);   /* [masked_value] */
                     } else {
                         int elem_sz = type_size(L->type ? L->type : type_int());
                         if (elem_sz <= 0) elem_sz = 4;
@@ -1816,6 +2005,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         ir_emit(g->fn, IR_STORE_GLOBAL, 0, gname, 0);
                     } else if (s) {
                         int store_aux = 0;
+                        int push_aux = 0;
                         if (s && s->type) {
                             switch (s->type->kind) {
                                 case TYPE_CHAR:  store_aux = 1; break;
@@ -1825,17 +2015,27 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                                 case TYPE_COMPLEX: store_aux = 16; break;
                                 default:         store_aux = 0; break;
                             }
+                            /* #I5 FIX: Preserve volatile qualifier in compound
+                             * assignment. Without this, __HAL_RCC_*_ENABLE() macros
+                             * doing tmpreg |= RCC->CR lose volatile semantics. */
+                            if (s->type->is_volatile) {
+                                store_aux |= IR_AUX_VOLATILE;
+                                push_aux = IR_AUX_VOLATILE;
+                            }
                         }
-                        ir_emit(g->fn, IR_PUSH_VAR, s->offset, L->u.name, 0);
+                        ir_emit(g->fn, IR_PUSH_VAR, s->offset, L->u.name, push_aux);
                         irgen_expr(g, node->u.binary.right);
                         ir_emit(g->fn, IR_BINARY, 0, 0, bop);
                         ir_emit(g->fn, IR_STORE, s->offset, L->u.name, store_aux);
-                        ir_emit(g->fn, IR_PUSH_VAR, s->offset, L->u.name, 0);
+                        ir_emit(g->fn, IR_PUSH_VAR, s->offset, L->u.name, push_aux);
                     }
                 } else if (L->kind == AST_UNARY && L->u.unary.op == (int)TOK_MUL) {
                     /* *ptr OP= val : load old, compute new, store back, leave new on stack.
-                     * Uses IR_SWAP to reorder [new, new, addr] -> [new, addr, new]
-                     * so STORE_IDX pops (new, addr) and leaves [new] as result. */
+                     * Bug-I4 FIX: Evaluate the lvalue address ONCE and duplicate it
+                     * with IR_DUP so that side effects in L (e.g. i++ in *p++ += 5)
+                     * are not doubled. The original address stays at the bottom of
+                     * the stack while LOAD_IDX consumes the duplicate; STORE_IDX
+                     * then consumes the original, so no SWAP is needed. */
                     int elem_sz = type_size(L->type ? L->type : type_int());
                     int packed_aux = 0;
                     if (elem_sz <= 0) elem_sz = 4;
@@ -1845,16 +2045,17 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         packed_aux = 0x400;
                     }
                     irgen_lvalue_addr(g, L);                       /* [addr] */
-                    ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);           /* [addr, 0] */
-                    ir_emit(g->fn, IR_LOAD_IDX, elem_sz, 0, packed_aux); /* [old_val] */
-                    irgen_expr(g, node->u.binary.right);            /* [old_val, rhs] */
-                    ir_emit(g->fn, IR_BINARY, 0, 0, bop);           /* [new_val] */
-                    ir_emit(g->fn, IR_DUP, 0, 0, 0);               /* [new_val, new_val] */
-                    irgen_lvalue_addr(g, L);                       /* [new_val, new_val, addr] */
-                    ir_emit(g->fn, IR_SWAP, 0, 0, 0);              /* [new_val, addr, new_val] */
+                    ir_emit(g->fn, IR_DUP, 0, 0, 0);               /* [addr, addr] */
+                    ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);           /* [addr, addr, 0] */
+                    ir_emit(g->fn, IR_LOAD_IDX, elem_sz, 0, packed_aux); /* [addr, old_val] */
+                    irgen_expr(g, node->u.binary.right);            /* [addr, old_val, rhs] */
+                    ir_emit(g->fn, IR_BINARY, 0, 0, bop);           /* [addr, new_val] */
                     ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, packed_aux); /* [new_val] */
                 } else if (L->kind == AST_ARRAY_ACCESS) {
-                    /* arr[i] OP= val */
+                    /* arr[i] OP= val
+                     * Bug-I4 FIX: Evaluate the lvalue address ONCE and duplicate
+                     * it with IR_DUP so that side effects in the index expression
+                     * (e.g. i++ in arr[i++] += 5) are not doubled. */
                     AstNode *arr = L->u.array_access.array;
                     int elem_sz = 4;
                     int packed_aux = 0;
@@ -1865,13 +2066,11 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         packed_aux = 0x400;
                     }
                     irgen_lvalue_addr(g, L);                       /* [addr] */
-                    ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);           /* [addr, 0] */
-                    ir_emit(g->fn, IR_LOAD_IDX, elem_sz, 0, packed_aux); /* [old_val] */
-                    irgen_expr(g, node->u.binary.right);            /* [old_val, rhs] */
-                    ir_emit(g->fn, IR_BINARY, 0, 0, bop);           /* [new_val] */
-                    ir_emit(g->fn, IR_DUP, 0, 0, 0);               /* [new_val, new_val] */
-                    irgen_lvalue_addr(g, L);                       /* [new_val, new_val, addr] */
-                    ir_emit(g->fn, IR_SWAP, 0, 0, 0);              /* [new_val, addr, new_val] */
+                    ir_emit(g->fn, IR_DUP, 0, 0, 0);               /* [addr, addr] */
+                    ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);           /* [addr, addr, 0] */
+                    ir_emit(g->fn, IR_LOAD_IDX, elem_sz, 0, packed_aux); /* [addr, old_val] */
+                    irgen_expr(g, node->u.binary.right);            /* [addr, old_val, rhs] */
+                    ir_emit(g->fn, IR_BINARY, 0, 0, bop);           /* [addr, new_val] */
                     ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, packed_aux); /* [new_val] */
                 } else if (L->kind == AST_MEMBER) {
                     int bo, bw;
@@ -1883,14 +2082,15 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                     } else {
                         int elem_sz = type_size(L->type ? L->type : type_int());
                         if (elem_sz <= 0) elem_sz = 4;
+                        /* Bug-I4 FIX: Evaluate the lvalue address ONCE and
+                         * duplicate it with IR_DUP so that side effects in the
+                         * member's base object are not doubled. */
                         irgen_lvalue_addr(g, L);                       /* [addr] */
-                        ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);           /* [addr, 0] */
-                        ir_emit(g->fn, IR_LOAD_IDX, elem_sz, 0, 0);     /* [old_val] */
-                        irgen_expr(g, node->u.binary.right);            /* [old_val, rhs] */
-                        ir_emit(g->fn, IR_BINARY, 0, 0, bop);           /* [new_val] */
-                        ir_emit(g->fn, IR_DUP, 0, 0, 0);               /* [new_val, new_val] */
-                        irgen_lvalue_addr(g, L);                       /* [new_val, new_val, addr] */
-                        ir_emit(g->fn, IR_SWAP, 0, 0, 0);              /* [new_val, addr, new_val] */
+                        ir_emit(g->fn, IR_DUP, 0, 0, 0);               /* [addr, addr] */
+                        ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);           /* [addr, addr, 0] */
+                        ir_emit(g->fn, IR_LOAD_IDX, elem_sz, 0, 0);     /* [addr, old_val] */
+                        irgen_expr(g, node->u.binary.right);            /* [addr, old_val, rhs] */
+                        ir_emit(g->fn, IR_BINARY, 0, 0, bop);           /* [addr, new_val] */
                         ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, 0);    /* [new_val] */
                     }
                 } else {
@@ -1944,7 +2144,18 @@ static void irgen_expr(IrGen *g, AstNode *node) {
             }
 
             for (i = n - 1; i >= 0; i--) {
-                irgen_expr(g, node->u.call.args[i]);
+                AstNode *arg = node->u.call.args[i];
+                Type *at = arg ? arg->type : 0;
+                /* struct-by-value: pass the address of the source struct
+                 * instead of the (truncated to 8-byte) value. The callee's
+                 * IR_GETARG (with size-in-aux) will memcpy the payload into
+                 * its own frame slot. */
+                if (at && (at->kind == TYPE_STRUCT || at->kind == TYPE_UNION) &&
+                    type_size(at) > 8) {
+                    irgen_lvalue_addr(g, arg);
+                } else {
+                    irgen_expr(g, arg);
+                }
             }
             /* Indirect call: push the function pointer (callee) last so it
              * becomes aa[0] when the C backend pops. n includes the pointer. */
@@ -1964,20 +2175,33 @@ static void irgen_expr(IrGen *g, AstNode *node) {
 #endif
             else {
                 /* Encode argument types into aux bitmask so the C backend can emit
-                 * the correct cast for each variadic argument (long long vs double).
-                 * bit i (i=0..7) = 1 if arg i is float/double (default-promoted to
-                 * double when passed to a variadic function); 0 otherwise (int/ptr).
-                 * Without this, printf("%g", x) would receive a long long bit
-                 * pattern in an integer register while the callee reads XMM, causing
-                 * garbage output or a crash on x86_64 MS-ABI hosts. */
+                 * the correct cast for each variadic argument. Each arg uses 2 bits:
+                 *   bit(2*i)   = 1 if arg is float/double (default-promoted to double)
+                 *   bit(2*i+1) = 1 if arg is long long / unsigned long long (8 bytes)
+                 * Default (both bits 0) = int/ptr/short/char (promoted to int, 4 bytes
+                 * in the variadic ABI on 32-bit hosts; 8 bytes on 64-bit LP64 but the
+                 * high 32 bits are 0). Without this, printf("%d %lld %d", ...) on a
+                 * 32-bit host would misread argument offsets because the callee's
+                 * va_arg(int) reads 4 bytes while arkcc passed 8, shifting all
+                 * subsequent %lld / %s reads and producing garbage.
+                 *
+                 * NOTE: use arg_count, not n, as the upper bound. For indirect calls
+                 * (obj->fnptr()), n includes the function pointer (n = arg_count + 1),
+                 * but the callee pointer is stored separately in node->u.call.callee,
+                 * NOT in the args[] array. Using n here would read past args[] end
+                 * (or dereference NULL when arg_count==0), causing a crash. */
                 int argmask = 0;
-                int max_args = n > 8 ? 8 : n;
+                int max_args = node->u.call.arg_count;
+                if (max_args > 16) max_args = 16;
                 for (i = 0; i < max_args; i++) {
                     AstNode *arg = node->u.call.args[i];
-                    if (arg && arg->type &&
-                        (arg->type->kind == TYPE_FLOAT ||
-                         arg->type->kind == TYPE_DOUBLE)) {
-                        argmask |= (1 << i);
+                    if (arg && arg->type) {
+                        int k = arg->type->kind;
+                        if (k == TYPE_FLOAT || k == TYPE_DOUBLE) {
+                            argmask |= (1 << (2 * i));
+                        } else if (k == TYPE_LLONG) {
+                            argmask |= (1 << (2 * i + 1));
+                        }
                     }
                 }
                 ir_emit(g->fn, IR_CALL, n, node->u.call.name, argmask);
@@ -2017,10 +2241,14 @@ static void irgen_expr(IrGen *g, AstNode *node) {
         case AST_MEMBER: {
             int bo, bw;
             if (member_bitfield_info(node, &bo, &bw)) {
-                /* ????????irgen_lvalue_addr ??????????????????????????
-                 * IR_LOAD_FLD ??????????? (bit_offset, bit_width) ?????????? */
+                /* #I6 FIX: Set 0x100 flag for signed bitfields so the ARM
+                 * backend can apply sign extension (LSL+ASR) instead of
+                 * zero extension (LSR+AND). */
+                int fld_aux = bw;
+                if (node->type && !node->type->is_unsigned)
+                    fld_aux |= 0x100;
                 irgen_lvalue_addr(g, node);
-                ir_emit(g->fn, IR_LOAD_FLD, bo, 0, bw);
+                ir_emit(g->fn, IR_LOAD_FLD, bo, 0, fld_aux);
             } else if (node->type && node->type->kind == TYPE_ARRAY) {
                 /* ????????????????? data[]??????????????????????????
                  * ??????????? IR_LOAD_IDX???? AST_ARRAY_ACCESS ???????????

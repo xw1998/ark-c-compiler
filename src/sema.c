@@ -10,9 +10,11 @@
 
 static int g_errors;
 
+/* Forward declarations */
 static void sema_decl(AstNode *node);
 static void sema_stmt(AstNode *node);
 static Type *sema_expr(AstNode *node);
+static AstNode *sema_implicit_cast(AstNode *node, Type *target);
 
 static void err(AstNode *node, const char *msg) {
     ark_log("[sema] line %d: %s\n", node ? node->line : 0, msg);
@@ -130,9 +132,39 @@ Type *usual_arith_conv(Type *lt, Type *rt) {
     }
 }
 
-/* ?????????????????? 1 ????????0 ??????????????????
- * ???????????????int x = 1+2;????case ??????????????????
- * ??? long long ???????? 64 ????????LLONG_MAX ??????????????? */
+/* Bug-I1: Determine whether a cast from src to dst would change the IR
+ * representation (i.e., is not a no-op on the target machine).
+ * Returns 1 if an explicit AST_CAST node must be inserted, 0 otherwise.
+ * - float <-> int:   always needs a cast (IR_I2F / IR_F2I)
+ * - int(32b) <-> ll(64b): needs a cast (widen / narrow stack slots)
+ * - same-size int <-> int: no-op (signedness change is represented in type only)
+ * - float <-> double:  not handled yet (irgen lacks float<->double promotion);
+ *   skip cast so current float arithmetic keeps working.
+ * - non-arithmetic types: no-op (pointer/struct/etc. casts are address passes) */
+static int cast_changes_repr(Type *src, Type *dst) {
+    int src_float, dst_float;
+    if (!src || !dst) return 0;
+    if (!type_is_arith(src) || !type_is_arith(dst)) return 0;
+    src_float = (src->kind == TYPE_FLOAT || src->kind == TYPE_DOUBLE);
+    dst_float = (dst->kind == TYPE_FLOAT || dst->kind == TYPE_DOUBLE);
+    if (src_float && !dst_float) return 1;        /* float -> int */
+    if (!src_float && dst_float) return 1;        /* int -> float */
+    if (src_float && dst_float) return 0;          /* float <-> double: skip */
+    /* both are integer types: cast only if size differs */
+    return (type_size(src) != type_size(dst));
+}
+
+/* Bug-I1: Insert an implicit AST_CAST wrapping `node` to convert it to
+ * `target` type, following C99 6.3 (assignment / usual arithmetic
+ * conversions). Returns `node` unchanged when no actual conversion is
+ * needed so that downstream IR is not polluted by redundant cast nodes. */
+static AstNode *sema_implicit_cast(AstNode *node, Type *target) {
+    if (!node || !target) return node;
+    if (!node->type) return node;
+    if (!cast_changes_repr(node->type, target)) return node;
+    return ast_cast(target, node, node->line);
+}
+
 int eval_const_expr(AstNode *node, long long *out_value) {
     long long lv, rv;
     if (!node || !out_value) return 0;
@@ -497,17 +529,25 @@ static Type *sema_expr(AstNode *node) {
             if (node->kind == AST_COMMA) {
                 if (node->u.binary.right) t = node->u.binary.right->type ? node->u.binary.right->type : type_int();
             } else {
-                /* ?????????????????????????????"???"??????????
-                 * ????????????????? int?? */
                 int op = node->u.binary.op;
                 int is_cmp = (op == (int)TOK_EQ || op == (int)TOK_NE ||
                               op == (int)TOK_LT || op == (int)TOK_GT ||
                               op == (int)TOK_LE || op == (int)TOK_GE ||
                               op == (int)TOK_AND || op == (int)TOK_OR);
+                Type *lt = node->u.binary.left  ? node->u.binary.left->type  : 0;
+                Type *rt = node->u.binary.right ? node->u.binary.right->type : 0;
+                Type *common = usual_arith_conv(lt, rt);
                 if (!is_cmp) {
-                    Type *lt = node->u.binary.left  ? node->u.binary.left->type  : 0;
-                    Type *rt = node->u.binary.right ? node->u.binary.right->type : 0;
-                    t = usual_arith_conv(lt, rt);
+                    t = common;
+                }
+                /* Bug-I1: Cast both operands to the common type so irgen sees
+                 * consistent operand types and emits proper IR_I2F / IR_F2I /
+                 * 64-bit widen instructions. Only for arithmetic operands;
+                 * pointer arithmetic (ptr + int) is left untouched. */
+                if (common && lt && rt &&
+                    type_is_arith(lt) && type_is_arith(rt)) {
+                    node->u.binary.left  = sema_implicit_cast(node->u.binary.left,  common);
+                    node->u.binary.right = sema_implicit_cast(node->u.binary.right, common);
                 }
             }
             node->type = t;
@@ -533,6 +573,13 @@ static Type *sema_expr(AstNode *node) {
         case AST_ASSIGN:
             sema_expr(node->u.binary.left);
             sema_expr(node->u.binary.right);
+            /* Bug-I1: Apply assignment conversion (C99 6.5.16.1): cast RHS
+             * to LHS type when the two differ meaningfully (e.g. int -> double,
+             * int -> long long). Same-size int<->int is a no-op cast. */
+            if (node->u.binary.left && node->u.binary.right) {
+                Type *lt = node->u.binary.left->type;
+                node->u.binary.right = sema_implicit_cast(node->u.binary.right, lt);
+            }
             node->type = node->u.binary.left->type;
             return node->type;
         case AST_FUNC_CALL: {
@@ -594,10 +641,21 @@ static Type *sema_expr(AstNode *node) {
             return node->type;
         }
         case AST_TERNARY: {
-            Type *tt;
+            Type *tt, *ft, *common;
             sema_expr(node->u.ternary.cond);
             tt = sema_expr(node->u.ternary.true_expr);
-            sema_expr(node->u.ternary.false_expr);
+            ft = sema_expr(node->u.ternary.false_expr);
+            /* Bug-I1 (B6): C99 6.5.15 - the result type is the common type
+             * of the two branches after usual arithmetic conversions. Cast
+             * both branches to the common type so irgen produces consistent
+             * code. */
+            common = usual_arith_conv(tt, ft);
+            if (common && tt && ft &&
+                type_is_arith(tt) && type_is_arith(ft)) {
+                node->u.ternary.true_expr  = sema_implicit_cast(node->u.ternary.true_expr,  common);
+                node->u.ternary.false_expr = sema_implicit_cast(node->u.ternary.false_expr, common);
+                tt = common;
+            }
             node->type = tt;
             return node->type;
         }

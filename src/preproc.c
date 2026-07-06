@@ -22,7 +22,7 @@
 #include "arkcc_config.h"
 #include "type.h"   /* type_set_pack/type_get_pack drive #pragma pack handling. */
 
-#define PP_BUF_SIZE (512 * 1024)
+#define PP_BUF_SIZE (4 * 1024 * 1024)
 /* Per-include file content buffer. Kept out of the memory pool (a static 2D
  * array indexed by include depth) so that many #include directives no longer
  * exhaust the bump allocator. STM32 vendor headers (e.g. stm32f401xe.h) can

@@ -6,22 +6,22 @@
 #include "config.h"
 #include <stdio.h>
 
-static Type ty_void   = { TYPE_VOID,   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_char   = { TYPE_CHAR,   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_short  = { TYPE_SHORT,  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_int    = { TYPE_INT,    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_long   = { TYPE_LONG,   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_llong  = { TYPE_LLONG,  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_bool   = { TYPE_BOOL,   0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_float  = { TYPE_FLOAT,  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_double = { TYPE_DOUBLE, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_uchar  = { TYPE_CHAR,   0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_ushort = { TYPE_SHORT,  0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_uint   = { TYPE_INT,    0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_ulong  = { TYPE_LONG,   0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_ullong = { TYPE_LLONG,  0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_void   = { TYPE_VOID,   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_char   = { TYPE_CHAR,   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_short  = { TYPE_SHORT,  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_int    = { TYPE_INT,    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_long   = { TYPE_LONG,   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_llong  = { TYPE_LLONG,  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_bool   = { TYPE_BOOL,   0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_float  = { TYPE_FLOAT,  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_double = { TYPE_DOUBLE, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_uchar  = { TYPE_CHAR,   0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_ushort = { TYPE_SHORT,  0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_uint   = { TYPE_INT,    0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_ulong  = { TYPE_LONG,   0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_ullong = { TYPE_LLONG,  0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 /* B2: wchar_t - passed through to gcc by host/C backend, treated as 4-byte unsigned integer */
-static Type ty_wchar  = { TYPE_WCHAR,  0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_wchar  = { TYPE_WCHAR,  0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
 Type *type_void(void)   { return &ty_void;  }
 Type *type_char(void)   { return &ty_char;  }
@@ -43,6 +43,20 @@ Type *type_pointer(Type *base) {
     t->kind = TYPE_PTR;
     t->base = base;
     return t;
+}
+
+/* F2: Create a qualified copy of a type with volatile/const flags set.
+ * Does not modify the original (important for singleton basic types).
+ * If no qualifiers are requested, returns the original type unchanged. */
+Type *type_qualified(Type *t, int is_volatile, int is_const) {
+    Type *q;
+    if (!t) return t;
+    if (!is_volatile && !is_const) return t;
+    q = (Type *)mem_pool_alloc(sizeof(Type));
+    *q = *t;  /* shallow copy all fields */
+    q->is_volatile = is_volatile;
+    q->is_const = is_const;
+    return q;
 }
 
 Type *type_array(Type *base, int size) {

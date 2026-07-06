@@ -48,6 +48,8 @@ typedef struct Type {
     int          is_packed;       /* __attribute__((packed)) */
     int          align_override;  /* __attribute__((aligned(N))) explicit alignment, 0=default */
     int          is_vla;          /* variable-length array flag (B3): runtime allocated */
+    int          is_volatile;     /* volatile type qualifier (F2) */
+    int          is_const;        /* const type qualifier (F2) */
 } Type;
 
 Type *type_void(void);
@@ -71,6 +73,7 @@ Type *type_enum(const char *tag);
 Type *type_func(Type *ret, Type **params, int pc, int variadic);
 Type *type_wchar(void);                       /* B2: wchar_t */
 Type *type_complex(Type *base);               /* B4: _Complex base (base is float/double) */
+Type *type_qualified(Type *t, int is_volatile, int is_const); /* F2: qualified copy */
 
 void  type_struct_add_field(Type *st, const char *name, Type *ft);
 void  type_struct_add_bitfield(Type *st, const char *name, Type *ft, int width);
