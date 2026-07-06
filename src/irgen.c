@@ -1035,8 +1035,18 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
                         int df = dt && (dt->kind == TYPE_FLOAT || dt->kind == TYPE_DOUBLE);
                         int si = st && type_is_integer(st);
                         int di = dt && type_is_integer(dt);
-                        if (sf && di)      ir_emit(g->fn, IR_F2I, 0, 0, 0);
-                        else if (si && df) ir_emit(g->fn, IR_I2F, 0, 0, 0);
+                        if (sf && di) {
+                            int is_dbl = (st && st->kind == TYPE_DOUBLE);
+                            int aux = is_dbl ? 0x200 : 0;
+                            if (dt && dt->is_unsigned) aux |= 0x400;
+                            ir_emit(g->fn, IR_F2I, 0, 0, aux);
+                        }
+                        else if (si && df) {
+                            int is_dbl = (dt && dt->kind == TYPE_DOUBLE);
+                            int aux = is_dbl ? 0x200 : 0;
+                            if (st && st->is_unsigned) aux |= 0x400;
+                            ir_emit(g->fn, IR_I2F, 0, 0, aux);
+                        }
                         if (dt && dt->kind == TYPE_BOOL) {
                             ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
                             ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_NE);
@@ -1536,7 +1546,12 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                 int dst_int   = dst_t && type_is_integer(dst_t);
                 if (src_float && dst_int) {
                     int is_dbl = (src_t->kind == TYPE_DOUBLE);
-                    ir_emit(g->fn, IR_F2I, 0, 0, is_dbl ? 0x200 : 0);
+                    /* F2I unsigned fix: encode unsigned flag (0x400) so ARM
+                     * backend selects __aeabi_d2uiz/__aeabi_f2uiz for unsigned
+                     * destinations instead of always using signed __aeabi_d2iz. */
+                    int aux = is_dbl ? 0x200 : 0;
+                    if (dst_t->is_unsigned) aux |= 0x400;
+                    ir_emit(g->fn, IR_F2I, 0, 0, aux);
                 }
                 else if (src_int && dst_float) {
                     int is_dbl = (dst_t->kind == TYPE_DOUBLE);
@@ -1896,8 +1911,18 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         int df = dt && (dt->kind == TYPE_FLOAT || dt->kind == TYPE_DOUBLE);
                         int si = st && type_is_integer(st);
                         int di = dt && type_is_integer(dt);
-                        if (sf && di)      ir_emit(g->fn, IR_F2I, 0, 0, 0);
-                        else if (si && df) ir_emit(g->fn, IR_I2F, 0, 0, 0);
+                        if (sf && di) {
+                            int is_dbl = (st && st->kind == TYPE_DOUBLE);
+                            int aux = is_dbl ? 0x200 : 0;
+                            if (dt && dt->is_unsigned) aux |= 0x400;
+                            ir_emit(g->fn, IR_F2I, 0, 0, aux);
+                        }
+                        else if (si && df) {
+                            int is_dbl = (dt && dt->kind == TYPE_DOUBLE);
+                            int aux = is_dbl ? 0x200 : 0;
+                            if (st && st->is_unsigned) aux |= 0x400;
+                            ir_emit(g->fn, IR_I2F, 0, 0, aux);
+                        }
                         /* _Bool ??Z????C99 6.3.1.2?? */
                         if (dt && dt->kind == TYPE_BOOL) {
                             ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);

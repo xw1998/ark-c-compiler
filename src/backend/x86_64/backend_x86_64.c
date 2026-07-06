@@ -486,13 +486,11 @@ static int x86_emit(IrProgram *prog, char *out, int cap) {
 
                 /* IR_F2I: double -> int (truncate toward zero) */
                 case IR_F2I: {
-                    int is_complex = (I->aux & 0x400) != 0;
-                    if (is_complex) {
-                        /* _Complex -> real: just discard imaginary part */
-                        asmbuf_puts(&buf, "    pop rax\n    pop rax\n    movq xmm0, rax\n");
-                    } else {
-                        asmbuf_puts(&buf, "    pop rax\n    movq xmm0, rax\n");
-                    }
+                    /* 0x400 = unsigned destination. cvttsd2si to 64-bit rax
+                     * correctly handles the full 32-bit unsigned range
+                     * (0..2^32-1 fits in a signed 64-bit int). The result
+                     * is then truncated to 32 bits by the caller. */
+                    asmbuf_puts(&buf, "    pop rax\n    movq xmm0, rax\n");
                     asmbuf_puts(&buf, "    cvttsd2si rax, xmm0\n    push rax\n");
                     break;
                 }
