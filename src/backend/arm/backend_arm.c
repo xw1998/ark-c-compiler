@@ -15,7 +15,9 @@
 #include "common.h"
 #include "config.h"
 #include "arkcc_config.h"
-#include <stdlib.h>
+/* Note: <stdlib.h> intentionally NOT included to avoid pulling in semihosting-
+ * dependent C library functions on STM32. mem_realloc (our own allocator)
+ * is used instead of realloc. */
 
 /* --- Internal helpers: emit common instruction fragments --- */
 static void emit_line(AsmBuffer *b, const char *s) {
@@ -261,9 +263,9 @@ static void emit_epilogue_return(AsmBuffer *b, int local_size,
  * Globals are placed in SRAM starting at 0x20000000; __at variables keep
  * their absolute address. Codegen emits MOVW/MOVT to load these addresses
  * instead of LDR =label (which the minimal assembler doesn't fully support). */
-static const char *g_gvar_names[2048];
-static unsigned    g_gvar_addrs[2048];
-static int         g_gvar_sizes[2048];  /* #6 FIX: track global variable sizes */
+static const char *g_gvar_names[ARM_MAX_GVARS];
+static unsigned    g_gvar_addrs[ARM_MAX_GVARS];
+static int         g_gvar_sizes[ARM_MAX_GVARS];  /* #6 FIX: track global variable sizes */
 static int         g_gvar_count = 0;
 
 /* F3/S5: Track .data/.bss boundaries for startup initialization */
@@ -306,7 +308,7 @@ static void gvar_assign(IrProgram *prog) {
     /* F3/S5: First pass - assign .data (initialized) globals to SRAM.
      * This ensures .data globals are contiguous, followed by .bss globals.
      * The startup code (__arkcc_init_globals) initializes .data and zeros .bss. */
-    for (gi = 0; gi < prog->global_count && g_gvar_count < 2048; gi++) {
+    for (gi = 0; gi < prog->global_count && g_gvar_count < ARM_MAX_GVARS; gi++) {
         IrGlobal *g = prog->globals[gi];
         int sz;
         if (g->is_extern) continue;
@@ -331,7 +333,7 @@ static void gvar_assign(IrProgram *prog) {
 
     /* Second pass - assign .bss (uninitialized/zero) globals after .data */
     g_bss_sram_start = sram;
-    for (gi = 0; gi < prog->global_count && g_gvar_count < 2048; gi++) {
+    for (gi = 0; gi < prog->global_count && g_gvar_count < ARM_MAX_GVARS; gi++) {
         IrGlobal *g = prog->globals[gi];
         int sz;
         if (g->is_extern) continue;
@@ -818,6 +820,14 @@ static char *codegen_arm(IrProgram *prog) {
                     emit_push_r0(&buf);
                     asmbuf_puts(&buf, "    PUSH {r1}\n");
                     break;
+                case IR_SEXT:
+                case IR_ZEXT:
+                case IR_CDECL64:
+                    /* x86-cdecl-specific 64-bit arg passing conversion.
+                     * ARM AAPCS passes 64-bit values in register pairs or
+                     * 8-byte aligned stack slots as a unit; no conversion
+                     * needed. Treat as no-op. */
+                    break;
                 case IR_STORE: {
                     /* aux encodes store width: 1=byte, 2=halfword, 4=word,
                      * 8=double word (two STRs), 16=complex (two 8-byte).
@@ -1223,6 +1233,56 @@ static char *codegen_arm(IrProgram *prog) {
                         emit_line(&buf, is_unsigned ? "BL __aeabi_ui2f" : "BL __aeabi_i2f");
                         emit_push_r0(&buf);
                     }
+                    break;
+                }
+                case IR_F2F: {
+                    /* float <-> float cast. On the ARM soft-float stack:
+                     *   double = [r0_low, r1_high] (2 slots, high on top)
+                     *   float  = [r0]              (1 slot)
+                     *   aux 0x200 = double->float (narrow): -1 slot
+                     *   aux 0x100 = float->double (widen):  +1 slot
+                     * AAPCS helpers: __aeabi_d2f (r0/r1 -> r0),
+                     *                __aeabi_f2d (r0 -> r0/r1). */
+                    int src_dbl = (I->aux & 0x200) != 0;
+                    int dst_dbl = (I->aux & 0x100) != 0;
+#if ARKCC_FEATURE_FPU_HW
+                    if (g_config.enable_fpu_hw) {
+                        if (src_dbl && !dst_dbl) {
+                            /* double -> float */
+                            emit_pop_r1(&buf);
+                            emit_pop_r0(&buf);
+                            emit_line(&buf, "VMOV s0, r0");
+                            emit_line(&buf, "VMOV s1, r1");
+                            emit_line(&buf, "VCVT.F32.F64 s0, d0");
+                            emit_line(&buf, "VMOV r0, s0");
+                            emit_push_r0(&buf);
+                        } else if (!src_dbl && dst_dbl) {
+                            /* float -> double */
+                            emit_pop_r0(&buf);
+                            emit_line(&buf, "VMOV s0, r0");
+                            emit_line(&buf, "VCVT.F64.F32 d0, s0");
+                            emit_line(&buf, "VMOV r0, s0");
+                            emit_line(&buf, "VMOV r1, s1");
+                            emit_push_r0(&buf);
+                            asmbuf_puts(&buf, "    PUSH {r1}\n");
+                        }
+                        break;
+                    }
+#endif
+                    if (src_dbl && !dst_dbl) {
+                        /* double -> float */
+                        emit_pop_r1(&buf);
+                        emit_pop_r0(&buf);
+                        emit_line(&buf, "BL __aeabi_d2f");
+                        emit_push_r0(&buf);
+                    } else if (!src_dbl && dst_dbl) {
+                        /* float -> double */
+                        emit_pop_r0(&buf);
+                        emit_line(&buf, "BL __aeabi_f2d");
+                        emit_push_r0(&buf);
+                        asmbuf_puts(&buf, "    PUSH {r1}\n");
+                    }
+                    /* same-size: no-op */
                     break;
                 }
                 case IR_FCMP: {
@@ -4376,6 +4436,10 @@ static int arm_emit(IrProgram *m, char *out, int cap) {
 static void arm_save_syms(ArmAsm *a);  /* forward decl */
 static void arm_save_relocs(ArmAsm *a);  /* Bug-A2: forward decl */
 
+/* STM32 debug flag: set via UART "debug syms" command to dump symbol map.
+ * On host, getenv("ARKCC_DUMP_SYMS") is used instead. */
+int g_arm_dump_syms = 0;
+
 static int arm_assemble(const char *asm_text, unsigned char *out, int cap) {
     ArmAsm a;
     a.src = asm_text;
@@ -4399,16 +4463,24 @@ static int arm_assemble(const char *asm_text, unsigned char *out, int cap) {
      * so that the global symbol/reloc arrays are populated before the
      * object file is written. */
     arm_save_relocs(&a);
-    /* Debug: dump label addresses to stderr if ARKCC_DUMP_SYMS is set */
+    /* Debug: dump label addresses if ARKCC_DUMP_SYMS is set.
+     * On STM32 (ARKCC_PROFILE_STM32_MIN), getenv() is not available, so we
+     * use a global flag that can be set via UART command instead. */
+#if ARKCC_PROFILE != ARKCC_PROFILE_STM32_MIN
     if (getenv("ARKCC_DUMP_SYMS")) {
-        int di;
-        ark_log("=== ARM Symbol Map (%d labels) ===\n", a.label_count);
-        for (di = 0; di < a.label_count; di++) {
-            if (a.labels[di].name[0] != '.')
-                ark_log("  %-40s 0x%04X (%d)\n",
-                        a.labels[di].name, a.labels[di].addr, a.labels[di].addr);
+#else
+    if (g_arm_dump_syms) {  /* set by UART "debug syms" command on STM32 */
+#endif
+        {
+            int di;
+            ark_log("=== ARM Symbol Map (%d labels) ===\n", a.label_count);
+            for (di = 0; di < a.label_count; di++) {
+                if (a.labels[di].name[0] != '.')
+                    ark_log("  %-40s 0x%04X (%d)\n",
+                            a.labels[di].name, a.labels[di].addr, a.labels[di].addr);
+            }
+            ark_log("=== End Symbol Map ===\n");
         }
-        ark_log("=== End Symbol Map ===\n");
     }
     /* Bug-A2: Don't fail on unresolved cross-object references.
      * The error_count from resolve_refs_a includes refs to external
@@ -4432,7 +4504,7 @@ typedef struct ArmSym {
     int   type;     /* 0=code label, 1=data/global */
 } ArmSym;
 
-static ArmSym  g_arm_syms[4096];
+static ArmSym  g_arm_syms[ARM_MAX_SYMBOLS] __attribute__((section(".ark_buf")));
 static int     g_arm_sym_count = 0;
 
 /* Bug-A2: Relocation table for cross-object references.
@@ -4445,14 +4517,14 @@ typedef struct ArmReloc {
     int   type;    /* 1=BL(T1), 2=B.W, 3=B<cond>.W, 4=R_ARM_ABS32 (.word) */
 } ArmReloc;
 
-static ArmReloc g_arm_relocs[4096];
+static ArmReloc g_arm_relocs[ARM_MAX_RELOCS] __attribute__((section(".ark_buf")));
 static int      g_arm_reloc_count = 0;
 
 /* Save symbol table after assembly */
 static void arm_save_syms(ArmAsm *a) {
     int i;
     g_arm_sym_count = 0;
-    for (i = 0; i < a->label_count && g_arm_sym_count < 4096; i++) {
+    for (i = 0; i < a->label_count && g_arm_sym_count < ARM_MAX_SYMBOLS; i++) {
         /* Skip local labels (starting with .L) */
         if (a->labels[i].name[0] == '.' && a->labels[i].name[1] == 'L') continue;
         g_arm_syms[g_arm_sym_count].name   = a->labels[i].name;
@@ -4468,7 +4540,7 @@ static void arm_save_syms(ArmAsm *a) {
 static void arm_save_relocs(ArmAsm *a) {
     int i;
     g_arm_reloc_count = 0;
-    for (i = 0; i < a->ref_count && g_arm_reloc_count < 4096; i++) {
+    for (i = 0; i < a->ref_count && g_arm_reloc_count < ARM_MAX_RELOCS; i++) {
         AsmRef *r = &a->refs[i];
         int addr = find_label_a(a, r->name);
         if (addr < 0) {

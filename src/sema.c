@@ -299,6 +299,17 @@ static void sema_func(AstNode *node) {
     }
     s->param_count = node->u.func.param_count;
     s->is_variadic = node->u.func.is_variadic;
+    /* Store parameter types so call sites can do 64-bit arg promotion
+     * (int -> long long) based on the PARAMETER type, not the arg type.
+     * Each params[i] is an AST_VAR_DECL whose u.var.var_type is the
+     * parameter's declared type. */
+    if (node->u.func.param_count > 0 && node->u.func.params) {
+        s->param_types = (Type **)mem_pool_alloc(sizeof(Type *) * node->u.func.param_count);
+        for (i = 0; i < node->u.func.param_count; i++) {
+            AstNode *pp = node->u.func.params[i];
+            s->param_types[i] = (pp && pp->u.var.var_type) ? pp->u.var.var_type : 0;
+        }
+    }
     s->svc_num = node->u.func.svc_num;
     /* ???? ARM Compiler 5 ?????????????????? irgen ???????? IrFunc??
      * ??? OR ????????????????????????????????????????????

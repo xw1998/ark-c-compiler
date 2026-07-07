@@ -42,28 +42,31 @@ static void uart_puts(const char *s) {
     HAL_UART_Transmit_Wrapper((const unsigned char *)s, n);
 }
 
-/* ???? printf ?????%d %s %x %c */
+/* ark_log: minimal printf supporting %d %s %x %c.
+ * Uses stdarg.h (works with both GCC and armcc5).
+ */
+#include <stdarg.h>
+
 void ark_log(const char *fmt, ...) {
     char buf[256];
     int n = 0;
     const char *p = fmt;
-    /* va_list ??????????????????????? stdarg.h????????I??? */
-    __builtin_va_list ap;
-    __builtin_va_start(ap, fmt);
+    va_list ap;
+    va_start(ap, fmt);
     while (*p && n < (int)sizeof(buf) - 32) {
         if (*p == '%' && p[1]) {
             char c = p[1]; p += 2;
             if (c == 'd') {
-                int v = __builtin_va_arg(ap, int);
+                int v = va_arg(ap, int);
                 n += ark_itoa(v, &buf[n], 10);
             } else if (c == 'x') {
-                int v = __builtin_va_arg(ap, int);
+                int v = va_arg(ap, int);
                 n += ark_itoa(v, &buf[n], 16);
             } else if (c == 's') {
-                const char *s = __builtin_va_arg(ap, const char *);
+                const char *s = va_arg(ap, const char *);
                 while (*s && n < (int)sizeof(buf) - 1) buf[n++] = *s++;
             } else if (c == 'c') {
-                int v = __builtin_va_arg(ap, int);
+                int v = va_arg(ap, int);
                 buf[n++] = (char)v;
             } else {
                 buf[n++] = c;
@@ -72,7 +75,7 @@ void ark_log(const char *fmt, ...) {
             buf[n++] = *p++;
         }
     }
-    __builtin_va_end(ap);
+    va_end(ap);
     buf[n] = 0;
     uart_puts(buf);
 }

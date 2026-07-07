@@ -26,8 +26,9 @@ SPI_HandleTypeDef  hspi1;
 
 /* === ArkCC dedicated large buffers: placed in dedicated AXI SRAM sections ===
  * The scatter file links .ark_heap / .ark_code sections to AXI SRAM starting at 0x24000000.
+ * Sizes reduced to fit in 512KB AXI SRAM (heap 64K→32K, code 32K unchanged).
  */
-__attribute__((section(".ark_heap"))) unsigned char ark_heap_buffer[64 * 1024];
+__attribute__((section(".ark_heap"))) unsigned char ark_heap_buffer[32 * 1024];
 __attribute__((section(".ark_code"))) unsigned char ark_code_buffer[32 * 1024];
 
 /* === UART wrapper required by platform_stm32.c === */

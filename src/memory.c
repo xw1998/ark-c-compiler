@@ -5,7 +5,9 @@
 #include "memory.h"
 #include "platform.h"
 
-static unsigned char g_pool[ARK_POOL_SIZE];
+/* Place the large pool in .ark_buf section so the linker script can put it
+ * in AXI SRAM (0x24000000) on STM32H743. On host builds this is a no-op. */
+static unsigned char g_pool[ARK_POOL_SIZE] __attribute__((section(".ark_buf")));
 static int           g_offset = 0;
 
 void mem_pool_reset(void) {

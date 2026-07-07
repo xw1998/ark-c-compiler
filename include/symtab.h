@@ -28,6 +28,7 @@ typedef struct Symbol {
     int            is_defined;
     int            param_count;
     int            is_variadic;
+    Type         **param_types;  /* function parameter types (parallel to param_count) */
     int            is_static;
     int            is_extern;
     int            enum_value;

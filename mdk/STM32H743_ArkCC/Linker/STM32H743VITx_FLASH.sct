@@ -1,12 +1,12 @@
-; Ark C Compiler - MDK STM32H743 - scatter ÎÄ¼þ
-; STM32H743VI: 2 MB Flash @ 0x08000000, 1 MB SRAM ×ÜÁ¿
+; Ark C Compiler - MDK STM32H743 - scatter ï¿½Ä¼ï¿½
+; STM32H743VI: 2 MB Flash @ 0x08000000, 1 MB SRAM ï¿½ï¿½ï¿½ï¿½
 ;   DTCM 128KB @ 0x20000000
 ;   AXI  512KB @ 0x24000000
-;   SRAM1+2+3+4 ¹²Ô¼ 384KB (±¾¹¤³ÌÎ´Ê¹ÓÃ)
+;   SRAM1+2+3+4 ï¿½ï¿½Ô¼ 384KB (ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Î´Ê¹ï¿½ï¿½)
 ;
-; ER_IROM1 : Flash ´úÂë
-; RW_IRAM1 : DTCM ¸ø .data/.bss/stack/heap
-; RW_AXI   : AXI SRAM ¸ø ArkCC µÄ¶ÑÓë´úÂë»º³å (.ark_heap / .ark_code)
+; ER_IROM1 : Flash ï¿½ï¿½ï¿½ï¿½
+; RW_IRAM1 : DTCM ï¿½ï¿½ .data/.bss/stack/heap
+; RW_AXI   : AXI SRAM ï¿½ï¿½ ArkCC ï¿½Ä¶ï¿½ï¿½ï¿½ï¿½ï¿½ë»ºï¿½ï¿½ (.ark_heap / .ark_code)
 
 LR_IROM1 0x08000000 0x00200000  {
   ER_IROM1 0x08000000 0x00200000  {
@@ -16,14 +16,15 @@ LR_IROM1 0x08000000 0x00200000  {
     .ANY (+XO)
   }
 
-  ; DTCM ¡ª¡ª RW/ZI¡¢Õ»¡¢¶Ñ
+  ; DTCM ï¿½ï¿½ï¿½ï¿½ RW/ZIï¿½ï¿½Õ»ï¿½ï¿½ï¿½ï¿½
   RW_IRAM1 0x20000000 0x00020000  {
     .ANY (+RW +ZI)
   }
 
-  ; AXI SRAM ¡ª¡ª ArkCC ×¨ÓÃ¶Î
+  ; AXI SRAM ï¿½ï¿½ï¿½ï¿½ ArkCC ×¨ï¿½Ã¶ï¿½
   RW_AXI 0x24000000 0x00080000  {
     *(.ark_heap)
     *(.ark_code)
+    *(.ark_buf)
   }
 }

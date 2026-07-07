@@ -138,6 +138,13 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                 case IR_SWAP:
                     asmbuf_puts(&buf, "    lw t0, 0(sp)\n    lw t1, 4(sp)\n    sw t1, 0(sp)\n    sw t0, 4(sp)\n");
                     break;
+                case IR_SEXT:
+                case IR_ZEXT:
+                case IR_CDECL64:
+                    /* x86-cdecl-specific 64-bit arg passing conversion.
+                     * RISC-V ilp32 passes 64-bit values in register pairs;
+                     * no conversion needed. Treat as no-op. */
+                    break;
                 case IR_STORE:
                     asmbuf_puts(&buf, "    lw t0, 0(sp)\n    addi sp, sp, 4\n    sw t0, -");
                     asmbuf_int(&buf, 16 + I->val);

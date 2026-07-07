@@ -4,7 +4,8 @@
 #include "type.h"
 #include "memory.h"
 #include "config.h"
-#include <stdio.h>
+/* Note: <stdio.h> intentionally NOT included - no stdio functions used in
+ * type.c, and we want to avoid pulling in semihosting on STM32. */
 
 static Type ty_void   = { TYPE_VOID,   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 static Type ty_char   = { TYPE_CHAR,   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };

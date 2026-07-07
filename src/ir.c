@@ -3,7 +3,8 @@
  */
 #include "ir.h"
 #include "memory.h"
-#include <stdio.h>
+/* Note: <stdio.h> intentionally NOT included - no stdio functions used in
+ * ir.c, and we want to avoid pulling in semihosting on STM32. */
 
 #define IR_INIT_CAP 64
 
@@ -238,6 +239,7 @@ const char *ir_op_name(IrOp op) {
         case IR_FCMP:         return "FCMP";
         case IR_F2I:          return "F2I";
         case IR_I2F:          return "I2F";
+        case IR_F2F:          return "F2F";
         case IR_ASM:          return "ASM";
         case IR_SVC:          return "SVC";
         case IR_DIV:          return "DIV";
@@ -257,6 +259,10 @@ const char *ir_op_name(IrOp op) {
         case IR_SIMD_SUB16:   return "SIMD_SUB16";
         case IR_SIMD_ADD8:    return "SIMD_ADD8";
         case IR_SIMD_SUB8:    return "SIMD_SUB8";
+        case IR_SWAP:         return "SWAP";
+        case IR_SEXT:         return "SEXT";
+        case IR_ZEXT:         return "ZEXT";
+        case IR_CDECL64:      return "CDECL64";
         default:              return "NOP";
     }
 }

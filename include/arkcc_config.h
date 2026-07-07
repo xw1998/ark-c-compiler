@@ -166,7 +166,7 @@
  * ========================================================================= */
 #ifndef ARK_POOL_SIZE
 # if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
-#   define ARK_POOL_SIZE          (256 * 1024)    /* 256 KB arena for STM32 */
+#   define ARK_POOL_SIZE          (64 * 1024)     /* 64 KB arena for STM32 (was 128K to fit 512KB AXI) */
 # else
 #   define ARK_POOL_SIZE          (64 * 1024 * 1024)  /* 64 MB for host */
 # endif
@@ -180,16 +180,71 @@
 #endif
 #ifndef ARK_ASM_BUF_SIZE
 # if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
-#   define ARK_ASM_BUF_SIZE      (128 * 1024)     /* 128 KB asm buffer */
+#   define ARK_ASM_BUF_SIZE      (64 * 1024)      /* 64 KB asm buffer */
 # else
 #   define ARK_ASM_BUF_SIZE      (8 * 1024 * 1024)  /* 8 MB asm buffer */
 # endif
 #endif
 #ifndef ARK_CODE_BUF_SIZE
 # if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
-#   define ARK_CODE_BUF_SIZE     (64 * 1024)      /* 64 KB code buffer */
+#   define ARK_CODE_BUF_SIZE     (32 * 1024)      /* 32 KB code buffer */
 # else
 #   define ARK_CODE_BUF_SIZE     (4 * 1024 * 1024)  /* 4 MB code buffer */
+# endif
+#endif
+#ifndef ARK_LINK_BUF_SIZE
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARK_LINK_BUF_SIZE     (4 * 1024)       /* 4 KB (link mode unused on STM32) */
+# else
+#   define ARK_LINK_BUF_SIZE     (256 * 1024)     /* 256 KB */
+# endif
+#endif
+#ifndef ARK_OBJ_BUF_SIZE
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARK_OBJ_BUF_SIZE      (4 * 1024)       /* 4 KB (object mode unused on STM32) */
+# else
+#   define ARK_OBJ_BUF_SIZE      (ARK_ASM_BUF_SIZE + 16)
+# endif
+#endif
+
+/* Preprocessor buffer sizes (used by preproc.c). STM32 uses smaller buffers
+ * to fit in the AXI SRAM budget. */
+#ifndef PP_BUF_SIZE
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define PP_BUF_SIZE           (64 * 1024)      /* 64 KB preprocessed output */
+# else
+#   define PP_BUF_SIZE           (4 * 1024 * 1024) /* 4 MB */
+# endif
+#endif
+#ifndef PP_MAX_INC_DEPTH
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define PP_MAX_INC_DEPTH      8                /* 8 levels of #include nesting */
+# else
+#   define PP_MAX_INC_DEPTH      32
+# endif
+#endif
+
+/* ARM backend symbol/relocation table sizes. STM32 self-hosted builds only
+ * compile small programs, so 1024 entries are plenty. */
+#ifndef ARM_MAX_SYMBOLS
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARM_MAX_SYMBOLS       1024
+# else
+#   define ARM_MAX_SYMBOLS       4096
+# endif
+#endif
+#ifndef ARM_MAX_RELOCS
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARM_MAX_RELOCS        1024
+# else
+#   define ARM_MAX_RELOCS        4096
+# endif
+#endif
+#ifndef ARM_MAX_GVARS
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARM_MAX_GVARS         512
+# else
+#   define ARM_MAX_GVARS         2048
 # endif
 #endif
 

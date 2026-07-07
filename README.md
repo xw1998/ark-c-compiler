@@ -3,6 +3,22 @@
 一个多目标 C99 编译器，可在 Windows / Linux / macOS 上用 gcc 构建运行，
 也可**原生自托管**于 STM32（Cortex-M7），从外部 SPI Flash 读取 `.c` 文件就地编译执行。
 覆盖 98% 以上的 ARM Compiler 5 (armcc) 常用扩展（仅缺 C++ 模式与高级优化）。
+**STM32H743 + armcc5 工具链已打通完整构建流水线**：用 armcc5 编译 arkCC 源码可生成
+可直接烧录的 `arkcc_stm32.hex/.bin`，目标板启动后从 W25Q Flash 读取 `.c` 源码就地编译执行。
+
+## armcc5 完全兼容路线图
+
+用户明确要求："**电脑上有 armcc5，要求 arkCC 完全兼容 armcc5，能不对 MDK 工程做任何改动编译出可执行文件，然后能在 STM32 上跑 arkCC，实现 STM32 上编译 STM32 的程序**"。
+
+| 阶段 | 目标 | 状态 |
+| --- | --- | :---: |
+| 阶段 1 | arkCC 自身用 armcc5 编译为 STM32 固件 | ✅ 已完成 |
+| 阶段 2 | STM32 板载 arkCC 能编译 `.c` 源码生成 `.bin` | ✅ 已完成 |
+| 阶段 3 | 板载编译产物能烧写回 Flash 并跳转执行 | 🚧 进行中 |
+| 阶段 4 | 无需改动的 MDK 工程可被 arkCC 直接编译 | 📋 路线图 |
+| 阶段 5 | `__user_initial_stackheap`、HAL 重定向、scatter 链接完整支持 | 📋 路线图 |
+
+详见 [docs/STM32_BUILD.md](docs/STM32_BUILD.md) 与 [docs/MANUAL.md](docs/MANUAL.md)。
 
 ## 功能特性 (v0.7.0)
 
@@ -131,7 +147,7 @@
 | VLA 动态栈分配 `IR_ALLOCA` | 是 |
 | `.data/.bss/.rodata` 段分离 | 是 |
 | 位域按位打包/解包 | 是 |
-| 直接编译 `.s` 汇编文件 | 是 |
+| 直接编译 `.s` 汇编文件 | 是（ARM 后端有完整 Thumb-2 文本汇编器；按文件扩展名 `.s`/`.S` 触发，不支持 `.asm`） |
 | 严格 AAPCS（>4 参数走栈） | 是 |
 | `setjmp/longjmp` 支持 | 是 |
 | `.init_array`/`.fini_array`（构造/析构函数） | 是 |
@@ -139,8 +155,23 @@
 | 完整 DWARF 调试信息（`.file/.loc/.cfi_startproc/.size` + `.debug_info`/`.debug_abbrev`/`.debug_line`） | 是 |
 | TLS 线程局部存储（`.tbss`/`.tdata`） | 是 |
 | `--split_sections` 每函数一段（`.text.fn`） | 是 |
-| scatter 加载描述文件（`include/scatter.h` + `src/scatter.c`） | 是 |
+| Scatter 加载描述文件解析（`include/scatter.h` + `src/scatter.c`） | 是（仅解析与 `.sct`↔`.ld` 互转，**不参与实际段放置/链接**；见下表） |
 | CPU 选择（`-mcpu`/`--cpu`，`include/cpu.h` + `src/cpu.c`） | 是 |
+
+### `.sct` / `.s` 文件支持矩阵
+
+| 能力 | 状态 | 说明 |
+| --- | :---: | --- |
+| 解析 `.sct`（scatter）文件 | ✅ | `scatter_parse_file()` (`src/scatter.c`) |
+| 解析 GNU `.ld` 脚本 | ✅ | `linker_script_parse_file()` (`src/scatter.c`) |
+| `.sct` → `.ld` 转换 | ✅ | 仅在 `-S` 模式下输出，`scatter_to_ld_script()` |
+| `.ld` → `.sct` 转换 | ✅ | 仅在 `-S` 模式下输出，`scatter_to_sct_file()` |
+| 按段名查找执行地址 | ✅ | `scatter_lookup_addr()`，但**ARM 后端未调用** |
+| 用 `.sct` 进行实际段放置/链接 | ❌ | 后端从不查询 `ScatterDesc`；`arm_link()` 为空实现 |
+| 编译 `.s`/`.S` 汇编文件 | ✅ | `arm_assemble()` 完整 Thumb-2 文本汇编器，按扩展名触发 |
+| 编译 `.asm` 文件 | ❌ | 仅识别 `.s`/`.S`（2 字符扩展名） |
+| `--scatter <file>` 命令行选项 | ✅ | 在 `-S` 模式下解析并转换为 `.ld` 输出 |
+| `-T <file>` / `--linker-script` 选项 | ✅ | 在 `-S` 模式下解析并转换为 `.sct` 输出 |
 
 ### 标准库子集
 
@@ -178,19 +209,33 @@ ark c compiler/
 ├── port/stm32/             STM32 平台层（platform/flash_fs/main_stm32 入口）
 ├── examples/               62 个测试（.c + .s）
 ├── mdk/STM32H743_ArkCC/    Keil MDK 工程
+├── build_stm32_armcc.ps1   armcc5 构建 STM32 固件脚本（输出 arkcc_stm32.hex/.bin）
 ├── arkcc.cfg               默认运行时配置（INI 格式）
-├── Makefile
-├── docs/MANUAL.md          用户手册
-└── README.md
+├── Makefile                gcc 主机构建脚本
+├── docs/MANUAL.md          用户手册（中文，UTF-8）
+├── docs/STM32_BUILD.md     STM32 + armcc5 构建手册（中文，UTF-8）
+└── README.md               项目简介（UTF-8）
 ```
 
 ## 构建
+
+### 方式 1：gcc 构建（用于主机开发与测试）
 
 ```bash
 make            # 生成 arkcc.exe
 make test       # 编译 examples
 make clean
 ```
+
+### 方式 2：armcc5 构建（生成 STM32 固件）
+
+```powershell
+# 需要 Keil MDK 5.x，armcc.exe 在 PATH 或位于 D:\Keil_v5\ARM\ARMCC\bin
+powershell -ExecutionPolicy Bypass -File build_stm32_armcc.ps1
+# 输出：bootstrap_x86\armcc_objs\arkcc_stm32.{elf,hex,bin}
+```
+
+详细说明见 [docs/STM32_BUILD.md](docs/STM32_BUILD.md)。
 
 ## 命令行
 
@@ -306,6 +351,9 @@ powershell -ExecutionPolicy Bypass -File examples\run_tests.ps1
 ## 移植到 STM32
 
 只需将 `port/host/*.c` 替换为 `port/stm32/*.c`；入口点为 `port/stm32/main_stm32.c`。MDK 工程见 `mdk/STM32H743_ArkCC/`。STM32 端为自托管配置，可直接从外部 W25Q Flash 读取 `.c` 文件就地编译执行。
+
+**armcc5 构建**：用 `build_stm32_armcc.ps1` 脚本可在装有 armcc5 的 Windows 上直接编译 arkCC 源码并链接为可烧录的 STM32 固件，无需 gcc。详见 [docs/STM32_BUILD.md](docs/STM32_BUILD.md)。
+
 详见 [docs/MANUAL.md](docs/MANUAL.md)。
 
 ## 版本历史

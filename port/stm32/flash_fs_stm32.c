@@ -74,7 +74,24 @@ int fs_list_files(void) {
 /* On STM32: write to Flash or return to the caller.
  * Placeholder implementation: returns the compilation result via callback or a global pointer.
  * When porting, replace this with Flash programming or a RAM copy. */
-extern void arkcc_on_output(const unsigned char *data, int len);
+
+/* Default weak implementation of arkcc_on_output: dumps hex over UART via ark_log.
+ * The user (e.g. MDK main.c) can override this by providing a strong definition. */
+__attribute__((weak)) void arkcc_on_output(const unsigned char *data, int len) {
+    int i;
+    for (i = 0; i < len; i++) {
+        char hex[4];
+        int v = data[i];
+        int hi = (v >> 4) & 0xf;
+        int lo = v & 0xf;
+        hex[0] = (char)(hi < 10 ? '0' + hi : 'A' + hi - 10);
+        hex[1] = (char)(lo < 10 ? '0' + lo : 'A' + lo - 10);
+        hex[2] = ' ';
+        hex[3] = 0;
+        ark_log("%s", hex);
+    }
+    ark_log("\n");
+}
 
 int fs_write_file(const char *path, const unsigned char *data, int len) {
     (void)path;

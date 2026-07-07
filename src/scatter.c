@@ -23,7 +23,7 @@
 #include "memory.h"
 #include "platform.h"
 #include "common.h"
-#include <stdio.h>
+#include "flash_fs.h"
 #include <stdarg.h>
 #include <string.h>
 #include <ctype.h>
@@ -118,26 +118,22 @@ static const char *collect_braces(const char *start, char **out_buf, int *out_le
 }
 
 int scatter_parse_file(const char *path, ScatterDesc *out) {
-    FILE *fp;
-    long fsize;
     char *src;
     const char *p;
     int read;
 
     if (!path || !out) return 1;
-    fp = fopen(path, "rb");
-    if (!fp) {
+    /* Use fs_read_file() abstraction (host=stdio, STM32=W25Q flash) to avoid
+     * pulling in semihosting-dependent C library functions on STM32. */
+    {
+        int cap = ARK_SRC_BUF_SIZE;
+        src = (char *)mem_pool_alloc(cap);
+        read = fs_read_file(path, src, cap);
+    }
+    if (read <= 0) {
         ark_log("[scatter] cannot open %s\n", path);
         return 1;
     }
-    fseek(fp, 0, SEEK_END);
-    fsize = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
-    if (fsize <= 0) { fclose(fp); return 1; }
-    src = (char *)mem_pool_alloc((int)fsize + 1);
-    read = (int)fread(src, 1, (size_t)fsize, fp);
-    fclose(fp);
-    if (read <= 0) return 1;
     src[read] = 0;
 
     p = src;
@@ -483,26 +479,22 @@ static const char *parse_ld_sections(const char *p, ScatterDesc *out) {
 }
 
 int linker_script_parse_file(const char *path, ScatterDesc *out) {
-    FILE *fp;
-    long fsize;
     char *src;
     const char *p;
     int read;
 
     if (!path || !out) return 1;
-    fp = fopen(path, "rb");
-    if (!fp) {
+    /* Use fs_read_file() abstraction (host=stdio, STM32=W25Q flash) to avoid
+     * pulling in semihosting-dependent C library functions on STM32. */
+    {
+        int cap = ARK_SRC_BUF_SIZE;
+        src = (char *)mem_pool_alloc(cap);
+        read = fs_read_file(path, src, cap);
+    }
+    if (read <= 0) {
         ark_log("[ld] cannot open %s\n", path);
         return 1;
     }
-    fseek(fp, 0, SEEK_END);
-    fsize = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
-    if (fsize <= 0) { fclose(fp); return 1; }
-    src = (char *)mem_pool_alloc((int)fsize + 1);
-    read = (int)fread(src, 1, (size_t)fsize, fp);
-    fclose(fp);
-    if (read <= 0) return 1;
     src[read] = 0;
 
     p = src;
@@ -539,18 +531,75 @@ unsigned scatter_lookup_addr(const ScatterDesc *desc, const char *section_name) 
 }
 
 /* snprintf-style append: writes to buf at *off (up to cap), returns the number
- * of chars that would have been written (excluding NUL). */
+ * of chars that would have been written (excluding NUL).
+ * Custom implementation to avoid pulling in vsnprintf (semihosting) on STM32.
+ * Supports only the format specifiers used by scatter.c: %s, %X (and %%).
+ * Width specifiers (e.g. %08X) are NOT supported. */
 static int put_fmt(char *buf, int cap, int *off, const char *fmt, ...) {
     va_list ap;
-    int n;
+    int n = 0;
+    const char *p;
     va_start(ap, fmt);
-    if (buf && *off < cap) {
-        n = vsnprintf(buf + *off, cap - *off, fmt, ap);
-    } else {
-        n = vsnprintf(NULL, 0, fmt, ap);
+    p = fmt;
+    while (*p) {
+        if (*p == '%' && p[1]) {
+            char c = p[1];
+            p += 2;
+            if (c == 's') {
+                const char *s = va_arg(ap, const char *);
+                if (!s) s = "(null)";
+                while (*s) {
+                    if (buf && *off + n < cap - 1) buf[*off + n] = *s;
+                    n++; s++;
+                }
+            } else if (c == 'X') {
+                unsigned int v = (unsigned int)va_arg(ap, int);
+                char tmp[8];
+                int k = 0;
+                const char *hex = "0123456789ABCDEF";
+                if (v == 0) tmp[k++] = '0';
+                while (v && k < 8) { tmp[k++] = hex[v & 0xF]; v >>= 4; }
+                while (k > 0) {
+                    k--;
+                    if (buf && *off + n < cap - 1) buf[*off + n] = tmp[k];
+                    n++;
+                }
+            } else if (c == 'd') {
+                int v = va_arg(ap, int);
+                char tmp[12];
+                int k = 0, neg = 0;
+                unsigned int u;
+                if (v < 0) { neg = 1; u = (unsigned int)(-v); } else u = (unsigned int)v;
+                if (u == 0) tmp[k++] = '0';
+                while (u && k < 11) { tmp[k++] = (char)('0' + (u % 10)); u /= 10; }
+                if (neg) tmp[k++] = '-';
+                while (k > 0) {
+                    k--;
+                    if (buf && *off + n < cap - 1) buf[*off + n] = tmp[k];
+                    n++;
+                }
+            } else if (c == 'c') {
+                int v = va_arg(ap, int);
+                if (buf && *off + n < cap - 1) buf[*off + n] = (char)v;
+                n++;
+            } else if (c == '%') {
+                if (buf && *off + n < cap - 1) buf[*off + n] = '%';
+                n++;
+            } else {
+                /* Unknown specifier: emit literally */
+                if (buf && *off + n < cap - 1) buf[*off + n] = '%';
+                n++;
+                if (buf && *off + n < cap - 1) buf[*off + n] = c;
+                n++;
+            }
+        } else {
+            if (buf && *off + n < cap - 1) buf[*off + n] = *p;
+            n++;
+            p++;
+        }
     }
     va_end(ap);
-    if (n < 0) return -1;
+    if (buf && *off + n < cap) buf[*off + n] = 0;
     *off += n;
     return n;
 }

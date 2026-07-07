@@ -23,6 +23,7 @@
 13. [附录 A：内部数据流](#附录-a内部数据流)
 14. [附录 B：术语表](#附录-b术语表)
 15. [附录 C：源码与文档编码规范](#附录-c源码与文档编码规范)
+16. [附录 D：armcc5 工具链与 MDK 构建详解](#附录-darmcc5-工具链与-mdk-构建详解)
 
 ---
 
@@ -429,6 +430,30 @@ CPU 选择在 `include/cpu.h` + `src/cpu.c` 中实现，会自动设置相应预
 
 ARM 后端可解析 armcc 风格的 Scatter 文件（`.sct`），实现位于 `include/scatter.h` + `src/scatter.c`。Scatter 文件描述各段（`.text`/`.data`/`.bss`/`.ark_heap`/`.ark_code` 等）的物理与执行地址，常用于多存储区域嵌入式系统（例如 STM32H7 的 DTCM/AXI SRAM/Flash 分区）。
 
+**当前支持范围**：
+- ✅ 解析 `.sct`（`scatter_parse_file`）和 GNU `.ld`（`linker_script_parse_file`）
+- ✅ 互转：`.sct` ↔ `.ld`（在 `-S` 模式下）
+- ✅ 按段名查找执行地址（`scatter_lookup_addr`）
+- ❌ **不参与实际段放置/链接**：ARM 后端不查询 `ScatterDesc`，`arm_link()` 为空实现
+- 命令行：`--scatter <file>`、`-T <file>`、`--linker-script <file>`、`--script <file>`
+
+**实际段放置由谁负责？** 在 armcc5 路径下由 armlink 负责（通过 `--scatter=<sct>` 选项），arkCC 只输出汇编/对象代码。在自托管路径下（STM32 板上运行 arkCC），生成的机器码放入 `.ark_code` 段，由 scatter 文件路由到 AXI SRAM。
+
+### 5.6 汇编文件（`.s`/`.S`）输入
+
+arkCC 可直接编译 `.s`/`.S` 汇编文件为机器码，ARM 后端有完整的 Thumb-2 文本汇编器（`arm_assemble()`）：
+
+```powershell
+.\arkcc.exe startup.s -target arm -o startup.bin
+.\arkcc.exe myfunc.S -target arm -c -o myfunc.ark_obj
+```
+
+**触发规则**：由文件扩展名决定（`.s` 或 `.S`，2 字符扩展名），**不支持 `.asm`**。检测到 `.s`/`.S` 后跳过前端流程（preproc/lex/parse/sema/irgen），直接调用 `be->assemble()`。
+
+**汇编器能力**：两遍汇编 + 重定位，识别 `.thumb`/`.thumb_func`/`.global`/`.section`/`.text`/`.data`/`.bss`/`.type`/`.size`/`.word` 等伪指令，并把 Thumb-2 指令编码为 16/32 位二进制。
+
+**与 `-S` 的区别**：`-S` 是**输出**模式（生成汇编文本），而 `.s` 文件输入是"汇编→机器码"路径。若同时给 `.s` 输入加 `-S`，则原样输出汇编文本（相当于 copy）。
+
 ---
 
 ## 6 在 Windows 上测试
@@ -487,15 +512,32 @@ riscv32-unknown-elf-gcc foo.s -o foo.elf
 | 项目 | 取值 |
 | --- | --- |
 | 芯片 | STM32H743VIT6（Cortex-M7，2 MB Flash，1 MB SRAM，480 MHz） |
-| 编译器 | ARM Compiler 6（armclang） |
+| 编译器 | **ARM Compiler 5（armcc 5.06 update 7，build 960）**；亦可使用 armclang |
 | Scatter | [Linker/STM32H743VITx_FLASH.sct](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/mdk/STM32H743_ArkCC/Linker/STM32H743VITx_FLASH.sct) |
 | 启动文件 | [Startup/startup_stm32h743xx.s](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/mdk/STM32H743_ArkCC/Startup/startup_stm32h743xx.s) |
 | 用户程序 | [User/main.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/mdk/STM32H743_ArkCC/User/main.c) |
 | STM32 自举入口 | [port/stm32/main_stm32.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/port/stm32/main_stm32.c) |
 | Flash 区域 | `0x08000000 0x00200000` |
-| DTCM 区域 | `0x20000000 0x00020000` |
-| AXI SRAM | `0x24000000 0x00080000`，用于放置 `.ark_heap` + `.ark_code` |
+| DTCM 区域 | `0x20000000 0x00020000`（128 KB） |
+| AXI SRAM | `0x24000000 0x00080000`（512 KB），用于放置 `.ark_heap` + `.ark_code` + `.ark_buf` |
+| armcc5 构建脚本 | [build_stm32_armcc.ps1](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/build_stm32_armcc.ps1) |
 | 仅集成 ARM 后端 | 为节省 Flash |
+
+#### 7.1.1 armcc5 命令行关键参数
+
+`build_stm32_armcc.ps1` 使用以下 armcc5 编译选项：
+
+| 选项 | 说明 |
+| --- | --- |
+| `--cpu=Cortex-M7` | 目标 CPU 选择 |
+| `--thumb` | Thumb-2 模式 |
+| `-O0` | 关闭优化（便于调试） |
+| `-g` | 生成调试信息 |
+| `--c99` | C99 模式（armcc5 默认 C90，arkCC 源码需要 C99 的混合声明） |
+| `--apcs=interwork` | ARM/Thumb 互操作 ABI |
+| `-DARKCC_PROFILE=ARKCC_PROFILE_STM32_MIN` | 启用 STM32 最小配置 profile |
+
+armlink 关键选项：`--scatter=<sct>`，并通过 `system_stm32h7xx.c` 中的 `__user_initial_stackheap` 重定向消除 semihosting 依赖。
 
 工程文件列表（按 Keil "Source Group" 组织）：
 
@@ -503,12 +545,38 @@ riscv32-unknown-elf-gcc foo.s -o foo.elf
 - **Application/Startup**：`startup_stm32h743xx.s`
 - **ArkCC/Core**：`..\..\src\compiler.c` `lexer.c` `parser.c` `sema.c` `ir.c` `irgen.c` `ast.c` `type.c` `symtab.c` `memory.c` `preproc.c` `codegen_common.c` `cpu.c` `scatter.c` `config.c` `opt.c`
 - **ArkCC/Backend**：`..\..\src\backend\registry.c` `..\..\src\backend\arm\backend_arm.c`
-- **ArkCC/Port**：`..\..\port\stm32\platform_stm32.c` `..\..\port\stm32\flash_fs_stm32.c` `..\..\port\stm32\main_stm32.c`
-- **Drivers/HAL**：空，由用户填入官方 HAL 的 `.c` 文件
+- **ArkCC/Port**：`..\..\port\stm32\platform_stm32.c` `..\..\port\stm32\flash_fs_stm32.c`
+- **Drivers/HAL**：占位头文件位于 `Drivers/CMSIS/Device/ST/STM32H7xx/Include/`
 
-> 由于 `src` 采用相对路径引用，PC 侧修改 src 后只需在 Keil 里 Rebuild 即可。
+> 注意：在 armcc5 路径下，`port/stm32/main_stm32.c` 不参与编译；MDK `User/main.c` 提供独立的 `main()`，调用 `ark_compile()` 后把生成的机器码通过 `arkcc_on_output()` 输出到 UART。
 
 ### 7.2 五步启动
+
+#### 方式 A：用 armcc5 命令行构建（推荐）
+
+无需 Keil IDE，一行 PowerShell 脚本即可完成全部构建：
+
+1. **安装 Keil MDK 5.x（含 armcc 5.06 update 7）**
+   确认 `D:\Keil_v5\ARM\ARMCC\bin\armcc.exe`、`armlink.exe`、`fromelf.exe`、`armasm.exe` 存在，并加入 PATH（脚本支持自动探测该路径）。
+2. **运行构建脚本**
+   ```powershell
+   cd "<your-ark-cc-repo-path>"
+   powershell -ExecutionPolicy Bypass -File build_stm32_armcc.ps1
+   ```
+   脚本会：编译 16 个核心 `.c` + 2 个 ARM 后端 + 2 个 STM32 port + 5 个 MDK 用户 `.c` + 1 个启动 `.s`，链接生成：
+   - `bootstrap_x86\armcc_objs\arkcc_stm32.elf`
+   - `bootstrap_x86\armcc_objs\arkcc_stm32.hex`
+   - `bootstrap_x86\armcc_objs\arkcc_stm32.bin`
+3. **烧录固件**：用 ST-Link Utility / Keil FlashTool / openocd 把 `arkcc_stm32.hex` 烧到 0x08000000。
+4. **准备 W25Q 上的源文件**（参见 [7.3 烧录文件到 W25Q](#73-烧录文件到-w25q)）。
+5. **在串口查看输出**：连接 PA9/PA10，115200 波特率，应看到：
+   ```
+   === Ark C Compiler on STM32H743 ===
+   Compiling /app/main.c from W25Q...
+   Exit code: <int>
+   ```
+
+#### 方式 B：用 Keil MDK IDE 构建
 
 1. **填入官方 CMSIS / HAL**
    将 STM32CubeH7 中的 `Drivers/CMSIS/**` 与 `Drivers/STM32H7xx_HAL_Driver/**` 覆盖工程占位文件；随后在 Keil 中将需要使用的 `stm32h7xx_hal_*.c` 加入 `Drivers/HAL` 分组。
@@ -563,9 +631,36 @@ def make_image(files):
 
 ### 7.4 内存与缓冲区
 
-- `.ark_heap`：64 KB bump 内存池，存放 AST / IR / 符号表
-- `.ark_code`：32 KB 代码缓冲区，存放生成的 Thumb-2 机器码
-- 跳转执行前需调用 `SCB_CleanDCache_by_Addr` + `SCB_InvalidateICache`（[User/main.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/mdk/STM32H743_ArkCC/User/main.c) 中有调用模板）。
+arkCC 在 STM32 上使用三层内存区域：
+
+| 段 | 区域 | 大小 | 用途 |
+| --- | --- | --- | --- |
+| `.text` (含 `.rodata`) | Flash @ 0x08000000 | ~148 KB | 代码段（约 7.3% Flash 占用） |
+| `.data` + `.bss` (DTCM) | DTCM @ 0x20000000 | ~19 KB | 全局变量、栈（约 15% DTCM 占用） |
+| `.ark_buf` + `.ark_code` + `.ark_heap` | AXI SRAM @ 0x24000000 | ~440 KB | 大型静态缓冲区、代码缓冲、内存池 |
+
+**AXI SRAM 详细布局**（512 KB 总容量，当前占用 ~440 KB，余 72 KB）：
+
+| 段 | 大小 | 内容 |
+| --- | --- | --- |
+| `.ark_buf`（compiler.o） | 160 KB | `g_src`(32K) + `g_asm`(64K) + `g_code`(32K) + `dep/ld/sct`(24K) + 其他(8K) |
+| `.ark_buf`（memory.o） | 64 KB | `g_pool` 内存池（原 128K，为适配 512KB 已减半） |
+| `.ark_buf`（preproc.o） | 64 KB | `g_inc_bufs`(4×8K=32K) + `out_buf`(32K)（原 8×16K=128K 已减） |
+| `.ark_buf`（backend_arm.o） | 24 KB | `g_arm_syms`(12K) + `g_arm_relocs`(12K) |
+| `.ark_code` | 32 KB | 生成的 Thumb-2 机器码缓冲 |
+| `.ark_heap` | 32 KB | armcc5 C 库堆（通过 `__user_initial_stackheap` 重定向） |
+
+**关键设计：semihosting 消除**
+- arkCC 源码中所有 `fopen/fread/fclose/vsnprintf/snprintf/getenv` 等 semihosting 依赖均已被移除或重定向：
+  - `scatter.c` 使用 `fs_read_file()` 抽象层替代 `fopen/fread`
+  - `irgen.c` 自定义 `sb_putf` 替代 `snprintf("%.17g")`
+  - `scatter.c` 自定义 `put_fmt` 替代 `vsnprintf`
+  - `backend_arm.c` 用 `g_arm_dump_syms` 全局标志替代 `getenv("ARKCC_DUMP_SYMS")`
+- `system_stm32h7xx.c` 提供 `__user_initial_stackheap` 重定向，将 C 库堆指向 `ark_heap_buffer`
+
+**缓冲区尺寸自适应**：[include/arkcc_config.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/arkcc_config.h) 通过 `ARKCC_PROFILE` 宏区分 `ARKCC_PROFILE_STM32_MIN` 与 `ARKCC_PROFILE_HOST_FULL`，所有大型缓冲区尺寸都按 profile 自动选择。命令行加 `-DARKCC_PROFILE=ARKCC_PROFILE_STM32_MIN` 即启用 STM32 配置。
+
+跳转执行前需调用 `SCB_CleanDCache_by_Addr` + `SCB_InvalidateICache`（[User/main.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/mdk/STM32H743_ArkCC/User/main.c) 中有调用模板）。
 
 ### 7.5 调试器与串口
 
@@ -824,7 +919,13 @@ A：c 后端是从 IR 翻译，而不是从 AST；它追求的是"语义等价"�
 A：构建 arkcc 本身需要 gcc / MinGW / MSVC。若使用 MSVC，需修改 Makefile 使用 `cl.exe`。VS Code + clangd 也是常见选择。
 
 **Q3：能编译用 Keil/MDK 写的 STM32 工程吗？**
-A：v0.7.0 已覆盖 armcc 常用扩展的 98% 以上。HAL/CMSIS 中常见的 `__attribute__`、`__packed`、`__align`、内联汇编、`#pragma pack/anon_unions/location/...`、`__irq`/`__weak`/`__naked` 等均已支持。少数极端的宏戏法或 C++ 模式仍不支持；建议先用官方编译器编译 HAL/CMSIS，再用 arkcc 编译应用层代码。
+A：v0.7.0 已覆盖 armcc 常用扩展的 98% 以上。HAL/CMSIS 中常见的 `__attribute__`、`__packed`、`__align`、内联汇编、`#pragma pack/anon_unions/location/...`、`__irq`/`__weak`/`__naked` 等均已支持。**armcc5 路径已打通**：`build_stm32_armcc.ps1` 可用 armcc 5.06 直接编译 arkCC 源码生成 `arkcc_stm32.hex/.bin` 烧录到 STM32H743（见 [附录 D](#附录-darmcc5-工具链与-mdk-构建详解)）。少数极端的宏戏法或 C++ 模式仍不支持；建议先用官方编译器编译 HAL/CMSIS，再用 arkcc 编译应用层代码。
+
+**Q3.1：arkCC 能解析 MDK 的 .sct 文件吗？**
+A：能解析与互转（`.sct` ↔ `.ld`），但**不参与实际段放置**。在 armcc5 路径下，段放置由 armlink 根据 `.sct` 完成（见 [5.5](#55-scatter-描述文件) 与 [附录 D.5](#d5-sct-文件与-armlink)）。在自托管路径下（STM32 上跑 arkCC），机器码固定放入 `.ark_code` 段，由 scatter 文件路由到 AXI SRAM。
+
+**Q3.2：arkCC 能编译 .s 汇编文件吗？**
+A：能。ARM 后端有完整的 Thumb-2 文本汇编器（`arm_assemble()`）。由文件扩展名触发：`.s` 或 `.S` 会被识别为汇编输入，跳过前端流程直接汇编为机器码。**不支持 `.asm`**（详见 [5.6](#56-汇编文件ss输入)）。
 
 **Q4：如何让编译出的程序在 STM32 上调用 HAL？**
 A：通过外部声明 + 链接重定位。编译后的代码声明 `extern void HAL_Delay(uint32_t)`；运行时 ARM 后端链接器把 `BL HAL_Delay` 的目标地址回填为 HAL 函数的实际地址（需要你提供地址表）。更简单的做法：把这些函数地址硬编码到一个数组里，让 arkcc 通过函数指针调用。
@@ -969,6 +1070,147 @@ source .c
 - 编译器本身作为 v0.7.0 的自举目标，需要在 STM32 等嵌入式环境中运行，那里的编辑器/终端往往不支持 UTF-8；纯 ASCII 源码保证了跨平台可读性与可编辑性。
 - 中文文档采用 UTF-8 是 Markdown 生态与 Web 渲染的通行做法，便于在 GitHub、VS Code、Obsidian 等工具中正常显示。
 - 源码注释坚持英文，避免因编辑器编码识别错误导致注释乱码进而污染合并、diff、grep 等工作流。
+
+---
+
+## 附录 D：armcc5 工具链与 MDK 构建详解
+
+本附录详细说明如何在 Windows 上使用 ARM Compiler 5（armcc 5.06）编译 arkCC 源码生成可烧录的 STM32 固件，以及如何编译 MDK 工程。完整教程见 [docs/STM32_BUILD.md](STM32_BUILD.md)。
+
+### D.1 工具链准备
+
+| 工具 | 位置（默认安装） | 用途 |
+| --- | --- | --- |
+| `armcc.exe` | `D:\Keil_v5\ARM\ARMCC\bin\` | C 源码编译 |
+| `armlink.exe` | 同上 | 链接 |
+| `fromelf.exe` | 同上 | ELF → hex/bin 转换 |
+| `armasm.exe` | 同上 | 启动汇编 `startup_stm32h743xx.s` |
+
+确认 armcc5 版本：
+```powershell
+& "D:\Keil_v5\ARM\ARMCC\bin\armcc.exe" --version
+# 输出应包含 "ARM Compiler 5.06 update 7 (build 960)"
+```
+
+如未加入系统 PATH，`build_stm32_armcc.ps1` 会自动探测上述默认路径。
+
+### D.2 一键构建
+
+```powershell
+cd "<your-ark-cc-repo-path>"
+powershell -ExecutionPolicy Bypass -File build_stm32_armcc.ps1
+```
+
+脚本执行流程：
+1. 编译 16 个核心 `.c`（`src/*.c`）
+2. 编译 2 个 ARM 后端（`src/backend/arm/backend_arm.c` + `src/backend/registry.c`）
+3. 编译 2 个 STM32 port（`port/stm32/platform_stm32.c` + `port/stm32/flash_fs_stm32.c`）
+4. 编译 5 个 MDK 用户文件（`mdk/STM32H743_ArkCC/User/*.c`）
+5. 汇编启动文件（`Startup/startup_stm32h743xx.s`）
+6. armlink 链接 + fromelf 生成 `.hex` / `.bin`
+
+输出目录：`bootstrap_x86\armcc_objs\`
+
+| 文件 | 用途 |
+| --- | --- |
+| `arkcc_stm32.elf` | 完整 ELF（含符号表，调试用） |
+| `arkcc_stm32.hex` | Intel HEX 格式（ST-Link Utility 烧录用） |
+| `arkcc_stm32.bin` | 纯二进制（openocd 烧录用） |
+| `*.map` | 链接 map 文件（内存布局分析） |
+
+### D.3 编译 MDK 工程（uvprojx）
+
+若要使用 Keil IDE 而非脚本：
+
+1. 打开 `mdk/STM32H743_ArkCC/ArkCC.uvprojx`
+2. Project → Options for Target：
+   - **Device**：STM32H743VIT6
+   - **Target**：ARM Compiler 5（注意：默认可能是 V5.06，可在 Keil → Components → Manage → Project Components 切换）
+   - **C/C++**：勾选 C99，添加宏 `ARKCC_PROFILE=ARKCC_PROFILE_STM32_MIN`，Include Paths 添加 `..\..\include;..\..\include\..\stdlib\include`
+   - **Link**：Scatter File 指向 `Linker\STM32H743VITx_FLASH.sct`
+3. Build → Build Target（F7）
+4. Build → Download（F8）烧录到 Flash
+
+### D.4 常见构建错误
+
+#### L6915E: The semihosting __user_initial_stackheap cannot reliably set up...
+
+**原因**：armcc5 C 库默认使用 semihosting 初始化堆/栈，与 scatter loading 冲突。
+
+**解决**：`system_stm32h7xx.c` 已提供 `__user_initial_stackheap` 重定向实现，把 C 库堆指向 `ark_heap_buffer`（AXI SRAM）。确认该文件参与编译，并使用 `--c99` 而非 C90 编译。
+
+#### L6220E: Load region RW_AXI size exceeds limit
+
+**原因**：AXI SRAM（512 KB）溢出。map 文件会显示 RW_AXI Size > 0x80000。
+
+**解决**：减小 [include/arkcc_config.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/arkcc_config.h) 中的 STM32 profile 缓冲区尺寸：
+- `ARK_POOL_SIZE`（默认 64K）
+- `PP_INC_BUF` × `PP_MAX_INC_DEPTH`（默认 8K × 4 = 32K）
+- `PP_BUF_SIZE`（默认 32K）
+- `ark_heap_buffer`（[User/main.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/mdk/STM32H743_ArkCC/User/main.c)，默认 32K）
+
+#### #268: declaration may not appear after executable statement
+
+**原因**：armcc5 默认 C90 模式，不允许混合声明与语句。
+
+**解决**：`build_stm32_armcc.ps1` 已加 `--c99`。若在 Keil IDE 中构建，需在 Options → C/C++ → Language 选 C99。
+
+#### Undefined symbol arkcc_on_output
+
+**原因**：`flash_fs_stm32.c` 调用 `arkcc_on_output()` 但未提供定义。
+
+**解决**：已在 `flash_fs_stm32.c` 提供 `__attribute__((weak))` 默认实现，用户可在 `main.c` 中提供强定义覆盖。
+
+### D.5 .sct 文件与 armlink
+
+arkCC 自身**不参与实际段放置/链接**（见 [5.5](#55-scatter-描述文件)）。在 armcc5 路径下，段放置由 armlink 根据 `.sct` 文件完成：
+
+```text
+LR_IROM1 0x08000000 0x00200000  {
+  ER_IROM1 0x08000000 0x00200000 {        /* Flash: 代码 + 只读数据 */
+    *.o (RESET, +First)
+    *(InRoot$$Sections)
+    .ANY (+RO)
+    .ANY (+XO)
+  }
+  RW_IRAM1 0x20000000 0x00020000 {        /* DTCM 128K: 全局变量 */
+    .ANY (+RW +ZI)
+  }
+  RW_AXI 0x24000000 0x00080000 {          /* AXI SRAM 512K: 大缓冲区 */
+    *(.ark_heap)
+    *(.ark_code)
+    *(.ark_buf)
+  }
+}
+```
+
+**段到区域的映射**：
+- `.text` + `.rodata` → ER_IROM1（Flash）
+- `.data` + `.bss` → RW_IRAM1（DTCM）
+- `.ark_heap` + `.ark_code` + `.ark_buf` → RW_AXI（AXI SRAM）
+
+arkCC 在生成汇编/对象时使用 `.section` 指令标记段归属；armlink 根据这些段名将内容路由到正确的内存区域。
+
+### D.6 自托管验证：在 STM32 上编译 STM32 程序
+
+arkCC 固件烧录后，目标板会自动从 W25Q Flash 读取 `/app/main.c` 并就地编译执行。验证步骤：
+
+1. 准备一个测试程序，例如 `/app/main.c`：
+   ```c
+   int main(void) {
+       volatile int *led = (int *)0x48000014;  /* GPIOA ODR */
+       *led = 1;  /* 点亮 LED */
+       return 42;
+   }
+   ```
+2. 用主机端工具把该 `.c` 写入 W25Q Flash（见 [7.3](#73-烧录文件到-w25q)）。
+3. 复位 STM32，串口应输出：
+   ```
+   === Ark C Compiler on STM32H743 ===
+   Compiling /app/main.c from W25Q...
+   Exit code: 42
+   ```
+4. 验证 LED 是否点亮。
 
 ---
 

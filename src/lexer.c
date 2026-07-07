@@ -120,7 +120,7 @@ static int hex_val(char c) {
 static Token make_token(TokenKind kind, int line) {
     Token t;
     t.kind = kind; t.value = 0; t.fvalue = 0.0; t.str = 0; t.line = line;
-    t.src_start = 0; t.is_imag = 0;
+    t.src_start = 0; t.is_imag = 0; t.is_float = 0;
     return t;
 }
 
@@ -499,24 +499,32 @@ static Token lexer_read_token(Lexer *lex) {
                 if (has_exp) {
                     if (exp_neg) fval /= e; else fval *= e;
                 }
-                while (*lex->p == 'f' || *lex->p == 'F' ||
-                       *lex->p == 'l' || *lex->p == 'L') lex->p++;
-                if (*lex->p == 'i' || *lex->p == 'I' ||
-                    *lex->p == 'j' || *lex->p == 'J') {
-                    lex->p++;
+                {
+                    int is_float_suffix = 0;
+                    while (*lex->p == 'f' || *lex->p == 'F' ||
+                           *lex->p == 'l' || *lex->p == 'L') {
+                        if (*lex->p == 'f' || *lex->p == 'F') is_float_suffix = 1;
+                        lex->p++;
+                    }
+                    if (*lex->p == 'i' || *lex->p == 'I' ||
+                        *lex->p == 'j' || *lex->p == 'J') {
+                        lex->p++;
+                        {
+                            Token t = make_token(TOK_FCONST, line);
+                            t.fvalue = fval;
+                            t.value = (int)fval;
+                            t.is_imag = 1;
+                            t.is_float = is_float_suffix;
+                            return t;
+                        }
+                    }
                     {
                         Token t = make_token(TOK_FCONST, line);
                         t.fvalue = fval;
                         t.value = (int)fval;
-                        t.is_imag = 1;
+                        t.is_float = is_float_suffix;
                         return t;
                     }
-                }
-                {
-                    Token t = make_token(TOK_FCONST, line);
-                    t.fvalue = fval;
-                    t.value = (int)fval;
-                    return t;
                 }
             }
             val = ipart;
@@ -591,27 +599,35 @@ static Token lexer_read_token(Lexer *lex) {
                 e = pow(10.0, (double)(exp_neg ? -exp_v : exp_v));
                 fval *= e;
             }
-            if (*lex->p == 'f' || *lex->p == 'F' ||
-                *lex->p == 'l' || *lex->p == 'L') lex->p++;
-            /* C99 imaginary suffix: the i/I/j/J suffix sets is_imag=1.
-             * For example, 1.0i becomes the pure imaginary 0+1i literal,
-             * which the parser converts into a TYPE_COMPLEX AST_NUM node. */
-            if (*lex->p == 'i' || *lex->p == 'I' ||
-                *lex->p == 'j' || *lex->p == 'J') {
-                lex->p++;
+            {
+                int is_float_suffix = 0;
+                while (*lex->p == 'f' || *lex->p == 'F' ||
+                       *lex->p == 'l' || *lex->p == 'L') {
+                    if (*lex->p == 'f' || *lex->p == 'F') is_float_suffix = 1;
+                    lex->p++;
+                }
+                /* C99 imaginary suffix: the i/I/j/J suffix sets is_imag=1.
+                 * For example, 1.0i becomes the pure imaginary 0+1i literal,
+                 * which the parser converts into a TYPE_COMPLEX AST_NUM node. */
+                if (*lex->p == 'i' || *lex->p == 'I' ||
+                    *lex->p == 'j' || *lex->p == 'J') {
+                    lex->p++;
+                    {
+                        Token t = make_token(TOK_FCONST, line);
+                        t.fvalue = fval;
+                        t.value = (int)fval;
+                        t.is_imag = 1;
+                        t.is_float = is_float_suffix;
+                        return t;
+                    }
+                }
                 {
                     Token t = make_token(TOK_FCONST, line);
                     t.fvalue = fval;
                     t.value = (int)fval;
-                    t.is_imag = 1;
+                    t.is_float = is_float_suffix;
                     return t;
                 }
-            }
-            {
-                Token t = make_token(TOK_FCONST, line);
-                t.fvalue = fval;
-                t.value = (int)fval;
-                return t;
             }
         }
         /* Consume integer suffix u/U/l/L. */

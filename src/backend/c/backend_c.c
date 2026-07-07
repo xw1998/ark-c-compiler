@@ -608,12 +608,16 @@ static int ir_stack_delta(IrInst *I) {
         case IR_UNARY:
         case IR_F2I:
         case IR_I2F:
+        case IR_F2F:
         case IR_64F2I:
         case IR_64I2F:
         case IR_ALLOCA:
         case IR_SVC:
         case IR_LOAD_FLD:
         case IR_SWAP:
+        case IR_SEXT:
+        case IR_ZEXT:
+        case IR_CDECL64:
         case IR_JMP:
         case IR_JMP_NAMED:
         case IR_LABEL:
@@ -642,7 +646,7 @@ static int ir_stack_delta(IrInst *I) {
 static int compute_max_sp(IrFunc *f) {
     /* Collect named labels and assign them indices after numeric labels. */
     int named_count = 0;
-    char *named_names[256];
+    const char *named_names[256];
     int i;
     int total_labels;
     int label_sp_stack[MAX_LABELS_FOR_SP];
@@ -652,7 +656,7 @@ static int compute_max_sp(IrFunc *f) {
 
     for (i = 0; i < f->code_count && named_count < 256; i++) {
         if (f->code[i].op == IR_LABEL_NAMED) {
-            char *name = f->code[i].name;
+            const char *name = f->code[i].name;
             int found = 0, j;
             for (j = 0; j < named_count; j++) {
                 if (named_names[j] && name && ark_streq(named_names[j], name)) {
@@ -1409,6 +1413,13 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
                 case IR_SWAP:
                     asmbuf_puts(&buf, "if (sp>=2) { long long _t = stk[sp-1].i; stk[sp-1].i = stk[sp-2].i; stk[sp-2].i = _t; }");
                     break;
+                case IR_SEXT:
+                case IR_ZEXT:
+                case IR_CDECL64:
+                    /* No-op in C backend: virtual stack uses 8-byte long long
+                     * slots, so int->long long promotion and 64-bit word-order
+                     * conversion are unnecessary (each value occupies one slot). */
+                    break;
                 case IR_STORE: {
                     /* aux encodes the store size: 1/2/4/8/16. Narrow values
                      * are stored through the corresponding pointer type so that
@@ -1537,6 +1548,17 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
                     } else {
                         asmbuf_puts(&buf, "ark_a = stk[--sp].i; stk[sp++].f = (double)ark_a;");
                     }
+                    break;
+                case IR_F2F:
+                    /* float <-> float cast. In the C backend the union stores
+                     * all floats as double, so float->double is a no-op and
+                     * double->float truncates to float precision (then
+                     * promotes back to double). Stack effect: 0. */
+                    if (I->aux & 0x200) {
+                        /* double -> float */
+                        asmbuf_puts(&buf, "stk[sp-1].f = (float)stk[sp-1].f;");
+                    }
+                    /* float -> double: no-op in C backend */
                     break;
                 case IR_ASM:
                     /* '@' prefix indicates extended asm form: `"text" : outputs : inputs : clobbers`.

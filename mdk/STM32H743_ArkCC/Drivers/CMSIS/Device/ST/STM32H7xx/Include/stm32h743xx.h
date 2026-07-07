@@ -1,10 +1,10 @@
-/* Ark C Compiler - MDK STM32H743 - stm32h743xx (¼«¼òÕ¼Î») */
+/* Ark C Compiler - MDK STM32H743 - stm32h743xx (ï¿½ï¿½ï¿½ï¿½Õ¼Î») */
 /*
- * ¸ÃÎÄ¼þ½öÎª×îÐ¡»¯Õ¼Î»£¬Ä¿µÄÊÇÈÃ±¾¹¤³ÌÔÚÈ±ÉÙ¹Ù·½ CMSIS µÄÇé¿öÏÂ
- * Ò²ÄÜÍê³ÉÓï·¨¼ì²éÓë ArkCC ºËÐÄÔ´´úÂëµÄ±àÒë¡£
+ * ï¿½ï¿½ï¿½Ä¼ï¿½ï¿½ï¿½Îªï¿½ï¿½Ð¡ï¿½ï¿½Õ¼Î»ï¿½ï¿½Ä¿ï¿½ï¿½ï¿½ï¿½ï¿½Ã±ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½È±ï¿½Ù¹Ù·ï¿½ CMSIS ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+ * Ò²ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï·¨ï¿½ï¿½ï¿½ï¿½ï¿½ ArkCC ï¿½ï¿½ï¿½ï¿½Ô´ï¿½ï¿½ï¿½ï¿½Ä±ï¿½ï¿½ë¡£
  *
- * ÕýÊ½±àÒëÓÃ»§Ó¦ÓÃ (HAL_Init, SystemClock_Config, USART1, SPI1...) Ê±£¬
- * ±ØÐë´Ó STM32CubeH7 ²Ö¿â¿½±´¹Ù·½°æ±¾¸²¸Ç´ËÎÄ¼þ¡£
+ * ï¿½ï¿½Ê½ï¿½ï¿½ï¿½ï¿½ï¿½Ã»ï¿½Ó¦ï¿½ï¿½ (HAL_Init, SystemClock_Config, USART1, SPI1...) Ê±ï¿½ï¿½
+ * ï¿½ï¿½ï¿½ï¿½ï¿½ STM32CubeH7 ï¿½Ö¿â¿½ï¿½ï¿½ï¿½Ù·ï¿½ï¿½æ±¾ï¿½ï¿½ï¿½Ç´ï¿½ï¿½Ä¼ï¿½ï¿½ï¿½
  */
 #ifndef __STM32H743xx_H
 #define __STM32H743xx_H
@@ -13,11 +13,11 @@
 extern "C" {
 #endif
 
-#warning "stm32h743xx.h µ±Ç°ÊÇÕ¼Î»ÊµÏÖ£¬ÇëÓÃ¹Ù·½ CMSIS ¸²¸Ç"
+#warning "stm32h743xx.h ï¿½ï¿½Ç°ï¿½ï¿½Õ¼Î»Êµï¿½Ö£ï¿½ï¿½ï¿½ï¿½Ã¹Ù·ï¿½ CMSIS ï¿½ï¿½ï¿½ï¿½"
 
 #include <stdint.h>
 
-/* ============ »ù±¾ÀàÐÍ ============ */
+/* ============ ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ ============ */
 typedef int32_t  IRQn_Type;
 
 typedef enum { RESET = 0U, SET = !RESET } FlagStatus, ITStatus;
@@ -29,7 +29,7 @@ typedef enum {
     HAL_TIMEOUT  = 0x03U
 } HAL_StatusTypeDef;
 
-/* ============ Cortex-M7 Õ¼Î»¼Ä´æÆ÷/ÍâÉè½á¹¹ ============ */
+/* ============ Cortex-M7 Õ¼Î»ï¿½Ä´ï¿½ï¿½ï¿½/ï¿½ï¿½ï¿½ï¿½á¹¹ ============ */
 typedef struct {
     volatile uint32_t MODER;
     volatile uint32_t OTYPER;
@@ -77,7 +77,7 @@ typedef struct {
     volatile uint32_t I2SCFGR;
 } SPI_TypeDef;
 
-/* ÄÚ´æ»ùÖ· (Ê¾ÒâÖµ£¬½ö¹©Õ¼Î») */
+/* ï¿½Ú´ï¿½ï¿½Ö· (Ê¾ï¿½ï¿½Öµï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Õ¼Î») */
 #define PERIPH_BASE         (0x40000000UL)
 #define D2_AHB1PERIPH_BASE  (PERIPH_BASE + 0x18020000UL)
 #define GPIOA_BASE          (D2_AHB1PERIPH_BASE + 0x0000UL)
@@ -90,7 +90,7 @@ typedef struct {
 #define USART1  ((USART_TypeDef *) USART1_BASE)
 #define SPI1    ((SPI_TypeDef *) SPI1_BASE)
 
-/* HAL ¾ä±úÕ¼Î» */
+/* HAL ï¿½ï¿½ï¿½Õ¼Î» */
 typedef struct {
     USART_TypeDef *Instance;
     uint32_t       BaudRate;
@@ -101,18 +101,21 @@ typedef struct {
     uint32_t       Mode;
 } SPI_HandleTypeDef;
 
-/* ============ HAL ×îÐ¡ API Õ¼Î» ============ */
+/* ============ HAL ??? API ============ */
 HAL_StatusTypeDef HAL_Init(void);
 HAL_StatusTypeDef HAL_UART_Transmit(UART_HandleTypeDef *huart,
                                     const uint8_t *pData, uint16_t Size,
                                     uint32_t Timeout);
+HAL_StatusTypeDef HAL_UART_Receive(UART_HandleTypeDef *huart,
+                                   uint8_t *pData, uint16_t Size,
+                                   uint32_t Timeout);
 HAL_StatusTypeDef HAL_SPI_TransmitReceive(SPI_HandleTypeDef *hspi,
                                           uint8_t *pTxData, uint8_t *pRxData,
                                           uint16_t Size, uint32_t Timeout);
 void HAL_Delay(uint32_t Delay);
 uint32_t HAL_GetTick(void);
 
-/* IRQ ¾ä±úÕ¼Î» */
+/* IRQ ï¿½ï¿½ï¿½Õ¼Î» */
 typedef enum {
     NonMaskableInt_IRQn   = -14,
     HardFault_IRQn        = -13,

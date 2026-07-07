@@ -22,7 +22,9 @@
 #include "arkcc_config.h"
 #include "type.h"   /* type_set_pack/type_get_pack drive #pragma pack handling. */
 
-#define PP_BUF_SIZE (4 * 1024 * 1024)
+/* PP_BUF_SIZE and PP_MAX_INC_DEPTH come from arkcc_config.h (profile-aware).
+ * STM32 profile: 64KB output / 8 include depth.
+ * Host profile: 4MB output / 32 include depth. */
 /* Per-include file content buffer. Kept out of the memory pool (a static 2D
  * array indexed by include depth) so that many #include directives no longer
  * exhaust the bump allocator. STM32 vendor headers (e.g. stm32f401xe.h) can
@@ -30,17 +32,10 @@
  * Override via -DPP_INC_BUF=<bytes> if a larger header is needed. */
 #ifndef PP_INC_BUF
 # if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
-#   define PP_INC_BUF  (16 * 1024)        /* 16 KB per include for STM32 */
+#   define PP_INC_BUF  (8 * 1024)         /* 8 KB per include for STM32 (was 16K to fit 512KB AXI) */
 # else
 #   define PP_INC_BUF  (1024 * 1024)      /* 1 MB per include for host */
 # endif
-#endif
-/* Maximum #include nesting depth. STM32 HAL/CMSIS chains go deeper than 8
- * (main.c -> main.h -> stm32f4xx_hal.h -> stm32f4xx_hal_conf.h -> core_cm4.h
- *  -> cmsis_compiler.h -> cmsis_gcc.h -> stdint.h -> ...). Bump to 32 on host.
- * Override via -DPP_MAX_INC_DEPTH=<n> for tighter embedded builds. */
-#ifndef PP_MAX_INC_DEPTH
-#define PP_MAX_INC_DEPTH 32
 #endif
 #define PP_MAX_INC_DIRS  16
 #define PP_PACK_STACK    32
@@ -95,8 +90,9 @@ typedef struct Macro {
 static Macro *g_macros;
 static int    g_inc_depth;
 /* Per-depth include file content buffers (kept out of the memory pool so many
- * #include directives don't exhaust the bump allocator). Indexed by g_inc_depth. */
-static char   g_inc_bufs[PP_MAX_INC_DEPTH][PP_INC_BUF];
+ * #include directives don't exhaust the bump allocator). Indexed by g_inc_depth.
+ * Placed in .ark_buf section so the linker can put them in AXI SRAM on STM32H743. */
+static char   g_inc_bufs[PP_MAX_INC_DEPTH][PP_INC_BUF] __attribute__((section(".ark_buf")));
 static const char *g_inc_dirs[PP_MAX_INC_DIRS];
 static int    g_inc_dir_count;
 static char   g_main_file[256];
@@ -643,6 +639,10 @@ static int handle_pragma_pack(const char *q) {
 /* Main processing entry point. */
 static void process(const char *src, char *out, int *out_len, int out_cap) {
     const char *p = src;
+    /* Skip UTF-8 BOM (EF BB BF) if present at start of file. */
+    if ((unsigned char)p[0] == 0xEF && (unsigned char)p[1] == 0xBB && (unsigned char)p[2] == 0xBF) {
+        p += 3;
+    }
     /* Conditional compilation stack: tracks both taken state and skip mask. */
     int cond_stack[32];
     int cond_taken[32];   /* parent already-taken mask for skipping branches */
@@ -1277,8 +1277,9 @@ char *preproc_process(const char *src) {
     /* Static output buffer kept out of the memory pool so the bump allocator
      * has the full pool available for AST/IR/symbol tables. Single-threaded
      * compiler use means reentry between translation units is safe because
-     * preproc_process completes before any pool consumer runs. */
-    static char out_buf[PP_BUF_SIZE];
+     * preproc_process completes before any pool consumer runs.
+     * Placed in .ark_buf section so the linker can put it in AXI SRAM on STM32H743. */
+    static char out_buf[PP_BUF_SIZE] __attribute__((section(".ark_buf")));
     char *out = out_buf;
     int out_len = 0;
     const char *src_ptr = src;

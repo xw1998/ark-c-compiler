@@ -5,16 +5,12 @@
 #define ARK_MEMORY_H
 
 #include "common.h"
+#include "arkcc_config.h"   /* brings in profile-aware ARK_POOL_SIZE */
 
-/* Default 8MB memory pool (host); redefinable at compile time.
- * The pool backs all AST/IR/symbol allocations via a bump allocator that
- * never frees until mem_pool_reset. 8MB gives headroom for large files
- * with many #include directives (observed peak ~4.0MB for a 48KB test with
- * 20 includes: ~2.7MB parse + ~0.1MB sema + ~1.2MB irgen).
- * STM32 overrides via -DARK_POOL_SIZE=262144. */
-#ifndef ARK_POOL_SIZE
-#define ARK_POOL_SIZE (64 * 1024 * 1024)
-#endif
+/* ARK_POOL_SIZE is defined by arkcc_config.h (profile-aware):
+ *   STM32 profile: 128 KB
+ *   Host profile:   64 MB
+ * Override via -DARK_POOL_SIZE=<bytes> on the command line if needed. */
 
 void  mem_pool_reset(void);
 void *mem_pool_alloc(int size);

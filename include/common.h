@@ -216,6 +216,7 @@ typedef enum {
     IR_FCMP,           /* aux = TOK_EQ / TOK_NE / TOK_LT ... */
     IR_F2I,            /* float -> int */
     IR_I2F,            /* int -> float */
+    IR_F2F,            /* float <-> float cast; aux: 0x200=src double, 0x100=dst double */
     IR_ASM,            /* inline assembly fragment; name = raw template text */
     IR_SVC,            /* ARM SVC instruction; val = SVC number */
     IR_DIV,            /* integer division; aux=0 signed, aux=1 unsigned */
@@ -243,7 +244,18 @@ typedef enum {
     IR_SIMD_SUB8,
 
     /* === 0.7.1 additions === */
-    IR_SWAP            /* swap top two stack values: [a, b] -> [b, a] */
+    IR_SWAP,           /* swap top two stack values: [a, b] -> [b, a] */
+
+    /* === 0.8.0 additions: 64-bit argument passing for cdecl (32-bit x86) ===
+     * The internal stack model stores 64-bit values as two 4-byte slots
+     * with the HIGH word on top. The cdecl ABI (i386) requires the LOW
+     * word at the lower address (on top after push). These instructions
+     * convert from the internal model to cdecl order for function call
+     * arguments. The C backend treats them as no-ops (its virtual stack
+     * uses 8-byte long long slots, so no conversion is needed). */
+    IR_SEXT,           /* sign-extend top-of-stack int to long long (cdecl order) */
+    IR_ZEXT,           /* zero-extend top-of-stack int to long long (cdecl order) */
+    IR_CDECL64         /* convert top long long from internal model to cdecl order */
 } IrOp;
 
 /* Simple string comparison to avoid depending on string.h */

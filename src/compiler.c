@@ -17,31 +17,19 @@
 #include "arkcc_config.h"
 #include "opt.h"
 #include "scatter.h"
-#include <stdio.h>
+/* Note: <stdio.h> intentionally NOT included - all file I/O goes through
+ * fs_read_file/fs_write_file (flash_fs abstraction) to avoid pulling in
+ * semihosting-dependent C library functions on STM32. */
 
-/* Buffer sizes can be overridden at compile time:
- *   host defaults 128KB/512KB/256KB; STM32 port may shrink to 32KB/128KB/64KB.
- * -c / -link mode output accumulation buffers work the same way (these two modes are
- * usually unused on STM32; set them very small via -D to save SRAM). */
-#ifndef ARK_SRC_BUF_SIZE
-#define ARK_SRC_BUF_SIZE  (2 * 1024 * 1024)
-#endif
-#ifndef ARK_ASM_BUF_SIZE
-#define ARK_ASM_BUF_SIZE  (8 * 1024 * 1024)
-#endif
-#ifndef ARK_CODE_BUF_SIZE
-#define ARK_CODE_BUF_SIZE (2 * 1024 * 1024)
-#endif
-#ifndef ARK_OBJ_BUF_SIZE
-#define ARK_OBJ_BUF_SIZE  (ARK_ASM_BUF_SIZE + 16)
-#endif
-#ifndef ARK_LINK_BUF_SIZE
-#define ARK_LINK_BUF_SIZE (256 * 1024)
-#endif
+/* Buffer sizes come from arkcc_config.h (profile-aware): ARK_SRC_BUF_SIZE,
+ * ARK_ASM_BUF_SIZE, ARK_CODE_BUF_SIZE, ARK_OBJ_BUF_SIZE, ARK_LINK_BUF_SIZE.
+ * STM32 profile uses much smaller buffers to fit in AXI SRAM. */
 
-static char          g_src[ARK_SRC_BUF_SIZE];
-static char          g_asm[ARK_ASM_BUF_SIZE];
-static unsigned char g_code[ARK_CODE_BUF_SIZE];
+/* Place large buffers in .ark_buf section so the linker script can put them
+ * in AXI SRAM (0x24000000) on STM32H743. On host builds this is a no-op. */
+static char          g_src[ARK_SRC_BUF_SIZE]   __attribute__((section(".ark_buf")));
+static char          g_asm[ARK_ASM_BUF_SIZE]   __attribute__((section(".ark_buf")));
+static unsigned char g_code[ARK_CODE_BUF_SIZE] __attribute__((section(".ark_buf")));
 
 static int derive_output(const char *input, char *out, int cap, const char *ext) {
     int n = ark_strlen(input);
@@ -104,7 +92,7 @@ int ark_compile(const ArkOptions *opts) {
         char buf[64 * 1024];
         /* Since fs_write_file writes a whole block at once, accumulate link results into out_buf first.
          * Size is controlled by ARK_LINK_BUF_SIZE (can be very small on STM32). */
-        static char out_buf[ARK_LINK_BUF_SIZE];
+        static char out_buf[ARK_LINK_BUF_SIZE] __attribute__((section(".ark_buf")));
         int out_len = 0;
         for (li = 0; li < opts->link_input_count; li++) {
             int n = fs_read_file(opts->link_inputs[li], buf, sizeof(buf));
@@ -327,7 +315,7 @@ int ark_compile(const ArkOptions *opts) {
         }
         /* Build dependency file content: "<obj>: <source> <h1> <h2> ...\n" */
         {
-            static char dep_buf[8192];
+            static char dep_buf[8192] __attribute__((section(".ark_buf")));
             int dl = 0;
             int k;
             /* Output target */
@@ -410,7 +398,7 @@ int ark_compile(const ArkOptions *opts) {
     if (opts->compile_only) {
         char outpath[512];
         const char *target;
-        static unsigned char obj_buf[ARK_OBJ_BUF_SIZE];
+        static unsigned char obj_buf[ARK_OBJ_BUF_SIZE] __attribute__((section(".ark_buf")));
         int ol = 0;
         int code_len = asm_len;  /* default: text assembly for non-ARM backends */
 
@@ -578,7 +566,7 @@ int ark_compile(const ArkOptions *opts) {
             if (opts->scatter_file &&
                 scatter_parse_file(opts->scatter_file, &sd) == 0) {
                 /* .sct -> .ld */
-                static char ld_buf[8192];
+                static char ld_buf[8192] __attribute__((section(".ark_buf")));
                 int ln = scatter_to_ld_script(&sd, ld_buf, (int)sizeof(ld_buf) - 1);
                 if (ln > 0) {
                     char ld_path[512];
@@ -592,7 +580,7 @@ int ark_compile(const ArkOptions *opts) {
             } else if (opts->linker_script &&
                        linker_script_parse_file(opts->linker_script, &sd) == 0) {
                 /* .ld -> .sct */
-                static char sct_buf[8192];
+                static char sct_buf[8192] __attribute__((section(".ark_buf")));
                 int sn = scatter_to_sct_file(&sd, sct_buf, (int)sizeof(sct_buf) - 1);
                 if (sn > 0) {
                     char sct_path[512];

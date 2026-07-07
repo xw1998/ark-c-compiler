@@ -77,6 +77,7 @@ Symbol *sym_add(SymKind kind, const char *name, Type *type, int offset) {
     s->is_defined = 0;
     s->param_count = 0;
     s->is_variadic = 0;
+    s->param_types = 0;
     s->is_static = 0;
     s->is_extern = 0;
     s->enum_value = 0;

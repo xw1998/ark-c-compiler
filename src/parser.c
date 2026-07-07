@@ -2332,6 +2332,9 @@ static AstNode *parse_primary_expr(Parser *p) {
              * num_val=-1 as marker; irgen emits (0, fval) complex number. */
             node->type = type_complex(type_double());
             node->u.num_val = -1;
+        } else if (t.is_float) {
+            /* C99 float suffix (f/F): 10.0f has type float (not double). */
+            node->type = type_float();
         } else {
             node->type = type_double();
         }
