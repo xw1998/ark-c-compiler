@@ -18,7 +18,8 @@ $BIN     = "$OBJDIR\arkcc_stm32.bin"
 $CFLAGS_BASE = @(
     "-c", "--cpu=Cortex-M7", "--thumb", "-O0", "-g", "--c99", "--apcs=interwork",
     "-DARM_MATH_CM7", "-DUSE_HAL_DRIVER", "-DSTM32H743xx",
-    "-DARKCC_PROFILE=ARKCC_PROFILE_STM32_MIN", "-DHAL_MAX_DELAY=0xFFFFFFFFU",
+    "-DARKCC_PROFILE=ARKCC_PROFILE_STM32_MIN", "-DARKCC_BACKEND_X86_64=0",
+    "-DHAL_MAX_DELAY=0xFFFFFFFFU",
     "-Iinclude",
     "-Istdlib\include",
     "-Iport\stm32",

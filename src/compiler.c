@@ -719,6 +719,7 @@ int ark_compile(const ArkOptions *opts) {
             p_reloc_offset= arm_get_reloc_offset;
             p_reloc_type  = arm_get_reloc_type;
         } else if (ark_streq(be->name, "x86")) {
+#if ARKCC_BACKEND_X86_64
             extern int   x86_get_symbol_count(void);
             extern const char *x86_get_symbol_name(int idx);
             extern int   x86_get_symbol_offset(int idx);
@@ -737,6 +738,7 @@ int ark_compile(const ArkOptions *opts) {
             p_reloc_name  = x86_get_reloc_name;
             p_reloc_offset= x86_get_reloc_offset;
             p_reloc_type  = x86_get_reloc_type;
+#endif
         }
 
         /* Write symbol table for object backends (ARM/x86) */
