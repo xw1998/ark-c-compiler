@@ -124,7 +124,11 @@ static void ld_add_sym(const char *name, int offset, int is_weak) {
         g_ld_syms[idx].is_weak = 0;
         return;
     }
-    if (idx >= 0) return;  /* duplicate (same strength), keep first */
+    if (idx >= 0) {
+        if (!g_ld_syms[idx].is_weak && !is_weak)
+            ark_log("[link] warning: duplicate strong symbol '%s', using first definition\n", name);
+        return;  /* duplicate (same strength), keep first */
+    }
     n = 0;
     while (name[n] && n < (int)sizeof(g_ld_syms[g_ld_sym_count].name) - 1) {
         g_ld_syms[g_ld_sym_count].name[n] = name[n]; n++;
@@ -149,7 +153,11 @@ static void ld_add_reloc(const char *name, int offset, int type) {
 }
 
 /* Patch a Thumb-2 branch or absolute reference in the merged code buffer. */
-static void ld_patch_ref(unsigned char *code, int pc, int target, int type) {
+static void ld_patch_ref(unsigned char *code, int code_size, int pc, int target, int type) {
+    if (pc < 0 || pc + 4 > code_size) {
+        ark_log("[link] error: relocation offset %d out of bounds (code size %d)\n", pc, code_size);
+        return;
+    }
     if (type == 4) {
         /* R_ARM_ABS32: 4-byte absolute address */
         code[pc]     = (unsigned char)(target & 0xFF);
@@ -303,7 +311,7 @@ int ark_compile(const ArkOptions *opts) {
                 for (ri = 0; ri < g_ld_reloc_count; ri++) {
                     int idx = ld_find_global(g_ld_relocs[ri].name);
                     if (idx >= 0)
-                        ld_patch_ref(out_buf, g_ld_relocs[ri].offset,
+                        ld_patch_ref(out_buf, out_len, g_ld_relocs[ri].offset,
                                      g_ld_syms[idx].offset, g_ld_relocs[ri].type);
                     else
                         ark_log("[arkcc] link: unresolved symbol '%s'\n", g_ld_relocs[ri].name);

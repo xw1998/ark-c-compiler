@@ -382,13 +382,13 @@ static long long eval_expr(int min_prec) {
                 case 9:  lhs = lhs +  rhs; break;
                 case 10: lhs = lhs -  rhs; break;
                 case 11: lhs = lhs *  rhs; break;
-                case 12: lhs = rhs ? lhs / rhs : 0; break;
+                case 12: if (rhs == 0) { ark_log("[preproc] error: division by zero in #if\n"); lhs = 0; } else lhs = lhs / rhs; break;
                 case 13: lhs = lhs << rhs; break;
                 case 14: lhs = lhs >> rhs; break;
                 case 15: lhs = lhs &  rhs; break;
                 case 16: lhs = lhs |  rhs; break;
                 case 17: lhs = lhs ^  rhs; break;
-                case 18: lhs = rhs ? lhs % rhs : 0; break;
+                case 18: if (rhs == 0) { ark_log("[preproc] error: modulo by zero in #if\n"); lhs = 0; } else lhs = lhs % rhs; break;
                 default: break;
             }
         }
@@ -457,6 +457,8 @@ static const char *parse_macro_args(const char *p, char **args, int *parg_count,
         if (bl < 1023) buf[bl++] = *p;
         p++;
     }
+    if (bl >= 1023)
+        ark_log("[preproc] warning: macro argument truncated at 1023 bytes\n");
     *parg_count = n;
     return p;
 }
@@ -757,6 +759,9 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
                         break;
                     }
                     body[bl++] = *q++;
+                }
+                if (bl >= 16383 && *q && *q != '\n') {
+                    ark_log("[preproc] warning: macro '%s' body truncated at 16383 bytes\n", nl > 0 ? name : "?");
                 }
                 /* If macro body was truncated (exceeded buffer), consume the rest of
                  * the macro definition (including line continuations) to avoid emitting

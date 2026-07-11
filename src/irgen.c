@@ -40,7 +40,7 @@ static void sb_putc(StrBuf *b, char c) {
 static void sb_puts(StrBuf *b, const char *s) { while (*s) sb_putc(b, *s++); }
 static void sb_putd(StrBuf *b, long long v) {
     char tmp[24]; int n = 0; unsigned long long u; int neg = 0; int i;
-    if (v < 0) { neg = 1; u = (unsigned long long)(-v); } else u = (unsigned long long)v;
+    if (v < 0) { neg = 1; u = -(unsigned long long)v; } else u = (unsigned long long)v;
     if (u == 0) tmp[n++] = '0';
     while (u) { tmp[n++] = (char)('0' + u % 10); u /= 10; }
     if (neg) sb_putc(b, '-');
