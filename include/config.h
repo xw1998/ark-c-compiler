@@ -33,6 +33,7 @@ typedef struct {
     int wchar32;              /* --wchar32: wchar_t is 32-bit */
     int dwarf_version;        /* --dwarf2=2 / --dwarf3=3; 0=default */
     const char *scatter_file; /* --scatter <file>: scatter load description file */
+    const char *linker_script;/* -T/--linker-script <file>: GNU ld script (converted to scatter internally) */
     const char *fpu_type;     /* --fpu <name>: FPU type name */
 } ArkccConfig;
 

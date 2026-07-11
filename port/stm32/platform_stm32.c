@@ -210,3 +210,168 @@ void ark_get_date_time(char *date_buf, char *time_buf) {
     for (i = 0; i < 8; i++) time_buf[i] = tn[i];
     time_buf[8] = 0;
 }
+
+/* ============================================================================
+ * Stage 5: ARM C library retargeting
+ *
+ * __user_initial_stackheap: called by the ARM C library's __rt_entry to obtain
+ * the initial heap and stack extents. Returns 4 values in registers (r0-r3):
+ *   r0 = heap base   (start of heap area)
+ *   r1 = stack base  (top of stack, highest address)
+ *   r2 = heap limit  (end of heap area, first address beyond heap)
+ *   r3 = stack limit (lowest address the stack may grow to)
+ *
+ * STM32H743 memory layout (from STM32H743VITx_FLASH.sct):
+ *   Flash  : 0x08000000, 2 MB       (code + rodata)
+ *   DTCM   : 0x20000000, 128 KB     (.data/.bss + stack, top at 0x20020000)
+ *   AXI    : 0x24000000, 512 KB     (.ark_heap/.ark_code/.ark_buf)
+ *
+ * Heap lives in AXI SRAM; stack grows down from DTCM top.
+ * ========================================================================= */
+
+/* Heap/stack addresses for STM32H743.
+ * These match the scatter file (STM32H743VITx_FLASH.sct) exactly.
+ * On host builds these are never used (platform_host.c is linked instead). */
+#define ARK_HEAP_BASE   0x24000000u  /* AXI SRAM start (512 KB) */
+#define ARK_HEAP_LIMIT  0x24080000u  /* AXI SRAM end */
+#define ARK_STACK_BASE  0x20020000u  /* DTCM top (initial SP) */
+#define ARK_STACK_LIMIT 0x20000000u  /* DTCM bottom (stack limit) */
+
+#if defined(__CC_ARM) || defined(__ARMCC_VERSION)
+
+/* armcc5 / armclang: use __value_in_regs for multi-register struct return.
+ * This is the standard ARM C library retargeting contract. */
+struct __heap_extent {
+    void *heap_base;
+    void *heap_limit;
+    void *stack_base;
+    void *stack_limit;
+};
+
+__value_in_regs struct __heap_extent
+__user_initial_stackheap(unsigned requested_heap,
+                          void *heap_base,
+                          void *stack_base,
+                          unsigned stack_size) {
+    struct __heap_extent e;
+    (void)requested_heap;   /* we ignore the C library's suggestion */
+    (void)heap_base;        /* and the default heap_base passed in */
+    (void)stack_base;
+    (void)stack_size;
+    e.heap_base   = (void *)ARK_HEAP_BASE;
+    e.heap_limit  = (void *)ARK_HEAP_LIMIT;
+    e.stack_base  = (void *)ARK_STACK_BASE;
+    e.stack_limit = (void *)ARK_STACK_LIMIT;
+    return e;
+}
+
+/* fputc: armcc5 stdio retargeting hook.
+ * Called by printf/fprintf to output a single character.
+ * Redirects to UART1 via HAL_UART_Transmit_Wrapper. */
+int fputc(int ch, void *stream) {
+    (void)stream;
+    {
+        unsigned char c = (unsigned char)ch;
+        /* Translate LF to CRLF for terminal display */
+        if (c == '\n') {
+            unsigned char cr = '\r';
+            HAL_UART_Transmit_Wrapper(&cr, 1);
+        }
+        HAL_UART_Transmit_Wrapper(&c, 1);
+    }
+    return ch;
+}
+
+/* _ttywrch: armcc5 terminal write for error/diagnostic messages. */
+void _ttywrch(int ch) {
+    unsigned char c = (unsigned char)ch;
+    if (c == '\n') {
+        unsigned char cr = '\r';
+        HAL_UART_Transmit_Wrapper(&cr, 1);
+    }
+    HAL_UART_Transmit_Wrapper(&c, 1);
+}
+
+/* _sys_exit: armcc5 exit handler (called by exit()/abort()).
+ * On bare-metal, we loop forever since there's no OS to return to. */
+void _sys_exit(int return_code) {
+    (void)return_code;
+    uart_puts("\r\n[arkcc] _sys_exit called\r\n");
+    for (;;) { }
+}
+
+#endif /* __CC_ARM || __ARMCC_VERSION */
+
+/* ============================================================================
+ * HAL redirect: strong putchar that overrides the weak default in
+ * putchar_default.c. This makes printf (from stdlib/src/printf.c) output
+ * to UART1 on STM32, regardless of which compiler built the project.
+ * ========================================================================= */
+int putchar(int c) {
+    unsigned char ch = (unsigned char)c;
+    /* Translate LF to CRLF for terminal display */
+    if (ch == '\n') {
+        unsigned char cr = '\r';
+        HAL_UART_Transmit_Wrapper(&cr, 1);
+    }
+    HAL_UART_Transmit_Wrapper(&ch, 1);
+    return c;
+}
+
+/* ============================================================================
+ * Stage 5: Minimal malloc/free for STM32 bare-metal
+ *
+ * A simple bump allocator for the heap region in AXI SRAM.
+ * The ARM C library's malloc (when using __user_initial_stackheap) uses this
+ * region; for arkcc's own use, mem_pool_alloc is preferred. This malloc/free
+ * is for user code and any C library functions that call malloc internally.
+ * ========================================================================= */
+/* This file is only compiled for STM32 targets (see Makefile/build_stm32_armcc.ps1),
+ * so malloc/free are always provided here. On host builds, platform_host.c is
+ * linked instead and the host libc provides malloc/free. */
+
+static unsigned char *g_heap_ptr = (unsigned char *)ARK_HEAP_BASE;
+static unsigned char *g_heap_limit_ptr = (unsigned char *)ARK_HEAP_LIMIT;
+
+/* Simple bump allocator: no free list, no coalescing.
+ * Sufficient for embedded use where allocations are mostly permanent.
+ * Aligns to 8 bytes (ARM AAPCS requirement). */
+void *malloc(unsigned int size) {
+    unsigned int aligned = (size + 7u) & ~7u;  /* 8-byte alignment */
+    void *p;
+    if (g_heap_ptr + aligned > g_heap_limit_ptr) return 0;
+    p = g_heap_ptr;
+    g_heap_ptr += aligned;
+    return p;
+}
+
+void free(void *ptr) {
+    (void)ptr;  /* bump allocator: free is a no-op */
+}
+
+/* calloc: malloc + memset */
+void *calloc(unsigned int nmemb, unsigned int size) {
+    unsigned int total = nmemb * size;
+    void *p = malloc(total);
+    if (p) {
+        unsigned char *bp = (unsigned char *)p;
+        unsigned int i;
+        for (i = 0; i < total; i++) bp[i] = 0;
+    }
+    return p;
+}
+
+/* realloc: simple impl — allocate new, copy, (old free is no-op) */
+void *realloc(void *ptr, unsigned int size) {
+    void *p;
+    if (!ptr) return malloc(size);
+    p = malloc(size);
+    if (p) {
+        /* Copy old data (we don't know old size, copy up to new size) */
+        unsigned char *dst = (unsigned char *)p;
+        unsigned char *src = (unsigned char *)ptr;
+        unsigned int i;
+        for (i = 0; i < size; i++) dst[i] = src[i];
+    }
+    return p;
+}

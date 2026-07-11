@@ -221,6 +221,78 @@ static void ld_patch_ref(unsigned char *code, int code_size, int pc, int target,
     }
 }
 
+/* === Cortex-M vector table generation ===
+ * Generates a vector table at the start of the linked binary. Each entry is
+ * a 4-byte little-endian address. Entry 0 = initial SP; entries 1-15 =
+ * system exception handlers; entries 16+ = peripheral IRQ handlers.
+ * Handler addresses are resolved from the global symbol table as
+ * flash_base + symbol_offset. Unresolved entries are filled with
+ * Default_Handler (if defined) or 0. */
+
+#define LD_VECTOR_TABLE_ENTRIES 256  /* 1024 bytes; covers STM32F4/H7 */
+
+static const char *g_ld_vector_names[] = {
+    NULL,                 /* 0: initial SP */
+    "Reset_Handler",      /* 1 */
+    "NMI_Handler",        /* 2 */
+    "HardFault_Handler",  /* 3 */
+    "MemManage_Handler",  /* 4 */
+    "BusFault_Handler",   /* 5 */
+    "UsageFault_Handler", /* 6 */
+    NULL, NULL, NULL, NULL, /* 7-10: reserved */
+    "SVC_Handler",        /* 11 */
+    "DebugMon_Handler",   /* 12 */
+    NULL,                 /* 13: reserved */
+    "PendSV_Handler",     /* 14 */
+    "SysTick_Handler"     /* 15 */
+};
+#define LD_SYSTEM_VECTOR_COUNT 16
+
+/* Write a 4-byte LE address into out_buf[off]. */
+static void ld_write_word(unsigned char *buf, int off, unsigned val) {
+    buf[off]     = (unsigned char)(val & 0xFF);
+    buf[off + 1] = (unsigned char)((val >> 8) & 0xFF);
+    buf[off + 2] = (unsigned char)((val >> 16) & 0xFF);
+    buf[off + 3] = (unsigned char)((val >> 24) & 0xFF);
+}
+
+/* Generate vector table at out_buf[0..vt_size-1].
+ * Handler addresses = flash_base + symbol_offset (symbols already adjusted).
+ * Returns vt_size in bytes (LD_VECTOR_TABLE_ENTRIES * 4). */
+static int ld_build_vector_table(unsigned char *out_buf,
+                                  unsigned flash_base,
+                                  unsigned initial_sp) {
+    int i;
+    int vt_size = LD_VECTOR_TABLE_ENTRIES * 4;
+    unsigned default_addr = 0;
+
+    /* Find Default_Handler for filling unresolved entries */
+    {
+        int idx = ld_find_global("Default_Handler");
+        if (idx >= 0)
+            default_addr = flash_base + (unsigned)g_ld_syms[idx].offset;
+    }
+
+    /* Entry 0: initial SP */
+    ld_write_word(out_buf, 0, initial_sp);
+
+    /* Fill entries 1..N with Default_Handler (or 0) */
+    for (i = 1; i < LD_VECTOR_TABLE_ENTRIES; i++)
+        ld_write_word(out_buf, i * 4, default_addr);
+
+    /* Fill in known system exception handlers */
+    for (i = 1; i < LD_SYSTEM_VECTOR_COUNT; i++) {
+        if (g_ld_vector_names[i]) {
+            int idx = ld_find_global(g_ld_vector_names[i]);
+            if (idx >= 0) {
+                unsigned addr = flash_base + (unsigned)g_ld_syms[idx].offset;
+                ld_write_word(out_buf, i * 4, addr);
+            }
+        }
+    }
+    return vt_size;
+}
+
 int ark_compile(const ArkOptions *opts) {
     int src_len;
     Lexer lex;
@@ -312,6 +384,66 @@ int ark_compile(const ArkOptions *opts) {
                     reloc_off = rd_le32(up + pos); pos += 4;
                     reloc_type = up[pos]; pos += 1;
                     ld_add_reloc(reloc_name, base + reloc_off, reloc_type);
+                }
+            }
+            /* === Scatter-aware linking: generate vector table ===
+             * If a scatter file (.sct or .ld) is provided, parse it to derive
+             * flash_base and initial_sp. If Reset_Handler is found in the symbol
+             * table, generate a Cortex-M vector table at the start of the binary,
+ * shift code right by vt_size, and adjust all symbol/reloc offsets. */
+            {
+                unsigned flash_base = 0x08000000u;
+                unsigned initial_sp = 0x20020000u;
+                int vt_size = 0;
+#if ARKCC_FEATURE_SCATTER
+                {
+                    ScatterDesc ld_scatter;
+                    ld_scatter.load_regions = 0;
+                    ld_scatter.error_count = 0;
+                    if (g_config.scatter_file && g_config.scatter_file[0] &&
+                        scatter_parse_file(g_config.scatter_file, &ld_scatter) == 0) {
+                        flash_base = scatter_get_flash_base(&ld_scatter);
+                        {   ScatterExecRegion *er_rw = scatter_find_er_by_attr(&ld_scatter, SCATTER_ATTR_RW);
+                            if (er_rw && er_rw->size > 0)
+                                initial_sp = er_rw->load_addr + er_rw->size;
+                        }
+                        scatter_free(&ld_scatter);
+                    } else if (g_config.linker_script && g_config.linker_script[0] &&
+                               linker_script_parse_file(g_config.linker_script, &ld_scatter) == 0) {
+                        flash_base = scatter_get_flash_base(&ld_scatter);
+                        {   ScatterExecRegion *er_rw = scatter_find_er_by_attr(&ld_scatter, SCATTER_ATTR_RW);
+                            if (er_rw && er_rw->size > 0)
+                                initial_sp = er_rw->load_addr + er_rw->size;
+                        }
+                        scatter_free(&ld_scatter);
+                    }
+                }
+#endif
+                /* Generate vector table if Reset_Handler symbol exists */
+                if (ld_find_global("Reset_Handler") >= 0) {
+                    vt_size = LD_VECTOR_TABLE_ENTRIES * 4;
+                    if (out_len + vt_size > (int)sizeof(out_buf)) {
+                        ark_log("[arkcc] link: vector table exceeds output buffer\n");
+                        return ARK_ERR_IO;
+                    }
+                    /* Move existing code right by vt_size bytes */
+                    { int k; for (k = out_len - 1; k >= 0; k--) out_buf[k + vt_size] = out_buf[k]; }
+                    /* Adjust all symbol offsets by vt_size */
+                    for (li = 0; li < g_ld_sym_count; li++)
+                        g_ld_syms[li].offset += vt_size;
+                    /* Adjust all relocation offsets by vt_size */
+                    for (li = 0; li < g_ld_reloc_count; li++)
+                        g_ld_relocs[li].offset += vt_size;
+                    /* Generate vector table at the beginning */
+                    ld_build_vector_table(out_buf, flash_base, initial_sp);
+                    out_len += vt_size;
+                    if (opts->verbose) {
+                        int ri = ld_find_global("Reset_Handler");
+                        ark_log("[arkcc] link: vector table %d bytes, SP=0x%08X, Flash=0x%08X\n",
+                                vt_size, initial_sp, flash_base);
+                        if (ri >= 0)
+                            ark_log("  Reset     = 0x%08X\n", flash_base + (unsigned)g_ld_syms[ri].offset);
+                    }
                 }
             }
             /* Resolve cross-object relocations via find_global (strong > weak) */
@@ -894,6 +1026,7 @@ int ark_compile(const ArkOptions *opts) {
     if (be->link) {
         int rc = be->link(g_code, code_size, 0);
         if (rc < 0) return ARK_ERR_LINK;
+        if (rc > 0) code_size = rc;  /* backend may expand code (e.g. vector table) */
     }
     if (opts->verbose) ark_log("[arkcc] assembled: %d bytes\n", code_size);
 
@@ -942,5 +1075,6 @@ int ark_compile_and_run(const char *path) {
     o.linker_script = 0;
     for (i = 0; i < 64; i++) o.pre_defines[i] = 0;
     o.pre_define_count = 0;
+    o.uvprojx = 0;
     return ark_compile(&o);
 }

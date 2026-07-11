@@ -323,6 +323,10 @@ static void arm_scatter_load(void) {
     if (g_config.scatter_file && g_config.scatter_file[0] &&
         scatter_parse_file(g_config.scatter_file, &g_scatter) == 0) {
         g_scatter_loaded = 1;
+    } else if (g_config.linker_script && g_config.linker_script[0] &&
+               linker_script_parse_file(g_config.linker_script, &g_scatter) == 0) {
+        /* -T/--linker-script: parse GNU ld script the same way as .sct */
+        g_scatter_loaded = 1;
         g_flash_base = scatter_get_flash_base(&g_scatter);
         /* +RW region is the load origin for .data; +ZI for .bss.
          * If a +ZI region exists separately, .bss starts there, otherwise it
@@ -5451,11 +5455,11 @@ static int arm_assemble(const char *asm_text, unsigned char *out, int cap) {
  * Keeping this function a no-op is the correct division of labour:
  * the backend assembles and exports symbols/relocs; compiler.c links.
  * Making arm_link do real work would duplicate the -link logic and
- * still could not resolve cross-object refs without all objects. */
-static int arm_link(unsigned char *code, int size, struct LinkContext *lc) {
-    (void)code; (void)size; (void)lc;
-    return 0;
-}
+ * still could not resolve cross-object refs without all objects.
+ *
+ * Exception: vector table generation is handled after symbol table is
+ * built (see arm_link_impl below, called via the forward declaration). */
+static int arm_link(unsigned char *code, int size, struct LinkContext *lc);  /* forward decl */
 
 /* --- Symbol table export for linker --- */
 typedef struct ArmSym {
@@ -5528,6 +5532,96 @@ int arm_get_reloc_count(void) { return g_arm_reloc_count; }
 const char *arm_get_reloc_name(int idx) { return g_arm_relocs[idx].name; }
 int arm_get_reloc_offset(int idx) { return g_arm_relocs[idx].offset; }
 int arm_get_reloc_type(int idx) { return g_arm_relocs[idx].type; }
+
+/* === Vector table generation (single-file .bin mode) ===
+ * If Reset_Handler is defined, generates a Cortex-M vector table at the start
+ * of the binary. Safe because Thumb-2 branches use PC-relative offsets that
+ * survive a uniform shift; absolute (.word) refs are already resolved by
+ * resolve_refs_a within the object. */
+#define ARM_VT_ENTRIES 256
+#define ARM_VT_SIZE   (ARM_VT_ENTRIES * 4)
+static const char *g_arm_vector_names[] = {
+    NULL, "Reset_Handler", "NMI_Handler", "HardFault_Handler",
+    "MemManage_Handler", "BusFault_Handler", "UsageFault_Handler",
+    NULL, NULL, NULL, NULL,
+    "SVC_Handler", "DebugMon_Handler", NULL,
+    "PendSV_Handler", "SysTick_Handler"
+};
+#define ARM_SYSTEM_VECTOR_COUNT 16
+
+static int arm_link(unsigned char *code, int size, struct LinkContext *lc) {
+    int i, reset_idx = -1, default_idx = -1;
+    unsigned flash_base, initial_sp;
+    int new_size;
+    (void)lc;
+
+    /* Find Reset_Handler in symbol table */
+    for (i = 0; i < g_arm_sym_count; i++) {
+        if (ark_streq(g_arm_syms[i].name, "Reset_Handler")) { reset_idx = i; break; }
+    }
+    if (reset_idx < 0) return size;  /* no Reset_Handler: skip vector table */
+
+    /* Find Default_Handler for filling unresolved entries */
+    for (i = 0; i < g_arm_sym_count; i++) {
+        if (ark_streq(g_arm_syms[i].name, "Default_Handler")) { default_idx = i; break; }
+    }
+
+    /* Determine flash_base and initial_sp from scatter or defaults */
+    flash_base = g_flash_base;
+    initial_sp = g_bss_base + 0x20000;  /* default: SRAM + 128KB */
+#if ARKCC_FEATURE_SCATTER
+    if (g_scatter_loaded) {
+        ScatterExecRegion *er_rw = scatter_find_er_by_attr(&g_scatter, SCATTER_ATTR_RW);
+        if (er_rw && er_rw->size > 0)
+            initial_sp = er_rw->load_addr + er_rw->size;
+    }
+#endif
+
+    new_size = size + ARM_VT_SIZE;
+    if (new_size > ARK_CODE_BUF_SIZE) return -1;
+
+    /* Move existing code right by ARM_VT_SIZE bytes */
+    for (i = size - 1; i >= 0; i--) code[i + ARM_VT_SIZE] = code[i];
+
+    /* Adjust all symbol offsets by ARM_VT_SIZE */
+    for (i = 0; i < g_arm_sym_count; i++)
+        g_arm_syms[i].offset += ARM_VT_SIZE;
+
+    /* Generate vector table at code[0] */
+    {
+        unsigned default_addr = (default_idx >= 0) ?
+            (flash_base + (unsigned)g_arm_syms[default_idx].offset) : 0;
+        /* Entry 0: initial SP */
+        code[0] = (unsigned char)(initial_sp & 0xFF);
+        code[1] = (unsigned char)((initial_sp >> 8) & 0xFF);
+        code[2] = (unsigned char)((initial_sp >> 16) & 0xFF);
+        code[3] = (unsigned char)((initial_sp >> 24) & 0xFF);
+        /* Fill entries 1..N with Default_Handler (or 0) */
+        for (i = 1; i < ARM_VT_ENTRIES; i++) {
+            code[i*4]   = (unsigned char)(default_addr & 0xFF);
+            code[i*4+1] = (unsigned char)((default_addr >> 8) & 0xFF);
+            code[i*4+2] = (unsigned char)((default_addr >> 16) & 0xFF);
+            code[i*4+3] = (unsigned char)((default_addr >> 24) & 0xFF);
+        }
+        /* Fill in known system exception handlers */
+        for (i = 1; i < ARM_SYSTEM_VECTOR_COUNT; i++) {
+            if (g_arm_vector_names[i]) {
+                int j;
+                for (j = 0; j < g_arm_sym_count; j++) {
+                    if (ark_streq(g_arm_syms[j].name, g_arm_vector_names[i])) {
+                        unsigned addr = flash_base + (unsigned)g_arm_syms[j].offset;
+                        code[i*4]   = (unsigned char)(addr & 0xFF);
+                        code[i*4+1] = (unsigned char)((addr >> 8) & 0xFF);
+                        code[i*4+2] = (unsigned char)((addr >> 16) & 0xFF);
+                        code[i*4+3] = (unsigned char)((addr >> 24) & 0xFF);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    return new_size;
+}
 
 static const ArkBackend g_arm_backend = {
     "arm",

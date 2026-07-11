@@ -12,6 +12,7 @@
 #include "arkcc_config.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 static void usage(void) {
     fprintf(stderr,
@@ -37,6 +38,7 @@ static void usage(void) {
         "  -ffunction-sections  one section per function; alias: --split_sections\n"
         "  --scatter <file>   ARM scatter .sct file (parsed and converted to .ld when -S is used)\n"
         "  -T <file>          GNU ld linker script .ld (alias: --linker-script; converted to .sct with -S)\n"
+        "  --uvprojx <file>   MDK project file: auto-extract -I include paths and -D defines\n"
         "  -config <file>     load arkcc INI config file (overrides defaults; see arkcc.cfg)\n"
         "  -profile <name>    select build profile (host_full/stm32_min/cross_compile)\n"
         "  -D<name>[=<val>]   define macro (e.g. -DFOO=1 or -D FOO)\n"
@@ -51,6 +53,146 @@ static int file_exists(const char *path) {
     if (!fp) return 0;
     fclose(fp);
     return 1;
+}
+
+/* === MDK .uvprojx auto-discovery ===
+ * Parses an MDK .uvprojx (XML) file to extract <IncludePath> and <Define>
+ * entries from the <Cads><VariousControls> section, then injects them as
+ * -I and -D options into opts. Relative paths are resolved relative to
+ * the .uvprojx file's directory.
+ *
+ * This lets arkcc compile an unmodified MDK project:
+ *   arkcc main.c --uvprojx project.uvprojx -target arm -c -o main.ark_obj
+ */
+static void parse_uvprojx(const char *uvprojx_path, ArkOptions *opts) {
+    FILE *fp;
+    char *buf;
+    long fsize;
+    char dir[512];
+    int di;
+
+    fp = fopen(uvprojx_path, "r");
+    if (!fp) {
+        fprintf(stderr, "[arkcc] warning: cannot open .uvprojx '%s'\n", uvprojx_path);
+        return;
+    }
+    fseek(fp, 0, SEEK_END);
+    fsize = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    if (fsize <= 0 || fsize > 4 * 1024 * 1024) { fclose(fp); return; }
+    buf = (char *)malloc(fsize + 1);
+    if (!buf) { fclose(fp); return; }
+    fread(buf, 1, fsize, fp);
+    buf[fsize] = 0;
+    fclose(fp);
+
+    /* Extract directory from uvprojx_path (for relative path resolution) */
+    for (di = (int)strlen(uvprojx_path) - 1; di >= 0; di--) {
+        if (uvprojx_path[di] == '/' || uvprojx_path[di] == '\\') break;
+    }
+    if (di > 0) {
+        int j;
+        for (j = 0; j <= di && j < (int)sizeof(dir) - 1; j++)
+            dir[j] = uvprojx_path[j];
+        dir[j] = 0;
+    } else {
+        dir[0] = 0;
+    }
+
+    /* Find <Cads> section first, then <IncludePath> and <Define> within it.
+     * The .uvprojx has multiple <IncludePath>/<Define> tags (top-level empty,
+     * Cads with content, Aads empty); we need the Cads ones. */
+    {
+        char *cads = strstr(buf, "<Cads>");
+        char *cads_end = cads ? strstr(cads, "</Cads>") : 0;
+        char *inc_start, *def_start;
+
+        /* Find <IncludePath>...</IncludePath> within Cads */
+        if (cads && cads_end) {
+            inc_start = strstr(cads, "<IncludePath>");
+            if (inc_start && inc_start < cads_end) {
+                inc_start += 13;  /* strlen("<IncludePath>") */
+                {
+                    char *end = strstr(inc_start, "</IncludePath>");
+                    if (end && end < cads_end) {
+                        /* Split by ';' and add each path */
+                        char *p = inc_start;
+                        while (p < end && opts->include_dir_count < 16) {
+                            char *sep = strchr(p, ';');
+                            char *path_end = sep ? sep : end;
+                            int plen = (int)(path_end - p);
+                            if (plen > 0 && plen < 512) {
+                                char abspath[1024];
+                                char tmp[512];
+                                int ti = 0;
+                                int j;
+                                /* Copy the path segment */
+                                for (j = 0; j < plen && ti < (int)sizeof(tmp) - 1; j++) {
+                                    if (p[j] != ' ' && p[j] != '\t' && p[j] != '\r' && p[j] != '\n')
+                                        tmp[ti++] = p[j];
+                                }
+                                tmp[ti] = 0;
+                                if (ti > 0) {
+                                    /* If relative, prepend the .uvprojx directory */
+                                    if (tmp[0] != '/' && tmp[0] != '\\' &&
+                                        !(ti > 1 && tmp[1] == ':')) {
+                                        snprintf(abspath, sizeof(abspath), "%s%s", dir, tmp);
+                                    } else {
+                                        strncpy(abspath, tmp, sizeof(abspath) - 1);
+                                        abspath[sizeof(abspath) - 1] = 0;
+                                    }
+                                    {
+                                        char *dup = (char *)malloc(strlen(abspath) + 1);
+                                        if (dup) { strcpy(dup, abspath); }
+                                        opts->include_dirs[opts->include_dir_count++] = dup;
+                                    }
+                                }
+                            }
+                            p = path_end + 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        /* Find <Define>...</Define> within Cads */
+        if (cads && cads_end) {
+            def_start = strstr(cads, "<Define>");
+            if (def_start && def_start < cads_end) {
+                def_start += 8;  /* strlen("<Define>") */
+                {
+                    char *end = strstr(def_start, "</Define>");
+                    if (end && end < cads_end) {
+                        /* Split by ',' and add each define */
+                        char *p = def_start;
+                        while (p < end && opts->pre_define_count < 64) {
+                            char *sep = strchr(p, ',');
+                            char *def_end = sep ? sep : end;
+                            int dlen = (int)(def_end - p);
+                            if (dlen > 0 && dlen < 256) {
+                                char tmp[256];
+                                int ti = 0;
+                                int j;
+                                for (j = 0; j < dlen && ti < (int)sizeof(tmp) - 1; j++) {
+                                    if (p[j] != ' ' && p[j] != '\t' && p[j] != '\r' && p[j] != '\n')
+                                        tmp[ti++] = p[j];
+                                }
+                                tmp[ti] = 0;
+                                if (ti > 0) {
+                                    char *dup = (char *)malloc(strlen(tmp) + 1);
+                                    if (dup) { strcpy(dup, tmp); }
+                                    opts->pre_defines[opts->pre_define_count++] = dup;
+                                }
+                            }
+                            p = def_end + 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    free(buf);
 }
 
 static void reset_opts(ArkOptions *o) {
@@ -79,6 +221,7 @@ static void reset_opts(ArkOptions *o) {
     o->linker_script = 0;
     for (i = 0; i < 64; i++) o->pre_defines[i] = 0;
     o->pre_define_count = 0;
+    o->uvprojx = 0;
 }
 
 int main(int argc, char **argv) {
@@ -150,6 +293,13 @@ int main(int argc, char **argv) {
             /* -T <file> / --linker-script <file>: GNU ld linker script (.ld).
              * Stored in opts so the backend can emit address-aware section placement. */
             opts.linker_script = argv[++i];
+        }
+        else if (strcmp(a, "--uvprojx") == 0 && i + 1 < argc) {
+            /* --uvprojx <file>: MDK project file. Auto-extracts -I and -D
+             * from <Cads><VariousControls><IncludePath>/<Define> and injects
+             * them into opts.include_dirs / opts.pre_defines. */
+            opts.uvprojx = argv[++i];
+            parse_uvprojx(opts.uvprojx, &opts);
         }
         else if (strcmp(a, "--fpu") == 0 && i + 1 < argc) {
             /* --fpu <name>: already handled by config_apply_args, skip argument here */

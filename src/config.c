@@ -273,6 +273,15 @@ void config_apply_args(int argc, char **argv) {
             i++;
             continue;
         }
+        /* -T/--linker-script: GNU ld style. Stored separately so the backend
+         * can parse it via linker_script_parse_file and the -S mode can do
+         * .ld -> .sct conversion. */
+        if ((ark_streq(a, "-T") || ark_streq(a, "--linker-script") ||
+             ark_streq(a, "--script")) && i + 1 < argc) {
+            g_config.linker_script = argv[i + 1];
+            i++;
+            continue;
+        }
         if (ark_streq(a, "--fpu") && i + 1 < argc) {
             const char *name = argv[i + 1];
             g_config.fpu_type = name;

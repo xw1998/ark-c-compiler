@@ -15,8 +15,8 @@
 | 阶段 1 | arkCC 自身用 armcc5 编译为 STM32 固件 | ✅ 已完成 |
 | 阶段 2 | STM32 板载 arkCC 能编译 `.c` 源码生成 `.bin` | ✅ 已完成 |
 | 阶段 3 | 板载编译产物能烧写回 Flash 并跳转执行 | 🚧 进行中 |
-| 阶段 4 | 无需改动的 MDK 工程可被 arkCC 直接编译 | 📋 路线图 |
-| 阶段 5 | `__user_initial_stackheap`、HAL 重定向、scatter 链接完整支持 | 📋 路线图 |
+| 阶段 4 | 无需改动的 MDK 工程可被 arkCC 直接编译 | ✅ 已完成（`--uvprojx` 自动提取 include 路径和宏定义；预处理除零保护） |
+| 阶段 5 | `__user_initial_stackheap`、HAL 重定向、scatter 链接完整支持 | ✅ 已完成（`__user_initial_stackheap` + `putchar`/`fputc` UART 重定向 + malloc/free + scatter 感知向量表生成） |
 
 详见 [docs/STM32_BUILD.md](docs/STM32_BUILD.md) 与 [docs/MANUAL.md](docs/MANUAL.md)。
 
@@ -155,7 +155,7 @@
 | 完整 DWARF 调试信息（`.file/.loc/.cfi_startproc/.size` + `.debug_info`/`.debug_abbrev`/`.debug_line`） | 是 |
 | TLS 线程局部存储（`.tbss`/`.tdata`） | 是 |
 | `--split_sections` 每函数一段（`.text.fn`） | 是 |
-| Scatter 加载描述文件解析（`include/scatter.h` + `src/scatter.c`） | 是（仅解析与 `.sct`↔`.ld` 互转，**不参与实际段放置/链接**；见下表） |
+| Scatter 加载描述文件解析（`include/scatter.h` + `src/scatter.c`） | 是（解析 + scatter 感知链接 + 向量表生成；见下表） |
 | CPU 选择（`-mcpu`/`--cpu`，`include/cpu.h` + `src/cpu.c`） | 是 |
 
 ### `.sct` / `.s` 文件支持矩阵
@@ -166,12 +166,13 @@
 | 解析 GNU `.ld` 脚本 | ✅ | `linker_script_parse_file()` (`src/scatter.c`) |
 | `.sct` → `.ld` 转换 | ✅ | 仅在 `-S` 模式下输出，`scatter_to_ld_script()` |
 | `.ld` → `.sct` 转换 | ✅ | 仅在 `-S` 模式下输出，`scatter_to_sct_file()` |
-| 按段名查找执行地址 | ✅ | `scatter_lookup_addr()`，但**ARM 后端未调用** |
-| 用 `.sct` 进行实际段放置/链接 | ❌ | 后端从不查询 `ScatterDesc`；`arm_link()` 为空实现 |
+| 按段名查找执行地址 | ✅ | `scatter_lookup_addr()` + `scatter_get_er_base_for_section()` |
+| 用 `.sct` 进行实际段放置/链接 | ✅ | scatter 感知：`-link` 模式解析 `.sct`/`.ld` → 提取 flash_base/initial_sp → 生成 256 条目向量表 → 移动代码 → 调整符号/重定位偏移 |
 | 编译 `.s`/`.S` 汇编文件 | ✅ | `arm_assemble()` 完整 Thumb-2 文本汇编器，按扩展名触发 |
 | 编译 `.asm` 文件 | ❌ | 仅识别 `.s`/`.S`（2 字符扩展名） |
-| `--scatter <file>` 命令行选项 | ✅ | 在 `-S` 模式下解析并转换为 `.ld` 输出 |
-| `-T <file>` / `--linker-script` 选项 | ✅ | 在 `-S` 模式下解析并转换为 `.sct` 输出 |
+| `--scatter <file>` 命令行选项 | ✅ | 在 `-S`/`-link`/`-c` 模式下解析；`-link` 模式参与向量表生成 |
+| `-T <file>` / `--linker-script` 选项 | ✅ | 同 `--scatter`，GNU `.ld` 脚本转换为 scatter 内部表示 |
+| `--uvprojx <file>` 选项 | ✅ | 从 MDK `.uvprojx` 自动提取 `<IncludePath>`/`<Define>` 为 `-I`/`-D` |
 
 ### 标准库子集
 
