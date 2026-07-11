@@ -1,0 +1,18 @@
+feat: implement built-in x86 assembler for true self-hosting
+
+D: Replace x86_assemble pass-through stub with real x86 32-bit assembler
+  - Two-pass scan (pass1: compute sizes+labels, pass2: emit machine code)
+  - Intel syntax parser: mov/push/pop/lea/add/sub/cmp/xor/and/or/not/neg/
+    test/imul/idiv/div/cdq/shl/shr/sar/movzx/movsx/jmp/jcc/setcc/call/ret/
+    rep movsb + data directives (.byte/.word/.long/.quad/.asciz)
+  - ModR/M + SIB byte generation for all addressing modes
+  - Symbol table + relocation export (type 4=abs32, type 5=PC-relative)
+  - compiler.c: extend ARM-only symbol/reloc paths to also support x86
+
+E: Fix ark_test include paths
+  - build_ark_test_fw.ps1 with correct -D STM32F401xe and -I paths
+  - Generates 156KB firmware successfully
+
+Test result: 71 passed, 0 failed (arm/c/x86/riscv32)
+x86 ARKOBJ2: 310 bytes (2 syms, 12 relocs)
+x86 -link: 878 bytes binary (3 objects linked)

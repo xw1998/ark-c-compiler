@@ -15,6 +15,7 @@
 #include "backend.h"
 #include "codegen.h"
 #include "memory.h"
+#include "platform.h"
 #include "common.h"
 #include "ir.h"
 
@@ -1333,33 +1334,1107 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
     }
 }
 
-/* assemble and link are intentional pass-through stubs (see backend.h:
- * "software-style backends ... letting the user post-process with gcc/as/nasm").
+/* === Built-in x86 32-bit assembler ===
  *
- * The emit_asm function produces GNU as-compatible (.intel_syntax noprefix)
- * 32-bit x86 assembly text. Assembling and linking into an executable is done
- * by an external gcc -m32 toolchain. The supported workflows are:
+ * Encodes Intel-syntax (.intel_syntax noprefix) assembly text into x86
+ * machine code. Two-pass design: pass1 computes instruction sizes and
+ * collects label addresses; pass2 emits bytes and records forward refs;
+ * resolve_refs patches the refs. All jumps use near (4-byte disp32) form
+ * so pass1 sizes are fixed regardless of branch distance.
  *
- *   1. Emit assembly text, then assemble+link externally:
- *        arkcc -target x86 -S foo.c -o foo.s
- *        gcc -m32 foo.s -o foo.exe
- *
- *   2. Emit assembly text as bytes (default, no -S): the bytes written to the
- *      output file are the assembly source text, ready for gcc -m32 -c.
- *
- * The bootstrap_x86.ps1 / bootstrap_x86_build.ps1 scripts automate workflow 1.
- */
-static int x86_assemble(const char *asm_text, unsigned char *out, int cap) {
-    int n = ark_strlen(asm_text);
-    int i;
-    if (n > cap) n = cap;
-    for (i = 0; i < n; i++) out[i] = (unsigned char)asm_text[i];
+ * Relocation types (for cross-object refs, consumed by the ARKOBJ2 linker):
+ *   4 = absolute 32-bit address (R_386_32, same encoding as ARM R_ARM_ABS32)
+ *   5 = PC-relative 32-bit disp  (R_386_PC32, for jmp/call/jcc disp32) */
+
+typedef struct { char *name; int addr; int is_weak; } X86AsmLabel;
+typedef struct { int pc; char *name; int type; } X86AsmRef;
+
+typedef struct {
+    const char    *src;
+    unsigned char *out;
+    int            pc;
+    int            out_cap;
+    X86AsmLabel   *labels;
+    int            label_count, label_cap;
+    X86AsmRef     *refs;
+    int            ref_count, ref_cap;
+    int            error_count;
+    int            cur_section;  /* 0=.text, 1=.data, 2=.rodata */
+    int            pending_weak;
+    int            dry_run;      /* 1=pass1 (count only), 0=pass2 (emit) */
+} X86Asm;
+
+/* Operand kinds */
+enum { XOP_NONE, XOP_REG, XOP_IMM, XOP_MEM };
+
+typedef struct {
+    int  kind;
+    int  reg;        /* register code 0-7 (XOP_REG) */
+    int  reg_size;   /* 1=byte, 2=word, 4=dword (XOP_REG) */
+    long long imm;   /* immediate value (XOP_IMM) */
+    /* memory: [base + index*scale + disp] or [symbol] */
+    int  base;       /* base register code, -1=none (XOP_MEM) */
+    int  index;      /* index register code, -1=none (XOP_MEM) */
+    int  scale;      /* 1,2,4,8 (XOP_MEM) */
+    int  disp;       /* displacement (XOP_MEM) */
+    int  has_sym;    /* 1 if [symbol] (XOP_MEM) */
+    char sym[64];    /* symbol name (XOP_MEM) */
+    int  mem_size;   /* 0=auto, 1=byte, 2=word, 4=dword (from size prefix) */
+} X86Operand;
+
+/* --- character / token helpers --- */
+static int xa_is_alpha(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c == '.';
+}
+static int xa_is_alnum(char c) {
+    return xa_is_alpha(c) || (c >= '0' && c <= '9');
+}
+static int xa_is_space(char c) { return c == ' ' || c == '\t' || c == '\r'; }
+static int xa_toupper(int c) { return (c >= 'a' && c <= 'z') ? c - 'a' + 'A' : c; }
+static int xa_strieq(const char *a, const char *b) {
+    while (*a && *b) { if (xa_toupper(*a) != xa_toupper(*b)) return 0; a++; b++; }
+    return *a == 0 && *b == 0;
+}
+/* Case-insensitive prefix check: does *p start with prefix (followed by space
+ * or '[')?  Needed because xa_strieq requires exact match but "dword ptr [...]"
+ * has trailing content after "dword". */
+static int xa_starts_with(const char *p, const char *prefix) {
+    while (*prefix) {
+        if (xa_toupper(*p) != xa_toupper(*prefix)) return 0;
+        p++; prefix++;
+    }
+    return 1;
+}
+static void xa_skip_space(const char **p) { while (xa_is_space(**p)) (*p)++; }
+static void xa_skip_to_eol(const char **p) { while (**p && **p != '\n') (*p)++; }
+
+/* Read a word (mnemonic, directive, or label name). */
+static int xa_read_word(const char **p, char *out, int cap) {
+    int n = 0;
+    xa_skip_space(p);
+    while (**p && xa_is_alnum(**p) && n < cap - 1) { out[n++] = **p; (*p)++; }
+    out[n] = 0;
     return n;
 }
 
-/* No-op link: the x86 backend produces self-contained assembly units. Final
- * linking (resolving cross-object references, laying out sections, producing
- * a PE/ELF executable) is delegated to the external gcc -m32 linker. */
+/* --- label / ref management --- */
+static void xa_add_label(X86Asm *a, const char *name, int addr) {
+    if (a->label_count >= a->label_cap) {
+        int nc = a->label_cap == 0 ? 64 : a->label_cap * 2;
+        a->labels = (X86AsmLabel *)mem_realloc(a->labels,
+            a->label_cap * (int)sizeof(X86AsmLabel), nc * (int)sizeof(X86AsmLabel));
+        a->label_cap = nc;
+    }
+    a->labels[a->label_count].name = mem_strdup(name);
+    a->labels[a->label_count].addr = addr;
+    a->labels[a->label_count].is_weak = a->pending_weak;
+    a->pending_weak = 0;
+    a->label_count++;
+}
+static int xa_find_label(X86Asm *a, const char *name) {
+    int i;
+    for (i = 0; i < a->label_count; i++)
+        if (ark_streq(a->labels[i].name, name)) return a->labels[i].addr;
+    return -1;
+}
+static void xa_add_ref(X86Asm *a, int pc, const char *name, int type) {
+    if (a->ref_count >= a->ref_cap) {
+        int nc = a->ref_cap == 0 ? 64 : a->ref_cap * 2;
+        a->refs = (X86AsmRef *)mem_realloc(a->refs,
+            a->ref_cap * (int)sizeof(X86AsmRef), nc * (int)sizeof(X86AsmRef));
+        a->ref_cap = nc;
+    }
+    a->refs[a->ref_count].pc = pc;
+    a->refs[a->ref_count].name = mem_strdup(name);
+    a->refs[a->ref_count].type = type;
+    a->ref_count++;
+}
+
+/* --- byte emission (respects dry_run) --- */
+static void xa_emit(X86Asm *a, unsigned char b) {
+    if (!a->dry_run && a->pc < a->out_cap) a->out[a->pc] = b;
+    a->pc++;
+}
+static void xa_emit16(X86Asm *a, int v) {
+    xa_emit(a, (unsigned char)(v & 0xFF));
+    xa_emit(a, (unsigned char)((v >> 8) & 0xFF));
+}
+static void xa_emit32(X86Asm *a, int v) {
+    xa_emit(a, (unsigned char)(v & 0xFF));
+    xa_emit(a, (unsigned char)((v >> 8) & 0xFF));
+    xa_emit(a, (unsigned char)((v >> 16) & 0xFF));
+    xa_emit(a, (unsigned char)((v >> 24) & 0xFF));
+}
+
+/* --- register parsing ---
+ * Returns register code (0-7), sets *size (1=byte,2=word,4=dword), or -1.
+ * 32-bit: eax=0,ecx=1,edx=2,ebx=3,esp=4,ebp=5,esi=6,edi=7
+ * 16-bit: ax=0,cx=1,dx=2,bx=3,sp=4,bp=5,si=6,di=7
+ * 8-bit:  al=0,cl=1,dl=2,bl=3,ah=4,ch=5,dh=6,bh=7 */
+static int xa_parse_reg(const char **p, int *size) {
+    char w[8];
+    int n = 0;
+    const char *s = *p;
+    xa_skip_space(p);
+    s = *p;
+    while (xa_is_alnum(**p) && n < (int)sizeof(w) - 1) { w[n++] = **p; (*p)++; }
+    w[n] = 0;
+    if (n == 0) return -1;
+    /* 32-bit registers (3 chars: eax, ecx, ...) */
+    if (n == 3 && w[1] == 'a' && w[0] == 'e') {
+        if (w[2] == 'x') { *size = 4; return 0; }
+        if (w[2] == 'c') { *size = 4; return 1; }
+        if (w[2] == 'd') { *size = 4; return 2; }
+        if (w[2] == 'b') { *size = 4; return 3; }
+        if (w[2] == 's') { *size = 4; return 6; }
+        if (w[2] == 'i') { *size = 4; return 7; }
+    }
+    if (n == 3 && (w[0] == 'e')) {
+        if (w[1] == 's' && w[2] == 'p') { *size = 4; return 4; }
+        if (w[1] == 'e' && w[2] == 'b') { *size = 4; return 5; } /* "eeb"? unlikely */
+        if (w[1] == 'b' && w[2] == 'p') { *size = 4; return 5; }
+    }
+    /* 16-bit registers (2 chars) */
+    if (n == 2) {
+        if (w[0] == 'a' && w[1] == 'x') { *size = 2; return 0; }
+        if (w[0] == 'c' && w[1] == 'x') { *size = 2; return 1; }
+        if (w[0] == 'd' && w[1] == 'x') { *size = 2; return 2; }
+        if (w[0] == 'b' && w[1] == 'x') { *size = 2; return 3; }
+        if (w[0] == 's' && w[1] == 'p') { *size = 2; return 4; }
+        if (w[0] == 'b' && w[1] == 'p') { *size = 2; return 5; }
+        if (w[0] == 's' && w[1] == 'i') { *size = 2; return 6; }
+        if (w[0] == 'd' && w[1] == 'i') { *size = 2; return 7; }
+    }
+    /* 8-bit registers (2 chars) */
+    if (n == 2) {
+        if (w[0] == 'a' && w[1] == 'l') { *size = 1; return 0; }
+        if (w[0] == 'c' && w[1] == 'l') { *size = 1; return 1; }
+        if (w[0] == 'd' && w[1] == 'l') { *size = 1; return 2; }
+        if (w[0] == 'b' && w[1] == 'l') { *size = 1; return 3; }
+        if (w[0] == 'a' && w[1] == 'h') { *size = 1; return 4; }
+        if (w[0] == 'c' && w[1] == 'h') { *size = 1; return 5; }
+        if (w[0] == 'd' && w[1] == 'h') { *size = 1; return 6; }
+        if (w[0] == 'b' && w[1] == 'h') { *size = 1; return 7; }
+    }
+    /* Not a register - restore position */
+    *p = s;
+    return -1;
+}
+
+/* --- immediate parsing ---
+ * Handles decimal, hex (0x), and leading '-' / '+'. */
+static int xa_parse_imm(const char **p, long long *out) {
+    long long v = 0;
+    int neg = 0;
+    xa_skip_space(p);
+    if (**p == '+') (*p)++;
+    if (**p == '-') { neg = 1; (*p)++; }
+    if (**p == '0' && ((*p)[1] == 'x' || (*p)[1] == 'X')) {
+        (*p) += 2;
+        if (!( (**p >= '0' && **p <= '9') ||
+               (**p >= 'a' && **p <= 'f') ||
+               (**p >= 'A' && **p <= 'F') )) return 0;
+        while ((**p >= '0' && **p <= '9') ||
+               (**p >= 'a' && **p <= 'f') ||
+               (**p >= 'A' && **p <= 'F')) {
+            char c = **p;
+            int dv = (c >= '0' && c <= '9') ? c - '0' :
+                     (c >= 'a' && c <= 'f') ? c - 'a' + 10 : c - 'A' + 10;
+            v = v * 16 + dv;
+            (*p)++;
+        }
+    } else if (**p >= '0' && **p <= '9') {
+        while (**p >= '0' && **p <= '9') { v = v * 10 + (**p - '0'); (*p)++; }
+    } else {
+        return 0;
+    }
+    /* skip suffixes (u, l, L) */
+    while (**p == 'u' || **p == 'U' || **p == 'l' || **p == 'L') (*p)++;
+    *out = neg ? -v : v;
+    return 1;
+}
+
+/* Parse a register-or-symbol name (for labels in jmp/call). */
+static int xa_read_ident(const char **p, char *out, int cap) {
+    int n = 0;
+    xa_skip_space(p);
+    if (**p == '.') {
+        while (xa_is_alnum(**p) && n < cap - 1) { out[n++] = **p; (*p)++; }
+    } else if (xa_is_alpha(**p)) {
+        while (xa_is_alnum(**p) && n < cap - 1) { out[n++] = **p; (*p)++; }
+    }
+    out[n] = 0;
+    return n;
+}
+
+/* --- memory operand parsing ---
+ * Parses [base+index*scale+disp] or [symbol]. Handles optional
+ * size prefix (dword ptr / byte ptr / word ptr) before the bracket. */
+static int xa_parse_mem(const char **p, X86Operand *op) {
+    xa_skip_space(p);
+    op->mem_size = 0;
+    /* Check for size prefix: "dword ptr" / "byte ptr" / "word ptr" */
+    {
+        const char *save = *p;
+        if (xa_starts_with(*p, "dword")) {
+            *p += 5; xa_skip_space(p);
+            if (xa_starts_with(*p, "ptr")) { *p += 3; xa_skip_space(p); op->mem_size = 4; }
+            else { *p = save; }
+        } else if (xa_starts_with(*p, "byte")) {
+            *p += 4; xa_skip_space(p);
+            if (xa_starts_with(*p, "ptr")) { *p += 3; xa_skip_space(p); op->mem_size = 1; }
+            else { *p = save; }
+        } else if (xa_starts_with(*p, "word")) {
+            *p += 4; xa_skip_space(p);
+            if (xa_starts_with(*p, "ptr")) { *p += 3; xa_skip_space(p); op->mem_size = 2; }
+            else { *p = save; }
+        }
+    }
+    if (**p != '[') return 0;
+    (*p)++;
+    op->kind = XOP_MEM;
+    op->base = -1;
+    op->index = -1;
+    op->scale = 1;
+    op->disp = 0;
+    op->has_sym = 0;
+    op->sym[0] = 0;
+
+    /* Parse interior: sequence of terms separated by + or - */
+    {
+        int sign = 1;  /* +1 for '+' prefix, -1 for '-' */
+        int got_term = 0;
+        for (;;) {
+            xa_skip_space(p);
+            if (**p == ']') { (*p)++; break; }
+            if (**p == '+') { sign = 1; (*p)++; xa_skip_space(p); continue; }
+            if (**p == '-') { sign = -1; (*p)++; xa_skip_space(p); continue; }
+            /* Try register */
+            {
+                int rsize;
+                const char *save = *p;
+                int rc = xa_parse_reg(p, &rsize);
+                if (rc >= 0) {
+                    /* Check for *scale */
+                    xa_skip_space(p);
+                    if (**p == '*') {
+                        (*p)++;
+                        xa_skip_space(p);
+                        {
+                            long long sc;
+                            if (!xa_parse_imm(p, &sc)) sc = 1;
+                            op->index = rc;
+                            op->scale = (int)sc;
+                        }
+                    } else {
+                        if (op->base < 0 && sign > 0) op->base = rc;
+                        else if (op->index < 0) { op->index = rc; op->scale = 1; }
+                        else { *p = save; break; } /* too many regs */
+                    }
+                    sign = 1;
+                    got_term = 1;
+                    continue;
+                }
+            }
+            /* Try immediate (displacement) */
+            {
+                long long v;
+                const char *save = *p;
+                if (xa_parse_imm(p, &v)) {
+                    op->disp += (int)(sign * v);
+                    sign = 1;
+                    got_term = 1;
+                    continue;
+                }
+                /* Try symbol name */
+                {
+                    char name[64];
+                    const char *sv2 = *p;
+                    if (xa_read_ident(p, name, (int)sizeof(name)) && name[0]) {
+                        /* If this is the first term and no base/index, it's [symbol] */
+                        if (!got_term && op->base < 0 && op->index < 0) {
+                            /* Check if next char is ']' or '+' or '-' */
+                            xa_skip_space(p);
+                            if (**p == ']' || **p == '+' || **p == '-') {
+                                op->has_sym = 1;
+                                /* copy symbol name */
+                                {
+                                    int k;
+                                    for (k = 0; name[k] && k < (int)sizeof(op->sym) - 1; k++)
+                                        op->sym[k] = name[k];
+                                    op->sym[k] = 0;
+                                }
+                                sign = 1;
+                                got_term = 1;
+                                continue;
+                            }
+                        }
+                        /* symbol + disp: treat symbol as disp32 reference */
+                        op->has_sym = 1;
+                        {
+                            int k;
+                            for (k = 0; name[k] && k < (int)sizeof(op->sym) - 1; k++)
+                                op->sym[k] = name[k];
+                            op->sym[k] = 0;
+                        }
+                        sign = 1;
+                        got_term = 1;
+                        continue;
+                    }
+                    *p = sv2;
+                }
+                *p = save;
+            }
+            break;  /* unrecognized token */
+        }
+    }
+    return 1;
+}
+
+/* Parse one operand (register, immediate, or memory). */
+static int xa_parse_operand(const char **p, X86Operand *op) {
+    xa_skip_space(p);
+    if (**p == 0 || **p == '\n' || **p == ',') return 0;
+    /* Try memory operand (with optional size prefix) */
+    if (**p == '[' || xa_starts_with(*p, "dword") || xa_starts_with(*p, "byte") || xa_starts_with(*p, "word")) {
+        return xa_parse_mem(p, op);
+    }
+    /* Try register */
+    {
+        int rsize;
+        const char *save = *p;
+        int rc = xa_parse_reg(p, &rsize);
+        if (rc >= 0) {
+            op->kind = XOP_REG;
+            op->reg = rc;
+            op->reg_size = rsize;
+            return 1;
+        }
+        *p = save;
+    }
+    /* Try immediate */
+    {
+        long long v;
+        if (xa_parse_imm(p, &v)) {
+            op->kind = XOP_IMM;
+            op->imm = v;
+            return 1;
+        }
+    }
+    /* Try label/symbol (for jmp/call targets) */
+    {
+        char name[64];
+        if (xa_read_ident(p, name, (int)sizeof(name)) && name[0]) {
+            op->kind = XOP_MEM;
+            op->base = -1;
+            op->index = -1;
+            op->scale = 1;
+            op->disp = 0;
+            op->has_sym = 1;
+            {
+                int k;
+                for (k = 0; name[k] && k < (int)sizeof(op->sym) - 1; k++)
+                    op->sym[k] = name[k];
+                op->sym[k] = 0;
+            }
+            op->mem_size = 0;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* --- ModR/M encoding --- */
+/* Emit ModR/M for reg-reg (mod=11). */
+static void xa_modrm_reg(X86Asm *a, int reg, int rm) {
+    xa_emit(a, (unsigned char)(0xC0 | ((reg & 7) << 3) | (rm & 7)));
+}
+
+/* Emit ModR/M + optional SIB + displacement for a memory operand.
+ * reg_field is the /r field (register or opcode extension). */
+static void xa_modrm_mem(X86Asm *a, int reg_field, X86Operand *mem) {
+    int base = mem->base;
+    int index = mem->index;
+    int disp = mem->disp;
+    int needs_sib = (base == 4) || (index >= 0);
+
+    /* [symbol] with no base/index: mod=00, rm=101, disp32 = symbol addr */
+    if (mem->has_sym && base < 0 && index < 0) {
+        xa_emit(a, (unsigned char)(((reg_field & 7) << 3) | 5));
+        xa_add_ref(a, a->pc, mem->sym, 4);  /* absolute 32-bit */
+        xa_emit32(a, 0);  /* placeholder; patched by resolve_refs */
+        return;
+    }
+    /* [symbol + base]: symbol contributes to disp32 (absolute reloc). */
+    if (mem->has_sym && base >= 0) {
+        xa_emit(a, (unsigned char)((0x02 << 6) | ((reg_field & 7) << 3) | (needs_sib ? 4 : (base & 7))));
+        if (needs_sib) {
+            int sb = (base >= 0) ? base : 5;
+            int si = (index >= 0) ? index : 4;
+            int sc = (mem->scale == 2) ? 1 : (mem->scale == 4) ? 2 : (mem->scale == 8) ? 3 : 0;
+            xa_emit(a, (unsigned char)((sc << 6) | ((si & 7) << 3) | (sb & 7)));
+        }
+        xa_add_ref(a, a->pc, mem->sym, 4);
+        xa_emit32(a, disp);
+        return;
+    }
+
+    /* Determine mod field */
+    {
+        int mod;
+        if (disp == 0 && base != 5) {
+            mod = 0;
+        } else if (disp >= -128 && disp <= 127) {
+            mod = 1;
+        } else {
+            mod = 2;
+        }
+        /* ebp (5) as base needs at least mod=01 (mod=00 rm=101 = [disp32]) */
+        if (base == 5 && mod == 0) mod = 1;
+
+        if (needs_sib) {
+            int sb = (base >= 0) ? base : 5;  /* 5 in mod=00 means no base (disp32) */
+            int si = (index >= 0) ? index : 4;  /* 4 = no index */
+            int sc = (mem->scale == 2) ? 1 : (mem->scale == 4) ? 2 : (mem->scale == 8) ? 3 : 0;
+            xa_emit(a, (unsigned char)((mod << 6) | ((reg_field & 7) << 3) | 4));
+            xa_emit(a, (unsigned char)((sc << 6) | ((si & 7) << 3) | (sb & 7)));
+        } else {
+            xa_emit(a, (unsigned char)((mod << 6) | ((reg_field & 7) << 3) | (base & 7)));
+        }
+        if (mod == 1) {
+            xa_emit(a, (unsigned char)(disp & 0xFF));
+        } else if (mod == 2) {
+            xa_emit32(a, disp);
+        }
+    }
+}
+
+/* --- ALU instruction emitter (add/sub/cmp/and/or/xor/adc/sbb) ---
+ * op_rm_r:  r/m, r form opcode (e.g. 0x01 for add)
+ * op_r_rm:  r, r/m form opcode (e.g. 0x03 for add)
+ * op_eax:   eax, imm32 special opcode (e.g. 0x05 for add)
+ * sub_op:   /n extension (0=add, 1=or, 4=and, 5=sub, 6=xor, 7=cmp) */
+static void xa_alu(X86Asm *a, int op_rm_r, int op_r_rm, int op_eax, int sub_op,
+                   X86Operand *dst, X86Operand *src) {
+    if (dst->kind == XOP_REG && src->kind == XOP_REG) {
+        xa_emit(a, (unsigned char)op_rm_r);
+        xa_modrm_reg(a, src->reg, dst->reg);
+    } else if (dst->kind == XOP_REG && src->kind == XOP_IMM) {
+        int imm = (int)src->imm;
+        if (imm >= -128 && imm <= 127) {
+            xa_emit(a, 0x83);
+            xa_modrm_reg(a, sub_op, dst->reg);
+            xa_emit(a, (unsigned char)(imm & 0xFF));
+        } else if (dst->reg == 0) {  /* eax */
+            xa_emit(a, (unsigned char)op_eax);
+            xa_emit32(a, imm);
+        } else {
+            xa_emit(a, 0x81);
+            xa_modrm_reg(a, sub_op, dst->reg);
+            xa_emit32(a, imm);
+        }
+    } else if (dst->kind == XOP_REG && src->kind == XOP_MEM) {
+        xa_emit(a, (unsigned char)op_r_rm);
+        xa_modrm_mem(a, dst->reg, src);
+    } else if (dst->kind == XOP_MEM && src->kind == XOP_REG) {
+        xa_emit(a, (unsigned char)op_rm_r);
+        xa_modrm_mem(a, src->reg, dst);
+    } else if (dst->kind == XOP_MEM && src->kind == XOP_IMM) {
+        int imm = (int)src->imm;
+        if (imm >= -128 && imm <= 127) {
+            xa_emit(a, 0x83);
+            xa_modrm_mem(a, sub_op, dst);
+            xa_emit(a, (unsigned char)(imm & 0xFF));
+        } else {
+            xa_emit(a, 0xC7);
+            xa_modrm_mem(a, 0, dst);
+            xa_emit32(a, imm);
+        }
+    } else {
+        a->error_count++;
+    }
+}
+
+/* Emit a branch (jmp/call/jcc) with a label operand.
+ * opcode2 is 0 for single-byte opcodes (E8/E9), or the second byte for 0F-prefixed jcc. */
+static void xa_branch(X86Asm *a, unsigned char op1, unsigned char op2, const char *label) {
+    int disp_pc;
+    if (op2) {
+        xa_emit(a, 0x0F);
+        xa_emit(a, op2);
+    } else {
+        xa_emit(a, op1);
+    }
+    disp_pc = a->pc;
+    xa_add_ref(a, disp_pc, label, 5);  /* type 5: PC-relative disp32 */
+    xa_emit32(a, 0);  /* placeholder */
+}
+
+/* Parse a string literal ".asciz" / ".ascii" content and emit bytes. */
+static void xa_emit_string(X86Asm *a, const char **p, int with_nul) {
+    xa_skip_space(p);
+    if (**p != '"') return;
+    (*p)++;
+    while (**p && **p != '"' && **p != '\n') {
+        if (**p == '\\') {
+            (*p)++;
+            switch (**p) {
+                case 'n':  xa_emit(a, '\n'); (*p)++; break;
+                case 't':  xa_emit(a, '\t'); (*p)++; break;
+                case 'r':  xa_emit(a, '\r'); (*p)++; break;
+                case '0':  xa_emit(a, 0);    (*p)++; break;
+                case '\\': xa_emit(a, '\\'); (*p)++; break;
+                case '"':  xa_emit(a, '"');  (*p)++; break;
+                case 'x': {
+                    int v = 0; (*p)++;
+                    while (**p) {
+                        int dv;
+                        if (**p >= '0' && **p <= '9') dv = **p - '0';
+                        else if (**p >= 'a' && **p <= 'f') dv = **p - 'a' + 10;
+                        else if (**p >= 'A' && **p <= 'F') dv = **p - 'A' + 10;
+                        else break;
+                        v = v * 16 + dv; (*p)++;
+                    }
+                    xa_emit(a, (unsigned char)v);
+                    break;
+                }
+                default: xa_emit(a, (unsigned char)**p); (*p)++; break;
+            }
+        } else {
+            xa_emit(a, (unsigned char)**p);
+            (*p)++;
+        }
+    }
+    if (**p == '"') (*p)++;
+    if (with_nul) xa_emit(a, 0);
+}
+
+/* Emit a .byte/.word/.long/.quad value (numeric or symbol reference). */
+static void xa_emit_data(X86Asm *a, const char **p, int size) {
+    xa_skip_space(p);
+    {
+        long long v;
+        const char *save = *p;
+        if (xa_parse_imm(p, &v)) {
+            if (size == 1) xa_emit(a, (unsigned char)(v & 0xFF));
+            else if (size == 2) xa_emit16(a, (int)v);
+            else if (size == 4) xa_emit32(a, (int)v);
+            else { xa_emit32(a, (int)v); xa_emit32(a, 0); }
+        } else {
+            /* Symbol reference (for .long symbol etc.) */
+            char name[64];
+            *p = save;
+            if (xa_read_ident(p, name, (int)sizeof(name)) && name[0]) {
+                if (size == 4) {
+                    xa_add_ref(a, a->pc, name, 4);
+                    xa_emit32(a, 0);
+                } else if (size == 8) {
+                    xa_add_ref(a, a->pc, name, 4);
+                    xa_emit32(a, 0);
+                    xa_emit32(a, 0);
+                } else {
+                    xa_emit(a, 0);
+                }
+            }
+        }
+    }
+}
+
+/* --- process one line of assembly ---
+ * Shared by pass1 (dry_run=1) and pass2 (dry_run=0). */
+static void xa_process_line(X86Asm *a, const char *line) {
+    const char *p = line;
+    char mn[32];
+    X86Operand ops[2];
+    int nop = 0;
+
+    xa_skip_space(&p);
+    if (*p == '\n' || *p == 0 || *p == '#') return;
+
+    /* Read mnemonic or directive */
+    if (xa_read_word(&p, mn, (int)sizeof(mn)) == 0) return;
+    xa_skip_space(&p);
+
+    /* Label definition: "name:" */
+    if (*p == ':') {
+        xa_add_label(a, mn, a->pc);
+        p++;
+        xa_skip_space(&p);
+        if (*p == '\n' || *p == 0 || *p == '#') return;
+        /* Read the actual mnemonic after the label */
+        if (xa_read_word(&p, mn, (int)sizeof(mn)) == 0) return;
+        xa_skip_space(&p);
+    }
+
+    /* Parse operands (up to 2, comma-separated) */
+    {
+        int i;
+        for (i = 0; i < 2; i++) {
+            ops[i].kind = XOP_NONE;
+            if (xa_parse_operand(&p, &ops[i])) {
+                nop++;
+                xa_skip_space(&p);
+                if (*p == ',') { p++; continue; }
+                break;
+            }
+            break;
+        }
+    }
+
+    /* --- Directives --- */
+    if (mn[0] == '.') {
+        if (xa_strieq(mn, ".intel_syntax")) { xa_skip_to_eol(&p); return; }
+        if (xa_strieq(mn, ".text"))    { a->cur_section = 0; return; }
+        if (xa_strieq(mn, ".data"))    { a->cur_section = 1; return; }
+        if (xa_strieq(mn, ".section")) {
+            xa_skip_space(&p);
+            if (xa_starts_with(p, ".rodata")) a->cur_section = 2;
+            else if (xa_starts_with(p, ".data")) a->cur_section = 1;
+            else if (xa_starts_with(p, ".text")) a->cur_section = 0;
+            else a->cur_section = 0;
+            xa_skip_to_eol(&p);
+            return;
+        }
+        if (xa_strieq(mn, ".globl") || xa_strieq(mn, ".global")) {
+            /* Mark symbol as global (next label defined). For the ARKOBJ2
+             * format, all non-.L labels are exported, so this is metadata. */
+            return;
+        }
+        if (xa_strieq(mn, ".local")) { return; }
+        if (xa_strieq(mn, ".weak")) { a->pending_weak = 1; return; }
+        if (xa_strieq(mn, ".align") || xa_strieq(mn, ".balign") || xa_strieq(mn, ".p2align")) {
+            long long align = 0;
+            xa_parse_imm(&p, &align);
+            if (align > 1) {
+                int rem = a->pc % (int)align;
+                if (rem) { int pad; for (pad = 0; pad < (int)align - rem; pad++) xa_emit(a, 0); }
+            }
+            return;
+        }
+        if (xa_strieq(mn, ".asciz") || xa_strieq(mn, ".ascii")) {
+            xa_emit_string(a, &p, xa_strieq(mn, ".asciz"));
+            return;
+        }
+        if (xa_strieq(mn, ".byte"))  { xa_emit_data(a, &p, 1); return; }
+        if (xa_strieq(mn, ".word") || xa_strieq(mn, ".short")) { xa_emit_data(a, &p, 2); return; }
+        if (xa_strieq(mn, ".long") || xa_strieq(mn, ".int")) { xa_emit_data(a, &p, 4); return; }
+        if (xa_strieq(mn, ".quad")) { xa_emit_data(a, &p, 8); return; }
+        if (xa_strieq(mn, ".zero") || xa_strieq(mn, ".skip") || xa_strieq(mn, ".space")) {
+            long long n = 0;
+            xa_parse_imm(&p, &n);
+            { int k; for (k = 0; k < n; k++) xa_emit(a, 0); }
+            return;
+        }
+        if (xa_strieq(mn, ".set") || xa_strieq(mn, ".equ")) { return; }
+        /* Unknown directive: skip */
+        return;
+    }
+
+    /* --- Instructions --- */
+    if (xa_strieq(mn, "mov")) {
+        if (ops[0].kind == XOP_REG && ops[1].kind == XOP_REG) {
+            if (ops[0].reg_size == 1 || ops[1].reg_size == 1) {
+                /* mov reg8, reg8: 88 /r */
+                xa_emit(a, 0x88);
+                xa_modrm_reg(a, ops[1].reg, ops[0].reg);
+            } else {
+                xa_emit(a, 0x89);
+                xa_modrm_reg(a, ops[1].reg, ops[0].reg);
+            }
+        } else if (ops[0].kind == XOP_REG && ops[1].kind == XOP_IMM) {
+            if (ops[0].reg_size == 1) {
+                xa_emit(a, (unsigned char)(0xB0 + ops[0].reg));
+                xa_emit(a, (unsigned char)(ops[1].imm & 0xFF));
+            } else {
+                xa_emit(a, (unsigned char)(0xB8 + ops[0].reg));
+                xa_emit32(a, (int)ops[1].imm);
+            }
+        } else if (ops[0].kind == XOP_REG && ops[1].kind == XOP_MEM) {
+            xa_emit(a, 0x8B);
+            xa_modrm_mem(a, ops[0].reg, &ops[1]);
+        } else if (ops[0].kind == XOP_MEM && ops[1].kind == XOP_REG) {
+            if (ops[1].reg_size == 1) {
+                xa_emit(a, 0x88);
+            } else {
+                xa_emit(a, 0x89);
+            }
+            xa_modrm_mem(a, ops[1].reg, &ops[0]);
+        } else if (ops[0].kind == XOP_MEM && ops[1].kind == XOP_IMM) {
+            int imm = (int)ops[1].imm;
+            xa_emit(a, 0xC7);
+            xa_modrm_mem(a, 0, &ops[0]);
+            xa_emit32(a, imm);
+        } else {
+            a->error_count++;
+        }
+    } else if (xa_strieq(mn, "add")) {
+        xa_alu(a, 0x01, 0x03, 0x05, 0, &ops[0], &ops[1]);
+    } else if (xa_strieq(mn, "sub")) {
+        xa_alu(a, 0x29, 0x2B, 0x2D, 5, &ops[0], &ops[1]);
+    } else if (xa_strieq(mn, "cmp")) {
+        xa_alu(a, 0x39, 0x3B, 0x3D, 7, &ops[0], &ops[1]);
+    } else if (xa_strieq(mn, "xor")) {
+        xa_alu(a, 0x31, 0x33, 0x35, 6, &ops[0], &ops[1]);
+    } else if (xa_strieq(mn, "and")) {
+        xa_alu(a, 0x21, 0x23, 0x25, 4, &ops[0], &ops[1]);
+    } else if (xa_strieq(mn, "or")) {
+        xa_alu(a, 0x09, 0x0B, 0x0D, 1, &ops[0], &ops[1]);
+    } else if (xa_strieq(mn, "adc")) {
+        xa_alu(a, 0x11, 0x13, 0x15, 2, &ops[0], &ops[1]);
+    } else if (xa_strieq(mn, "sbb")) {
+        xa_alu(a, 0x19, 0x1B, 0x1D, 3, &ops[0], &ops[1]);
+    } else if (xa_strieq(mn, "push")) {
+        if (ops[0].kind == XOP_REG) {
+            xa_emit(a, (unsigned char)(0x50 + ops[0].reg));
+        } else if (ops[0].kind == XOP_IMM) {
+            int imm = (int)ops[0].imm;
+            if (imm >= -128 && imm <= 127) {
+                xa_emit(a, 0x6A);
+                xa_emit(a, (unsigned char)(imm & 0xFF));
+            } else {
+                xa_emit(a, 0x68);
+                xa_emit32(a, imm);
+            }
+        } else if (ops[0].kind == XOP_MEM) {
+            xa_emit(a, 0xFF);
+            xa_modrm_mem(a, 6, &ops[0]);
+        } else {
+            a->error_count++;
+        }
+    } else if (xa_strieq(mn, "pop")) {
+        if (ops[0].kind == XOP_REG) {
+            xa_emit(a, (unsigned char)(0x58 + ops[0].reg));
+        } else if (ops[0].kind == XOP_MEM) {
+            xa_emit(a, 0x8F);
+            xa_modrm_mem(a, 0, &ops[0]);
+        } else {
+            a->error_count++;
+        }
+    } else if (xa_strieq(mn, "lea")) {
+        if (ops[0].kind == XOP_REG && ops[1].kind == XOP_MEM) {
+            xa_emit(a, 0x8D);
+            xa_modrm_mem(a, ops[0].reg, &ops[1]);
+        } else {
+            a->error_count++;
+        }
+    } else if (xa_strieq(mn, "not")) {
+        if (ops[0].kind == XOP_REG) {
+            xa_emit(a, 0xF7); xa_modrm_reg(a, 2, ops[0].reg);
+        } else { xa_emit(a, 0xF7); xa_modrm_mem(a, 2, &ops[0]); }
+    } else if (xa_strieq(mn, "neg")) {
+        if (ops[0].kind == XOP_REG) {
+            xa_emit(a, 0xF7); xa_modrm_reg(a, 3, ops[0].reg);
+        } else { xa_emit(a, 0xF7); xa_modrm_mem(a, 3, &ops[0]); }
+    } else if (xa_strieq(mn, "test")) {
+        if (ops[0].kind == XOP_REG && ops[1].kind == XOP_REG) {
+            xa_emit(a, 0x85); xa_modrm_reg(a, ops[1].reg, ops[0].reg);
+        } else if (ops[0].kind == XOP_REG && ops[1].kind == XOP_IMM) {
+            if (ops[0].reg == 0) {  /* eax */
+                xa_emit(a, 0xA9); xa_emit32(a, (int)ops[1].imm);
+            } else {
+                xa_emit(a, 0xF7); xa_modrm_reg(a, 0, ops[0].reg);
+                xa_emit32(a, (int)ops[1].imm);
+            }
+        } else if (ops[0].kind == XOP_MEM && ops[1].kind == XOP_IMM) {
+            xa_emit(a, 0xF7); xa_modrm_mem(a, 0, &ops[0]);
+            xa_emit32(a, (int)ops[1].imm);
+        } else {
+            a->error_count++;
+        }
+    } else if (xa_strieq(mn, "imul")) {
+        if (ops[0].kind == XOP_REG && ops[1].kind == XOP_REG) {
+            xa_emit(a, 0x0F); xa_emit(a, 0xAF);
+            xa_modrm_reg(a, ops[0].reg, ops[1].reg);
+        } else if (ops[0].kind == XOP_REG && ops[1].kind == XOP_IMM) {
+            /* imul r, r/m, imm → 69 /r id (three-operand form) */
+            xa_emit(a, 0x69); xa_modrm_reg(a, ops[0].reg, ops[0].reg);
+            xa_emit32(a, (int)ops[1].imm);
+        } else if (ops[0].kind == XOP_REG && ops[1].kind == XOP_MEM) {
+            xa_emit(a, 0x0F); xa_emit(a, 0xAF);
+            xa_modrm_mem(a, ops[0].reg, &ops[1]);
+        } else {
+            a->error_count++;
+        }
+    } else if (xa_strieq(mn, "idiv")) {
+        if (ops[0].kind == XOP_REG) { xa_emit(a, 0xF7); xa_modrm_reg(a, 7, ops[0].reg); }
+        else { xa_emit(a, 0xF7); xa_modrm_mem(a, 7, &ops[0]); }
+    } else if (xa_strieq(mn, "div")) {
+        if (ops[0].kind == XOP_REG) { xa_emit(a, 0xF7); xa_modrm_reg(a, 6, ops[0].reg); }
+        else { xa_emit(a, 0xF7); xa_modrm_mem(a, 6, &ops[0]); }
+    } else if (xa_strieq(mn, "cdq") || xa_strieq(mn, "cqo")) {
+        xa_emit(a, 0x99);
+    } else if (xa_strieq(mn, "cbw")) {
+        xa_emit(a, 0x66); xa_emit(a, 0x98);
+    } else if (xa_strieq(mn, "cwd") || xa_strieq(mn, "cwde")) {
+        xa_emit(a, 0x98);
+    } else if (xa_strieq(mn, "shl") || xa_strieq(mn, "sal")) {
+        if (ops[1].kind == XOP_REG && ops[1].reg == 1 && ops[1].reg_size == 1) {
+            /* cl */
+            xa_emit(a, 0xD3); xa_modrm_reg(a, 4, ops[0].reg);
+        } else if (ops[1].kind == XOP_IMM) {
+            xa_emit(a, 0xC1); xa_modrm_reg(a, 4, ops[0].reg);
+            xa_emit(a, (unsigned char)(ops[1].imm & 0xFF));
+        } else { a->error_count++; }
+    } else if (xa_strieq(mn, "shr")) {
+        if (ops[1].kind == XOP_REG && ops[1].reg == 1 && ops[1].reg_size == 1) {
+            xa_emit(a, 0xD3); xa_modrm_reg(a, 5, ops[0].reg);
+        } else if (ops[1].kind == XOP_IMM) {
+            xa_emit(a, 0xC1); xa_modrm_reg(a, 5, ops[0].reg);
+            xa_emit(a, (unsigned char)(ops[1].imm & 0xFF));
+        } else { a->error_count++; }
+    } else if (xa_strieq(mn, "sar")) {
+        if (ops[1].kind == XOP_REG && ops[1].reg == 1 && ops[1].reg_size == 1) {
+            xa_emit(a, 0xD3); xa_modrm_reg(a, 7, ops[0].reg);
+        } else if (ops[1].kind == XOP_IMM) {
+            xa_emit(a, 0xC1); xa_modrm_reg(a, 7, ops[0].reg);
+            xa_emit(a, (unsigned char)(ops[1].imm & 0xFF));
+        } else { a->error_count++; }
+    } else if (xa_strieq(mn, "movzx")) {
+        unsigned char op2 = (ops[1].reg_size == 2) ? 0xB7 : 0xB6;
+        xa_emit(a, 0x0F); xa_emit(a, op2);
+        if (ops[1].kind == XOP_REG) xa_modrm_reg(a, ops[0].reg, ops[1].reg);
+        else xa_modrm_mem(a, ops[0].reg, &ops[1]);
+    } else if (xa_strieq(mn, "movsx")) {
+        unsigned char op2 = (ops[1].reg_size == 2 || ops[1].mem_size == 2) ? 0xBF : 0xBE;
+        xa_emit(a, 0x0F); xa_emit(a, op2);
+        if (ops[1].kind == XOP_REG) xa_modrm_reg(a, ops[0].reg, ops[1].reg);
+        else xa_modrm_mem(a, ops[0].reg, &ops[1]);
+    } else if (xa_strieq(mn, "jmp")) {
+        if (ops[0].kind == XOP_REG) {
+            xa_emit(a, 0xFF); xa_modrm_reg(a, 4, ops[0].reg);
+        } else if (ops[0].has_sym) {
+            xa_branch(a, 0xE9, 0, ops[0].sym);
+        } else { a->error_count++; }
+    } else if (xa_strieq(mn, "je") || xa_strieq(mn, "jz")) {
+        xa_branch(a, 0, 0x84, ops[0].sym);
+    } else if (xa_strieq(mn, "jne") || xa_strieq(mn, "jnz")) {
+        xa_branch(a, 0, 0x85, ops[0].sym);
+    } else if (xa_strieq(mn, "jl")) {
+        xa_branch(a, 0, 0x8C, ops[0].sym);
+    } else if (xa_strieq(mn, "jge")) {
+        xa_branch(a, 0, 0x8D, ops[0].sym);
+    } else if (xa_strieq(mn, "jle")) {
+        xa_branch(a, 0, 0x8E, ops[0].sym);
+    } else if (xa_strieq(mn, "jg")) {
+        xa_branch(a, 0, 0x8F, ops[0].sym);
+    } else if (xa_strieq(mn, "jb") || xa_strieq(mn, "jc")) {
+        xa_branch(a, 0, 0x82, ops[0].sym);
+    } else if (xa_strieq(mn, "jae") || xa_strieq(mn, "jnc")) {
+        xa_branch(a, 0, 0x83, ops[0].sym);
+    } else if (xa_strieq(mn, "jbe")) {
+        xa_branch(a, 0, 0x86, ops[0].sym);
+    } else if (xa_strieq(mn, "ja")) {
+        xa_branch(a, 0, 0x87, ops[0].sym);
+    } else if (xa_strieq(mn, "js")) {
+        xa_branch(a, 0, 0x88, ops[0].sym);
+    } else if (xa_strieq(mn, "jns")) {
+        xa_branch(a, 0, 0x89, ops[0].sym);
+    } else if (xa_strieq(mn, "sete") || xa_strieq(mn, "setz")) {
+        xa_emit(a, 0x0F); xa_emit(a, 0x94); xa_modrm_reg(a, 0, 0);
+    } else if (xa_strieq(mn, "setne") || xa_strieq(mn, "setnz")) {
+        xa_emit(a, 0x0F); xa_emit(a, 0x95); xa_modrm_reg(a, 0, 0);
+    } else if (xa_strieq(mn, "setl")) {
+        xa_emit(a, 0x0F); xa_emit(a, 0x9C); xa_modrm_reg(a, 0, 0);
+    } else if (xa_strieq(mn, "setge")) {
+        xa_emit(a, 0x0F); xa_emit(a, 0x9D); xa_modrm_reg(a, 0, 0);
+    } else if (xa_strieq(mn, "setle")) {
+        xa_emit(a, 0x0F); xa_emit(a, 0x9E); xa_modrm_reg(a, 0, 0);
+    } else if (xa_strieq(mn, "setg")) {
+        xa_emit(a, 0x0F); xa_emit(a, 0x9F); xa_modrm_reg(a, 0, 0);
+    } else if (xa_strieq(mn, "setb") || xa_strieq(mn, "setc")) {
+        xa_emit(a, 0x0F); xa_emit(a, 0x92); xa_modrm_reg(a, 0, 0);
+    } else if (xa_strieq(mn, "setae") || xa_strieq(mn, "setnc")) {
+        xa_emit(a, 0x0F); xa_emit(a, 0x93); xa_modrm_reg(a, 0, 0);
+    } else if (xa_strieq(mn, "setbe")) {
+        xa_emit(a, 0x0F); xa_emit(a, 0x96); xa_modrm_reg(a, 0, 0);
+    } else if (xa_strieq(mn, "seta")) {
+        xa_emit(a, 0x0F); xa_emit(a, 0x97); xa_modrm_reg(a, 0, 0);
+    } else if (xa_strieq(mn, "call")) {
+        if (ops[0].kind == XOP_REG) {
+            xa_emit(a, 0xFF); xa_modrm_reg(a, 2, ops[0].reg);
+        } else if (ops[0].has_sym) {
+            xa_branch(a, 0xE8, 0, ops[0].sym);
+        } else { a->error_count++; }
+    } else if (xa_strieq(mn, "ret")) {
+        xa_emit(a, 0xC3);
+    } else if (xa_strieq(mn, "nop")) {
+        xa_emit(a, 0x90);
+    } else if (xa_strieq(mn, "rep") || xa_strieq(mn, "repe") || xa_strieq(mn, "repz")) {
+        /* rep movsb / rep stosb / etc. */
+        char sub[16];
+        xa_emit(a, 0xF3);
+        xa_skip_space(&p);
+        if (xa_read_word(&p, sub, (int)sizeof(sub))) {
+            if (xa_strieq(sub, "movsb")) { xa_emit(a, 0xA4); }
+            else if (xa_strieq(sub, "movsw")) { xa_emit(a, 0x66); xa_emit(a, 0xA5); }
+            else if (xa_strieq(sub, "movsd")) { xa_emit(a, 0xA5); }
+            else if (xa_strieq(sub, "stosb")) { xa_emit(a, 0xAA); }
+            else if (xa_strieq(sub, "stosd")) { xa_emit(a, 0xAB); }
+            else if (xa_strieq(sub, "lodsb")) { xa_emit(a, 0xAC); }
+            else if (xa_strieq(sub, "scasb")) { xa_emit(a, 0xAE); }
+            else if (xa_strieq(sub, "cmpsb")) { xa_emit(a, 0xA6); }
+        }
+    } else if (xa_strieq(mn, "movsb")) { xa_emit(a, 0xA4); }
+    else if (xa_strieq(mn, "movsd")) { xa_emit(a, 0xA5); }
+    else if (xa_strieq(mn, "stosb")) { xa_emit(a, 0xAA); }
+    else if (xa_strieq(mn, "stosd")) { xa_emit(a, 0xAB); }
+    else if (xa_strieq(mn, "leave")) { xa_emit(a, 0xC9); }
+    else if (xa_strieq(mn, "int")) {
+        if (ops[0].kind == XOP_IMM) { xa_emit(a, 0xCD); xa_emit(a, (unsigned char)(ops[0].imm & 0xFF)); }
+    } else if (xa_strieq(mn, "xchg")) {
+        if (ops[0].kind == XOP_REG && ops[1].kind == XOP_REG) {
+            if (ops[0].reg == 0) { xa_emit(a, (unsigned char)(0x90 + ops[1].reg)); }
+            else if (ops[1].reg == 0) { xa_emit(a, (unsigned char)(0x90 + ops[0].reg)); }
+            else { xa_emit(a, 0x87); xa_modrm_reg(a, ops[0].reg, ops[1].reg); }
+        } else { a->error_count++; }
+    } else if (xa_strieq(mn, "inc")) {
+        if (ops[0].kind == XOP_REG) { xa_emit(a, 0xFF); xa_modrm_reg(a, 0, ops[0].reg); }
+        else { xa_emit(a, 0xFF); xa_modrm_mem(a, 0, &ops[0]); }
+    } else if (xa_strieq(mn, "dec")) {
+        if (ops[0].kind == XOP_REG) { xa_emit(a, 0xFF); xa_modrm_reg(a, 1, ops[0].reg); }
+        else { xa_emit(a, 0xFF); xa_modrm_mem(a, 1, &ops[0]); }
+    } else {
+        /* Unknown instruction: emit nop to keep pc advancing */
+        a->error_count++;
+        ark_log("[asm-x86] unknown instruction '%s'\n", mn);
+    }
+    (void)nop;
+}
+
+/* --- pass1: compute sizes, collect labels --- */
+static void pass1_x(X86Asm *a) {
+    const char *p = a->src;
+    a->dry_run = 1;
+    a->pc = 0;
+    a->label_count = 0;
+    a->ref_count = 0;
+    while (*p) {
+        const char *line = p;
+        /* Find end of line */
+        while (*p && *p != '\n') p++;
+        xa_process_line(a, line);
+        if (*p == '\n') p++;
+    }
+}
+
+/* --- pass2: emit machine code, record refs --- */
+static void pass2_x(X86Asm *a) {
+    const char *p = a->src;
+    a->dry_run = 0;
+    a->pc = 0;
+    a->ref_count = 0;  /* reset refs for pass2 */
+    while (*p) {
+        const char *line = p;
+        while (*p && *p != '\n') p++;
+        xa_process_line(a, line);
+        if (*p == '\n') p++;
+    }
+}
+
+/* --- resolve_refs: patch forward references --- */
+static void resolve_refs_x(X86Asm *a) {
+    int i;
+    for (i = 0; i < a->ref_count; i++) {
+        X86AsmRef *r = &a->refs[i];
+        int addr = xa_find_label(a, r->name);
+        if (addr < 0) {
+            /* Unresolved: will be handled as a cross-object relocation */
+            continue;
+        }
+        if (r->type == 5) {
+            /* PC-relative disp32: disp = target - (ref_pc + 4) */
+            int disp = addr - (r->pc + 4);
+            if (!a->dry_run) {
+                a->out[r->pc]     = (unsigned char)(disp & 0xFF);
+                a->out[r->pc + 1] = (unsigned char)((disp >> 8) & 0xFF);
+                a->out[r->pc + 2] = (unsigned char)((disp >> 16) & 0xFF);
+                a->out[r->pc + 3] = (unsigned char)((disp >> 24) & 0xFF);
+            }
+        } else if (r->type == 4) {
+            /* Absolute 32-bit address */
+            if (!a->dry_run) {
+                a->out[r->pc]     = (unsigned char)(addr & 0xFF);
+                a->out[r->pc + 1] = (unsigned char)((addr >> 8) & 0xFF);
+                a->out[r->pc + 2] = (unsigned char)((addr >> 16) & 0xFF);
+                a->out[r->pc + 3] = (unsigned char)((addr >> 24) & 0xFF);
+            }
+        }
+    }
+}
+
+/* --- symbol/reloc export for the linker --- */
+typedef struct { char *name; int offset; int type; int is_weak; } X86Sym;
+typedef struct { char *name; int offset; int type; } X86Reloc;
+
+static X86Sym   g_x86_syms[ARM_MAX_SYMBOLS]   __attribute__((section(".ark_buf")));
+static int      g_x86_sym_count = 0;
+static X86Reloc g_x86_relocs[ARM_MAX_RELOCS]  __attribute__((section(".ark_buf")));
+static int      g_x86_reloc_count = 0;
+
+static void x86_save_syms(X86Asm *a) {
+    int i;
+    g_x86_sym_count = 0;
+    for (i = 0; i < a->label_count && g_x86_sym_count < ARM_MAX_SYMBOLS; i++) {
+        if (a->labels[i].name[0] == '.' && a->labels[i].name[1] == 'L') continue;
+        g_x86_syms[g_x86_sym_count].name    = a->labels[i].name;
+        g_x86_syms[g_x86_sym_count].offset   = a->labels[i].addr;
+        g_x86_syms[g_x86_sym_count].type     = 0;
+        g_x86_syms[g_x86_sym_count].is_weak  = a->labels[i].is_weak;
+        g_x86_sym_count++;
+    }
+}
+
+static void x86_save_relocs(X86Asm *a) {
+    int i;
+    g_x86_reloc_count = 0;
+    for (i = 0; i < a->ref_count && g_x86_reloc_count < ARM_MAX_RELOCS; i++) {
+        X86AsmRef *r = &a->refs[i];
+        if (xa_find_label(a, r->name) < 0) {
+            g_x86_relocs[g_x86_reloc_count].name   = r->name;
+            g_x86_relocs[g_x86_reloc_count].offset  = r->pc;
+            g_x86_relocs[g_x86_reloc_count].type    = r->type;
+            g_x86_reloc_count++;
+        }
+    }
+}
+
+int x86_get_symbol_count(void) { return g_x86_sym_count; }
+const char *x86_get_symbol_name(int idx) { return g_x86_syms[idx].name; }
+int x86_get_symbol_offset(int idx) { return g_x86_syms[idx].offset; }
+int x86_get_symbol_type(int idx) { return g_x86_syms[idx].type; }
+int x86_get_symbol_weak(int idx) { return g_x86_syms[idx].is_weak; }
+
+int x86_get_reloc_count(void) { return g_x86_reloc_count; }
+const char *x86_get_reloc_name(int idx) { return g_x86_relocs[idx].name; }
+int x86_get_reloc_offset(int idx) { return g_x86_relocs[idx].offset; }
+int x86_get_reloc_type(int idx) { return g_x86_relocs[idx].type; }
+
+/* x86_assemble: encode Intel-syntax assembly text into x86 machine code.
+ * Two-pass design: pass1 computes sizes + labels; pass2 emits bytes + refs;
+ * resolve_refs patches forward references. All jumps use near (disp32) form
+ * so pass1 sizes are fixed. Exports symbol/reloc tables for the ARKOBJ2 linker. */
+static int x86_assemble(const char *asm_text, unsigned char *out, int cap) {
+    X86Asm a;
+    a.src = asm_text;
+    a.out = out;
+    a.pc = 0;
+    a.out_cap = cap;
+    a.labels = 0; a.label_count = 0; a.label_cap = 0;
+    a.refs = 0; a.ref_count = 0; a.ref_cap = 0;
+    a.error_count = 0;
+    a.cur_section = 0;
+    a.pending_weak = 0;
+    a.dry_run = 0;
+    pass1_x(&a);
+    pass2_x(&a);
+    resolve_refs_x(&a);
+    x86_save_syms(&a);
+    x86_save_relocs(&a);
+    return a.pc;
+}
+
+/* No-op link: cross-object linking is handled by compiler.c's -link mode
+ * (ARKOBJ2 binary linker with symbol resolution + relocation patching). */
 static int x86_link(unsigned char *c, int s, struct LinkContext *lc) {
     (void)c; (void)s; (void)lc;
     return 0;

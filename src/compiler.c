@@ -159,11 +159,20 @@ static void ld_patch_ref(unsigned char *code, int code_size, int pc, int target,
         return;
     }
     if (type == 4) {
-        /* R_ARM_ABS32: 4-byte absolute address */
+        /* R_ARM_ABS32 / R_386_32: 4-byte absolute address */
         code[pc]     = (unsigned char)(target & 0xFF);
         code[pc + 1] = (unsigned char)((target >> 8) & 0xFF);
         code[pc + 2] = (unsigned char)((target >> 16) & 0xFF);
         code[pc + 3] = (unsigned char)((target >> 24) & 0xFF);
+        return;
+    }
+    if (type == 5) {
+        /* R_386_PC32: x86 PC-relative disp32 (relative to next instr = pc+4) */
+        int disp = target - (pc + 4);
+        code[pc]     = (unsigned char)(disp & 0xFF);
+        code[pc + 1] = (unsigned char)((disp >> 8) & 0xFF);
+        code[pc + 2] = (unsigned char)((disp >> 16) & 0xFF);
+        code[pc + 3] = (unsigned char)((disp >> 24) & 0xFF);
         return;
     }
     {
@@ -637,8 +646,8 @@ int ark_compile(const ArkOptions *opts) {
         int ol = 0;
         int code_len = asm_len;  /* default: text assembly for non-ARM backends */
 
-        /* For ARM backend: assemble text to binary first */
-        if (ark_streq(be->name, "arm")) {
+        /* For ARM/x86 backends: assemble text to binary first */
+        if (ark_streq(be->name, "arm") || ark_streq(be->name, "x86")) {
             code_len = be->assemble(g_asm, g_code, ARK_CODE_BUF_SIZE);
             if (code_len < 0) {
                 ark_log("[arkcc] assembly failed\n");
@@ -676,18 +685,63 @@ int ark_compile(const ArkOptions *opts) {
         }
         {
             int k;
-            const unsigned char *src = ark_streq(be->name, "arm") ? g_code : (const unsigned char *)g_asm;
+            const unsigned char *src = (ark_streq(be->name, "arm") || ark_streq(be->name, "x86")) ? g_code : (const unsigned char *)g_asm;
             for (k = 0; k < code_len; k++) obj_buf[ol++] = src[k];
         }
 
-        /* Write symbol table for ARM backend */
+        /* Symbol/reloc getters: ARM and x86 backends both emit ARKOBJ2 tables. */
+        int   (*p_sym_count)(void)       = 0;
+        const char *(*p_sym_name)(int)   = 0;
+        int   (*p_sym_offset)(int)       = 0;
+        int   (*p_sym_type)(int)         = 0;
+        int   (*p_sym_weak)(int)          = 0;
+        int   (*p_reloc_count)(void)     = 0;
+        const char *(*p_reloc_name)(int) = 0;
+        int   (*p_reloc_offset)(int)     = 0;
+        int   (*p_reloc_type)(int)       = 0;
         if (ark_streq(be->name, "arm")) {
-            extern int arm_get_symbol_count(void);
+            extern int   arm_get_symbol_count(void);
             extern const char *arm_get_symbol_name(int idx);
-            extern int arm_get_symbol_offset(int idx);
-            extern int arm_get_symbol_type(int idx);
-            extern int arm_get_symbol_weak(int idx);
-            int sc = arm_get_symbol_count();
+            extern int   arm_get_symbol_offset(int idx);
+            extern int   arm_get_symbol_type(int idx);
+            extern int   arm_get_symbol_weak(int idx);
+            extern int   arm_get_reloc_count(void);
+            extern const char *arm_get_reloc_name(int idx);
+            extern int   arm_get_reloc_offset(int idx);
+            extern int   arm_get_reloc_type(int idx);
+            p_sym_count   = arm_get_symbol_count;
+            p_sym_name    = arm_get_symbol_name;
+            p_sym_offset  = arm_get_symbol_offset;
+            p_sym_type    = arm_get_symbol_type;
+            p_sym_weak    = arm_get_symbol_weak;
+            p_reloc_count = arm_get_reloc_count;
+            p_reloc_name  = arm_get_reloc_name;
+            p_reloc_offset= arm_get_reloc_offset;
+            p_reloc_type  = arm_get_reloc_type;
+        } else if (ark_streq(be->name, "x86")) {
+            extern int   x86_get_symbol_count(void);
+            extern const char *x86_get_symbol_name(int idx);
+            extern int   x86_get_symbol_offset(int idx);
+            extern int   x86_get_symbol_type(int idx);
+            extern int   x86_get_symbol_weak(int idx);
+            extern int   x86_get_reloc_count(void);
+            extern const char *x86_get_reloc_name(int idx);
+            extern int   x86_get_reloc_offset(int idx);
+            extern int   x86_get_reloc_type(int idx);
+            p_sym_count   = x86_get_symbol_count;
+            p_sym_name    = x86_get_symbol_name;
+            p_sym_offset  = x86_get_symbol_offset;
+            p_sym_type    = x86_get_symbol_type;
+            p_sym_weak    = x86_get_symbol_weak;
+            p_reloc_count = x86_get_reloc_count;
+            p_reloc_name  = x86_get_reloc_name;
+            p_reloc_offset= x86_get_reloc_offset;
+            p_reloc_type  = x86_get_reloc_type;
+        }
+
+        /* Write symbol table for object backends (ARM/x86) */
+        if (p_sym_count) {
+            int sc = p_sym_count();
             int si;
             /* symbol count (4 bytes LE) */
             obj_buf[ol++] = (unsigned char)(sc & 0xFF);
@@ -695,11 +749,11 @@ int ark_compile(const ArkOptions *opts) {
             obj_buf[ol++] = (unsigned char)((sc >> 16) & 0xFF);
             obj_buf[ol++] = (unsigned char)((sc >> 24) & 0xFF);
             for (si = 0; si < sc; si++) {
-                const char *sn = arm_get_symbol_name(si);
+                const char *sn = p_sym_name(si);
                 int nl = ark_strlen(sn) + 1; /* include null terminator */
-                int off = arm_get_symbol_offset(si);
-                int tp = arm_get_symbol_type(si);
-                int wk = arm_get_symbol_weak(si);
+                int off = p_sym_offset(si);
+                int tp = p_sym_type(si);
+                int wk = p_sym_weak(si);
                 /* name length (4 bytes LE) */
                 obj_buf[ol++] = (unsigned char)(nl & 0xFF);
                 obj_buf[ol++] = (unsigned char)((nl >> 8) & 0xFF);
@@ -721,7 +775,7 @@ int ark_compile(const ArkOptions *opts) {
                 obj_buf[ol++] = (unsigned char)wk;
             }
         } else {
-            /* Non-ARM: write 0 symbol count */
+            /* Non-object backend: write 0 symbol count */
             obj_buf[ol++] = 0; obj_buf[ol++] = 0; obj_buf[ol++] = 0; obj_buf[ol++] = 0;
         }
 
@@ -730,12 +784,8 @@ int ark_compile(const ArkOptions *opts) {
          *   name_len (4 bytes LE) + name (name_len bytes) + offset (4 bytes LE) + type (1 byte)
          * This goes AFTER the symbol table. Existing readers that stop
          * after the symbol table (like build_ark_test_fw.ps1) are unaffected. */
-        if (ark_streq(be->name, "arm")) {
-            extern int arm_get_reloc_count(void);
-            extern const char *arm_get_reloc_name(int idx);
-            extern int arm_get_reloc_offset(int idx);
-            extern int arm_get_reloc_type(int idx);
-            int rc = arm_get_reloc_count();
+        if (p_reloc_count) {
+            int rc = p_reloc_count();
             int ri;
             /* reloc count (4 bytes LE) */
             obj_buf[ol++] = (unsigned char)(rc & 0xFF);
@@ -743,10 +793,10 @@ int ark_compile(const ArkOptions *opts) {
             obj_buf[ol++] = (unsigned char)((rc >> 16) & 0xFF);
             obj_buf[ol++] = (unsigned char)((rc >> 24) & 0xFF);
             for (ri = 0; ri < rc; ri++) {
-                const char *rn = arm_get_reloc_name(ri);
+                const char *rn = p_reloc_name(ri);
                 int nl = ark_strlen(rn) + 1;
-                int off = arm_get_reloc_offset(ri);
-                int tp = arm_get_reloc_type(ri);
+                int off = p_reloc_offset(ri);
+                int tp = p_reloc_type(ri);
                 /* name length (4 bytes LE) */
                 obj_buf[ol++] = (unsigned char)(nl & 0xFF);
                 obj_buf[ol++] = (unsigned char)((nl >> 8) & 0xFF);
@@ -770,12 +820,10 @@ int ark_compile(const ArkOptions *opts) {
         if (fs_write_file(target, obj_buf, ol) != ol)
             return ARK_ERR_IO;
         {
-            extern int arm_get_symbol_count(void);
-            extern int arm_get_reloc_count(void);
             if (opts->verbose) ark_log("[arkcc] wrote object '%s' (%d bytes code, %d syms, %d relocs)\n",
                 target, code_len,
-                ark_streq(be->name, "arm") ? arm_get_symbol_count() : 0,
-                ark_streq(be->name, "arm") ? arm_get_reloc_count() : 0);
+                p_sym_count   ? p_sym_count()   : 0,
+                p_reloc_count ? p_reloc_count() : 0);
         }
         return ARK_OK;
     }
