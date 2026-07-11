@@ -248,6 +248,10 @@ struct __heap_extent {
     void *stack_limit;
 };
 
+/* weak: allows a project-specific strong definition (e.g. in
+ * system_stm32h7xx.c) to override this default. If the project
+ * does not provide one, this default is used instead. */
+__attribute__((weak))
 __value_in_regs struct __heap_extent
 __user_initial_stackheap(unsigned requested_heap,
                           void *heap_base,

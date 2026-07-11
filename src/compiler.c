@@ -575,7 +575,31 @@ int ark_compile(const ArkOptions *opts) {
     mem_pool_reset();
     preproc_reset();
     preproc_set_main_file(opts->input_path);
-    /* Built-in header search paths have lowest priority; add user-specified -I dirs first */
+
+    /* C99 6.10.2: #include "..." searches the directory of the source file
+     * containing the #include directive. We add the main source file's
+     * directory as the highest-priority search path so that paths like
+     * #include "Drivers/.../foo.c" (relative to the .c file) resolve
+     * correctly, matching gcc/armcc5 behavior. This is essential for
+     * --uvprojx builds where the main .c includes HAL .c sources by
+     * project-relative paths. Added FIRST so it has highest search priority. */
+    {
+        const char *src = opts->input_path;
+        int slen = ark_strlen(src);
+        int di;
+        char srcdir[512];
+        for (di = slen - 1; di >= 0; di--) {
+            if (src[di] == '/' || src[di] == '\\') break;
+        }
+        if (di > 0 && di < (int)sizeof(srcdir) - 1) {
+            int j;
+            for (j = 0; j <= di; j++) srcdir[j] = src[j];
+            srcdir[di + 1] = 0;
+            preproc_add_include_dir(srcdir);
+        }
+    }
+
+    /* User-specified -I dirs (added after source dir for lower priority) */
     for (i = 0; i < opts->include_dir_count; i++) {
         preproc_add_include_dir(opts->include_dirs[i]);
     }
