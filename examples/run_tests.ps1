@@ -35,6 +35,13 @@ foreach ($f in $examples) {
         $passed++
         continue
     }
+    # stm32_blink/stm32_shell_blink access hardware registers directly (e.g. 0x580244E0),
+    # which crashes on host. These are STM32-only tests.
+    if ($base -eq "stm32_blink" -or $base -eq "stm32_shell_blink") {
+        Write-Host "  [c]   skipped (STM32 hardware test)"
+        $passed++
+        continue
+    }
     $genc = "$base.gen.c"
     $exe  = "$base.gen.exe"
     & .\arkcc.exe $f.FullName -target c -o $genc
@@ -56,8 +63,17 @@ foreach ($f in $examples) {
     }
     & ".\$exe"
     $rc = $LASTEXITCODE
-    Write-Host "  [c]   exit code = $rc"
-    $passed++
+    # Tests use main() return value as computation result (e.g. test_fpu_hw returns r*10=40).
+    # Non-zero exit code is NOT failure. Only crash (negative exit code / SEH) counts as failure.
+    if ($rc -lt 0) {
+        $hex = ('0x{0:X}' -f ($rc -band 0xFFFFFFFF))
+        Write-Host "  [c]   FAILED: CRASH exit code = $rc ($hex)"
+        Write-Host "        possible cause: runtime crash (segfault/illegal instruction)"
+        $failed++
+    } else {
+        Write-Host "  [c]   exit code = $rc (OK)"
+        $passed++
+    }
 }
 
 Write-Host ""

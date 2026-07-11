@@ -49,30 +49,72 @@ static void sb_putd(StrBuf *b, long long v) {
 static void sb_putf(StrBuf *b, double v) {
     /* ?? %.17g ???????????????????????????????
      * ?????????????????? 1e-10???????????? 1e100???? */
-    /* Minimal double-to-string: avoids snprintf (semihosting on STM32).
-     * Not perfectly round-trip, but the binary value is stored separately
-     * in init_float for code generation. */
-    char tmp[64];
+    /* 自定义 double 转字符串，避免使用 snprintf（STM32 半主机依赖）。
+     * 大数（v >= 1e16）和极小值（v < 1e-4）使用科学记数法，
+     * 正常范围使用定点表示，保证输出为合法 C 浮点字面量。
+     * 并非完全可往返，但二进制值在 init_float 中单独保存用于代码生成。 */
+    char tmp[80];
     int n = 0;
     if (v != v) { sb_puts(b, "nan"); return; }
+    /* 无穷大检测：inf - inf = NaN，NaN != 0.0。
+     * 不能用 v > DBL_MAX 比较，因为 -O2 下 x87 FPU 的 80 位扩展精度
+     * 可能导致误判（DBL_MAX 被误判为 >DBL_MAX）。 */
+    if (v - v != 0.0) { sb_puts(b, "inf"); return; }
     if (v < 0) { sb_putc(b, '-'); v = -v; }
-    if (v > 1e308) { sb_puts(b, "inf"); return; }
     if (v == 0.0) { sb_puts(b, "0.0"); return; }
-    if (v >= 9.2e18) {
-        /* Very large value: use hex bit pattern */
-        unsigned long long *pbits = (unsigned long long *)&v;
-        tmp[n++] = '0'; tmp[n++] = 'x';
+    /* 大数或极小值使用科学记数法 */
+    if (v >= 1e16 || v < 1e-4) {
+        int exp = 0;
+        int i, d;
+        /* 规范化到 1 <= v < 10，记录指数。
+         * 用 10 的幂表大步长归一化，减少迭代次数以降低累积舍入误差
+         * （逐次乘除 10 会因 300+ 次迭代累积误差，导致 1e-300 往返失败） */
         {
-            unsigned long long bits = *pbits;
-            char hbuf[16]; int k = 0;
-            const char *hex = "0123456789abcdef";
-            while (bits && k < 16) { hbuf[k++] = hex[bits & 0xF]; bits >>= 4; }
-            while (k > 0) tmp[n++] = hbuf[--k];
+            static const double p10[] = {1e1, 1e2, 1e4, 1e8, 1e16, 1e32, 1e64, 1e128, 1e256};
+            static const int sh[] = {1, 2, 4, 8, 16, 32, 64, 128, 256};
+            int bi;
+            for (bi = 8; bi >= 0; bi--) {
+                while (v >= p10[bi]) { v /= p10[bi]; exp += sh[bi]; }
+            }
+            while (v >= 10.0) { v /= 10.0; exp++; }
+            for (bi = 8; bi >= 0; bi--) {
+                while (v < 1.0 && v * p10[bi] < 10.0) { v *= p10[bi]; exp -= sh[bi]; }
+            }
+            while (v < 1.0) { v *= 10.0; exp--; }
+        }
+        /* 尾数整数部分（1 位） */
+        d = (int)v;
+        if (d > 9) d = 9;
+        tmp[n++] = (char)('0' + d);
+        v -= (double)d;
+        /* 小数点 + 17 位小数 */
+        tmp[n++] = '.';
+        for (i = 0; i < 17; i++) {
+            v *= 10.0;
+            d = (int)v;
+            if (d > 9) d = 9;
+            if (d < 0) d = 0;
+            tmp[n++] = (char)('0' + d);
+            v -= (double)d;
+        }
+        /* 去掉末尾多余的 0，保证至少有一位小数 */
+        while (n > 0 && tmp[n-1] == '0') n--;
+        if (tmp[n-1] == '.') tmp[n++] = '0';
+        /* 指数部分：e+NN 或 e-NN（至少 2 位，不足补 0） */
+        tmp[n++] = 'e';
+        if (exp >= 0) tmp[n++] = '+';
+        else { tmp[n++] = '-'; exp = -exp; }
+        if (exp < 10) { tmp[n++] = '0'; tmp[n++] = (char)('0' + exp); }
+        else {
+            char ebuf[8]; int k = 0;
+            while (exp > 0) { ebuf[k++] = (char)('0' + exp % 10); exp /= 10; }
+            while (k > 0) tmp[n++] = ebuf[--k];
         }
         tmp[n] = 0;
         sb_puts(b, tmp);
         return;
     }
+    /* 定点表示：1e-4 <= v < 1e16，保持原有输出方式 */
     {
         long long ip = (long long)v;
         double frac = v - (double)ip;
@@ -233,7 +275,7 @@ typedef struct {
     int        cont_label;
     /* switch ????????? */
     int       *case_labels;     /* ??? case ?????????? */
-    int       *case_values;
+    long long *case_values;
     int        case_count;
     int        default_label;
     int        switch_end_label;
@@ -248,10 +290,22 @@ static void irgen_widen_to_64(IrGen *g, Type *src_t, Type *dst_t);
  * ??? C99 ?????????????designated initializer??.field / [idx]???? */
 static void irgen_local_aggregate_init(IrGen *g, int off, Type *t, AstNode *init_list);
 /* C99 ?????????? (type){...}????????????? ark_cl_<n>?????????????
- * ????????????????????????????????? C99 ????????????????????? */
-static const char *irgen_compound_literal(IrGen *g, AstNode *node);
+ * ????????????????????????????????? C99 ?????????????????????
+ * Bug-I7 FIX: Block-scope compound literals have automatic storage duration.
+ * The function allocates a local stack slot, zero-initializes it, and applies
+ * the initializer so each block entry re-initializes the object. Returns the
+ * local frame offset. */
+static int irgen_compound_literal(IrGen *g, AstNode *node);
 /* ?????????????????????????????????????????????????????? */
 static int g_compound_lit_counter = 0;
+
+/* C 后端使用 8 字节 long long 槽，无需 32→64 位 widen/narrow 序列。
+ * 设为 1 时 irgen_widen_to_64 和 irgen_cond_to_bool 成为 no-op。 */
+static int g_irgen_64bit_slots = 0;
+
+void irgen_set_64bit_slots(int enabled) {
+    g_irgen_64bit_slots = enabled;
+}
 
 static int alloc_label(IrGen *g) {
     return g->fn->label_count++;
@@ -289,7 +343,7 @@ static char *static_local_name(const char *func, const char *var) {
 /* ???????? switch body????? case/default ????????? */
 typedef struct CaseList {
     int *labels;
-    int *values;
+    long long *values;
     int  count;
     int  cap;
     int  default_label;
@@ -301,7 +355,7 @@ static void collect_cases(IrGen *g, AstNode *node, CaseList *cl) {
         if (cl->count >= cl->cap) {
             int nc = cl->cap == 0 ? 8 : cl->cap * 2;
             cl->labels = (int *)mem_realloc(cl->labels, cl->cap * (int)sizeof(int), nc * (int)sizeof(int));
-            cl->values = (int *)mem_realloc(cl->values, cl->cap * (int)sizeof(int), nc * (int)sizeof(int));
+            cl->values = (long long *)mem_realloc(cl->values, cl->cap * (int)sizeof(long long), nc * (int)sizeof(long long));
             cl->cap = nc;
         }
         cl->values[cl->count] = node->u.case_stmt.value;
@@ -697,6 +751,19 @@ IrProgram *irgen_program(AstNode *prog) {
             g.fn = ir_func_new(d->u.func.name);
             g.fn->ret_type = d->u.func.ret_type;
             g.fn->param_count = d->u.func.param_count;
+            /* Populate param_types so backends can compute AAPCS register
+             * assignment (64-bit even-pair alignment) for IR_GETARG.
+             * Without this, aapcs_map falls back to 4-byte slots for all
+             * params, mis-routing long long/double through wrong registers. */
+            if (d->u.func.param_count > 0) {
+                g.fn->param_types = (Type **)mem_pool_alloc(
+                    sizeof(Type *) * d->u.func.param_count);
+                for (j = 0; j < d->u.func.param_count; j++) {
+                    AstNode *pp = d->u.func.params[j];
+                    g.fn->param_types[j] = (pp && pp->u.var.var_type)
+                                            ? pp->u.var.var_type : 0;
+                }
+            }
             g.fn->is_variadic = d->u.func.is_variadic;
             g.fn->is_static = d->u.func.is_static;
             /* ???? ARM Compiler 5 ????????? IrFunc???????????
@@ -787,6 +854,14 @@ IrProgram *irgen_program(AstNode *prog) {
             ir_emit(g.fn, IR_PUSH_INT, 0, 0, 0);
             ir_emit(g.fn, IR_RETURN, 0, 0, 0);
             ir_emit(g.fn, IR_FUNC_END, 0, 0, 0);
+            /* Bug-X4: For variadic functions, the 8000 frame region (used by
+             * va_start/va_arg to access the variadic tail) must be included
+             * in local_size so the backend prologue allocates enough stack.
+             * The region spans offsets 8000..8063 (8 args * 8 bytes). */
+            if (d->u.func.is_variadic) {
+                if (g.max_size < 8064)
+                    g.max_size = 8064;
+            }
             g.fn->local_size = (g.max_size + 7) & ~7;
             sym_leave_scope();
             ir_program_add(out, g.fn);
@@ -860,57 +935,113 @@ static void irgen_local_aggregate_init(IrGen *g, int off, Type *t, AstNode *init
     /* ??????????????????????????? */
 }
 
-/* C99 ?????????? (type){...}?????????????????????????
- *   - ????/??????????? init ??????? C ?????????? init_aggregate
- *   - ???????? (int){42} ????? init_int ????????
- * ??????????????????????? PUSH_GLOBAL_ADDR ??????
- * ????????????????? decay ???????? irgen_expr ?????????? rvalue?? */
-static const char *irgen_compound_literal(IrGen *g, AstNode *node) {
-    char namebuf[32];
-    IrGlobal *gv;
+/* C99 compound literal (type){...} -- Bug-I7 FIX.
+ * This function is only reached from function-body codegen (irgen_expr and
+ * irgen_lvalue_addr), so the compound literal is always block-scope and has
+ * automatic storage duration per C99 6.5.2.5. We allocate a stack slot via
+ * alloc_local, zero-initialize it (so trailing elements/padding are zero,
+ * matching aggregate init rules), then apply the initializer on each entry
+ * to the block. File-scope compound literals are handled separately in
+ * irgen_program via serialize_init and are unaffected here.
+ * Returns the local frame offset of the allocated storage. */
+static int irgen_compound_literal(IrGen *g, AstNode *node) {
     Type *t = node->u.compound_lit.lit_type;
     AstNode *init = node->u.compound_lit.init;
-    /* ??????????? ark_cl_<n> */
-    {
-        int n = g_compound_lit_counter++;
-        int i = 0;
-        const char *pfx = "ark_cl_";
-        while (*pfx) namebuf[i++] = *pfx++;
-        /* ?????????? */
-        {
-            char tmp[16]; int tn = 0; unsigned u = (unsigned)n;
-            if (u == 0) tmp[tn++] = '0';
-            while (u) { tmp[tn++] = (char)('0' + u % 10); u /= 10; }
-            while (tn > 0) namebuf[i++] = tmp[--tn];
+    int sz = type_size(t);
+    int off;
+    int k;
+    /* Compound literals of array type with an unspecified dimension
+     * (e.g. (int[]){1,2,3}) arrive here with t->size == 0; type_size()
+     * then reports a single element's worth of storage. Unlike var
+     * decls, nobody calls infer_array_size_from_init on the literal's
+     * own type, so complete the dimension from the init list here.
+     * This ensures alloc_local reserves space for every element and
+     * the zero-init loop covers the whole object instead of just the
+     * first slot (whose filler 0 would otherwise share the offset of
+     * the first initialized element). */
+    if (t && t->kind == TYPE_ARRAY && t->size == 0 && init &&
+        init->kind == AST_INIT_LIST) {
+        int count = 0;
+        int pos = 0;
+        int i;
+        for (i = 0; i < init->u.init_list.item_count; i++) {
+            AstNode *item = init->u.init_list.items[i];
+            if (item && item->kind == AST_INIT_FIELD) {
+                if (item->u.init_field.has_index) {
+                    if (item->u.init_field.index + 1 > count)
+                        count = item->u.init_field.index + 1;
+                } else {
+                    pos++;
+                }
+            } else {
+                pos++;
+            }
         }
-        namebuf[i] = 0;
+        if (pos > count) count = pos;
+        if (count > 0) {
+            t->size = count;
+            sz = type_size(t);
+        }
     }
-    gv = ir_program_add_global(g->prog, namebuf, t);
-    gv->is_static = 1;  /* ??????????????????????? */
+    if (sz <= 0) sz = 4;
+    off = alloc_local(g, sz);
+    /* Zero-initialize the storage so uninitialized elements (trailing array
+     * elements, padding, absent struct fields) are zero, matching C99
+     * aggregate initialization semantics. Store 4 bytes at a time; the
+     * frame is 8-byte aligned so partial trailing words are safe. */
+    for (k = 0; k < sz; k += 4) {
+        ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
+        ir_emit(g->fn, IR_STORE, off + k, 0, 4);
+    }
     if (init) {
         if (init->kind == AST_INIT_LIST) {
-            StrBuf sb; sb_init(&sb);
-            serialize_init(&sb, init);
-            gv->has_init = 1;
-            gv->init_aggregate = sb.data;
-        } else if (init->kind == AST_NUM) {
-            gv->has_init = 1;
-            gv->init_int = init->u.num_val;
-            if (init->type && (init->type->kind == TYPE_FLOAT || init->type->kind == TYPE_DOUBLE)) {
-                gv->is_float = 1;
-                gv->init_float = init->fval;
+            if (t && (t->kind == TYPE_ARRAY || t->kind == TYPE_STRUCT ||
+                      t->kind == TYPE_UNION)) {
+                /* Aggregate compound literal: reuse the same init path as
+                 * local var decls (handles designated initializers, nested
+                 * aggregates, etc.). */
+                irgen_local_aggregate_init(g, off, t, init);
+            } else {
+                /* Scalar compound literal: (int){42}, (float){1.5f}, etc.
+                 * The init list has a single element; extract and store it. */
+                if (init->u.init_list.item_count > 0) {
+                    AstNode *v = init->u.init_list.items[0];
+                    if (v && v->kind == AST_INIT_FIELD) v = v->u.init_field.value;
+                    if (v) {
+                        irgen_expr(g, v);
+                        ir_emit(g->fn, IR_STORE, off, 0, sz);
+                    }
+                }
             }
-        } else if (init->kind == AST_STR) {
-            gv->has_init = 1;
-            gv->init_str = init->u.name;
         } else {
-            StrBuf sb; sb_init(&sb);
-            serialize_const_expr(&sb, init);
-            gv->has_init = 1;
-            gv->init_aggregate = sb.data;
+            /* Non-INIT_LIST init (shouldn't happen per parser, but handle
+             * for safety). */
+            irgen_expr(g, init);
+            ir_emit(g->fn, IR_STORE, off, 0, sz);
         }
     }
-    return gv->name;
+    /* Keep the counter alive for bootstrap ABI compatibility. */
+    (void)g_compound_lit_counter;
+    return off;
+}
+
+/* ROUND4-P2 FIX: Discard an expression result from the stack after a
+ * statement-level expression. Direct void function calls don't push a
+ * return value (backends skip the push), so no IR_POP is needed. Indirect
+ * void calls still conservatively push, so they need the POP. 64-bit
+ * returns occupy 2 stack slots and need 2 POPs. */
+static void irgen_discard_result(IrGen *g, AstNode *node) {
+    Type *et = node ? node->type : 0;
+    if (et && (et->kind == TYPE_LLONG || et->kind == TYPE_DOUBLE)) {
+        ir_emit(g->fn, IR_POP, 0, 0, 0);
+        ir_emit(g->fn, IR_POP, 0, 0, 0);
+    } else if (et && et->kind == TYPE_VOID &&
+               node->kind == AST_FUNC_CALL &&
+               !(node->u.call.name && node->u.call.name[0] == '?')) {
+        /* Direct void call: backend doesn't push a return value, skip POP */
+    } else {
+        ir_emit(g->fn, IR_POP, 0, 0, 0);
+    }
 }
 
 static void irgen_stmt(IrGen *g, AstNode *node) {
@@ -1227,7 +1358,7 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
                     irgen_stmt(g, node->u.for_stmt.init);
                 else {
                     irgen_expr(g, node->u.for_stmt.init);
-                    ir_emit(g->fn, IR_POP, 0, 0, 0);
+                    irgen_discard_result(g, node->u.for_stmt.init);
                 }
             }
             ir_emit(g->fn, IR_LABEL, start_l, 0, 0);
@@ -1240,7 +1371,7 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
             ir_emit(g->fn, IR_LABEL, cont_l, 0, 0);
             if (node->u.for_stmt.step) {
                 irgen_expr(g, node->u.for_stmt.step);
-                ir_emit(g->fn, IR_POP, 0, 0, 0);
+                irgen_discard_result(g, node->u.for_stmt.step);
             }
             ir_emit(g->fn, IR_JMP, start_l, 0, 0);
             ir_emit(g->fn, IR_LABEL, end_l, 0, 0);
@@ -1271,10 +1402,12 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
             CaseList cl;
             int i;
             int *sv_labels = g->case_labels;
-            int *sv_values = g->case_values;
+            long long *sv_values = g->case_values;
             int sv_count = g->case_count;
             int sv_default = g->default_label;
             int sv_end = g->switch_end_label;
+            Type *sw_type = node->u.switch_stmt.expr ? node->u.switch_stmt.expr->type : 0;
+            int is_llong_sw = (sw_type && sw_type->kind == TYPE_LLONG);
 
             cl.labels = 0; cl.values = 0; cl.count = 0; cl.cap = 0;
             cl.default_label = -1;
@@ -1292,15 +1425,29 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
              * Each case comparison reloads the temp; after JNZ the stack
              * is balanced regardless of whether a case matched.
              * (Previous DUP-based approach left expr on stack when a case
-             * matched via JNZ, leaking 1 slot per switch execution.) */
+             * matched via JNZ, leaking 1 slot per switch execution.)
+             * For long long switch expressions, use 8-byte store/load and
+             * IR_64CMP so the full 64-bit value is compared (not just the low
+             * 32 bits, which would make distinct 64-bit cases alias). */
             {
                 int switch_temp = alloc_local(g, 8);
+                int store_aux = is_llong_sw ? 8 : 0;
+                int load_aux  = is_llong_sw ? 8 : 0;
                 irgen_expr(g, node->u.switch_stmt.expr);
-                ir_emit(g->fn, IR_STORE, switch_temp, 0, 0);
+                ir_emit(g->fn, IR_STORE, switch_temp, 0, store_aux);
                 for (i = 0; i < cl.count; i++) {
-                    ir_emit(g->fn, IR_PUSH_VAR, switch_temp, 0, 0);
-                    ir_emit(g->fn, IR_PUSH_INT, cl.values[i], 0, 0);
-                    ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_EQ);
+                    ir_emit(g->fn, IR_PUSH_VAR, switch_temp, 0, load_aux);
+                    if (is_llong_sw) {
+                        long long cv = cl.values[i];
+                        int low32  = (int)(unsigned int)(cv & 0xFFFFFFFFLL);
+                        int high32 = (int)(unsigned int)((unsigned long long)cv >> 32);
+                        ir_emit(g->fn, IR_64PUSH, high32, 0, low32);
+                        ir_emit(g->fn, IR_64CMP, 0, 0,
+                                (int)TOK_EQ | (sw_type->is_unsigned ? 0x100 : 0));
+                    } else {
+                        ir_emit(g->fn, IR_PUSH_INT, cl.values[i], 0, 0);
+                        ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_EQ);
+                    }
                     ir_emit(g->fn, IR_JNZ, cl.labels[i], 0, 0);
                 }
             }
@@ -1357,7 +1504,7 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
         case AST_EXPR_STMT:
             if (node->u.unary.operand) {
                 irgen_expr(g, node->u.unary.operand);
-                ir_emit(g->fn, IR_POP, 0, 0, 0);
+                irgen_discard_result(g, node->u.unary.operand);
             }
             break;
         case AST_ASM: {
@@ -1390,7 +1537,7 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
         }
         default:
             irgen_expr(g, node);
-            ir_emit(g->fn, IR_POP, 0, 0, 0);
+            irgen_discard_result(g, node);
             break;
     }
 }
@@ -1414,10 +1561,10 @@ static void irgen_lvalue_addr(IrGen *g, AstNode *node) {
         return;
     }
     if (node->kind == AST_COMPOUND_LITERAL) {
-        /* ???????????? lvalue????"???"??????????????
-         * irgen_compound_literal ??????????????????? */
-        const char *gname = irgen_compound_literal(g, node);
-        ir_emit(g->fn, IR_PUSH_GLOBAL_ADDR, 0, gname, 0);
+        /* Bug-I7 FIX: Block-scope compound literal -- the stack slot's
+         * address is the lvalue address. */
+        int off = irgen_compound_literal(g, node);
+        ir_emit(g->fn, IR_PUSH_ADDR, off, 0, 0);
         return;
     }
     if (node->kind == AST_ARRAY_ACCESS) {
@@ -1506,6 +1653,9 @@ static void irgen_widen_to_64(IrGen *g, Type *src_t, Type *dst_t) {
     int src_size, dst_size;
     if (!src_t || !dst_t) return;
     if (!type_is_integer(src_t) || !type_is_integer(dst_t)) return;
+    /* C 后端使用 8 字节 long long 槽，32 位值存入槽时已自动符号扩展，
+     * 无需推送额外的高字槽。窄化时也不需要丢弃高字（只有一个槽）。 */
+    if (g_irgen_64bit_slots) return;
     src_size = type_size(src_t);
     dst_size = type_size(dst_t);
     if (dst_size == 8 && src_size < 8) {
@@ -1538,6 +1688,8 @@ static void irgen_widen_to_64(IrGen *g, Type *src_t, Type *dst_t) {
  * For non-64-bit types, this is a no-op. */
 static void irgen_cond_to_bool(IrGen *g, AstNode *cond) {
     if (!cond || !cond->type) return;
+    /* C 后端使用 8 字节 long long 槽，64 位值只占一个槽，无需 BOR 合并。 */
+    if (g_irgen_64bit_slots) return;
     if (type_size(cond->type) == 8 && type_is_integer(cond->type)) {
         /* Stack: [lo, hi] (hi on top). BOR pops both and pushes lo|hi (4 bytes). */
         ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_BOR);
@@ -1631,7 +1783,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                 else { re = node->fval; im = 0.0; }
                 {
                     int cid = ir_program_add_complex(g->prog, re, im);
-                    ir_emit(g->fn, IR_PUSH_FLOAT, cid, 0, cid | 0x600);
+                    ir_emit(g->fn, IR_PUSH_FLOAT, cid, 0, 0x600);
                 }
                 break;
             }
@@ -1640,12 +1792,22 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                 /* aux ???? 0x200 ??? double ?????ARM ???????? 64 ????????
                  * val ????????????????? */
                 int is_dbl = (node->type->kind == TYPE_DOUBLE);
-                ir_emit(g->fn, IR_PUSH_FLOAT, fid, 0, fid | (is_dbl ? 0x200 : 0));
+                ir_emit(g->fn, IR_PUSH_FLOAT, fid, 0, is_dbl ? 0x200 : 0);
             } else {
-                /* aux low byte = size: 8 for long long (push 8 bytes),
-                 * 0 for int/short/char (push 4 bytes). */
-                int push_aux = (node->type && node->type->kind == TYPE_LLONG) ? 8 : 0;
-                ir_emit(g->fn, IR_PUSH_INT, node->u.num_val, 0, push_aux);
+                /* Bug-N1: For long long constants, emit IR_64PUSH which
+                 * correctly pushes both 32-bit halves (low word first, high
+                 * word on top). The old IR_PUSH_INT with aux=8 only pushed the
+                 * low 32 bits on ARM (emit_mov_imm truncates to 32 bits),
+                 * silently dropping the high word for values >= 2^31.
+                 * IR_64PUSH encoding: val=high32, aux=low32. */
+                if (node->type && node->type->kind == TYPE_LLONG) {
+                    long long v = node->u.num_val;
+                    int low32  = (int)(unsigned int)(v & 0xFFFFFFFFLL);
+                    int high32 = (int)(unsigned int)((unsigned long long)v >> 32);
+                    ir_emit(g->fn, IR_64PUSH, high32, 0, low32);
+                } else {
+                    ir_emit(g->fn, IR_PUSH_INT, node->u.num_val, 0, 0);
+                }
             }
             break;
         case AST_STR: {
@@ -1667,18 +1829,40 @@ static void irgen_expr(IrGen *g, AstNode *node) {
             ir_emit(g->fn, IR_PUSH_INT, node->u.num_val, 0, 0);
             break;
         case AST_COMPOUND_LITERAL: {
-            /* C99 ????????????????????????
-             *   - ????/?????rvalue ? decay ???????????????????
-             *     ??? PUSH_GLOBAL_ADDR??
-             *   - ??????rvalue ??????????? PUSH_GLOBAL ??????????? */
-            const char *gname = irgen_compound_literal(g, node);
-            if (node->type &&
-                (node->type->kind == TYPE_ARRAY ||
-                 node->type->kind == TYPE_STRUCT ||
-                 node->type->kind == TYPE_UNION)) {
-                ir_emit(g->fn, IR_PUSH_GLOBAL_ADDR, 0, gname, 0);
+            /* Bug-I7 FIX: Block-scope compound literal -- allocate on stack.
+             * For aggregate types (array/struct/union), the address decays
+             * to a pointer (PUSH_ADDR). For scalars, the value is loaded
+             * (PUSH_VAR with the correct width/unsigned aux).
+             * Use lit_type (the declared type) rather than node->type:
+             * sema_expr has no case for AST_COMPOUND_LITERAL, so its default
+             * arm clobbers node->type to int. Relying on node->type would
+             * misclassify an array/struct compound literal as a scalar and
+             * load the first element's value (e.g. 1) instead of pushing the
+             * storage address, which then crashes when used as a pointer
+             * (Bug-I7 regression). */
+            Type *lt = node->u.compound_lit.lit_type;
+            int off = irgen_compound_literal(g, node);
+            if (lt &&
+                (lt->kind == TYPE_ARRAY ||
+                 lt->kind == TYPE_STRUCT ||
+                 lt->kind == TYPE_UNION)) {
+                ir_emit(g->fn, IR_PUSH_ADDR, off, 0, 0);
             } else {
-                ir_emit(g->fn, IR_PUSH_GLOBAL, 0, gname, 0);
+                int push_aux = 0;
+                if (lt) {
+                    int uns = lt->is_unsigned ? 0x100 : 0;
+                    switch (lt->kind) {
+                        case TYPE_CHAR:  push_aux = 1; break;
+                        case TYPE_SHORT: push_aux = 2; break;
+                        case TYPE_INT:
+                        case TYPE_ENUM:  push_aux = 4; break;
+                        case TYPE_LLONG:  push_aux = 8; break;
+                        case TYPE_DOUBLE: push_aux = 8; break;
+                        default:         push_aux = 0; break;
+                    }
+                    push_aux |= uns;
+                }
+                ir_emit(g->fn, IR_PUSH_VAR, off, 0, push_aux);
             }
             break;
         }
@@ -1750,21 +1934,37 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                 int dst_int   = dst_t && type_is_integer(dst_t);
                 if (src_float && dst_int) {
                     int is_dbl = (src_t->kind == TYPE_DOUBLE);
-                    /* F2I unsigned fix: encode unsigned flag (0x400) so ARM
-                     * backend selects __aeabi_d2uiz/__aeabi_f2uiz for unsigned
-                     * destinations instead of always using signed __aeabi_d2iz. */
-                    int aux = is_dbl ? 0x200 : 0;
-                    if (dst_t->is_unsigned) aux |= 0x400;
-                    ir_emit(g->fn, IR_F2I, 0, 0, aux);
+                    /* Bug-N2: double -> long long requires IR_64F2I (not
+                     * IR_F2I) because IR_F2I truncates to 32-bit int.
+                     * aux: 0x200=src is double, 0x400=dst is unsigned.
+                     * ARM backend selects __aeabi_d2lz/__aeabi_d2ulz (or
+                     * __aeabi_f2lz/__aeabi_f2ulz for float source). */
+                    if (dst_t->kind == TYPE_LLONG) {
+                        int aux = is_dbl ? 0x200 : 0;
+                        if (dst_t->is_unsigned) aux |= 0x400;
+                        ir_emit(g->fn, IR_64F2I, 0, 0, aux);
+                    } else {
+                        int aux = is_dbl ? 0x200 : 0;
+                        if (dst_t->is_unsigned) aux |= 0x400;
+                        ir_emit(g->fn, IR_F2I, 0, 0, aux);
+                    }
                 }
                 else if (src_int && dst_float) {
                     int is_dbl = (dst_t->kind == TYPE_DOUBLE);
-                    /* Bug-P1-7: encode unsigned flag (0x400) so ARM backend
-                     * selects __aeabi_ui2d/__aeabi_ui2f for unsigned sources
-                     * instead of always using the signed __aeabi_i2d/__aeabi_i2f. */
-                    int aux = is_dbl ? 0x200 : 0;
-                    if (src_t->is_unsigned) aux |= 0x400;
-                    ir_emit(g->fn, IR_I2F, 0, 0, aux);
+                    /* Bug-N2: long long -> double requires IR_64I2F (not
+                     * IR_I2F) because IR_I2F expects a 32-bit int source.
+                     * aux: 0x200=dst is double, 0x400=src is unsigned.
+                     * ARM backend selects __aeabi_l2d/__aeabi_ul2d (or
+                     * __aeabi_l2f/__aeabi_ul2f for float destination). */
+                    if (src_t->kind == TYPE_LLONG) {
+                        int aux = is_dbl ? 0x200 : 0;
+                        if (src_t->is_unsigned) aux |= 0x400;
+                        ir_emit(g->fn, IR_64I2F, 0, 0, aux);
+                    } else {
+                        int aux = is_dbl ? 0x200 : 0;
+                        if (src_t->is_unsigned) aux |= 0x400;
+                        ir_emit(g->fn, IR_I2F, 0, 0, aux);
+                    }
                 }
                 /* Bug-F2F: float <-> float cast. Previously missing — a double->float
                  * narrowing was a no-op, leaving 8 bytes on the stack when only 4
@@ -1787,32 +1987,11 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                  * Stack layout for 64-bit values: low word pushed first, high
                  * word pushed last (high word on top of stack). */
                 else if (src_int && dst_int) {
-                    int src_size = type_size(src_t);
-                    int dst_size = type_size(dst_t);
-                    if (dst_size == 8 && src_size < 8) {
-                        /* Widen 32-bit int to 64-bit (2 slots). The int value
-                         * is already on the stack as 1 slot; push the high
-                         * word (sign or zero extension) on top. */
-                        if (src_t->is_unsigned) {
-                            /* Zero extend: high word = 0 */
-                            ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
-                        } else {
-                            /* Bug-N4 FIX: Sign extend using (val < 0) ? -1 : 0
-                             * instead of the buggy shrl $31 which gives 1 (not
-                             * -1) for negative values. DUP+PUSH 0+LT+NEG
-                             * correctly produces 0xFFFFFFFF for negatives. */
-                            ir_emit(g->fn, IR_DUP, 0, 0, 0);
-                            ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
-                            ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_LT);
-                            ir_emit(g->fn, IR_UNARY, 0, 0, (int)TOK_MINUS);
-                        }
-                    }
-                    else if (src_size == 8 && dst_size < 8) {
-                        /* Narrow 64-bit to 32-bit: discard the high word
-                         * (which is on top of stack). */
-                        ir_emit(g->fn, IR_POP, 0, 0, 0);
-                    }
-                    /* same-size int<->int: no-op */
+                    /* int(32-bit) <-> long long(64-bit) widening/narrowing.
+                     * 委托给 irgen_widen_to_64 统一处理，该函数内部会检查
+                     * g_irgen_64bit_slots 标志：C 后端使用 8 字节 long long
+                     * 槽时跳过 2 槽 widen/narrow 序列。 */
+                    irgen_widen_to_64(g, src_t, dst_t);
                 }
                 /* complex -> real????????????????????? IR_F2I ??? 0x400 ????
                  * ????? C ??????????? creal()????????? aux ????????????? */
@@ -2004,6 +2183,16 @@ static void irgen_expr(IrGen *g, AstNode *node) {
             } else if (op == (int)TOK_INC || op == (int)TOK_DEC) {
                 int delta = (op == (int)TOK_INC) ? 1 : -1;
                 AstNode *operand = node->u.unary.operand;
+                /* Pointer arithmetic: p++ advances p by sizeof(T) bytes for T *p.
+                 * Without this scaling, va_arg(ap, type) using *ap++ (where ap is
+                 * long long * from stdarg.h) would only advance ap by 1 byte
+                 * instead of 8, causing subsequent va_arg reads to return
+                 * misaligned garbage (B06: va_test.c printed "sum = 1" instead
+                 * of "sum = 10"). */
+                if (operand->type && operand->type->kind == TYPE_PTR && operand->type->base) {
+                    int pointed_sz = type_size(operand->type->base);
+                    if (pointed_sz > 0) delta *= pointed_sz;
+                }
                 if (operand->kind == AST_VAR) {
                     Symbol *s = sym_find(operand->u.name);
                     if (!s) { ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0); break; }
@@ -2404,7 +2593,11 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                      * with IR_DUP so that side effects in L (e.g. i++ in *p++ += 5)
                      * are not doubled. The original address stays at the bottom of
                      * the stack while LOAD_IDX consumes the duplicate; STORE_IDX
-                     * then consumes the original, so no SWAP is needed. */
+                     * then consumes the original, so no SWAP is needed.
+                     * Bug-I5 FIX: Preserve volatile semantics on *ptr OP= val so
+                     * that LOAD_IDX/STORE_IDX carry IR_AUX_VOLATILE, preventing
+                     * optimization passes and host compilers from merging or
+                     * eliminating the read-modify-write. */
                     int elem_sz = type_size(L->type ? L->type : type_int());
                     int packed_aux = 0;
                     if (elem_sz <= 0) elem_sz = 4;
@@ -2412,6 +2605,9 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         L->u.unary.operand->type->kind == TYPE_PTR &&
                         L->u.unary.operand->type->is_packed) {
                         packed_aux = 0x400;
+                    }
+                    if (L->type && L->type->is_volatile) {
+                        packed_aux |= IR_AUX_VOLATILE;
                     }
                     irgen_lvalue_addr(g, L);                       /* [addr] */
                     ir_emit(g->fn, IR_DUP, 0, 0, 0);               /* [addr, addr] */
@@ -2425,7 +2621,8 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                     /* arr[i] OP= val
                      * Bug-I4 FIX: Evaluate the lvalue address ONCE and duplicate
                      * it with IR_DUP so that side effects in the index expression
-                     * (e.g. i++ in arr[i++] += 5) are not doubled. */
+                     * (e.g. i++ in arr[i++] += 5) are not doubled.
+                     * Bug-I5 FIX: Preserve volatile semantics on arr[i] OP= val. */
                     AstNode *arr = L->u.array_access.array;
                     int elem_sz = 4;
                     int packed_aux = 0;
@@ -2434,6 +2631,9 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                     if (elem_sz <= 0) elem_sz = 4;
                     if (arr->type && arr->type->kind == TYPE_PTR && arr->type->is_packed) {
                         packed_aux = 0x400;
+                    }
+                    if (L->type && L->type->is_volatile) {
+                        packed_aux |= IR_AUX_VOLATILE;
                     }
                     irgen_lvalue_addr(g, L);                       /* [addr] */
                     ir_emit(g->fn, IR_DUP, 0, 0, 0);               /* [addr, addr] */
@@ -2452,18 +2652,23 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
                     } else {
                         int elem_sz = type_size(L->type ? L->type : type_int());
+                        int vol_aux = 0;
                         if (elem_sz <= 0) elem_sz = 4;
                         /* Bug-I4 FIX: Evaluate the lvalue address ONCE and
                          * duplicate it with IR_DUP so that side effects in the
-                         * member's base object are not doubled. */
+                         * member's base object are not doubled.
+                         * Bug-I5 FIX: Preserve volatile semantics on s.f OP= val. */
+                        if (L->type && L->type->is_volatile) {
+                            vol_aux = IR_AUX_VOLATILE;
+                        }
                         irgen_lvalue_addr(g, L);                       /* [addr] */
                         ir_emit(g->fn, IR_DUP, 0, 0, 0);               /* [addr, addr] */
                         ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);           /* [addr, addr, 0] */
-                        ir_emit(g->fn, IR_LOAD_IDX, elem_sz, 0, 0);     /* [addr, old_val] */
+                        ir_emit(g->fn, IR_LOAD_IDX, elem_sz, 0, vol_aux); /* [addr, old_val] */
                         irgen_expr(g, node->u.binary.right);            /* [addr, old_val, rhs] */
                         irgen_maybe_widen_for_binary(g, L->type, node->u.binary.right ? node->u.binary.right->type : 0);
                         irgen_emit_binary_op(g, bop, L->type, node->u.binary.right ? node->u.binary.right->type : 0); /* [addr, new_val] */
-                        ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, 0);    /* [new_val] */
+                        ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, vol_aux); /* [new_val] */
                     }
                 } else {
                     ark_log("[irgen] line %d: compound-assign target unsupported\n", node->line);
@@ -2610,14 +2815,31 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                     Type *use_t = pt ? pt : (arg ? arg->type : 0);
                     if (use_t) {
                         int k = use_t->kind;
+                        /* bit(2*i)   = 1 => float/double (promoted to double)
+                         * bit(2*i+1) = 1 => 8-byte type (long long OR double)
+                         * Double sets BOTH bits: bit(2*i) for float/double cast
+                         * (C backend checks this first), bit(2*i+1) for 8-byte
+                         * AAPCS alignment (ARM even-register-pair). Float sets
+                         * only bit(2*i) since it is 4 bytes on ARM. */
                         if (k == TYPE_FLOAT || k == TYPE_DOUBLE) {
                             argmask |= (1 << (2 * i));
-                        } else if (k == TYPE_LLONG) {
+                        }
+                        if (k == TYPE_LLONG || k == TYPE_DOUBLE) {
                             argmask |= (1 << (2 * i + 1));
                         }
                     }
                 }
-                ir_emit(g->fn, IR_CALL, n, node->u.call.name, argmask);
+                /* Encode indirect-call 64-bit return flag in bit 32 of val.
+                 * All backends truncate val to int for the arg count, so the
+                 * high bit is free. The ARM backend checks it to decide whether
+                 * to push r1 (high word) alongside r0 after an indirect call. */
+                {
+                    long long call_val = n;
+                    if (is_indirect && node->type &&
+                        (node->type->kind == TYPE_LLONG || node->type->kind == TYPE_DOUBLE))
+                        call_val |= 0x100000000LL;
+                    ir_emit(g->fn, IR_CALL, call_val, node->u.call.name, argmask);
+                }
             }
             break;
         }

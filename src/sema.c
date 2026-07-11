@@ -376,7 +376,14 @@ static void sema_decl(AstNode *node) {
                     existing->kind = SYM_GLOBAL;
                     existing->is_extern = node->u.var.is_extern;
                     node->u.var.is_global = 1;
-                    if (node->u.var.init) sema_expr(node->u.var.init);
+                    if (node->u.var.init) {
+                        sema_expr(node->u.var.init);
+                        /* Bug-I1: Apply initialization conversion (C99 6.7.8):
+                         * cast the initializer to the variable's type. */
+                        node->u.var.init =
+                            sema_implicit_cast(node->u.var.init,
+                                               node->u.var.var_type);
+                    }
                     break;
                 }
                 /* Allow extern declaration after any prior declaration (redundant but legal).
@@ -392,7 +399,14 @@ static void sema_decl(AstNode *node) {
                 sym->is_extern = node->u.var.is_extern;
             }
             node->u.var.is_global = 1;
-            if (node->u.var.init) sema_expr(node->u.var.init);
+            if (node->u.var.init) {
+                sema_expr(node->u.var.init);
+                /* Bug-I1: Apply initialization conversion (C99 6.7.8):
+                 * cast the initializer to the variable's type. */
+                node->u.var.init =
+                    sema_implicit_cast(node->u.var.init,
+                                       node->u.var.var_type);
+            }
             break;
         }
         case AST_TYPEDEF:
@@ -432,7 +446,14 @@ static void sema_stmt(AstNode *node) {
             } else {
                 sym_add(SYM_VAR, name, node->u.var.var_type, 0);
             }
-            if (node->u.var.init) sema_expr(node->u.var.init);
+            if (node->u.var.init) {
+                sema_expr(node->u.var.init);
+                /* Bug-I1: Apply initialization conversion (C99 6.7.8):
+                 * cast the initializer to the variable's type. */
+                node->u.var.init =
+                    sema_implicit_cast(node->u.var.init,
+                                       node->u.var.var_type);
+            }
             break;
         }
         case AST_TYPEDEF:
@@ -616,8 +637,19 @@ static Type *sema_expr(AstNode *node) {
                     sema_expr(node->u.call.args[i]);
                 return node->type;
             }
-            for (i = 0; i < node->u.call.arg_count; i++)
+            for (i = 0; i < node->u.call.arg_count; i++) {
                 sema_expr(node->u.call.args[i]);
+                /* Bug-I1: Apply argument conversion (C99 6.5.2.2): cast each
+                 * argument to the corresponding parameter type when the
+                 * function has a prototype and the arg index is within the
+                 * named parameter list. Variadic args beyond the named list
+                 * get default argument promotion instead. */
+                if (s->param_types && i < s->param_count) {
+                    node->u.call.args[i] =
+                        sema_implicit_cast(node->u.call.args[i],
+                                           s->param_types[i]);
+                }
+            }
             if (s->param_count >= 0 && !s->is_variadic &&
                 s->param_count != node->u.call.arg_count) {
                 ark_log("[sema] line %d: warning: argument count mismatch for '%s'\n",

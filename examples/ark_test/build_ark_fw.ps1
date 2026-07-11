@@ -31,6 +31,7 @@ for ($i = 0; $i -lt $symCount; $i++) {
     $pos += $nameLen
     $offset = [BitConverter]::ToInt32($obj, $pos); $pos += 4
     $type   = $obj[$pos]; $pos += 1
+    $isWeak = $obj[$pos]; $pos += 1
     $syms[$name] = $offset
 }
 

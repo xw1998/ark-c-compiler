@@ -2002,17 +2002,16 @@ static AstNode *parse_statement(Parser *p) {
             AstNode *n;
             AstNode *ce;
             long long cv = 0;
-            int v = 0;
             lexer_advance(p->lex);
             /* C99 6.10: case label is an integer constant expression.
              * Use the full conditional-expression parser so that cast
              * expressions (e.g. `case (int)TOK_PLUS:`), arithmetic
              * (e.g. `case 1+2:`), and enum constants all work. */
             ce = parse_cond_expr(p);
-            if (ce && eval_const_expr(ce, &cv)) v = (int)cv;
+            if (ce) eval_const_expr(ce, &cv);
             lexer_expect(p->lex, TOK_COLON);
             n = ast_new(AST_CASE, line);
-            n->u.case_stmt.value = v;
+            n->u.case_stmt.value = cv;
             n->u.case_stmt.stmt = parse_statement(p);
             return n;
         }

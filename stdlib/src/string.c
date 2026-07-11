@@ -65,3 +65,13 @@ int strcmp(const char *a, const char *b) {
     while (*a && *a == *b) { a++; b++; }
     return (int)(unsigned char)*a - (int)(unsigned char)*b;
 }
+
+char *strstr(const char *s, const char *needle) {
+    size_t n = strlen(needle);
+    if (n == 0) return (char *)s;
+    while (*s) {
+        if (memcmp(s, needle, n) == 0) return (char *)s;
+        s++;
+    }
+    return 0;
+}

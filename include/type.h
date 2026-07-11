@@ -50,6 +50,7 @@ typedef struct Type {
     int          is_vla;          /* variable-length array flag (B3): runtime allocated */
     int          is_volatile;     /* volatile type qualifier (F2) */
     int          is_const;        /* const type qualifier (F2) */
+    int          bf_break;        /* C99 6.7.2.1: width=0 bitfield forces next bitfield to a new storage unit */
 } Type;
 
 Type *type_void(void);

@@ -36,6 +36,23 @@ void *mem_pool_alloc(int size) {
     return p;
 }
 
+void mem_pool_free(void *ptr, int size) {
+    /* Bump allocator: only the most recent allocation can be reclaimed, by
+     * rolling back the bump pointer. Freeing an older allocation is a no-op
+     * (other allocations sit above it); this mirrors mem_realloc above, which
+     * also only adjusts the last allocation in place. The freed region is
+     * zero-filled again by the next mem_pool_alloc that reuses it, so we do
+     * not zero it here. */
+    unsigned char *p = (unsigned char *)ptr;
+    int aligned;
+    if (!p || size <= 0) return;
+    aligned = (size + 7) & ~7;
+    if (p + aligned == &g_pool[g_offset]) {
+        g_offset -= aligned;
+    }
+    /* Otherwise: older allocation, cannot reclaim. Silent no-op. */
+}
+
 int ark_strlen(const char *s) {
     int n = 0;
     if (!s) return 0;

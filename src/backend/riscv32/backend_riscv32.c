@@ -104,6 +104,15 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                     asmbuf_int(&buf, I->val);
                     asmbuf_puts(&buf, "\n    addi sp, sp, -4\n    sw t0, 0(sp)\n");
                     break;
+                case IR_64PUSH:
+                    /* val=high32, aux=low32; push low first (bottom), high last (top) */
+                    asmbuf_puts(&buf, "    li t0, ");
+                    asmbuf_int(&buf, I->aux);
+                    asmbuf_puts(&buf, "\n    addi sp, sp, -4\n    sw t0, 0(sp)\n");
+                    asmbuf_puts(&buf, "    li t0, ");
+                    asmbuf_int(&buf, I->val);
+                    asmbuf_puts(&buf, "\n    addi sp, sp, -4\n    sw t0, 0(sp)\n");
+                    break;
                 case IR_PUSH_STR:
                     asmbuf_puts(&buf, "    la t0, ark_str_");
                     asmbuf_int(&buf, I->val);
@@ -251,6 +260,21 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                 case IR_CALL: {
                     int n = I->val;
                     int k;
+                    int is_indirect = (I->name && I->name[0] == '?');
+                    int is_void_ret = 0;
+                    /* ROUND4-P2 FIX: For direct calls to void functions, skip
+                     * the return-value push (caller no longer emits IR_POP). */
+                    if (!is_indirect) {
+                        int fi2;
+                        for (fi2 = 0; fi2 < prog->func_count; fi2++) {
+                            if (ark_streq(prog->funcs[fi2]->name, I->name)) {
+                                Type *rt = prog->funcs[fi2]->ret_type;
+                                if (rt && rt->kind == TYPE_VOID)
+                                    is_void_ret = 1;
+                                break;
+                            }
+                        }
+                    }
                     for (k = 0; k < n && k < 8; k++) {
                         asmbuf_puts(&buf, "    lw ");
                         asmbuf_puts(&buf, arg_reg_r(k));
@@ -258,7 +282,9 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                     }
                     asmbuf_puts(&buf, "    call ");
                     asmbuf_puts(&buf, I->name);
-                    asmbuf_puts(&buf, "\n    addi sp, sp, -4\n    sw a0, 0(sp)\n");
+                    asmbuf_putc(&buf, '\n');
+                    if (!is_void_ret)
+                        asmbuf_puts(&buf, "    addi sp, sp, -4\n    sw a0, 0(sp)\n");
                     break;
                 }
                 case IR_RETURN:
@@ -313,7 +339,8 @@ static const ArkBackend g_rv_backend = {
     4,
     rv_emit,
     rv_assemble,
-    rv_link
+    rv_link,
+    ARK_ABI_SYSV
 };
 
 const ArkBackend *ark_backend_riscv32(void) {

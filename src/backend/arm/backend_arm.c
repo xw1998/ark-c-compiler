@@ -5396,7 +5396,7 @@ static int arm_assemble(const char *asm_text, unsigned char *out, int cap) {
             ark_log("=== ARM Symbol Map (%d labels) ===\n", a.label_count);
             for (di = 0; di < a.label_count; di++) {
                 if (a.labels[di].name[0] != '.')
-                    ark_log("  %-40s 0x%04X (%d)\n",
+                    ark_log("  %s 0x%X (%d)\n",
                             a.labels[di].name, a.labels[di].addr, a.labels[di].addr);
             }
             ark_log("=== End Symbol Map ===\n");

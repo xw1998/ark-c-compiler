@@ -173,7 +173,7 @@
 #endif
 #ifndef ARK_SRC_BUF_SIZE
 # if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
-#   define ARK_SRC_BUF_SIZE       (32 * 1024)     /* 32 KB source buffer */
+#   define ARK_SRC_BUF_SIZE       (16 * 1024)     /* 16 KB source buffer (was 32K to ease 64KB pool pressure) */
 # else
 #   define ARK_SRC_BUF_SIZE       (1024 * 1024)   /* 1 MB source buffer */
 # endif

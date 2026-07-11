@@ -593,11 +593,31 @@ static Token lexer_read_token(Lexer *lex) {
                  * at extreme magnitudes:
                  *   10^320 overflows to +inf, so fval/inf = 0;
                  *   pow(10,-320) may return a subnormal value.
-                 * Use host pow() to inherit its subnormal handling. */
-                double e;
-                extern double pow(double, double);
-                e = pow(10.0, (double)(exp_neg ? -exp_v : exp_v));
-                fval *= e;
+                 * Use host pow() to inherit its subnormal handling.
+                 *
+                 * 宿主环境使用 strtod 进行正确舍入的浮点解析。
+                 * 手动计算 mantissa * pow(10, exp) 在 DBL_MAX
+                 * (1.7976931348623157e308) 等极端值时会因中间舍入溢出为 inf。
+                 * strtod 由宿主 libc 提供正确舍入，能精确解析所有 double 字面量。 */
+#if !defined(ARKCC_STM32)
+                {
+                    char lit[64];
+                    int lit_len = (int)(lex->p - start);
+                    extern double strtod(const char *, char **);
+                    if (lit_len >= (int)sizeof(lit)) lit_len = (int)sizeof(lit) - 1;
+                    { int ii; for (ii = 0; ii < lit_len; ii++) lit[ii] = start[ii]; }
+                    lit[lit_len] = 0;
+                    fval = strtod(lit, 0);
+                }
+#else
+                /* STM32 freestanding 环境：手动计算（对极端大数可能不够精确） */
+                {
+                    double e;
+                    extern double pow(double, double);
+                    e = pow(10.0, (double)(exp_neg ? -exp_v : exp_v));
+                    fval *= e;
+                }
+#endif
             }
             {
                 int is_float_suffix = 0;

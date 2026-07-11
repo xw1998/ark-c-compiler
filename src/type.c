@@ -7,22 +7,22 @@
 /* Note: <stdio.h> intentionally NOT included - no stdio functions used in
  * type.c, and we want to avoid pulling in semihosting on STM32. */
 
-static Type ty_void   = { TYPE_VOID,   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_char   = { TYPE_CHAR,   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_short  = { TYPE_SHORT,  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_int    = { TYPE_INT,    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_long   = { TYPE_LONG,   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_llong  = { TYPE_LLONG,  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_bool   = { TYPE_BOOL,   0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_float  = { TYPE_FLOAT,  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_double = { TYPE_DOUBLE, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_uchar  = { TYPE_CHAR,   0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_ushort = { TYPE_SHORT,  0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_uint   = { TYPE_INT,    0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_ulong  = { TYPE_LONG,   0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_ullong = { TYPE_LLONG,  0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_void   = { TYPE_VOID,   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_char   = { TYPE_CHAR,   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_short  = { TYPE_SHORT,  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_int    = { TYPE_INT,    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_long   = { TYPE_LONG,   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_llong  = { TYPE_LLONG,  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_bool   = { TYPE_BOOL,   0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_float  = { TYPE_FLOAT,  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_double = { TYPE_DOUBLE, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_uchar  = { TYPE_CHAR,   0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_ushort = { TYPE_SHORT,  0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_uint   = { TYPE_INT,    0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_ulong  = { TYPE_LONG,   0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_ullong = { TYPE_LLONG,  0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 /* B2: wchar_t - passed through to gcc by host/C backend, treated as 4-byte unsigned integer */
-static Type ty_wchar  = { TYPE_WCHAR,  0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_wchar  = { TYPE_WCHAR,  0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
 Type *type_void(void)   { return &ty_void;  }
 Type *type_char(void)   { return &ty_char;  }
@@ -178,8 +178,16 @@ void type_struct_add_bitfield(Type *st, const char *name, Type *ft, int width) {
     if (pack_val > 0 && st->align_override == 0) st->align_override = pack_val;
     if (unit_al < 1) unit_al = 1;
 
-    /* width <= 0 is treated as invalid/placeholder, handled as a normal field for compatibility */
-    if (width <= 0) {
+    /* C99 6.7.2.1: A bit-field with width 0 indicates that no further
+     * bit-field is to be packed into the unit in which the previous bit-field,
+     * if any, was placed. No field is added; the next bitfield must start at
+     * a new storage unit boundary. Named zero-width bitfields are forbidden by
+     * C99 but accepted as a GCC extension (treated as anonymous separator). */
+    if (width == 0) {
+        st->bf_break = 1;
+        return;
+    }
+    if (width < 0) {
         type_struct_add_field(st, name, ft);
         return;
     }
@@ -191,13 +199,16 @@ void type_struct_add_bitfield(Type *st, const char *name, Type *ft, int width) {
         last = st->fields;
         while (last->next) last = last->next;
     }
-    /* Try to share a storage unit with the previous same-type bitfield */
+    /* Try to share a storage unit with the previous same-type bitfield.
+     * bf_break (set by a preceding width=0 bitfield) forces a new unit. */
     if (last && last->bit_width > 0 && last->type == ft &&
-        last->bit_offset + last->bit_width + width <= unit_bits) {
+        last->bit_offset + last->bit_width + width <= unit_bits &&
+        !st->bf_break) {
         cur_off = last->offset;
         bit_off = last->bit_offset + last->bit_width;
     } else {
         /* New storage unit: align current size to unit_al */
+        st->bf_break = 0;
         cur_off = st->size;
         cur_off = (cur_off + unit_al - 1) & ~(unit_al - 1);
         bit_off = 0;
@@ -363,6 +374,7 @@ int type_equal(Type *a, Type *b) {
         return type_equal(a->base, b->base);
     if (a->kind == TYPE_COMPLEX)
         return type_equal(a->base, b->base);
+    if (a->is_unsigned != b->is_unsigned) return 0;
     return 1;
 }
 

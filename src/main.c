@@ -23,7 +23,7 @@ static void usage(void) {
         "  -E                 preprocess only, write expanded source\n"
         "  -link a.o b.o      link multiple .ark_obj files (use with -o)\n"
         "  -v                 verbose\n"
-        "  -target <name>     select backend (arm|x86_64|riscv32|c)\n"
+        "  -target <name>     select backend (arm|x86|riscv32|c)\n"
         "  -I <dir>           additional include path\n"
         "  -O0/-O1/-O2        optimisation level (accepted but currently unused)\n"
         "  -g                 emit debug info (accepted but currently unused)\n"

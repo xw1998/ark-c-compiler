@@ -70,6 +70,140 @@ static int write_text(const char *path, const char *s) {
     return ARK_OK;
 }
 
+/* === Binary ARM linker (ARKOBJ2) ===
+ * Merges multiple .ark_obj files: concatenates code sections, builds a global
+ * symbol table with weak-symbol precedence (strong > weak, first weak wins),
+ * and resolves cross-object relocations (BL/B.W/B<cond>.W/R_ARM_ABS32). */
+#define LD_MAX_SYMS   256
+#define LD_MAX_RELOCS 512
+
+typedef struct LdSym {
+    char name[128];
+    int  offset;   /* offset within merged code */
+    int  is_weak;
+} LdSym;
+
+typedef struct LdReloc {
+    char name[128];
+    int  offset;   /* offset within merged code (adjusted by object base) */
+    int  type;     /* 1=BL, 2=B.W, 3=B<cond>.W, 4=R_ARM_ABS32 */
+} LdReloc;
+
+static LdSym    g_ld_syms[LD_MAX_SYMS];
+static int      g_ld_sym_count = 0;
+static LdReloc  g_ld_relocs[LD_MAX_RELOCS];
+static int      g_ld_reloc_count = 0;
+
+static int rd_le32(const unsigned char *p) {
+    return (int)((unsigned)p[0] | ((unsigned)p[1] << 8) |
+                 ((unsigned)p[2] << 16) | ((unsigned)p[3] << 24));
+}
+
+/* find_global: prefer strong over weak; first weak if no strong.
+ * Returns symbol index, or -1 if not found. */
+static int ld_find_global(const char *name) {
+    int weak_idx = -1;
+    int i;
+    for (i = 0; i < g_ld_sym_count; i++) {
+        if (ark_streq(g_ld_syms[i].name, name)) {
+            if (!g_ld_syms[i].is_weak) return i;  /* strong wins */
+            if (weak_idx < 0) weak_idx = i;       /* first weak */
+        }
+    }
+    return weak_idx;
+}
+
+/* Add a symbol; strong overrides weak, weak skipped if strong exists. */
+static void ld_add_sym(const char *name, int offset, int is_weak) {
+    int idx, n;
+    if (g_ld_sym_count >= LD_MAX_SYMS) return;
+    idx = ld_find_global(name);
+    if (idx >= 0 && !g_ld_syms[idx].is_weak && is_weak) return;  /* strong exists, skip weak */
+    if (idx >= 0 && g_ld_syms[idx].is_weak && !is_weak) {       /* strong overrides weak */
+        g_ld_syms[idx].offset = offset;
+        g_ld_syms[idx].is_weak = 0;
+        return;
+    }
+    if (idx >= 0) return;  /* duplicate (same strength), keep first */
+    n = 0;
+    while (name[n] && n < (int)sizeof(g_ld_syms[g_ld_sym_count].name) - 1) {
+        g_ld_syms[g_ld_sym_count].name[n] = name[n]; n++;
+    }
+    g_ld_syms[g_ld_sym_count].name[n] = 0;
+    g_ld_syms[g_ld_sym_count].offset = offset;
+    g_ld_syms[g_ld_sym_count].is_weak = is_weak;
+    g_ld_sym_count++;
+}
+
+static void ld_add_reloc(const char *name, int offset, int type) {
+    int n;
+    if (g_ld_reloc_count >= LD_MAX_RELOCS) return;
+    n = 0;
+    while (name[n] && n < (int)sizeof(g_ld_relocs[g_ld_reloc_count].name) - 1) {
+        g_ld_relocs[g_ld_reloc_count].name[n] = name[n]; n++;
+    }
+    g_ld_relocs[g_ld_reloc_count].name[n] = 0;
+    g_ld_relocs[g_ld_reloc_count].offset = offset;
+    g_ld_relocs[g_ld_reloc_count].type = type;
+    g_ld_reloc_count++;
+}
+
+/* Patch a Thumb-2 branch or absolute reference in the merged code buffer. */
+static void ld_patch_ref(unsigned char *code, int pc, int target, int type) {
+    if (type == 4) {
+        /* R_ARM_ABS32: 4-byte absolute address */
+        code[pc]     = (unsigned char)(target & 0xFF);
+        code[pc + 1] = (unsigned char)((target >> 8) & 0xFF);
+        code[pc + 2] = (unsigned char)((target >> 16) & 0xFF);
+        code[pc + 3] = (unsigned char)((target >> 24) & 0xFF);
+        return;
+    }
+    {
+        /* Relative branch: BL(T1) / B.W(T4) / B<cond>.W(T3) */
+        int offset = target - pc - 4;
+        int off2 = offset >> 1;
+        unsigned hi, lo;
+        if (type == 1) {
+            /* BL T1 - 25-bit signed range */
+            int s  = (off2 >> 23) & 1;
+            int i1 = (off2 >> 22) & 1;
+            int i2 = (off2 >> 21) & 1;
+            int imm10 = (off2 >> 11) & 0x3FF;
+            int imm11 = off2 & 0x7FF;
+            int j1 = (~(i1 ^ s)) & 1;
+            int j2 = (~(i2 ^ s)) & 1;
+            hi = 0xF000u | (unsigned)(s << 10) | (unsigned)imm10;
+            lo = 0xD000u | (unsigned)(j1 << 13) | (unsigned)(j2 << 11) | (unsigned)imm11;
+        } else if (type == 2) {
+            /* B.W T4 - 25-bit signed range */
+            int s  = (off2 >> 23) & 1;
+            int i1 = (off2 >> 22) & 1;
+            int i2 = (off2 >> 21) & 1;
+            int imm10 = (off2 >> 11) & 0x3FF;
+            int imm11 = off2 & 0x7FF;
+            int j1 = (~(i1 ^ s)) & 1;
+            int j2 = (~(i2 ^ s)) & 1;
+            hi = 0xF000u | (unsigned)(s << 10) | (unsigned)imm10;
+            lo = 0x9000u | (unsigned)(j1 << 13) | (unsigned)(j2 << 11) | (unsigned)imm11;
+        } else {
+            /* B<cond>.W T3 - 21-bit signed range; preserve cond from existing hi word */
+            unsigned old_hi = (unsigned)code[pc] | ((unsigned)code[pc + 1] << 8);
+            int cond = (old_hi >> 6) & 0xF;
+            int s  = (off2 >> 19) & 1;
+            int i1 = (off2 >> 18) & 1;
+            int i2 = (off2 >> 17) & 1;
+            int imm6  = (off2 >> 11) & 0x3F;
+            int imm11 = off2 & 0x7FF;
+            hi = 0xF000u | (unsigned)(s << 10) | (unsigned)(cond << 6) | (unsigned)imm6;
+            lo = 0x8000u | (unsigned)(i1 << 13) | (unsigned)(i2 << 11) | (unsigned)imm11;
+        }
+        code[pc]     = (unsigned char)(hi & 0xFF);
+        code[pc + 1] = (unsigned char)((hi >> 8) & 0xFF);
+        code[pc + 2] = (unsigned char)(lo & 0xFF);
+        code[pc + 3] = (unsigned char)((lo >> 8) & 0xFF);
+    }
+}
+
 int ark_compile(const ArkOptions *opts) {
     int src_len;
     Lexer lex;
@@ -85,52 +219,136 @@ int ark_compile(const ArkOptions *opts) {
     if (!opts) return ARK_ERR_ARG;
     if (opts->list_backends) { ark_backend_list(); return ARK_OK; }
 
-    /* -link mode: merge multiple .ark_obj (custom minimal format: raw text object concatenation) */
+    /* -link mode: merge multiple .ark_obj files.
+     * ARKOBJ2 binary objects are linked via the binary ARM linker (code merge +
+     * symbol resolution with weak-symbol precedence + relocation patching).
+     * Legacy text objects are concatenated (C backend). */
     if (opts->link_mode) {
-        const char *out_path = opts->output_path ? opts->output_path : "a.out.c";
-        int li;
         char buf[64 * 1024];
-        /* Since fs_write_file writes a whole block at once, accumulate link results into out_buf first.
-         * Size is controlled by ARK_LINK_BUF_SIZE (can be very small on STM32). */
-        static char out_buf[ARK_LINK_BUF_SIZE] __attribute__((section(".ark_buf")));
+        static unsigned char out_buf[ARK_LINK_BUF_SIZE] __attribute__((section(".ark_buf")));
         int out_len = 0;
-        for (li = 0; li < opts->link_input_count; li++) {
-            int n = fs_read_file(opts->link_inputs[li], buf, sizeof(buf));
-            int rem;
-            const char *p;
-            if (n < 0) {
-                ark_log("[arkcc] cannot read object '%s'\n", opts->link_inputs[li]);
-                return ARK_ERR_IO;
+        int is_binary = 0;
+        const char *out_path;
+        int li;
+
+        /* Detect ARKOBJ2 binary format from the first input */
+        {
+            int pn = fs_read_file(opts->link_inputs[0], buf, 8);
+            if (pn >= 8 && (unsigned char)buf[0]=='A' && (unsigned char)buf[1]=='R' &&
+                (unsigned char)buf[2]=='K' && (unsigned char)buf[3]=='O' &&
+                (unsigned char)buf[4]=='B' && (unsigned char)buf[5]=='J' &&
+                (unsigned char)buf[6]=='2' && (unsigned char)buf[7]=='\n')
+                is_binary = 1;
+        }
+        out_path = opts->output_path ? opts->output_path :
+                   (is_binary ? "a.out.bin" : "a.out.c");
+
+        if (is_binary) {
+            /* Binary ARM linker */
+            g_ld_sym_count = 0;
+            g_ld_reloc_count = 0;
+            for (li = 0; li < opts->link_input_count; li++) {
+                int n = fs_read_file(opts->link_inputs[li], buf, sizeof(buf));
+                const unsigned char *up = (const unsigned char *)buf;
+                int pos = 8;  /* skip "ARKOBJ2\n" header */
+                int base = out_len;
+                int code_sz, sym_cnt, reloc_cnt, si, ri;
+                if (n < 0) {
+                    ark_log("[arkcc] cannot read object '%s'\n", opts->link_inputs[li]);
+                    return ARK_ERR_IO;
+                }
+                /* Code size (4 bytes LE) + code body */
+                code_sz = rd_le32(up + pos); pos += 4;
+                if (out_len + code_sz > (int)sizeof(out_buf)) {
+                    ark_log("[arkcc] link output too large\n");
+                    return ARK_ERR_IO;
+                }
+                { int k; for (k = 0; k < code_sz; k++) out_buf[out_len++] = up[pos + k]; }
+                pos += code_sz;
+                /* Symbol table: count + entries
+                 * Each entry: name_len(4) + name(name_len) + offset(4) + type(1) + is_weak(1) */
+                sym_cnt = rd_le32(up + pos); pos += 4;
+                for (si = 0; si < sym_cnt; si++) {
+                    char sym_name[128];
+                    int name_len, sym_off, sym_weak, k;
+                    name_len = rd_le32(up + pos); pos += 4;
+                    for (k = 0; k < name_len && k < (int)sizeof(sym_name) - 1; k++)
+                        sym_name[k] = (char)up[pos + k];
+                    sym_name[k] = 0;
+                    pos += name_len;
+                    sym_off = rd_le32(up + pos); pos += 4;
+                    pos += 1;           /* type (unused by linker) */
+                    sym_weak = up[pos]; pos += 1;
+                    ld_add_sym(sym_name, base + sym_off, sym_weak);
+                }
+                /* Relocation table: count + entries
+                 * Each entry: name_len(4) + name(name_len) + offset(4) + type(1) */
+                reloc_cnt = rd_le32(up + pos); pos += 4;
+                for (ri = 0; ri < reloc_cnt; ri++) {
+                    char reloc_name[128];
+                    int name_len, reloc_off, reloc_type, k;
+                    name_len = rd_le32(up + pos); pos += 4;
+                    for (k = 0; k < name_len && k < (int)sizeof(reloc_name) - 1; k++)
+                        reloc_name[k] = (char)up[pos + k];
+                    reloc_name[k] = 0;
+                    pos += name_len;
+                    reloc_off = rd_le32(up + pos); pos += 4;
+                    reloc_type = up[pos]; pos += 1;
+                    ld_add_reloc(reloc_name, base + reloc_off, reloc_type);
+                }
             }
-            /* Skip the object header "ARKOBJ\n" and optional #include block (if present) */
-            p = buf;
-            rem = n;
-            if (rem >= 7 && p[0] == 'A' && p[1] == 'R' && p[2] == 'K' &&
-                p[3] == 'O' && p[4] == 'B' && p[5] == 'J' && p[6] == '\n') {
-                p += 7; rem -= 7;
-            }
-            /* Keep #include block only in the first object; others skip past the first typedef.
-             * Simplified here: just concatenate every object's full content; duplicate #includes won't cause gcc errors. */
-            if (li > 0) {
-                /* Skip leading blank lines */
-                while (rem > 0 && (*p == '\n' || *p == '\r')) { p++; rem--; }
-            }
-            if (out_len + rem + 1 > (int)sizeof(out_buf)) {
-                ark_log("[arkcc] link output too large\n");
-                return ARK_ERR_IO;
-            }
+            /* Resolve cross-object relocations via find_global (strong > weak) */
             {
-                int k;
-                for (k = 0; k < rem; k++) out_buf[out_len++] = p[k];
+                int ri;
+                for (ri = 0; ri < g_ld_reloc_count; ri++) {
+                    int idx = ld_find_global(g_ld_relocs[ri].name);
+                    if (idx >= 0)
+                        ld_patch_ref(out_buf, g_ld_relocs[ri].offset,
+                                     g_ld_syms[idx].offset, g_ld_relocs[ri].type);
+                    else
+                        ark_log("[arkcc] link: unresolved symbol '%s'\n", g_ld_relocs[ri].name);
+                }
             }
-            out_buf[out_len++] = '\n';
+            if (fs_write_file(out_path, out_buf, out_len) != out_len) {
+                ark_log("[arkcc] cannot write link output '%s'\n", out_path);
+                return ARK_ERR_IO;
+            }
+            if (opts->verbose) ark_log("[arkcc] linked %d objects -> %s (%d bytes, %d syms)\n",
+                                       opts->link_input_count, out_path, out_len, g_ld_sym_count);
+            return ARK_OK;
+        } else {
+            /* Text concatenation (C backend) */
+            for (li = 0; li < opts->link_input_count; li++) {
+                int n = fs_read_file(opts->link_inputs[li], buf, sizeof(buf));
+                int rem;
+                const char *p;
+                if (n < 0) {
+                    ark_log("[arkcc] cannot read object '%s'\n", opts->link_inputs[li]);
+                    return ARK_ERR_IO;
+                }
+                p = buf;
+                rem = n;
+                if (rem >= 7 && p[0] == 'A' && p[1] == 'R' && p[2] == 'K' &&
+                    p[3] == 'O' && p[4] == 'B' && p[5] == 'J' && p[6] == '\n') {
+                    p += 7; rem -= 7;
+                }
+                if (li > 0) {
+                    while (rem > 0 && (*p == '\n' || *p == '\r')) { p++; rem--; }
+                }
+                if (out_len + rem + 1 > (int)sizeof(out_buf)) {
+                    ark_log("[arkcc] link output too large\n");
+                    return ARK_ERR_IO;
+                }
+                { int k; for (k = 0; k < rem; k++) out_buf[out_len++] = (unsigned char)p[k]; }
+                out_buf[out_len++] = '\n';
+            }
+            if (fs_write_file(out_path, out_buf, out_len) != out_len) {
+                ark_log("[arkcc] cannot write link output '%s'\n", out_path);
+                return ARK_ERR_IO;
+            }
+            if (opts->verbose) ark_log("[arkcc] linked %d objects -> %s\n", opts->link_input_count, out_path);
+            return ARK_OK;
         }
-        if (fs_write_file(out_path, (const unsigned char *)out_buf, out_len) != out_len) {
-            ark_log("[arkcc] cannot write link output '%s'\n", out_path);
-            return ARK_ERR_IO;
-        }
-        if (opts->verbose) ark_log("[arkcc] linked %d objects -> %s\n", opts->link_input_count, out_path);
-        return ARK_OK;
     }
 
     if (!opts->input_path) return ARK_ERR_ARG;
@@ -199,6 +417,12 @@ int ark_compile(const ArkOptions *opts) {
         }
     }
 
+    /* Bug M2: latch ARKCC_DUMP_SYMS into the ARM backend debug flag once at
+     * startup so g_arm_dump_syms is actually populated. Previously the flag
+     * was dead code on host (the backend checked getenv() inline at the point
+     * of use) and was never set on either profile. No-op on STM32 (getenv
+     * unavailable under semihosting; flag set via UART there). */
+    arm_dump_syms_init();
     mem_pool_reset();
     preproc_reset();
     preproc_set_main_file(opts->input_path);
@@ -365,6 +589,9 @@ int ark_compile(const ArkOptions *opts) {
      * The C backend runs on the host (8-byte pointers on 64-bit); ARM/RISC-V32
      * use 4-byte pointers; x86_64 uses 8-byte pointers. */
     type_set_ptr_size(be->pointer_size);
+    /* C 后端使用 8 字节 long long 虚拟栈槽，irgen 无需生成 32→64 位
+     * widen/narrow 序列（DUP+PUSH+LT+NEG）或 64 位条件 BOR 合并。 */
+    irgen_set_64bit_slots(ark_streq(be->name, "c"));
     lexer_init(&lex, preprocessed);
     ast = parse_program(&lex);
     if (!ast) {
@@ -451,6 +678,7 @@ int ark_compile(const ArkOptions *opts) {
             extern const char *arm_get_symbol_name(int idx);
             extern int arm_get_symbol_offset(int idx);
             extern int arm_get_symbol_type(int idx);
+            extern int arm_get_symbol_weak(int idx);
             int sc = arm_get_symbol_count();
             int si;
             /* symbol count (4 bytes LE) */
@@ -463,6 +691,7 @@ int ark_compile(const ArkOptions *opts) {
                 int nl = ark_strlen(sn) + 1; /* include null terminator */
                 int off = arm_get_symbol_offset(si);
                 int tp = arm_get_symbol_type(si);
+                int wk = arm_get_symbol_weak(si);
                 /* name length (4 bytes LE) */
                 obj_buf[ol++] = (unsigned char)(nl & 0xFF);
                 obj_buf[ol++] = (unsigned char)((nl >> 8) & 0xFF);
@@ -480,6 +709,8 @@ int ark_compile(const ArkOptions *opts) {
                 obj_buf[ol++] = (unsigned char)((off >> 24) & 0xFF);
                 /* type (1 byte) */
                 obj_buf[ol++] = (unsigned char)tp;
+                /* is_weak (1 byte): 1=weak symbol, 0=strong */
+                obj_buf[ol++] = (unsigned char)wk;
             }
         } else {
             /* Non-ARM: write 0 symbol count */

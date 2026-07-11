@@ -37,6 +37,9 @@ static void registry_init(void) {
 #endif
 #if ARKCC_BACKEND_X86_64
     g_backends[g_count++] = ark_backend_x86_64();
+    /* MSVC variant removed (B01): now points to the same cdecl backend.
+     * Kept for link compatibility; -target x86_64-msvc resolves to x86. */
+    g_backends[g_count++] = ark_backend_x86_64_msvc();
 #endif
 #if ARKCC_BACKEND_RISCV32
     g_backends[g_count++] = ark_backend_riscv32();

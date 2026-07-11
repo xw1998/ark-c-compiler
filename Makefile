@@ -4,7 +4,7 @@ LDFLAGS ?=
 
 SRC_CORE := $(wildcard src/*.c)
 SRC_BE   := $(wildcard src/backend/*/*.c) src/backend/registry.c
-SRC_HOST := port/host/flash_fs_host.c port/host/platform_host.c
+SRC_HOST := port/host/flash_fs_host.c port/host/platform_host.c port/host/debug_host.c
 SRC      := $(SRC_CORE) $(SRC_BE) $(SRC_HOST)
 
 ifeq ($(OS),Windows_NT)
@@ -35,9 +35,9 @@ test-c: $(ARKCC)
 	./$(ARKCC) examples/func.c  -target c -o func.gen.c
 
 test-x86: $(ARKCC)
-	./$(ARKCC) examples/hello.c -target x86_64 -S -o nul
-	./$(ARKCC) examples/arith.c -target x86_64 -S -o nul
-	./$(ARKCC) examples/func.c  -target x86_64 -S -o nul
+	./$(ARKCC) examples/hello.c -target x86 -S -o nul
+	./$(ARKCC) examples/arith.c -target x86 -S -o nul
+	./$(ARKCC) examples/func.c  -target x86 -S -o nul
 
 test-riscv: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target riscv32 -S -o nul

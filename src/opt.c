@@ -57,10 +57,21 @@ static int eval_binary(long long a, long long b, int aux, long long *out) {
         case (int)TOK_BAND: r = a & b; break;
         case (int)TOK_BOR:  r = a | b; break;
         case (int)TOK_BXOR: r = a ^ b; break;
-        case (int)TOK_SHL:  r = (long long)((unsigned long long)a << (b & 63)); break;
+        case (int)TOK_SHL:
+            /* Bug-I8 FIX: Abandon folding for UB shifts. C99 6.5.7:
+             *   - shift count negative or >= width -> UB
+             *   - left shift of negative signed value -> UB
+             * Folding these to a masked result would silently produce
+             * a wrong constant; instead return 0 so the expression is
+             * left as-is for the backend to evaluate at runtime. */
+            if (b < 0 || b >= 64) return 0;
+            if (!is_unsigned && a < 0) return 0;
+            r = (long long)((unsigned long long)a << b);
+            break;
         case (int)TOK_SHR:
-            if (is_unsigned) r = (long long)((unsigned long long)a >> (b & 63));
-            else r = a >> (b & 63);
+            if (b < 0 || b >= 64) return 0;
+            if (is_unsigned) r = (long long)((unsigned long long)a >> b);
+            else r = a >> b;
             break;
         case (int)TOK_EQ: r = (a == b) ? 1 : 0; break;
         case (int)TOK_NE: r = (a != b) ? 1 : 0; break;
@@ -90,13 +101,13 @@ static int eval_binary(long long a, long long b, int aux, long long *out) {
 }
 
 /* #11 FIX: Volatile access protection.
- * IR_PUSH_VAR / IR_PUSH_GLOBAL / IR_STORE / IR_STORE_GLOBAL with bit
- * 0x10000 (IR_AUX_VOLATILE) in aux must NOT be eliminated, folded, or
- * combined by any optimization pass. The constfold pass below only folds
- * PUSH_INT+PUSH_INT+BINARY patterns and is inherently safe. The DCE pass
- * only removes unreachable code after RETURN/JMP. Future optimization
- * passes (load combining, dead store elimination, etc.) MUST check
- * (I->aux & IR_AUX_VOLATILE) before removing any memory access. */
+ * IR_PUSH_VAR / IR_PUSH_GLOBAL / IR_STORE / IR_STORE_GLOBAL / IR_LOAD_IDX /
+ * IR_STORE_IDX with bit 0x10000 (IR_AUX_VOLATILE) in aux must NOT be
+ * eliminated, folded, or combined by any optimization pass. The constfold
+ * pass below only folds PUSH_INT+PUSH_INT+BINARY patterns and is inherently
+ * safe. The DCE pass only removes unreachable code after RETURN/JMP. Future
+ * optimization passes (load combining, dead store elimination, etc.) MUST
+ * check (I->aux & IR_AUX_VOLATILE) before removing any memory access. */
 void opt_constfold_func(IrFunc *f) {
     int changed = 1;
     int iter = 0;
@@ -112,6 +123,11 @@ void opt_constfold_func(IrFunc *f) {
             if (a->op != IR_PUSH_INT) continue;
             if (b->op != IR_PUSH_INT) continue;
             if (c->op != IR_BINARY) continue;
+            /* N5 FIX: Never fold sequences that involve volatile memory
+             * accesses. Although PUSH_INT/BINARY don't normally carry the
+             * volatile bit, this check is defensive against future IR shapes
+             * and documents the invariant. */
+            if ((a->aux | b->aux | c->aux) & IR_AUX_VOLATILE) continue;
             if (!eval_binary(a->val, b->val, c->aux, &result)) continue;
             /* ?????????????????????????? NOP */
             a->val = result;
@@ -135,6 +151,10 @@ void opt_dce_func(IrFunc *f) {
                 unreachable = 0;
                 continue;
             }
+            /* N5 FIX: preserve volatile memory accesses even in dead code.
+             * Volatile reads/writes must not be eliminated by the optimizer. */
+            if (I->aux & IR_AUX_VOLATILE)
+                continue;
             /* ?????????? NOP?????? FUNC_BEGIN/FUNC_END ?????? */
             if (I->op != IR_FUNC_BEGIN && I->op != IR_FUNC_END) {
                 I->op = IR_NOP;
@@ -153,7 +173,15 @@ void opt_run(IrProgram *prog, int level) {
     int i;
     if (!prog) return;
 #if ARKCC_FEATURE_OPT_CONSTFOLD
-    if (g_config.enable_opt_constfold || level >= 1) {
+    /* Bug-I8 FIX: Constant folding must NOT run at -O0. Previously the
+     * condition was `g_config.enable_opt_constfold || level >= 1`, and
+     * since enable_opt_constfold defaults to 1 (ARKCC_FEATURE_OPT_CONSTFOLD),
+     * constfold ran even at -O0. This altered -O0 codegen expectations
+     * (folding 1+2 into 3, eliminating dead constant computations) and
+     * could also fold UB expressions (e.g. 1/0, 1<<40) to wrong values.
+     * Now constfold only runs when the user explicitly requests -O1 or
+     * above via `level >= 1`. */
+    if (level >= 1) {
         for (i = 0; i < prog->func_count; i++) {
             opt_constfold_func(prog->funcs[i]);
         }
@@ -162,7 +190,10 @@ void opt_run(IrProgram *prog, int level) {
     (void)level;
 #endif
 #if ARKCC_FEATURE_OPT_DCE
-    if (g_config.enable_opt_dce || level >= 1) {
+    /* Bug-I8 FIX: DCE also must only run at -O1 or above, matching the
+     * constfold gating. At -O0 the user expects all code (even unreachable
+     * after return) to be preserved. */
+    if (level >= 1) {
         for (i = 0; i < prog->func_count; i++) {
             opt_dce_func(prog->funcs[i]);
         }
@@ -177,7 +208,7 @@ void opt_run(IrProgram *prog, int level) {
     if (level >= 2 && g_config.enable_opt_inline) {
         opt_inline(prog);
         /* ?????????? DCE??????????????????? NOP????????????????? */
-        if (g_config.enable_opt_dce || level >= 1) {
+        if (level >= 1) {
             for (i = 0; i < prog->func_count; i++) {
                 opt_dce_func(prog->funcs[i]);
             }

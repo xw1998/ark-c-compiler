@@ -14,6 +14,13 @@
 
 void  mem_pool_reset(void);
 void *mem_pool_alloc(int size);
+/* Release an allocation. This is a bump allocator: only the most recent
+ * allocation can actually be reclaimed (by rolling back the bump pointer);
+ * freeing an older allocation is a silent no-op because other allocations
+ * sit above it. Callers that need guaranteed reclamation must free immediately,
+ * before any further mem_pool_alloc. `size` must match the size passed to the
+ * corresponding mem_pool_alloc call. */
+void  mem_pool_free(void *ptr, int size);
 char *mem_strdup(const char *s);
 char *mem_strndup(const char *s, int n);
 void *mem_realloc(void *old_ptr, int old_size, int new_size);

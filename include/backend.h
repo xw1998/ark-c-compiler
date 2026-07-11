@@ -21,6 +21,13 @@ struct LinkContext {
     int dummy;
 };
 
+/* ABI selector (B01: x86 backend now targets i386 cdecl).
+ *   0 = cdecl (default): all args on stack, caller cleans up.
+ *   1 = MSVC x64 ABI (legacy, now maps to cdecl). ARK_ABI_MSVC is retained
+ *       for source compatibility but the x86 backend ignores it. */
+#define ARK_ABI_SYSV 0
+#define ARK_ABI_MSVC 1
+
 typedef struct ArkBackend {
     const char *name;            /* "arm", "x86_64", "riscv32", "c" */
     const char *triple;          /* description string */
@@ -31,6 +38,7 @@ typedef struct ArkBackend {
     int  (*assemble)(const char *asm_text, unsigned char *out, int cap);
     /* Linker relocation. Returns -1 on failure. */
     int  (*link)(unsigned char *code, int size, struct LinkContext *lc);
+    int  abi;                    /* x86 ABI: ARK_ABI_SYSV (cdecl, default) or ARK_ABI_MSVC (legacy) */
 } ArkBackend;
 
 const ArkBackend *ark_backend_find(const char *name);
@@ -40,7 +48,16 @@ void ark_backend_list(void);
 /* Per-backend exported functions */
 const ArkBackend *ark_backend_arm(void);
 const ArkBackend *ark_backend_x86_64(void);
+const ArkBackend *ark_backend_x86_64_msvc(void);
 const ArkBackend *ark_backend_riscv32(void);
 const ArkBackend *ark_backend_c(void);
+
+/* ARM backend debug flag (defined in backend_arm.c). When set, the ARM
+ * assembler dumps its symbol map after assembly. On host it is latched from
+ * the ARKCC_DUMP_SYMS environment variable at arkcc startup via
+ * arm_dump_syms_init(); on STM32 getenv() is unavailable under semihosting,
+ * so the flag is set via a UART "debug syms" command instead. */
+extern int g_arm_dump_syms;
+void arm_dump_syms_init(void);
 
 #endif /* ARK_BACKEND_H */

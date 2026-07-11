@@ -26,12 +26,18 @@
 #include "flash_fs.h"
 #include <stdarg.h>
 #include <string.h>
-#include <ctype.h>
+
+/* freestanding-safe character classification (no ctype.h dependency) */
+static int sc_isspace(int c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f'; }
+static int sc_isalnum(int c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
+static int sc_isdigit(int c) { return c >= '0' && c <= '9'; }
+static int sc_isxdigit(int c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); }
+static int sc_toupper(int c) { return (c >= 'a' && c <= 'z') ? c - 32 : c; }
 
 /* Skip whitespace and comments (; to end of line) */
 static const char *skip_ws(const char *p) {
     for (;;) {
-        while (*p && isspace((unsigned char)*p)) p++;
+        while (*p && sc_isspace((unsigned char)*p)) p++;
         if (*p == ';') {
             while (*p && *p != '\n') p++;
             continue;
@@ -45,7 +51,7 @@ static const char *skip_ws(const char *p) {
  * out capacity must be at least 64 bytes. */
 static const char *read_ident(const char *p, char *out) {
     int n = 0;
-    while (*p && (isalnum((unsigned char)*p) || *p == '_' || *p == '$')) {
+    while (*p && (sc_isalnum((unsigned char)*p) || *p == '_' || *p == '$')) {
         if (n < 63) out[n++] = *p;
         p++;
     }
@@ -60,7 +66,7 @@ static const char *read_addr(const char *p, unsigned *out_addr) {
     unsigned v = 0;
     if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
         p += 2;
-        while (*p && isxdigit((unsigned char)*p)) {
+        while (*p && sc_isxdigit((unsigned char)*p)) {
             char c = *p;
             int d = (c >= '0' && c <= '9') ? c - '0' :
                     (c >= 'a' && c <= 'f') ? c - 'a' + 10 :
@@ -69,7 +75,7 @@ static const char *read_addr(const char *p, unsigned *out_addr) {
             p++;
         }
     } else {
-        while (*p && isdigit((unsigned char)*p)) {
+        while (*p && sc_isdigit((unsigned char)*p)) {
             v = v * 10 + (unsigned)(*p - '0');
             p++;
         }
@@ -117,21 +123,148 @@ static const char *collect_braces(const char *start, char **out_buf, int *out_le
     return p;
 }
 
+/* Parse a selectors string (the raw text captured between ER braces) into the
+ * structured fields of an exec region:
+ *   - is_any:          set when a `.ANY` selector appears
+ *   - module_pattern:  first `*.o`/`*.c` glob (mem_strdup'd)
+ *   - section_name:    first parenthesised name, e.g. (RESET) or (InRoot$$Sections)
+ *   - attr_flags:      OR of SCATTER_ATTR_* from (+RO +RW +ZI +First +Last ...)
+ * Both scatter syntax (+RO) and ld syntax ((.text)) are recognised; this is a
+ * best-effort summary used by the backend to pick an ER per input section. */
+static void parse_selectors(const char *sel, ScatterExecRegion *er) {
+    const char *p;
+    if (!sel || !er) return;
+    er->attr_flags = 0;
+    er->is_any = 0;
+    er->module_pattern = 0;
+    er->section_name = 0;
+    p = sel;
+    while (*p) {
+        /* Skip whitespace/commas/newlines between selector clauses */
+        while (*p && (sc_isspace((unsigned char)*p) || *p == ',')) p++;
+        if (*p == 0) break;
+        /* Skip ';'-to-end-of-line comments (scatter comments live inside the
+         * braces and would otherwise pollute section_name/attr parsing). */
+        if (*p == ';') {
+            while (*p && *p != '\n') p++;
+            continue;
+        }
+        /* Recognise `.ANY` (case-insensitive, scatter wildcard selector) */
+        if (p[0] == '.' && (p[1] == 'A' || p[1] == 'a') &&
+            (p[2] == 'N' || p[2] == 'n') && (p[3] == 'Y' || p[3] == 'y')) {
+            er->is_any = 1;
+            p += 4;
+        }
+        /* Recognise a module glob like `*.o` / `*.c` / `*` (ld/scatter input) */
+        else if (p[0] == '*') {
+            const char *start = p;
+            p++;
+            while (*p && (sc_isalnum((unsigned char)*p) || *p == '_' || *p == '.' ||
+                          *p == '*' || *p == '?')) p++;
+            if (!er->module_pattern) {
+                int n = (int)(p - start);
+                char *m = (char *)mem_pool_alloc(n + 1);
+                int i;
+                for (i = 0; i < n; i++) m[i] = start[i];
+                m[n] = 0;
+                er->module_pattern = m;
+            }
+        }
+        /* Parenthesised clause: (Name, +Attr +Attr ...) */
+        if (*p == '(') {
+            const char *inner = p + 1;
+            const char *end = inner;
+            while (*end && *end != ')') end++;
+            /* If the clause contains a named section (RESET, InRoot$$Sections,
+             * .text, .data, .rodata, .bss), record it. Named sections are
+             * alphanumeric/$/._ tokens that don't start with '+'. */
+            if (!er->section_name) {
+                const char *q = inner;
+                char buf[64];
+                int n = 0;
+                /* skip leading ws */
+                while (q < end && sc_isspace((unsigned char)*q)) q++;
+                while (q < end && (sc_isalnum((unsigned char)*q) || *q == '_' ||
+                                    *q == '$' || *q == '.') && n < 63) {
+                    buf[n++] = *q++;
+                }
+                buf[n] = 0;
+                if (n > 0 && buf[0] != '+') {
+                    er->section_name = mem_strdup(buf);
+                }
+            }
+            /* Scan attribute tokens (+RO +RW +ZI +XO +First +Last +FIRST +LAST) */
+            {
+                const char *q = inner;
+                while (q < end) {
+                    if (*q == '+') {
+                        q++;
+                        char tok[16];
+                        int n = 0;
+                        while (q < end && (sc_isalnum((unsigned char)*q)) && n < 15) {
+                            tok[n++] = (char)sc_toupper((unsigned char)*q);
+                            q++;
+                        }
+                        tok[n] = 0;
+                        if (ark_streq(tok, "RO"))        er->attr_flags |= SCATTER_ATTR_RO;
+                        else if (ark_streq(tok, "RW"))   er->attr_flags |= SCATTER_ATTR_RW;
+                        else if (ark_streq(tok, "ZI"))   er->attr_flags |= SCATTER_ATTR_ZI;
+                        else if (ark_streq(tok, "XO"))   er->attr_flags |= SCATTER_ATTR_XO;
+                        else if (ark_streq(tok, "FIRST"))er->attr_flags |= SCATTER_ATTR_FIRST;
+                        else if (ark_streq(tok, "LAST")) er->attr_flags |= SCATTER_ATTR_LAST;
+                    } else {
+                        q++;
+                    }
+                }
+            }
+            p = (*end == ')') ? end + 1 : end;
+            continue;
+        }
+        /* Bare +Attribute outside parens (some scripts write `.ANY +RO` flat) */
+        if (*p == '+') {
+            char tok[16];
+            int n = 0;
+            p++;
+            while (*p && sc_isalnum((unsigned char)*p) && n < 15) {
+                tok[n++] = (char)sc_toupper((unsigned char)*p);
+                p++;
+            }
+            tok[n] = 0;
+            if (ark_streq(tok, "RO"))        er->attr_flags |= SCATTER_ATTR_RO;
+            else if (ark_streq(tok, "RW"))   er->attr_flags |= SCATTER_ATTR_RW;
+            else if (ark_streq(tok, "ZI"))   er->attr_flags |= SCATTER_ATTR_ZI;
+            else if (ark_streq(tok, "XO"))   er->attr_flags |= SCATTER_ATTR_XO;
+            else if (ark_streq(tok, "FIRST"))er->attr_flags |= SCATTER_ATTR_FIRST;
+            else if (ark_streq(tok, "LAST")) er->attr_flags |= SCATTER_ATTR_LAST;
+            continue;
+        }
+        /* Skip any other character to make progress */
+        p++;
+    }
+}
+
 int scatter_parse_file(const char *path, ScatterDesc *out) {
     char *src;
     const char *p;
     int read;
+    int cap = ARK_SRC_BUF_SIZE;
 
     if (!path || !out) return 1;
     /* Use fs_read_file() abstraction (host=stdio, STM32=W25Q flash) to avoid
      * pulling in semihosting-dependent C library functions on STM32. */
-    {
-        int cap = ARK_SRC_BUF_SIZE;
-        src = (char *)mem_pool_alloc(cap);
-        read = fs_read_file(path, src, cap);
-    }
+    src = (char *)mem_pool_alloc(cap);
+    read = fs_read_file(path, src, cap);
     if (read <= 0) {
         ark_log("[scatter] cannot open %s\n", path);
+        mem_pool_free(src, cap);
+        return 1;
+    }
+    /* Detect silent truncation: fs_read_file reads at most cap-1 bytes; if
+     * the buffer is full the file was larger and got truncated. Refuse to
+     * parse a truncated scatter description. */
+    if (read >= cap - 1) {
+        ark_log("[scatter] file too large (>= %d), truncated\n", cap - 1);
+        mem_pool_free(src, cap);
         return 1;
     }
     src[read] = 0;
@@ -158,12 +291,12 @@ int scatter_parse_file(const char *path, ScatterDesc *out) {
             lr->next = 0;
             /* Read load address */
             p = skip_ws(p);
-            if (*p == '0' || isdigit((unsigned char)*p)) {
+            if (*p == '0' || sc_isdigit((unsigned char)*p)) {
                 p = read_addr(p, &lr->load_addr);
             }
             /* Read optional region size (decimal/hex, may be absent) */
             p = skip_ws(p);
-            if (*p == '0' || isdigit((unsigned char)*p)) {
+            if (*p == '0' || sc_isdigit((unsigned char)*p)) {
                 p = read_addr(p, &lr->size);
             }
             /* Skip optional attributes (ABSOLUTE/OVERLAY/...) until '{' */
@@ -191,15 +324,19 @@ int scatter_parse_file(const char *path, ScatterDesc *out) {
                         er->load_addr = 0;
                         er->size = 0;
                         er->selectors = 0;
+                        er->attr_flags = 0;
+                        er->is_any = 0;
+                        er->module_pattern = 0;
+                        er->section_name = 0;
                         er->next = 0;
                         bp = skip_ws(bp);
                         /* ER address */
-                        if (*bp == '0' || isdigit((unsigned char)*bp)) {
+                        if (*bp == '0' || sc_isdigit((unsigned char)*bp)) {
                             bp = read_addr(bp, &er->load_addr);
                         }
                         /* Read optional region size */
                         bp = skip_ws(bp);
-                        if (*bp == '0' || isdigit((unsigned char)*bp)) {
+                        if (*bp == '0' || sc_isdigit((unsigned char)*bp)) {
                             bp = read_addr(bp, &er->size);
                         }
                         /* Skip attributes until '{' */
@@ -210,6 +347,9 @@ int scatter_parse_file(const char *path, ScatterDesc *out) {
                             int sel_len;
                             bp = collect_braces(bp, &sel, &sel_len);
                             er->selectors = sel;
+                            /* Summarise selectors into structured fields so the
+                             * backend can match input sections to this ER. */
+                            parse_selectors(sel, er);
                         }
                         /* Append to end of lr list */
                         {
@@ -219,7 +359,7 @@ int scatter_parse_file(const char *path, ScatterDesc *out) {
                         }
                     } else {
                         /* Non-ER token, skip to next whitespace */
-                        while (*bp && !isspace((unsigned char)*bp)) bp++;
+                        while (*bp && !sc_isspace((unsigned char)*bp)) bp++;
                     }
                 }
             }
@@ -232,6 +372,13 @@ int scatter_parse_file(const char *path, ScatterDesc *out) {
         }
     }
     ark_log("[scatter] parsed %s\n", path);
+    /* Bug M4: release the source buffer. This is a bump allocator, so the free
+     * only reclaims the memory if src is the most recent allocation (true on
+     * the error path above); after a successful parse other allocations sit
+     * above src and the call is a harmless no-op. The parsed regions reference
+     * only mem_strdup'd / collect_braces'd copies, never src directly, so
+     * releasing it is always safe. */
+    mem_pool_free(src, cap);
     return 0;
 }
 
@@ -246,9 +393,12 @@ void scatter_dump(const ScatterDesc *desc) {
     if (!desc) return;
     for (lr = desc->load_regions; lr; lr = lr->next) {
         ScatterExecRegion *er;
-        ark_log("LR %s @0x%08X\n", lr->name, lr->load_addr);
+        ark_log("LR %s @0x%X size 0x%X\n", lr->name, lr->load_addr, lr->size);
         for (er = lr->exec_regions; er; er = er->next) {
-            ark_log("  ER %s @0x%08X\n", er->name, er->load_addr);
+            ark_log("  ER %s @0x%X size 0x%X attrs 0x%X%s\n",
+                    er->name, er->load_addr, er->size, er->attr_flags,
+                    er->is_any ? " [.ANY]" : "");
+            if (er->section_name) ark_log("    section: %s\n", er->section_name);
             if (er->selectors) ark_log("    selectors: %s\n", er->selectors);
         }
     }
@@ -259,7 +409,7 @@ void scatter_dump(const ScatterDesc *desc) {
 /* Skip whitespace and C-style / C++-style comments used in ld scripts. */
 static const char *skip_ld_ws(const char *p) {
     for (;;) {
-        while (*p && isspace((unsigned char)*p)) p++;
+        while (*p && sc_isspace((unsigned char)*p)) p++;
         if (p[0] == '/' && p[1] == '*') {
             p += 2;
             while (*p && !(p[0] == '*' && p[1] == '/')) p++;
@@ -282,7 +432,7 @@ static const char *read_section_name(const char *p, char *out) {
         if (n < 63) out[n++] = *p;
         p++;
     }
-    while (*p && (isalnum((unsigned char)*p) || *p == '_' || *p == '.')) {
+    while (*p && (sc_isalnum((unsigned char)*p) || *p == '_' || *p == '.')) {
         if (n < 63) out[n++] = *p;
         p++;
     }
@@ -322,8 +472,8 @@ static char *make_er_name(const char *section_name) {
     while (section_name[i] && j < 76) {
         char c = section_name[i++];
         if (c == '.') continue;
-        if (isalnum((unsigned char)c) || c == '_') {
-            buf[j++] = (char)toupper((unsigned char)c);
+        if (sc_isalnum((unsigned char)c) || c == '_') {
+            buf[j++] = (char)sc_toupper((unsigned char)c);
         } else {
             buf[j++] = '_';
         }
@@ -418,7 +568,7 @@ static const char *parse_ld_sections(const char *p, ScatterDesc *out) {
         if (*p == 0) break;
         /* Section name must start with '.' */
         if (*p != '.') {
-            while (*p && !isspace((unsigned char)*p) && *p != '}') p++;
+            while (*p && !sc_isspace((unsigned char)*p) && *p != '}') p++;
             continue;
         }
         sec_name[0] = 0; region[0] = 0; addr = 0; has_addr = 0; sel = 0; sel_len = 0;
@@ -426,7 +576,7 @@ static const char *parse_ld_sections(const char *p, ScatterDesc *out) {
         if (sec_name[0] == 0) continue;
         p = skip_ld_ws(p);
         /* Optional address */
-        if (*p == '0' || isdigit((unsigned char)*p)) {
+        if (*p == '0' || sc_isdigit((unsigned char)*p)) {
             p = read_addr(p, &addr);
             has_addr = 1;
             p = skip_ld_ws(p);
@@ -470,7 +620,14 @@ static const char *parse_ld_sections(const char *p, ScatterDesc *out) {
         er->load_addr = has_addr ? addr : 0;
         er->size = 0;
         er->selectors = sel ? sel : mem_strdup("");
+        er->attr_flags = 0;
+        er->is_any = 0;
+        er->module_pattern = 0;
+        er->section_name = 0;
         er->next = 0;
+        /* Summarise ld selectors too (e.g. .text/.data/.rodata names and
+         * KEEP()/attribute text) so backend matching is uniform. */
+        parse_selectors(er->selectors, er);
         tail = &lr->exec_regions;
         while (*tail) tail = &(*tail)->next;
         *tail = er;
@@ -482,17 +639,21 @@ int linker_script_parse_file(const char *path, ScatterDesc *out) {
     char *src;
     const char *p;
     int read;
+    int cap = ARK_SRC_BUF_SIZE;
 
     if (!path || !out) return 1;
     /* Use fs_read_file() abstraction (host=stdio, STM32=W25Q flash) to avoid
      * pulling in semihosting-dependent C library functions on STM32. */
-    {
-        int cap = ARK_SRC_BUF_SIZE;
-        src = (char *)mem_pool_alloc(cap);
-        read = fs_read_file(path, src, cap);
-    }
+    src = (char *)mem_pool_alloc(cap);
+    read = fs_read_file(path, src, cap);
     if (read <= 0) {
         ark_log("[ld] cannot open %s\n", path);
+        mem_pool_free(src, cap);
+        return 1;
+    }
+    if (read >= cap - 1) {
+        ark_log("[ld] file too large (>= %d), truncated\n", cap - 1);
+        mem_pool_free(src, cap);
         return 1;
     }
     src[read] = 0;
@@ -513,6 +674,10 @@ int linker_script_parse_file(const char *path, ScatterDesc *out) {
         }
     }
     ark_log("[ld] parsed %s\n", path);
+    /* Bug M4: release the source buffer (see scatter_parse_file for the
+     * bump-allocator caveat). Reclaims memory on the error path; no-op on a
+     * successful parse where later allocations sit above src. */
+    mem_pool_free(src, cap);
     return 0;
 }
 
@@ -528,6 +693,74 @@ unsigned scatter_lookup_addr(const ScatterDesc *desc, const char *section_name) 
         }
     }
     return 0;
+}
+
+/* SCT-3: Return the execution base address for a named custom section.
+ * Unlike scatter_lookup_addr (which substring-matches the raw selectors
+ * text), this first tries an exact match against the parsed section_name
+ * field, then falls back to a substring match on selectors. This lets the
+ * backend place #pragma arm section / __attribute__((section("...")))
+ * globals at the address declared in the scatter description's exec region.
+ * Returns 0 when no scatter is loaded or the section is not found, in
+ * which case the caller falls back to default .data/.bss allocation. */
+unsigned scatter_get_er_base_for_section(const ScatterDesc *desc, const char *section_name) {
+    ScatterLoadRegion *lr;
+    if (!desc || !section_name) return 0;
+    for (lr = desc->load_regions; lr; lr = lr->next) {
+        ScatterExecRegion *er;
+        for (er = lr->exec_regions; er; er = er->next) {
+            /* Prefer an exact match on the parsed section_name field so a
+             * short section name (e.g. "RO") does not falsely match the
+             * "+RO" attribute substring inside another region's selectors. */
+            if (er->section_name && ark_streq(er->section_name, section_name))
+                return er->load_addr;
+        }
+    }
+    /* Fallback: substring match on the raw selectors text (covers
+     * "my_section (RW)" style where section_name was not parsed out). */
+    for (lr = desc->load_regions; lr; lr = lr->next) {
+        ScatterExecRegion *er;
+        for (er = lr->exec_regions; er; er = er->next) {
+            if (er->selectors && strstr(er->selectors, section_name))
+                return er->load_addr;
+        }
+    }
+    return 0;
+}
+
+ScatterExecRegion *scatter_find_er_by_attr(const ScatterDesc *desc, unsigned attr) {
+    ScatterLoadRegion *lr;
+    if (!desc) return NULL;
+    for (lr = desc->load_regions; lr; lr = lr->next) {
+        ScatterExecRegion *er;
+        for (er = lr->exec_regions; er; er = er->next) {
+            if (er->attr_flags & attr) return er;
+        }
+    }
+    return NULL;
+}
+
+unsigned scatter_get_flash_base(const ScatterDesc *desc) {
+    /* The first load region's address is the Flash load base for code/vectors.
+     * Fallback 0x08000000 (STM32F4 Flash base) when no scatter is loaded. */
+    if (desc && desc->load_regions) return desc->load_regions->load_addr;
+    return 0x08000000u;
+}
+
+unsigned scatter_get_data_base(const ScatterDesc *desc, unsigned attr) {
+    ScatterExecRegion *er = scatter_find_er_by_attr(desc, attr);
+    if (er) return er->load_addr;
+    /* Default SRAM base for STM32F4 when no scatter region matches. */
+    return 0x20000000u;
+}
+
+/* Check whether a region of [addr, addr+sz) fits inside the exec region's
+ * declared [load_addr, load_addr+size). Returns 1 if it fits (or size==0,
+ * meaning unspecified), 0 on overflow. Used by the backend to warn on overflow. */
+int scatter_er_fits(const ScatterExecRegion *er, unsigned addr, unsigned sz) {
+    if (!er) return 1;
+    if (er->size == 0) return 1;  /* unspecified size: assume fits */
+    return (addr + sz) <= (er->load_addr + er->size);
 }
 
 /* snprintf-style append: writes to buf at *off (up to cap), returns the number
@@ -569,7 +802,7 @@ static int put_fmt(char *buf, int cap, int *off, const char *fmt, ...) {
                 char tmp[12];
                 int k = 0, neg = 0;
                 unsigned int u;
-                if (v < 0) { neg = 1; u = (unsigned int)(-v); } else u = (unsigned int)v;
+                if (v < 0) { neg = 1; u = (unsigned int)(-(unsigned int)v); } else u = (unsigned int)v;
                 if (u == 0) tmp[k++] = '0';
                 while (u && k < 11) { tmp[k++] = (char)('0' + (u % 10)); u /= 10; }
                 if (neg) tmp[k++] = '-';

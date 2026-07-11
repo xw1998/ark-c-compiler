@@ -283,8 +283,11 @@ static int is_libc_func(const char *name) {
     return 0;
 }
 
-/* Decide whether a function returns void. Such functions never push a result;
- * the IR_CALL path synthesizes a 0 value onto the stack. */
+/* Decide whether a libc function returns void. Such functions never push a
+ * result onto the stack; the IR_CALL path invokes them without synthesizing
+ * a return value (irgen skips IR_POP for direct void calls). User-defined
+ * void functions are detected separately via prog->funcs in the IR_CALL
+ * handler. */
 static int is_void_func(const char *name) {
     static const char *voids[] = {
         "free", "exit", "_Exit", "abort", "srand", "qsort",
@@ -1077,23 +1080,85 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
                     if (is_aggregate && g->init_aggregate) {
                         asmbuf_puts(&buf, g->init_aggregate);
                     } else if (g->is_float) {
-                        char fb[64]; int fn=0; double v = g->init_float; int neg=0;
-                        if (v < 0) { neg = 1; v = -v; }
-                        if (neg) asmbuf_putc(&buf, '-');
-                        {
-                            long long ip = (long long)v; char tmp[24]; int tn=0; int kk;
-                            if (ip == 0) tmp[tn++]='0';
-                            while (ip>0) { tmp[tn++]=(char)('0'+ip%10); ip/=10; }
-                            for (kk = tn - 1; kk >= 0; kk--) fb[fn++] = tmp[kk];
+                        /* 自定义 double 转字符串，与 irgen.c 的 sb_putf 保持一致：
+                         * 大数（v >= 1e16）和极小值（v < 1e-4）使用科学记数法，
+                         * 正常范围使用定点表示，保证输出为合法 C 浮点字面量。 */
+                        char fb[80]; int fn=0; double v = g->init_float;
+                        if (v != v) {
+                            asmbuf_puts(&buf, "nan");
+                        } else if (v - v != 0.0) {
+                            /* 无穷大检测：inf - inf = NaN，NaN != 0.0。
+                             * 不能用 v > DBL_MAX 比较，因为 -O2 下 x87 FPU
+                             * 的 80 位扩展精度可能导致误判（DBL_MAX 被误判为 >DBL_MAX）。 */
+                            asmbuf_puts(&buf, "inf");
+                        } else {
+                            if (v < 0) { fb[fn++] = '-'; v = -v; }
+                            if (v == 0.0) {
+                                fb[fn++] = '0'; fb[fn++] = '.'; fb[fn++] = '0';
+                            } else if (v >= 1e16 || v < 1e-4) {
+                                /* 大数或极小值使用科学记数法 */
+                                int ex = 0, i, d;
+                                /* 大步长归一化，减少迭代次数以降低累积舍入误差 */
+                                {
+                                    static const double p10[] = {1e1, 1e2, 1e4, 1e8, 1e16, 1e32, 1e64, 1e128, 1e256};
+                                    static const int sh[] = {1, 2, 4, 8, 16, 32, 64, 128, 256};
+                                    int bi;
+                                    for (bi = 8; bi >= 0; bi--) {
+                                        while (v >= p10[bi]) { v /= p10[bi]; ex += sh[bi]; }
+                                    }
+                                    while (v >= 10.0) { v /= 10.0; ex++; }
+                                    for (bi = 8; bi >= 0; bi--) {
+                                        while (v < 1.0 && v * p10[bi] < 10.0) { v *= p10[bi]; ex -= sh[bi]; }
+                                    }
+                                    while (v < 1.0) { v *= 10.0; ex--; }
+                                }
+                                d = (int)v; if (d > 9) d = 9;
+                                fb[fn++] = (char)('0' + d);
+                                v -= (double)d;
+                                fb[fn++] = '.';
+                                for (i = 0; i < 17; i++) {
+                                    v *= 10.0; d = (int)v;
+                                    if (d > 9) d = 9; if (d < 0) d = 0;
+                                    fb[fn++] = (char)('0' + d);
+                                    v -= (double)d;
+                                }
+                                while (fn > 0 && fb[fn-1] == '0') fn--;
+                                if (fb[fn-1] == '.') fb[fn++] = '0';
+                                fb[fn++] = 'e';
+                                if (ex >= 0) fb[fn++] = '+';
+                                else { fb[fn++] = '-'; ex = -ex; }
+                                if (ex < 10) { fb[fn++] = '0'; fb[fn++] = (char)('0' + ex); }
+                                else {
+                                    char eb[8]; int k = 0;
+                                    while (ex > 0) { eb[k++] = (char)('0' + ex % 10); ex /= 10; }
+                                    while (k > 0) fb[fn++] = eb[--k];
+                                }
+                            } else {
+                                /* 定点表示：1e-4 <= v < 1e16 */
+                                long long ip = (long long)v; char tmp[24]; int tn=0; int kk;
+                                if (ip == 0) fb[fn++]='0';
+                                else {
+                                    while (ip>0) { tmp[tn++]=(char)('0'+ip%10); ip/=10; }
+                                    for (kk = tn - 1; kk >= 0; kk--) fb[fn++] = tmp[kk];
+                                }
+                                fb[fn++] = '.';
+                                {
+                                    /* 17 位小数保证 double 往返精度 */
+                                    double f = v - (double)((long long)v);
+                                    int kk2;
+                                    for (kk2 = 0; kk2 < 17 && f > 0; kk2++) {
+                                        int d; f *= 10; d = (int)f;
+                                        if (d > 9) d = 9;
+                                        fb[fn++] = (char)('0' + d);
+                                        f -= d;
+                                    }
+                                }
+                                while (fn > 0 && fb[fn-1] == '0') fn--;
+                                if (fb[fn-1] == '.') fb[fn++] = '0';
+                            }
+                            fb[fn] = 0;
+                            asmbuf_puts(&buf, fb);
                         }
-                        fb[fn++] = '.';
-                        {
-                            /* Print 15 fractional digits to cover IEEE 754 double precision. */
-                            double f = v - (double)((long long)v);
-                            int kk; for (kk = 0; kk < 15; kk++) { f*=10; { int d=(int)f; if (d>9)d=9; fb[fn++]=(char)('0'+d); f-=d;} }
-                        }
-                        fb[fn]=0;
-                        asmbuf_puts(&buf, fb);
                     } else if (g->init_str) {
                         /* char a[] = "..." */
                         emit_str_literal(&buf, g->init_str, ark_strlen(g->init_str));
@@ -1147,6 +1212,7 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
     for (fi = 0; fi < prog->func_count; fi++) {
         IrFunc *f = prog->funcs[fi];
         int i;
+        int param_idx;  /* C 后端参数索引（每个参数占 8 字节，不同于 x86 的 4 字节 slot） */
         if (ark_streq(f->name, "main")) main_idx = fi;
 
         /* alias target: __attribute__((alias(...))) handles body generation. */
@@ -1247,6 +1313,11 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
             asmbuf_puts(&buf, ";\n");
         }
 
+        /* C 后端函数签名为 ark_<name>(long long a0, ..., long long a15)，
+         * 每个参数占 8 字节。irgen.c 的 aux 低 8 位是 x86 cdecl 的 4 字节 slot
+         * 索引（64 位参数占 2 个 slot），与 C 后端的参数索引不一致。
+         * 因此用 param_idx 追踪真实参数顺序（0, 1, 2, ...）。 */
+        param_idx = 0;
         for (i = 0; i < f->code_count; i++) {
             IrInst *I = &f->code[i];
             asmbuf_puts(&buf, "    ");
@@ -1256,27 +1327,41 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
                     asmbuf_puts(&buf, "/* fn boundary */");
                     break;
                 case IR_GETARG: {
-                    /* aux low 8 bits = argument index; aux>>8 = struct size (0 if
-                     * scalar/pointer). For scalar/pointer (size==0), store the
-                     * 8-byte a<idx> at frame[val]. For struct-by-value, a<idx>
-                     * carries a *pointer* to the source struct pushed by the
-                     * caller; memcpy the payload into frame[val]. */
+                    /* aux 低 8 位 = x86 cdecl 的 4 字节 slot 索引；
+                     * aux>>8 = 参数类型大小（字节数）。
+                     * C 后端函数签名为 long long a0..a15，每个参数 8 字节。
+                     * 用 param_idx 追踪真实参数顺序（而非 x86 slot 索引）。
+                     * - st_sz > 8：struct 按值传递，a<param_idx> 是指向源 struct
+                     *   的指针（由调用者 irgen_lvalue_addr 压入），用 memcpy 拷贝。
+                     * - st_sz <= 8：标量/指针/小 struct，直接存储 a<param_idx>。
+                     * - val >= 8000：变参区域，aux 低 8 位直接是 a0..a7 索引。 */
                     int arg_idx = I->aux & 0xFF;
                     int st_sz   = (I->aux >> 8) & 0xFFFFFF;
-                    if (st_sz > 0) {
-                        asmbuf_puts(&buf, "memcpy(frame + ");
-                        asmbuf_int(&buf, I->val);
-                        asmbuf_puts(&buf, ", (void*)(intptr_t)a");
-                        asmbuf_int(&buf, arg_idx);
-                        asmbuf_puts(&buf, ", (size_t)");
-                        asmbuf_int(&buf, st_sz);
-                        asmbuf_puts(&buf, ");");
-                    } else {
+                    if (I->val >= 8000) {
+                        /* 变参区域：a<arg_idx> 直接存储到 frame[val] */
                         asmbuf_puts(&buf, "*(long long*)(frame + ");
                         asmbuf_int(&buf, I->val);
                         asmbuf_puts(&buf, ") = a");
                         asmbuf_int(&buf, arg_idx);
                         asmbuf_putc(&buf, ';');
+                    } else if (st_sz > 8) {
+                        /* struct 按值传递（>8 字节）：a<param_idx> 是源指针 */
+                        asmbuf_puts(&buf, "memcpy(frame + ");
+                        asmbuf_int(&buf, I->val);
+                        asmbuf_puts(&buf, ", (void*)(intptr_t)a");
+                        asmbuf_int(&buf, param_idx);
+                        asmbuf_puts(&buf, ", (size_t)");
+                        asmbuf_int(&buf, st_sz);
+                        asmbuf_puts(&buf, ");");
+                        param_idx++;
+                    } else {
+                        /* 标量/指针/小 struct（<=8 字节）：直接存储 */
+                        asmbuf_puts(&buf, "*(long long*)(frame + ");
+                        asmbuf_int(&buf, I->val);
+                        asmbuf_puts(&buf, ") = a");
+                        asmbuf_int(&buf, param_idx);
+                        asmbuf_putc(&buf, ';');
+                        param_idx++;
                     }
                     break;
                 }
@@ -1446,23 +1531,50 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
                     }
                     break;
                 }
-                case IR_LOAD_IDX:
+                case IR_LOAD_IDX: {
+                    /* Bug-I5 FIX: When IR_AUX_VOLATILE is set, emit volatile-qualified
+                     * loads so the host C compiler does not merge or eliminate the
+                     * read-modify-write of volatile lvalues. */
+                    int is_vol = (I->aux & IR_AUX_VOLATILE) != 0;
+                    const char *vol = is_vol ? "volatile " : "";
                     asmbuf_puts(&buf, "{ long long ix = stk[--sp].i; long long ad = stk[--sp].i; ark_es = ");
                     asmbuf_int(&buf, I->val);
-                    asmbuf_puts(&buf, "; if (ark_es==1) stk[sp++].i = *(signed char*)(intptr_t)(ad + ix);");
-                    asmbuf_puts(&buf, " else if (ark_es==2) stk[sp++].i = *(short*)(intptr_t)(ad + ix*2);");
-                    asmbuf_puts(&buf, " else if (ark_es==8) stk[sp++].i = *(long long*)(intptr_t)(ad + ix*8);");
-                    asmbuf_puts(&buf, " else stk[sp++].i = *(int*)(intptr_t)(ad + ix*ark_es); }");
+                    asmbuf_puts(&buf, "; if (ark_es==1) stk[sp++].i = *(");
+                    if (is_vol) asmbuf_puts(&buf, vol);
+                    asmbuf_puts(&buf, "signed char*)(intptr_t)(ad + ix);");
+                    asmbuf_puts(&buf, " else if (ark_es==2) stk[sp++].i = *(");
+                    if (is_vol) asmbuf_puts(&buf, vol);
+                    asmbuf_puts(&buf, "short*)(intptr_t)(ad + ix*2);");
+                    asmbuf_puts(&buf, " else if (ark_es==8) stk[sp++].i = *(");
+                    if (is_vol) asmbuf_puts(&buf, vol);
+                    asmbuf_puts(&buf, "long long*)(intptr_t)(ad + ix*8);");
+                    asmbuf_puts(&buf, " else stk[sp++].i = *(");
+                    if (is_vol) asmbuf_puts(&buf, vol);
+                    asmbuf_puts(&buf, "int*)(intptr_t)(ad + ix*ark_es); }");
                     break;
-                case IR_STORE_IDX:
+                }
+                case IR_STORE_IDX: {
+                    /* Bug-I5 FIX: When IR_AUX_VOLATILE is set, emit volatile-qualified
+                     * stores so the host C compiler preserves the write. */
+                    int is_vol = (I->aux & IR_AUX_VOLATILE) != 0;
+                    const char *vol = is_vol ? "volatile " : "";
                     asmbuf_puts(&buf, "{ long long va = stk[--sp].i; long long ad = stk[--sp].i; ark_es = ");
                     asmbuf_int(&buf, I->val);
-                    asmbuf_puts(&buf, "; if (ark_es==1) *(char*)(intptr_t)ad = (char)va;");
-                    asmbuf_puts(&buf, " else if (ark_es==2) *(short*)(intptr_t)ad = (short)va;");
-                    asmbuf_puts(&buf, " else if (ark_es==8) *(long long*)(intptr_t)ad = va;");
-                    asmbuf_puts(&buf, " else *(int*)(intptr_t)ad = (int)va;");
+                    asmbuf_puts(&buf, "; if (ark_es==1) *(");
+                    if (is_vol) asmbuf_puts(&buf, vol);
+                    asmbuf_puts(&buf, "char*)(intptr_t)ad = (char)va;");
+                    asmbuf_puts(&buf, " else if (ark_es==2) *(");
+                    if (is_vol) asmbuf_puts(&buf, vol);
+                    asmbuf_puts(&buf, "short*)(intptr_t)ad = (short)va;");
+                    asmbuf_puts(&buf, " else if (ark_es==8) *(");
+                    if (is_vol) asmbuf_puts(&buf, vol);
+                    asmbuf_puts(&buf, "long long*)(intptr_t)ad = va;");
+                    asmbuf_puts(&buf, " else *(");
+                    if (is_vol) asmbuf_puts(&buf, vol);
+                    asmbuf_puts(&buf, "int*)(intptr_t)ad = (int)va;");
                     asmbuf_puts(&buf, " stk[sp++].i = va; }");
                     break;
+                }
                 case IR_BINARY:
                     asmbuf_puts(&buf, "ark_c = stk[--sp].i; ark_a = stk[--sp].i; stk[sp++].i = ");
                     emit_binop(&buf, I->aux);
@@ -1547,6 +1659,25 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
                         asmbuf_puts(&buf, "ark_ca = stk[--sp].c; stk[sp++].f = cimag(ark_ca);");
                     } else {
                         asmbuf_puts(&buf, "ark_a = stk[--sp].i; stk[sp++].f = (double)ark_a;");
+                    }
+                    break;
+                case IR_64I2F:
+                    /* long long -> double/float. On the C backend all values are
+                     * 8-byte slots, so this is a numeric cast (not bit reinterpret).
+                     * 0x400 = unsigned: cast through (unsigned long long) first. */
+                    if (I->aux & 0x400) {
+                        asmbuf_puts(&buf, "ark_a = stk[--sp].i; stk[sp++].f = (double)(unsigned long long)ark_a;");
+                    } else {
+                        asmbuf_puts(&buf, "ark_a = stk[--sp].i; stk[sp++].f = (double)ark_a;");
+                    }
+                    break;
+                case IR_64F2I:
+                    /* double -> long long. Numeric cast, not bit reinterpret.
+                     * 0x400 = unsigned: cast to (unsigned long long) then store. */
+                    if (I->aux & 0x400) {
+                        asmbuf_puts(&buf, "ark_fa = stk[--sp].f; stk[sp++].i = (long long)(unsigned long long)ark_fa;");
+                    } else {
+                        asmbuf_puts(&buf, "ark_fa = stk[--sp].f; stk[sp++].i = (long long)ark_fa;");
                     }
                     break;
                 case IR_F2F:
@@ -1743,6 +1874,22 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
                         int is_wrapped = is_wrapped_func(I->name);
                         int is_void_ret = is_void_func(I->name);
                         int is_struct_ret = is_struct_ret_func(I->name);
+                        /* ROUND4-P2 FIX: Also detect user-defined void functions via
+                         * prog->funcs. irgen's AST_EXPR_STMT no longer emits IR_POP
+                         * for direct void calls, so the backend must NOT synthesize a
+                         * 0 result onto the stack (otherwise sp would drift). This
+                         * branch only handles direct calls; indirect ('?') calls
+                         * are dispatched above and conservatively push. */
+                        if (!is_void_ret) {
+                            int fi2;
+                            for (fi2 = 0; fi2 < prog->func_count; fi2++) {
+                                if (ark_streq(prog->funcs[fi2]->name, I->name)) {
+                                    Type *rt = prog->funcs[fi2]->ret_type;
+                                    if (rt && rt->kind == TYPE_VOID) is_void_ret = 1;
+                                    break;
+                                }
+                            }
+                        }
                         int k;
                         /* libc: pass only n args; wrapped: wrappers have fixed 8-arg
                          * signature; user-defined: pass all MAX_CALL_ARGS args. */
@@ -1779,6 +1926,9 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
                             }
                             asmbuf_puts(&buf, ");");
                         } else if (is_void_ret) {
+                            /* ROUND4-P2 FIX: Do not push a synthesized 0 result.
+                             * irgen_discard_result skips IR_POP for direct void
+                             * calls, so pushing here would leave sp unbalanced. */
                             asmbuf_puts(&buf, "");
                             if (!is_libc) asmbuf_puts(&buf, "ark_");
                             asmbuf_puts(&buf, I->name);
@@ -1792,7 +1942,7 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
                                 asmbuf_int(&buf, k);
                                 asmbuf_puts(&buf, "]");
                             }
-                            asmbuf_puts(&buf, "); stk[sp++].i = 0;");
+                            asmbuf_puts(&buf, ");");
                         } else {
                             asmbuf_puts(&buf, "stk[sp++].i = (long long)");
                             if (!is_libc) asmbuf_puts(&buf, "ark_");
@@ -2006,7 +2156,8 @@ static const ArkBackend g_c_backend = {
     (int)sizeof(void*),
     c_emit,
     c_assemble,
-    c_link
+    c_link,
+    ARK_ABI_SYSV
 };
 
 const ArkBackend *ark_backend_c(void) {

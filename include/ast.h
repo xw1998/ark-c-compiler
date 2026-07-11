@@ -81,7 +81,7 @@ struct AstNode {
         struct { AstNode **decls; int decl_count; int decl_capacity; } program;
         struct { AstNode *obj; char *member; int is_arrow; int offset; } member;
         struct { AstNode *expr; AstNode *body; AstNode **cases; int case_count; AstNode *default_case; } switch_stmt;
-        struct { int value; AstNode *stmt; int label_id; } case_stmt;
+        struct { long long value; AstNode *stmt; int label_id; } case_stmt;
         struct { char *name; AstNode *stmt; } label_stmt;
         struct { AstNode **items; int item_count; int item_capacity; } init_list;       /* AST_INIT_LIST */
         struct { char *field; int index; int has_field; int has_index; AstNode *value; } init_field; /* AST_INIT_FIELD */

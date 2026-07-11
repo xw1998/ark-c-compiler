@@ -62,7 +62,7 @@ int fs_list_files(void) {
     ensure_table();
     for (i = 0; i < MAX_FILES; i++) {
         if (s_table[i].name[0] == 0) continue;
-        ark_log("  %-24s  %u bytes\r\n", (int)s_table[i].name, (int)s_table[i].size);
+        ark_log("  %s %d bytes\r\n", s_table[i].name, (int)s_table[i].size);
         count++;
     }
     if (count == 0) {
