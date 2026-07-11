@@ -14,10 +14,14 @@
 #include "platform.h"
 #include "common.h"
 #include "config.h"
+#include "scatter.h"
 #include "arkcc_config.h"
-/* Note: <stdlib.h> intentionally NOT included to avoid pulling in semihosting-
- * dependent C library functions on STM32. mem_realloc (our own allocator)
- * is used instead of realloc. */
+/* On host, <stdlib.h> provides getenv() for the ARKCC_DUMP_SYMS debug flag.
+ * On STM32, getenv() is not available (semihosting); g_arm_dump_syms is used
+ * instead, and mem_realloc (our own allocator) replaces realloc. */
+#if ARKCC_PROFILE != ARKCC_PROFILE_STM32_MIN
+#  include <stdlib.h>
+#endif
 
 /* --- Internal helpers: emit common instruction fragments --- */
 static void emit_line(AsmBuffer *b, const char *s) {
@@ -268,11 +272,76 @@ static unsigned    g_gvar_addrs[ARM_MAX_GVARS];
 static int         g_gvar_sizes[ARM_MAX_GVARS];  /* #6 FIX: track global variable sizes */
 static int         g_gvar_count = 0;
 
+/* SCT-1/SCT-3: Custom section address tracking. When a global has a
+ * g->section (from #pragma arm section / __attribute__((section))),
+ * gvar_assign looks up the section's exec region base from the scatter
+ * description and allocates variables contiguously from that base. Each
+ * entry tracks the next free offset for one named section. Reset per
+ * compilation in gvar_assign. */
+#define ARM_MAX_CUSTOM_SECTIONS 16
+static struct {
+    const char *name;     /* section name (points into IrGlobal, lives through codegen) */
+    unsigned    cur_addr; /* next free address within this section's exec region */
+} g_custom_sect[ARM_MAX_CUSTOM_SECTIONS];
+static int g_custom_sect_count = 0;
+
 /* F3/S5: Track .data/.bss boundaries for startup initialization */
 static unsigned g_data_sram_start = 0;  /* First .data SRAM address */
 static unsigned g_data_sram_end   = 0;  /* One past last .data SRAM address */
 static unsigned g_bss_sram_start  = 0;  /* First .bss SRAM address */
 static unsigned g_bss_sram_end    = 0;  /* One past last .bss SRAM address */
+
+/* Scatter (.sct) load description: when --scatter <file> is given, the parsed
+ * regions drive address assignment instead of the hardcoded defaults below.
+ * g_flash_base is the base for code labels (LR load address); g_data_base /
+ * g_bss_base are the SRAM origins for .data (+RW) and .bss (+ZI). These are
+ * refreshed by arm_scatter_load() at the start of each codegen_arm() call. */
+static ScatterDesc g_scatter;
+static int          g_scatter_loaded = 0;
+static unsigned     g_flash_base = 0x08000000u;  /* default STM32F4 Flash base */
+static unsigned     g_data_base  = 0x20000000u;  /* default SRAM base */
+static unsigned     g_bss_base   = 0x20000000u;  /* default SRAM base (.bss follows .data) */
+
+/* Debug flag: when set, arm_assemble dumps the symbol map and scatter layout
+ * after assembly. On host it is latched from getenv("ARKCC_DUMP_SYMS") at
+ * arkcc startup by arm_dump_syms_init(); on STM32 getenv() is unavailable
+ * under semihosting, so the flag is instead set by the UART "debug syms"
+ * command. Defined here (early) so arm_scatter_load() can read it. */
+int g_arm_dump_syms = 0;
+
+/* Parse g_config.scatter_file (if set) into g_scatter and derive the Flash /
+ * data / bss base addresses from the described execution regions. Called once
+ * per compilation so the backend places sections per the scatter layout. */
+static void arm_scatter_load(void) {
+    g_scatter_loaded = 0;
+    g_scatter.load_regions = 0;
+    g_scatter.error_count = 0;
+    g_flash_base = 0x08000000u;
+    g_data_base  = 0x20000000u;
+    g_bss_base   = 0x20000000u;
+#if ARKCC_FEATURE_SCATTER
+    if (g_config.scatter_file && g_config.scatter_file[0] &&
+        scatter_parse_file(g_config.scatter_file, &g_scatter) == 0) {
+        g_scatter_loaded = 1;
+        g_flash_base = scatter_get_flash_base(&g_scatter);
+        /* +RW region is the load origin for .data; +ZI for .bss.
+         * If a +ZI region exists separately, .bss starts there, otherwise it
+         * follows .data (set bss_base = data_base; gvar_assign lays them out
+         * contiguously and records the real bss_start boundary). */
+        g_data_base = scatter_get_data_base(&g_scatter, SCATTER_ATTR_RW);
+        if (scatter_find_er_by_attr(&g_scatter, SCATTER_ATTR_ZI)) {
+            g_bss_base = scatter_get_data_base(&g_scatter, SCATTER_ATTR_ZI);
+        } else {
+            g_bss_base = g_data_base;
+        }
+        if (g_arm_dump_syms) {
+            ark_log("[scatter] flash=0x%08X data=0x%08X bss=0x%08X\n",
+                    g_flash_base, g_data_base, g_bss_base);
+            scatter_dump(&g_scatter);
+        }
+    }
+#endif
+}
 
 static unsigned gvar_find(const char *name) {
     int i;
@@ -296,14 +365,50 @@ static int gvar_known(const char *name) {
     return 0;
 }
 
+/* SCT-1/SCT-3: Allocate `sz` bytes from the named custom section's exec region.
+ * Looks up the section base via scatter_get_er_base_for_section the first time
+ * the section is seen, then hands out consecutive addresses from that base.
+ * Returns the assigned address, or 0 if the section is not described in the
+ * scatter file (or no scatter is loaded) -- in that case the caller falls
+ * back to the default .data/.bss sequential allocation. */
+static unsigned custom_sect_alloc(const char *section_name, int sz) {
+    int i;
+    unsigned base, addr;
+    /* Existing section: continue from the tracked offset. */
+    for (i = 0; i < g_custom_sect_count; i++) {
+        if (ark_streq(g_custom_sect[i].name, section_name)) {
+            g_custom_sect[i].cur_addr = (g_custom_sect[i].cur_addr + 3) & ~3u;
+            addr = g_custom_sect[i].cur_addr;
+            g_custom_sect[i].cur_addr += sz;
+            return addr;
+        }
+    }
+    /* New section: resolve its base from the scatter description. */
+    if (g_custom_sect_count >= ARM_MAX_CUSTOM_SECTIONS) return 0;
+#if ARKCC_FEATURE_SCATTER
+    base = scatter_get_er_base_for_section(&g_scatter, section_name);
+#else
+    base = 0;
+#endif
+    if (base == 0) return 0;  /* not found: caller falls back to default */
+    g_custom_sect[g_custom_sect_count].name = section_name;
+    g_custom_sect[g_custom_sect_count].cur_addr = (base + 3) & ~3u;
+    addr = g_custom_sect[g_custom_sect_count].cur_addr;
+    g_custom_sect[g_custom_sect_count].cur_addr += sz;
+    g_custom_sect_count++;
+    return addr;
+}
+
 static void gvar_assign(IrProgram *prog) {
-    unsigned sram = 0x20000000;
+    unsigned data_sram = g_data_base;   /* .data origin (scatter +RW or 0x20000000) */
+    unsigned bss_sram;                  /* .bss origin (computed below) */
     int gi;
     g_gvar_count = 0;
-    g_data_sram_start = sram;  /* will be updated if .data globals exist */
-    g_data_sram_end = sram;
-    g_bss_sram_start = sram;
-    g_bss_sram_end = sram;
+    g_custom_sect_count = 0;  /* SCT-1/SCT-3: reset custom section tracking */
+    g_data_sram_start = data_sram;  /* will be updated if .data globals exist */
+    g_data_sram_end = data_sram;
+    g_bss_sram_start = data_sram;
+    g_bss_sram_end = data_sram;
 
     /* F3/S5: First pass - assign .data (initialized) globals to SRAM.
      * This ensures .data globals are contiguous, followed by .bss globals.
@@ -318,21 +423,39 @@ static void gvar_assign(IrProgram *prog) {
         if (!g->init_aggregate && !g->init_str && !g->is_float && g->init_int == 0) continue;
         sz = g->type ? type_size(g->type) : 4;
         if (sz <= 0) sz = 4;
-        sram = (sram + 3) & ~3u;
+        /* SCT-1/SCT-3: custom section globals get their address from the
+         * scatter exec region rather than the default .data pool. */
+        if (g->section && g_scatter_loaded) {
+            unsigned caddr = custom_sect_alloc(g->section, sz);
+            if (caddr) {
+                g_gvar_names[g_gvar_count] = g->name;
+                g_gvar_addrs[g_gvar_count] = caddr;
+                g_gvar_sizes[g_gvar_count] = sz;
+                g_gvar_count++;
+                continue;
+            }
+            /* section not found in scatter: fall through to .data allocation */
+        }
+        data_sram = (data_sram + 3) & ~3u;
         g_gvar_names[g_gvar_count] = g->name;
-        g_gvar_addrs[g_gvar_count] = sram;
+        g_gvar_addrs[g_gvar_count] = data_sram;
         g_gvar_sizes[g_gvar_count] = sz;  /* #6 FIX */
         g_gvar_count++;
-        sram += sz;
+        data_sram += sz;
     }
     /* #BSS-ALIGN FIX: Align .data end / .bss start to 4 bytes so the
      * __arkcc_init_globals zeroing loop starts at an aligned address.
      * STR r2, [r0] on an unaligned r0 can fault on Cortex-M. */
-    sram = (sram + 3) & ~3u;
-    g_data_sram_end = sram;
+    data_sram = (data_sram + 3) & ~3u;
+    g_data_sram_end = data_sram;
+
+    /* .bss origin: when scatter defines a separate +ZI region, .bss starts
+     * there; otherwise it follows .data contiguously. Take the higher of the
+     * +ZI base and the .data end so .data and .bss never overlap. */
+    bss_sram = (g_bss_base > data_sram) ? g_bss_base : data_sram;
+    g_bss_sram_start = bss_sram;
 
     /* Second pass - assign .bss (uninitialized/zero) globals after .data */
-    g_bss_sram_start = sram;
     for (gi = 0; gi < prog->global_count && g_gvar_count < ARM_MAX_GVARS; gi++) {
         IrGlobal *g = prog->globals[gi];
         int sz;
@@ -357,19 +480,49 @@ static void gvar_assign(IrProgram *prog) {
         }
         sz = g->type ? type_size(g->type) : 4;
         if (sz <= 0) sz = 4;
-        sram = (sram + 3) & ~3u;
+        /* SCT-1/SCT-3: custom section globals get their address from the
+         * scatter exec region rather than the default .bss pool. */
+        if (g->section && g_scatter_loaded) {
+            unsigned caddr = custom_sect_alloc(g->section, sz);
+            if (caddr) {
+                g_gvar_names[g_gvar_count] = g->name;
+                g_gvar_addrs[g_gvar_count] = caddr;
+                g_gvar_sizes[g_gvar_count] = sz;
+                g_gvar_count++;
+                continue;
+            }
+            /* section not found in scatter: fall through to .bss allocation */
+        }
+        bss_sram = (bss_sram + 3) & ~3u;
         g_gvar_names[g_gvar_count] = g->name;
-        g_gvar_addrs[g_gvar_count] = sram;
+        g_gvar_addrs[g_gvar_count] = bss_sram;
         g_gvar_sizes[g_gvar_count] = sz;  /* #6 FIX */
         g_gvar_count++;
-        sram += sz;
+        bss_sram += sz;
     }
     /* #BSS-ALIGN FIX: Align .bss end to 4 bytes. The __arkcc_init_globals
      * zeroing loop increments r0 by 4 and terminates with CMP r0, r1; BNE.
      * If the last .bss variable's size is not a multiple of 4 (e.g. a char
      * or uint8_t array), r0 would never equal r1, causing an infinite loop
      * that writes zeros past .bss into adjacent memory or HardFault. */
-    g_bss_sram_end = (sram + 3) & ~3u;
+    g_bss_sram_end = (bss_sram + 3) & ~3u;
+
+    /* Scatter overflow check: warn (do not fail) if .data/.bss grew past their
+     * declared execution-region size. Helps catch layout mistakes early. */
+#if ARKCC_FEATURE_SCATTER
+    if (g_scatter_loaded) {
+        ScatterExecRegion *rw_er = scatter_find_er_by_attr(&g_scatter, SCATTER_ATTR_RW);
+        ScatterExecRegion *zi_er = scatter_find_er_by_attr(&g_scatter, SCATTER_ATTR_ZI);
+        if (rw_er && !scatter_er_fits(rw_er, g_data_sram_start,
+                                      g_data_sram_end - g_data_sram_start))
+            ark_log("[scatter] warning: .data (0x%X..0x%X) overflows %s (size 0x%X)\n",
+                    g_data_sram_start, g_data_sram_end, rw_er->name, rw_er->size);
+        if (zi_er && !scatter_er_fits(zi_er, g_bss_sram_start,
+                                      g_bss_sram_end - g_bss_sram_start))
+            ark_log("[scatter] warning: .bss (0x%X..0x%X) overflows %s (size 0x%X)\n",
+                    g_bss_sram_start, g_bss_sram_end, zi_er->name, zi_er->size);
+    }
+#endif
 }
 
 static char *codegen_arm(IrProgram *prog) {
@@ -381,6 +534,11 @@ static char *codegen_arm(IrProgram *prog) {
     int dbg = 0;
 #endif
     asmbuf_init(&buf);
+
+    /* Load the scatter description (if --scatter was given) so the base
+     * addresses for Flash/.data/.bss come from the .sct layout. Must happen
+     * before gvar_assign, which places globals at g_data_base/g_bss_base. */
+    arm_scatter_load();
 
     /* Assign SRAM addresses to all non-extern, non-__at globals.
      * This must happen before generating function code so IR_PUSH_GLOBAL etc.
@@ -415,8 +573,23 @@ static char *codegen_arm(IrProgram *prog) {
                     char c = s->data[k];
                     if (c == '\n') asmbuf_puts(&buf, "\\n");
                     else if (c == '\t') asmbuf_puts(&buf, "\\t");
+                    else if (c == '\r') asmbuf_puts(&buf, "\\r");
                     else if (c == '\\') asmbuf_puts(&buf, "\\\\");
                     else if (c == '"')  asmbuf_puts(&buf, "\\\"");
+                    else if (c == '\b') asmbuf_puts(&buf, "\\b");
+                    else if (c == '\f') asmbuf_puts(&buf, "\\f");
+                    else if (c == '\v') asmbuf_puts(&buf, "\\v");
+                    else if (c == '\a') asmbuf_puts(&buf, "\\a");
+                    else if (c == '\0') asmbuf_puts(&buf, "\\0");
+                    else if ((unsigned char)c < 0x20 || (unsigned char)c >= 0x7F) {
+                        char hb[8]; int hn = 0;
+                        const char *hh = "0123456789abcdef";
+                        hb[hn++] = '\\'; hb[hn++] = 'x';
+                        hb[hn++] = hh[((unsigned char)c >> 4) & 0xF];
+                        hb[hn++] = hh[(unsigned char)c & 0xF];
+                        hb[hn] = 0;
+                        asmbuf_puts(&buf, hb);
+                    }
                     else asmbuf_putc(&buf, c);
                 }
             }
@@ -502,6 +675,12 @@ static char *codegen_arm(IrProgram *prog) {
         int i;
         int is_sret = 0;
         int sret_off = 0;
+        /* P1 FIX (sret caller side): pre-allocate sret buffers in this
+         * function's frame so the sret space doesn't occupy SP+0 (where
+         * the callee expects to read stack args). Each sret call site gets
+         * its own buffer at a known r6-relative offset. */
+        int sret_call_buf_off[64];
+        int sret_call_n = 0;
 
         /* Detect sret: struct/union return > 8 bytes */
         {
@@ -598,6 +777,23 @@ static char *codegen_arm(IrProgram *prog) {
             asmbuf_puts(&buf, ", %function\n");
         }
 #endif
+        /* Pre-scan IR for sret calls: reserve a buffer in the frame for each.
+         * The buffer is addressed via r6 (frame pointer) at the call site,
+         * so SP stays at the stack args (callee reads them at SP+0). */
+        {
+            int sci;
+            for (sci = 0; sci < f->code_count && sret_call_n < 64; sci++) {
+                IrInst *sci_I = &f->code[sci];
+                if (sci_I->op == IR_CALL && sci_I->name && sci_I->name[0] != '?') {
+                    if (sret_lookup(sret_names, sret_sizes, sret_count, sci_I->name)) {
+                        int sz = sret_get_size(sret_names, sret_sizes, sret_count, sci_I->name);
+                        local_size += sz;
+                        sret_call_buf_off[sret_call_n] = local_size - sz;
+                        sret_call_n++;
+                    }
+                }
+            }
+        }
         emit_prologue(&buf, f->name, local_size, f->is_irq, f->is_naked, dbg);
         /* #2 FIX: Auto-call __arkcc_init_globals at the start of Reset_Handler
          * to initialize .data and zero .bss before main() runs. */
@@ -615,6 +811,43 @@ static char *codegen_arm(IrProgram *prog) {
 
         {
         int cur_line = 0;
+        int sret_call_idx = 0;
+        /* Precompute AAPCS register assignment for each param slot.
+         * Maps slot index (cumulative 4-byte slot count) to AAPCS register
+         * number (r0-r3), accounting for 64-bit even-pair alignment.
+         * -1 = slot not used (gap in struct-by-value slot space). */
+        int aapcs_map[64];
+        {
+            int aapcs_slot = 0;
+            int aapcs_reg = is_sret ? 1 : 0;  /* sret: r0=ptr, args start at r1 */
+            int pj;
+            for (pj = 0; pj < 64; pj++) aapcs_map[pj] = -1;
+            for (pj = 0; pj < f->param_count; pj++) {
+                Type *pt = (f->param_types && pj < f->param_count)
+                           ? f->param_types[pj] : 0;
+                int psz = pt ? type_size(pt) : 4;
+                int is_sv = (pt && (pt->kind == TYPE_STRUCT ||
+                                    pt->kind == TYPE_UNION) && psz > 8);
+                if (psz <= 0) psz = 4;
+                if (is_sv) {
+                    /* Struct-by-value: 1 register holds pointer, sz/4 slots */
+                    if (aapcs_slot < 64) aapcs_map[aapcs_slot] = aapcs_reg;
+                    aapcs_reg += 1;
+                    aapcs_slot += (psz + 3) / 4;
+                } else if (psz > 4) {
+                    /* 64-bit: align to even register pair (r0/r1 or r2/r3) */
+                    if (aapcs_reg & 1) aapcs_reg++;
+                    if (aapcs_slot < 64) aapcs_map[aapcs_slot] = aapcs_reg;
+                    if (aapcs_slot + 1 < 64) aapcs_map[aapcs_slot + 1] = aapcs_reg + 1;
+                    aapcs_reg += 2;
+                    aapcs_slot += 2;
+                } else {
+                    if (aapcs_slot < 64) aapcs_map[aapcs_slot] = aapcs_reg;
+                    aapcs_reg += 1;
+                    aapcs_slot += 1;
+                }
+            }
+        }
         for (i = 0; i < f->code_count; i++) {
             IrInst *I = &f->code[i];
 #if ARKCC_FEATURE_DWARF
@@ -633,42 +866,40 @@ static char *codegen_arm(IrProgram *prog) {
                 case IR_GETARG: {
                     /* AAPCS: first 4 args in r0-r3, args 5+ on caller's stack.
                      * For sret functions, r0 holds the hidden sret pointer;
-                     * real args start at r1, so arg_idx is shifted by 1.
-                     * Stack layout (upward from r6 = frame pointer):
-                     *   [r6 + 0 .. local_size-1]            this frame's local variables
-                     *   [r6 + local_size + 0..15]           saved r5/r6/r7/lr
-                     *   [r6 + local_size + 16 + k*4]        the (5+k)th argument
-                     * arg_idx < 4: store directly from r{arg_idx} into this frame;
-                     * arg_idx >= 4: load from caller's stack slot, then store into this frame.
+                     * real args start at r1. The aapcs_map[] (precomputed above)
+                     * already accounts for sret by starting at r1, so arg_idx
+                     * is used directly as the aapcs_map key — NO manual shift.
                      *
-                     * #7 FIX: For struct-by-value params (size > 8), aux high bits
-                     * encode the struct size. The caller pushes the source struct
-                     * address; we must memcpy from that address into frame[val]. */
+                     * Stack layout (upward from r6 = frame pointer):
+                     *   [r6 + 0 .. local_size-1]            this frame's local vars
+                     *   [r6 + local_size + 0..15]           saved r5/r6/r7/lr
+                     *   [r6 + local_size + 16 + k*4]        the (5+k)th stack arg
+                     *
+                     * aux encoding: low 8 bits = slot index, high 24 bits = type size.
+                     *   st_sz > 8  => struct-by-value: reg/stack holds a *pointer*
+                     *   st_sz == 8 => 64-bit scalar (long long / double): two words
+                     *   st_sz <= 4 => 32-bit or smaller: one word
+                     * aapcs_map[slot] gives the AAPCS register (0-3) or -1 for gaps.
+                     * For stack args, register number is 4+; offset = (reg-4)*4. */
                     int arg_idx = I->aux & 0xFF;
                     int st_sz   = (I->aux >> 8) & 0xFFFFFF;
-                    if (is_sret) arg_idx++;  /* r0=sret ptr, real args start at r1 */
-                    if (st_sz > 0) {
-                        /* Struct-by-value: the register (or stack slot) holds a
-                         * *pointer* to the source struct. memcpy from it into
-                         * frame[val]. Use r3 as temp, r2 as byte counter. */
-                        int dst_off = I->val;
-                        if (arg_idx < 4) {
-                            /* Source pointer in r{arg_idx} */
+                    int dst_off = I->val;
+                    int reg     = (arg_idx < 64) ? aapcs_map[arg_idx] : -1;
+                    if (dst_off >= 8000) break;  /* variadic region: C-backend only */
+                    if (st_sz > 8) {
+                        /* Struct-by-value (> 8 bytes): register/stack holds a
+                         * *pointer* to the source struct. memcpy into frame[dst_off]. */
+                        if (reg >= 0 && reg < 4) {
                             asmbuf_puts(&buf, "    MOV r3, r");
-                            asmbuf_int(&buf, arg_idx);
+                            asmbuf_int(&buf, reg);
                             asmbuf_puts(&buf, "\n");
                         } else {
-                            /* Source pointer on caller's stack */
-                            int stack_off = local_size + 16 + (arg_idx - 4) * 4;
+                            int stack_off = local_size + 16 + (reg - 4) * 4;
                             asmbuf_puts(&buf, "    LDR r3, [r6, #");
                             asmbuf_int(&buf, stack_off);
                             asmbuf_puts(&buf, "]\n");
                         }
-                        /* Emit inline memcpy: for small sizes use individual
-                         * LDR/STR pairs; for larger sizes, call memcpy.
-                         * r0 = dst (frame+dst_off), r1 = src (r3), r2 = size */
                         if (st_sz <= 16) {
-                            /* Inline copy for small structs (<=16 bytes) */
                             int off;
                             for (off = 0; off < st_sz; off += 4) {
                                 asmbuf_puts(&buf, "    LDR r0, [r3, #");
@@ -679,28 +910,62 @@ static char *codegen_arm(IrProgram *prog) {
                                 asmbuf_puts(&buf, "]\n");
                             }
                         } else {
-                            /* Call memcpy for larger structs */
-                            emit_mov_imm(&buf, 0, 0);  /* will be overwritten */
                             asmbuf_puts(&buf, "    ADD r0, r6, #");
                             asmbuf_int(&buf, dst_off);
                             asmbuf_puts(&buf, "\n    MOV r1, r3\n");
                             emit_mov_imm(&buf, 2, st_sz);
                             asmbuf_puts(&buf, "    PUSH {lr}\n    BL memcpy\n    POP {r0}\n");
                         }
-                    } else if (arg_idx < 4) {
-                        asmbuf_puts(&buf, "    STR r");
-                        asmbuf_int(&buf, arg_idx);
-                        asmbuf_puts(&buf, ", [r6, #");
-                        asmbuf_int(&buf, I->val);
-                        asmbuf_puts(&buf, "]\n");
+                    } else if (st_sz == 8) {
+                        /* 64-bit scalar (long long / double): read two words from
+                         * the even register pair (r0/r1 or r2/r3) or caller's stack. */
+                        int reg_hi = (arg_idx + 1 < 64) ? aapcs_map[arg_idx + 1] : -1;
+                        /* Low word */
+                        if (reg >= 0 && reg < 4) {
+                            asmbuf_puts(&buf, "    STR r");
+                            asmbuf_int(&buf, reg);
+                            asmbuf_puts(&buf, ", [r6, #");
+                            asmbuf_int(&buf, dst_off);
+                            asmbuf_puts(&buf, "]\n");
+                        } else {
+                            int soff = local_size + 16 + (reg - 4) * 4;
+                            asmbuf_puts(&buf, "    LDR r0, [r6, #");
+                            asmbuf_int(&buf, soff);
+                            asmbuf_puts(&buf, "]\n    STR r0, [r6, #");
+                            asmbuf_int(&buf, dst_off);
+                            asmbuf_puts(&buf, "]\n");
+                        }
+                        /* High word */
+                        if (reg_hi >= 0 && reg_hi < 4) {
+                            asmbuf_puts(&buf, "    STR r");
+                            asmbuf_int(&buf, reg_hi);
+                            asmbuf_puts(&buf, ", [r6, #");
+                            asmbuf_int(&buf, dst_off + 4);
+                            asmbuf_puts(&buf, "]\n");
+                        } else {
+                            int soff = local_size + 16 + (reg_hi - 4) * 4;
+                            asmbuf_puts(&buf, "    LDR r0, [r6, #");
+                            asmbuf_int(&buf, soff);
+                            asmbuf_puts(&buf, "]\n    STR r0, [r6, #");
+                            asmbuf_int(&buf, dst_off + 4);
+                            asmbuf_puts(&buf, "]\n");
+                        }
                     } else {
-                        int stack_off = local_size + 16 + (arg_idx - 4) * 4;
-                        asmbuf_puts(&buf, "    LDR r0, [r6, #");
-                        asmbuf_int(&buf, stack_off);
-                        asmbuf_puts(&buf, "]\n");
-                        asmbuf_puts(&buf, "    STR r0, [r6, #");
-                        asmbuf_int(&buf, I->val);
-                        asmbuf_puts(&buf, "]\n");
+                        /* 32-bit or smaller: one word */
+                        if (reg >= 0 && reg < 4) {
+                            asmbuf_puts(&buf, "    STR r");
+                            asmbuf_int(&buf, reg);
+                            asmbuf_puts(&buf, ", [r6, #");
+                            asmbuf_int(&buf, dst_off);
+                            asmbuf_puts(&buf, "]\n");
+                        } else {
+                            int soff = local_size + 16 + (reg - 4) * 4;
+                            asmbuf_puts(&buf, "    LDR r0, [r6, #");
+                            asmbuf_int(&buf, soff);
+                            asmbuf_puts(&buf, "]\n    STR r0, [r6, #");
+                            asmbuf_int(&buf, dst_off);
+                            asmbuf_puts(&buf, "]\n");
+                        }
                     }
                     break;
                 }
@@ -720,9 +985,14 @@ static char *codegen_arm(IrProgram *prog) {
                      *   2 = short (LDRSH signed / LDRH unsigned)
                      *   4 or 0 = int/ptr (LDR 4 bytes)
                      *   8 = 64-bit (long long / double): load two words, push both
-                     *   0x100 bit = unsigned */
+                     *   0x100 bit = unsigned
+                     *   0x10000 bit (IR_AUX_VOLATILE) = volatile read: emit
+                     *     DMB SY barriers before and after to enforce ordering. */
                     int width = I->aux & 0xFF;
                     int is_unsigned = (I->aux & 0x100) != 0;
+                    int is_volatile = (I->aux & IR_AUX_VOLATILE) != 0;
+                    if (is_volatile)
+                        emit_line(&buf, "DMB SY");  /* volatile: order prior memory ops */
                     if (width == 1) {
                         asmbuf_puts(&buf, is_unsigned
                             ? "    LDRB r0, [r6, #"
@@ -753,6 +1023,8 @@ static char *codegen_arm(IrProgram *prog) {
                         asmbuf_puts(&buf, "]\n");
                         emit_push_r0(&buf);
                     }
+                    if (is_volatile)
+                        emit_line(&buf, "DMB SY");  /* volatile: order subsequent memory ops */
                     break;
                 }
                 case IR_PUSH_ADDR:
@@ -836,9 +1108,14 @@ static char *codegen_arm(IrProgram *prog) {
                      * checking width — volatile uint32_t has aux=0x10004,
                      * which would wrongly match sw>=8 and sw>=16, causing
                      * 16-byte writes into an 8-byte slot and corrupting
-                     * saved registers on the stack. */
+                     * saved registers on the stack.
+                     * N5 FIX: volatile stores emit DMB SY before (release) and
+                     * after (full barrier) to enforce memory ordering. */
                     int sw = I->aux & ~IR_AUX_VOLATILE;
+                    int is_volatile = (I->aux & IR_AUX_VOLATILE) != 0;
                     if (sw == 0) sw = 4;
+                    if (is_volatile)
+                        emit_line(&buf, "DMB SY");  /* volatile: release barrier */
                     if (sw == 1) {
                         emit_pop_r0(&buf);
                         asmbuf_puts(&buf, "    STRB r0, [r6, #");
@@ -875,10 +1152,16 @@ static char *codegen_arm(IrProgram *prog) {
                         asmbuf_int(&buf, I->val);
                         asmbuf_puts(&buf, "]\n");
                     }
+                    if (is_volatile)
+                        emit_line(&buf, "DMB SY");  /* volatile: full barrier */
                     break;
                 }
                 case IR_LOAD_IDX: {
                     int es = I->val;
+                    /* Bug-I5 FIX: mask off IR_AUX_VOLATILE (0x10000) before
+                     * checking the packed flag. The volatile bit is carried for
+                     * optimizer/host-compiler correctness and does not affect
+                     * the ARM load encoding. */
                     int packed = (I->aux & 0x400) ? 1 : 0;
                     emit_pop_r1(&buf);
                     emit_pop_r0(&buf);
@@ -931,6 +1214,10 @@ static char *codegen_arm(IrProgram *prog) {
                 }
                 case IR_STORE_IDX: {
                     int es = I->val;
+                    /* Bug-I5 FIX: mask off IR_AUX_VOLATILE (0x10000) before
+                     * checking the packed flag. The volatile bit is carried for
+                     * optimizer/host-compiler correctness and does not affect
+                     * the ARM store encoding. */
                     int packed = (I->aux & 0x400) ? 1 : 0;
                     if (es == 8) {
                         /* #A4 FIX: 8-byte element (long long/double): stack has
@@ -1235,6 +1522,47 @@ static char *codegen_arm(IrProgram *prog) {
                     }
                     break;
                 }
+                case IR_64I2F: {
+                    /* long long (64-bit) -> float/double.
+                     * Stack model: [r0_low, r1_high] (high on top).
+                     * AAPCS helpers: __aeabi_l2d/ul2d (-> r0/r1 double),
+                     *                __aeabi_l2f/ul2f (-> r0 float). */
+                    int is_dbl = (I->aux & 0x200) != 0;
+                    int is_unsigned = (I->aux & 0x400) != 0;
+                    emit_pop_r1(&buf);  /* high */
+                    emit_pop_r0(&buf);  /* low */
+                    if (is_dbl) {
+                        emit_line(&buf, is_unsigned ? "BL __aeabi_ul2d" : "BL __aeabi_l2d");
+                        /* double result: r0=low, r1=high */
+                        emit_push_r0(&buf);
+                        asmbuf_puts(&buf, "    PUSH {r1}\n");
+                    } else {
+                        emit_line(&buf, is_unsigned ? "BL __aeabi_ul2f" : "BL __aeabi_l2f");
+                        emit_push_r0(&buf);
+                    }
+                    break;
+                }
+                case IR_64F2I: {
+                    /* float/double -> long long (64-bit).
+                     * For double: stack has [r0_low, r1_high]; pop both.
+                     * For float:  stack has [r0]; pop one.
+                     * AAPCS helpers: __aeabi_d2lz/d2ulz (double -> r0/r1),
+                     *                __aeabi_f2lz/f2ulz (float  -> r0/r1). */
+                    int is_dbl = (I->aux & 0x200) != 0;
+                    int is_unsigned = (I->aux & 0x400) != 0;
+                    if (is_dbl) {
+                        emit_pop_r1(&buf);  /* high */
+                        emit_pop_r0(&buf);  /* low */
+                        emit_line(&buf, is_unsigned ? "BL __aeabi_d2ulz" : "BL __aeabi_d2lz");
+                    } else {
+                        emit_pop_r0(&buf);
+                        emit_line(&buf, is_unsigned ? "BL __aeabi_f2ulz" : "BL __aeabi_f2lz");
+                    }
+                    /* 64-bit result: r0=low, r1=high */
+                    emit_push_r0(&buf);
+                    asmbuf_puts(&buf, "    PUSH {r1}\n");
+                    break;
+                }
                 case IR_F2F: {
                     /* float <-> float cast. On the ARM soft-float stack:
                      *   double = [r0_low, r1_high] (2 slots, high on top)
@@ -1454,67 +1782,136 @@ static char *codegen_arm(IrProgram *prog) {
                     }
 
                     /* sret call: callee returns struct > 8 bytes via hidden pointer in r0.
-                     * Stack layout at entry: [arg0, arg1, ..., argN-1] (top at SP).
-                     * We pop reg args into r1-r3 (max 3, r0 is sret ptr), allocate sret
-                     * space below stack args, then restore sp so callee sees stack args
-                     * at the correct position. */
+                     * P1 FIX: sret buffer is pre-allocated in the caller's frame (via r6),
+                     * NOT on the stack. This ensures:
+                     *   1. Callee reads stack args at SP+0 (not sret space).
+                     *   2. sret buffer survives the callee's PUSH (above SP, in the frame).
+                     *   3. The sret pointer pushed after BL remains valid (buffer not freed).
+                     * AAPCS: r0 = sret pointer, real args start at r1.
+                     * 64-bit args align to even register pairs (r2/r3 only option). */
                     if (is_sret_call) {
-                        int sret_sz = sret_get_size(sret_names, sret_sizes, sret_count, I->name);
-                        int reg_args = (real_args > 3) ? 3 : real_args;
-                        int stack_args = (real_args > 3) ? (real_args - 3) : 0;
-                        /* Pop register args into r1, r2, r3 */
-                        for (k = 0; k < reg_args; k++) {
-                            asmbuf_puts(&buf, "    POP {r");
-                            asmbuf_int(&buf, k + 1);
-                            asmbuf_puts(&buf, "}\n");
+                        int argmask = I->aux;
+                        int aapcs_reg = 1;  /* r0 = sret, args start at r1 */
+                        int total_slots = 0;
+                        int reg_slots = 0;
+                        int stack_args;
+                        int need_align;
+                        int buf_off = (sret_call_idx < sret_call_n)
+                                      ? sret_call_buf_off[sret_call_idx++] : 0;
+                        int kk;
+                        for (kk = 0; kk < real_args; kk++) {
+                            int is_64 = (argmask >> (2 * kk + 1)) & 1;
+                            total_slots += is_64 ? 2 : 1;
                         }
-                        /* #A6 FIX: Allocate sret space and keep it allocated during BL.
-                         * Previously the code did SUB sp; MOV r0,sp; ADD sp (releasing
-                         * sret space before BL), which caused the callee's prologue
-                         * PUSH {r5,r6,r7,lr} to overwrite the sret space (it was below
-                         * SP). Now sret space stays at SP+0 during the call; the callee's
-                         * PUSH writes below SP, not touching sret space.
-                         * Limitation: if stack_args > 0, the callee reads stack args at
-                         * SP+0 which is sret space. For sret functions with >3 args,
-                         * pre-allocating sret in the caller's frame is needed (TODO). */
-                        asmbuf_puts(&buf, "    SUB sp, sp, #");
-                        asmbuf_int(&buf, sret_sz);
+                        /* Pop each arg from the IR stack into the correct AAPCS
+                         * register. IR stack: arg0 on top. For 64-bit args, high
+                         * word is on top, low word below (pushed first). */
+                        for (kk = 0; kk < real_args; kk++) {
+                            int is_64 = (argmask >> (2 * kk + 1)) & 1;
+                            if (is_64) {
+                                if (aapcs_reg & 1) aapcs_reg++;  /* even-pair align */
+                                if (aapcs_reg + 1 <= 3) {
+                                    asmbuf_puts(&buf, "    POP {r");
+                                    asmbuf_int(&buf, aapcs_reg + 1);
+                                    asmbuf_puts(&buf, "}\n");
+                                    asmbuf_puts(&buf, "    POP {r");
+                                    asmbuf_int(&buf, aapcs_reg);
+                                    asmbuf_puts(&buf, "}\n");
+                                    reg_slots += 2;
+                                    aapcs_reg += 2;
+                                } else {
+                                    break;  /* both words stay on stack */
+                                }
+                            } else {
+                                if (aapcs_reg <= 3) {
+                                    asmbuf_puts(&buf, "    POP {r");
+                                    asmbuf_int(&buf, aapcs_reg);
+                                    asmbuf_puts(&buf, "}\n");
+                                    reg_slots += 1;
+                                    aapcs_reg += 1;
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+                        stack_args = total_slots - reg_slots;
+                        if (stack_args < 0) stack_args = 0;
+                        need_align = (stack_args & 1) != 0;
+                        /* r0 = sret buffer address (pre-allocated in caller's frame) */
+                        asmbuf_puts(&buf, "    ADD r0, r6, #");
+                        asmbuf_int(&buf, buf_off);
                         asmbuf_putc(&buf, '\n');
-                        /* r0 = sret pointer */
-                        asmbuf_puts(&buf, "    MOV r0, sp\n");
-                        /* BL callee (sret space is safe at SP+0..SP+sret_sz-1) */
+                        if (need_align) {
+                            asmbuf_puts(&buf, "    SUB sp, sp, #4\n");
+                        }
                         asmbuf_puts(&buf, "    BL ");
                         asmbuf_puts(&buf, I->name);
                         asmbuf_putc(&buf, '\n');
-                        /* Clean up sret space + stack args */
-                        asmbuf_puts(&buf, "    ADD sp, sp, #");
-                        asmbuf_int(&buf, sret_sz + stack_args * 4);
-                        asmbuf_putc(&buf, '\n');
-                        /* Push r0 (sret pointer) */
+                        if (need_align) {
+                            asmbuf_puts(&buf, "    ADD sp, sp, #4\n");
+                        }
+                        if (stack_args > 0) {
+                            asmbuf_puts(&buf, "    ADD sp, sp, #");
+                            asmbuf_int(&buf, stack_args * 4);
+                            asmbuf_putc(&buf, '\n');
+                        }
                         emit_push_r0(&buf);
                         break;
                     }
 
-                    /* Regular (non-sret) call */
+                    /* Regular (non-sret) call.
+                     * AAPCS: first 4 args in r0-r3, 64-bit args aligned to even
+                     * register pairs (r0/r1 or r2/r3). Remaining args on stack.
+                     * argmask bit(2*k+1)=1 marks 8-byte args (long long / double). */
                     {
-                    int reg_args = (real_args > 4) ? 4 : real_args;
-                    int stack_args = (real_args > 4) ? (real_args - 4) : 0;
-                    /* P1 FIX: AAPCS requires 8-byte SP alignment at BL.
-                     * When stack_args is odd, SP is only 4-byte aligned after
-                     * popping reg_args. Insert padding before BL, remove after. */
-                    int need_align = (stack_args & 1) != 0;
+                    int argmask = I->aux;
+                    int aapcs_reg = 0;
+                    int total_slots = 0;
+                    int reg_slots = 0;
+                    int stack_args;
+                    int need_align;
+                    int kk;
 
                     /* Indirect call: pop function pointer into ip (r12) first */
                     if (is_indirect) {
                         asmbuf_puts(&buf, "    POP {ip}\n");
-                        /* #8 FIX: Ensure Thumb bit is set for BLX ip */
                         asmbuf_puts(&buf, "    ORR ip, ip, #1\n");
                     }
-                    for (k = 0; k < reg_args; k++) {
-                        asmbuf_puts(&buf, "    POP {r");
-                        asmbuf_int(&buf, k);
-                        asmbuf_puts(&buf, "}\n");
+                    for (kk = 0; kk < real_args; kk++) {
+                        int is_64 = (argmask >> (2 * kk + 1)) & 1;
+                        total_slots += is_64 ? 2 : 1;
                     }
+                    for (kk = 0; kk < real_args; kk++) {
+                        int is_64 = (argmask >> (2 * kk + 1)) & 1;
+                        if (is_64) {
+                            if (aapcs_reg & 1) aapcs_reg++;  /* even-pair align */
+                            if (aapcs_reg + 1 <= 3) {
+                                asmbuf_puts(&buf, "    POP {r");
+                                asmbuf_int(&buf, aapcs_reg + 1);
+                                asmbuf_puts(&buf, "}\n");
+                                asmbuf_puts(&buf, "    POP {r");
+                                asmbuf_int(&buf, aapcs_reg);
+                                asmbuf_puts(&buf, "}\n");
+                                reg_slots += 2;
+                                aapcs_reg += 2;
+                            } else {
+                                break;  /* remaining args stay on stack */
+                            }
+                        } else {
+                            if (aapcs_reg <= 3) {
+                                asmbuf_puts(&buf, "    POP {r");
+                                asmbuf_int(&buf, aapcs_reg);
+                                asmbuf_puts(&buf, "}\n");
+                                reg_slots += 1;
+                                aapcs_reg += 1;
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    stack_args = total_slots - reg_slots;
+                    if (stack_args < 0) stack_args = 0;
+                    need_align = (stack_args & 1) != 0;
                     if (need_align) {
                         asmbuf_puts(&buf, "    SUB sp, sp, #4\n");
                     }
@@ -1525,7 +1922,6 @@ static char *codegen_arm(IrProgram *prog) {
                         asmbuf_puts(&buf, I->name);
                         asmbuf_putc(&buf, '\n');
                     }
-                    /* Clean up alignment padding + stack arguments */
                     if (need_align) {
                         asmbuf_puts(&buf, "    ADD sp, sp, #4\n");
                     }
@@ -1535,9 +1931,16 @@ static char *codegen_arm(IrProgram *prog) {
                         asmbuf_putc(&buf, '\n');
                     }
                     /* #9 FIX: Check if called function returns 64-bit (long long/double).
-                     * If so, push both r0 (low) and r1 (high). */
+                     * If so, push both r0 (low) and r1 (high).
+                     * For indirect calls, the return type is not in prog->funcs,
+                     * so irgen encodes the 64-bit return flag in bit 32 of val.
+                     * ROUND4-P2 FIX: For direct calls to void functions, skip
+                     * the push entirely (the caller's AST_EXPR_STMT no longer
+                     * emits IR_POP, so the stack stays balanced). Indirect
+                     * calls conservatively push. */
                     {
                         int ret64 = 0;
+                        int is_void_ret = 0;
                         if (!is_indirect) {
                             int fi2;
                             for (fi2 = 0; fi2 < prog->func_count; fi2++) {
@@ -1545,16 +1948,20 @@ static char *codegen_arm(IrProgram *prog) {
                                     Type *rt = prog->funcs[fi2]->ret_type;
                                     if (rt && (rt->kind == TYPE_LLONG || rt->kind == TYPE_DOUBLE)) {
                                         ret64 = 1;
+                                    } else if (rt && rt->kind == TYPE_VOID) {
+                                        is_void_ret = 1;
                                     }
                                     break;
                                 }
                             }
+                        } else {
+                            ret64 = (int)((I->val >> 32) & 1);
                         }
                         if (ret64) {
                             emit_push_r0(&buf);              /* push low word */
                             asmbuf_puts(&buf, "    PUSH {r1}\n");  /* push high word */
-                        } else {
-                            emit_push_r0(&buf);
+                        } else if (!is_void_ret) {
+                            emit_push_r0(&buf);              /* push r0 only if non-void */
                         }
                     }
                     }
@@ -1773,11 +2180,17 @@ static char *codegen_arm(IrProgram *prog) {
                     }
                     break;
                 case IR_ALLOCA: {
-                    /* VLA dynamic stack allocation: pop byte count, 8-byte align,
-                     * subtract from sp, push the start address of the allocated region. */
+                    /* Bug S6 FIX (verified): VLA dynamic stack allocation.
+                     * Pop byte count, align UP to 8 bytes (ADD+BIC rounds up,
+                     * not down), subtract from sp, push the start address.
+                     * irgen emits exactly: PUSH(size_expr); PUSH_INT(elem_sz);
+                     * BINARY(MUL); IR_ALLOCA; IR_STORE. The ALLOCA pops 1 value
+                     * (byte count) and pushes 1 value (start address) - balanced.
+                     * The previously-reported extra PUSH {r0} + ADD sp,#4 does
+                     * not exist in the current code; the bug was already fixed. */
                     emit_pop_r0(&buf);                  /* r0 = byte count */
                     emit_line(&buf, "ADD r0, r0, #7");
-                    emit_line(&buf, "BIC r0, r0, #7");  /* 8-byte align down */
+                    emit_line(&buf, "BIC r0, r0, #7");  /* align up to 8 (clear low 3 bits) */
                     emit_line(&buf, "SUB sp, sp, r0");  /* allocate on stack */
                     emit_line(&buf, "MOV r0, sp");      /* r0 = start address */
                     emit_push_r0(&buf);                 /* push start address */
@@ -2059,8 +2472,11 @@ static char *codegen_arm(IrProgram *prog) {
             asmbuf_puts(&buf, ".L_bss_done:\n");
         }
 
-        asmbuf_puts(&buf, "    POP {r0}\n");
-        asmbuf_puts(&buf, "    BX r0\n\n");
+        /* Bug ROUND4-P3 FIX: Use POP {pc} for return instead of POP {r0}; BX r0.
+         * In ARM Thumb mode, POP {pc} automatically sets the Thumb bit from
+         * bit 0 of the stored LR (which is always 1 for Thumb code), so this
+         * is the standard, more efficient epilogue pattern. */
+        asmbuf_puts(&buf, "    POP {pc}\n\n");
     }
 
     /* #A1 FIX: Emit __aeabi_* runtime helper functions for 64-bit arithmetic.
@@ -2368,19 +2784,235 @@ static char *codegen_arm(IrProgram *prog) {
         asmbuf_puts(&buf, "    B .L_i2f_conv\n\n");
 
         /* __aeabi_fadd: float (r0) + float (r1) -> float (r0)
-         * Minimal implementation: for same-sign operands, add mantissas.
-         * This is a simplified version; full IEEE 754 requires normalization. */
+         * 真正的 IEEE 754 单精度加法：提取符号/指数/尾数，对齐指数，
+         * 同号相加异号相减，规格化后组装结果。NaN/Inf 未做完整处理。 */
         asmbuf_puts(&buf, ".global __aeabi_fadd\n.thumb_func\n__aeabi_fadd:\n");
-        asmbuf_puts(&buf, "    BX lr\n\n");              /* placeholder: returns r0 unchanged */
+        asmbuf_puts(&buf, "    PUSH {r4, r5, r6, r7, lr}\n");
+        asmbuf_puts(&buf, "    LSR r2, r0, #31\n");          /* a 符号 */
+        asmbuf_puts(&buf, "    LSR r3, r0, #23\n");
+        asmbuf_puts(&buf, "    LSL r3, r3, #24\n");
+        asmbuf_puts(&buf, "    LSR r3, r3, #24\n");          /* a 指数(8位) */
+        asmbuf_puts(&buf, "    LSL r4, r0, #9\n");
+        asmbuf_puts(&buf, "    LSR r4, r4, #9\n");           /* a 尾数(23位) */
+        asmbuf_puts(&buf, "    LSR r5, r1, #31\n");          /* b 符号 */
+        asmbuf_puts(&buf, "    LSR r6, r1, #23\n");
+        asmbuf_puts(&buf, "    LSL r6, r6, #24\n");
+        asmbuf_puts(&buf, "    LSR r6, r6, #24\n");          /* b 指数 */
+        asmbuf_puts(&buf, "    LSL r7, r1, #9\n");
+        asmbuf_puts(&buf, "    LSR r7, r7, #9\n");           /* b 尾数 */
+        asmbuf_puts(&buf, "    CMP r3, #0\n");
+        asmbuf_puts(&buf, "    BEQ .L_fadd_ret_b\n");        /* a 为零返回 b */
+        asmbuf_puts(&buf, "    CMP r6, #0\n");
+        asmbuf_puts(&buf, "    BEQ .L_fadd_ret_a\n");        /* b 为零返回 a */
+        asmbuf_puts(&buf, "    MOV r0, #1\n");
+        asmbuf_puts(&buf, "    LSL r0, r0, #23\n");          /* 0x800000 隐含位 */
+        asmbuf_puts(&buf, "    ORR r4, r0\n");               /* a 尾数补隐含位 */
+        asmbuf_puts(&buf, "    ORR r7, r0\n");               /* b 尾数补隐含位 */
+        asmbuf_puts(&buf, "    SUB r0, r3, r6\n");           /* 指数差 */
+        asmbuf_puts(&buf, "    CMP r0, #0\n");
+        asmbuf_puts(&buf, "    BGE .L_fadd_a_ge\n");
+        asmbuf_puts(&buf, "    RSB r0, r0, #0\n");           /* 移位量 = -差 */
+        asmbuf_puts(&buf, "    LSR r4, r4, r0\n");           /* a 尾数右移对齐 */
+        asmbuf_puts(&buf, "    MOV r3, r6\n");               /* 结果指数取大者 */
+        asmbuf_puts(&buf, "    B .L_fadd_aligned\n");
+        asmbuf_puts(&buf, ".L_fadd_a_ge:\n");
+        asmbuf_puts(&buf, "    LSR r7, r7, r0\n");           /* b 尾数右移对齐 */
+        asmbuf_puts(&buf, ".L_fadd_aligned:\n");
+        asmbuf_puts(&buf, "    CMP r2, r5\n");
+        asmbuf_puts(&buf, "    BEQ .L_fadd_add\n");          /* 同号相加 */
+        asmbuf_puts(&buf, "    CMP r4, r7\n");
+        asmbuf_puts(&buf, "    BCS .L_fadd_sub_ab\n");       /* a 尾数 >= b 尾数 */
+        asmbuf_puts(&buf, "    SUB r4, r7, r4\n");           /* 结果 = b - a */
+        asmbuf_puts(&buf, "    MOV r2, r5\n");               /* 符号取 b */
+        asmbuf_puts(&buf, "    B .L_fadd_norm\n");
+        asmbuf_puts(&buf, ".L_fadd_sub_ab:\n");
+        asmbuf_puts(&buf, "    SUB r4, r4, r7\n");           /* 结果 = a - b */
+        asmbuf_puts(&buf, "    B .L_fadd_norm\n");
+        asmbuf_puts(&buf, ".L_fadd_add:\n");
+        asmbuf_puts(&buf, "    ADD r4, r4, r7\n");           /* 结果 = a + b */
+        asmbuf_puts(&buf, ".L_fadd_norm:\n");
+        asmbuf_puts(&buf, "    CMP r4, #0\n");
+        asmbuf_puts(&buf, "    BEQ .L_fadd_zero\n");
+        asmbuf_puts(&buf, "    MOV r1, #1\n");
+        asmbuf_puts(&buf, "    LSL r1, r1, #24\n");          /* bit24 掩码 */
+        asmbuf_puts(&buf, "    TST r4, r1\n");
+        asmbuf_puts(&buf, "    BEQ .L_fadd_nocarry\n");
+        asmbuf_puts(&buf, "    LSR r4, r4, #1\n");           /* 加法进位：右移1 */
+        asmbuf_puts(&buf, "    ADD r3, r3, #1\n");
+        asmbuf_puts(&buf, "    B .L_fadd_chk\n");
+        asmbuf_puts(&buf, ".L_fadd_nocarry:\n");
+        asmbuf_puts(&buf, "    MOV r1, #1\n");
+        asmbuf_puts(&buf, "    LSL r1, r1, #23\n");          /* bit23 掩码 */
+        asmbuf_puts(&buf, "    TST r4, r1\n");
+        asmbuf_puts(&buf, "    BNE .L_fadd_chk\n");          /* 已规格化 */
+        asmbuf_puts(&buf, ".L_fadd_shl:\n");
+        asmbuf_puts(&buf, "    LSL r4, r4, #1\n");           /* 左移补位 */
+        asmbuf_puts(&buf, "    SUB r3, r3, #1\n");
+        asmbuf_puts(&buf, "    CMP r3, #0\n");
+        asmbuf_puts(&buf, "    BLE .L_fadd_zero\n");         /* 指数下溢 */
+        asmbuf_puts(&buf, "    TST r4, r1\n");
+        asmbuf_puts(&buf, "    BEQ .L_fadd_shl\n");
+        asmbuf_puts(&buf, ".L_fadd_chk:\n");
+        asmbuf_puts(&buf, "    CMP r3, #255\n");
+        asmbuf_puts(&buf, "    BGE .L_fadd_inf\n");          /* 溢出 -> Inf */
+        asmbuf_puts(&buf, "    CMP r3, #0\n");
+        asmbuf_puts(&buf, "    BLE .L_fadd_zero\n");
+        asmbuf_puts(&buf, "    MOV r1, #1\n");
+        asmbuf_puts(&buf, "    LSL r1, r1, #23\n");          /* bit23 掩码 */
+        asmbuf_puts(&buf, "    BIC r4, r1\n");               /* 清除隐含位 */
+        asmbuf_puts(&buf, "    LSL r3, r3, #23\n");          /* 指数就位 */
+        asmbuf_puts(&buf, "    LSL r2, r2, #31\n");          /* 符号就位 */
+        asmbuf_puts(&buf, "    MOV r0, r3\n");
+        asmbuf_puts(&buf, "    ORR r0, r4\n");
+        asmbuf_puts(&buf, "    ORR r0, r2\n");
+        asmbuf_puts(&buf, "    POP {r4, r5, r6, r7, pc}\n");
+        asmbuf_puts(&buf, ".L_fadd_ret_b:\n");
+        asmbuf_puts(&buf, "    MOV r0, r1\n");
+        asmbuf_puts(&buf, "    POP {r4, r5, r6, r7, pc}\n");
+        asmbuf_puts(&buf, ".L_fadd_ret_a:\n");
+        asmbuf_puts(&buf, "    POP {r4, r5, r6, r7, pc}\n");
+        asmbuf_puts(&buf, ".L_fadd_zero:\n");
+        asmbuf_puts(&buf, "    MOV r0, #0\n");
+        asmbuf_puts(&buf, "    POP {r4, r5, r6, r7, pc}\n");
+        asmbuf_puts(&buf, ".L_fadd_inf:\n");
+        asmbuf_puts(&buf, "    MOV r1, #255\n");
+        asmbuf_puts(&buf, "    LSL r1, r1, #23\n");          /* exp=0xFF -> Inf */
+        asmbuf_puts(&buf, "    LSL r2, r2, #31\n");
+        asmbuf_puts(&buf, "    MOV r0, r1\n");
+        asmbuf_puts(&buf, "    ORR r0, r2\n");
+        asmbuf_puts(&buf, "    POP {r4, r5, r6, r7, pc}\n\n");
 
+        /* __aeabi_fsub: 翻转 b 符号位后尾调用 fadd */
         asmbuf_puts(&buf, ".global __aeabi_fsub\n.thumb_func\n__aeabi_fsub:\n");
-        asmbuf_puts(&buf, "    BX lr\n\n");
+        asmbuf_puts(&buf, "    MOV r2, #1\n");
+        asmbuf_puts(&buf, "    LSL r2, r2, #31\n");          /* 0x80000000 */
+        asmbuf_puts(&buf, "    EOR r1, r2\n");               /* 翻转 b 符号 */
+        asmbuf_puts(&buf, "    B __aeabi_fadd\n\n");
 
+        /* __aeabi_fmul: float (r0) * float (r1) -> float (r0)
+         * 尾数用 UMULL 做 32x32->64 乘法，取乘积>>23 规格化。 */
         asmbuf_puts(&buf, ".global __aeabi_fmul\n.thumb_func\n__aeabi_fmul:\n");
-        asmbuf_puts(&buf, "    BX lr\n\n");
+        asmbuf_puts(&buf, "    PUSH {r4, r5, r6, r7, lr}\n");
+        asmbuf_puts(&buf, "    LSR r2, r0, #31\n");          /* a 符号 */
+        asmbuf_puts(&buf, "    LSR r3, r0, #23\n");
+        asmbuf_puts(&buf, "    LSL r3, r3, #24\n");
+        asmbuf_puts(&buf, "    LSR r3, r3, #24\n");          /* a 指数 */
+        asmbuf_puts(&buf, "    LSL r4, r0, #9\n");
+        asmbuf_puts(&buf, "    LSR r4, r4, #9\n");           /* a 尾数 */
+        asmbuf_puts(&buf, "    LSR r5, r1, #31\n");          /* b 符号 */
+        asmbuf_puts(&buf, "    LSR r6, r1, #23\n");
+        asmbuf_puts(&buf, "    LSL r6, r6, #24\n");
+        asmbuf_puts(&buf, "    LSR r6, r6, #24\n");          /* b 指数 */
+        asmbuf_puts(&buf, "    LSL r7, r1, #9\n");
+        asmbuf_puts(&buf, "    LSR r7, r7, #9\n");           /* b 尾数 */
+        asmbuf_puts(&buf, "    CMP r3, #0\n");
+        asmbuf_puts(&buf, "    BEQ .L_fmul_zero\n");
+        asmbuf_puts(&buf, "    CMP r6, #0\n");
+        asmbuf_puts(&buf, "    BEQ .L_fmul_zero\n");
+        asmbuf_puts(&buf, "    MOV r0, #1\n");
+        asmbuf_puts(&buf, "    LSL r0, r0, #23\n");          /* 隐含位 */
+        asmbuf_puts(&buf, "    ORR r4, r0\n");
+        asmbuf_puts(&buf, "    ORR r7, r0\n");
+        asmbuf_puts(&buf, "    EOR r2, r5\n");               /* 结果符号 */
+        asmbuf_puts(&buf, "    ADD r3, r3, r6\n");
+        asmbuf_puts(&buf, "    SUB r3, r3, #127\n");         /* 结果指数 */
+        asmbuf_puts(&buf, "    UMULL r0, r1, r4, r7\n");     /* r1:r0 = a_mant * b_mant */
+        asmbuf_puts(&buf, "    LSR r0, r0, #23\n");          /* 低字 >> 23 */
+        asmbuf_puts(&buf, "    LSL r1, r1, #9\n");           /* 高字 << 9 */
+        asmbuf_puts(&buf, "    MOV r4, r1\n");
+        asmbuf_puts(&buf, "    ORR r4, r0\n");               /* r4 = 乘积 >> 23 */
+        asmbuf_puts(&buf, "    MOV r0, #1\n");
+        asmbuf_puts(&buf, "    LSL r0, r0, #24\n");          /* bit24 掩码 */
+        asmbuf_puts(&buf, "    TST r4, r0\n");
+        asmbuf_puts(&buf, "    BEQ .L_fmul_chk\n");
+        asmbuf_puts(&buf, "    LSR r4, r4, #1\n");           /* 进位右移1 */
+        asmbuf_puts(&buf, "    ADD r3, r3, #1\n");
+        asmbuf_puts(&buf, ".L_fmul_chk:\n");
+        asmbuf_puts(&buf, "    CMP r3, #255\n");
+        asmbuf_puts(&buf, "    BGE .L_fmul_inf\n");
+        asmbuf_puts(&buf, "    CMP r3, #0\n");
+        asmbuf_puts(&buf, "    BLE .L_fmul_zero\n");
+        asmbuf_puts(&buf, "    MOV r0, #1\n");
+        asmbuf_puts(&buf, "    LSL r0, r0, #23\n");          /* bit23 掩码 */
+        asmbuf_puts(&buf, "    BIC r4, r0\n");               /* 清除隐含位 */
+        asmbuf_puts(&buf, "    LSL r3, r3, #23\n");
+        asmbuf_puts(&buf, "    LSL r2, r2, #31\n");
+        asmbuf_puts(&buf, "    MOV r0, r3\n");
+        asmbuf_puts(&buf, "    ORR r0, r4\n");
+        asmbuf_puts(&buf, "    ORR r0, r2\n");
+        asmbuf_puts(&buf, "    POP {r4, r5, r6, r7, pc}\n");
+        asmbuf_puts(&buf, ".L_fmul_zero:\n");
+        asmbuf_puts(&buf, "    MOV r0, #0\n");
+        asmbuf_puts(&buf, "    POP {r4, r5, r6, r7, pc}\n");
+        asmbuf_puts(&buf, ".L_fmul_inf:\n");
+        asmbuf_puts(&buf, "    MOV r0, #255\n");
+        asmbuf_puts(&buf, "    LSL r0, r0, #23\n");
+        asmbuf_puts(&buf, "    LSL r2, r2, #31\n");
+        asmbuf_puts(&buf, "    ORR r0, r2\n");
+        asmbuf_puts(&buf, "    POP {r4, r5, r6, r7, pc}\n\n");
 
+        /* __aeabi_fdiv: float (r0) / float (r1) -> float (r0)
+         * 尾数 = (a_mant<<23) / b_mant，64 位除法复用 __aeabi_uldivmod。 */
         asmbuf_puts(&buf, ".global __aeabi_fdiv\n.thumb_func\n__aeabi_fdiv:\n");
-        asmbuf_puts(&buf, "    BX lr\n\n");
+        asmbuf_puts(&buf, "    PUSH {r4, r5, r6, r7, lr}\n");
+        asmbuf_puts(&buf, "    LSR r2, r0, #31\n");          /* a 符号 */
+        asmbuf_puts(&buf, "    LSR r3, r0, #23\n");
+        asmbuf_puts(&buf, "    LSL r3, r3, #24\n");
+        asmbuf_puts(&buf, "    LSR r3, r3, #24\n");          /* a 指数 */
+        asmbuf_puts(&buf, "    LSL r4, r0, #9\n");
+        asmbuf_puts(&buf, "    LSR r4, r4, #9\n");           /* a 尾数 */
+        asmbuf_puts(&buf, "    LSR r5, r1, #31\n");          /* b 符号 */
+        asmbuf_puts(&buf, "    LSR r6, r1, #23\n");
+        asmbuf_puts(&buf, "    LSL r6, r6, #24\n");
+        asmbuf_puts(&buf, "    LSR r6, r6, #24\n");          /* b 指数 */
+        asmbuf_puts(&buf, "    LSL r7, r1, #9\n");
+        asmbuf_puts(&buf, "    LSR r7, r7, #9\n");           /* b 尾数 */
+        asmbuf_puts(&buf, "    CMP r6, #0\n");
+        asmbuf_puts(&buf, "    BEQ .L_fdiv_inf\n");          /* 除以零 -> Inf */
+        asmbuf_puts(&buf, "    CMP r3, #0\n");
+        asmbuf_puts(&buf, "    BEQ .L_fdiv_zero\n");         /* 0 / x = 0 */
+        asmbuf_puts(&buf, "    MOV r0, #1\n");
+        asmbuf_puts(&buf, "    LSL r0, r0, #23\n");          /* 隐含位 */
+        asmbuf_puts(&buf, "    ORR r4, r0\n");
+        asmbuf_puts(&buf, "    ORR r7, r0\n");
+        asmbuf_puts(&buf, "    EOR r5, r2\n");               /* 结果符号 -> r5 */
+        asmbuf_puts(&buf, "    SUB r6, r3, r6\n");
+        asmbuf_puts(&buf, "    ADD r6, r6, #127\n");         /* 结果指数 -> r6 */
+        asmbuf_puts(&buf, "    LSR r1, r4, #9\n");           /* 被除数高字 = a_mant>>9 */
+        asmbuf_puts(&buf, "    LSL r0, r4, #23\n");          /* 被除数低字 = a_mant<<23 */
+        asmbuf_puts(&buf, "    MOV r2, r7\n");               /* 除数 = b_mant */
+        asmbuf_puts(&buf, "    MOV r3, #0\n");
+        asmbuf_puts(&buf, "    BL __aeabi_uldivmod\n");      /* r0:r1 = 商 */
+        asmbuf_puts(&buf, "    MOV r4, r0\n");               /* r4 = 结果尾数 */
+        asmbuf_puts(&buf, "    MOV r0, #1\n");
+        asmbuf_puts(&buf, "    LSL r0, r0, #23\n");          /* bit23 掩码 */
+        asmbuf_puts(&buf, "    TST r4, r0\n");
+        asmbuf_puts(&buf, "    BNE .L_fdiv_chk\n");          /* bit23 已置位 */
+        asmbuf_puts(&buf, "    LSL r4, r4, #1\n");           /* 否则左移1，指数-1 */
+        asmbuf_puts(&buf, "    SUB r6, r6, #1\n");
+        asmbuf_puts(&buf, ".L_fdiv_chk:\n");
+        asmbuf_puts(&buf, "    CMP r6, #255\n");
+        asmbuf_puts(&buf, "    BGE .L_fdiv_inf\n");
+        asmbuf_puts(&buf, "    CMP r6, #0\n");
+        asmbuf_puts(&buf, "    BLE .L_fdiv_zero\n");
+        asmbuf_puts(&buf, "    MOV r0, #1\n");
+        asmbuf_puts(&buf, "    LSL r0, r0, #23\n");
+        asmbuf_puts(&buf, "    BIC r4, r0\n");               /* 清除隐含位 */
+        asmbuf_puts(&buf, "    LSL r6, r6, #23\n");
+        asmbuf_puts(&buf, "    LSL r5, r5, #31\n");
+        asmbuf_puts(&buf, "    MOV r0, r6\n");
+        asmbuf_puts(&buf, "    ORR r0, r4\n");
+        asmbuf_puts(&buf, "    ORR r0, r5\n");
+        asmbuf_puts(&buf, "    POP {r4, r5, r6, r7, pc}\n");
+        asmbuf_puts(&buf, ".L_fdiv_zero:\n");
+        asmbuf_puts(&buf, "    MOV r0, #0\n");
+        asmbuf_puts(&buf, "    POP {r4, r5, r6, r7, pc}\n");
+        asmbuf_puts(&buf, ".L_fdiv_inf:\n");
+        asmbuf_puts(&buf, "    MOV r0, #255\n");
+        asmbuf_puts(&buf, "    LSL r0, r0, #23\n");
+        asmbuf_puts(&buf, "    LSL r5, r5, #31\n");
+        asmbuf_puts(&buf, "    ORR r0, r5\n");
+        asmbuf_puts(&buf, "    POP {r4, r5, r6, r7, pc}\n\n");
 
         /* Double-precision helpers: for now, truncate to single and use
          * single-precision helpers. This loses precision but allows linking. */
@@ -2412,54 +3044,274 @@ static char *codegen_arm(IrProgram *prog) {
         asmbuf_puts(&buf, "    POP {r0}\n");
         asmbuf_puts(&buf, "    BX r0\n\n");
 
+        /* 双精度算术：a=r0(低):r1(高)，b=r2(低):r3(高)，结果=r0(低):r1(高)。
+         * 策略：将两个 double 截断为 single（__arkcc_d2f_pair 返回 r0/r1），
+         * 调用对应单精度运算，再用 __arkcc_f2d_ext 扩展回 double。精度有限但可链接。 */
         asmbuf_puts(&buf, ".global __aeabi_dadd\n.thumb_func\n__aeabi_dadd:\n");
-        asmbuf_puts(&buf, "    BX lr\n\n");
+        asmbuf_puts(&buf, "    PUSH {lr}\n");
+        asmbuf_puts(&buf, "    BL __arkcc_d2f_pair\n");      /* r0=a_s, r1=b_s */
+        asmbuf_puts(&buf, "    BL __aeabi_fadd\n");
+        asmbuf_puts(&buf, "    BL __arkcc_f2d_ext\n");       /* r0 -> r0:r1 */
+        asmbuf_puts(&buf, "    POP {pc}\n\n");
 
         asmbuf_puts(&buf, ".global __aeabi_dsub\n.thumb_func\n__aeabi_dsub:\n");
-        asmbuf_puts(&buf, "    BX lr\n\n");
+        asmbuf_puts(&buf, "    PUSH {lr}\n");
+        asmbuf_puts(&buf, "    BL __arkcc_d2f_pair\n");
+        asmbuf_puts(&buf, "    BL __aeabi_fsub\n");
+        asmbuf_puts(&buf, "    BL __arkcc_f2d_ext\n");
+        asmbuf_puts(&buf, "    POP {pc}\n\n");
 
         asmbuf_puts(&buf, ".global __aeabi_dmul\n.thumb_func\n__aeabi_dmul:\n");
-        asmbuf_puts(&buf, "    BX lr\n\n");
+        asmbuf_puts(&buf, "    PUSH {lr}\n");
+        asmbuf_puts(&buf, "    BL __arkcc_d2f_pair\n");
+        asmbuf_puts(&buf, "    BL __aeabi_fmul\n");
+        asmbuf_puts(&buf, "    BL __arkcc_f2d_ext\n");
+        asmbuf_puts(&buf, "    POP {pc}\n\n");
 
         asmbuf_puts(&buf, ".global __aeabi_ddiv\n.thumb_func\n__aeabi_ddiv:\n");
-        asmbuf_puts(&buf, "    BX lr\n\n");
+        asmbuf_puts(&buf, "    PUSH {lr}\n");
+        asmbuf_puts(&buf, "    BL __arkcc_d2f_pair\n");
+        asmbuf_puts(&buf, "    BL __aeabi_fdiv\n");
+        asmbuf_puts(&buf, "    BL __arkcc_f2d_ext\n");
+        asmbuf_puts(&buf, "    POP {pc}\n\n");
 
-        /* Float comparison helpers: return 1 for true, 0 for false.
-         * __aeabi_fcmpeq: r0 == r1 */
+        /* 单精度比较：返回 1 为真，0 为假。NaN 时除 != 外皆返回 0（!= 由调用方翻转）。
+         * __arkcc_fcmp3 返回 r0: -1(a<b) / 0(==) / 1(a>b) / 2(无序/NaN)。
+         * 用符号-幅值到二进制补码的单调映射做整数比较，+0==-0。 */
         asmbuf_puts(&buf, ".global __aeabi_fcmpeq\n.thumb_func\n__aeabi_fcmpeq:\n");
-        asmbuf_puts(&buf, "    CMP r0, r1\n");
+        asmbuf_puts(&buf, "    PUSH {lr}\n");
+        asmbuf_puts(&buf, "    BL __arkcc_fcmp3\n");
+        asmbuf_puts(&buf, "    CMP r0, #0\n");
         asmbuf_puts(&buf, "    ITE EQ\n");
         asmbuf_puts(&buf, "    MOVEQ r0, #1\n");
         asmbuf_puts(&buf, "    MOVNE r0, #0\n");
-        asmbuf_puts(&buf, "    BX lr\n\n");
+        asmbuf_puts(&buf, "    POP {pc}\n\n");
 
         asmbuf_puts(&buf, ".global __aeabi_fcmplt\n.thumb_func\n__aeabi_fcmplt:\n");
-        asmbuf_puts(&buf, "    CMP r0, r1\n");
+        asmbuf_puts(&buf, "    PUSH {lr}\n");
+        asmbuf_puts(&buf, "    BL __arkcc_fcmp3\n");
+        asmbuf_puts(&buf, "    CMP r0, #0\n");
         asmbuf_puts(&buf, "    ITE LT\n");
         asmbuf_puts(&buf, "    MOVLT r0, #1\n");
         asmbuf_puts(&buf, "    MOVGE r0, #0\n");
-        asmbuf_puts(&buf, "    BX lr\n\n");
+        asmbuf_puts(&buf, "    POP {pc}\n\n");
 
         asmbuf_puts(&buf, ".global __aeabi_fcmpgt\n.thumb_func\n__aeabi_fcmpgt:\n");
-        asmbuf_puts(&buf, "    CMP r0, r1\n");
-        asmbuf_puts(&buf, "    ITE GT\n");
-        asmbuf_puts(&buf, "    MOVGT r0, #1\n");
-        asmbuf_puts(&buf, "    MOVLE r0, #0\n");
-        asmbuf_puts(&buf, "    BX lr\n\n");
+        asmbuf_puts(&buf, "    PUSH {lr}\n");
+        asmbuf_puts(&buf, "    BL __arkcc_fcmp3\n");
+        asmbuf_puts(&buf, "    CMP r0, #1\n");
+        asmbuf_puts(&buf, "    ITE EQ\n");
+        asmbuf_puts(&buf, "    MOVEQ r0, #1\n");
+        asmbuf_puts(&buf, "    MOVNE r0, #0\n");
+        asmbuf_puts(&buf, "    POP {pc}\n\n");
 
         asmbuf_puts(&buf, ".global __aeabi_fcmple\n.thumb_func\n__aeabi_fcmple:\n");
-        asmbuf_puts(&buf, "    CMP r0, r1\n");
+        asmbuf_puts(&buf, "    PUSH {lr}\n");
+        asmbuf_puts(&buf, "    BL __arkcc_fcmp3\n");
+        asmbuf_puts(&buf, "    CMP r0, #0\n");
         asmbuf_puts(&buf, "    ITE LE\n");
         asmbuf_puts(&buf, "    MOVLE r0, #1\n");
         asmbuf_puts(&buf, "    MOVGT r0, #0\n");
-        asmbuf_puts(&buf, "    BX lr\n\n");
+        asmbuf_puts(&buf, "    POP {pc}\n\n");
 
         asmbuf_puts(&buf, ".global __aeabi_fcmpge\n.thumb_func\n__aeabi_fcmpge:\n");
-        asmbuf_puts(&buf, "    CMP r0, r1\n");
-        asmbuf_puts(&buf, "    ITE GE\n");
-        asmbuf_puts(&buf, "    MOVGE r0, #1\n");
-        asmbuf_puts(&buf, "    MOVLT r0, #0\n");
-        asmbuf_puts(&buf, "    BX lr\n\n");
+        asmbuf_puts(&buf, "    PUSH {lr}\n");
+        asmbuf_puts(&buf, "    BL __arkcc_fcmp3\n");
+        asmbuf_puts(&buf, "    CMP r0, #2\n");              /* NaN -> 假 */
+        asmbuf_puts(&buf, "    BEQ .L_fcmpge_false\n");
+        asmbuf_puts(&buf, "    CMP r0, #0\n");
+        asmbuf_puts(&buf, "    BGE .L_fcmpge_true\n");      /* 0 或 1 -> 真 */
+        asmbuf_puts(&buf, ".L_fcmpge_false:\n");
+        asmbuf_puts(&buf, "    MOV r0, #0\n");
+        asmbuf_puts(&buf, "    B .L_fcmpge_done\n");
+        asmbuf_puts(&buf, ".L_fcmpge_true:\n");
+        asmbuf_puts(&buf, "    MOV r0, #1\n");
+        asmbuf_puts(&buf, ".L_fcmpge_done:\n");
+        asmbuf_puts(&buf, "    POP {pc}\n\n");
+
+        /* 双精度比较：截断到单精度后调用对应单精度比较。
+         * a=r0:r1，b=r2:r3，返回 r0 (0/1)。 */
+        asmbuf_puts(&buf, ".global __aeabi_dcmpeq\n.thumb_func\n__aeabi_dcmpeq:\n");
+        asmbuf_puts(&buf, "    PUSH {lr}\n");
+        asmbuf_puts(&buf, "    BL __arkcc_d2f_pair\n");
+        asmbuf_puts(&buf, "    BL __aeabi_fcmpeq\n");
+        asmbuf_puts(&buf, "    POP {pc}\n\n");
+
+        asmbuf_puts(&buf, ".global __aeabi_dcmplt\n.thumb_func\n__aeabi_dcmplt:\n");
+        asmbuf_puts(&buf, "    PUSH {lr}\n");
+        asmbuf_puts(&buf, "    BL __arkcc_d2f_pair\n");
+        asmbuf_puts(&buf, "    BL __aeabi_fcmplt\n");
+        asmbuf_puts(&buf, "    POP {pc}\n\n");
+
+        asmbuf_puts(&buf, ".global __aeabi_dcmpgt\n.thumb_func\n__aeabi_dcmpgt:\n");
+        asmbuf_puts(&buf, "    PUSH {lr}\n");
+        asmbuf_puts(&buf, "    BL __arkcc_d2f_pair\n");
+        asmbuf_puts(&buf, "    BL __aeabi_fcmpgt\n");
+        asmbuf_puts(&buf, "    POP {pc}\n\n");
+
+        asmbuf_puts(&buf, ".global __aeabi_dcmple\n.thumb_func\n__aeabi_dcmple:\n");
+        asmbuf_puts(&buf, "    PUSH {lr}\n");
+        asmbuf_puts(&buf, "    BL __arkcc_d2f_pair\n");
+        asmbuf_puts(&buf, "    BL __aeabi_fcmple\n");
+        asmbuf_puts(&buf, "    POP {pc}\n\n");
+
+        asmbuf_puts(&buf, ".global __aeabi_dcmpge\n.thumb_func\n__aeabi_dcmpge:\n");
+        asmbuf_puts(&buf, "    PUSH {lr}\n");
+        asmbuf_puts(&buf, "    BL __arkcc_d2f_pair\n");
+        asmbuf_puts(&buf, "    BL __aeabi_fcmpge\n");
+        asmbuf_puts(&buf, "    POP {pc}\n\n");
+
+        /* === 内部辅助函数（非导出，仅供上述 helper 调用）=== */
+
+        /* __arkcc_fcmp3: 单精度三值比较。r0=a, r1=b -> r0 ∈ {-1,0,1,2}。
+         * NaN(指数=0xFF 且尾数!=0) -> 2；+0==-0；否则按单调映射做有符号整数比较。 */
+        asmbuf_puts(&buf, ".thumb_func\n__arkcc_fcmp3:\n");
+        asmbuf_puts(&buf, "    PUSH {r4, r5, lr}\n");
+        asmbuf_puts(&buf, "    LSL r2, r0, #1\n");
+        asmbuf_puts(&buf, "    LSR r2, r2, #24\n");          /* a 指数 */
+        asmbuf_puts(&buf, "    LSL r3, r0, #9\n");
+        asmbuf_puts(&buf, "    LSR r3, r3, #9\n");           /* a 尾数 */
+        asmbuf_puts(&buf, "    CMP r2, #255\n");
+        asmbuf_puts(&buf, "    BNE .L_fc3_a_ok\n");
+        asmbuf_puts(&buf, "    CMP r3, #0\n");
+        asmbuf_puts(&buf, "    BNE .L_fc3_unord\n");         /* a 是 NaN */
+        asmbuf_puts(&buf, ".L_fc3_a_ok:\n");
+        asmbuf_puts(&buf, "    LSL r2, r1, #1\n");
+        asmbuf_puts(&buf, "    LSR r2, r2, #24\n");          /* b 指数 */
+        asmbuf_puts(&buf, "    LSL r3, r1, #9\n");
+        asmbuf_puts(&buf, "    LSR r3, r3, #9\n");           /* b 尾数 */
+        asmbuf_puts(&buf, "    CMP r2, #255\n");
+        asmbuf_puts(&buf, "    BNE .L_fc3_b_ok\n");
+        asmbuf_puts(&buf, "    CMP r3, #0\n");
+        asmbuf_puts(&buf, "    BNE .L_fc3_unord\n");         /* b 是 NaN */
+        asmbuf_puts(&buf, ".L_fc3_b_ok:\n");
+        asmbuf_puts(&buf, "    LSL r2, r0, #1\n");
+        asmbuf_puts(&buf, "    LSR r2, r2, #1\n");           /* a 幅值(清符号) */
+        asmbuf_puts(&buf, "    LSL r3, r1, #1\n");
+        asmbuf_puts(&buf, "    LSR r3, r3, #1\n");           /* b 幅值 */
+        asmbuf_puts(&buf, "    MOV r4, r2\n");
+        asmbuf_puts(&buf, "    ORR r4, r3\n");               /* r4 = a_mag | b_mag */
+        asmbuf_puts(&buf, "    CMP r4, #0\n");
+        asmbuf_puts(&buf, "    BEQ .L_fc3_eq\n");            /* 两者皆零 -> 相等 */
+        asmbuf_puts(&buf, "    LSR r4, r0, #31\n");          /* a 符号 */
+        asmbuf_puts(&buf, "    CMP r4, #0\n");
+        asmbuf_puts(&buf, "    BEQ .L_fc3_apos\n");
+        asmbuf_puts(&buf, "    RSB r2, r2, #0\n");           /* Ka = -a_mag */
+        asmbuf_puts(&buf, ".L_fc3_apos:\n");
+        asmbuf_puts(&buf, "    LSR r5, r1, #31\n");          /* b 符号 */
+        asmbuf_puts(&buf, "    CMP r5, #0\n");
+        asmbuf_puts(&buf, "    BEQ .L_fc3_bpos\n");
+        asmbuf_puts(&buf, "    RSB r3, r3, #0\n");           /* Kb = -b_mag */
+        asmbuf_puts(&buf, ".L_fc3_bpos:\n");
+        asmbuf_puts(&buf, "    CMP r2, r3\n");
+        asmbuf_puts(&buf, "    BEQ .L_fc3_eq\n");
+        asmbuf_puts(&buf, "    BGT .L_fc3_gt\n");
+        asmbuf_puts(&buf, "    MVN r0, #0\n");               /* a < b -> -1 */
+        asmbuf_puts(&buf, "    B .L_fc3_done\n");
+        asmbuf_puts(&buf, ".L_fc3_gt:\n");
+        asmbuf_puts(&buf, "    MOV r0, #1\n");
+        asmbuf_puts(&buf, "    B .L_fc3_done\n");
+        asmbuf_puts(&buf, ".L_fc3_eq:\n");
+        asmbuf_puts(&buf, "    MOV r0, #0\n");
+        asmbuf_puts(&buf, "    B .L_fc3_done\n");
+        asmbuf_puts(&buf, ".L_fc3_unord:\n");
+        asmbuf_puts(&buf, "    MOV r0, #2\n");
+        asmbuf_puts(&buf, ".L_fc3_done:\n");
+        asmbuf_puts(&buf, "    POP {r4, r5, pc}\n\n");
+
+        /* __arkcc_d2f_trunc: double (r0=低, r1=高) 截断为 single (r0)。
+         * 高字含符号/指数/尾数高位；单精度尾数取双精度尾数高 23 位。 */
+        asmbuf_puts(&buf, ".thumb_func\n__arkcc_d2f_trunc:\n");
+        asmbuf_puts(&buf, "    PUSH {r4, r5, lr}\n");
+        asmbuf_puts(&buf, "    LSR r2, r1, #31\n");          /* 符号 */
+        asmbuf_puts(&buf, "    LSR r3, r1, #20\n");
+        asmbuf_puts(&buf, "    LSL r3, r3, #21\n");
+        asmbuf_puts(&buf, "    LSR r3, r3, #21\n");          /* double 指数(11位) */
+        asmbuf_puts(&buf, "    CMP r3, #0\n");
+        asmbuf_puts(&buf, "    BEQ .L_d2f_zero\n");          /* 零/非规格化 */
+        asmbuf_puts(&buf, "    MOVW r4, #0x7FF\n");
+        asmbuf_puts(&buf, "    CMP r3, r4\n");
+        asmbuf_puts(&buf, "    BEQ .L_d2f_inf\n");           /* Inf/NaN */
+        asmbuf_puts(&buf, "    SUB r4, r3, #896\n");         /* single 指数 = exp_d - 896 */
+        asmbuf_puts(&buf, "    CMP r4, #0\n");
+        asmbuf_puts(&buf, "    BLE .L_d2f_zero\n");          /* 下溢 */
+        asmbuf_puts(&buf, "    CMP r4, #255\n");
+        asmbuf_puts(&buf, "    BGE .L_d2f_inf\n");           /* 上溢 */
+        asmbuf_puts(&buf, "    LSL r5, r1, #12\n");
+        asmbuf_puts(&buf, "    LSR r5, r5, #12\n");          /* r1 & 0xFFFFF (尾数高位) */
+        asmbuf_puts(&buf, "    LSL r5, r5, #3\n");           /* << 3 */
+        asmbuf_puts(&buf, "    LSR r0, r0, #29\n");          /* 低字 >> 29 (尾数低位) */
+        asmbuf_puts(&buf, "    ORR r5, r0\n");               /* 23 位尾数 */
+        asmbuf_puts(&buf, "    LSL r2, r2, #31\n");
+        asmbuf_puts(&buf, "    LSL r4, r4, #23\n");
+        asmbuf_puts(&buf, "    MOV r0, r4\n");
+        asmbuf_puts(&buf, "    ORR r0, r5\n");
+        asmbuf_puts(&buf, "    ORR r0, r2\n");
+        asmbuf_puts(&buf, "    POP {r4, r5, pc}\n");
+        asmbuf_puts(&buf, ".L_d2f_zero:\n");
+        asmbuf_puts(&buf, "    LSL r2, r2, #31\n");
+        asmbuf_puts(&buf, "    MOV r0, r2\n");
+        asmbuf_puts(&buf, "    POP {r4, r5, pc}\n");
+        asmbuf_puts(&buf, ".L_d2f_inf:\n");
+        asmbuf_puts(&buf, "    LSL r2, r2, #31\n");
+        asmbuf_puts(&buf, "    MOV r4, #255\n");
+        asmbuf_puts(&buf, "    LSL r4, r4, #23\n");
+        asmbuf_puts(&buf, "    MOV r0, r4\n");
+        asmbuf_puts(&buf, "    ORR r0, r2\n");
+        asmbuf_puts(&buf, "    POP {r4, r5, pc}\n\n");
+
+        /* __arkcc_f2d_ext: single (r0) 扩展为 double (r0=低, r1=高)。
+         * 双精度尾数 = 单精度 23 位尾数左移到高 23 位，低 29 位补 0。 */
+        asmbuf_puts(&buf, ".thumb_func\n__arkcc_f2d_ext:\n");
+        asmbuf_puts(&buf, "    PUSH {r4, r5, lr}\n");
+        asmbuf_puts(&buf, "    LSR r2, r0, #31\n");          /* 符号 */
+        asmbuf_puts(&buf, "    LSR r3, r0, #23\n");
+        asmbuf_puts(&buf, "    LSL r3, r3, #24\n");
+        asmbuf_puts(&buf, "    LSR r3, r3, #24\n");          /* single 指数 */
+        asmbuf_puts(&buf, "    CMP r3, #0\n");
+        asmbuf_puts(&buf, "    BEQ .L_f2d_zero\n");
+        asmbuf_puts(&buf, "    CMP r3, #255\n");
+        asmbuf_puts(&buf, "    BEQ .L_f2d_inf\n");
+        asmbuf_puts(&buf, "    ADD r4, r3, #896\n");         /* double 指数 */
+        asmbuf_puts(&buf, "    LSL r5, r0, #9\n");
+        asmbuf_puts(&buf, "    LSR r5, r5, #9\n");           /* single 尾数 */
+        asmbuf_puts(&buf, "    LSL r3, r5, #29\n");          /* 低字 = 尾数 << 29 */
+        asmbuf_puts(&buf, "    LSR r5, r5, #3\n");           /* 尾数高位 = 尾数 >> 3 */
+        asmbuf_puts(&buf, "    LSL r2, r2, #31\n");
+        asmbuf_puts(&buf, "    LSL r4, r4, #20\n");
+        asmbuf_puts(&buf, "    MOV r1, r4\n");
+        asmbuf_puts(&buf, "    ORR r1, r5\n");
+        asmbuf_puts(&buf, "    ORR r1, r2\n");
+        asmbuf_puts(&buf, "    MOV r0, r3\n");
+        asmbuf_puts(&buf, "    POP {r4, r5, pc}\n");
+        asmbuf_puts(&buf, ".L_f2d_zero:\n");
+        asmbuf_puts(&buf, "    LSL r2, r2, #31\n");
+        asmbuf_puts(&buf, "    MOV r1, r2\n");
+        asmbuf_puts(&buf, "    MOV r0, #0\n");
+        asmbuf_puts(&buf, "    POP {r4, r5, pc}\n");
+        asmbuf_puts(&buf, ".L_f2d_inf:\n");
+        asmbuf_puts(&buf, "    LSL r2, r2, #31\n");
+        asmbuf_puts(&buf, "    MOVW r3, #0x7FF\n");
+        asmbuf_puts(&buf, "    LSL r3, r3, #20\n");          /* 0x7FF00000 */
+        asmbuf_puts(&buf, "    MOV r1, r3\n");
+        asmbuf_puts(&buf, "    ORR r1, r2\n");
+        asmbuf_puts(&buf, "    MOV r0, #0\n");
+        asmbuf_puts(&buf, "    POP {r4, r5, pc}\n\n");
+
+        /* __arkcc_d2f_pair: 两个 double (a=r0:r1, b=r2:r3) 截断为两个 single，
+         * 返回 r0=a_single, r1=b_single。b 先保存到 r4/r5 以免被 d2f_trunc 破坏。 */
+        asmbuf_puts(&buf, ".thumb_func\n__arkcc_d2f_pair:\n");
+        asmbuf_puts(&buf, "    PUSH {r4, r5, r6, lr}\n");
+        asmbuf_puts(&buf, "    MOV r4, r2\n");               /* 保存 b 低 */
+        asmbuf_puts(&buf, "    MOV r5, r3\n");               /* 保存 b 高 */
+        asmbuf_puts(&buf, "    BL __arkcc_d2f_trunc\n");     /* r0 = a single */
+        asmbuf_puts(&buf, "    MOV r6, r0\n");               /* 暂存 a single */
+        asmbuf_puts(&buf, "    MOV r0, r4\n");
+        asmbuf_puts(&buf, "    MOV r1, r5\n");
+        asmbuf_puts(&buf, "    BL __arkcc_d2f_trunc\n");     /* r0 = b single */
+        asmbuf_puts(&buf, "    MOV r1, r0\n");
+        asmbuf_puts(&buf, "    MOV r0, r6\n");
+        asmbuf_puts(&buf, "    POP {r4, r5, r6, pc}\n\n");
     }
 
     /* Globals: SRAM addresses are assigned by gvar_assign() above and loaded
@@ -2529,7 +3381,24 @@ static char *codegen_arm(IrProgram *prog) {
             if (want_custom) {
                 asmbuf_puts(&buf, ".section \"");
                 asmbuf_puts(&buf, want_custom);
-                asmbuf_puts(&buf, "\"\n");
+                asmbuf_puts(&buf, "\"");
+#if ARKCC_FEATURE_SCATTER
+                /* SCT-1: annotate the section's scatter exec region base so
+                 * the resolved layout is visible in the emitted assembly. */
+                if (g_scatter_loaded) {
+                    unsigned sect_base =
+                        scatter_get_er_base_for_section(&g_scatter, want_custom);
+                    if (sect_base) {
+                        char hex[9]; int k;
+                        const char *hd = "0123456789ABCDEF";
+                        asmbuf_puts(&buf, "  @ base 0x");
+                        for (k = 7; k >= 0; k--) { hex[k] = hd[sect_base & 0xF]; sect_base >>= 4; }
+                        hex[8] = 0;
+                        asmbuf_puts(&buf, hex);
+                    }
+                }
+#endif
+                asmbuf_putc(&buf, '\n');
                 cur_sec = 4;
             } else if (cur_sec != want_sec) {
                 if (want_sec == 1) asmbuf_puts(&buf, ".data\n");
@@ -2704,7 +3573,7 @@ static char *codegen_arm(IrProgram *prog) {
 }
 
 /* === Minimal Thumb-2 text assembler === */
-typedef struct AsmLabel { char *name; int addr; } AsmLabel;
+typedef struct AsmLabel { char *name; int addr; int is_weak; } AsmLabel;
 typedef struct AsmRef   { int pc; char *name; int type; } AsmRef;
 /* Literal pool entry: LDR rd,=label at ldr_pc needs a 4-byte literal at pool_offset */
 typedef struct AsmLiteral { int ldr_pc; char *name; int pool_offset; } AsmLiteral;
@@ -2726,6 +3595,10 @@ typedef struct {
     AsmLiteral    *literals;
     int            literal_count, literal_cap;
     int            literal_pool_start;  /* pc where the pool begins (-1 = not yet) */
+    /* .weak directive sets pending_weak; the next label defined inherits it. */
+    int            pending_weak;
+    /* Current section: 0=.text, 1=.data, 2=.bss, 3=.init_array, 4=.fini_array */
+    int            cur_section;
 } ArmAsm;
 
 static int is_alpha_a(char c) {
@@ -2745,6 +3618,13 @@ static int strieq_a(const char *a, const char *b) {
         a++; b++;
     }
     return *a == 0 && *b == 0;
+}
+static int starts_with_a(const char *s, const char *prefix) {
+    while (*prefix) {
+        if (*s != *prefix) return 0;
+        s++; prefix++;
+    }
+    return 1;
 }
 static void skip_space_a(const char **p) { while (is_space_a(**p)) (*p)++; }
 static void skip_to_eol_a(const char **p) { while (**p && **p != '\n') (*p)++; }
@@ -2896,6 +3776,8 @@ static void add_label_a(ArmAsm *a, const char *name, int addr) {
     }
     a->labels[a->label_count].name = mem_strdup(name);
     a->labels[a->label_count].addr = addr;
+    a->labels[a->label_count].is_weak = a->pending_weak;
+    a->pending_weak = 0;
     a->label_count++;
 }
 static int find_label_a(ArmAsm *a, const char *name) {
@@ -3128,9 +4010,40 @@ static void pass1_a(ArmAsm *a) {
                     int rem = pc % align;
                     if (rem != 0) pc += align - rem;
                 }
+            } else if (strieq_a(first, ".weak")) {
+                /* .weak name - mark the next-defined label as weak.
+                 * The symbol name argument is consumed but pending_weak
+                 * applies to whichever label is defined next (the .weak
+                 * directive always immediately precedes the label in our
+                 * emission order: .global / .weak / label:). */
+                char wname[64];
+                skip_space_a(&p);
+                n = read_word_a(&p, wname, (int)sizeof(wname));
+                (void)n; (void)wname;
+                a->pending_weak = 1;
+            } else if (strieq_a(first, ".section")) {
+                /* .section .text.foo, "ax", %progbits - track current section.
+                 * Section tracking is metadata-only (pc unaffected); the
+                 * assembler emits all code/data into a single linear buffer. */
+                char sec[64];
+                skip_space_a(&p);
+                n = read_word_a(&p, sec, (int)sizeof(sec));
+                if (n > 0) {
+                    if (starts_with_a(sec, ".init_array")) a->cur_section = 3;
+                    else if (starts_with_a(sec, ".fini_array")) a->cur_section = 4;
+                    else if (starts_with_a(sec, ".data")) a->cur_section = 1;
+                    else if (starts_with_a(sec, ".bss")) a->cur_section = 2;
+                    else a->cur_section = 0;  /* .text or default */
+                }
+            } else if (strieq_a(first, ".text")) {
+                a->cur_section = 0;
+            } else if (strieq_a(first, ".data")) {
+                a->cur_section = 1;
+            } else if (strieq_a(first, ".bss")) {
+                a->cur_section = 2;
             }
-            /* .section, .data, .bss, .text, .global, .type, .size, .thumb, .file, .loc,
-             * .cfi_*, etc. are metadata-only and don't affect pc */
+            /* .global, .type, .size, .thumb, .file, .loc, .cfi_*,
+             * etc. are metadata-only and don't affect pc */
         } else if (strieq_a(first, "LDR") || strieq_a(first, "LDRB") ||
                    strieq_a(first, "STR") || strieq_a(first, "STRB") ||
                    strieq_a(first, "LDRH") || strieq_a(first, "STRH") ||
@@ -3482,12 +4395,12 @@ static void pass2_a(ArmAsm *a) {
                                 case 'x': {
                                     int hv = 0;
                                     p++;
-                                    if (*p && (*p >= '0' && *p <= '9' || *p >= 'a' && *p <= 'f' || *p >= 'A' && *p <= 'F')) {
+                                    if (*p && ((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f') || (*p >= 'A' && *p <= 'F'))) {
                                         char ch = *p;
                                         hv = (ch >= '0' && ch <= '9') ? ch - '0' :
                                              (ch >= 'a' && ch <= 'f') ? ch - 'a' + 10 : ch - 'A' + 10;
                                         p++;
-                                        if (*p && (*p >= '0' && *p <= '9' || *p >= 'a' && *p <= 'f' || *p >= 'A' && *p <= 'F')) {
+                                        if (*p && ((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f') || (*p >= 'A' && *p <= 'F'))) {
                                             ch = *p;
                                             hv = hv * 16 + ((ch >= '0' && ch <= '9') ? ch - '0' :
                                                  (ch >= 'a' && ch <= 'f') ? ch - 'a' + 10 : ch - 'A' + 10);
@@ -3850,7 +4763,9 @@ static void pass2_a(ArmAsm *a) {
             if (*p == '=') {
                 /* LDR rd, =label - emit MOVW+MOVT to load absolute address.
                  * .set symbols (e.g. __at variables) use their absolute address directly;
-                 * code/data labels (e.g. .L_str_N) use 0x08000000 + offset (Flash base). */
+                 * code/data labels (e.g. .L_str_N) use g_flash_base + offset.
+                 * g_flash_base is the first LR load address when --scatter is
+                 * given, otherwise the default 0x08000000 (STM32F4 Flash). */
                 char sym[64];
                 int addr;
                 int sn;
@@ -3867,8 +4782,8 @@ static void pass2_a(ArmAsm *a) {
                         a->error_count++;
                         addr = 0;
                     } else {
-                        /* code/data label - add Flash base address */
-                        addr = 0x08000000 + addr;
+                        /* code/data label - add Flash base address (scatter-aware) */
+                        addr = (int)g_flash_base + addr;
                     }
                 }
                 /* Emit MOVW rd, #low16 */
@@ -4436,9 +5351,15 @@ static int arm_emit(IrProgram *m, char *out, int cap) {
 static void arm_save_syms(ArmAsm *a);  /* forward decl */
 static void arm_save_relocs(ArmAsm *a);  /* Bug-A2: forward decl */
 
-/* STM32 debug flag: set via UART "debug syms" command to dump symbol map.
- * On host, getenv("ARKCC_DUMP_SYMS") is used instead. */
-int g_arm_dump_syms = 0;
+/* Latch the ARKCC_DUMP_SYMS environment variable (host only) into
+ * g_arm_dump_syms at arkcc startup, so the ARM backend has a single uniform
+ * flag on both profiles. On STM32 getenv() is not available and this is a
+ * no-op; the flag is set via UART there. Called from ark_compile(). */
+void arm_dump_syms_init(void) {
+#if ARKCC_PROFILE != ARKCC_PROFILE_STM32_MIN
+    if (getenv("ARKCC_DUMP_SYMS")) g_arm_dump_syms = 1;
+#endif
+}
 
 static int arm_assemble(const char *asm_text, unsigned char *out, int cap) {
     ArmAsm a;
@@ -4452,6 +5373,8 @@ static int arm_assemble(const char *asm_text, unsigned char *out, int cap) {
     a.sets = 0; a.set_count = 0; a.set_cap = 0;
     a.literals = 0; a.literal_count = 0; a.literal_cap = 0;
     a.literal_pool_start = -1;
+    a.pending_weak = 0;
+    a.cur_section = 0;
     pass1_a(&a);
     a.pc = 0;
     pass2_a(&a);
@@ -4463,14 +5386,11 @@ static int arm_assemble(const char *asm_text, unsigned char *out, int cap) {
      * so that the global symbol/reloc arrays are populated before the
      * object file is written. */
     arm_save_relocs(&a);
-    /* Debug: dump label addresses if ARKCC_DUMP_SYMS is set.
-     * On STM32 (ARKCC_PROFILE_STM32_MIN), getenv() is not available, so we
-     * use a global flag that can be set via UART command instead. */
-#if ARKCC_PROFILE != ARKCC_PROFILE_STM32_MIN
-    if (getenv("ARKCC_DUMP_SYMS")) {
-#else
-    if (g_arm_dump_syms) {  /* set by UART "debug syms" command on STM32 */
-#endif
+    /* Debug: dump label addresses when g_arm_dump_syms is set. On host the
+     * flag is latched from getenv("ARKCC_DUMP_SYMS") at arkcc startup (see
+     * arm_dump_syms_init); on STM32 it is set via the UART "debug syms"
+     * command, since getenv() is unavailable under semihosting. */
+    if (g_arm_dump_syms) {
         {
             int di;
             ark_log("=== ARM Symbol Map (%d labels) ===\n", a.label_count);
@@ -4492,6 +5412,37 @@ static int arm_assemble(const char *asm_text, unsigned char *out, int cap) {
     return a.pc;
 }
 
+/* arm_link - per-object link stub (intentionally a no-op).
+ *
+ * Design rationale: arkcc splits linking responsibility across two stages.
+ *
+ *  1) Backend stage (this function): called once per object right after
+ *     arm_assemble, with only that object's code and no link context
+ *     (lc is always NULL today - see the call sites in compiler.c).
+ *     Cross-object references cannot be resolved here because we only see
+ *     one object; the unresolved refs were already captured by
+ *     arm_save_relocs() into g_arm_relocs for later use.
+ *
+ *  2) Linker stage (compiler.c -link mode): the ARKOBJ2 binary linker
+ *     merges code sections from every input object, builds a global
+ *     symbol table with weak-symbol precedence (ld_add_sym), and
+ *     patches cross-object relocations (ld_patch_ref for BL/B.W/
+ *     B<cond>.W/R_ARM_ABS32). Unresolved symbols are reported but do
+ *     not abort - they may be satisfied by an external library.
+ *
+ * Per-mode behaviour:
+ *   -S      : emits GAS-compatible assembly; real linking is delegated
+ *             to arm-none-eabi-ld / arm-none-eabi-gcc externally.
+ *   -c      : writes an ARKOBJ2 object (code + symbol table + reloc
+ *             table) for the -link stage to consume later.
+ *   -link   : runs the ARKOBJ2 binary linker described above.
+ *   -> .bin : single-file direct binary; cross-object refs are left
+ *             unresolved (acceptable for self-contained units).
+ *
+ * Keeping this function a no-op is the correct division of labour:
+ * the backend assembles and exports symbols/relocs; compiler.c links.
+ * Making arm_link do real work would duplicate the -link logic and
+ * still could not resolve cross-object refs without all objects. */
 static int arm_link(unsigned char *code, int size, struct LinkContext *lc) {
     (void)code; (void)size; (void)lc;
     return 0;
@@ -4502,6 +5453,7 @@ typedef struct ArmSym {
     char *name;
     int   offset;   /* byte offset from start of code section */
     int   type;     /* 0=code label, 1=data/global */
+    int   is_weak;  /* 1=weak symbol (overridable by a strong definition) */
 } ArmSym;
 
 static ArmSym  g_arm_syms[ARM_MAX_SYMBOLS] __attribute__((section(".ark_buf")));
@@ -4530,6 +5482,7 @@ static void arm_save_syms(ArmAsm *a) {
         g_arm_syms[g_arm_sym_count].name   = a->labels[i].name;
         g_arm_syms[g_arm_sym_count].offset = a->labels[i].addr;
         g_arm_syms[g_arm_sym_count].type   = 0;  /* code label */
+        g_arm_syms[g_arm_sym_count].is_weak = a->labels[i].is_weak;
         g_arm_sym_count++;
     }
 }
@@ -4559,6 +5512,7 @@ int arm_get_symbol_count(void) { return g_arm_sym_count; }
 const char *arm_get_symbol_name(int idx) { return g_arm_syms[idx].name; }
 int arm_get_symbol_offset(int idx) { return g_arm_syms[idx].offset; }
 int arm_get_symbol_type(int idx) { return g_arm_syms[idx].type; }
+int arm_get_symbol_weak(int idx) { return g_arm_syms[idx].is_weak; }
 
 /* Bug-A2: Export relocation info for the linker */
 int arm_get_reloc_count(void) { return g_arm_reloc_count; }
@@ -4572,7 +5526,8 @@ static const ArkBackend g_arm_backend = {
     4,
     arm_emit,
     arm_assemble,
-    arm_link
+    arm_link,
+    ARK_ABI_SYSV
 };
 
 const ArkBackend *ark_backend_arm(void) {
