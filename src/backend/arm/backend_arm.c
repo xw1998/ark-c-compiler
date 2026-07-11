@@ -794,6 +794,15 @@ static char *codegen_arm(IrProgram *prog) {
                 }
             }
         }
+        /* AAPCS: SP must be 8-byte aligned at BL. irgen aligns f->local_size
+         * to 8, but the sret adjustments above (sret pointer slot +4, sret call
+         * buffers +sz) can leave local_size at 4 mod 8. Round up to 8 so the
+         * prologue's SUB sp,sp,#local_size preserves the 8-byte alignment that
+         * IR_CALL's need_align parity check relies on. The padding sits at the
+         * top of the frame (between the last variable and saved regs); all
+         * r6-relative offsets remain valid because the prologue SUB and the
+         * stack-arg offset computation both use this padded value. */
+        local_size = (local_size + 7) & ~7;
         emit_prologue(&buf, f->name, local_size, f->is_irq, f->is_naked, dbg);
         /* #2 FIX: Auto-call __arkcc_init_globals at the start of Reset_Handler
          * to initialize .data and zero .bss before main() runs. */

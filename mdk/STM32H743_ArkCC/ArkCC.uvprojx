@@ -7,8 +7,8 @@
       <TargetName>ArkCC_H743</TargetName>
       <ToolsetNumber>0x4</ToolsetNumber>
       <ToolsetName>ARM-ADS</ToolsetName>
-      <pCCUsed>6160000::V6.16::ARMCLANG</pCCUsed>
-      <uAC6>1</uAC6>
+      <pCCUsed>5060000::V5.06::ARMCC</pCCUsed>
+      <uAC6>0</uAC6>
       <TargetOption>
         <TargetCommonOption>
           <Device>STM32H743VITx</Device>
@@ -335,7 +335,7 @@
             <v6Rtti>0</v6Rtti>
             <VariousControls>
               <MiscControls>-fno-common -ffunction-sections -fdata-sections</MiscControls>
-              <Define>USE_HAL_DRIVER,STM32H743xx,ARK_TARGET_STM32H7</Define>
+              <Define>USE_HAL_DRIVER,STM32H743xx,ARK_TARGET_STM32H7,ARKCC_PROFILE=ARKCC_PROFILE_STM32_MIN</Define>
               <Undefine />
               <IncludePath>..\..\include;..\..\stdlib\include;.\User\Inc;.\Drivers\CMSIS\Device\ST\STM32H7xx\Include;.\Drivers\CMSIS\Include;.\Drivers\STM32H7xx_HAL_Driver\Inc;.\RTE\_ArkCC</IncludePath>
             </VariousControls>
@@ -481,6 +481,26 @@
               <FileType>1</FileType>
               <FilePath>..\..\src\codegen_common.c</FilePath>
             </File>
+            <File>
+              <FileName>cpu.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\src\cpu.c</FilePath>
+            </File>
+            <File>
+              <FileName>config.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\src\config.c</FilePath>
+            </File>
+            <File>
+              <FileName>opt.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\src\opt.c</FilePath>
+            </File>
+            <File>
+              <FileName>scatter.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\src\scatter.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>
@@ -516,7 +536,7 @@
         <Group>
           <GroupName>Drivers/HAL</GroupName>
           <Files>
-            <!-- Çë½« STM32CubeH7 ÖÐµÄ stm32h7xx_hal*.c ÍÏµ½´Ë×é -->
+            <!-- ï¿½ë½« STM32CubeH7 ï¿½Ðµï¿½ stm32h7xx_hal*.c ï¿½Ïµï¿½ï¿½ï¿½ï¿½ï¿½ -->
           </Files>
         </Group>
       </Groups>

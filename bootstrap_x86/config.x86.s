@@ -1,12 +1,6 @@
-# Ark C Compiler - generated x86 (32-bit cdecl) assembly
-    .data
-    .globl _g_config
-_g_config:
-    .zero 96
-    .globl _ark_sl_config_load_file_cfg_buf
-_ark_sl_config_load_file_cfg_buf:
-    .zero 4096
-    .section .rdata,"dr"
+# Ark C Compiler - generated x86 32-bit (cdecl) assembly
+    .intel_syntax noprefix
+    .section .rodata
 ark_str_0:
     .asciz "features"
 ark_str_1:
@@ -163,1801 +157,2697 @@ ark_str_76:
     .asciz "(none)"
 ark_str_77:
     .asciz "  config_file=%s\n"
+    .data
+    .globl g_config
+g_config:
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .globl ark_sl_config_load_file_cfg_buf
+    .local ark_sl_config_load_file_cfg_buf
+ark_sl_config_load_file_cfg_buf:
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
+    .quad 0
     .text
-_parse_bool:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $272, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    popl %eax
-    cmpl $0, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lparse_bool_2
-    pushl -24(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    .globl parse_bool
+parse_bool:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 316
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    push dword ptr [ebp-48]
+    pop eax
+    test eax, eax
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lparse_bool_2
+    push dword ptr [ebp-48]
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    pop eax
+    test eax, eax
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lparse_bool_3
 .Lparse_bool_2:
-    pushl $1
+    push 1
 .Lparse_bool_3:
-    popl %eax
-    cmpl $0, %eax
-    je .Lparse_bool_0
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    pop eax
+    test eax, eax
+    jz .Lparse_bool_0
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
+    jmp .Lparse_bool_1
 .Lparse_bool_0:
 .Lparse_bool_1:
-    pushl -24(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $48
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lparse_bool_6
-    pushl -24(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-48]
+    push 0
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 48
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lparse_bool_6
+    push dword ptr [ebp-48]
+    push 1
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lparse_bool_7
 .Lparse_bool_6:
-    pushl $0
+    push 0
 .Lparse_bool_7:
-    popl %eax
-    cmpl $0, %eax
-    je .Lparse_bool_4
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    pop eax
+    test eax, eax
+    jz .Lparse_bool_4
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
+    jmp .Lparse_bool_5
 .Lparse_bool_4:
 .Lparse_bool_5:
-    pushl -24(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $49
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lparse_bool_10
-    pushl -24(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-48]
+    push 0
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 49
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lparse_bool_10
+    push dword ptr [ebp-48]
+    push 1
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lparse_bool_11
 .Lparse_bool_10:
-    pushl $0
+    push 0
 .Lparse_bool_11:
-    popl %eax
-    cmpl $0, %eax
-    je .Lparse_bool_8
-    pushl $1
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    pop eax
+    test eax, eax
+    jz .Lparse_bool_8
+    push 1
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
+    jmp .Lparse_bool_9
 .Lparse_bool_8:
 .Lparse_bool_9:
-    pushl -24(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $116
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lparse_bool_22
-    pushl -24(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $84
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-48]
+    push 0
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 116
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lparse_bool_22
+    push dword ptr [ebp-48]
+    push 0
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 84
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lparse_bool_23
 .Lparse_bool_22:
-    pushl $1
+    push 1
 .Lparse_bool_23:
-    popl %eax
-    cmpl $0, %eax
-    je .Lparse_bool_20
-    pushl -24(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $114
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lparse_bool_24
-    pushl -24(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $82
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jz .Lparse_bool_20
+    push dword ptr [ebp-48]
+    push 1
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 114
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lparse_bool_24
+    push dword ptr [ebp-48]
+    push 1
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 82
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lparse_bool_25
 .Lparse_bool_24:
-    pushl $1
+    push 1
 .Lparse_bool_25:
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lparse_bool_21
 .Lparse_bool_20:
-    pushl $0
+    push 0
 .Lparse_bool_21:
-    popl %eax
-    cmpl $0, %eax
-    je .Lparse_bool_18
-    pushl -24(%ebp)
-    pushl $2
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $117
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lparse_bool_26
-    pushl -24(%ebp)
-    pushl $2
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $85
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jz .Lparse_bool_18
+    push dword ptr [ebp-48]
+    push 2
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 117
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lparse_bool_26
+    push dword ptr [ebp-48]
+    push 2
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 85
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lparse_bool_27
 .Lparse_bool_26:
-    pushl $1
+    push 1
 .Lparse_bool_27:
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lparse_bool_19
 .Lparse_bool_18:
-    pushl $0
+    push 0
 .Lparse_bool_19:
-    popl %eax
-    cmpl $0, %eax
-    je .Lparse_bool_16
-    pushl -24(%ebp)
-    pushl $3
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $101
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lparse_bool_28
-    pushl -24(%ebp)
-    pushl $3
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $69
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jz .Lparse_bool_16
+    push dword ptr [ebp-48]
+    push 3
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 101
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lparse_bool_28
+    push dword ptr [ebp-48]
+    push 3
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 69
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lparse_bool_29
 .Lparse_bool_28:
-    pushl $1
+    push 1
 .Lparse_bool_29:
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lparse_bool_17
 .Lparse_bool_16:
-    pushl $0
+    push 0
 .Lparse_bool_17:
-    popl %eax
-    cmpl $0, %eax
-    je .Lparse_bool_14
-    pushl -24(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jz .Lparse_bool_14
+    push dword ptr [ebp-48]
+    push 4
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lparse_bool_15
 .Lparse_bool_14:
-    pushl $0
+    push 0
 .Lparse_bool_15:
-    popl %eax
-    cmpl $0, %eax
-    je .Lparse_bool_12
-    pushl $1
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    pop eax
+    test eax, eax
+    jz .Lparse_bool_12
+    push 1
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
+    jmp .Lparse_bool_13
 .Lparse_bool_12:
 .Lparse_bool_13:
-    pushl -24(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $102
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lparse_bool_42
-    pushl -24(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $70
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-48]
+    push 0
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 102
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lparse_bool_42
+    push dword ptr [ebp-48]
+    push 0
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 70
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lparse_bool_43
 .Lparse_bool_42:
-    pushl $1
+    push 1
 .Lparse_bool_43:
-    popl %eax
-    cmpl $0, %eax
-    je .Lparse_bool_40
-    pushl -24(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $97
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lparse_bool_44
-    pushl -24(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $65
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jz .Lparse_bool_40
+    push dword ptr [ebp-48]
+    push 1
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 97
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lparse_bool_44
+    push dword ptr [ebp-48]
+    push 1
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 65
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lparse_bool_45
 .Lparse_bool_44:
-    pushl $1
+    push 1
 .Lparse_bool_45:
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lparse_bool_41
 .Lparse_bool_40:
-    pushl $0
+    push 0
 .Lparse_bool_41:
-    popl %eax
-    cmpl $0, %eax
-    je .Lparse_bool_38
-    pushl -24(%ebp)
-    pushl $2
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $108
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lparse_bool_46
-    pushl -24(%ebp)
-    pushl $2
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $76
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jz .Lparse_bool_38
+    push dword ptr [ebp-48]
+    push 2
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 108
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lparse_bool_46
+    push dword ptr [ebp-48]
+    push 2
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 76
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lparse_bool_47
 .Lparse_bool_46:
-    pushl $1
+    push 1
 .Lparse_bool_47:
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lparse_bool_39
 .Lparse_bool_38:
-    pushl $0
+    push 0
 .Lparse_bool_39:
-    popl %eax
-    cmpl $0, %eax
-    je .Lparse_bool_36
-    pushl -24(%ebp)
-    pushl $3
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $115
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lparse_bool_48
-    pushl -24(%ebp)
-    pushl $3
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $83
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jz .Lparse_bool_36
+    push dword ptr [ebp-48]
+    push 3
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 115
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lparse_bool_48
+    push dword ptr [ebp-48]
+    push 3
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 83
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lparse_bool_49
 .Lparse_bool_48:
-    pushl $1
+    push 1
 .Lparse_bool_49:
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lparse_bool_37
 .Lparse_bool_36:
-    pushl $0
+    push 0
 .Lparse_bool_37:
-    popl %eax
-    cmpl $0, %eax
-    je .Lparse_bool_34
-    pushl -24(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $101
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lparse_bool_50
-    pushl -24(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $69
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jz .Lparse_bool_34
+    push dword ptr [ebp-48]
+    push 4
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 101
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lparse_bool_50
+    push dword ptr [ebp-48]
+    push 4
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 69
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lparse_bool_51
 .Lparse_bool_50:
-    pushl $1
+    push 1
 .Lparse_bool_51:
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lparse_bool_35
 .Lparse_bool_34:
-    pushl $0
+    push 0
 .Lparse_bool_35:
-    popl %eax
-    cmpl $0, %eax
-    je .Lparse_bool_32
-    pushl -24(%ebp)
-    pushl $5
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jz .Lparse_bool_32
+    push dword ptr [ebp-48]
+    push 5
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lparse_bool_33
 .Lparse_bool_32:
-    pushl $0
+    push 0
 .Lparse_bool_33:
-    popl %eax
-    cmpl $0, %eax
-    je .Lparse_bool_30
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    pop eax
+    test eax, eax
+    jz .Lparse_bool_30
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
+    jmp .Lparse_bool_31
 .Lparse_bool_30:
 .Lparse_bool_31:
-    pushl -24(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $48
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setge %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lparse_bool_54
-    pushl -24(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $57
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setle %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-48]
+    push 0
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 48
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setge al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lparse_bool_54
+    push dword ptr [ebp-48]
+    push 0
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 57
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setle al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lparse_bool_55
 .Lparse_bool_54:
-    pushl $0
+    push 0
 .Lparse_bool_55:
-    popl %eax
-    cmpl $0, %eax
-    je .Lparse_bool_52
-    pushl $1
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    pop eax
+    test eax, eax
+    jz .Lparse_bool_52
+    push 1
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
+    jmp .Lparse_bool_53
 .Lparse_bool_52:
 .Lparse_bool_53:
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 
-_parse_int:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $304, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -56(%ebp)
-    movl 12(%ebp), %eax
-    movl %eax, -48(%ebp)
-    pushl $1
-    popl %eax
-    movl %eax, -40(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -32(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -24(%ebp)
-    pushl -56(%ebp)
-    popl %eax
-    cmpl $0, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lparse_int_2
-    pushl -56(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    .globl parse_int
+parse_int:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 348
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    mov eax, [ebp+12]
+    mov [ebp-56], eax
+    push 1
+    pop eax
+    mov [ebp-64], eax
+    push 0
+    pop eax
+    mov [ebp-72], eax
+    push 0
+    pop eax
+    mov [ebp-80], eax
+    push dword ptr [ebp-48]
+    pop eax
+    test eax, eax
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lparse_int_2
+    push dword ptr [ebp-48]
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    pop eax
+    test eax, eax
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lparse_int_3
 .Lparse_int_2:
-    pushl $1
+    push 1
 .Lparse_int_3:
-    popl %eax
-    cmpl $0, %eax
-    je .Lparse_int_0
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    pop eax
+    test eax, eax
+    jz .Lparse_int_0
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
+    jmp .Lparse_int_1
 .Lparse_int_0:
 .Lparse_int_1:
-    pushl -56(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $45
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lparse_int_4
-    pushl $1
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -40(%ebp)
-    pushl -40(%ebp)
-    addl $4, %esp
-    pushl -56(%ebp)
-    pushl -56(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -56(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-48]
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 45
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lparse_int_4
+    push 1
+    pop eax
+    neg eax
+    push eax
+    pop eax
+    mov [ebp-64], eax
+    push dword ptr [ebp-64]
+    add esp, 4
+    push dword ptr [ebp-48]
+    push dword ptr [ebp-48]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-48], eax
+    add esp, 4
     jmp .Lparse_int_5
 .Lparse_int_4:
-    pushl -56(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $43
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lparse_int_6
-    pushl -56(%ebp)
-    pushl -56(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -56(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-48]
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 43
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lparse_int_6
+    push dword ptr [ebp-48]
+    push dword ptr [ebp-48]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-48], eax
+    add esp, 4
     jmp .Lparse_int_7
 .Lparse_int_6:
 .Lparse_int_7:
 .Lparse_int_5:
 .Lparse_int_8:
-    pushl -56(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $48
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setge %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lparse_int_10
-    pushl -56(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $57
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setle %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-48]
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 48
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setge al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lparse_int_10
+    push dword ptr [ebp-48]
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 57
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setle al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lparse_int_11
 .Lparse_int_10:
-    pushl $0
+    push 0
 .Lparse_int_11:
-    popl %eax
-    cmpl $0, %eax
-    je .Lparse_int_9
-    pushl -32(%ebp)
-    pushl $10
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    pushl -56(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $48
-    popl %ecx
-    popl %eax
-    subl %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -32(%ebp)
-    pushl -32(%ebp)
-    addl $4, %esp
-    pushl -56(%ebp)
-    pushl -56(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -56(%ebp)
-    addl $4, %esp
-    pushl $1
-    popl %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    addl $4, %esp
+    pop eax
+    test eax, eax
+    jz .Lparse_int_9
+    push dword ptr [ebp-72]
+    push 10
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    push dword ptr [ebp-48]
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 48
+    pop ecx
+    pop eax
+    sub eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-72], eax
+    push dword ptr [ebp-72]
+    add esp, 4
+    push dword ptr [ebp-48]
+    push dword ptr [ebp-48]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-48], eax
+    add esp, 4
+    push 1
+    pop eax
+    mov [ebp-80], eax
+    push dword ptr [ebp-80]
+    add esp, 4
     jmp .Lparse_int_8
 .Lparse_int_9:
-    pushl -24(%ebp)
-    popl %eax
-    cmpl $0, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lparse_int_12
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    push dword ptr [ebp-80]
+    pop eax
+    test eax, eax
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lparse_int_12
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
+    jmp .Lparse_int_13
 .Lparse_int_12:
 .Lparse_int_13:
-    pushl -48(%ebp)
-    pushl -40(%ebp)
-    pushl -32(%ebp)
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl $1
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    push dword ptr [ebp-56]
+    push dword ptr [ebp-64]
+    push dword ptr [ebp-72]
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push 1
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-
-    .globl _config_init
-_config_init:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $272, %esp
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $1
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $1
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $1
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $12
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $1
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $16
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $1
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $20
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $1
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $1
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $28
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $1
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $32
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $36
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $1
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $40
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $1
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $44
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $48
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $52
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $56
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $60
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $64
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $1
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $68
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $72
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $76
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $80
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $84
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $88
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $92
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
-    ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 
-_apply_kv:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $288, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -40(%ebp)
-    movl 12(%ebp), %eax
-    movl %eax, -32(%ebp)
-    movl 16(%ebp), %eax
-    movl %eax, -24(%ebp)
-    pushl -32(%ebp)
-    popl %eax
-    cmpl $0, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lapply_kv_2
-    pushl -24(%ebp)
-    popl %eax
-    cmpl $0, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    .globl config_init
+config_init:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 316
+    lea eax, [g_config]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 1
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    lea eax, [g_config]
+    push eax
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 1
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    lea eax, [g_config]
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 1
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    lea eax, [g_config]
+    push eax
+    push 12
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 1
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    lea eax, [g_config]
+    push eax
+    push 16
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 1
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    lea eax, [g_config]
+    push eax
+    push 20
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 1
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    lea eax, [g_config]
+    push eax
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 1
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    lea eax, [g_config]
+    push eax
+    push 28
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 1
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    lea eax, [g_config]
+    push eax
+    push 32
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    lea eax, [g_config]
+    push eax
+    push 36
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 1
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    lea eax, [g_config]
+    push eax
+    push 40
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 1
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    lea eax, [g_config]
+    push eax
+    push 44
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    lea eax, [g_config]
+    push eax
+    push 48
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    lea eax, [g_config]
+    push eax
+    push 52
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    lea eax, [g_config]
+    push eax
+    push 56
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    lea eax, [g_config]
+    push eax
+    push 60
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    lea eax, [g_config]
+    push eax
+    push 64
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 1
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    lea eax, [g_config]
+    push eax
+    push 68
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    lea eax, [g_config]
+    push eax
+    push 72
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    lea eax, [g_config]
+    push eax
+    push 76
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    lea eax, [g_config]
+    push eax
+    push 80
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    lea eax, [g_config]
+    push eax
+    push 84
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    lea eax, [g_config]
+    push eax
+    push 88
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    lea eax, [g_config]
+    push eax
+    push 92
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+
+    .globl apply_kv
+apply_kv:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 332
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    mov eax, [ebp+12]
+    mov [ebp-56], eax
+    mov eax, [ebp+16]
+    mov [ebp-64], eax
+    push dword ptr [ebp-56]
+    pop eax
+    test eax, eax
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lapply_kv_2
+    push dword ptr [ebp-64]
+    pop eax
+    test eax, eax
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lapply_kv_3
 .Lapply_kv_2:
-    pushl $1
+    push 1
 .Lapply_kv_3:
-    popl %eax
-    cmpl $0, %eax
-    je .Lapply_kv_0
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    pop eax
+    test eax, eax
+    jz .Lapply_kv_0
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
+    jmp .Lapply_kv_1
 .Lapply_kv_0:
 .Lapply_kv_1:
-    leal ark_str_0, %eax
-    pushl %eax
-    pushl -40(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lapply_kv_4
-    leal ark_str_1, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lapply_kv_6
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -24(%ebp)
-    call _parse_bool
-    addl $4, %esp
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    lea eax, [ark_str_0]
+    push eax
+    push dword ptr [ebp-48]
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-80]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lapply_kv_4
+    lea eax, [ark_str_1]
+    push eax
+    push dword ptr [ebp-56]
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-80]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lapply_kv_6
+    lea eax, [g_config]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-64]
+    pop eax
+    mov [ebp-96], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-96]
+    and esp, -16
+    call parse_bool
+    mov esp, [ebp-80]
+    push eax
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lapply_kv_7
 .Lapply_kv_6:
-    leal ark_str_2, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lapply_kv_8
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -24(%ebp)
-    call _parse_bool
-    addl $4, %esp
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    lea eax, [ark_str_2]
+    push eax
+    push dword ptr [ebp-56]
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-80]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lapply_kv_8
+    lea eax, [g_config]
+    push eax
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-64]
+    pop eax
+    mov [ebp-96], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-96]
+    and esp, -16
+    call parse_bool
+    mov esp, [ebp-80]
+    push eax
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lapply_kv_9
 .Lapply_kv_8:
-    leal ark_str_3, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lapply_kv_10
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -24(%ebp)
-    call _parse_bool
-    addl $4, %esp
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    lea eax, [ark_str_3]
+    push eax
+    push dword ptr [ebp-56]
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-80]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lapply_kv_10
+    lea eax, [g_config]
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-64]
+    pop eax
+    mov [ebp-96], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-96]
+    and esp, -16
+    call parse_bool
+    mov esp, [ebp-80]
+    push eax
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lapply_kv_11
 .Lapply_kv_10:
-    leal ark_str_4, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lapply_kv_12
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $12
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -24(%ebp)
-    call _parse_bool
-    addl $4, %esp
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    lea eax, [ark_str_4]
+    push eax
+    push dword ptr [ebp-56]
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-80]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lapply_kv_12
+    lea eax, [g_config]
+    push eax
+    push 12
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-64]
+    pop eax
+    mov [ebp-96], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-96]
+    and esp, -16
+    call parse_bool
+    mov esp, [ebp-80]
+    push eax
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lapply_kv_13
 .Lapply_kv_12:
-    leal ark_str_5, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lapply_kv_14
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $16
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -24(%ebp)
-    call _parse_bool
-    addl $4, %esp
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    lea eax, [ark_str_5]
+    push eax
+    push dword ptr [ebp-56]
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-80]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lapply_kv_14
+    lea eax, [g_config]
+    push eax
+    push 16
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-64]
+    pop eax
+    mov [ebp-96], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-96]
+    and esp, -16
+    call parse_bool
+    mov esp, [ebp-80]
+    push eax
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lapply_kv_15
 .Lapply_kv_14:
-    leal ark_str_6, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lapply_kv_16
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $20
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -24(%ebp)
-    call _parse_bool
-    addl $4, %esp
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    lea eax, [ark_str_6]
+    push eax
+    push dword ptr [ebp-56]
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-80]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lapply_kv_16
+    lea eax, [g_config]
+    push eax
+    push 20
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-64]
+    pop eax
+    mov [ebp-96], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-96]
+    and esp, -16
+    call parse_bool
+    mov esp, [ebp-80]
+    push eax
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lapply_kv_17
 .Lapply_kv_16:
-    leal ark_str_7, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lapply_kv_18
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -24(%ebp)
-    call _parse_bool
-    addl $4, %esp
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    lea eax, [ark_str_7]
+    push eax
+    push dword ptr [ebp-56]
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-80]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lapply_kv_18
+    lea eax, [g_config]
+    push eax
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-64]
+    pop eax
+    mov [ebp-96], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-96]
+    and esp, -16
+    call parse_bool
+    mov esp, [ebp-80]
+    push eax
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lapply_kv_19
 .Lapply_kv_18:
-    leal ark_str_8, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lapply_kv_20
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $28
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -24(%ebp)
-    call _parse_bool
-    addl $4, %esp
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    lea eax, [ark_str_8]
+    push eax
+    push dword ptr [ebp-56]
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-80]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lapply_kv_20
+    lea eax, [g_config]
+    push eax
+    push 28
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-64]
+    pop eax
+    mov [ebp-96], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-96]
+    and esp, -16
+    call parse_bool
+    mov esp, [ebp-80]
+    push eax
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lapply_kv_21
 .Lapply_kv_20:
-    leal ark_str_9, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lapply_kv_22
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $32
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -24(%ebp)
-    call _parse_bool
-    addl $4, %esp
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    lea eax, [ark_str_9]
+    push eax
+    push dword ptr [ebp-56]
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-80]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lapply_kv_22
+    lea eax, [g_config]
+    push eax
+    push 32
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-64]
+    pop eax
+    mov [ebp-96], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-96]
+    and esp, -16
+    call parse_bool
+    mov esp, [ebp-80]
+    push eax
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lapply_kv_23
 .Lapply_kv_22:
-    leal ark_str_10, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lapply_kv_24
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $36
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -24(%ebp)
-    call _parse_bool
-    addl $4, %esp
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    lea eax, [ark_str_10]
+    push eax
+    push dword ptr [ebp-56]
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-80]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lapply_kv_24
+    lea eax, [g_config]
+    push eax
+    push 36
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-64]
+    pop eax
+    mov [ebp-96], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-96]
+    and esp, -16
+    call parse_bool
+    mov esp, [ebp-80]
+    push eax
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lapply_kv_25
 .Lapply_kv_24:
-    leal ark_str_11, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lapply_kv_26
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $40
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -24(%ebp)
-    call _parse_bool
-    addl $4, %esp
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    lea eax, [ark_str_11]
+    push eax
+    push dword ptr [ebp-56]
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-80]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lapply_kv_26
+    lea eax, [g_config]
+    push eax
+    push 40
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-64]
+    pop eax
+    mov [ebp-96], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-96]
+    and esp, -16
+    call parse_bool
+    mov esp, [ebp-80]
+    push eax
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lapply_kv_27
 .Lapply_kv_26:
 .Lapply_kv_27:
@@ -1973,180 +2863,238 @@ _apply_kv:
 .Lapply_kv_7:
     jmp .Lapply_kv_5
 .Lapply_kv_4:
-    leal ark_str_12, %eax
-    pushl %eax
-    pushl -40(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lapply_kv_28
-    leal ark_str_13, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lapply_kv_30
-    pushl $0
-    popl %eax
-    movl %eax, -16(%ebp)
-    leal -16(%ebp), %eax
-    pushl %eax
-    pushl -24(%ebp)
-    call _parse_int
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lapply_kv_32
-    pushl -16(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lapply_kv_34
-    pushl $0
-    popl %eax
-    movl %eax, -16(%ebp)
-    pushl -16(%ebp)
-    addl $4, %esp
+    lea eax, [ark_str_12]
+    push eax
+    push dword ptr [ebp-48]
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-80]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lapply_kv_28
+    lea eax, [ark_str_13]
+    push eax
+    push dword ptr [ebp-56]
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-80]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lapply_kv_30
+    push 0
+    pop eax
+    mov [ebp-72], eax
+    lea eax, [ebp-72]
+    push eax
+    push dword ptr [ebp-64]
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call parse_int
+    mov esp, [ebp-80]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lapply_kv_32
+    push dword ptr [ebp-72]
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lapply_kv_34
+    push 0
+    pop eax
+    mov [ebp-72], eax
+    push dword ptr [ebp-72]
+    add esp, 4
     jmp .Lapply_kv_35
 .Lapply_kv_34:
 .Lapply_kv_35:
-    pushl -16(%ebp)
-    pushl $2
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setg %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lapply_kv_36
-    pushl $2
-    popl %eax
-    movl %eax, -16(%ebp)
-    pushl -16(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-72]
+    push 2
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setg al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lapply_kv_36
+    push 2
+    pop eax
+    mov [ebp-72], eax
+    push dword ptr [ebp-72]
+    add esp, 4
     jmp .Lapply_kv_37
 .Lapply_kv_36:
 .Lapply_kv_37:
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $44
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -16(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    lea eax, [g_config]
+    push eax
+    push 44
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-72]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lapply_kv_33
 .Lapply_kv_32:
 .Lapply_kv_33:
     jmp .Lapply_kv_31
 .Lapply_kv_30:
-    leal ark_str_14, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lapply_kv_38
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $48
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -24(%ebp)
-    call _parse_bool
-    addl $4, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lapply_kv_40
-    pushl $1
+    lea eax, [ark_str_14]
+    push eax
+    push dword ptr [ebp-56]
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-80]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lapply_kv_38
+    lea eax, [g_config]
+    push eax
+    push 48
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-64]
+    pop eax
+    mov [ebp-96], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-96]
+    and esp, -16
+    call parse_bool
+    mov esp, [ebp-80]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lapply_kv_40
+    push 1
     jmp .Lapply_kv_41
 .Lapply_kv_40:
-    pushl $0
+    push 0
 .Lapply_kv_41:
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lapply_kv_39
 .Lapply_kv_38:
-    leal ark_str_15, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lapply_kv_44
-    leal ark_str_16, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    lea eax, [ark_str_15]
+    push eax
+    push dword ptr [ebp-56]
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-80]
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lapply_kv_44
+    lea eax, [ark_str_16]
+    push eax
+    push dword ptr [ebp-56]
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-80]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lapply_kv_45
 .Lapply_kv_44:
-    pushl $1
+    push 1
 .Lapply_kv_45:
-    popl %eax
-    cmpl $0, %eax
-    je .Lapply_kv_42
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $52
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -24(%ebp)
-    call _parse_bool
-    addl $4, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lapply_kv_46
-    pushl $1
+    pop eax
+    test eax, eax
+    jz .Lapply_kv_42
+    lea eax, [g_config]
+    push eax
+    push 52
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-64]
+    pop eax
+    mov [ebp-96], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-96]
+    and esp, -16
+    call parse_bool
+    mov esp, [ebp-80]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lapply_kv_46
+    push 1
     jmp .Lapply_kv_47
 .Lapply_kv_46:
-    pushl $0
+    push 0
 .Lapply_kv_47:
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lapply_kv_43
 .Lapply_kv_42:
 .Lapply_kv_43:
@@ -2156,3162 +3104,3728 @@ _apply_kv:
 .Lapply_kv_28:
 .Lapply_kv_29:
 .Lapply_kv_5:
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 
-    .globl _config_load_file
-_config_load_file:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $416, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -168(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -160(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -156(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -152(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -148(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -144(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -140(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -136(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -132(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -128(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -124(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -120(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -116(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -112(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -108(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -104(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -100(%ebp)
-    pushl $1
-    leal ark_str_17, %eax
-    pushl %eax
-    leal -160(%ebp), %eax
-    pushl %eax
-    call _memcpy
-    addl $12, %esp
-    pushl %eax
-    addl $4, %esp
-    pushl -168(%ebp)
-    popl %eax
-    cmpl $0, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_load_file_0
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    .globl config_load_file
+config_load_file:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 460
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    push 0
+    pop eax
+    mov [ebp-56], eax
+    push 0
+    pop eax
+    mov [ebp-60], eax
+    push 0
+    pop eax
+    mov [ebp-64], eax
+    push 0
+    pop eax
+    mov [ebp-68], eax
+    push 0
+    pop eax
+    mov [ebp-72], eax
+    push 0
+    pop eax
+    mov [ebp-76], eax
+    push 0
+    pop eax
+    mov [ebp-80], eax
+    push 0
+    pop eax
+    mov [ebp-84], eax
+    push 0
+    pop eax
+    mov [ebp-88], eax
+    push 0
+    pop eax
+    mov [ebp-92], eax
+    push 0
+    pop eax
+    mov [ebp-96], eax
+    push 0
+    pop eax
+    mov [ebp-100], eax
+    push 0
+    pop eax
+    mov [ebp-104], eax
+    push 0
+    pop eax
+    mov [ebp-108], eax
+    push 0
+    pop eax
+    mov [ebp-112], eax
+    push 0
+    pop eax
+    mov [ebp-116], eax
+    push 1
+    lea eax, [ark_str_17]
+    push eax
+    lea eax, [ebp-56]
+    push eax
+    pop eax
+    mov [ebp-224], eax
+    pop eax
+    mov [ebp-228], eax
+    pop eax
+    mov [ebp-232], eax
+    mov [ebp-208], esp
+    push dword ptr [ebp-232]
+    push dword ptr [ebp-228]
+    push dword ptr [ebp-224]
+    and esp, -16
+    call memcpy
+    mov esp, [ebp-208]
+    push eax
+    add esp, 4
+    push dword ptr [ebp-48]
+    pop eax
+    test eax, eax
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_load_file_0
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
+    jmp .Lconfig_load_file_1
 .Lconfig_load_file_0:
 .Lconfig_load_file_1:
-    pushl $4095
-    movl $_ark_sl_config_load_file_cfg_buf, %eax
-    pushl %eax
-    pushl -168(%ebp)
-    call _fs_read_file
-    addl $12, %esp
-    pushl %eax
-    popl %eax
-    movl %eax, -96(%ebp)
-    pushl -96(%ebp)
-    addl $4, %esp
-    pushl -96(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_load_file_2
-    pushl -168(%ebp)
-    leal ark_str_18, %eax
-    pushl %eax
-    call _ark_log
-    addl $8, %esp
-    pushl %eax
-    addl $4, %esp
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    push 4096
+    push 1
+    pop ecx
+    pop eax
+    sub eax, ecx
+    push eax
+    lea eax, [ark_sl_config_load_file_cfg_buf]
+    push eax
+    push dword ptr [ebp-48]
+    pop eax
+    mov [ebp-224], eax
+    pop eax
+    mov [ebp-228], eax
+    pop eax
+    mov [ebp-232], eax
+    mov [ebp-208], esp
+    push dword ptr [ebp-232]
+    push dword ptr [ebp-228]
+    push dword ptr [ebp-224]
+    and esp, -16
+    call fs_read_file
+    mov esp, [ebp-208]
+    push eax
+    pop eax
+    mov [ebp-120], eax
+    push dword ptr [ebp-120]
+    add esp, 4
+    push dword ptr [ebp-120]
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_load_file_2
+    push dword ptr [ebp-48]
+    lea eax, [ark_str_18]
+    push eax
+    pop eax
+    mov [ebp-224], eax
+    pop eax
+    mov [ebp-228], eax
+    mov [ebp-208], esp
+    push dword ptr [ebp-228]
+    push dword ptr [ebp-224]
+    and esp, -16
+    call ark_log
+    mov esp, [ebp-208]
+    push eax
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
+    jmp .Lconfig_load_file_3
 .Lconfig_load_file_2:
 .Lconfig_load_file_3:
-    movl $_ark_sl_config_load_file_cfg_buf, %eax
-    pushl %eax
-    pushl -96(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $56
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -168(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    movl $_ark_sl_config_load_file_cfg_buf, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -80(%ebp)
-    pushl -80(%ebp)
-    addl $4, %esp
-    pushl $0
-    popl %eax
-    movl %eax, -88(%ebp)
-    pushl -88(%ebp)
-    addl $4, %esp
+    lea eax, [ark_sl_config_load_file_cfg_buf]
+    push eax
+    push dword ptr [ebp-120]
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
+    lea eax, [g_config]
+    push eax
+    push 56
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-48]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    lea eax, [ark_sl_config_load_file_cfg_buf]
+    push eax
+    pop eax
+    mov [ebp-136], eax
+    push dword ptr [ebp-136]
+    add esp, 4
+    push 0
+    pop eax
+    mov [ebp-128], eax
+    push dword ptr [ebp-128]
+    add esp, 4
 .Lconfig_load_file_4:
-    pushl -88(%ebp)
-    pushl -96(%ebp)
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setle %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_load_file_5
-    pushl -88(%ebp)
-    pushl -96(%ebp)
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lconfig_load_file_9
-    movl $_ark_sl_config_load_file_cfg_buf, %eax
-    pushl %eax
-    pushl -88(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $10
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-128]
+    push dword ptr [ebp-120]
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setle al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_load_file_5
+    push dword ptr [ebp-128]
+    push dword ptr [ebp-120]
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lconfig_load_file_9
+    lea eax, [ark_sl_config_load_file_cfg_buf]
+    push eax
+    push dword ptr [ebp-128]
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 10
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_load_file_10
 .Lconfig_load_file_9:
-    pushl $1
+    push 1
 .Lconfig_load_file_10:
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_load_file_7
-    pushl -80(%ebp)
-    popl %eax
-    movl %eax, -72(%ebp)
-    pushl -88(%ebp)
-    pushl -96(%ebp)
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_load_file_11
-    movl $_ark_sl_config_load_file_cfg_buf, %eax
-    pushl %eax
-    pushl -88(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
+    pop eax
+    test eax, eax
+    jz .Lconfig_load_file_7
+    push dword ptr [ebp-136]
+    pop eax
+    mov [ebp-144], eax
+    push dword ptr [ebp-128]
+    push dword ptr [ebp-120]
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_load_file_11
+    lea eax, [ark_sl_config_load_file_cfg_buf]
+    push eax
+    push dword ptr [ebp-128]
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
     jmp .Lconfig_load_file_12
 .Lconfig_load_file_11:
 .Lconfig_load_file_12:
-    movl $_ark_sl_config_load_file_cfg_buf, %eax
-    pushl %eax
-    pushl -88(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -72(%ebp)
-    popl %ecx
-    popl %eax
-    subl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -32(%ebp)
+    lea eax, [ark_sl_config_load_file_cfg_buf]
+    push eax
+    push dword ptr [ebp-128]
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-144]
+    pop ecx
+    pop eax
+    sub eax, ecx
+    push eax
+    pop eax
+    mov [ebp-184], eax
 .Lconfig_load_file_13:
-    pushl -32(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setg %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_load_file_15
-    pushl -72(%ebp)
-    pushl -32(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    subl %ecx, %eax
-    pushl %eax
-    pushl $1
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $13
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-184]
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setg al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_load_file_15
+    push dword ptr [ebp-144]
+    push dword ptr [ebp-184]
+    push 1
+    pop ecx
+    pop eax
+    sub eax, ecx
+    push eax
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 13
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_load_file_16
 .Lconfig_load_file_15:
-    pushl $0
+    push 0
 .Lconfig_load_file_16:
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_load_file_14
-    pushl -72(%ebp)
-    pushl -32(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    subl %ecx, %eax
-    pushl %eax
-    pushl $1
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -32(%ebp)
-    pushl -32(%ebp)
-    pushl $-1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -32(%ebp)
-    addl $4, %esp
+    pop eax
+    test eax, eax
+    jz .Lconfig_load_file_14
+    push dword ptr [ebp-144]
+    push dword ptr [ebp-184]
+    push 1
+    pop ecx
+    pop eax
+    sub eax, ecx
+    push eax
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
+    push dword ptr [ebp-184]
+    push dword ptr [ebp-184]
+    push -1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-184], eax
+    add esp, 4
     jmp .Lconfig_load_file_13
 .Lconfig_load_file_14:
 .Lconfig_load_file_17:
-    pushl -72(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $32
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lconfig_load_file_19
-    pushl -72(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $9
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-144]
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 32
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lconfig_load_file_19
+    push dword ptr [ebp-144]
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 9
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_load_file_20
 .Lconfig_load_file_19:
-    pushl $1
+    push 1
 .Lconfig_load_file_20:
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_load_file_18
-    pushl -72(%ebp)
-    pushl -72(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -72(%ebp)
-    addl $4, %esp
+    pop eax
+    test eax, eax
+    jz .Lconfig_load_file_18
+    push dword ptr [ebp-144]
+    push dword ptr [ebp-144]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-144], eax
+    add esp, 4
     jmp .Lconfig_load_file_17
 .Lconfig_load_file_18:
-    pushl -72(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lconfig_load_file_25
-    pushl -72(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $59
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-144]
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lconfig_load_file_25
+    push dword ptr [ebp-144]
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 59
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_load_file_26
 .Lconfig_load_file_25:
-    pushl $1
+    push 1
 .Lconfig_load_file_26:
-    popl %eax
-    cmpl $0, %eax
-    jne .Lconfig_load_file_23
-    pushl -72(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $35
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jnz .Lconfig_load_file_23
+    push dword ptr [ebp-144]
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 35
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_load_file_24
 .Lconfig_load_file_23:
-    pushl $1
+    push 1
 .Lconfig_load_file_24:
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_load_file_21
-    movl $_ark_sl_config_load_file_cfg_buf, %eax
-    pushl %eax
-    pushl -88(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $1
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -80(%ebp)
-    pushl -80(%ebp)
-    addl $4, %esp
+    pop eax
+    test eax, eax
+    jz .Lconfig_load_file_21
+    lea eax, [ark_sl_config_load_file_cfg_buf]
+    push eax
+    push dword ptr [ebp-128]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-136], eax
+    push dword ptr [ebp-136]
+    add esp, 4
     jmp .Lconfig_load_file_6
+    jmp .Lconfig_load_file_22
 .Lconfig_load_file_21:
 .Lconfig_load_file_22:
-    pushl -72(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $91
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_load_file_27
-    pushl -72(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -32(%ebp)
-    pushl -32(%ebp)
-    popl %eax
-    movl %eax, -24(%ebp)
+    push dword ptr [ebp-144]
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 91
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_load_file_27
+    push dword ptr [ebp-144]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-184], eax
+    push dword ptr [ebp-184]
+    pop eax
+    mov [ebp-192], eax
 .Lconfig_load_file_29:
-    pushl -24(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_load_file_31
-    pushl -24(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $93
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-192]
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_load_file_31
+    push dword ptr [ebp-192]
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 93
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_load_file_32
 .Lconfig_load_file_31:
-    pushl $0
+    push 0
 .Lconfig_load_file_32:
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_load_file_30
-    pushl -24(%ebp)
-    pushl -24(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -24(%ebp)
-    addl $4, %esp
+    pop eax
+    test eax, eax
+    jz .Lconfig_load_file_30
+    push dword ptr [ebp-192]
+    push dword ptr [ebp-192]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-192], eax
+    add esp, 4
     jmp .Lconfig_load_file_29
 .Lconfig_load_file_30:
-    pushl -24(%ebp)
-    pushl $0
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl $0
-    popl %eax
-    movl %eax, -16(%ebp)
+    push dword ptr [ebp-192]
+    push 0
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
+    push 0
+    pop eax
+    mov [ebp-200], eax
 .Lconfig_load_file_33:
-    pushl -32(%ebp)
-    pushl -16(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_load_file_35
-    pushl -16(%ebp)
-    pushl $63
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-184]
+    push dword ptr [ebp-200]
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_load_file_35
+    push dword ptr [ebp-200]
+    push 64
+    push 1
+    pop ecx
+    pop eax
+    sub eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_load_file_36
 .Lconfig_load_file_35:
-    pushl $0
+    push 0
 .Lconfig_load_file_36:
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_load_file_34
-    leal -160(%ebp), %eax
-    pushl %eax
-    pushl -16(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    pushl -16(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -16(%ebp)
-    pushl -16(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -16(%ebp)
-    addl $4, %esp
+    pop eax
+    test eax, eax
+    jz .Lconfig_load_file_34
+    lea eax, [ebp-56]
+    push eax
+    push dword ptr [ebp-200]
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-184]
+    push dword ptr [ebp-200]
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
+    push dword ptr [ebp-200]
+    push dword ptr [ebp-200]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-200], eax
+    add esp, 4
     jmp .Lconfig_load_file_33
 .Lconfig_load_file_34:
-    leal -160(%ebp), %eax
-    pushl %eax
-    pushl -16(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
-    movl $_ark_sl_config_load_file_cfg_buf, %eax
-    pushl %eax
-    pushl -88(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $1
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -80(%ebp)
-    pushl -80(%ebp)
-    addl $4, %esp
+    lea eax, [ebp-56]
+    push eax
+    push dword ptr [ebp-200]
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
+    lea eax, [ark_sl_config_load_file_cfg_buf]
+    push eax
+    push dword ptr [ebp-128]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-136], eax
+    push dword ptr [ebp-136]
+    add esp, 4
     jmp .Lconfig_load_file_6
+    jmp .Lconfig_load_file_28
 .Lconfig_load_file_27:
 .Lconfig_load_file_28:
-    pushl -72(%ebp)
-    popl %eax
-    movl %eax, -48(%ebp)
-    pushl -48(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-144]
+    pop eax
+    mov [ebp-168], eax
+    push dword ptr [ebp-168]
+    add esp, 4
 .Lconfig_load_file_37:
-    pushl -48(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_load_file_39
-    pushl -48(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $61
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-168]
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_load_file_39
+    push dword ptr [ebp-168]
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 61
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_load_file_40
 .Lconfig_load_file_39:
-    pushl $0
+    push 0
 .Lconfig_load_file_40:
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_load_file_38
-    pushl -48(%ebp)
-    pushl -48(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -48(%ebp)
-    addl $4, %esp
+    pop eax
+    test eax, eax
+    jz .Lconfig_load_file_38
+    push dword ptr [ebp-168]
+    push dword ptr [ebp-168]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-168], eax
+    add esp, 4
     jmp .Lconfig_load_file_37
 .Lconfig_load_file_38:
-    pushl -48(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $61
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_load_file_41
-    movl $_ark_sl_config_load_file_cfg_buf, %eax
-    pushl %eax
-    pushl -88(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $1
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -80(%ebp)
-    pushl -80(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-168]
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 61
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_load_file_41
+    lea eax, [ark_sl_config_load_file_cfg_buf]
+    push eax
+    push dword ptr [ebp-128]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-136], eax
+    push dword ptr [ebp-136]
+    add esp, 4
     jmp .Lconfig_load_file_6
+    jmp .Lconfig_load_file_42
 .Lconfig_load_file_41:
 .Lconfig_load_file_42:
-    pushl -48(%ebp)
-    pushl $0
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -48(%ebp)
-    popl %eax
-    movl %eax, -40(%ebp)
-    pushl -40(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-168]
+    push 0
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
+    push dword ptr [ebp-168]
+    pop eax
+    mov [ebp-176], eax
+    push dword ptr [ebp-176]
+    add esp, 4
 .Lconfig_load_file_43:
-    pushl -40(%ebp)
-    pushl -72(%ebp)
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setg %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_load_file_45
-    pushl -40(%ebp)
-    pushl $1
-    popl %eax
-    negl %eax
-    pushl %eax
-    pushl $1
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $32
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lconfig_load_file_47
-    pushl -40(%ebp)
-    pushl $1
-    popl %eax
-    negl %eax
-    pushl %eax
-    pushl $1
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $9
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-176]
+    push dword ptr [ebp-144]
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setg al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_load_file_45
+    push dword ptr [ebp-176]
+    push 1
+    pop eax
+    neg eax
+    push eax
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 32
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lconfig_load_file_47
+    push dword ptr [ebp-176]
+    push 1
+    pop eax
+    neg eax
+    push eax
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 9
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_load_file_48
 .Lconfig_load_file_47:
-    pushl $1
+    push 1
 .Lconfig_load_file_48:
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_load_file_46
 .Lconfig_load_file_45:
-    pushl $0
+    push 0
 .Lconfig_load_file_46:
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_load_file_44
-    pushl -40(%ebp)
-    pushl -40(%ebp)
-    pushl $-1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -40(%ebp)
-    addl $4, %esp
-    pushl -40(%ebp)
-    pushl $0
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
+    pop eax
+    test eax, eax
+    jz .Lconfig_load_file_44
+    push dword ptr [ebp-176]
+    push dword ptr [ebp-176]
+    push -1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-176], eax
+    add esp, 4
+    push dword ptr [ebp-176]
+    push 0
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
     jmp .Lconfig_load_file_43
 .Lconfig_load_file_44:
-    pushl -72(%ebp)
-    popl %eax
-    movl %eax, -64(%ebp)
-    pushl -64(%ebp)
-    addl $4, %esp
-    pushl -48(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -56(%ebp)
-    pushl -56(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-144]
+    pop eax
+    mov [ebp-152], eax
+    push dword ptr [ebp-152]
+    add esp, 4
+    push dword ptr [ebp-168]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-160], eax
+    push dword ptr [ebp-160]
+    add esp, 4
 .Lconfig_load_file_49:
-    pushl -56(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $32
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lconfig_load_file_51
-    pushl -56(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $9
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-160]
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 32
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lconfig_load_file_51
+    push dword ptr [ebp-160]
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 9
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_load_file_52
 .Lconfig_load_file_51:
-    pushl $1
+    push 1
 .Lconfig_load_file_52:
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_load_file_50
-    pushl -56(%ebp)
-    pushl -56(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -56(%ebp)
-    addl $4, %esp
+    pop eax
+    test eax, eax
+    jz .Lconfig_load_file_50
+    push dword ptr [ebp-160]
+    push dword ptr [ebp-160]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-160], eax
+    add esp, 4
     jmp .Lconfig_load_file_49
 .Lconfig_load_file_50:
-    pushl -56(%ebp)
-    popl %eax
-    movl %eax, -32(%ebp)
+    push dword ptr [ebp-160]
+    pop eax
+    mov [ebp-184], eax
 .Lconfig_load_file_53:
-    pushl -32(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_load_file_54
-    pushl -32(%ebp)
-    pushl -32(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -32(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-184]
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_load_file_54
+    push dword ptr [ebp-184]
+    push dword ptr [ebp-184]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-184], eax
+    add esp, 4
     jmp .Lconfig_load_file_53
 .Lconfig_load_file_54:
 .Lconfig_load_file_55:
-    pushl -32(%ebp)
-    pushl -56(%ebp)
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setg %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_load_file_57
-    pushl -32(%ebp)
-    pushl $1
-    popl %eax
-    negl %eax
-    pushl %eax
-    pushl $1
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $32
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lconfig_load_file_59
-    pushl -32(%ebp)
-    pushl $1
-    popl %eax
-    negl %eax
-    pushl %eax
-    pushl $1
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $9
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-184]
+    push dword ptr [ebp-160]
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setg al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_load_file_57
+    push dword ptr [ebp-184]
+    push 1
+    pop eax
+    neg eax
+    push eax
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 32
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lconfig_load_file_59
+    push dword ptr [ebp-184]
+    push 1
+    pop eax
+    neg eax
+    push eax
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 9
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_load_file_60
 .Lconfig_load_file_59:
-    pushl $1
+    push 1
 .Lconfig_load_file_60:
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_load_file_58
 .Lconfig_load_file_57:
-    pushl $0
+    push 0
 .Lconfig_load_file_58:
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_load_file_56
-    pushl -32(%ebp)
-    pushl -32(%ebp)
-    pushl $-1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -32(%ebp)
-    addl $4, %esp
-    pushl -32(%ebp)
-    pushl $0
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
+    pop eax
+    test eax, eax
+    jz .Lconfig_load_file_56
+    push dword ptr [ebp-184]
+    push dword ptr [ebp-184]
+    push -1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-184], eax
+    add esp, 4
+    push dword ptr [ebp-184]
+    push 0
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
     jmp .Lconfig_load_file_55
 .Lconfig_load_file_56:
-    pushl -56(%ebp)
-    pushl -64(%ebp)
-    leal -160(%ebp), %eax
-    pushl %eax
-    call _apply_kv
-    addl $12, %esp
-    pushl %eax
-    addl $4, %esp
-    movl $_ark_sl_config_load_file_cfg_buf, %eax
-    pushl %eax
-    pushl -88(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $1
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -80(%ebp)
-    pushl -80(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-160]
+    push dword ptr [ebp-152]
+    lea eax, [ebp-56]
+    push eax
+    pop eax
+    mov [ebp-224], eax
+    pop eax
+    mov [ebp-228], eax
+    pop eax
+    mov [ebp-232], eax
+    mov [ebp-208], esp
+    push dword ptr [ebp-232]
+    push dword ptr [ebp-228]
+    push dword ptr [ebp-224]
+    and esp, -16
+    call apply_kv
+    mov esp, [ebp-208]
+    lea eax, [ark_sl_config_load_file_cfg_buf]
+    push eax
+    push dword ptr [ebp-128]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-136], eax
+    push dword ptr [ebp-136]
+    add esp, 4
     jmp .Lconfig_load_file_8
 .Lconfig_load_file_7:
 .Lconfig_load_file_8:
 .Lconfig_load_file_6:
-    pushl -88(%ebp)
-    pushl -88(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -88(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-128]
+    push dword ptr [ebp-128]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-128], eax
+    add esp, 4
     jmp .Lconfig_load_file_4
 .Lconfig_load_file_5:
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 
-    .globl _config_apply_args
-_config_apply_args:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $304, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -56(%ebp)
-    movl 12(%ebp), %eax
-    movl %eax, -48(%ebp)
-    pushl -48(%ebp)
-    popl %eax
-    cmpl $0, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_0
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    .globl config_apply_args
+config_apply_args:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 348
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    mov eax, [ebp+12]
+    mov [ebp-56], eax
+    push dword ptr [ebp-56]
+    pop eax
+    test eax, eax
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_0
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
+    jmp .Lconfig_apply_args_1
 .Lconfig_apply_args_0:
 .Lconfig_apply_args_1:
-    pushl $1
-    popl %eax
-    movl %eax, -40(%ebp)
-    pushl -40(%ebp)
-    addl $4, %esp
+    push 1
+    pop eax
+    mov [ebp-64], eax
+    push dword ptr [ebp-64]
+    add esp, 4
 .Lconfig_apply_args_2:
-    pushl -40(%ebp)
-    pushl -56(%ebp)
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_3
-    pushl -48(%ebp)
-    pushl -40(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -32(%ebp)
-    pushl -32(%ebp)
-    popl %eax
-    cmpl $0, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lconfig_apply_args_7
-    pushl -32(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $45
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-64]
+    push dword ptr [ebp-48]
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_3
+    push dword ptr [ebp-56]
+    push dword ptr [ebp-64]
+    push 4
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    mov [ebp-72], eax
+    push dword ptr [ebp-72]
+    pop eax
+    test eax, eax
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lconfig_apply_args_7
+    push dword ptr [ebp-72]
+    push 0
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 45
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_apply_args_8
 .Lconfig_apply_args_7:
-    pushl $1
+    push 1
 .Lconfig_apply_args_8:
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_5
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_5
     jmp .Lconfig_apply_args_4
+    jmp .Lconfig_apply_args_6
 .Lconfig_apply_args_5:
 .Lconfig_apply_args_6:
-    pushl -32(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $45
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_17
-    pushl -32(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $79
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-72]
+    push 0
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 45
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_17
+    push dword ptr [ebp-72]
+    push 1
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 79
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_apply_args_18
 .Lconfig_apply_args_17:
-    pushl $0
+    push 0
 .Lconfig_apply_args_18:
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_15
-    pushl -32(%ebp)
-    pushl $2
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $48
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setge %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_15
+    push dword ptr [ebp-72]
+    push 2
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 48
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setge al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_apply_args_16
 .Lconfig_apply_args_15:
-    pushl $0
+    push 0
 .Lconfig_apply_args_16:
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_13
-    pushl -32(%ebp)
-    pushl $2
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $57
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setle %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_13
+    push dword ptr [ebp-72]
+    push 2
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 57
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setle al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_apply_args_14
 .Lconfig_apply_args_13:
-    pushl $0
+    push 0
 .Lconfig_apply_args_14:
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_11
-    pushl -32(%ebp)
-    pushl $3
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_11
+    push dword ptr [ebp-72]
+    push 3
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_apply_args_12
 .Lconfig_apply_args_11:
-    pushl $0
+    push 0
 .Lconfig_apply_args_12:
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_9
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $44
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    pushl $2
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $48
-    popl %ecx
-    popl %eax
-    subl %ecx, %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $44
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $2
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setg %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_19
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $44
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $2
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_9
+    lea eax, [g_config]
+    push eax
+    push 44
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-72]
+    push 2
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 48
+    pop ecx
+    pop eax
+    sub eax, ecx
+    push eax
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    lea eax, [g_config]
+    push eax
+    push 44
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 2
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setg al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_19
+    lea eax, [g_config]
+    push eax
+    push 44
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 2
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lconfig_apply_args_20
 .Lconfig_apply_args_19:
 .Lconfig_apply_args_20:
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $44
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $2
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setge %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_21
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $36
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $1
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $40
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $1
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    lea eax, [g_config]
+    push eax
+    push 44
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 2
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setge al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_21
+    lea eax, [g_config]
+    push eax
+    push 36
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 1
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    lea eax, [g_config]
+    push eax
+    push 40
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 1
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lconfig_apply_args_22
 .Lconfig_apply_args_21:
 .Lconfig_apply_args_22:
     jmp .Lconfig_apply_args_4
+    jmp .Lconfig_apply_args_10
 .Lconfig_apply_args_9:
 .Lconfig_apply_args_10:
-    leal ark_str_19, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_23
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $48
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $1
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    lea eax, [ark_str_19]
+    push eax
+    push dword ptr [ebp-72]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_23
+    lea eax, [g_config]
+    push eax
+    push 48
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 1
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lconfig_apply_args_4
+    jmp .Lconfig_apply_args_24
 .Lconfig_apply_args_23:
 .Lconfig_apply_args_24:
-    leal ark_str_20, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_27
-    pushl -40(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -56(%ebp)
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    lea eax, [ark_str_20]
+    push eax
+    push dword ptr [ebp-72]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_27
+    push dword ptr [ebp-64]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-48]
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_apply_args_28
 .Lconfig_apply_args_27:
-    pushl $0
+    push 0
 .Lconfig_apply_args_28:
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_25
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $56
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -48(%ebp)
-    pushl -40(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $4
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -40(%ebp)
-    pushl -40(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -40(%ebp)
-    addl $4, %esp
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_25
+    lea eax, [g_config]
+    push eax
+    push 56
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-56]
+    push dword ptr [ebp-64]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 4
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-64]
+    push dword ptr [ebp-64]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-64], eax
+    add esp, 4
     jmp .Lconfig_apply_args_4
+    jmp .Lconfig_apply_args_26
 .Lconfig_apply_args_25:
 .Lconfig_apply_args_26:
-    leal ark_str_21, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_29
-    leal ark_str_22, %eax
-    pushl %eax
-    call _ark_log
-    addl $4, %esp
-    pushl %eax
-    addl $4, %esp
+    lea eax, [ark_str_21]
+    push eax
+    push dword ptr [ebp-72]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_29
+    lea eax, [ark_str_22]
+    push eax
+    pop eax
+    mov [ebp-112], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_log
+    mov esp, [ebp-96]
+    push eax
     jmp .Lconfig_apply_args_4
+    jmp .Lconfig_apply_args_30
 .Lconfig_apply_args_29:
 .Lconfig_apply_args_30:
-    leal ark_str_23, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lconfig_apply_args_33
-    leal ark_str_24, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    lea eax, [ark_str_23]
+    push eax
+    push dword ptr [ebp-72]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lconfig_apply_args_33
+    lea eax, [ark_str_24]
+    push eax
+    push dword ptr [ebp-72]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_apply_args_34
 .Lconfig_apply_args_33:
-    pushl $1
+    push 1
 .Lconfig_apply_args_34:
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_31
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $60
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $1
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_31
+    lea eax, [g_config]
+    push eax
+    push 60
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 1
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lconfig_apply_args_4
+    jmp .Lconfig_apply_args_32
 .Lconfig_apply_args_31:
 .Lconfig_apply_args_32:
-    leal ark_str_25, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_35
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $64
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $1
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    lea eax, [ark_str_25]
+    push eax
+    push dword ptr [ebp-72]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_35
+    lea eax, [g_config]
+    push eax
+    push 64
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 1
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lconfig_apply_args_4
+    jmp .Lconfig_apply_args_36
 .Lconfig_apply_args_35:
 .Lconfig_apply_args_36:
-    leal ark_str_26, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_37
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $68
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $1
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $72
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    lea eax, [ark_str_26]
+    push eax
+    push dword ptr [ebp-72]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_37
+    lea eax, [g_config]
+    push eax
+    push 68
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 1
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    lea eax, [g_config]
+    push eax
+    push 72
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lconfig_apply_args_4
+    jmp .Lconfig_apply_args_38
 .Lconfig_apply_args_37:
 .Lconfig_apply_args_38:
-    leal ark_str_27, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_39
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $72
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $1
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $68
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    lea eax, [ark_str_27]
+    push eax
+    push dword ptr [ebp-72]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_39
+    lea eax, [g_config]
+    push eax
+    push 72
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 1
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    lea eax, [g_config]
+    push eax
+    push 68
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lconfig_apply_args_4
+    jmp .Lconfig_apply_args_40
 .Lconfig_apply_args_39:
 .Lconfig_apply_args_40:
-    leal ark_str_28, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_41
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $76
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $1
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $80
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    lea eax, [ark_str_28]
+    push eax
+    push dword ptr [ebp-72]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_41
+    lea eax, [g_config]
+    push eax
+    push 76
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 1
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    lea eax, [g_config]
+    push eax
+    push 80
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lconfig_apply_args_4
+    jmp .Lconfig_apply_args_42
 .Lconfig_apply_args_41:
 .Lconfig_apply_args_42:
-    leal ark_str_29, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_43
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $80
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $1
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $76
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    lea eax, [ark_str_29]
+    push eax
+    push dword ptr [ebp-72]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_43
+    lea eax, [g_config]
+    push eax
+    push 80
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 1
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    lea eax, [g_config]
+    push eax
+    push 76
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lconfig_apply_args_4
+    jmp .Lconfig_apply_args_44
 .Lconfig_apply_args_43:
 .Lconfig_apply_args_44:
-    leal ark_str_30, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_45
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $84
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $2
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    lea eax, [ark_str_30]
+    push eax
+    push dword ptr [ebp-72]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_45
+    lea eax, [g_config]
+    push eax
+    push 84
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 2
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lconfig_apply_args_4
+    jmp .Lconfig_apply_args_46
 .Lconfig_apply_args_45:
 .Lconfig_apply_args_46:
-    leal ark_str_31, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_47
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $84
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $3
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    lea eax, [ark_str_31]
+    push eax
+    push dword ptr [ebp-72]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_47
+    lea eax, [g_config]
+    push eax
+    push 84
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 3
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lconfig_apply_args_4
+    jmp .Lconfig_apply_args_48
 .Lconfig_apply_args_47:
 .Lconfig_apply_args_48:
-    leal ark_str_32, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_51
-    pushl -40(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -56(%ebp)
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    lea eax, [ark_str_32]
+    push eax
+    push dword ptr [ebp-72]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_51
+    push dword ptr [ebp-64]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-48]
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_apply_args_52
 .Lconfig_apply_args_51:
-    pushl $0
+    push 0
 .Lconfig_apply_args_52:
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_49
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $88
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -48(%ebp)
-    pushl -40(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $4
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -40(%ebp)
-    pushl -40(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -40(%ebp)
-    addl $4, %esp
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_49
+    lea eax, [g_config]
+    push eax
+    push 88
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-56]
+    push dword ptr [ebp-64]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 4
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-64]
+    push dword ptr [ebp-64]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-64], eax
+    add esp, 4
     jmp .Lconfig_apply_args_4
+    jmp .Lconfig_apply_args_50
 .Lconfig_apply_args_49:
 .Lconfig_apply_args_50:
-    leal ark_str_33, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_55
-    pushl -40(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -56(%ebp)
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    lea eax, [ark_str_33]
+    push eax
+    push dword ptr [ebp-72]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_55
+    push dword ptr [ebp-64]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-48]
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_apply_args_56
 .Lconfig_apply_args_55:
-    pushl $0
+    push 0
 .Lconfig_apply_args_56:
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_53
-    pushl -48(%ebp)
-    pushl -40(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $4
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -24(%ebp)
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $92
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -24(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    leal ark_str_34, %eax
-    pushl %eax
-    pushl -24(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_57
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $16
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_53
+    push dword ptr [ebp-56]
+    push dword ptr [ebp-64]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 4
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    mov [ebp-80], eax
+    lea eax, [g_config]
+    push eax
+    push 92
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-80]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    lea eax, [ark_str_34]
+    push eax
+    push dword ptr [ebp-80]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_57
+    lea eax, [g_config]
+    push eax
+    push 16
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lconfig_apply_args_58
 .Lconfig_apply_args_57:
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $16
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $1
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    lea eax, [g_config]
+    push eax
+    push 16
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 1
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
 .Lconfig_apply_args_58:
-    pushl -40(%ebp)
-    pushl -40(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -40(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-64]
+    push dword ptr [ebp-64]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-64], eax
+    add esp, 4
     jmp .Lconfig_apply_args_4
+    jmp .Lconfig_apply_args_54
 .Lconfig_apply_args_53:
 .Lconfig_apply_args_54:
-    leal ark_str_35, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lconfig_apply_args_75
-    leal ark_str_36, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    lea eax, [ark_str_35]
+    push eax
+    push dword ptr [ebp-72]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lconfig_apply_args_75
+    lea eax, [ark_str_36]
+    push eax
+    push dword ptr [ebp-72]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_apply_args_76
 .Lconfig_apply_args_75:
-    pushl $1
+    push 1
 .Lconfig_apply_args_76:
-    popl %eax
-    cmpl $0, %eax
-    jne .Lconfig_apply_args_73
-    leal ark_str_37, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jnz .Lconfig_apply_args_73
+    lea eax, [ark_str_37]
+    push eax
+    push dword ptr [ebp-72]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_apply_args_74
 .Lconfig_apply_args_73:
-    pushl $1
+    push 1
 .Lconfig_apply_args_74:
-    popl %eax
-    cmpl $0, %eax
-    jne .Lconfig_apply_args_71
-    leal ark_str_38, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jnz .Lconfig_apply_args_71
+    lea eax, [ark_str_38]
+    push eax
+    push dword ptr [ebp-72]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_apply_args_72
 .Lconfig_apply_args_71:
-    pushl $1
+    push 1
 .Lconfig_apply_args_72:
-    popl %eax
-    cmpl $0, %eax
-    jne .Lconfig_apply_args_69
-    leal ark_str_39, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jnz .Lconfig_apply_args_69
+    lea eax, [ark_str_39]
+    push eax
+    push dword ptr [ebp-72]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_apply_args_70
 .Lconfig_apply_args_69:
-    pushl $1
+    push 1
 .Lconfig_apply_args_70:
-    popl %eax
-    cmpl $0, %eax
-    jne .Lconfig_apply_args_67
-    leal ark_str_40, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jnz .Lconfig_apply_args_67
+    lea eax, [ark_str_40]
+    push eax
+    push dword ptr [ebp-72]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_apply_args_68
 .Lconfig_apply_args_67:
-    pushl $1
+    push 1
 .Lconfig_apply_args_68:
-    popl %eax
-    cmpl $0, %eax
-    jne .Lconfig_apply_args_65
-    leal ark_str_41, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jnz .Lconfig_apply_args_65
+    lea eax, [ark_str_41]
+    push eax
+    push dword ptr [ebp-72]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_apply_args_66
 .Lconfig_apply_args_65:
-    pushl $1
+    push 1
 .Lconfig_apply_args_66:
-    popl %eax
-    cmpl $0, %eax
-    jne .Lconfig_apply_args_63
-    leal ark_str_42, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jnz .Lconfig_apply_args_63
+    lea eax, [ark_str_42]
+    push eax
+    push dword ptr [ebp-72]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_apply_args_64
 .Lconfig_apply_args_63:
-    pushl $1
+    push 1
 .Lconfig_apply_args_64:
-    popl %eax
-    cmpl $0, %eax
-    jne .Lconfig_apply_args_61
-    leal ark_str_43, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jnz .Lconfig_apply_args_61
+    lea eax, [ark_str_43]
+    push eax
+    push dword ptr [ebp-72]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_apply_args_62
 .Lconfig_apply_args_61:
-    pushl $1
+    push 1
 .Lconfig_apply_args_62:
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_59
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_59
     jmp .Lconfig_apply_args_4
+    jmp .Lconfig_apply_args_60
 .Lconfig_apply_args_59:
 .Lconfig_apply_args_60:
-    leal ark_str_44, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_77
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $36
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $1
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    lea eax, [ark_str_44]
+    push eax
+    push dword ptr [ebp-72]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_77
+    lea eax, [g_config]
+    push eax
+    push 36
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 1
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lconfig_apply_args_4
+    jmp .Lconfig_apply_args_78
 .Lconfig_apply_args_77:
 .Lconfig_apply_args_78:
-    leal ark_str_45, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_79
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $36
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    lea eax, [ark_str_45]
+    push eax
+    push dword ptr [ebp-72]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_79
+    lea eax, [g_config]
+    push eax
+    push 36
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lconfig_apply_args_4
+    jmp .Lconfig_apply_args_80
 .Lconfig_apply_args_79:
 .Lconfig_apply_args_80:
-    leal ark_str_46, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_81
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $40
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $1
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    lea eax, [ark_str_46]
+    push eax
+    push dword ptr [ebp-72]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_81
+    lea eax, [g_config]
+    push eax
+    push 40
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 1
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lconfig_apply_args_4
+    jmp .Lconfig_apply_args_82
 .Lconfig_apply_args_81:
 .Lconfig_apply_args_82:
-    leal ark_str_47, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_83
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $40
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    lea eax, [ark_str_47]
+    push eax
+    push dword ptr [ebp-72]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_83
+    lea eax, [g_config]
+    push eax
+    push 40
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lconfig_apply_args_4
+    jmp .Lconfig_apply_args_84
 .Lconfig_apply_args_83:
 .Lconfig_apply_args_84:
-    pushl -32(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $45
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_87
-    pushl -32(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $102
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-72]
+    push 0
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 45
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_87
+    push dword ptr [ebp-72]
+    push 1
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 102
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_apply_args_88
 .Lconfig_apply_args_87:
-    pushl $0
+    push 0
 .Lconfig_apply_args_88:
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_85
-    pushl -32(%ebp)
-    pushl $2
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $110
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_93
-    pushl -32(%ebp)
-    pushl $3
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $111
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_85
+    push dword ptr [ebp-72]
+    push 2
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 110
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_93
+    push dword ptr [ebp-72]
+    push 3
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 111
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_apply_args_94
 .Lconfig_apply_args_93:
-    pushl $0
+    push 0
 .Lconfig_apply_args_94:
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_91
-    pushl -32(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $45
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_91
+    push dword ptr [ebp-72]
+    push 4
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 45
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_apply_args_92
 .Lconfig_apply_args_91:
-    pushl $0
+    push 0
 .Lconfig_apply_args_92:
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_89
-    pushl $0
-    popl %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    addl $4, %esp
-    pushl -32(%ebp)
-    pushl $5
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -16(%ebp)
-    pushl -16(%ebp)
-    addl $4, %esp
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_89
+    push 0
+    pop eax
+    mov [ebp-80], eax
+    push dword ptr [ebp-80]
+    add esp, 4
+    push dword ptr [ebp-72]
+    push 5
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-88], eax
+    push dword ptr [ebp-88]
+    add esp, 4
     jmp .Lconfig_apply_args_90
 .Lconfig_apply_args_89:
-    pushl $1
-    popl %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    addl $4, %esp
-    pushl -32(%ebp)
-    pushl $2
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -16(%ebp)
-    pushl -16(%ebp)
-    addl $4, %esp
+    push 1
+    pop eax
+    mov [ebp-80], eax
+    push dword ptr [ebp-80]
+    add esp, 4
+    push dword ptr [ebp-72]
+    push 2
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-88], eax
+    push dword ptr [ebp-88]
+    add esp, 4
 .Lconfig_apply_args_90:
-    pushl -16(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_95
+    push dword ptr [ebp-88]
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    pop eax
+    test eax, eax
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_95
     jmp .Lconfig_apply_args_4
+    jmp .Lconfig_apply_args_96
 .Lconfig_apply_args_95:
 .Lconfig_apply_args_96:
-    leal ark_str_48, %eax
-    pushl %eax
-    pushl -16(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_97
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -24(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    lea eax, [ark_str_48]
+    push eax
+    push dword ptr [ebp-88]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_97
+    lea eax, [g_config]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-80]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lconfig_apply_args_98
 .Lconfig_apply_args_97:
-    leal ark_str_49, %eax
-    pushl %eax
-    pushl -16(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_99
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -24(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    lea eax, [ark_str_49]
+    push eax
+    push dword ptr [ebp-88]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_99
+    lea eax, [g_config]
+    push eax
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-80]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lconfig_apply_args_100
 .Lconfig_apply_args_99:
-    leal ark_str_50, %eax
-    pushl %eax
-    pushl -16(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_101
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -24(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    lea eax, [ark_str_50]
+    push eax
+    push dword ptr [ebp-88]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_101
+    lea eax, [g_config]
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-80]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lconfig_apply_args_102
 .Lconfig_apply_args_101:
-    leal ark_str_51, %eax
-    pushl %eax
-    pushl -16(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_103
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $12
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -24(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    lea eax, [ark_str_51]
+    push eax
+    push dword ptr [ebp-88]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_103
+    lea eax, [g_config]
+    push eax
+    push 12
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-80]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lconfig_apply_args_104
 .Lconfig_apply_args_103:
-    leal ark_str_52, %eax
-    pushl %eax
-    pushl -16(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lconfig_apply_args_109
-    leal ark_str_53, %eax
-    pushl %eax
-    pushl -16(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    lea eax, [ark_str_52]
+    push eax
+    push dword ptr [ebp-88]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lconfig_apply_args_109
+    lea eax, [ark_str_53]
+    push eax
+    push dword ptr [ebp-88]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_apply_args_110
 .Lconfig_apply_args_109:
-    pushl $1
+    push 1
 .Lconfig_apply_args_110:
-    popl %eax
-    cmpl $0, %eax
-    jne .Lconfig_apply_args_107
-    leal ark_str_54, %eax
-    pushl %eax
-    pushl -16(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jnz .Lconfig_apply_args_107
+    lea eax, [ark_str_54]
+    push eax
+    push dword ptr [ebp-88]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_apply_args_108
 .Lconfig_apply_args_107:
-    pushl $1
+    push 1
 .Lconfig_apply_args_108:
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_105
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $16
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -24(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_105
+    lea eax, [g_config]
+    push eax
+    push 16
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-80]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lconfig_apply_args_106
 .Lconfig_apply_args_105:
-    leal ark_str_55, %eax
-    pushl %eax
-    pushl -16(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_111
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $20
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -24(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    lea eax, [ark_str_55]
+    push eax
+    push dword ptr [ebp-88]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_111
+    lea eax, [g_config]
+    push eax
+    push 20
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-80]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lconfig_apply_args_112
 .Lconfig_apply_args_111:
-    leal ark_str_56, %eax
-    pushl %eax
-    pushl -16(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lconfig_apply_args_115
-    leal ark_str_57, %eax
-    pushl %eax
-    pushl -16(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    lea eax, [ark_str_56]
+    push eax
+    push dword ptr [ebp-88]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lconfig_apply_args_115
+    lea eax, [ark_str_57]
+    push eax
+    push dword ptr [ebp-88]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_apply_args_116
 .Lconfig_apply_args_115:
-    pushl $1
+    push 1
 .Lconfig_apply_args_116:
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_113
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -24(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_113
+    lea eax, [g_config]
+    push eax
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-80]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lconfig_apply_args_114
 .Lconfig_apply_args_113:
-    leal ark_str_58, %eax
-    pushl %eax
-    pushl -16(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lconfig_apply_args_119
-    leal ark_str_59, %eax
-    pushl %eax
-    pushl -16(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    lea eax, [ark_str_58]
+    push eax
+    push dword ptr [ebp-88]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lconfig_apply_args_119
+    lea eax, [ark_str_59]
+    push eax
+    push dword ptr [ebp-88]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_apply_args_120
 .Lconfig_apply_args_119:
-    pushl $1
+    push 1
 .Lconfig_apply_args_120:
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_117
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $28
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -24(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_117
+    lea eax, [g_config]
+    push eax
+    push 28
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-80]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lconfig_apply_args_118
 .Lconfig_apply_args_117:
-    leal ark_str_60, %eax
-    pushl %eax
-    pushl -16(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lconfig_apply_args_123
-    leal ark_str_61, %eax
-    pushl %eax
-    pushl -16(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    lea eax, [ark_str_60]
+    push eax
+    push dword ptr [ebp-88]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lconfig_apply_args_123
+    lea eax, [ark_str_61]
+    push eax
+    push dword ptr [ebp-88]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_apply_args_124
 .Lconfig_apply_args_123:
-    pushl $1
+    push 1
 .Lconfig_apply_args_124:
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_121
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $32
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -24(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_121
+    lea eax, [g_config]
+    push eax
+    push 32
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-80]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lconfig_apply_args_122
 .Lconfig_apply_args_121:
-    leal ark_str_62, %eax
-    pushl %eax
-    pushl -16(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lconfig_apply_args_127
-    leal ark_str_63, %eax
-    pushl %eax
-    pushl -16(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    lea eax, [ark_str_62]
+    push eax
+    push dword ptr [ebp-88]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lconfig_apply_args_127
+    lea eax, [ark_str_63]
+    push eax
+    push dword ptr [ebp-88]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_apply_args_128
 .Lconfig_apply_args_127:
-    pushl $1
+    push 1
 .Lconfig_apply_args_128:
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_125
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $36
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -24(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_125
+    lea eax, [g_config]
+    push eax
+    push 36
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-80]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lconfig_apply_args_126
 .Lconfig_apply_args_125:
-    leal ark_str_64, %eax
-    pushl %eax
-    pushl -16(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lconfig_apply_args_131
-    leal ark_str_65, %eax
-    pushl %eax
-    pushl -16(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    lea eax, [ark_str_64]
+    push eax
+    push dword ptr [ebp-88]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lconfig_apply_args_131
+    lea eax, [ark_str_65]
+    push eax
+    push dword ptr [ebp-88]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_apply_args_132
 .Lconfig_apply_args_131:
-    pushl $1
+    push 1
 .Lconfig_apply_args_132:
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_129
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $40
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -24(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_129
+    lea eax, [g_config]
+    push eax
+    push 40
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-80]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lconfig_apply_args_130
 .Lconfig_apply_args_129:
-    leal ark_str_66, %eax
-    pushl %eax
-    pushl -16(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lconfig_apply_args_135
-    leal ark_str_67, %eax
-    pushl %eax
-    pushl -16(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    lea eax, [ark_str_66]
+    push eax
+    push dword ptr [ebp-88]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lconfig_apply_args_135
+    lea eax, [ark_str_67]
+    push eax
+    push dword ptr [ebp-88]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lconfig_apply_args_136
 .Lconfig_apply_args_135:
-    pushl $1
+    push 1
 .Lconfig_apply_args_136:
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_133
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $52
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -24(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_133
+    lea eax, [g_config]
+    push eax
+    push 52
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-80]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lconfig_apply_args_134
 .Lconfig_apply_args_133:
-    leal ark_str_68, %eax
-    pushl %eax
-    pushl -16(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_137
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $60
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -24(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    lea eax, [ark_str_68]
+    push eax
+    push dword ptr [ebp-88]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_137
+    lea eax, [g_config]
+    push eax
+    push 60
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-80]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lconfig_apply_args_138
 .Lconfig_apply_args_137:
-    leal ark_str_69, %eax
-    pushl %eax
-    pushl -16(%ebp)
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_apply_args_139
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $64
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -24(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    lea eax, [ark_str_69]
+    push eax
+    push dword ptr [ebp-88]
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_apply_args_139
+    lea eax, [g_config]
+    push eax
+    push 64
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-80]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lconfig_apply_args_140
 .Lconfig_apply_args_139:
 .Lconfig_apply_args_140:
@@ -5332,314 +6846,402 @@ _config_apply_args:
 .Lconfig_apply_args_85:
 .Lconfig_apply_args_86:
 .Lconfig_apply_args_4:
-    pushl -40(%ebp)
-    pushl -40(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -40(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-64]
+    push dword ptr [ebp-64]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-64], eax
+    add esp, 4
     jmp .Lconfig_apply_args_2
 .Lconfig_apply_args_3:
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 
-    .globl _config_print
-_config_print:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $272, %esp
-    leal ark_str_70, %eax
-    pushl %eax
-    call _ark_log
-    addl $4, %esp
-    pushl %eax
-    addl $4, %esp
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $12
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    leal ark_str_71, %eax
-    pushl %eax
-    call _ark_log
-    addl $20, %esp
-    pushl %eax
-    addl $4, %esp
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $20
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $16
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    leal ark_str_72, %eax
-    pushl %eax
-    call _ark_log
-    addl $12, %esp
-    pushl %eax
-    addl $4, %esp
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $32
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $28
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    leal ark_str_73, %eax
-    pushl %eax
-    call _ark_log
-    addl $16, %esp
-    pushl %eax
-    addl $4, %esp
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $40
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $36
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    leal ark_str_74, %eax
-    pushl %eax
-    call _ark_log
-    addl $12, %esp
-    pushl %eax
-    addl $4, %esp
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $52
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $48
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $44
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    leal ark_str_75, %eax
-    pushl %eax
-    call _ark_log
-    addl $16, %esp
-    pushl %eax
-    addl $4, %esp
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $56
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lconfig_print_0
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $56
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
+    .globl config_print
+config_print:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 316
+    lea eax, [ark_str_70]
+    push eax
+    pop eax
+    mov [ebp-80], eax
+    mov [ebp-64], esp
+    push dword ptr [ebp-80]
+    and esp, -16
+    call ark_log
+    mov esp, [ebp-64]
+    push eax
+    lea eax, [g_config]
+    push eax
+    push 12
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    lea eax, [g_config]
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    lea eax, [g_config]
+    push eax
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    lea eax, [g_config]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    lea eax, [ark_str_71]
+    push eax
+    pop eax
+    mov [ebp-80], eax
+    pop eax
+    mov [ebp-84], eax
+    pop eax
+    mov [ebp-88], eax
+    pop eax
+    mov [ebp-92], eax
+    pop eax
+    mov [ebp-96], eax
+    mov [ebp-64], esp
+    push dword ptr [ebp-96]
+    push dword ptr [ebp-92]
+    push dword ptr [ebp-88]
+    push dword ptr [ebp-84]
+    push dword ptr [ebp-80]
+    and esp, -16
+    call ark_log
+    mov esp, [ebp-64]
+    push eax
+    lea eax, [g_config]
+    push eax
+    push 20
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    lea eax, [g_config]
+    push eax
+    push 16
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    lea eax, [ark_str_72]
+    push eax
+    pop eax
+    mov [ebp-80], eax
+    pop eax
+    mov [ebp-84], eax
+    pop eax
+    mov [ebp-88], eax
+    mov [ebp-64], esp
+    push dword ptr [ebp-88]
+    push dword ptr [ebp-84]
+    push dword ptr [ebp-80]
+    and esp, -16
+    call ark_log
+    mov esp, [ebp-64]
+    push eax
+    lea eax, [g_config]
+    push eax
+    push 32
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    lea eax, [g_config]
+    push eax
+    push 28
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    lea eax, [g_config]
+    push eax
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    lea eax, [ark_str_73]
+    push eax
+    pop eax
+    mov [ebp-80], eax
+    pop eax
+    mov [ebp-84], eax
+    pop eax
+    mov [ebp-88], eax
+    pop eax
+    mov [ebp-92], eax
+    mov [ebp-64], esp
+    push dword ptr [ebp-92]
+    push dword ptr [ebp-88]
+    push dword ptr [ebp-84]
+    push dword ptr [ebp-80]
+    and esp, -16
+    call ark_log
+    mov esp, [ebp-64]
+    push eax
+    lea eax, [g_config]
+    push eax
+    push 40
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    lea eax, [g_config]
+    push eax
+    push 36
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    lea eax, [ark_str_74]
+    push eax
+    pop eax
+    mov [ebp-80], eax
+    pop eax
+    mov [ebp-84], eax
+    pop eax
+    mov [ebp-88], eax
+    mov [ebp-64], esp
+    push dword ptr [ebp-88]
+    push dword ptr [ebp-84]
+    push dword ptr [ebp-80]
+    and esp, -16
+    call ark_log
+    mov esp, [ebp-64]
+    push eax
+    lea eax, [g_config]
+    push eax
+    push 52
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    lea eax, [g_config]
+    push eax
+    push 48
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    lea eax, [g_config]
+    push eax
+    push 44
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    lea eax, [ark_str_75]
+    push eax
+    pop eax
+    mov [ebp-80], eax
+    pop eax
+    mov [ebp-84], eax
+    pop eax
+    mov [ebp-88], eax
+    pop eax
+    mov [ebp-92], eax
+    mov [ebp-64], esp
+    push dword ptr [ebp-92]
+    push dword ptr [ebp-88]
+    push dword ptr [ebp-84]
+    push dword ptr [ebp-80]
+    and esp, -16
+    call ark_log
+    mov esp, [ebp-64]
+    push eax
+    lea eax, [g_config]
+    push eax
+    push 56
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lconfig_print_0
+    lea eax, [g_config]
+    push eax
+    push 56
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
     jmp .Lconfig_print_1
 .Lconfig_print_0:
-    leal ark_str_76, %eax
-    pushl %eax
+    lea eax, [ark_str_76]
+    push eax
 .Lconfig_print_1:
-    leal ark_str_77, %eax
-    pushl %eax
-    call _ark_log
-    addl $8, %esp
-    pushl %eax
-    addl $4, %esp
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    lea eax, [ark_str_77]
+    push eax
+    pop eax
+    mov [ebp-80], eax
+    pop eax
+    mov [ebp-84], eax
+    mov [ebp-64], esp
+    push dword ptr [ebp-84]
+    push dword ptr [ebp-80]
+    and esp, -16
+    call ark_log
+    mov esp, [ebp-64]
+    push eax
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 

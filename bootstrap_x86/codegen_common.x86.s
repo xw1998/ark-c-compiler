@@ -1,987 +1,1071 @@
-# Ark C Compiler - generated x86 (32-bit cdecl) assembly
+# Ark C Compiler - generated x86 32-bit (cdecl) assembly
+    .intel_syntax noprefix
+    .section .rodata
     .data
-    .section .rdata,"dr"
     .text
-    .globl _asmbuf_init
-_asmbuf_init:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $272, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $4096
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -24(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    call _mem_pool_alloc
-    addl $4, %esp
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    .globl asmbuf_init
+asmbuf_init:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 316
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    push dword ptr [ebp-48]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 4096
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-48]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-48]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-48]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    mov [ebp-80], eax
+    mov [ebp-64], esp
+    push dword ptr [ebp-80]
+    and esp, -16
+    call mem_pool_alloc
+    mov esp, [ebp-64]
+    push eax
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-48]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 0
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 
-_asmbuf_grow:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $288, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -40(%ebp)
-    movl 12(%ebp), %eax
-    movl %eax, -32(%ebp)
-    pushl -40(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -32(%ebp)
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -40(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setg %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lasmbuf_grow_0
-    pushl -40(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -24(%ebp)
+    .globl asmbuf_grow
+asmbuf_grow:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 332
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    mov eax, [ebp+12]
+    mov [ebp-56], eax
+    push dword ptr [ebp-48]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-56]
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-48]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setg al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lasmbuf_grow_0
+    push dword ptr [ebp-48]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    mov [ebp-64], eax
 .Lasmbuf_grow_2:
-    pushl -40(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -32(%ebp)
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -24(%ebp)
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setg %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lasmbuf_grow_3
-    pushl -24(%ebp)
-    pushl $2
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-48]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-56]
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-64]
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setg al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lasmbuf_grow_3
+    push dword ptr [ebp-64]
+    push 2
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop eax
+    mov [ebp-64], eax
+    push dword ptr [ebp-64]
+    add esp, 4
     jmp .Lasmbuf_grow_2
 .Lasmbuf_grow_3:
-    pushl -40(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -24(%ebp)
-    pushl -40(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -40(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    call _mem_realloc
-    addl $12, %esp
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -40(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -24(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    push dword ptr [ebp-48]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-64]
+    push dword ptr [ebp-48]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-48]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    pop eax
+    mov [ebp-104], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-104]
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call mem_realloc
+    mov esp, [ebp-80]
+    push eax
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-48]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-64]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lasmbuf_grow_1
 .Lasmbuf_grow_0:
 .Lasmbuf_grow_1:
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
-    ret
-
-    .globl _asmbuf_putc
-_asmbuf_putc:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $272, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -24(%ebp)
-    movl 12(%ebp), %eax
-    movl %eax, -16(%ebp)
-    pushl $1
-    pushl -24(%ebp)
-    call _asmbuf_grow
-    addl $8, %esp
-    pushl %eax
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -24(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %eax
-    popl %ecx
-    pushl %eax
-    pushl %ecx
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl $1
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    movzbl -16(%ebp), %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -24(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $1
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
-    ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 
-    .globl _asmbuf_puts
-_asmbuf_puts:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $288, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -40(%ebp)
-    movl 12(%ebp), %eax
-    movl %eax, -32(%ebp)
-    pushl -32(%ebp)
-    call _ark_strlen
-    addl $4, %esp
-    pushl %eax
-    popl %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    pushl -40(%ebp)
-    call _asmbuf_grow
-    addl $8, %esp
-    pushl %eax
-    addl $4, %esp
-    pushl $0
-    popl %eax
-    movl %eax, -16(%ebp)
-    pushl -16(%ebp)
-    addl $4, %esp
+    .globl asmbuf_putc
+asmbuf_putc:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 316
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    mov eax, [ebp+12]
+    mov [ebp-56], eax
+    push 1
+    push dword ptr [ebp-48]
+    pop eax
+    mov [ebp-80], eax
+    pop eax
+    mov [ebp-84], eax
+    mov [ebp-64], esp
+    push dword ptr [ebp-84]
+    push dword ptr [ebp-80]
+    and esp, -16
+    call asmbuf_grow
+    mov esp, [ebp-64]
+    push dword ptr [ebp-48]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-48]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    pop ecx
+    push eax
+    push ecx
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-56]
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
+    push dword ptr [ebp-48]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-48]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+
+    .globl asmbuf_puts
+asmbuf_puts:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 332
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    mov eax, [ebp+12]
+    mov [ebp-56], eax
+    push dword ptr [ebp-56]
+    pop eax
+    mov [ebp-96], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-96]
+    and esp, -16
+    call ark_strlen
+    mov esp, [ebp-80]
+    push eax
+    pop eax
+    mov [ebp-64], eax
+    push dword ptr [ebp-64]
+    push dword ptr [ebp-48]
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call asmbuf_grow
+    mov esp, [ebp-80]
+    push 0
+    pop eax
+    mov [ebp-72], eax
+    push dword ptr [ebp-72]
+    add esp, 4
 .Lasmbuf_puts_0:
-    pushl -16(%ebp)
-    pushl -24(%ebp)
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lasmbuf_puts_1
-    pushl -40(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -40(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %eax
-    popl %ecx
-    pushl %eax
-    pushl %ecx
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl $1
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    pushl -16(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
+    push dword ptr [ebp-72]
+    push dword ptr [ebp-64]
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lasmbuf_puts_1
+    push dword ptr [ebp-48]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-48]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    pop ecx
+    push eax
+    push ecx
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-56]
+    push dword ptr [ebp-72]
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
 .Lasmbuf_puts_2:
-    pushl -16(%ebp)
-    pushl -16(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -16(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-72]
+    push dword ptr [ebp-72]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-72], eax
+    add esp, 4
     jmp .Lasmbuf_puts_0
 .Lasmbuf_puts_1:
-    pushl -40(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -40(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $1
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    push dword ptr [ebp-48]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-48]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 
-    .globl _asmbuf_int
-_asmbuf_int:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $336, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -88(%ebp)
-    movl 12(%ebp), %eax
-    movl %eax, -80(%ebp)
-    movl 16(%ebp), %eax
-    movl %eax, -76(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -48(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -40(%ebp)
-    pushl -80(%ebp)
-    pushl -76(%ebp)
-    pushl $0
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    popl %edx
-    cmpl %ecx, %edx
-    jl .L64t_asmbuf_int_13
-    jg .L64f_asmbuf_int_13
-    cmpl %eax, (%esp)
-    jl .L64t_asmbuf_int_13
-.L64f_asmbuf_int_13:
-    addl $4, %esp
-    pushl $0
-    jmp .L64e_asmbuf_int_13
-.L64t_asmbuf_int_13:
-    addl $4, %esp
-    pushl $1
-.L64e_asmbuf_int_13:
-    popl %eax
-    cmpl $0, %eax
-    je .Lasmbuf_int_0
-    pushl $1
-    popl %eax
-    movl %eax, -48(%ebp)
-    pushl -48(%ebp)
-    addl $4, %esp
-    pushl -80(%ebp)
-    pushl -76(%ebp)
-    popl %edx
-    popl %eax
-    negl %eax
-    adcl $0, %edx
-    negl %edx
-    pushl %eax
-    pushl %edx
-    popl %edx
-    popl %eax
-    movl %eax, -24(%ebp)
-    movl %edx, -20(%ebp)
-    pushl -24(%ebp)
-    addl $4, %esp
+    .globl asmbuf_int
+asmbuf_int:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 380
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    mov eax, [ebp+12]
+    mov [ebp-56], eax
+    push 0
+    pop eax
+    mov [ebp-88], eax
+    push 0
+    pop eax
+    mov [ebp-96], eax
+    push dword ptr [ebp-56]
+    push 0
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop ecx
+    add esp, 4
+    pop eax
+    add esp, 4
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lasmbuf_int_0
+    push 1
+    pop eax
+    mov [ebp-88], eax
+    push dword ptr [ebp-88]
+    add esp, 4
+    push dword ptr [ebp-56]
+    pop eax
+    neg eax
+    push eax
+    pop eax
+    mov [ebp-112], eax
+    push dword ptr [ebp-112]
+    add esp, 4
+    add esp, 4
     jmp .Lasmbuf_int_1
 .Lasmbuf_int_0:
-    pushl -80(%ebp)
-    pushl -76(%ebp)
-    popl %edx
-    popl %eax
-    movl %eax, -24(%ebp)
-    movl %edx, -20(%ebp)
-    pushl -24(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-56]
+    pop eax
+    mov [ebp-112], eax
+    push dword ptr [ebp-112]
+    add esp, 4
+    add esp, 4
 .Lasmbuf_int_1:
-    pushl -24(%ebp)
-    pushl -20(%ebp)
-    pushl $0
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    popl %edx
-    cmpl %ecx, %edx
-    jne .L64f_asmbuf_int_37
-    cmpl %eax, (%esp)
-    jne .L64f_asmbuf_int_37
-    addl $4, %esp
-    pushl $1
-    jmp .L64e_asmbuf_int_37
-.L64f_asmbuf_int_37:
-    addl $4, %esp
-    pushl $0
-.L64e_asmbuf_int_37:
-    popl %eax
-    cmpl $0, %eax
-    je .Lasmbuf_int_2
-    leal -72(%ebp), %eax
-    pushl %eax
-    pushl -40(%ebp)
-    pushl -40(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -40(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $48
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
+    push dword ptr [ebp-112]
+    push 0
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop ecx
+    add esp, 4
+    pop eax
+    add esp, 4
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lasmbuf_int_2
+    lea eax, [ebp-64]
+    push eax
+    push dword ptr [ebp-96]
+    push dword ptr [ebp-96]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 48
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
     jmp .Lasmbuf_int_3
 .Lasmbuf_int_2:
 .Lasmbuf_int_3:
 .Lasmbuf_int_4:
-    pushl -24(%ebp)
-    pushl -20(%ebp)
-    popl %ecx
-    popl %eax
-    orl %ecx, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lasmbuf_int_5
-    leal -72(%ebp), %eax
-    pushl %eax
-    pushl -40(%ebp)
-    pushl -40(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -40(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $48
-    pushl -24(%ebp)
-    pushl -20(%ebp)
-    pushl $10
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    negl %eax
-    pushl %eax
-    movl 0(%esp), %eax
-    movl 12(%esp), %edx
-    movl %edx, 0(%esp)
-    movl %eax, 12(%esp)
-    movl 4(%esp), %eax
-    movl 8(%esp), %edx
-    movl %edx, 4(%esp)
-    movl %eax, 8(%esp)
-    call ___umoddi3
-    addl $16, %esp
-    pushl %eax
-    pushl %edx
-    addl $4, %esp
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl -20(%ebp)
-    pushl $10
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    negl %eax
-    pushl %eax
-    movl 0(%esp), %eax
-    movl 12(%esp), %edx
-    movl %edx, 0(%esp)
-    movl %eax, 12(%esp)
-    movl 4(%esp), %eax
-    movl 8(%esp), %edx
-    movl %edx, 4(%esp)
-    movl %eax, 8(%esp)
-    call ___udivdi3
-    addl $16, %esp
-    pushl %eax
-    pushl %edx
-    popl %edx
-    popl %eax
-    movl %eax, -24(%ebp)
-    movl %edx, -20(%ebp)
-    pushl -24(%ebp)
-    pushl -20(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-112]
+    pop ecx
+    pop eax
+    or eax, ecx
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lasmbuf_int_5
+    lea eax, [ebp-64]
+    push eax
+    push dword ptr [ebp-96]
+    push dword ptr [ebp-96]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 48
+    push dword ptr [ebp-112]
+    push 10
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop ecx
+    add esp, 4
+    pop eax
+    add esp, 4
+    xor edx, edx
+    div ecx
+    push 0
+    push edx
+    add esp, 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
+    push dword ptr [ebp-112]
+    push 10
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop ecx
+    add esp, 4
+    pop eax
+    add esp, 4
+    xor edx, edx
+    div ecx
+    push 0
+    push eax
+    pop eax
+    mov [ebp-112], eax
+    push dword ptr [ebp-112]
+    add esp, 4
+    add esp, 4
     jmp .Lasmbuf_int_4
 .Lasmbuf_int_5:
-    pushl -48(%ebp)
-    popl %eax
-    cmpl $0, %eax
-    je .Lasmbuf_int_6
-    pushl $45
-    pushl -88(%ebp)
-    call _asmbuf_putc
-    addl $8, %esp
-    pushl %eax
-    addl $4, %esp
+    push dword ptr [ebp-88]
+    pop eax
+    test eax, eax
+    jz .Lasmbuf_int_6
+    push 45
+    push dword ptr [ebp-48]
+    pop eax
+    mov [ebp-144], eax
+    pop eax
+    mov [ebp-148], eax
+    mov [ebp-128], esp
+    push dword ptr [ebp-148]
+    push dword ptr [ebp-144]
+    and esp, -16
+    call asmbuf_putc
+    mov esp, [ebp-128]
     jmp .Lasmbuf_int_7
 .Lasmbuf_int_6:
 .Lasmbuf_int_7:
-    pushl -40(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    subl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -32(%ebp)
-    pushl -32(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-96]
+    push 1
+    pop ecx
+    pop eax
+    sub eax, ecx
+    push eax
+    pop eax
+    mov [ebp-104], eax
+    push dword ptr [ebp-104]
+    add esp, 4
 .Lasmbuf_int_8:
-    pushl -32(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setge %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lasmbuf_int_9
-    leal -72(%ebp), %eax
-    pushl %eax
-    pushl -32(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl -88(%ebp)
-    call _asmbuf_putc
-    addl $8, %esp
-    pushl %eax
-    addl $4, %esp
+    push dword ptr [ebp-104]
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setge al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lasmbuf_int_9
+    lea eax, [ebp-64]
+    push eax
+    push dword ptr [ebp-104]
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push dword ptr [ebp-48]
+    pop eax
+    mov [ebp-144], eax
+    pop eax
+    mov [ebp-148], eax
+    mov [ebp-128], esp
+    push dword ptr [ebp-148]
+    push dword ptr [ebp-144]
+    and esp, -16
+    call asmbuf_putc
+    mov esp, [ebp-128]
 .Lasmbuf_int_10:
-    pushl -32(%ebp)
-    pushl -32(%ebp)
-    pushl $-1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -32(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-104]
+    push dword ptr [ebp-104]
+    push -1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-104], eax
+    add esp, 4
     jmp .Lasmbuf_int_8
 .Lasmbuf_int_9:
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 
-    .globl _asmbuf_printf_int
-_asmbuf_printf_int:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $288, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -40(%ebp)
-    movl 12(%ebp), %eax
-    movl %eax, -32(%ebp)
-    movl 16(%ebp), %eax
-    movl %eax, -24(%ebp)
-    movl 20(%ebp), %eax
-    movl %eax, -16(%ebp)
-    pushl -32(%ebp)
-    popl %eax
-    cmpl $0, %eax
-    je .Lasmbuf_printf_int_0
-    pushl -32(%ebp)
-    pushl -40(%ebp)
-    call _asmbuf_puts
-    addl $8, %esp
-    pushl %eax
-    addl $4, %esp
+    .globl asmbuf_printf_int
+asmbuf_printf_int:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 332
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    mov eax, [ebp+12]
+    mov [ebp-56], eax
+    mov eax, [ebp+16]
+    mov [ebp-64], eax
+    mov eax, [ebp+20]
+    mov [ebp-72], eax
+    push dword ptr [ebp-56]
+    pop eax
+    test eax, eax
+    jz .Lasmbuf_printf_int_0
+    push dword ptr [ebp-56]
+    push dword ptr [ebp-48]
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call asmbuf_puts
+    mov esp, [ebp-80]
     jmp .Lasmbuf_printf_int_1
 .Lasmbuf_printf_int_0:
 .Lasmbuf_printf_int_1:
-    pushl -24(%ebp)
-    popl %eax
-    movl %eax, %edx
-    sarl $31, %edx
-    pushl %edx
-    pushl %eax
-    pushl -40(%ebp)
-    call _asmbuf_int
-    addl $12, %esp
-    pushl %eax
-    addl $4, %esp
-    pushl -16(%ebp)
-    popl %eax
-    cmpl $0, %eax
-    je .Lasmbuf_printf_int_2
-    pushl -16(%ebp)
-    pushl -40(%ebp)
-    call _asmbuf_puts
-    addl $8, %esp
-    pushl %eax
-    addl $4, %esp
+    push dword ptr [ebp-64]
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    # unknown IR op: CDECL64
+    push dword ptr [ebp-48]
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call asmbuf_int
+    mov esp, [ebp-80]
+    push dword ptr [ebp-72]
+    pop eax
+    test eax, eax
+    jz .Lasmbuf_printf_int_2
+    push dword ptr [ebp-72]
+    push dword ptr [ebp-48]
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call asmbuf_puts
+    mov esp, [ebp-80]
     jmp .Lasmbuf_printf_int_3
 .Lasmbuf_printf_int_2:
 .Lasmbuf_printf_int_3:
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 

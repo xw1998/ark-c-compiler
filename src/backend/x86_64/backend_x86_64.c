@@ -1333,10 +1333,22 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
     }
 }
 
-/* assemble and link are intentional pass-through stubs.
+/* assemble and link are intentional pass-through stubs (see backend.h:
+ * "software-style backends ... letting the user post-process with gcc/as/nasm").
+ *
  * The emit_asm function produces GNU as-compatible (.intel_syntax noprefix)
- * assembly text. The user post-processes with external tools:
- *   arkcc -target x86 foo.c -o foo.s && gcc -m32 -c foo.s -o foo.o */
+ * 32-bit x86 assembly text. Assembling and linking into an executable is done
+ * by an external gcc -m32 toolchain. The supported workflows are:
+ *
+ *   1. Emit assembly text, then assemble+link externally:
+ *        arkcc -target x86 -S foo.c -o foo.s
+ *        gcc -m32 foo.s -o foo.exe
+ *
+ *   2. Emit assembly text as bytes (default, no -S): the bytes written to the
+ *      output file are the assembly source text, ready for gcc -m32 -c.
+ *
+ * The bootstrap_x86.ps1 / bootstrap_x86_build.ps1 scripts automate workflow 1.
+ */
 static int x86_assemble(const char *asm_text, unsigned char *out, int cap) {
     int n = ark_strlen(asm_text);
     int i;
@@ -1345,6 +1357,9 @@ static int x86_assemble(const char *asm_text, unsigned char *out, int cap) {
     return n;
 }
 
+/* No-op link: the x86 backend produces self-contained assembly units. Final
+ * linking (resolving cross-object references, laying out sections, producing
+ * a PE/ELF executable) is delegated to the external gcc -m32 linker. */
 static int x86_link(unsigned char *c, int s, struct LinkContext *lc) {
     (void)c; (void)s; (void)lc;
     return 0;

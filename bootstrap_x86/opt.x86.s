@@ -1,7160 +1,7278 @@
-# Ark C Compiler - generated x86 (32-bit cdecl) assembly
+# Ark C Compiler - generated x86 32-bit (cdecl) assembly
+    .intel_syntax noprefix
+    .section .rodata
     .data
-    .section .rdata,"dr"
     .text
-_compact_func:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $288, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -40(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -24(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -32(%ebp)
-    pushl -32(%ebp)
-    addl $4, %esp
+    .globl compact_func
+compact_func:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 332
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    push 0
+    pop eax
+    mov [ebp-64], eax
+    push 0
+    pop eax
+    mov [ebp-56], eax
+    push dword ptr [ebp-56]
+    add esp, 4
 .Lcompact_func_0:
-    pushl -32(%ebp)
-    pushl -40(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lcompact_func_1
-    pushl -40(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -32(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lcompact_func_3
-    pushl -24(%ebp)
-    pushl -32(%ebp)
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lcompact_func_5
-    pushl -40(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -24(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -40(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -32(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -40(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -24(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    movl 0(%eax), %edx
-    movl %edx, 0(%ecx)
-    movl 4(%eax), %edx
-    movl %edx, 4(%ecx)
-    movl 8(%eax), %edx
-    movl %edx, 8(%ecx)
-    movl 12(%eax), %edx
-    movl %edx, 12(%ecx)
-    movl 16(%eax), %edx
-    movl %edx, 16(%ecx)
-    movl 20(%eax), %edx
-    movl %edx, 20(%ecx)
-    movl 24(%eax), %edx
-    movl %edx, 24(%ecx)
-    movl 28(%eax), %edx
-    movl %edx, 28(%ecx)
-    pushl %eax
-    addl $4, %esp
+    push dword ptr [ebp-56]
+    push dword ptr [ebp-48]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lcompact_func_1
+    push dword ptr [ebp-48]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-56]
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lcompact_func_3
+    push dword ptr [ebp-64]
+    push dword ptr [ebp-56]
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lcompact_func_5
+    push dword ptr [ebp-48]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-64]
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-48]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-56]
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-48]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-64]
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop edi
+    pop esi
+    mov ecx, 32
+    rep movsb
+    add esp, 4
     jmp .Lcompact_func_6
 .Lcompact_func_5:
 .Lcompact_func_6:
-    pushl -24(%ebp)
-    pushl -24(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -24(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-64]
+    push dword ptr [ebp-64]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-64], eax
+    add esp, 4
     jmp .Lcompact_func_4
 .Lcompact_func_3:
 .Lcompact_func_4:
 .Lcompact_func_2:
-    pushl -32(%ebp)
-    pushl -32(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -32(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-56]
+    push dword ptr [ebp-56]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-56], eax
+    add esp, 4
     jmp .Lcompact_func_0
 .Lcompact_func_1:
-    pushl -40(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -24(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    push dword ptr [ebp-48]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-64]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 
-_eval_binary:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $320, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -72(%ebp)
-    movl 12(%ebp), %eax
-    movl %eax, -68(%ebp)
-    movl 16(%ebp), %eax
-    movl %eax, -64(%ebp)
-    movl 20(%ebp), %eax
-    movl %eax, -60(%ebp)
-    movl 24(%ebp), %eax
-    movl %eax, -56(%ebp)
-    movl 28(%ebp), %eax
-    movl %eax, -48(%ebp)
-    pushl -56(%ebp)
-    pushl $256
-    popl %ecx
-    popl %eax
-    andl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -40(%ebp)
-    pushl -56(%ebp)
-    pushl $256
-    popl %eax
-    notl %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    andl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -32(%ebp)
-    pushl $0
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %eax, -24(%ebp)
-    movl %edx, -20(%ebp)
-    pushl -32(%ebp)
-    popl %eax
-    movl %eax, -16(%ebp)
-    pushl -16(%ebp)
-    pushl $15
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Leval_binary_1
-    pushl -16(%ebp)
-    pushl $16
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Leval_binary_2
-    pushl -16(%ebp)
-    pushl $17
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Leval_binary_3
-    pushl -16(%ebp)
-    pushl $18
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Leval_binary_4
-    pushl -16(%ebp)
-    pushl $19
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Leval_binary_5
-    pushl -16(%ebp)
-    pushl $30
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Leval_binary_6
-    pushl -16(%ebp)
-    pushl $31
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Leval_binary_7
-    pushl -16(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Leval_binary_8
-    pushl -16(%ebp)
-    pushl $34
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Leval_binary_9
-    pushl -16(%ebp)
-    pushl $35
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Leval_binary_10
-    pushl -16(%ebp)
-    pushl $21
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Leval_binary_11
-    pushl -16(%ebp)
-    pushl $22
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Leval_binary_12
-    pushl -16(%ebp)
-    pushl $23
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Leval_binary_13
-    pushl -16(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Leval_binary_14
-    pushl -16(%ebp)
-    pushl $25
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Leval_binary_15
-    pushl -16(%ebp)
-    pushl $26
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Leval_binary_16
-    pushl -16(%ebp)
-    pushl $27
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Leval_binary_17
-    pushl -16(%ebp)
-    pushl $28
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Leval_binary_18
+    .globl eval_binary
+eval_binary:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 364
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    mov eax, [ebp+12]
+    mov [ebp-56], eax
+    mov eax, [ebp+16]
+    mov [ebp-64], eax
+    mov eax, [ebp+20]
+    mov [ebp-72], eax
+    push dword ptr [ebp-64]
+    push 256
+    pop ecx
+    pop eax
+    and eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    pop eax
+    mov [ebp-80], eax
+    push dword ptr [ebp-64]
+    push 256
+    pop eax
+    not eax
+    push eax
+    pop ecx
+    pop eax
+    and eax, ecx
+    push eax
+    pop eax
+    mov [ebp-88], eax
+    push 0
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    push dword ptr [ebp-88]
+    pop eax
+    mov [ebp-104], eax
+    push dword ptr [ebp-104]
+    push 15
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Leval_binary_1
+    push dword ptr [ebp-104]
+    push 16
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Leval_binary_2
+    push dword ptr [ebp-104]
+    push 17
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Leval_binary_3
+    push dword ptr [ebp-104]
+    push 18
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Leval_binary_4
+    push dword ptr [ebp-104]
+    push 19
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Leval_binary_5
+    push dword ptr [ebp-104]
+    push 30
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Leval_binary_6
+    push dword ptr [ebp-104]
+    push 31
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Leval_binary_7
+    push dword ptr [ebp-104]
+    push 32
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Leval_binary_8
+    push dword ptr [ebp-104]
+    push 34
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Leval_binary_9
+    push dword ptr [ebp-104]
+    push 35
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Leval_binary_10
+    push dword ptr [ebp-104]
+    push 21
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Leval_binary_11
+    push dword ptr [ebp-104]
+    push 22
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Leval_binary_12
+    push dword ptr [ebp-104]
+    push 23
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Leval_binary_13
+    push dword ptr [ebp-104]
+    push 24
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Leval_binary_14
+    push dword ptr [ebp-104]
+    push 25
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Leval_binary_15
+    push dword ptr [ebp-104]
+    push 26
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Leval_binary_16
+    push dword ptr [ebp-104]
+    push 27
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Leval_binary_17
+    push dword ptr [ebp-104]
+    push 28
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Leval_binary_18
     jmp .Leval_binary_19
 .Leval_binary_1:
-    pushl -72(%ebp)
-    pushl -68(%ebp)
-    pushl -64(%ebp)
-    pushl -60(%ebp)
-    popl %ecx
-    popl %eax
-    addl %eax, 4(%esp)
-    adcl %ecx, (%esp)
-    popl %edx
-    popl %eax
-    pushl %eax
-    pushl %edx
-    popl %edx
-    popl %eax
-    movl %eax, -24(%ebp)
-    movl %edx, -20(%ebp)
-    pushl -24(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-48]
+    push dword ptr [ebp-56]
+    pop ecx
+    pop ebx
+    pop eax
+    pop edx
+    add eax, ecx
+    add edx, ebx
+    push edx
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    push dword ptr [ebp-96]
+    add esp, 4
+    add esp, 4
     jmp .Leval_binary_0
 .Leval_binary_2:
-    pushl -72(%ebp)
-    pushl -68(%ebp)
-    pushl -64(%ebp)
-    pushl -60(%ebp)
-    popl %ecx
-    popl %eax
-    subl %eax, 4(%esp)
-    sbbl %ecx, (%esp)
-    popl %edx
-    popl %eax
-    pushl %eax
-    pushl %edx
-    popl %edx
-    popl %eax
-    movl %eax, -24(%ebp)
-    movl %edx, -20(%ebp)
-    pushl -24(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-48]
+    push dword ptr [ebp-56]
+    pop ecx
+    pop ebx
+    pop eax
+    pop edx
+    sub eax, ecx
+    sub edx, ebx
+    push edx
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    push dword ptr [ebp-96]
+    add esp, 4
+    add esp, 4
     jmp .Leval_binary_0
 .Leval_binary_3:
-    pushl -72(%ebp)
-    pushl -68(%ebp)
-    pushl -64(%ebp)
-    pushl -60(%ebp)
-    movl 0(%esp), %eax
-    movl 12(%esp), %edx
-    movl %edx, 0(%esp)
-    movl %eax, 12(%esp)
-    movl 4(%esp), %eax
-    movl 8(%esp), %edx
-    movl %edx, 4(%esp)
-    movl %eax, 8(%esp)
-    call ___muldi3
-    addl $16, %esp
-    pushl %eax
-    pushl %edx
-    popl %edx
-    popl %eax
-    movl %eax, -24(%ebp)
-    movl %edx, -20(%ebp)
-    pushl -24(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-48]
+    push dword ptr [ebp-56]
+    pop ecx
+    add esp, 4
+    pop eax
+    add esp, 4
+    imul eax, ecx
+    push 0
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    push dword ptr [ebp-96]
+    add esp, 4
+    add esp, 4
     jmp .Leval_binary_0
 .Leval_binary_4:
-    pushl -64(%ebp)
-    pushl -60(%ebp)
-    pushl $0
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    popl %edx
-    cmpl %ecx, %edx
-    jne .L64f_eval_binary_128
-    cmpl %eax, (%esp)
-    jne .L64f_eval_binary_128
-    addl $4, %esp
-    pushl $1
-    jmp .L64e_eval_binary_128
-.L64f_eval_binary_128:
-    addl $4, %esp
-    pushl $0
-.L64e_eval_binary_128:
-    popl %eax
-    cmpl $0, %eax
-    je .Leval_binary_20
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    push dword ptr [ebp-56]
+    push 0
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop ecx
+    add esp, 4
+    pop eax
+    add esp, 4
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Leval_binary_20
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
+    jmp .Leval_binary_21
 .Leval_binary_20:
 .Leval_binary_21:
-    pushl -40(%ebp)
-    popl %eax
-    cmpl $0, %eax
-    je .Leval_binary_22
-    pushl -72(%ebp)
-    pushl -68(%ebp)
-    pushl -64(%ebp)
-    pushl -60(%ebp)
-    movl 0(%esp), %eax
-    movl 12(%esp), %edx
-    movl %edx, 0(%esp)
-    movl %eax, 12(%esp)
-    movl 4(%esp), %eax
-    movl 8(%esp), %edx
-    movl %edx, 4(%esp)
-    movl %eax, 8(%esp)
-    call ___udivdi3
-    addl $16, %esp
-    pushl %eax
-    pushl %edx
-    popl %edx
-    popl %eax
-    movl %eax, -24(%ebp)
-    movl %edx, -20(%ebp)
-    pushl -24(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-80]
+    pop eax
+    test eax, eax
+    jz .Leval_binary_22
+    push dword ptr [ebp-48]
+    push dword ptr [ebp-56]
+    pop ecx
+    add esp, 4
+    pop eax
+    add esp, 4
+    xor edx, edx
+    div ecx
+    push 0
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    push dword ptr [ebp-96]
+    add esp, 4
+    add esp, 4
     jmp .Leval_binary_23
 .Leval_binary_22:
-    pushl -72(%ebp)
-    pushl -68(%ebp)
-    pushl -64(%ebp)
-    pushl -60(%ebp)
-    movl 0(%esp), %eax
-    movl 12(%esp), %edx
-    movl %edx, 0(%esp)
-    movl %eax, 12(%esp)
-    movl 4(%esp), %eax
-    movl 8(%esp), %edx
-    movl %edx, 4(%esp)
-    movl %eax, 8(%esp)
-    call ___divdi3
-    addl $16, %esp
-    pushl %eax
-    pushl %edx
-    popl %edx
-    popl %eax
-    movl %eax, -24(%ebp)
-    movl %edx, -20(%ebp)
-    pushl -24(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-48]
+    push dword ptr [ebp-56]
+    pop ecx
+    add esp, 4
+    pop eax
+    add esp, 4
+    cdq
+    idiv ecx
+    push edx
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    push dword ptr [ebp-96]
+    add esp, 4
+    add esp, 4
 .Leval_binary_23:
     jmp .Leval_binary_0
 .Leval_binary_5:
-    pushl -64(%ebp)
-    pushl -60(%ebp)
-    pushl $0
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    popl %edx
-    cmpl %ecx, %edx
-    jne .L64f_eval_binary_159
-    cmpl %eax, (%esp)
-    jne .L64f_eval_binary_159
-    addl $4, %esp
-    pushl $1
-    jmp .L64e_eval_binary_159
-.L64f_eval_binary_159:
-    addl $4, %esp
-    pushl $0
-.L64e_eval_binary_159:
-    popl %eax
-    cmpl $0, %eax
-    je .Leval_binary_24
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    push dword ptr [ebp-56]
+    push 0
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop ecx
+    add esp, 4
+    pop eax
+    add esp, 4
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Leval_binary_24
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
+    jmp .Leval_binary_25
 .Leval_binary_24:
 .Leval_binary_25:
-    pushl -40(%ebp)
-    popl %eax
-    cmpl $0, %eax
-    je .Leval_binary_26
-    pushl -72(%ebp)
-    pushl -68(%ebp)
-    pushl -64(%ebp)
-    pushl -60(%ebp)
-    movl 0(%esp), %eax
-    movl 12(%esp), %edx
-    movl %edx, 0(%esp)
-    movl %eax, 12(%esp)
-    movl 4(%esp), %eax
-    movl 8(%esp), %edx
-    movl %edx, 4(%esp)
-    movl %eax, 8(%esp)
-    call ___umoddi3
-    addl $16, %esp
-    pushl %eax
-    pushl %edx
-    popl %edx
-    popl %eax
-    movl %eax, -24(%ebp)
-    movl %edx, -20(%ebp)
-    pushl -24(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-80]
+    pop eax
+    test eax, eax
+    jz .Leval_binary_26
+    push dword ptr [ebp-48]
+    push dword ptr [ebp-56]
+    pop ecx
+    add esp, 4
+    pop eax
+    add esp, 4
+    xor edx, edx
+    div ecx
+    push 0
+    push edx
+    pop eax
+    mov [ebp-96], eax
+    push dword ptr [ebp-96]
+    add esp, 4
+    add esp, 4
     jmp .Leval_binary_27
 .Leval_binary_26:
-    pushl -72(%ebp)
-    pushl -68(%ebp)
-    pushl -64(%ebp)
-    pushl -60(%ebp)
-    movl 0(%esp), %eax
-    movl 12(%esp), %edx
-    movl %edx, 0(%esp)
-    movl %eax, 12(%esp)
-    movl 4(%esp), %eax
-    movl 8(%esp), %edx
-    movl %edx, 4(%esp)
-    movl %eax, 8(%esp)
-    call ___moddi3
-    addl $16, %esp
-    pushl %eax
-    pushl %edx
-    popl %edx
-    popl %eax
-    movl %eax, -24(%ebp)
-    movl %edx, -20(%ebp)
-    pushl -24(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-48]
+    push dword ptr [ebp-56]
+    pop ecx
+    add esp, 4
+    pop eax
+    add esp, 4
+    cdq
+    idiv ecx
+    push 0
+    push edx
+    pop eax
+    mov [ebp-96], eax
+    push dword ptr [ebp-96]
+    add esp, 4
+    add esp, 4
 .Leval_binary_27:
     jmp .Leval_binary_0
 .Leval_binary_6:
-    pushl -72(%ebp)
-    pushl -68(%ebp)
-    pushl -64(%ebp)
-    pushl -60(%ebp)
-    popl %ecx
-    popl %eax
-    andl %eax, 4(%esp)
-    andl %ecx, (%esp)
-    popl %edx
-    popl %eax
-    pushl %eax
-    pushl %edx
-    popl %edx
-    popl %eax
-    movl %eax, -24(%ebp)
-    movl %edx, -20(%ebp)
-    pushl -24(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-48]
+    push dword ptr [ebp-56]
+    pop ecx
+    pop ebx
+    pop eax
+    pop edx
+    and eax, ecx
+    and edx, ebx
+    push edx
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    push dword ptr [ebp-96]
+    add esp, 4
+    add esp, 4
     jmp .Leval_binary_0
 .Leval_binary_7:
-    pushl -72(%ebp)
-    pushl -68(%ebp)
-    pushl -64(%ebp)
-    pushl -60(%ebp)
-    popl %ecx
-    popl %eax
-    orl %eax, 4(%esp)
-    orl %ecx, (%esp)
-    popl %edx
-    popl %eax
-    pushl %eax
-    pushl %edx
-    popl %edx
-    popl %eax
-    movl %eax, -24(%ebp)
-    movl %edx, -20(%ebp)
-    pushl -24(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-48]
+    push dword ptr [ebp-56]
+    pop ecx
+    pop ebx
+    pop eax
+    pop edx
+    or eax, ecx
+    or edx, ebx
+    push edx
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    push dword ptr [ebp-96]
+    add esp, 4
+    add esp, 4
     jmp .Leval_binary_0
 .Leval_binary_8:
-    pushl -72(%ebp)
-    pushl -68(%ebp)
-    pushl -64(%ebp)
-    pushl -60(%ebp)
-    popl %ecx
-    popl %eax
-    xorl %eax, 4(%esp)
-    xorl %ecx, (%esp)
-    popl %edx
-    popl %eax
-    pushl %eax
-    pushl %edx
-    popl %edx
-    popl %eax
-    movl %eax, -24(%ebp)
-    movl %edx, -20(%ebp)
-    pushl -24(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-48]
+    push dword ptr [ebp-56]
+    pop ecx
+    pop ebx
+    pop eax
+    pop edx
+    xor eax, ecx
+    xor edx, ebx
+    push edx
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    push dword ptr [ebp-96]
+    add esp, 4
+    add esp, 4
     jmp .Leval_binary_0
 .Leval_binary_9:
-    pushl -72(%ebp)
-    pushl -68(%ebp)
-    pushl -64(%ebp)
-    pushl -60(%ebp)
-    pushl $63
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    andl %eax, 4(%esp)
-    andl %ecx, (%esp)
-    popl %edx
-    popl %eax
-    pushl %eax
-    pushl %edx
-    popl %ecx
-    popl %eax
-    shll %cl, %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %eax, -24(%ebp)
-    movl %edx, -20(%ebp)
-    pushl -24(%ebp)
-    addl $4, %esp
-    jmp .Leval_binary_0
-.Leval_binary_10:
-    pushl -40(%ebp)
-    popl %eax
-    cmpl $0, %eax
-    je .Leval_binary_28
-    pushl -72(%ebp)
-    pushl -68(%ebp)
-    pushl -64(%ebp)
-    pushl -60(%ebp)
-    pushl $63
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    andl %eax, 4(%esp)
-    andl %ecx, (%esp)
-    popl %edx
-    popl %eax
-    pushl %eax
-    pushl %edx
-    popl %edx
-    popl %eax
-    movl %eax, -24(%ebp)
-    movl %edx, -20(%ebp)
-    pushl -24(%ebp)
-    addl $4, %esp
-    jmp .Leval_binary_29
-.Leval_binary_28:
-    pushl -72(%ebp)
-    pushl -68(%ebp)
-    pushl -64(%ebp)
-    pushl -60(%ebp)
-    pushl $63
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    andl %eax, 4(%esp)
-    andl %ecx, (%esp)
-    popl %edx
-    popl %eax
-    pushl %eax
-    pushl %edx
-    popl %ecx
-    popl %eax
-    shrl %cl, %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %eax, -24(%ebp)
-    movl %edx, -20(%ebp)
-    pushl -24(%ebp)
-    addl $4, %esp
-.Leval_binary_29:
-    jmp .Leval_binary_0
-.Leval_binary_11:
-    pushl -72(%ebp)
-    pushl -68(%ebp)
-    pushl -64(%ebp)
-    pushl -60(%ebp)
-    popl %ecx
-    popl %eax
-    popl %edx
-    cmpl %ecx, %edx
-    jne .L64f_eval_binary_255
-    cmpl %eax, (%esp)
-    jne .L64f_eval_binary_255
-    addl $4, %esp
-    pushl $1
-    jmp .L64e_eval_binary_255
-.L64f_eval_binary_255:
-    addl $4, %esp
-    pushl $0
-.L64e_eval_binary_255:
-    popl %eax
-    cmpl $0, %eax
-    je .Leval_binary_30
-    pushl $1
+    push dword ptr [ebp-56]
+    push 0
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop ecx
+    add esp, 4
+    pop eax
+    add esp, 4
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Leval_binary_30
+    push dword ptr [ebp-56]
+    push 64
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop ecx
+    add esp, 4
+    pop eax
+    add esp, 4
+    cmp eax, ecx
+    setge al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Leval_binary_31
 .Leval_binary_30:
-    pushl $0
+    push 1
 .Leval_binary_31:
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %eax, -24(%ebp)
-    movl %edx, -20(%ebp)
-    pushl -24(%ebp)
-    addl $4, %esp
-    jmp .Leval_binary_0
-.Leval_binary_12:
-    pushl -72(%ebp)
-    pushl -68(%ebp)
-    pushl -64(%ebp)
-    pushl -60(%ebp)
-    popl %ecx
-    popl %eax
-    popl %edx
-    cmpl %ecx, %edx
-    jne .L64t_eval_binary_273
-    cmpl %eax, (%esp)
-    jne .L64t_eval_binary_273
-    addl $4, %esp
-    pushl $0
-    jmp .L64e_eval_binary_273
-.L64t_eval_binary_273:
-    addl $4, %esp
-    pushl $1
-.L64e_eval_binary_273:
-    popl %eax
-    cmpl $0, %eax
-    je .Leval_binary_32
-    pushl $1
-    jmp .Leval_binary_33
-.Leval_binary_32:
-    pushl $0
-.Leval_binary_33:
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %eax, -24(%ebp)
-    movl %edx, -20(%ebp)
-    pushl -24(%ebp)
-    addl $4, %esp
-    jmp .Leval_binary_0
-.Leval_binary_13:
-    pushl -40(%ebp)
-    popl %eax
-    cmpl $0, %eax
-    je .Leval_binary_34
-    pushl -72(%ebp)
-    pushl -68(%ebp)
-    pushl -64(%ebp)
-    pushl -60(%ebp)
-    popl %ecx
-    popl %eax
-    popl %edx
-    cmpl %ecx, %edx
-    jb .L64t_eval_binary_293
-    ja .L64f_eval_binary_293
-    cmpl %eax, (%esp)
-    jb .L64t_eval_binary_293
-.L64f_eval_binary_293:
-    addl $4, %esp
-    pushl $0
-    jmp .L64e_eval_binary_293
-.L64t_eval_binary_293:
-    addl $4, %esp
-    pushl $1
-.L64e_eval_binary_293:
-    popl %eax
-    cmpl $0, %eax
-    je .Leval_binary_36
-    pushl $1
-    jmp .Leval_binary_37
-.Leval_binary_36:
-    pushl $0
-.Leval_binary_37:
+    pop eax
+    test eax, eax
+    jz .Leval_binary_28
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+    jmp .Leval_binary_29
+.Leval_binary_28:
+.Leval_binary_29:
+    push dword ptr [ebp-80]
+    pop eax
+    test eax, eax
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Leval_binary_34
+    push dword ptr [ebp-48]
+    push 0
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop ecx
+    add esp, 4
+    pop eax
+    add esp, 4
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Leval_binary_35
 .Leval_binary_34:
-    pushl -72(%ebp)
-    pushl -68(%ebp)
-    pushl -64(%ebp)
-    pushl -60(%ebp)
-    popl %ecx
-    popl %eax
-    popl %edx
-    cmpl %ecx, %edx
-    jl .L64t_eval_binary_304
-    jg .L64f_eval_binary_304
-    cmpl %eax, (%esp)
-    jl .L64t_eval_binary_304
-.L64f_eval_binary_304:
-    addl $4, %esp
-    pushl $0
-    jmp .L64e_eval_binary_304
-.L64t_eval_binary_304:
-    addl $4, %esp
-    pushl $1
-.L64e_eval_binary_304:
-    popl %eax
-    cmpl $0, %eax
-    je .Leval_binary_38
-    pushl $1
+    push 0
+.Leval_binary_35:
+    pop eax
+    test eax, eax
+    jz .Leval_binary_32
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+    jmp .Leval_binary_33
+.Leval_binary_32:
+.Leval_binary_33:
+    push dword ptr [ebp-48]
+    push dword ptr [ebp-56]
+    pop ecx
+    pop eax
+    shl eax, cl
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    push dword ptr [ebp-96]
+    add esp, 4
+    add esp, 4
+    jmp .Leval_binary_0
+.Leval_binary_10:
+    push dword ptr [ebp-56]
+    push 0
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop ecx
+    add esp, 4
+    pop eax
+    add esp, 4
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Leval_binary_38
+    push dword ptr [ebp-56]
+    push 64
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop ecx
+    add esp, 4
+    pop eax
+    add esp, 4
+    cmp eax, ecx
+    setge al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Leval_binary_39
 .Leval_binary_38:
-    pushl $0
+    push 1
 .Leval_binary_39:
-.Leval_binary_35:
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %eax, -24(%ebp)
-    movl %edx, -20(%ebp)
-    pushl -24(%ebp)
-    addl $4, %esp
-    jmp .Leval_binary_0
-.Leval_binary_14:
-    pushl -40(%ebp)
-    popl %eax
-    cmpl $0, %eax
-    je .Leval_binary_40
-    pushl -72(%ebp)
-    pushl -68(%ebp)
-    pushl -64(%ebp)
-    pushl -60(%ebp)
-    popl %ecx
-    popl %eax
-    popl %edx
-    cmpl %ecx, %edx
-    ja .L64t_eval_binary_325
-    jb .L64f_eval_binary_325
-    cmpl %eax, (%esp)
-    ja .L64t_eval_binary_325
-.L64f_eval_binary_325:
-    addl $4, %esp
-    pushl $0
-    jmp .L64e_eval_binary_325
-.L64t_eval_binary_325:
-    addl $4, %esp
-    pushl $1
-.L64e_eval_binary_325:
-    popl %eax
-    cmpl $0, %eax
-    je .Leval_binary_42
-    pushl $1
-    jmp .Leval_binary_43
-.Leval_binary_42:
-    pushl $0
-.Leval_binary_43:
+    pop eax
+    test eax, eax
+    jz .Leval_binary_36
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+    jmp .Leval_binary_37
+.Leval_binary_36:
+.Leval_binary_37:
+    push dword ptr [ebp-80]
+    pop eax
+    test eax, eax
+    jz .Leval_binary_40
+    push dword ptr [ebp-48]
+    push dword ptr [ebp-56]
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    push dword ptr [ebp-96]
+    add esp, 4
+    add esp, 4
     jmp .Leval_binary_41
 .Leval_binary_40:
-    pushl -72(%ebp)
-    pushl -68(%ebp)
-    pushl -64(%ebp)
-    pushl -60(%ebp)
-    popl %ecx
-    popl %eax
-    popl %edx
-    cmpl %ecx, %edx
-    jg .L64t_eval_binary_336
-    jl .L64f_eval_binary_336
-    cmpl %eax, (%esp)
-    jg .L64t_eval_binary_336
-.L64f_eval_binary_336:
-    addl $4, %esp
-    pushl $0
-    jmp .L64e_eval_binary_336
-.L64t_eval_binary_336:
-    addl $4, %esp
-    pushl $1
-.L64e_eval_binary_336:
-    popl %eax
-    cmpl $0, %eax
-    je .Leval_binary_44
-    pushl $1
+    push dword ptr [ebp-48]
+    push dword ptr [ebp-56]
+    pop ecx
+    pop eax
+    sar eax, cl
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    push dword ptr [ebp-96]
+    add esp, 4
+    add esp, 4
+.Leval_binary_41:
+    jmp .Leval_binary_0
+.Leval_binary_11:
+    push dword ptr [ebp-48]
+    push dword ptr [ebp-56]
+    pop ecx
+    add esp, 4
+    pop eax
+    add esp, 4
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Leval_binary_42
+    push 1
+    jmp .Leval_binary_43
+.Leval_binary_42:
+    push 0
+.Leval_binary_43:
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    push dword ptr [ebp-96]
+    add esp, 4
+    add esp, 4
+    jmp .Leval_binary_0
+.Leval_binary_12:
+    push dword ptr [ebp-48]
+    push dword ptr [ebp-56]
+    pop ecx
+    add esp, 4
+    pop eax
+    add esp, 4
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Leval_binary_44
+    push 1
     jmp .Leval_binary_45
 .Leval_binary_44:
-    pushl $0
+    push 0
 .Leval_binary_45:
-.Leval_binary_41:
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %eax, -24(%ebp)
-    movl %edx, -20(%ebp)
-    pushl -24(%ebp)
-    addl $4, %esp
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    push dword ptr [ebp-96]
+    add esp, 4
+    add esp, 4
     jmp .Leval_binary_0
-.Leval_binary_15:
-    pushl -40(%ebp)
-    popl %eax
-    cmpl $0, %eax
-    je .Leval_binary_46
-    pushl -72(%ebp)
-    pushl -68(%ebp)
-    pushl -64(%ebp)
-    pushl -60(%ebp)
-    popl %ecx
-    popl %eax
-    popl %edx
-    cmpl %ecx, %edx
-    jb .L64t_eval_binary_357
-    ja .L64f_eval_binary_357
-    cmpl %eax, (%esp)
-    jbe .L64t_eval_binary_357
-    je .L64t_eval_binary_357
-.L64f_eval_binary_357:
-    addl $4, %esp
-    pushl $0
-    jmp .L64e_eval_binary_357
-.L64t_eval_binary_357:
-    addl $4, %esp
-    pushl $1
-.L64e_eval_binary_357:
-    popl %eax
-    cmpl $0, %eax
-    je .Leval_binary_48
-    pushl $1
+.Leval_binary_13:
+    push dword ptr [ebp-80]
+    pop eax
+    test eax, eax
+    jz .Leval_binary_46
+    push dword ptr [ebp-48]
+    push dword ptr [ebp-56]
+    pop ecx
+    add esp, 4
+    pop eax
+    add esp, 4
+    cmp eax, ecx
+    setb al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Leval_binary_48
+    push 1
     jmp .Leval_binary_49
 .Leval_binary_48:
-    pushl $0
+    push 0
 .Leval_binary_49:
     jmp .Leval_binary_47
 .Leval_binary_46:
-    pushl -72(%ebp)
-    pushl -68(%ebp)
-    pushl -64(%ebp)
-    pushl -60(%ebp)
-    popl %ecx
-    popl %eax
-    popl %edx
-    cmpl %ecx, %edx
-    jl .L64t_eval_binary_368
-    jg .L64f_eval_binary_368
-    cmpl %eax, (%esp)
-    jle .L64t_eval_binary_368
-    je .L64t_eval_binary_368
-.L64f_eval_binary_368:
-    addl $4, %esp
-    pushl $0
-    jmp .L64e_eval_binary_368
-.L64t_eval_binary_368:
-    addl $4, %esp
-    pushl $1
-.L64e_eval_binary_368:
-    popl %eax
-    cmpl $0, %eax
-    je .Leval_binary_50
-    pushl $1
+    push dword ptr [ebp-48]
+    push dword ptr [ebp-56]
+    pop ecx
+    add esp, 4
+    pop eax
+    add esp, 4
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Leval_binary_50
+    push 1
     jmp .Leval_binary_51
 .Leval_binary_50:
-    pushl $0
+    push 0
 .Leval_binary_51:
 .Leval_binary_47:
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %eax, -24(%ebp)
-    movl %edx, -20(%ebp)
-    pushl -24(%ebp)
-    addl $4, %esp
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    push dword ptr [ebp-96]
+    add esp, 4
+    add esp, 4
     jmp .Leval_binary_0
-.Leval_binary_16:
-    pushl -40(%ebp)
-    popl %eax
-    cmpl $0, %eax
-    je .Leval_binary_52
-    pushl -72(%ebp)
-    pushl -68(%ebp)
-    pushl -64(%ebp)
-    pushl -60(%ebp)
-    popl %ecx
-    popl %eax
-    popl %edx
-    cmpl %ecx, %edx
-    ja .L64t_eval_binary_389
-    jb .L64f_eval_binary_389
-    cmpl %eax, (%esp)
-    jae .L64t_eval_binary_389
-    je .L64t_eval_binary_389
-.L64f_eval_binary_389:
-    addl $4, %esp
-    pushl $0
-    jmp .L64e_eval_binary_389
-.L64t_eval_binary_389:
-    addl $4, %esp
-    pushl $1
-.L64e_eval_binary_389:
-    popl %eax
-    cmpl $0, %eax
-    je .Leval_binary_54
-    pushl $1
+.Leval_binary_14:
+    push dword ptr [ebp-80]
+    pop eax
+    test eax, eax
+    jz .Leval_binary_52
+    push dword ptr [ebp-48]
+    push dword ptr [ebp-56]
+    pop ecx
+    add esp, 4
+    pop eax
+    add esp, 4
+    cmp eax, ecx
+    seta al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Leval_binary_54
+    push 1
     jmp .Leval_binary_55
 .Leval_binary_54:
-    pushl $0
+    push 0
 .Leval_binary_55:
     jmp .Leval_binary_53
 .Leval_binary_52:
-    pushl -72(%ebp)
-    pushl -68(%ebp)
-    pushl -64(%ebp)
-    pushl -60(%ebp)
-    popl %ecx
-    popl %eax
-    popl %edx
-    cmpl %ecx, %edx
-    jg .L64t_eval_binary_400
-    jl .L64f_eval_binary_400
-    cmpl %eax, (%esp)
-    jge .L64t_eval_binary_400
-    je .L64t_eval_binary_400
-.L64f_eval_binary_400:
-    addl $4, %esp
-    pushl $0
-    jmp .L64e_eval_binary_400
-.L64t_eval_binary_400:
-    addl $4, %esp
-    pushl $1
-.L64e_eval_binary_400:
-    popl %eax
-    cmpl $0, %eax
-    je .Leval_binary_56
-    pushl $1
+    push dword ptr [ebp-48]
+    push dword ptr [ebp-56]
+    pop ecx
+    add esp, 4
+    pop eax
+    add esp, 4
+    cmp eax, ecx
+    setg al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Leval_binary_56
+    push 1
     jmp .Leval_binary_57
 .Leval_binary_56:
-    pushl $0
+    push 0
 .Leval_binary_57:
 .Leval_binary_53:
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %eax, -24(%ebp)
-    movl %edx, -20(%ebp)
-    pushl -24(%ebp)
-    addl $4, %esp
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    push dword ptr [ebp-96]
+    add esp, 4
+    add esp, 4
     jmp .Leval_binary_0
-.Leval_binary_17:
-    pushl -72(%ebp)
-    pushl -68(%ebp)
-    popl %ecx
-    popl %eax
-    orl %ecx, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Leval_binary_60
-    pushl -64(%ebp)
-    pushl -60(%ebp)
-    popl %ecx
-    popl %eax
-    orl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+.Leval_binary_15:
+    push dword ptr [ebp-80]
+    pop eax
+    test eax, eax
+    jz .Leval_binary_58
+    push dword ptr [ebp-48]
+    push dword ptr [ebp-56]
+    pop ecx
+    add esp, 4
+    pop eax
+    add esp, 4
+    cmp eax, ecx
+    setbe al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Leval_binary_60
+    push 1
     jmp .Leval_binary_61
 .Leval_binary_60:
-    pushl $0
+    push 0
 .Leval_binary_61:
-    popl %eax
-    cmpl $0, %eax
-    je .Leval_binary_58
-    pushl $1
     jmp .Leval_binary_59
 .Leval_binary_58:
-    pushl $0
-.Leval_binary_59:
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %eax, -24(%ebp)
-    movl %edx, -20(%ebp)
-    pushl -24(%ebp)
-    addl $4, %esp
-    jmp .Leval_binary_0
-.Leval_binary_18:
-    pushl -72(%ebp)
-    pushl -68(%ebp)
-    popl %ecx
-    popl %eax
-    orl %ecx, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Leval_binary_64
-    pushl -64(%ebp)
-    pushl -60(%ebp)
-    popl %ecx
-    popl %eax
-    orl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    jmp .Leval_binary_65
-.Leval_binary_64:
-    pushl $1
-.Leval_binary_65:
-    popl %eax
-    cmpl $0, %eax
-    je .Leval_binary_62
-    pushl $1
+    push dword ptr [ebp-48]
+    push dword ptr [ebp-56]
+    pop ecx
+    add esp, 4
+    pop eax
+    add esp, 4
+    cmp eax, ecx
+    setle al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Leval_binary_62
+    push 1
     jmp .Leval_binary_63
 .Leval_binary_62:
-    pushl $0
+    push 0
 .Leval_binary_63:
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %eax, -24(%ebp)
-    movl %edx, -20(%ebp)
-    pushl -24(%ebp)
-    addl $4, %esp
+.Leval_binary_59:
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    push dword ptr [ebp-96]
+    add esp, 4
+    add esp, 4
+    jmp .Leval_binary_0
+.Leval_binary_16:
+    push dword ptr [ebp-80]
+    pop eax
+    test eax, eax
+    jz .Leval_binary_64
+    push dword ptr [ebp-48]
+    push dword ptr [ebp-56]
+    pop ecx
+    add esp, 4
+    pop eax
+    add esp, 4
+    cmp eax, ecx
+    setae al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Leval_binary_66
+    push 1
+    jmp .Leval_binary_67
+.Leval_binary_66:
+    push 0
+.Leval_binary_67:
+    jmp .Leval_binary_65
+.Leval_binary_64:
+    push dword ptr [ebp-48]
+    push dword ptr [ebp-56]
+    pop ecx
+    add esp, 4
+    pop eax
+    add esp, 4
+    cmp eax, ecx
+    setge al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Leval_binary_68
+    push 1
+    jmp .Leval_binary_69
+.Leval_binary_68:
+    push 0
+.Leval_binary_69:
+.Leval_binary_65:
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    push dword ptr [ebp-96]
+    add esp, 4
+    add esp, 4
+    jmp .Leval_binary_0
+.Leval_binary_17:
+    push dword ptr [ebp-48]
+    pop ecx
+    pop eax
+    or eax, ecx
+    push eax
+    pop eax
+    test eax, eax
+    jz .Leval_binary_72
+    push dword ptr [ebp-56]
+    pop ecx
+    pop eax
+    or eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    jmp .Leval_binary_73
+.Leval_binary_72:
+    push 0
+.Leval_binary_73:
+    pop eax
+    test eax, eax
+    jz .Leval_binary_70
+    push 1
+    jmp .Leval_binary_71
+.Leval_binary_70:
+    push 0
+.Leval_binary_71:
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    push dword ptr [ebp-96]
+    add esp, 4
+    add esp, 4
+    jmp .Leval_binary_0
+.Leval_binary_18:
+    push dword ptr [ebp-48]
+    pop ecx
+    pop eax
+    or eax, ecx
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Leval_binary_76
+    push dword ptr [ebp-56]
+    pop ecx
+    pop eax
+    or eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    jmp .Leval_binary_77
+.Leval_binary_76:
+    push 1
+.Leval_binary_77:
+    pop eax
+    test eax, eax
+    jz .Leval_binary_74
+    push 1
+    jmp .Leval_binary_75
+.Leval_binary_74:
+    push 0
+.Leval_binary_75:
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    push dword ptr [ebp-96]
+    add esp, 4
+    add esp, 4
     jmp .Leval_binary_0
 .Leval_binary_19:
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 .Leval_binary_0:
-    pushl -48(%ebp)
-    pushl -24(%ebp)
-    pushl -20(%ebp)
-    popl %edx
-    popl %eax
-    popl %ecx
-    movl %eax, (%ecx)
-    movl %edx, 4(%ecx)
-    pushl %eax
-    pushl %edx
-    addl $4, %esp
-    pushl $1
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    push dword ptr [ebp-72]
+    push dword ptr [ebp-96]
+    pop edx
+    pop ecx
+    pop eax
+    mov dword ptr [eax], edx
+    mov dword ptr [eax+4], ecx
+    push edx
+    add esp, 4
+    add esp, 4
+    push 1
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 
-    .globl _opt_constfold_func
-_opt_constfold_func:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $320, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -72(%ebp)
-    pushl $1
-    popl %eax
-    movl %eax, -64(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -56(%ebp)
+    .globl opt_constfold_func
+opt_constfold_func:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 364
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    push 1
+    pop eax
+    mov [ebp-56], eax
+    push 0
+    pop eax
+    mov [ebp-64], eax
 .Lopt_constfold_func_0:
-    pushl -64(%ebp)
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_constfold_func_2
-    pushl -56(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-56]
+    pop eax
+    test eax, eax
+    jz .Lopt_constfold_func_2
+    push dword ptr [ebp-64]
+    push 8
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lopt_constfold_func_3
 .Lopt_constfold_func_2:
-    pushl $0
+    push 0
 .Lopt_constfold_func_3:
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_constfold_func_1
-    pushl $0
-    popl %eax
-    movl %eax, -64(%ebp)
-    pushl -64(%ebp)
-    addl $4, %esp
-    pushl -56(%ebp)
-    pushl -56(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -56(%ebp)
-    addl $4, %esp
-    pushl $0
-    popl %eax
-    movl %eax, -48(%ebp)
-    pushl -48(%ebp)
-    addl $4, %esp
+    pop eax
+    test eax, eax
+    jz .Lopt_constfold_func_1
+    push 0
+    pop eax
+    mov [ebp-56], eax
+    push dword ptr [ebp-56]
+    add esp, 4
+    push dword ptr [ebp-64]
+    push dword ptr [ebp-64]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-64], eax
+    add esp, 4
+    push 0
+    pop eax
+    mov [ebp-72], eax
+    push dword ptr [ebp-72]
+    add esp, 4
 .Lopt_constfold_func_4:
-    pushl -48(%ebp)
-    pushl $2
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -72(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_constfold_func_5
-    pushl -72(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -48(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -40(%ebp)
-    pushl -72(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -48(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -32(%ebp)
-    pushl -72(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -48(%ebp)
-    pushl $2
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -24(%ebp)
-    pushl -40(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $1
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_constfold_func_7
+    push dword ptr [ebp-72]
+    push 2
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-48]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_constfold_func_5
+    push dword ptr [ebp-48]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-72]
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-80], eax
+    push dword ptr [ebp-48]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-72]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-88], eax
+    push dword ptr [ebp-48]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-72]
+    push 2
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    push dword ptr [ebp-80]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 1
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_constfold_func_7
     jmp .Lopt_constfold_func_6
+    jmp .Lopt_constfold_func_8
 .Lopt_constfold_func_7:
 .Lopt_constfold_func_8:
-    pushl -32(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $1
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_constfold_func_9
+    push dword ptr [ebp-88]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 1
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_constfold_func_9
     jmp .Lopt_constfold_func_6
+    jmp .Lopt_constfold_func_10
 .Lopt_constfold_func_9:
 .Lopt_constfold_func_10:
-    pushl -24(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_constfold_func_11
+    push dword ptr [ebp-96]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_constfold_func_11
     jmp .Lopt_constfold_func_6
+    jmp .Lopt_constfold_func_12
 .Lopt_constfold_func_11:
 .Lopt_constfold_func_12:
-    leal -16(%ebp), %eax
-    pushl %eax
-    pushl -24(%ebp)
-    pushl $20
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -32(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $8, %ecx
-    addl %ecx, %eax
-    movl (%eax), %ecx
-    movl 4(%eax), %edx
-    pushl %ecx
-    pushl %edx
-    popl %eax
-    popl %ecx
-    pushl %eax
-    pushl %ecx
-    pushl -40(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $8, %ecx
-    addl %ecx, %eax
-    movl (%eax), %ecx
-    movl 4(%eax), %edx
-    pushl %ecx
-    pushl %edx
-    popl %eax
-    popl %ecx
-    pushl %eax
-    pushl %ecx
-    call _eval_binary
-    addl $24, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_constfold_func_13
+    push dword ptr [ebp-80]
+    push 20
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-88]
+    push 20
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop ecx
+    pop eax
+    or eax, ecx
+    push eax
+    push dword ptr [ebp-96]
+    push 20
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop ecx
+    pop eax
+    or eax, ecx
+    push eax
+    push 65536
+    pop ecx
+    pop eax
+    and eax, ecx
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_constfold_func_13
     jmp .Lopt_constfold_func_6
+    jmp .Lopt_constfold_func_14
 .Lopt_constfold_func_13:
 .Lopt_constfold_func_14:
-    pushl -40(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -16(%ebp)
-    pushl -12(%ebp)
-    popl %edx
-    popl %eax
-    popl %ecx
-    movl %eax, (%ecx)
-    movl %edx, 4(%ecx)
-    pushl %eax
-    pushl %edx
-    addl $4, %esp
-    pushl -32(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl $1
-    popl %eax
-    movl %eax, -64(%ebp)
-    pushl -64(%ebp)
-    addl $4, %esp
-.Lopt_constfold_func_6:
-    pushl -48(%ebp)
-    pushl -48(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -48(%ebp)
-    addl $4, %esp
-    jmp .Lopt_constfold_func_4
-.Lopt_constfold_func_5:
-    pushl -64(%ebp)
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_constfold_func_15
-    pushl -72(%ebp)
-    call _compact_func
-    addl $4, %esp
-    pushl %eax
-    addl $4, %esp
+    lea eax, [ebp-104]
+    push eax
+    push dword ptr [ebp-96]
+    push 20
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-88]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 8
+    add eax, ecx
+    mov edx, dword ptr [eax+4]
+    push edx
+    mov eax, dword ptr [eax]
+    push eax
+    # unknown IR op: CDECL64
+    push dword ptr [ebp-80]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 8
+    add eax, ecx
+    mov edx, dword ptr [eax+4]
+    push edx
+    mov eax, dword ptr [eax]
+    push eax
+    # unknown IR op: CDECL64
+    pop eax
+    mov [ebp-128], eax
+    pop eax
+    mov [ebp-132], eax
+    pop eax
+    mov [ebp-136], eax
+    pop eax
+    mov [ebp-140], eax
+    mov [ebp-112], esp
+    push dword ptr [ebp-140]
+    push dword ptr [ebp-136]
+    push dword ptr [ebp-132]
+    push dword ptr [ebp-128]
+    and esp, -16
+    call eval_binary
+    mov esp, [ebp-112]
+    push eax
+    pop eax
+    test eax, eax
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_constfold_func_15
+    jmp .Lopt_constfold_func_6
     jmp .Lopt_constfold_func_16
 .Lopt_constfold_func_15:
 .Lopt_constfold_func_16:
+    push dword ptr [ebp-80]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-104]
+    pop edx
+    pop ecx
+    pop eax
+    mov dword ptr [eax], edx
+    mov dword ptr [eax+4], ecx
+    push edx
+    add esp, 4
+    add esp, 4
+    push dword ptr [ebp-88]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-96]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push 1
+    pop eax
+    mov [ebp-56], eax
+    push dword ptr [ebp-56]
+    add esp, 4
+.Lopt_constfold_func_6:
+    push dword ptr [ebp-72]
+    push dword ptr [ebp-72]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-72], eax
+    add esp, 4
+    jmp .Lopt_constfold_func_4
+.Lopt_constfold_func_5:
+    push dword ptr [ebp-56]
+    pop eax
+    test eax, eax
+    jz .Lopt_constfold_func_17
+    push dword ptr [ebp-48]
+    pop eax
+    mov [ebp-128], eax
+    mov [ebp-112], esp
+    push dword ptr [ebp-128]
+    and esp, -16
+    call compact_func
+    mov esp, [ebp-112]
+    jmp .Lopt_constfold_func_18
+.Lopt_constfold_func_17:
+.Lopt_constfold_func_18:
     jmp .Lopt_constfold_func_0
 .Lopt_constfold_func_1:
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 
-    .globl _opt_dce_func
-_opt_dce_func:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $288, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -40(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -24(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -32(%ebp)
-    pushl -32(%ebp)
-    addl $4, %esp
+    .globl opt_dce_func
+opt_dce_func:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 332
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    push 0
+    pop eax
+    mov [ebp-64], eax
+    push 0
+    pop eax
+    mov [ebp-56], eax
+    push dword ptr [ebp-56]
+    add esp, 4
 .Lopt_dce_func_0:
-    pushl -32(%ebp)
-    pushl -40(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_dce_func_1
-    pushl -40(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -32(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -16(%ebp)
-    pushl -24(%ebp)
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_dce_func_3
-    pushl -16(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $12
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lopt_dce_func_7
-    pushl -16(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $25
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-56]
+    push dword ptr [ebp-48]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_dce_func_1
+    push dword ptr [ebp-48]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-56]
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-72], eax
+    push dword ptr [ebp-64]
+    pop eax
+    test eax, eax
+    jz .Lopt_dce_func_3
+    push dword ptr [ebp-72]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 12
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lopt_dce_func_7
+    push dword ptr [ebp-72]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 25
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lopt_dce_func_8
 .Lopt_dce_func_7:
-    pushl $1
+    push 1
 .Lopt_dce_func_8:
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_dce_func_5
-    pushl $0
-    popl %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    addl $4, %esp
+    pop eax
+    test eax, eax
+    jz .Lopt_dce_func_5
+    push 0
+    pop eax
+    mov [ebp-64], eax
+    push dword ptr [ebp-64]
+    add esp, 4
     jmp .Lopt_dce_func_2
+    jmp .Lopt_dce_func_6
 .Lopt_dce_func_5:
 .Lopt_dce_func_6:
-    pushl -16(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $16
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_dce_func_11
-    pushl -16(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $17
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    jmp .Lopt_dce_func_12
-.Lopt_dce_func_11:
-    pushl $0
-.Lopt_dce_func_12:
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_dce_func_9
-    pushl -16(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    push dword ptr [ebp-72]
+    push 20
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 65536
+    pop ecx
+    pop eax
+    and eax, ecx
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_dce_func_9
+    jmp .Lopt_dce_func_2
     jmp .Lopt_dce_func_10
 .Lopt_dce_func_9:
 .Lopt_dce_func_10:
-    jmp .Lopt_dce_func_2
-.Lopt_dce_func_3:
-.Lopt_dce_func_4:
-    pushl -16(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $11
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lopt_dce_func_17
-    pushl -16(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $13
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    jmp .Lopt_dce_func_18
-.Lopt_dce_func_17:
-    pushl $1
-.Lopt_dce_func_18:
-    popl %eax
-    cmpl $0, %eax
-    jne .Lopt_dce_func_15
-    pushl -16(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $26
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    jmp .Lopt_dce_func_16
-.Lopt_dce_func_15:
-    pushl $1
-.Lopt_dce_func_16:
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_dce_func_13
-    pushl $1
-    popl %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-72]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 16
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_dce_func_13
+    push dword ptr [ebp-72]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 17
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lopt_dce_func_14
 .Lopt_dce_func_13:
+    push 0
 .Lopt_dce_func_14:
+    pop eax
+    test eax, eax
+    jz .Lopt_dce_func_11
+    push dword ptr [ebp-72]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    jmp .Lopt_dce_func_12
+.Lopt_dce_func_11:
+.Lopt_dce_func_12:
+    jmp .Lopt_dce_func_2
+    jmp .Lopt_dce_func_4
+.Lopt_dce_func_3:
+.Lopt_dce_func_4:
+    push dword ptr [ebp-72]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 11
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lopt_dce_func_19
+    push dword ptr [ebp-72]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 13
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    jmp .Lopt_dce_func_20
+.Lopt_dce_func_19:
+    push 1
+.Lopt_dce_func_20:
+    pop eax
+    test eax, eax
+    jnz .Lopt_dce_func_17
+    push dword ptr [ebp-72]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 26
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    jmp .Lopt_dce_func_18
+.Lopt_dce_func_17:
+    push 1
+.Lopt_dce_func_18:
+    pop eax
+    test eax, eax
+    jz .Lopt_dce_func_15
+    push 1
+    pop eax
+    mov [ebp-64], eax
+    push dword ptr [ebp-64]
+    add esp, 4
+    jmp .Lopt_dce_func_16
+.Lopt_dce_func_15:
+.Lopt_dce_func_16:
 .Lopt_dce_func_2:
-    pushl -32(%ebp)
-    pushl -32(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -32(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-56]
+    push dword ptr [ebp-56]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-56], eax
+    add esp, 4
     jmp .Lopt_dce_func_0
 .Lopt_dce_func_1:
-    pushl -40(%ebp)
-    call _compact_func
-    addl $4, %esp
-    pushl %eax
-    addl $4, %esp
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    push dword ptr [ebp-48]
+    pop eax
+    mov [ebp-96], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-96]
+    and esp, -16
+    call compact_func
+    mov esp, [ebp-80]
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 
-    .globl _opt_run
-_opt_run:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $288, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -40(%ebp)
-    movl 12(%ebp), %eax
-    movl %eax, -32(%ebp)
-    pushl -40(%ebp)
-    popl %eax
-    cmpl $0, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_run_0
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    .globl opt_run
+opt_run:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 332
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    mov eax, [ebp+12]
+    mov [ebp-56], eax
+    push dword ptr [ebp-48]
+    pop eax
+    test eax, eax
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_run_0
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
+    jmp .Lopt_run_1
 .Lopt_run_0:
 .Lopt_run_1:
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lopt_run_4
-    pushl -32(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setge %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    jmp .Lopt_run_5
+    push dword ptr [ebp-56]
+    push 1
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setge al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_run_2
+    push 0
+    pop eax
+    mov [ebp-64], eax
+    push dword ptr [ebp-64]
+    add esp, 4
 .Lopt_run_4:
-    pushl $1
-.Lopt_run_5:
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_run_2
-    pushl $0
-    popl %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-64]
+    push dword ptr [ebp-48]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_run_5
+    push dword ptr [ebp-48]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-64]
+    push 4
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-96]
+    and esp, -16
+    call opt_constfold_func
+    mov esp, [ebp-80]
 .Lopt_run_6:
-    pushl -24(%ebp)
-    pushl -40(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_run_7
-    pushl -40(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -24(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    call _opt_constfold_func
-    addl $4, %esp
-    pushl %eax
-    addl $4, %esp
-.Lopt_run_8:
-    pushl -24(%ebp)
-    pushl -24(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -24(%ebp)
-    addl $4, %esp
-    jmp .Lopt_run_6
-.Lopt_run_7:
+    push dword ptr [ebp-64]
+    push dword ptr [ebp-64]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-64], eax
+    add esp, 4
+    jmp .Lopt_run_4
+.Lopt_run_5:
     jmp .Lopt_run_3
 .Lopt_run_2:
 .Lopt_run_3:
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $28
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lopt_run_11
-    pushl -32(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setge %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    jmp .Lopt_run_12
-.Lopt_run_11:
-    pushl $1
-.Lopt_run_12:
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_run_9
-    pushl $0
-    popl %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    addl $4, %esp
-.Lopt_run_13:
-    pushl -24(%ebp)
-    pushl -40(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_run_14
-    pushl -40(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -24(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    call _opt_dce_func
-    addl $4, %esp
-    pushl %eax
-    addl $4, %esp
-.Lopt_run_15:
-    pushl -24(%ebp)
-    pushl -24(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -24(%ebp)
-    addl $4, %esp
-    jmp .Lopt_run_13
-.Lopt_run_14:
-    jmp .Lopt_run_10
+    push dword ptr [ebp-56]
+    push 1
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setge al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_run_7
+    push 0
+    pop eax
+    mov [ebp-64], eax
+    push dword ptr [ebp-64]
+    add esp, 4
 .Lopt_run_9:
+    push dword ptr [ebp-64]
+    push dword ptr [ebp-48]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_run_10
+    push dword ptr [ebp-48]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-64]
+    push 4
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-96]
+    and esp, -16
+    call opt_dce_func
+    mov esp, [ebp-80]
+.Lopt_run_11:
+    push dword ptr [ebp-64]
+    push dword ptr [ebp-64]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-64], eax
+    add esp, 4
+    jmp .Lopt_run_9
 .Lopt_run_10:
-    pushl -32(%ebp)
-    pushl $2
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setge %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_run_18
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $36
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    jmp .Lopt_run_19
+    jmp .Lopt_run_8
+.Lopt_run_7:
+.Lopt_run_8:
+    push dword ptr [ebp-56]
+    push 2
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setge al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_run_14
+    lea eax, [g_config]
+    push eax
+    push 36
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    jmp .Lopt_run_15
+.Lopt_run_14:
+    push 0
+.Lopt_run_15:
+    pop eax
+    test eax, eax
+    jz .Lopt_run_12
+    push dword ptr [ebp-48]
+    pop eax
+    mov [ebp-96], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-96]
+    and esp, -16
+    call opt_inline
+    mov esp, [ebp-80]
+    push dword ptr [ebp-56]
+    push 1
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setge al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_run_16
+    push 0
+    pop eax
+    mov [ebp-64], eax
+    push dword ptr [ebp-64]
+    add esp, 4
 .Lopt_run_18:
-    pushl $0
-.Lopt_run_19:
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_run_16
-    pushl -40(%ebp)
-    call _opt_inline
-    addl $4, %esp
-    pushl %eax
-    addl $4, %esp
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $28
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lopt_run_22
-    pushl -32(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setge %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    jmp .Lopt_run_23
-.Lopt_run_22:
-    pushl $1
-.Lopt_run_23:
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_run_20
-    pushl $0
-    popl %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    addl $4, %esp
-.Lopt_run_24:
-    pushl -24(%ebp)
-    pushl -40(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_run_25
-    pushl -40(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -24(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    call _opt_dce_func
-    addl $4, %esp
-    pushl %eax
-    addl $4, %esp
-.Lopt_run_26:
-    pushl -24(%ebp)
-    pushl -24(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -24(%ebp)
-    addl $4, %esp
-    jmp .Lopt_run_24
-.Lopt_run_25:
-    jmp .Lopt_run_21
+    push dword ptr [ebp-64]
+    push dword ptr [ebp-48]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_run_19
+    push dword ptr [ebp-48]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-64]
+    push 4
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-96]
+    and esp, -16
+    call opt_dce_func
+    mov esp, [ebp-80]
 .Lopt_run_20:
-.Lopt_run_21:
+    push dword ptr [ebp-64]
+    push dword ptr [ebp-64]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-64], eax
+    add esp, 4
+    jmp .Lopt_run_18
+.Lopt_run_19:
     jmp .Lopt_run_17
 .Lopt_run_16:
 .Lopt_run_17:
-    movl $_g_config, %eax
-    pushl %eax
-    pushl $40
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lopt_run_29
-    pushl -32(%ebp)
-    pushl $2
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setge %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    jmp .Lopt_run_30
-.Lopt_run_29:
-    pushl $1
-.Lopt_run_30:
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_run_27
-    pushl -40(%ebp)
-    call _opt_vectorize
-    addl $4, %esp
-    pushl %eax
-    addl $4, %esp
-    jmp .Lopt_run_28
-.Lopt_run_27:
-.Lopt_run_28:
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    jmp .Lopt_run_13
+.Lopt_run_12:
+.Lopt_run_13:
+    lea eax, [g_config]
+    push eax
+    push 40
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lopt_run_23
+    push dword ptr [ebp-56]
+    push 2
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setge al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    jmp .Lopt_run_24
+.Lopt_run_23:
+    push 1
+.Lopt_run_24:
+    pop eax
+    test eax, eax
+    jz .Lopt_run_21
+    push dword ptr [ebp-48]
+    pop eax
+    mov [ebp-96], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-96]
+    and esp, -16
+    call opt_vectorize
+    mov esp, [ebp-80]
+    jmp .Lopt_run_22
+.Lopt_run_21:
+.Lopt_run_22:
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 
-_count_insts_and_check_recursion:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $320, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -72(%ebp)
-    movl 12(%ebp), %eax
-    movl %eax, -64(%ebp)
-    movl 16(%ebp), %eax
-    movl %eax, -56(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -40(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -32(%ebp)
-    pushl -56(%ebp)
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl $0
-    popl %eax
-    movl %eax, -48(%ebp)
-    pushl -48(%ebp)
-    addl $4, %esp
+    .globl count_insts_and_check_recursion
+count_insts_and_check_recursion:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 364
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    mov eax, [ebp+12]
+    mov [ebp-56], eax
+    mov eax, [ebp+16]
+    mov [ebp-64], eax
+    push 0
+    pop eax
+    mov [ebp-80], eax
+    push 0
+    pop eax
+    mov [ebp-88], eax
+    push dword ptr [ebp-64]
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push 0
+    pop eax
+    mov [ebp-72], eax
+    push dword ptr [ebp-72]
+    add esp, 4
 .Lcount_insts_and_check_recursion_0:
-    pushl -48(%ebp)
-    pushl -72(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lcount_insts_and_check_recursion_1
-    pushl -72(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -48(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    pushl $16
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lcount_insts_and_check_recursion_9
-    pushl -24(%ebp)
-    pushl $17
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-72]
+    push dword ptr [ebp-48]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lcount_insts_and_check_recursion_1
+    push dword ptr [ebp-48]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-72]
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    push dword ptr [ebp-96]
+    push 16
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lcount_insts_and_check_recursion_9
+    push dword ptr [ebp-96]
+    push 17
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lcount_insts_and_check_recursion_10
 .Lcount_insts_and_check_recursion_9:
-    pushl $1
+    push 1
 .Lcount_insts_and_check_recursion_10:
-    popl %eax
-    cmpl $0, %eax
-    jne .Lcount_insts_and_check_recursion_7
-    pushl -24(%ebp)
-    pushl $12
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jnz .Lcount_insts_and_check_recursion_7
+    push dword ptr [ebp-96]
+    push 12
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lcount_insts_and_check_recursion_8
 .Lcount_insts_and_check_recursion_7:
-    pushl $1
+    push 1
 .Lcount_insts_and_check_recursion_8:
-    popl %eax
-    cmpl $0, %eax
-    jne .Lcount_insts_and_check_recursion_5
-    pushl -24(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jnz .Lcount_insts_and_check_recursion_5
+    push dword ptr [ebp-96]
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lcount_insts_and_check_recursion_6
 .Lcount_insts_and_check_recursion_5:
-    pushl $1
+    push 1
 .Lcount_insts_and_check_recursion_6:
-    popl %eax
-    cmpl $0, %eax
-    je .Lcount_insts_and_check_recursion_3
+    pop eax
+    test eax, eax
+    jz .Lcount_insts_and_check_recursion_3
     jmp .Lcount_insts_and_check_recursion_2
+    jmp .Lcount_insts_and_check_recursion_4
 .Lcount_insts_and_check_recursion_3:
 .Lcount_insts_and_check_recursion_4:
-    pushl -24(%ebp)
-    pushl $10
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lcount_insts_and_check_recursion_15
-    pushl -72(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -48(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $16
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-96]
+    push 10
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lcount_insts_and_check_recursion_15
+    push dword ptr [ebp-48]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-72]
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 16
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lcount_insts_and_check_recursion_16
 .Lcount_insts_and_check_recursion_15:
-    pushl $0
+    push 0
 .Lcount_insts_and_check_recursion_16:
-    popl %eax
-    cmpl $0, %eax
-    je .Lcount_insts_and_check_recursion_13
-    pushl -72(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -72(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -48(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $16
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jz .Lcount_insts_and_check_recursion_13
+    push dword ptr [ebp-48]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-48]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-72]
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 16
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    mov [ebp-128], eax
+    pop eax
+    mov [ebp-132], eax
+    mov [ebp-112], esp
+    push dword ptr [ebp-132]
+    push dword ptr [ebp-128]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-112]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lcount_insts_and_check_recursion_14
 .Lcount_insts_and_check_recursion_13:
-    pushl $0
+    push 0
 .Lcount_insts_and_check_recursion_14:
-    popl %eax
-    cmpl $0, %eax
-    je .Lcount_insts_and_check_recursion_11
-    pushl $1
-    popl %eax
-    movl %eax, -32(%ebp)
-    pushl -32(%ebp)
-    addl $4, %esp
+    pop eax
+    test eax, eax
+    jz .Lcount_insts_and_check_recursion_11
+    push 1
+    pop eax
+    mov [ebp-88], eax
+    push dword ptr [ebp-88]
+    add esp, 4
     jmp .Lcount_insts_and_check_recursion_12
 .Lcount_insts_and_check_recursion_11:
 .Lcount_insts_and_check_recursion_12:
-    pushl -24(%ebp)
-    pushl $20
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lcount_insts_and_check_recursion_19
-    pushl -72(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -48(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $20
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    shrl %cl, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-96]
+    push 20
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lcount_insts_and_check_recursion_19
+    push dword ptr [ebp-48]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-72]
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 20
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    sar eax, cl
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lcount_insts_and_check_recursion_20
 .Lcount_insts_and_check_recursion_19:
-    pushl $0
+    push 0
 .Lcount_insts_and_check_recursion_20:
-    popl %eax
-    cmpl $0, %eax
-    je .Lcount_insts_and_check_recursion_17
-    pushl -56(%ebp)
-    pushl $1
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    pop eax
+    test eax, eax
+    jz .Lcount_insts_and_check_recursion_17
+    push dword ptr [ebp-64]
+    push 1
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lcount_insts_and_check_recursion_18
 .Lcount_insts_and_check_recursion_17:
 .Lcount_insts_and_check_recursion_18:
-    pushl -40(%ebp)
-    pushl -40(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -40(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-80]
+    push dword ptr [ebp-80]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-80], eax
+    add esp, 4
 .Lcount_insts_and_check_recursion_2:
-    pushl -48(%ebp)
-    pushl -48(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -48(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-72]
+    push dword ptr [ebp-72]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-72], eax
+    add esp, 4
     jmp .Lcount_insts_and_check_recursion_0
 .Lcount_insts_and_check_recursion_1:
-    pushl -64(%ebp)
-    pushl -40(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -32(%ebp)
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    push dword ptr [ebp-56]
+    push dword ptr [ebp-80]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-88]
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 
-    .globl _opt_inline
-_opt_inline:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $448, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -200(%ebp)
-    pushl -200(%ebp)
-    popl %eax
-    cmpl $0, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lopt_inline_2
-    pushl -200(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    .globl opt_inline
+opt_inline:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 492
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    push dword ptr [ebp-48]
+    pop eax
+    test eax, eax
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lopt_inline_2
+    push dword ptr [ebp-48]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lopt_inline_3
 .Lopt_inline_2:
-    pushl $1
+    push 1
 .Lopt_inline_3:
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_0
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_0
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
+    jmp .Lopt_inline_1
 .Lopt_inline_0:
 .Lopt_inline_1:
-    pushl $12
-    pushl -200(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    call _mem_pool_alloc
-    addl $4, %esp
-    pushl %eax
-    popl %eax
-    movl %eax, -168(%ebp)
-    pushl -168(%ebp)
-    addl $4, %esp
-    pushl $0
-    popl %eax
-    movl %eax, -192(%ebp)
-    pushl -192(%ebp)
-    addl $4, %esp
+    push 12
+    push dword ptr [ebp-48]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop eax
+    mov [ebp-256], eax
+    mov [ebp-240], esp
+    push dword ptr [ebp-256]
+    and esp, -16
+    call mem_pool_alloc
+    mov esp, [ebp-240]
+    push eax
+    pop eax
+    mov [ebp-80], eax
+    push dword ptr [ebp-80]
+    add esp, 4
+    push 0
+    pop eax
+    mov [ebp-56], eax
+    push dword ptr [ebp-56]
+    add esp, 4
 .Lopt_inline_4:
-    pushl -192(%ebp)
-    pushl -200(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_5
-    pushl -200(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -192(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -160(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -152(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -144(%ebp)
-    leal -144(%ebp), %eax
-    pushl %eax
-    leal -152(%ebp), %eax
-    pushl %eax
-    pushl -160(%ebp)
-    call _count_insts_and_check_recursion
-    addl $12, %esp
-    pushl %eax
-    popl %eax
-    movl %eax, -136(%ebp)
-    pushl -168(%ebp)
-    pushl -192(%ebp)
-    pushl $12
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -160(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -168(%ebp)
-    pushl -192(%ebp)
-    pushl $12
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -152(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -168(%ebp)
-    pushl -192(%ebp)
-    pushl $12
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -136(%ebp)
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_7
+    push dword ptr [ebp-56]
+    push dword ptr [ebp-48]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_5
+    push dword ptr [ebp-48]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-56]
+    push 4
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    mov [ebp-88], eax
+    push 0
+    pop eax
+    mov [ebp-96], eax
+    push 0
+    pop eax
+    mov [ebp-104], eax
+    lea eax, [ebp-104]
+    push eax
+    lea eax, [ebp-96]
+    push eax
+    push dword ptr [ebp-88]
+    pop eax
+    mov [ebp-256], eax
+    pop eax
+    mov [ebp-260], eax
+    pop eax
+    mov [ebp-264], eax
+    mov [ebp-240], esp
+    push dword ptr [ebp-264]
+    push dword ptr [ebp-260]
+    push dword ptr [ebp-256]
+    and esp, -16
+    call count_insts_and_check_recursion
+    mov esp, [ebp-240]
+    push eax
+    pop eax
+    mov [ebp-112], eax
+    push dword ptr [ebp-80]
+    push dword ptr [ebp-56]
+    push 12
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-88]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-80]
+    push dword ptr [ebp-56]
+    push 12
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-96]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-80]
+    push dword ptr [ebp-56]
+    push 12
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-112]
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_7
     jmp .Lopt_inline_6
+    jmp .Lopt_inline_8
 .Lopt_inline_7:
 .Lopt_inline_8:
-    pushl -160(%ebp)
-    pushl $28
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_9
+    push dword ptr [ebp-88]
+    push 28
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_9
     jmp .Lopt_inline_6
+    jmp .Lopt_inline_10
 .Lopt_inline_9:
 .Lopt_inline_10:
-    pushl -160(%ebp)
-    pushl $36
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lopt_inline_15
-    pushl -160(%ebp)
-    pushl $44
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-88]
+    push 36
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lopt_inline_15
+    push dword ptr [ebp-88]
+    push 44
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lopt_inline_16
 .Lopt_inline_15:
-    pushl $1
+    push 1
 .Lopt_inline_16:
-    popl %eax
-    cmpl $0, %eax
-    jne .Lopt_inline_13
-    pushl -160(%ebp)
-    pushl $56
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jnz .Lopt_inline_13
+    push dword ptr [ebp-88]
+    push 56
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lopt_inline_14
 .Lopt_inline_13:
-    pushl $1
+    push 1
 .Lopt_inline_14:
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_11
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_11
     jmp .Lopt_inline_6
+    jmp .Lopt_inline_12
 .Lopt_inline_11:
 .Lopt_inline_12:
-    pushl -160(%ebp)
-    pushl $64
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lopt_inline_19
-    pushl -160(%ebp)
-    pushl $68
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-88]
+    push 64
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lopt_inline_19
+    push dword ptr [ebp-88]
+    push 68
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lopt_inline_20
 .Lopt_inline_19:
-    pushl $1
+    push 1
 .Lopt_inline_20:
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_17
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_17
     jmp .Lopt_inline_6
+    jmp .Lopt_inline_18
 .Lopt_inline_17:
 .Lopt_inline_18:
-    pushl -160(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $4
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setg %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_21
+    push dword ptr [ebp-88]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 4
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setg al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_21
     jmp .Lopt_inline_6
+    jmp .Lopt_inline_22
 .Lopt_inline_21:
 .Lopt_inline_22:
-    pushl -144(%ebp)
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_23
+    push dword ptr [ebp-104]
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_23
     jmp .Lopt_inline_6
+    jmp .Lopt_inline_24
 .Lopt_inline_23:
 .Lopt_inline_24:
-    pushl -160(%ebp)
-    pushl $60
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_25
-    pushl -168(%ebp)
-    pushl -192(%ebp)
-    pushl $12
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $1
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    push dword ptr [ebp-88]
+    push 60
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_25
+    push dword ptr [ebp-80]
+    push dword ptr [ebp-56]
+    push 12
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 1
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lopt_inline_26
 .Lopt_inline_25:
-    pushl -152(%ebp)
-    pushl $12
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setle %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_27
-    pushl -168(%ebp)
-    pushl -192(%ebp)
-    pushl $12
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $1
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    push dword ptr [ebp-96]
+    push 12
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setle al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_27
+    push dword ptr [ebp-80]
+    push dword ptr [ebp-56]
+    push 12
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 1
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lopt_inline_28
 .Lopt_inline_27:
 .Lopt_inline_28:
 .Lopt_inline_26:
 .Lopt_inline_6:
-    pushl -192(%ebp)
-    pushl -192(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -192(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-56]
+    push dword ptr [ebp-56]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-56], eax
+    add esp, 4
     jmp .Lopt_inline_4
 .Lopt_inline_5:
-    pushl $0
-    popl %eax
-    movl %eax, -192(%ebp)
-    pushl -192(%ebp)
-    addl $4, %esp
+    push 0
+    pop eax
+    mov [ebp-56], eax
+    push dword ptr [ebp-56]
+    add esp, 4
 .Lopt_inline_29:
-    pushl -192(%ebp)
-    pushl -200(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_30
-    pushl -200(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -192(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -160(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -144(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -128(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -184(%ebp)
-    pushl -184(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-56]
+    push dword ptr [ebp-48]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_30
+    push dword ptr [ebp-48]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-56]
+    push 4
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    mov [ebp-88], eax
+    push 0
+    pop eax
+    mov [ebp-104], eax
+    push 0
+    pop eax
+    mov [ebp-120], eax
+    push 0
+    pop eax
+    mov [ebp-64], eax
+    push dword ptr [ebp-64]
+    add esp, 4
 .Lopt_inline_32:
-    pushl -184(%ebp)
-    pushl -160(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_33
-    pushl -160(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -184(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -120(%ebp)
-    pushl -120(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $10
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_35
+    push dword ptr [ebp-64]
+    push dword ptr [ebp-88]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_33
+    push dword ptr [ebp-88]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-64]
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-128], eax
+    push dword ptr [ebp-128]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 10
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_35
     jmp .Lopt_inline_34
+    jmp .Lopt_inline_36
 .Lopt_inline_35:
 .Lopt_inline_36:
-    pushl $0
-    popl %eax
-    movl %eax, -176(%ebp)
-    pushl -176(%ebp)
-    addl $4, %esp
+    push 0
+    pop eax
+    mov [ebp-72], eax
+    push dword ptr [ebp-72]
+    add esp, 4
 .Lopt_inline_37:
-    pushl -176(%ebp)
-    pushl -200(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_38
-    pushl -168(%ebp)
-    pushl -176(%ebp)
-    pushl $12
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_46
-    pushl -120(%ebp)
-    pushl $16
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-72]
+    push dword ptr [ebp-48]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_38
+    push dword ptr [ebp-80]
+    push dword ptr [ebp-72]
+    push 12
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_46
+    push dword ptr [ebp-128]
+    push 16
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lopt_inline_47
 .Lopt_inline_46:
-    pushl $0
+    push 0
 .Lopt_inline_47:
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_44
-    pushl -168(%ebp)
-    pushl -176(%ebp)
-    pushl $12
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -120(%ebp)
-    pushl $16
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_44
+    push dword ptr [ebp-80]
+    push dword ptr [ebp-72]
+    push 12
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-128]
+    push 16
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    mov [ebp-256], eax
+    pop eax
+    mov [ebp-260], eax
+    mov [ebp-240], esp
+    push dword ptr [ebp-260]
+    push dword ptr [ebp-256]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-240]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lopt_inline_45
 .Lopt_inline_44:
-    pushl $0
+    push 0
 .Lopt_inline_45:
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_42
-    pushl -160(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -168(%ebp)
-    pushl -176(%ebp)
-    pushl $12
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_42
+    push dword ptr [ebp-88]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-80]
+    push dword ptr [ebp-72]
+    push 12
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    mov [ebp-256], eax
+    pop eax
+    mov [ebp-260], eax
+    mov [ebp-240], esp
+    push dword ptr [ebp-260]
+    push dword ptr [ebp-256]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-240]
+    push eax
+    pop eax
+    test eax, eax
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lopt_inline_43
 .Lopt_inline_42:
-    pushl $0
+    push 0
 .Lopt_inline_43:
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_40
-    pushl $1
-    popl %eax
-    movl %eax, -128(%ebp)
-    pushl -128(%ebp)
-    addl $4, %esp
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_40
+    push 1
+    pop eax
+    mov [ebp-120], eax
+    push dword ptr [ebp-120]
+    add esp, 4
     jmp .Lopt_inline_38
+    jmp .Lopt_inline_41
 .Lopt_inline_40:
 .Lopt_inline_41:
 .Lopt_inline_39:
-    pushl -176(%ebp)
-    pushl -176(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -176(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-72]
+    push dword ptr [ebp-72]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-72], eax
+    add esp, 4
     jmp .Lopt_inline_37
 .Lopt_inline_38:
-    pushl -128(%ebp)
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_48
+    push dword ptr [ebp-120]
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_48
     jmp .Lopt_inline_33
+    jmp .Lopt_inline_49
 .Lopt_inline_48:
 .Lopt_inline_49:
 .Lopt_inline_34:
-    pushl -184(%ebp)
-    pushl -184(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -184(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-64]
+    push dword ptr [ebp-64]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-64], eax
+    add esp, 4
     jmp .Lopt_inline_32
 .Lopt_inline_33:
-    pushl -128(%ebp)
-    popl %eax
-    cmpl $0, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_50
+    push dword ptr [ebp-120]
+    pop eax
+    test eax, eax
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_50
     jmp .Lopt_inline_31
+    jmp .Lopt_inline_51
 .Lopt_inline_50:
 .Lopt_inline_51:
-    pushl -160(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $3
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    pushl $4096
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -152(%ebp)
-    pushl -152(%ebp)
-    addl $4, %esp
-    pushl $0
-    popl %eax
-    movl %eax, -184(%ebp)
-    pushl -184(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-88]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 3
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    push 4096
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    push dword ptr [ebp-96]
+    add esp, 4
+    push 0
+    pop eax
+    mov [ebp-64], eax
+    push dword ptr [ebp-64]
+    add esp, 4
 .Lopt_inline_52:
-    pushl -184(%ebp)
-    pushl -160(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_53
-    pushl -160(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -184(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -120(%ebp)
-    pushl -120(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $10
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_55
+    push dword ptr [ebp-64]
+    push dword ptr [ebp-88]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_53
+    push dword ptr [ebp-88]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-64]
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-128], eax
+    push dword ptr [ebp-128]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 10
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_55
     jmp .Lopt_inline_54
+    jmp .Lopt_inline_56
 .Lopt_inline_55:
 .Lopt_inline_56:
-    pushl $0
-    popl %eax
-    movl %eax, -176(%ebp)
-    pushl -176(%ebp)
-    addl $4, %esp
+    push 0
+    pop eax
+    mov [ebp-72], eax
+    push dword ptr [ebp-72]
+    add esp, 4
 .Lopt_inline_57:
-    pushl -176(%ebp)
-    pushl -200(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_58
-    pushl -168(%ebp)
-    pushl -176(%ebp)
-    pushl $12
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_66
-    pushl -120(%ebp)
-    pushl $16
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-72]
+    push dword ptr [ebp-48]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_58
+    push dword ptr [ebp-80]
+    push dword ptr [ebp-72]
+    push 12
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_66
+    push dword ptr [ebp-128]
+    push 16
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lopt_inline_67
 .Lopt_inline_66:
-    pushl $0
+    push 0
 .Lopt_inline_67:
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_64
-    pushl -168(%ebp)
-    pushl -176(%ebp)
-    pushl $12
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -120(%ebp)
-    pushl $16
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_64
+    push dword ptr [ebp-80]
+    push dword ptr [ebp-72]
+    push 12
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-128]
+    push 16
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    mov [ebp-256], eax
+    pop eax
+    mov [ebp-260], eax
+    mov [ebp-240], esp
+    push dword ptr [ebp-260]
+    push dword ptr [ebp-256]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-240]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lopt_inline_65
 .Lopt_inline_64:
-    pushl $0
+    push 0
 .Lopt_inline_65:
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_62
-    pushl -160(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -168(%ebp)
-    pushl -176(%ebp)
-    pushl $12
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_62
+    push dword ptr [ebp-88]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-80]
+    push dword ptr [ebp-72]
+    push 12
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    mov [ebp-256], eax
+    pop eax
+    mov [ebp-260], eax
+    mov [ebp-240], esp
+    push dword ptr [ebp-260]
+    push dword ptr [ebp-256]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-240]
+    push eax
+    pop eax
+    test eax, eax
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lopt_inline_63
 .Lopt_inline_62:
-    pushl $0
+    push 0
 .Lopt_inline_63:
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_60
-    pushl -168(%ebp)
-    pushl -176(%ebp)
-    pushl $12
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -112(%ebp)
-    pushl -152(%ebp)
-    pushl -120(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $8, %ecx
-    addl %ecx, %eax
-    movl (%eax), %ecx
-    movl 4(%eax), %edx
-    pushl %ecx
-    pushl %edx
-    pushl -112(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $16
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %eax, 4(%esp)
-    adcl %ecx, (%esp)
-    popl %edx
-    popl %eax
-    pushl %eax
-    pushl %edx
-    pushl $128
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %eax, 4(%esp)
-    adcl %ecx, (%esp)
-    popl %edx
-    popl %eax
-    pushl %eax
-    pushl %edx
-    addl $4, %esp
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -152(%ebp)
-    pushl -152(%ebp)
-    addl $4, %esp
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_60
+    push dword ptr [ebp-80]
+    push dword ptr [ebp-72]
+    push 12
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    mov [ebp-136], eax
+    push dword ptr [ebp-96]
+    push dword ptr [ebp-128]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 8
+    add eax, ecx
+    mov edx, dword ptr [eax+4]
+    push edx
+    mov eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-136]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 16
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop ecx
+    pop ebx
+    pop eax
+    pop edx
+    add eax, ecx
+    add edx, ebx
+    push edx
+    push eax
+    push 128
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop ecx
+    pop ebx
+    pop eax
+    pop edx
+    add eax, ecx
+    add edx, ebx
+    push edx
+    push eax
+    add esp, 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    push dword ptr [ebp-96]
+    add esp, 4
     jmp .Lopt_inline_58
+    jmp .Lopt_inline_61
 .Lopt_inline_60:
 .Lopt_inline_61:
 .Lopt_inline_59:
-    pushl -176(%ebp)
-    pushl -176(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -176(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-72]
+    push dword ptr [ebp-72]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-72], eax
+    add esp, 4
     jmp .Lopt_inline_57
 .Lopt_inline_58:
 .Lopt_inline_54:
-    pushl -184(%ebp)
-    pushl -184(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -184(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-64]
+    push dword ptr [ebp-64]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-64], eax
+    add esp, 4
     jmp .Lopt_inline_52
 .Lopt_inline_53:
-    pushl $32
-    pushl -152(%ebp)
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    call _mem_pool_alloc
-    addl $4, %esp
-    pushl %eax
-    popl %eax
-    movl %eax, -136(%ebp)
-    pushl -136(%ebp)
-    addl $4, %esp
-    pushl $0
-    popl %eax
-    movl %eax, -184(%ebp)
-    pushl -184(%ebp)
-    addl $4, %esp
+    push 32
+    push dword ptr [ebp-96]
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop eax
+    mov [ebp-256], eax
+    mov [ebp-240], esp
+    push dword ptr [ebp-256]
+    and esp, -16
+    call mem_pool_alloc
+    mov esp, [ebp-240]
+    push eax
+    pop eax
+    mov [ebp-112], eax
+    push dword ptr [ebp-112]
+    add esp, 4
+    push 0
+    pop eax
+    mov [ebp-64], eax
+    push dword ptr [ebp-64]
+    add esp, 4
 .Lopt_inline_68:
-    pushl -184(%ebp)
-    pushl -160(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_69
-    pushl -160(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -184(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -120(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -112(%ebp)
-    pushl $1
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -72(%ebp)
-    pushl $1
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -64(%ebp)
-    pushl -120(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $10
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_71
-    pushl -136(%ebp)
-    pushl -144(%ebp)
-    pushl -144(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -144(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -120(%ebp)
-    pushl -136(%ebp)
-    pushl -144(%ebp)
-    pushl -144(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -144(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    movl 0(%eax), %edx
-    movl %edx, 0(%ecx)
-    movl 4(%eax), %edx
-    movl %edx, 4(%ecx)
-    movl 8(%eax), %edx
-    movl %edx, 8(%ecx)
-    movl 12(%eax), %edx
-    movl %edx, 12(%ecx)
-    movl 16(%eax), %edx
-    movl %edx, 16(%ecx)
-    movl 20(%eax), %edx
-    movl %edx, 20(%ecx)
-    movl 24(%eax), %edx
-    movl %edx, 24(%ecx)
-    movl 28(%eax), %edx
-    movl %edx, 28(%ecx)
-    pushl %eax
-    addl $4, %esp
+    push dword ptr [ebp-64]
+    push dword ptr [ebp-88]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_69
+    push dword ptr [ebp-88]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-64]
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-128], eax
+    push 0
+    pop eax
+    mov [ebp-136], eax
+    push 1
+    pop eax
+    neg eax
+    push eax
+    pop eax
+    mov [ebp-176], eax
+    push 1
+    pop eax
+    neg eax
+    push eax
+    pop eax
+    mov [ebp-184], eax
+    push dword ptr [ebp-128]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 10
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_71
+    push dword ptr [ebp-112]
+    push dword ptr [ebp-104]
+    push dword ptr [ebp-104]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-104], eax
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-128]
+    push dword ptr [ebp-112]
+    push dword ptr [ebp-104]
+    push dword ptr [ebp-104]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-104], eax
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop edi
+    pop esi
+    mov ecx, 32
+    rep movsb
+    add esp, 4
     jmp .Lopt_inline_70
+    jmp .Lopt_inline_72
 .Lopt_inline_71:
 .Lopt_inline_72:
-    pushl $0
-    popl %eax
-    movl %eax, -176(%ebp)
-    pushl -176(%ebp)
-    addl $4, %esp
+    push 0
+    pop eax
+    mov [ebp-72], eax
+    push dword ptr [ebp-72]
+    add esp, 4
 .Lopt_inline_73:
-    pushl -176(%ebp)
-    pushl -200(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_74
-    pushl -168(%ebp)
-    pushl -176(%ebp)
-    pushl $12
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_82
-    pushl -120(%ebp)
-    pushl $16
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-72]
+    push dword ptr [ebp-48]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_74
+    push dword ptr [ebp-80]
+    push dword ptr [ebp-72]
+    push 12
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_82
+    push dword ptr [ebp-128]
+    push 16
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lopt_inline_83
 .Lopt_inline_82:
-    pushl $0
+    push 0
 .Lopt_inline_83:
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_80
-    pushl -168(%ebp)
-    pushl -176(%ebp)
-    pushl $12
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -120(%ebp)
-    pushl $16
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_80
+    push dword ptr [ebp-80]
+    push dword ptr [ebp-72]
+    push 12
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-128]
+    push 16
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    mov [ebp-256], eax
+    pop eax
+    mov [ebp-260], eax
+    mov [ebp-240], esp
+    push dword ptr [ebp-260]
+    push dword ptr [ebp-256]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-240]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lopt_inline_81
 .Lopt_inline_80:
-    pushl $0
+    push 0
 .Lopt_inline_81:
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_78
-    pushl -160(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -168(%ebp)
-    pushl -176(%ebp)
-    pushl $12
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    call _ark_streq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_78
+    push dword ptr [ebp-88]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-80]
+    push dword ptr [ebp-72]
+    push 12
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    mov [ebp-256], eax
+    pop eax
+    mov [ebp-260], eax
+    mov [ebp-240], esp
+    push dword ptr [ebp-260]
+    push dword ptr [ebp-256]
+    and esp, -16
+    call ark_streq
+    mov esp, [ebp-240]
+    push eax
+    pop eax
+    test eax, eax
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lopt_inline_79
 .Lopt_inline_78:
-    pushl $0
+    push 0
 .Lopt_inline_79:
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_76
-    pushl -168(%ebp)
-    pushl -176(%ebp)
-    pushl $12
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -112(%ebp)
-    pushl -112(%ebp)
-    addl $4, %esp
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_76
+    push dword ptr [ebp-80]
+    push dword ptr [ebp-72]
+    push 12
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    mov [ebp-136], eax
+    push dword ptr [ebp-136]
+    add esp, 4
     jmp .Lopt_inline_74
+    jmp .Lopt_inline_77
 .Lopt_inline_76:
 .Lopt_inline_77:
 .Lopt_inline_75:
-    pushl -176(%ebp)
-    pushl -176(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -176(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-72]
+    push dword ptr [ebp-72]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-72], eax
+    add esp, 4
     jmp .Lopt_inline_73
 .Lopt_inline_74:
-    pushl -112(%ebp)
-    popl %eax
-    cmpl $0, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_84
-    pushl -136(%ebp)
-    pushl -144(%ebp)
-    pushl -144(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -144(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -120(%ebp)
-    pushl -136(%ebp)
-    pushl -144(%ebp)
-    pushl -144(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -144(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    movl 0(%eax), %edx
-    movl %edx, 0(%ecx)
-    movl 4(%eax), %edx
-    movl %edx, 4(%ecx)
-    movl 8(%eax), %edx
-    movl %edx, 8(%ecx)
-    movl 12(%eax), %edx
-    movl %edx, 12(%ecx)
-    movl 16(%eax), %edx
-    movl %edx, 16(%ecx)
-    movl 20(%eax), %edx
-    movl %edx, 20(%ecx)
-    movl 24(%eax), %edx
-    movl %edx, 24(%ecx)
-    movl 28(%eax), %edx
-    movl %edx, 28(%ecx)
-    pushl %eax
-    addl $4, %esp
+    push dword ptr [ebp-136]
+    pop eax
+    test eax, eax
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_84
+    push dword ptr [ebp-112]
+    push dword ptr [ebp-104]
+    push dword ptr [ebp-104]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-104], eax
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-128]
+    push dword ptr [ebp-112]
+    push dword ptr [ebp-104]
+    push dword ptr [ebp-104]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-104], eax
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop edi
+    pop esi
+    mov ecx, 32
+    rep movsb
+    add esp, 4
     jmp .Lopt_inline_70
+    jmp .Lopt_inline_85
 .Lopt_inline_84:
 .Lopt_inline_85:
-    pushl -120(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $8, %ecx
-    addl %ecx, %eax
-    movl (%eax), %ecx
-    movl 4(%eax), %edx
-    pushl %ecx
-    pushl %edx
-    addl $4, %esp
-    popl %eax
-    movl %eax, -104(%ebp)
-    pushl -104(%ebp)
-    addl $4, %esp
-    pushl -104(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_86
-    pushl $0
-    popl %eax
-    movl %eax, -104(%ebp)
-    pushl -104(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-128]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 8
+    add eax, ecx
+    mov edx, dword ptr [eax+4]
+    push edx
+    mov eax, dword ptr [eax]
+    push eax
+    add esp, 4
+    pop eax
+    mov [ebp-144], eax
+    push dword ptr [ebp-144]
+    add esp, 4
+    push dword ptr [ebp-144]
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_86
+    push 0
+    pop eax
+    mov [ebp-144], eax
+    push dword ptr [ebp-144]
+    add esp, 4
     jmp .Lopt_inline_87
 .Lopt_inline_86:
 .Lopt_inline_87:
-    pushl -104(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setg %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_88
-    pushl $4
-    popl %eax
-    movl %eax, -104(%ebp)
-    pushl -104(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-144]
+    push 4
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setg al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_88
+    push 4
+    pop eax
+    mov [ebp-144], eax
+    push dword ptr [ebp-144]
+    add esp, 4
     jmp .Lopt_inline_89
 .Lopt_inline_88:
 .Lopt_inline_89:
-    pushl -160(%ebp)
-    pushl $16
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -96(%ebp)
-    pushl -96(%ebp)
-    addl $4, %esp
-    pushl -96(%ebp)
-    pushl -104(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -88(%ebp)
-    pushl -88(%ebp)
-    addl $4, %esp
-    pushl -160(%ebp)
-    pushl $20
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -112(%ebp)
-    pushl $20
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -80(%ebp)
-    pushl -80(%ebp)
-    addl $4, %esp
-    pushl $0
-    popl %eax
-    movl %eax, -176(%ebp)
-    pushl -176(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-88]
+    push 16
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    mov [ebp-152], eax
+    push dword ptr [ebp-152]
+    add esp, 4
+    push dword ptr [ebp-152]
+    push dword ptr [ebp-144]
+    push 4
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-160], eax
+    push dword ptr [ebp-160]
+    add esp, 4
+    push dword ptr [ebp-88]
+    push 20
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-136]
+    push 20
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-168], eax
+    push dword ptr [ebp-168]
+    add esp, 4
+    push 0
+    pop eax
+    mov [ebp-72], eax
+    push dword ptr [ebp-72]
+    add esp, 4
 .Lopt_inline_90:
-    pushl -176(%ebp)
-    pushl -112(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_91
-    pushl -112(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -176(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $16
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_93
-    pushl -176(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -72(%ebp)
-    pushl -72(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-72]
+    push dword ptr [ebp-136]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_91
+    push dword ptr [ebp-136]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-72]
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 16
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_93
+    push dword ptr [ebp-72]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-176], eax
+    push dword ptr [ebp-176]
+    add esp, 4
     jmp .Lopt_inline_94
 .Lopt_inline_93:
-    pushl -112(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -176(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $17
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_95
-    pushl -176(%ebp)
-    popl %eax
-    movl %eax, -64(%ebp)
-    pushl -64(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-136]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-72]
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 17
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_95
+    push dword ptr [ebp-72]
+    pop eax
+    mov [ebp-184], eax
+    push dword ptr [ebp-184]
+    add esp, 4
     jmp .Lopt_inline_91
+    jmp .Lopt_inline_96
 .Lopt_inline_95:
 .Lopt_inline_96:
 .Lopt_inline_94:
 .Lopt_inline_92:
-    pushl -176(%ebp)
-    pushl -176(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -176(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-72]
+    push dword ptr [ebp-72]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-72], eax
+    add esp, 4
     jmp .Lopt_inline_90
 .Lopt_inline_91:
-    pushl -72(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lopt_inline_99
-    pushl -64(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-176]
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lopt_inline_99
+    push dword ptr [ebp-184]
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lopt_inline_100
 .Lopt_inline_99:
-    pushl $1
+    push 1
 .Lopt_inline_100:
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_97
-    pushl -136(%ebp)
-    pushl -144(%ebp)
-    pushl -144(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -144(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -120(%ebp)
-    pushl -136(%ebp)
-    pushl -144(%ebp)
-    pushl -144(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -144(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    movl 0(%eax), %edx
-    movl %edx, 0(%ecx)
-    movl 4(%eax), %edx
-    movl %edx, 4(%ecx)
-    movl 8(%eax), %edx
-    movl %edx, 8(%ecx)
-    movl 12(%eax), %edx
-    movl %edx, 12(%ecx)
-    movl 16(%eax), %edx
-    movl %edx, 16(%ecx)
-    movl 20(%eax), %edx
-    movl %edx, 20(%ecx)
-    movl 24(%eax), %edx
-    movl %edx, 24(%ecx)
-    movl 28(%eax), %edx
-    movl %edx, 28(%ecx)
-    pushl %eax
-    addl $4, %esp
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_97
+    push dword ptr [ebp-112]
+    push dword ptr [ebp-104]
+    push dword ptr [ebp-104]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-104], eax
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-128]
+    push dword ptr [ebp-112]
+    push dword ptr [ebp-104]
+    push dword ptr [ebp-104]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-104], eax
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop edi
+    pop esi
+    mov ecx, 32
+    rep movsb
+    add esp, 4
     jmp .Lopt_inline_70
+    jmp .Lopt_inline_98
 .Lopt_inline_97:
 .Lopt_inline_98:
-    pushl $0
-    popl %eax
-    movl %eax, -176(%ebp)
-    pushl -176(%ebp)
-    addl $4, %esp
+    push 0
+    pop eax
+    mov [ebp-72], eax
+    push dword ptr [ebp-72]
+    add esp, 4
 .Lopt_inline_101:
-    pushl -176(%ebp)
-    pushl -104(%ebp)
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_102
-    pushl -136(%ebp)
-    pushl -144(%ebp)
-    pushl -144(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -144(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -56(%ebp)
-    pushl -56(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $5
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -56(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -96(%ebp)
-    pushl -176(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    popl %ecx
-    movl %eax, (%ecx)
-    movl %edx, 4(%ecx)
-    pushl %eax
-    pushl %edx
-    addl $4, %esp
-    pushl -56(%ebp)
-    pushl $16
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -56(%ebp)
-    pushl $20
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -56(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -120(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    push dword ptr [ebp-72]
+    push dword ptr [ebp-144]
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_102
+    push dword ptr [ebp-112]
+    push dword ptr [ebp-104]
+    push dword ptr [ebp-104]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-104], eax
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-192], eax
+    push dword ptr [ebp-192]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 5
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-192]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-152]
+    push dword ptr [ebp-72]
+    push 4
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop edx
+    pop ecx
+    pop eax
+    mov dword ptr [eax], edx
+    mov dword ptr [eax+4], ecx
+    push edx
+    add esp, 4
+    add esp, 4
+    push dword ptr [ebp-192]
+    push 16
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-192]
+    push 20
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-192]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-128]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
 .Lopt_inline_103:
-    pushl -176(%ebp)
-    pushl -176(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -176(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-72]
+    push dword ptr [ebp-72]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-72], eax
+    add esp, 4
     jmp .Lopt_inline_101
 .Lopt_inline_102:
-    pushl -72(%ebp)
-    popl %eax
-    movl %eax, -176(%ebp)
-    pushl -176(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-176]
+    pop eax
+    mov [ebp-72], eax
+    push dword ptr [ebp-72]
+    add esp, 4
 .Lopt_inline_104:
-    pushl -176(%ebp)
-    pushl -64(%ebp)
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_inline_105
-    pushl -112(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -176(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -56(%ebp)
-    pushl -136(%ebp)
-    pushl -144(%ebp)
-    pushl -144(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -144(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -48(%ebp)
-    pushl -48(%ebp)
-    pushl -56(%ebp)
-    pushl -48(%ebp)
-    popl %ecx
-    popl %eax
-    movl 0(%eax), %edx
-    movl %edx, 0(%ecx)
-    movl 4(%eax), %edx
-    movl %edx, 4(%ecx)
-    movl 8(%eax), %edx
-    movl %edx, 8(%ecx)
-    movl 12(%eax), %edx
-    movl %edx, 12(%ecx)
-    movl 16(%eax), %edx
-    movl %edx, 16(%ecx)
-    movl 20(%eax), %edx
-    movl %edx, 20(%ecx)
-    movl 24(%eax), %edx
-    movl %edx, 24(%ecx)
-    movl 28(%eax), %edx
-    movl %edx, 28(%ecx)
-    pushl %eax
-    addl $4, %esp
-    pushl -56(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -40(%ebp)
-    pushl -40(%ebp)
-    pushl $5
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lopt_inline_108
-    pushl -40(%ebp)
-    pushl $2
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lopt_inline_109
-    pushl -40(%ebp)
-    pushl $3
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lopt_inline_110
-    pushl -40(%ebp)
-    pushl $18
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lopt_inline_111
-    pushl -40(%ebp)
-    pushl $20
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lopt_inline_112
-    pushl -40(%ebp)
-    pushl $11
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lopt_inline_113
-    pushl -40(%ebp)
-    pushl $12
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lopt_inline_114
-    pushl -40(%ebp)
-    pushl $13
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lopt_inline_115
-    pushl -40(%ebp)
-    pushl $14
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lopt_inline_116
-    pushl -40(%ebp)
-    pushl $15
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lopt_inline_117
-    pushl -40(%ebp)
-    pushl $16
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lopt_inline_118
-    pushl -40(%ebp)
-    pushl $17
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lopt_inline_119
+    push dword ptr [ebp-72]
+    push dword ptr [ebp-184]
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_inline_105
+    push dword ptr [ebp-136]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-72]
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-192], eax
+    push dword ptr [ebp-112]
+    push dword ptr [ebp-104]
+    push dword ptr [ebp-104]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-104], eax
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-200], eax
+    push dword ptr [ebp-200]
+    push dword ptr [ebp-192]
+    push dword ptr [ebp-200]
+    pop edi
+    pop esi
+    mov ecx, 32
+    rep movsb
+    add esp, 4
+    push dword ptr [ebp-192]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    mov [ebp-208], eax
+    push dword ptr [ebp-208]
+    push 5
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lopt_inline_108
+    push dword ptr [ebp-208]
+    push 2
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lopt_inline_109
+    push dword ptr [ebp-208]
+    push 3
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lopt_inline_110
+    push dword ptr [ebp-208]
+    push 18
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lopt_inline_111
+    push dword ptr [ebp-208]
+    push 20
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lopt_inline_112
+    push dword ptr [ebp-208]
+    push 11
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lopt_inline_113
+    push dword ptr [ebp-208]
+    push 12
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lopt_inline_114
+    push dword ptr [ebp-208]
+    push 13
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lopt_inline_115
+    push dword ptr [ebp-208]
+    push 14
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lopt_inline_116
+    push dword ptr [ebp-208]
+    push 15
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lopt_inline_117
+    push dword ptr [ebp-208]
+    push 16
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lopt_inline_118
+    push dword ptr [ebp-208]
+    push 17
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lopt_inline_119
     jmp .Lopt_inline_120
 .Lopt_inline_108:
 .Lopt_inline_109:
 .Lopt_inline_110:
 .Lopt_inline_111:
-    pushl -48(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -56(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $8, %ecx
-    addl %ecx, %eax
-    movl (%eax), %ecx
-    movl 4(%eax), %edx
-    pushl %ecx
-    pushl %edx
-    pushl -88(%ebp)
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %eax, 4(%esp)
-    adcl %ecx, (%esp)
-    popl %edx
-    popl %eax
-    pushl %eax
-    pushl %edx
-    popl %edx
-    popl %eax
-    popl %ecx
-    movl %eax, (%ecx)
-    movl %edx, 4(%ecx)
-    pushl %eax
-    pushl %edx
-    addl $4, %esp
+    push dword ptr [ebp-200]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-192]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 8
+    add eax, ecx
+    mov edx, dword ptr [eax+4]
+    push edx
+    mov eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-160]
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop ecx
+    pop ebx
+    pop eax
+    pop edx
+    add eax, ecx
+    add edx, ebx
+    push edx
+    push eax
+    pop edx
+    pop ecx
+    pop eax
+    mov dword ptr [eax], edx
+    mov dword ptr [eax+4], ecx
+    push edx
+    add esp, 4
+    add esp, 4
     jmp .Lopt_inline_107
 .Lopt_inline_112:
-    pushl -56(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $8, %ecx
-    addl %ecx, %eax
-    movl (%eax), %ecx
-    movl 4(%eax), %edx
-    pushl %ecx
-    pushl %edx
-    addl $4, %esp
-    popl %eax
-    movl %eax, -32(%ebp)
-    pushl -56(%ebp)
-    pushl $20
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $255
-    popl %ecx
-    popl %eax
-    andl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -24(%ebp)
-    pushl -48(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $2
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -48(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -96(%ebp)
-    pushl -24(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    popl %ecx
-    movl %eax, (%ecx)
-    movl %edx, 4(%ecx)
-    pushl %eax
-    pushl %edx
-    addl $4, %esp
-    pushl -48(%ebp)
-    pushl $16
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -48(%ebp)
-    pushl $20
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -136(%ebp)
-    pushl -144(%ebp)
-    pushl -144(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -144(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -16(%ebp)
-    pushl -16(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $5
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -16(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -88(%ebp)
-    pushl -32(%ebp)
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    popl %ecx
-    movl %eax, (%ecx)
-    movl %edx, 4(%ecx)
-    pushl %eax
-    pushl %edx
-    addl $4, %esp
-    pushl -16(%ebp)
-    pushl $16
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -16(%ebp)
-    pushl $20
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -16(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -56(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    push dword ptr [ebp-192]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 8
+    add eax, ecx
+    mov edx, dword ptr [eax+4]
+    push edx
+    mov eax, dword ptr [eax]
+    push eax
+    add esp, 4
+    pop eax
+    mov [ebp-216], eax
+    push dword ptr [ebp-192]
+    push 20
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 255
+    pop ecx
+    pop eax
+    and eax, ecx
+    push eax
+    pop eax
+    mov [ebp-224], eax
+    push dword ptr [ebp-200]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 2
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-200]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-152]
+    push dword ptr [ebp-224]
+    push 4
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop edx
+    pop ecx
+    pop eax
+    mov dword ptr [eax], edx
+    mov dword ptr [eax+4], ecx
+    push edx
+    add esp, 4
+    add esp, 4
+    push dword ptr [ebp-200]
+    push 16
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-200]
+    push 20
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-112]
+    push dword ptr [ebp-104]
+    push dword ptr [ebp-104]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-104], eax
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-232], eax
+    push dword ptr [ebp-232]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 5
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-232]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-160]
+    push dword ptr [ebp-216]
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop edx
+    pop ecx
+    pop eax
+    mov dword ptr [eax], edx
+    mov dword ptr [eax+4], ecx
+    push edx
+    add esp, 4
+    add esp, 4
+    push dword ptr [ebp-232]
+    push 16
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-232]
+    push 20
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-232]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-192]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lopt_inline_107
 .Lopt_inline_113:
-    pushl -48(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $13
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -48(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -80(%ebp)
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    popl %ecx
-    movl %eax, (%ecx)
-    movl %edx, 4(%ecx)
-    pushl %eax
-    pushl %edx
-    addl $4, %esp
-    pushl -48(%ebp)
-    pushl $16
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -48(%ebp)
-    pushl $20
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    push dword ptr [ebp-200]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 13
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-200]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-168]
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop edx
+    pop ecx
+    pop eax
+    mov dword ptr [eax], edx
+    mov dword ptr [eax+4], ecx
+    push edx
+    add esp, 4
+    add esp, 4
+    push dword ptr [ebp-200]
+    push 16
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-200]
+    push 20
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lopt_inline_107
 .Lopt_inline_114:
 .Lopt_inline_115:
 .Lopt_inline_116:
 .Lopt_inline_117:
-    pushl -48(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -56(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $8, %ecx
-    addl %ecx, %eax
-    movl (%eax), %ecx
-    movl 4(%eax), %edx
-    pushl %ecx
-    pushl %edx
-    pushl -160(%ebp)
-    pushl $20
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %eax, 4(%esp)
-    adcl %ecx, (%esp)
-    popl %edx
-    popl %eax
-    pushl %eax
-    pushl %edx
-    popl %edx
-    popl %eax
-    popl %ecx
-    movl %eax, (%ecx)
-    movl %edx, 4(%ecx)
-    pushl %eax
-    pushl %edx
-    addl $4, %esp
+    push dword ptr [ebp-200]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-192]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 8
+    add eax, ecx
+    mov edx, dword ptr [eax+4]
+    push edx
+    mov eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-88]
+    push 20
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop ecx
+    pop ebx
+    pop eax
+    pop edx
+    add eax, ecx
+    add edx, ebx
+    push edx
+    push eax
+    pop edx
+    pop ecx
+    pop eax
+    mov dword ptr [eax], edx
+    mov dword ptr [eax+4], ecx
+    push edx
+    add esp, 4
+    add esp, 4
     jmp .Lopt_inline_107
 .Lopt_inline_118:
 .Lopt_inline_119:
-    pushl -48(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    push dword ptr [ebp-200]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lopt_inline_107
 .Lopt_inline_120:
     jmp .Lopt_inline_107
 .Lopt_inline_107:
 .Lopt_inline_106:
-    pushl -176(%ebp)
-    pushl -176(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -176(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-72]
+    push dword ptr [ebp-72]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-72], eax
+    add esp, 4
     jmp .Lopt_inline_104
 .Lopt_inline_105:
-    pushl -136(%ebp)
-    pushl -144(%ebp)
-    pushl -144(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -144(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -56(%ebp)
-    pushl -56(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $12
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -56(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -80(%ebp)
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    popl %ecx
-    movl %eax, (%ecx)
-    movl %edx, 4(%ecx)
-    pushl %eax
-    pushl %edx
-    addl $4, %esp
-    pushl -56(%ebp)
-    pushl $16
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -56(%ebp)
-    pushl $20
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -56(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -120(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -160(%ebp)
-    pushl $16
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -88(%ebp)
-    pushl -112(%ebp)
-    pushl $16
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -160(%ebp)
-    pushl $20
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -80(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    push dword ptr [ebp-112]
+    push dword ptr [ebp-104]
+    push dword ptr [ebp-104]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-104], eax
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-192], eax
+    push dword ptr [ebp-192]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 12
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-192]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-168]
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop edx
+    pop ecx
+    pop eax
+    mov dword ptr [eax], edx
+    mov dword ptr [eax+4], ecx
+    push edx
+    add esp, 4
+    add esp, 4
+    push dword ptr [ebp-192]
+    push 16
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-192]
+    push 20
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-192]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-128]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-88]
+    push 16
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-160]
+    push dword ptr [ebp-136]
+    push 16
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-88]
+    push 20
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-168]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
 .Lopt_inline_70:
-    pushl -184(%ebp)
-    pushl -184(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -184(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-64]
+    push dword ptr [ebp-64]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-64], eax
+    add esp, 4
     jmp .Lopt_inline_68
 .Lopt_inline_69:
-    pushl -160(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -136(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -160(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -144(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -160(%ebp)
-    pushl $12
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -152(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    push dword ptr [ebp-88]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-112]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-88]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-104]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-88]
+    push 12
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-96]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
 .Lopt_inline_31:
-    pushl -192(%ebp)
-    pushl -192(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -192(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-56]
+    push dword ptr [ebp-56]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-56], eax
+    add esp, 4
     jmp .Lopt_inline_29
 .Lopt_inline_30:
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 
-_body_has_unsafe_op:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $304, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -56(%ebp)
-    movl 12(%ebp), %eax
-    movl %eax, -48(%ebp)
-    movl 16(%ebp), %eax
-    movl %eax, -40(%ebp)
-    pushl -48(%ebp)
-    popl %eax
-    movl %eax, -32(%ebp)
-    pushl -32(%ebp)
-    addl $4, %esp
+    .globl body_has_unsafe_op
+body_has_unsafe_op:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 348
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    mov eax, [ebp+12]
+    mov [ebp-56], eax
+    mov eax, [ebp+16]
+    mov [ebp-64], eax
+    push dword ptr [ebp-56]
+    pop eax
+    mov [ebp-72], eax
+    push dword ptr [ebp-72]
+    add esp, 4
 .Lbody_has_unsafe_op_0:
-    pushl -32(%ebp)
-    pushl -40(%ebp)
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lbody_has_unsafe_op_1
-    pushl -56(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -32(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    pushl $10
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lbody_has_unsafe_op_5
-    pushl -24(%ebp)
-    pushl $11
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-72]
+    push dword ptr [ebp-64]
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lbody_has_unsafe_op_1
+    push dword ptr [ebp-48]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-72]
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    mov [ebp-80], eax
+    push dword ptr [ebp-80]
+    push 10
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lbody_has_unsafe_op_5
+    push dword ptr [ebp-80]
+    push 11
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lbody_has_unsafe_op_6
 .Lbody_has_unsafe_op_5:
-    pushl $1
+    push 1
 .Lbody_has_unsafe_op_6:
-    popl %eax
-    cmpl $0, %eax
-    je .Lbody_has_unsafe_op_3
-    pushl $1
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    pop eax
+    test eax, eax
+    jz .Lbody_has_unsafe_op_3
+    push 1
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
+    jmp .Lbody_has_unsafe_op_4
 .Lbody_has_unsafe_op_3:
 .Lbody_has_unsafe_op_4:
-    pushl -24(%ebp)
-    pushl $12
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lbody_has_unsafe_op_9
-    pushl -24(%ebp)
-    pushl $25
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-80]
+    push 12
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lbody_has_unsafe_op_9
+    push dword ptr [ebp-80]
+    push 25
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lbody_has_unsafe_op_10
 .Lbody_has_unsafe_op_9:
-    pushl $1
+    push 1
 .Lbody_has_unsafe_op_10:
-    popl %eax
-    cmpl $0, %eax
-    je .Lbody_has_unsafe_op_7
-    pushl $1
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    pop eax
+    test eax, eax
+    jz .Lbody_has_unsafe_op_7
+    push 1
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
+    jmp .Lbody_has_unsafe_op_8
 .Lbody_has_unsafe_op_7:
 .Lbody_has_unsafe_op_8:
 .Lbody_has_unsafe_op_2:
-    pushl -32(%ebp)
-    pushl -32(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -32(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-72]
+    push dword ptr [ebp-72]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-72], eax
+    add esp, 4
     jmp .Lbody_has_unsafe_op_0
 .Lbody_has_unsafe_op_1:
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 
-_match_vectorize_body:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $416, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -168(%ebp)
-    movl 12(%ebp), %eax
-    movl %eax, -160(%ebp)
-    movl 16(%ebp), %eax
-    movl %eax, -152(%ebp)
-    movl 20(%ebp), %eax
-    movl %eax, -144(%ebp)
-    movl 24(%ebp), %eax
-    movl %eax, -136(%ebp)
-    movl 28(%ebp), %eax
-    movl %eax, -128(%ebp)
-    movl 32(%ebp), %eax
-    movl %eax, -120(%ebp)
-    movl 36(%ebp), %eax
-    movl %eax, -112(%ebp)
-    movl 40(%ebp), %eax
-    movl %eax, -104(%ebp)
-    pushl $1
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -88(%ebp)
-    pushl $1
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -80(%ebp)
-    pushl $1
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -72(%ebp)
-    pushl $1
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -64(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -56(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -48(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -40(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -32(%ebp)
-    pushl -160(%ebp)
-    popl %eax
-    movl %eax, -96(%ebp)
-    pushl -96(%ebp)
-    addl $4, %esp
+    .globl match_vectorize_body
+match_vectorize_body:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 460
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    mov eax, [ebp+12]
+    mov [ebp-56], eax
+    mov eax, [ebp+16]
+    mov [ebp-64], eax
+    mov eax, [ebp+20]
+    mov [ebp-72], eax
+    mov eax, [ebp+24]
+    mov [ebp-80], eax
+    mov eax, [ebp+28]
+    mov [ebp-88], eax
+    mov eax, [ebp+32]
+    mov [ebp-96], eax
+    mov eax, [ebp+36]
+    mov [ebp-104], eax
+    mov eax, [ebp+40]
+    mov [ebp-112], eax
+    push 1
+    pop eax
+    neg eax
+    push eax
+    pop eax
+    mov [ebp-128], eax
+    push 1
+    pop eax
+    neg eax
+    push eax
+    pop eax
+    mov [ebp-136], eax
+    push 1
+    pop eax
+    neg eax
+    push eax
+    pop eax
+    mov [ebp-144], eax
+    push 1
+    pop eax
+    neg eax
+    push eax
+    pop eax
+    mov [ebp-152], eax
+    push 0
+    pop eax
+    mov [ebp-160], eax
+    push 0
+    pop eax
+    mov [ebp-168], eax
+    push 0
+    pop eax
+    mov [ebp-176], eax
+    push 0
+    pop eax
+    mov [ebp-184], eax
+    push dword ptr [ebp-56]
+    pop eax
+    mov [ebp-120], eax
+    push dword ptr [ebp-120]
+    add esp, 4
 .Lmatch_vectorize_body_0:
-    pushl -96(%ebp)
-    pushl -152(%ebp)
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lmatch_vectorize_body_1
-    pushl -168(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -96(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $7
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lmatch_vectorize_body_3
-    pushl -40(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lmatch_vectorize_body_5
-    pushl -96(%ebp)
-    popl %eax
-    movl %eax, -88(%ebp)
-    pushl -88(%ebp)
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $8, %ecx
-    addl %ecx, %eax
-    movl (%eax), %ecx
-    movl 4(%eax), %edx
-    pushl %ecx
-    pushl %edx
-    addl $4, %esp
-    popl %eax
-    movl %eax, -56(%ebp)
-    pushl -56(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-120]
+    push dword ptr [ebp-64]
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lmatch_vectorize_body_1
+    push dword ptr [ebp-48]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-120]
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-192], eax
+    push dword ptr [ebp-192]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 7
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lmatch_vectorize_body_3
+    push dword ptr [ebp-176]
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lmatch_vectorize_body_5
+    push dword ptr [ebp-120]
+    pop eax
+    mov [ebp-128], eax
+    push dword ptr [ebp-128]
+    add esp, 4
+    push dword ptr [ebp-192]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 8
+    add eax, ecx
+    mov edx, dword ptr [eax+4]
+    push edx
+    mov eax, dword ptr [eax]
+    push eax
+    add esp, 4
+    pop eax
+    mov [ebp-160], eax
+    push dword ptr [ebp-160]
+    add esp, 4
     jmp .Lmatch_vectorize_body_6
 .Lmatch_vectorize_body_5:
-    pushl -40(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lmatch_vectorize_body_7
-    pushl -96(%ebp)
-    popl %eax
-    movl %eax, -80(%ebp)
-    pushl -80(%ebp)
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $8, %ecx
-    addl %ecx, %eax
-    movl (%eax), %ecx
-    movl 4(%eax), %edx
-    pushl %ecx
-    pushl %edx
-    pushl -56(%ebp)
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    popl %edx
-    cmpl %ecx, %edx
-    jne .L64t_match_vectorize_body_94
-    cmpl %eax, (%esp)
-    jne .L64t_match_vectorize_body_94
-    addl $4, %esp
-    pushl $0
-    jmp .L64e_match_vectorize_body_94
-.L64t_match_vectorize_body_94:
-    addl $4, %esp
-    pushl $1
-.L64e_match_vectorize_body_94:
-    popl %eax
-    cmpl $0, %eax
-    je .Lmatch_vectorize_body_9
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    push dword ptr [ebp-176]
+    push 1
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lmatch_vectorize_body_7
+    push dword ptr [ebp-120]
+    pop eax
+    mov [ebp-136], eax
+    push dword ptr [ebp-136]
+    add esp, 4
+    push dword ptr [ebp-192]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 8
+    add eax, ecx
+    mov edx, dword ptr [eax+4]
+    push edx
+    mov eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-160]
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop ecx
+    add esp, 4
+    pop eax
+    add esp, 4
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lmatch_vectorize_body_9
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
+    jmp .Lmatch_vectorize_body_10
 .Lmatch_vectorize_body_9:
 .Lmatch_vectorize_body_10:
     jmp .Lmatch_vectorize_body_8
 .Lmatch_vectorize_body_7:
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 .Lmatch_vectorize_body_8:
 .Lmatch_vectorize_body_6:
-    pushl -40(%ebp)
-    pushl -40(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -40(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-176]
+    push dword ptr [ebp-176]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-176], eax
+    add esp, 4
     jmp .Lmatch_vectorize_body_4
 .Lmatch_vectorize_body_3:
-    pushl -24(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $6
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lmatch_vectorize_body_11
-    pushl -32(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setg %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lmatch_vectorize_body_13
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    push dword ptr [ebp-192]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 6
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lmatch_vectorize_body_11
+    push dword ptr [ebp-184]
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setg al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lmatch_vectorize_body_13
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
+    jmp .Lmatch_vectorize_body_14
 .Lmatch_vectorize_body_13:
 .Lmatch_vectorize_body_14:
-    pushl -96(%ebp)
-    popl %eax
-    movl %eax, -64(%ebp)
-    pushl -64(%ebp)
-    addl $4, %esp
-    pushl -56(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lmatch_vectorize_body_17
-    pushl -24(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $8, %ecx
-    addl %ecx, %eax
-    movl (%eax), %ecx
-    movl 4(%eax), %edx
-    pushl %ecx
-    pushl %edx
-    pushl -56(%ebp)
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    popl %edx
-    cmpl %ecx, %edx
-    jne .L64t_match_vectorize_body_148
-    cmpl %eax, (%esp)
-    jne .L64t_match_vectorize_body_148
-    addl $4, %esp
-    pushl $0
-    jmp .L64e_match_vectorize_body_148
-.L64t_match_vectorize_body_148:
-    addl $4, %esp
-    pushl $1
-.L64e_match_vectorize_body_148:
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-120]
+    pop eax
+    mov [ebp-152], eax
+    push dword ptr [ebp-152]
+    add esp, 4
+    push dword ptr [ebp-160]
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lmatch_vectorize_body_17
+    push dword ptr [ebp-192]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 8
+    add eax, ecx
+    mov edx, dword ptr [eax+4]
+    push edx
+    mov eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-160]
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop ecx
+    add esp, 4
+    pop eax
+    add esp, 4
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lmatch_vectorize_body_18
 .Lmatch_vectorize_body_17:
-    pushl $0
+    push 0
 .Lmatch_vectorize_body_18:
-    popl %eax
-    cmpl $0, %eax
-    je .Lmatch_vectorize_body_15
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    pop eax
+    test eax, eax
+    jz .Lmatch_vectorize_body_15
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
+    jmp .Lmatch_vectorize_body_16
 .Lmatch_vectorize_body_15:
 .Lmatch_vectorize_body_16:
-    pushl -56(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lmatch_vectorize_body_19
-    pushl -24(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $8, %ecx
-    addl %ecx, %eax
-    movl (%eax), %ecx
-    movl 4(%eax), %edx
-    pushl %ecx
-    pushl %edx
-    addl $4, %esp
-    popl %eax
-    movl %eax, -56(%ebp)
-    pushl -56(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-160]
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lmatch_vectorize_body_19
+    push dword ptr [ebp-192]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 8
+    add eax, ecx
+    mov edx, dword ptr [eax+4]
+    push edx
+    mov eax, dword ptr [eax]
+    push eax
+    add esp, 4
+    pop eax
+    mov [ebp-160], eax
+    push dword ptr [ebp-160]
+    add esp, 4
     jmp .Lmatch_vectorize_body_20
 .Lmatch_vectorize_body_19:
 .Lmatch_vectorize_body_20:
-    pushl -32(%ebp)
-    pushl -32(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -32(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-184]
+    push dword ptr [ebp-184]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-184], eax
+    add esp, 4
     jmp .Lmatch_vectorize_body_12
 .Lmatch_vectorize_body_11:
-    pushl -24(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lmatch_vectorize_body_23
-    pushl -40(%ebp)
-    pushl $2
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setge %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-192]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lmatch_vectorize_body_23
+    push dword ptr [ebp-176]
+    push 2
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setge al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lmatch_vectorize_body_24
 .Lmatch_vectorize_body_23:
-    pushl $0
+    push 0
 .Lmatch_vectorize_body_24:
-    popl %eax
-    cmpl $0, %eax
-    je .Lmatch_vectorize_body_21
-    pushl -24(%ebp)
-    pushl $20
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $256
-    popl %eax
-    notl %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    andl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -16(%ebp)
-    pushl -16(%ebp)
-    pushl $15
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lmatch_vectorize_body_27
-    pushl -16(%ebp)
-    pushl $16
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jz .Lmatch_vectorize_body_21
+    push dword ptr [ebp-192]
+    push 20
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 256
+    pop eax
+    not eax
+    push eax
+    pop ecx
+    pop eax
+    and eax, ecx
+    push eax
+    pop eax
+    mov [ebp-200], eax
+    push dword ptr [ebp-200]
+    push 15
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lmatch_vectorize_body_27
+    push dword ptr [ebp-200]
+    push 16
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lmatch_vectorize_body_28
 .Lmatch_vectorize_body_27:
-    pushl $1
+    push 1
 .Lmatch_vectorize_body_28:
-    popl %eax
-    cmpl $0, %eax
-    je .Lmatch_vectorize_body_25
-    pushl -72(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setge %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lmatch_vectorize_body_29
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    pop eax
+    test eax, eax
+    jz .Lmatch_vectorize_body_25
+    push dword ptr [ebp-144]
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setge al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lmatch_vectorize_body_29
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
+    jmp .Lmatch_vectorize_body_30
 .Lmatch_vectorize_body_29:
 .Lmatch_vectorize_body_30:
-    pushl -96(%ebp)
-    popl %eax
-    movl %eax, -72(%ebp)
-    pushl -72(%ebp)
-    addl $4, %esp
-    pushl -16(%ebp)
-    popl %eax
-    movl %eax, -48(%ebp)
-    pushl -48(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-120]
+    pop eax
+    mov [ebp-144], eax
+    push dword ptr [ebp-144]
+    add esp, 4
+    push dword ptr [ebp-200]
+    pop eax
+    mov [ebp-168], eax
+    push dword ptr [ebp-168]
+    add esp, 4
     jmp .Lmatch_vectorize_body_26
 .Lmatch_vectorize_body_25:
 .Lmatch_vectorize_body_26:
@@ -7164,2635 +7282,2704 @@ _match_vectorize_body:
 .Lmatch_vectorize_body_12:
 .Lmatch_vectorize_body_4:
 .Lmatch_vectorize_body_2:
-    pushl -96(%ebp)
-    pushl -96(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -96(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-120]
+    push dword ptr [ebp-120]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-120], eax
+    add esp, 4
     jmp .Lmatch_vectorize_body_0
 .Lmatch_vectorize_body_1:
-    pushl -40(%ebp)
-    pushl $2
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lmatch_vectorize_body_35
-    pushl -32(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-176]
+    push 2
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lmatch_vectorize_body_35
+    push dword ptr [ebp-184]
+    push 1
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lmatch_vectorize_body_36
 .Lmatch_vectorize_body_35:
-    pushl $1
+    push 1
 .Lmatch_vectorize_body_36:
-    popl %eax
-    cmpl $0, %eax
-    jne .Lmatch_vectorize_body_33
-    pushl -72(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jnz .Lmatch_vectorize_body_33
+    push dword ptr [ebp-144]
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lmatch_vectorize_body_34
 .Lmatch_vectorize_body_33:
-    pushl $1
+    push 1
 .Lmatch_vectorize_body_34:
-    popl %eax
-    cmpl $0, %eax
-    je .Lmatch_vectorize_body_31
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    pop eax
+    test eax, eax
+    jz .Lmatch_vectorize_body_31
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
+    jmp .Lmatch_vectorize_body_32
 .Lmatch_vectorize_body_31:
 .Lmatch_vectorize_body_32:
-    pushl -80(%ebp)
-    pushl -88(%ebp)
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lmatch_vectorize_body_41
-    pushl -72(%ebp)
-    pushl -80(%ebp)
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-136]
+    push dword ptr [ebp-128]
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lmatch_vectorize_body_41
+    push dword ptr [ebp-144]
+    push dword ptr [ebp-136]
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lmatch_vectorize_body_42
 .Lmatch_vectorize_body_41:
-    pushl $1
+    push 1
 .Lmatch_vectorize_body_42:
-    popl %eax
-    cmpl $0, %eax
-    jne .Lmatch_vectorize_body_39
-    pushl -64(%ebp)
-    pushl -72(%ebp)
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jnz .Lmatch_vectorize_body_39
+    push dword ptr [ebp-152]
+    push dword ptr [ebp-144]
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lmatch_vectorize_body_40
 .Lmatch_vectorize_body_39:
-    pushl $1
+    push 1
 .Lmatch_vectorize_body_40:
-    popl %eax
-    cmpl $0, %eax
-    je .Lmatch_vectorize_body_37
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    pop eax
+    test eax, eax
+    jz .Lmatch_vectorize_body_37
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
+    jmp .Lmatch_vectorize_body_38
 .Lmatch_vectorize_body_37:
 .Lmatch_vectorize_body_38:
-    pushl -56(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lmatch_vectorize_body_45
-    pushl -56(%ebp)
-    pushl $2
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-160]
+    push 1
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lmatch_vectorize_body_45
+    push dword ptr [ebp-160]
+    push 2
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lmatch_vectorize_body_46
 .Lmatch_vectorize_body_45:
-    pushl $0
+    push 0
 .Lmatch_vectorize_body_46:
-    popl %eax
-    cmpl $0, %eax
-    je .Lmatch_vectorize_body_43
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    pop eax
+    test eax, eax
+    jz .Lmatch_vectorize_body_43
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
+    jmp .Lmatch_vectorize_body_44
 .Lmatch_vectorize_body_43:
 .Lmatch_vectorize_body_44:
-    pushl -144(%ebp)
-    pushl -56(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -136(%ebp)
-    pushl -48(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -128(%ebp)
-    pushl -88(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -120(%ebp)
-    pushl -80(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -112(%ebp)
-    pushl -72(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -104(%ebp)
-    pushl -64(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl $1
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    push dword ptr [ebp-72]
+    push dword ptr [ebp-160]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-80]
+    push dword ptr [ebp-168]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-88]
+    push dword ptr [ebp-128]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-96]
+    push dword ptr [ebp-136]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-104]
+    push dword ptr [ebp-144]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-112]
+    push dword ptr [ebp-152]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push 1
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 
-    .globl _opt_vectorize
-_opt_vectorize:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $480, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -232(%ebp)
-    pushl -232(%ebp)
-    popl %eax
-    cmpl $0, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_0
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    .globl opt_vectorize
+opt_vectorize:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 524
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    push dword ptr [ebp-48]
+    pop eax
+    test eax, eax
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_0
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
+    jmp .Lopt_vectorize_1
 .Lopt_vectorize_0:
 .Lopt_vectorize_1:
-    pushl $0
-    popl %eax
-    movl %eax, -224(%ebp)
-    pushl -224(%ebp)
-    addl $4, %esp
+    push 0
+    pop eax
+    mov [ebp-56], eax
+    push dword ptr [ebp-56]
+    add esp, 4
 .Lopt_vectorize_2:
-    pushl -224(%ebp)
-    pushl -232(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_3
-    pushl -232(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -224(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -208(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -200(%ebp)
-    pushl -200(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-56]
+    push dword ptr [ebp-48]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_3
+    push dword ptr [ebp-48]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-56]
+    push 4
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    mov [ebp-72], eax
+    push 0
+    pop eax
+    mov [ebp-80], eax
+    push dword ptr [ebp-80]
+    add esp, 4
 .Lopt_vectorize_5:
-    pushl -200(%ebp)
-    pushl -208(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_6
-    pushl $1
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -192(%ebp)
-    pushl $1
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -184(%ebp)
-    pushl $1
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -176(%ebp)
-    pushl $1
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -168(%ebp)
-    pushl $1
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -160(%ebp)
-    pushl $1
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -152(%ebp)
-    pushl $1
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -144(%ebp)
-    pushl $1
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -136(%ebp)
-    pushl $1
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -128(%ebp)
-    pushl $1
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -120(%ebp)
-    pushl $1
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -112(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -104(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -96(%ebp)
-    pushl $1
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -88(%ebp)
-    pushl $1
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -80(%ebp)
-    pushl $1
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -72(%ebp)
-    pushl $1
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -64(%ebp)
-    pushl -208(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -200(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $13
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_8
+    push dword ptr [ebp-80]
+    push dword ptr [ebp-72]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_6
+    push 1
+    pop eax
+    neg eax
+    push eax
+    pop eax
+    mov [ebp-88], eax
+    push 1
+    pop eax
+    neg eax
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    push 1
+    pop eax
+    neg eax
+    push eax
+    pop eax
+    mov [ebp-104], eax
+    push 1
+    pop eax
+    neg eax
+    push eax
+    pop eax
+    mov [ebp-112], eax
+    push 1
+    pop eax
+    neg eax
+    push eax
+    pop eax
+    mov [ebp-120], eax
+    push 1
+    pop eax
+    neg eax
+    push eax
+    pop eax
+    mov [ebp-128], eax
+    push 1
+    pop eax
+    neg eax
+    push eax
+    pop eax
+    mov [ebp-136], eax
+    push 1
+    pop eax
+    neg eax
+    push eax
+    pop eax
+    mov [ebp-144], eax
+    push 1
+    pop eax
+    neg eax
+    push eax
+    pop eax
+    mov [ebp-152], eax
+    push 1
+    pop eax
+    neg eax
+    push eax
+    pop eax
+    mov [ebp-160], eax
+    push 1
+    pop eax
+    neg eax
+    push eax
+    pop eax
+    mov [ebp-168], eax
+    push 0
+    pop eax
+    mov [ebp-176], eax
+    push 0
+    pop eax
+    mov [ebp-184], eax
+    push 1
+    pop eax
+    neg eax
+    push eax
+    pop eax
+    mov [ebp-192], eax
+    push 1
+    pop eax
+    neg eax
+    push eax
+    pop eax
+    mov [ebp-200], eax
+    push 1
+    pop eax
+    neg eax
+    push eax
+    pop eax
+    mov [ebp-208], eax
+    push 1
+    pop eax
+    neg eax
+    push eax
+    pop eax
+    mov [ebp-216], eax
+    push dword ptr [ebp-72]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-80]
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 13
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_8
     jmp .Lopt_vectorize_7
+    jmp .Lopt_vectorize_9
 .Lopt_vectorize_8:
 .Lopt_vectorize_9:
-    pushl -208(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -200(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $8, %ecx
-    addl %ecx, %eax
-    movl (%eax), %ecx
-    movl 4(%eax), %edx
-    pushl %ecx
-    pushl %edx
-    addl $4, %esp
-    popl %eax
-    movl %eax, -192(%ebp)
-    pushl -192(%ebp)
-    addl $4, %esp
-    pushl -200(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    subl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -216(%ebp)
-    pushl -216(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-72]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-80]
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 8
+    add eax, ecx
+    mov edx, dword ptr [eax+4]
+    push edx
+    mov eax, dword ptr [eax]
+    push eax
+    add esp, 4
+    pop eax
+    mov [ebp-88], eax
+    push dword ptr [ebp-88]
+    add esp, 4
+    push dword ptr [ebp-80]
+    push 1
+    pop ecx
+    pop eax
+    sub eax, ecx
+    push eax
+    pop eax
+    mov [ebp-64], eax
+    push dword ptr [ebp-64]
+    add esp, 4
 .Lopt_vectorize_10:
-    pushl -216(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setge %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_11
-    pushl -208(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -216(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $12
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_15
-    pushl -208(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -216(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $8, %ecx
-    addl %ecx, %eax
-    movl (%eax), %ecx
-    movl 4(%eax), %edx
-    pushl %ecx
-    pushl %edx
-    pushl -192(%ebp)
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    popl %edx
-    cmpl %ecx, %edx
-    jne .L64f_opt_vectorize_177
-    cmpl %eax, (%esp)
-    jne .L64f_opt_vectorize_177
-    addl $4, %esp
-    pushl $1
-    jmp .L64e_opt_vectorize_177
-.L64f_opt_vectorize_177:
-    addl $4, %esp
-    pushl $0
-.L64e_opt_vectorize_177:
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-64]
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setge al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_11
+    push dword ptr [ebp-72]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-64]
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 12
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_15
+    push dword ptr [ebp-72]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-64]
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 8
+    add eax, ecx
+    mov edx, dword ptr [eax+4]
+    push edx
+    mov eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-88]
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop ecx
+    add esp, 4
+    pop eax
+    add esp, 4
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lopt_vectorize_16
 .Lopt_vectorize_15:
-    pushl $0
+    push 0
 .Lopt_vectorize_16:
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_13
-    pushl -216(%ebp)
-    popl %eax
-    movl %eax, -168(%ebp)
-    pushl -168(%ebp)
-    addl $4, %esp
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_13
+    push dword ptr [ebp-64]
+    pop eax
+    mov [ebp-112], eax
+    push dword ptr [ebp-112]
+    add esp, 4
     jmp .Lopt_vectorize_11
+    jmp .Lopt_vectorize_14
 .Lopt_vectorize_13:
 .Lopt_vectorize_14:
 .Lopt_vectorize_12:
-    pushl -216(%ebp)
-    pushl -216(%ebp)
-    pushl $-1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -216(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-64]
+    push dword ptr [ebp-64]
+    push -1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-64], eax
+    add esp, 4
     jmp .Lopt_vectorize_10
 .Lopt_vectorize_11:
-    pushl -168(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_17
+    push dword ptr [ebp-112]
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_17
     jmp .Lopt_vectorize_7
+    jmp .Lopt_vectorize_18
 .Lopt_vectorize_17:
 .Lopt_vectorize_18:
-    pushl $1
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -184(%ebp)
-    pushl -184(%ebp)
-    addl $4, %esp
-    pushl -168(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -216(%ebp)
-    pushl -216(%ebp)
-    addl $4, %esp
+    push 1
+    pop eax
+    neg eax
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    push dword ptr [ebp-96]
+    add esp, 4
+    push dword ptr [ebp-112]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-64], eax
+    push dword ptr [ebp-64]
+    add esp, 4
 .Lopt_vectorize_19:
-    pushl -216(%ebp)
-    pushl -200(%ebp)
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_20
-    pushl -208(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -216(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $14
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_22
-    pushl -208(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -216(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $8, %ecx
-    addl %ecx, %eax
-    movl (%eax), %ecx
-    movl 4(%eax), %edx
-    pushl %ecx
-    pushl %edx
-    addl $4, %esp
-    popl %eax
-    movl %eax, -184(%ebp)
-    pushl -184(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-64]
+    push dword ptr [ebp-80]
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_20
+    push dword ptr [ebp-72]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-64]
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 14
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_22
+    push dword ptr [ebp-72]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-64]
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 8
+    add eax, ecx
+    mov edx, dword ptr [eax+4]
+    push edx
+    mov eax, dword ptr [eax]
+    push eax
+    add esp, 4
+    pop eax
+    mov [ebp-96], eax
+    push dword ptr [ebp-96]
+    add esp, 4
     jmp .Lopt_vectorize_20
+    jmp .Lopt_vectorize_23
 .Lopt_vectorize_22:
 .Lopt_vectorize_23:
 .Lopt_vectorize_21:
-    pushl -216(%ebp)
-    pushl -216(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -216(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-64]
+    push dword ptr [ebp-64]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-64], eax
+    add esp, 4
     jmp .Lopt_vectorize_19
 .Lopt_vectorize_20:
-    pushl -184(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_24
+    push dword ptr [ebp-96]
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_24
     jmp .Lopt_vectorize_7
+    jmp .Lopt_vectorize_25
 .Lopt_vectorize_24:
 .Lopt_vectorize_25:
-    pushl -200(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    subl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -216(%ebp)
-    pushl -216(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-80]
+    push 1
+    pop ecx
+    pop eax
+    sub eax, ecx
+    push eax
+    pop eax
+    mov [ebp-64], eax
+    push dword ptr [ebp-64]
+    add esp, 4
 .Lopt_vectorize_26:
-    pushl -216(%ebp)
-    pushl -168(%ebp)
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setg %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_27
-    pushl -208(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -216(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $12
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_29
-    pushl -208(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -216(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $8, %ecx
-    addl %ecx, %eax
-    movl (%eax), %ecx
-    movl 4(%eax), %edx
-    pushl %ecx
-    pushl %edx
-    addl $4, %esp
-    popl %eax
-    movl %eax, -176(%ebp)
-    pushl -176(%ebp)
-    addl $4, %esp
-    pushl -216(%ebp)
-    popl %eax
-    movl %eax, -160(%ebp)
-    pushl -160(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-64]
+    push dword ptr [ebp-112]
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setg al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_27
+    push dword ptr [ebp-72]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-64]
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 12
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_29
+    push dword ptr [ebp-72]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-64]
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 8
+    add eax, ecx
+    mov edx, dword ptr [eax+4]
+    push edx
+    mov eax, dword ptr [eax]
+    push eax
+    add esp, 4
+    pop eax
+    mov [ebp-104], eax
+    push dword ptr [ebp-104]
+    add esp, 4
+    push dword ptr [ebp-64]
+    pop eax
+    mov [ebp-120], eax
+    push dword ptr [ebp-120]
+    add esp, 4
     jmp .Lopt_vectorize_27
+    jmp .Lopt_vectorize_30
 .Lopt_vectorize_29:
 .Lopt_vectorize_30:
 .Lopt_vectorize_28:
-    pushl -216(%ebp)
-    pushl -216(%ebp)
-    pushl $-1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -216(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-64]
+    push dword ptr [ebp-64]
+    push -1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-64], eax
+    add esp, 4
     jmp .Lopt_vectorize_26
 .Lopt_vectorize_27:
-    pushl -176(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_31
+    push dword ptr [ebp-104]
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_31
     jmp .Lopt_vectorize_7
+    jmp .Lopt_vectorize_32
 .Lopt_vectorize_31:
 .Lopt_vectorize_32:
-    pushl -176(%ebp)
-    pushl -184(%ebp)
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_33
+    push dword ptr [ebp-104]
+    push dword ptr [ebp-96]
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_33
     jmp .Lopt_vectorize_7
+    jmp .Lopt_vectorize_34
 .Lopt_vectorize_33:
 .Lopt_vectorize_34:
-    pushl -200(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -208(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setge %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_35
+    push dword ptr [ebp-80]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-72]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setge al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_35
     jmp .Lopt_vectorize_7
+    jmp .Lopt_vectorize_36
 .Lopt_vectorize_35:
 .Lopt_vectorize_36:
-    pushl -208(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -200(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $12
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lopt_vectorize_39
-    pushl -208(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -200(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $8, %ecx
-    addl %ecx, %eax
-    movl (%eax), %ecx
-    movl 4(%eax), %edx
-    pushl %ecx
-    pushl %edx
-    pushl -184(%ebp)
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    popl %edx
-    cmpl %ecx, %edx
-    jne .L64t_opt_vectorize_401
-    cmpl %eax, (%esp)
-    jne .L64t_opt_vectorize_401
-    addl $4, %esp
-    pushl $0
-    jmp .L64e_opt_vectorize_401
-.L64t_opt_vectorize_401:
-    addl $4, %esp
-    pushl $1
-.L64e_opt_vectorize_401:
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-72]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-80]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 12
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lopt_vectorize_39
+    push dword ptr [ebp-72]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-80]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 8
+    add eax, ecx
+    mov edx, dword ptr [eax+4]
+    push edx
+    mov eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-96]
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop ecx
+    add esp, 4
+    pop eax
+    add esp, 4
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lopt_vectorize_40
 .Lopt_vectorize_39:
-    pushl $1
+    push 1
 .Lopt_vectorize_40:
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_37
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_37
     jmp .Lopt_vectorize_7
+    jmp .Lopt_vectorize_38
 .Lopt_vectorize_37:
 .Lopt_vectorize_38:
-    pushl -168(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -152(%ebp)
-    pushl -152(%ebp)
-    addl $4, %esp
-    pushl -160(%ebp)
-    popl %eax
-    movl %eax, -144(%ebp)
-    pushl -144(%ebp)
-    addl $4, %esp
-    pushl -160(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -136(%ebp)
-    pushl -136(%ebp)
-    addl $4, %esp
-    pushl -200(%ebp)
-    popl %eax
-    movl %eax, -128(%ebp)
-    pushl -128(%ebp)
-    addl $4, %esp
-    pushl $1
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -40(%ebp)
-    pushl -168(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -32(%ebp)
-    pushl -32(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-112]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-128], eax
+    push dword ptr [ebp-128]
+    add esp, 4
+    push dword ptr [ebp-120]
+    pop eax
+    mov [ebp-136], eax
+    push dword ptr [ebp-136]
+    add esp, 4
+    push dword ptr [ebp-120]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-144], eax
+    push dword ptr [ebp-144]
+    add esp, 4
+    push dword ptr [ebp-80]
+    pop eax
+    mov [ebp-152], eax
+    push dword ptr [ebp-152]
+    add esp, 4
+    push 1
+    pop eax
+    neg eax
+    push eax
+    pop eax
+    mov [ebp-240], eax
+    push dword ptr [ebp-112]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-248], eax
+    push dword ptr [ebp-248]
+    add esp, 4
 .Lopt_vectorize_41:
-    pushl -32(%ebp)
-    pushl -160(%ebp)
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_42
-    pushl -208(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -32(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $14
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_44
-    pushl -32(%ebp)
-    popl %eax
-    movl %eax, -40(%ebp)
-    pushl -40(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-248]
+    push dword ptr [ebp-120]
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_42
+    push dword ptr [ebp-72]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-248]
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 14
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_44
+    push dword ptr [ebp-248]
+    pop eax
+    mov [ebp-240], eax
+    push dword ptr [ebp-240]
+    add esp, 4
     jmp .Lopt_vectorize_42
+    jmp .Lopt_vectorize_45
 .Lopt_vectorize_44:
 .Lopt_vectorize_45:
 .Lopt_vectorize_43:
-    pushl -32(%ebp)
-    pushl -32(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -32(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-248]
+    push dword ptr [ebp-248]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-248], eax
+    add esp, 4
     jmp .Lopt_vectorize_41
 .Lopt_vectorize_42:
-    pushl -40(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_46
+    push dword ptr [ebp-240]
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_46
     jmp .Lopt_vectorize_7
+    jmp .Lopt_vectorize_47
 .Lopt_vectorize_46:
 .Lopt_vectorize_47:
-    pushl -40(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -152(%ebp)
-    pushl -152(%ebp)
-    addl $4, %esp
-    pushl -40(%ebp)
-    pushl $3
-    popl %ecx
-    popl %eax
-    subl %ecx, %eax
-    pushl %eax
-    pushl -168(%ebp)
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_48
+    push dword ptr [ebp-240]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-128], eax
+    push dword ptr [ebp-128]
+    add esp, 4
+    push dword ptr [ebp-240]
+    push 3
+    pop ecx
+    pop eax
+    sub eax, ecx
+    push eax
+    push dword ptr [ebp-112]
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_48
     jmp .Lopt_vectorize_7
+    jmp .Lopt_vectorize_49
 .Lopt_vectorize_48:
 .Lopt_vectorize_49:
-    pushl -208(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -40(%ebp)
-    pushl $3
-    popl %ecx
-    popl %eax
-    subl %ecx, %eax
-    pushl %eax
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $2
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_50
+    push dword ptr [ebp-72]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-240]
+    push 3
+    pop ecx
+    pop eax
+    sub eax, ecx
+    push eax
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 2
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_50
     jmp .Lopt_vectorize_7
+    jmp .Lopt_vectorize_51
 .Lopt_vectorize_50:
 .Lopt_vectorize_51:
-    pushl -208(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -40(%ebp)
-    pushl $2
-    popl %ecx
-    popl %eax
-    subl %ecx, %eax
-    pushl %eax
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $1
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_52
+    push dword ptr [ebp-72]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-240]
+    push 2
+    pop ecx
+    pop eax
+    sub eax, ecx
+    push eax
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 1
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_52
     jmp .Lopt_vectorize_7
+    jmp .Lopt_vectorize_53
 .Lopt_vectorize_52:
 .Lopt_vectorize_53:
-    pushl -208(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -40(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    subl %ecx, %eax
-    pushl %eax
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_54
+    push dword ptr [ebp-72]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-240]
+    push 1
+    pop ecx
+    pop eax
+    sub eax, ecx
+    push eax
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_54
     jmp .Lopt_vectorize_7
+    jmp .Lopt_vectorize_55
 .Lopt_vectorize_54:
 .Lopt_vectorize_55:
-    pushl -208(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -40(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    subl %ecx, %eax
-    pushl %eax
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $20
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $256
-    popl %eax
-    notl %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    andl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    pushl $23
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_60
-    pushl -24(%ebp)
-    pushl $25
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-72]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-240]
+    push 1
+    pop ecx
+    pop eax
+    sub eax, ecx
+    push eax
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 20
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 256
+    pop eax
+    not eax
+    push eax
+    pop ecx
+    pop eax
+    and eax, ecx
+    push eax
+    pop eax
+    mov [ebp-256], eax
+    push dword ptr [ebp-256]
+    push 23
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_60
+    push dword ptr [ebp-256]
+    push 25
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lopt_vectorize_61
 .Lopt_vectorize_60:
-    pushl $0
+    push 0
 .Lopt_vectorize_61:
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_58
-    pushl -24(%ebp)
-    pushl $22
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_58
+    push dword ptr [ebp-256]
+    push 22
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lopt_vectorize_59
 .Lopt_vectorize_58:
-    pushl $0
+    push 0
 .Lopt_vectorize_59:
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_56
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_56
     jmp .Lopt_vectorize_7
+    jmp .Lopt_vectorize_57
 .Lopt_vectorize_56:
 .Lopt_vectorize_57:
-    pushl -208(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -40(%ebp)
-    pushl $3
-    popl %ecx
-    popl %eax
-    subl %ecx, %eax
-    pushl %eax
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $8, %ecx
-    addl %ecx, %eax
-    movl (%eax), %ecx
-    movl 4(%eax), %edx
-    pushl %ecx
-    pushl %edx
-    addl $4, %esp
-    popl %eax
-    movl %eax, -120(%ebp)
-    pushl -120(%ebp)
-    addl $4, %esp
-    pushl -208(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -40(%ebp)
-    pushl $2
-    popl %ecx
-    popl %eax
-    subl %ecx, %eax
-    pushl %eax
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $8, %ecx
-    addl %ecx, %eax
-    movl (%eax), %ecx
-    movl 4(%eax), %edx
-    pushl %ecx
-    pushl %edx
-    addl $4, %esp
-    popl %eax
-    movl %eax, -112(%ebp)
-    pushl -112(%ebp)
-    addl $4, %esp
-    pushl -144(%ebp)
-    pushl -152(%ebp)
-    pushl -208(%ebp)
-    call _body_has_unsafe_op
-    addl $12, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_62
+    push dword ptr [ebp-72]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-240]
+    push 3
+    pop ecx
+    pop eax
+    sub eax, ecx
+    push eax
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 8
+    add eax, ecx
+    mov edx, dword ptr [eax+4]
+    push edx
+    mov eax, dword ptr [eax]
+    push eax
+    add esp, 4
+    pop eax
+    mov [ebp-160], eax
+    push dword ptr [ebp-160]
+    add esp, 4
+    push dword ptr [ebp-72]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-240]
+    push 2
+    pop ecx
+    pop eax
+    sub eax, ecx
+    push eax
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 8
+    add eax, ecx
+    mov edx, dword ptr [eax+4]
+    push edx
+    mov eax, dword ptr [eax]
+    push eax
+    add esp, 4
+    pop eax
+    mov [ebp-168], eax
+    push dword ptr [ebp-168]
+    add esp, 4
+    push dword ptr [ebp-136]
+    push dword ptr [ebp-128]
+    push dword ptr [ebp-72]
+    pop eax
+    mov [ebp-288], eax
+    pop eax
+    mov [ebp-292], eax
+    pop eax
+    mov [ebp-296], eax
+    mov [ebp-272], esp
+    push dword ptr [ebp-296]
+    push dword ptr [ebp-292]
+    push dword ptr [ebp-288]
+    and esp, -16
+    call body_has_unsafe_op
+    mov esp, [ebp-272]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_62
     jmp .Lopt_vectorize_7
+    jmp .Lopt_vectorize_63
 .Lopt_vectorize_62:
 .Lopt_vectorize_63:
-    leal -64(%ebp), %eax
-    pushl %eax
-    leal -72(%ebp), %eax
-    pushl %eax
-    leal -80(%ebp), %eax
-    pushl %eax
-    leal -88(%ebp), %eax
-    pushl %eax
-    leal -96(%ebp), %eax
-    pushl %eax
-    leal -104(%ebp), %eax
-    pushl %eax
-    pushl -144(%ebp)
-    pushl -152(%ebp)
-    pushl -208(%ebp)
-    call _match_vectorize_body
-    addl $36, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_64
+    lea eax, [ebp-216]
+    push eax
+    lea eax, [ebp-208]
+    push eax
+    lea eax, [ebp-200]
+    push eax
+    lea eax, [ebp-192]
+    push eax
+    lea eax, [ebp-184]
+    push eax
+    lea eax, [ebp-176]
+    push eax
+    push dword ptr [ebp-136]
+    push dword ptr [ebp-128]
+    push dword ptr [ebp-72]
+    pop eax
+    mov [ebp-288], eax
+    pop eax
+    mov [ebp-292], eax
+    pop eax
+    mov [ebp-296], eax
+    pop eax
+    mov [ebp-300], eax
+    pop eax
+    mov [ebp-304], eax
+    pop eax
+    mov [ebp-308], eax
+    pop eax
+    mov [ebp-312], eax
+    pop eax
+    mov [ebp-316], eax
+    pop eax
+    mov [ebp-320], eax
+    mov [ebp-272], esp
+    push dword ptr [ebp-320]
+    push dword ptr [ebp-316]
+    push dword ptr [ebp-312]
+    push dword ptr [ebp-308]
+    push dword ptr [ebp-304]
+    push dword ptr [ebp-300]
+    push dword ptr [ebp-296]
+    push dword ptr [ebp-292]
+    push dword ptr [ebp-288]
+    and esp, -16
+    call match_vectorize_body
+    mov esp, [ebp-272]
+    push eax
+    pop eax
+    test eax, eax
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_64
     jmp .Lopt_vectorize_7
+    jmp .Lopt_vectorize_65
 .Lopt_vectorize_64:
 .Lopt_vectorize_65:
-    pushl -104(%ebp)
-    pushl $2
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_66
-    pushl $2
-    popl %eax
-    movl %eax, -56(%ebp)
-    pushl -56(%ebp)
-    addl $4, %esp
-    pushl -96(%ebp)
-    pushl $15
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_68
-    pushl $52
+    push dword ptr [ebp-176]
+    push 2
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_66
+    push 2
+    pop eax
+    mov [ebp-224], eax
+    push dword ptr [ebp-224]
+    add esp, 4
+    push dword ptr [ebp-184]
+    push 15
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_68
+    push 52
     jmp .Lopt_vectorize_69
 .Lopt_vectorize_68:
-    pushl $53
+    push 53
 .Lopt_vectorize_69:
-    popl %eax
-    movl %eax, -48(%ebp)
-    pushl -48(%ebp)
-    addl $4, %esp
+    pop eax
+    mov [ebp-232], eax
+    push dword ptr [ebp-232]
+    add esp, 4
     jmp .Lopt_vectorize_67
 .Lopt_vectorize_66:
-    pushl $4
-    popl %eax
-    movl %eax, -56(%ebp)
-    pushl -56(%ebp)
-    addl $4, %esp
-    pushl -96(%ebp)
-    pushl $15
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_70
-    pushl $54
+    push 4
+    pop eax
+    mov [ebp-224], eax
+    push dword ptr [ebp-224]
+    add esp, 4
+    push dword ptr [ebp-184]
+    push 15
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_70
+    push 54
     jmp .Lopt_vectorize_71
 .Lopt_vectorize_70:
-    pushl $55
+    push 55
 .Lopt_vectorize_71:
-    popl %eax
-    movl %eax, -48(%ebp)
-    pushl -48(%ebp)
-    addl $4, %esp
+    pop eax
+    mov [ebp-232], eax
+    push dword ptr [ebp-232]
+    add esp, 4
 .Lopt_vectorize_67:
-    pushl -112(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setle %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lopt_vectorize_74
-    pushl -112(%ebp)
-    pushl -56(%ebp)
-    popl %ecx
-    popl %eax
+    push dword ptr [ebp-168]
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setle al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lopt_vectorize_74
+    push dword ptr [ebp-168]
+    push dword ptr [ebp-224]
+    pop ecx
+    pop eax
     cdq
-    idivl %ecx
-    pushl %edx
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    idiv ecx
+    push edx
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lopt_vectorize_75
 .Lopt_vectorize_74:
-    pushl $1
+    push 1
 .Lopt_vectorize_75:
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_72
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_72
     jmp .Lopt_vectorize_7
+    jmp .Lopt_vectorize_73
 .Lopt_vectorize_72:
 .Lopt_vectorize_73:
-    pushl $0
-    popl %eax
-    movl %eax, -40(%ebp)
-    pushl -136(%ebp)
-    popl %eax
-    movl %eax, -32(%ebp)
-    pushl -32(%ebp)
-    addl $4, %esp
+    push 0
+    pop eax
+    mov [ebp-240], eax
+    push dword ptr [ebp-144]
+    pop eax
+    mov [ebp-248], eax
+    push dword ptr [ebp-248]
+    add esp, 4
 .Lopt_vectorize_76:
-    pushl -32(%ebp)
-    pushl -128(%ebp)
-    pushl $2
-    popl %ecx
-    popl %eax
-    subl %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_77
-    pushl -208(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -32(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $1
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_89
-    pushl -208(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -32(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $8, %ecx
-    addl %ecx, %eax
-    movl (%eax), %ecx
-    movl 4(%eax), %edx
-    pushl %ecx
-    pushl %edx
-    pushl $1
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    popl %edx
-    cmpl %ecx, %edx
-    jne .L64f_opt_vectorize_775
-    cmpl %eax, (%esp)
-    jne .L64f_opt_vectorize_775
-    addl $4, %esp
-    pushl $1
-    jmp .L64e_opt_vectorize_775
-.L64f_opt_vectorize_775:
-    addl $4, %esp
-    pushl $0
-.L64e_opt_vectorize_775:
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-248]
+    push dword ptr [ebp-152]
+    push 2
+    pop ecx
+    pop eax
+    sub eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_77
+    push dword ptr [ebp-72]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-248]
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 1
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_89
+    push dword ptr [ebp-72]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-248]
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 8
+    add eax, ecx
+    mov edx, dword ptr [eax+4]
+    push edx
+    mov eax, dword ptr [eax]
+    push eax
+    push 1
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop ecx
+    add esp, 4
+    pop eax
+    add esp, 4
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lopt_vectorize_90
 .Lopt_vectorize_89:
-    pushl $0
+    push 0
 .Lopt_vectorize_90:
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_87
-    pushl -208(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -32(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_87
+    push dword ptr [ebp-72]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-248]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lopt_vectorize_88
 .Lopt_vectorize_87:
-    pushl $0
+    push 0
 .Lopt_vectorize_88:
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_85
-    pushl -208(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -32(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $20
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $256
-    popl %eax
-    notl %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    andl %ecx, %eax
-    pushl %eax
-    pushl $15
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_85
+    push dword ptr [ebp-72]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-248]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 20
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 256
+    pop eax
+    not eax
+    push eax
+    pop ecx
+    pop eax
+    and eax, ecx
+    push eax
+    push 15
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lopt_vectorize_86
 .Lopt_vectorize_85:
-    pushl $0
+    push 0
 .Lopt_vectorize_86:
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_83
-    pushl -208(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -32(%ebp)
-    pushl $2
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $5
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_83
+    push dword ptr [ebp-72]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-248]
+    push 2
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 5
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lopt_vectorize_84
 .Lopt_vectorize_83:
-    pushl $0
+    push 0
 .Lopt_vectorize_84:
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_81
-    pushl -208(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -32(%ebp)
-    pushl $2
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $8, %ecx
-    addl %ecx, %eax
-    movl (%eax), %ecx
-    movl 4(%eax), %edx
-    pushl %ecx
-    pushl %edx
-    pushl -120(%ebp)
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    popl %edx
-    cmpl %ecx, %edx
-    jne .L64f_opt_vectorize_878
-    cmpl %eax, (%esp)
-    jne .L64f_opt_vectorize_878
-    addl $4, %esp
-    pushl $1
-    jmp .L64e_opt_vectorize_878
-.L64f_opt_vectorize_878:
-    addl $4, %esp
-    pushl $0
-.L64e_opt_vectorize_878:
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_81
+    push dword ptr [ebp-72]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-248]
+    push 2
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 8
+    add eax, ecx
+    mov edx, dword ptr [eax+4]
+    push edx
+    mov eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-160]
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop ecx
+    add esp, 4
+    pop eax
+    add esp, 4
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lopt_vectorize_82
 .Lopt_vectorize_81:
-    pushl $0
+    push 0
 .Lopt_vectorize_82:
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_79
-    pushl -208(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -32(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -56(%ebp)
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    popl %ecx
-    movl %eax, (%ecx)
-    movl %edx, 4(%ecx)
-    pushl %eax
-    pushl %edx
-    addl $4, %esp
-    pushl $1
-    popl %eax
-    movl %eax, -40(%ebp)
-    pushl -40(%ebp)
-    addl $4, %esp
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_79
+    push dword ptr [ebp-72]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-248]
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-224]
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop edx
+    pop ecx
+    pop eax
+    mov dword ptr [eax], edx
+    mov dword ptr [eax+4], ecx
+    push edx
+    add esp, 4
+    add esp, 4
+    push 1
+    pop eax
+    mov [ebp-240], eax
+    push dword ptr [ebp-240]
+    add esp, 4
     jmp .Lopt_vectorize_77
+    jmp .Lopt_vectorize_80
 .Lopt_vectorize_79:
 .Lopt_vectorize_80:
 .Lopt_vectorize_78:
-    pushl -32(%ebp)
-    pushl -32(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -32(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-248]
+    push dword ptr [ebp-248]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-248], eax
+    add esp, 4
     jmp .Lopt_vectorize_76
 .Lopt_vectorize_77:
-    pushl -40(%ebp)
-    popl %eax
-    cmpl $0, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lopt_vectorize_91
+    push dword ptr [ebp-240]
+    pop eax
+    test eax, eax
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lopt_vectorize_91
     jmp .Lopt_vectorize_7
+    jmp .Lopt_vectorize_92
 .Lopt_vectorize_91:
 .Lopt_vectorize_92:
-    pushl -208(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -88(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -104(%ebp)
-    pushl -56(%ebp)
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    popl %ecx
-    movl %eax, (%ecx)
-    movl %edx, 4(%ecx)
-    pushl %eax
-    pushl %edx
-    addl $4, %esp
-    pushl -208(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -80(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -104(%ebp)
-    pushl -56(%ebp)
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    popl %ecx
-    movl %eax, (%ecx)
-    movl %edx, 4(%ecx)
-    pushl %eax
-    pushl %edx
-    addl $4, %esp
-    pushl -208(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -64(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -104(%ebp)
-    pushl -56(%ebp)
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    popl %ecx
-    movl %eax, (%ecx)
-    movl %edx, 4(%ecx)
-    pushl %eax
-    pushl %edx
-    addl $4, %esp
-    pushl -208(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -72(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -48(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -208(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -72(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $20
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    push dword ptr [ebp-72]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-192]
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-176]
+    push dword ptr [ebp-224]
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop edx
+    pop ecx
+    pop eax
+    mov dword ptr [eax], edx
+    mov dword ptr [eax+4], ecx
+    push edx
+    add esp, 4
+    add esp, 4
+    push dword ptr [ebp-72]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-200]
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-176]
+    push dword ptr [ebp-224]
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop edx
+    pop ecx
+    pop eax
+    mov dword ptr [eax], edx
+    mov dword ptr [eax+4], ecx
+    push edx
+    add esp, 4
+    add esp, 4
+    push dword ptr [ebp-72]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-216]
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-176]
+    push dword ptr [ebp-224]
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop edx
+    pop ecx
+    pop eax
+    mov dword ptr [eax], edx
+    mov dword ptr [eax+4], ecx
+    push edx
+    add esp, 4
+    add esp, 4
+    push dword ptr [ebp-72]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-208]
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-232]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-72]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-208]
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 20
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
 .Lopt_vectorize_7:
-    pushl -200(%ebp)
-    pushl -200(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -200(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-80]
+    push dword ptr [ebp-80]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-80], eax
+    add esp, 4
     jmp .Lopt_vectorize_5
 .Lopt_vectorize_6:
 .Lopt_vectorize_4:
-    pushl -224(%ebp)
-    pushl -224(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -224(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-56]
+    push dword ptr [ebp-56]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-56], eax
+    add esp, 4
     jmp .Lopt_vectorize_2
 .Lopt_vectorize_3:
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 

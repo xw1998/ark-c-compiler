@@ -10,8 +10,7 @@
  *   rm <file>         - delete a file from flash FS (if supported)
  *   echo <text>      - echo text back (loopback test)
  *
- * Note: HAL_Init / SystemClock_Config / MX_xxx_Init in this file are
- * placeholder implementations; replace with STM32CubeMX-generated code.
+ * Clock setup: HSE 8MHz -> PLL1 -> SYSCLK 480MHz (CPU 480MHz, HCLK 240MHz).
  */
 #include "stm32h7xx.h"
 #include "bsp_w25q.h"
@@ -19,6 +18,34 @@
 #include "flash_fs.h"
 #include "compiler.h"
 #include <string.h>
+
+/* === Bare-metal register definitions ===
+ * The placeholder stm32h743xx.h only provides GPIO/USART/SPI structs;
+ * RCC and FLASH controllers must be defined here for clock setup.
+ * Addresses per STM32H743 RM0433 (RCC on AHB4, FLASH on D1 AHB1). */
+#define REG32(addr)      (*(volatile uint32_t *)(addr))
+
+#define RCC_BASE          (0x58024400UL)
+#define RCC_CR            REG32(RCC_BASE + 0x00U)
+#define RCC_CFGR          REG32(RCC_BASE + 0x10U)
+#define RCC_D1CFGR        REG32(RCC_BASE + 0x18U)
+#define RCC_PLLCKSELR     REG32(RCC_BASE + 0x28U)
+#define RCC_PLLCFGR       REG32(RCC_BASE + 0x2CU)
+#define RCC_PLL1DIVR      REG32(RCC_BASE + 0x30U)
+#define RCC_AHB4ENR        REG32(RCC_BASE + 0xE0U)
+#define RCC_APB2ENR        REG32(RCC_BASE + 0xF0U)
+
+#define FLASH_R_BASE      (0x52002000UL)
+#define FLASH_ACR         REG32(FLASH_R_BASE + 0x00U)
+
+/* RCC_CR bits */
+#define RCC_CR_HSEON      (1UL << 16)
+#define RCC_CR_HSERDY     (1UL << 17)
+#define RCC_CR_PLL1ON     (1UL << 24)
+#define RCC_CR_PLL1RDY    (1UL << 25)
+
+/* SystemCoreClock is defined in system_stm32h7xx.c; updated by SystemClock_Config */
+extern uint32_t SystemCoreClock;
 
 /* HAL handles (defined global per STM32 convention) */
 UART_HandleTypeDef huart1;
@@ -264,28 +291,109 @@ static void shell_loop(void) {
     }
 }
 
-/* ---------------- placeholder init functions ---------------- */
+/* ---------------- init functions ---------------- */
+/* SystemClock_Config: HSE 8MHz -> PLL1 -> SYSCLK 480MHz.
+ * PLL1: M=2, N=120, R=1 -> VCO=(8/2)*120=480MHz, SYSCLK=480/1=480MHz.
+ * D1HPRE=/2 -> HCLK=240MHz (feeds APB2, so USART1 BRR=240MHz/115200=2084).
+ * D1CPRE=/1 -> CPU=480MHz (SystemCoreClock=480000000).
+ */
 static void SystemClock_Config(void) {
-#warning "SystemClock_Config is a placeholder; replace with STM32CubeMX-generated 480MHz PLL config"
-    /* Expected: HSE 25MHz -> PLL1 -> SYSCLK 480MHz.
-     * Current placeholder writes no registers; after reset the system runs on internal HSI 64MHz.
-     */
+    /* 1. Enable HSE and wait for ready */
+    RCC_CR |= RCC_CR_HSEON;
+    while (!(RCC_CR & RCC_CR_HSERDY)) { }
+
+    /* 2. Configure PLL1: M=2, N=120, R=1, source=HSE */
+    RCC_PLLCKSELR = (2UL << 4) | 0x2UL;        /* DIVM1=2, PLLSRC=HSE(0x2) */
+    RCC_PLLCFGR   = (1UL << 2) | (1UL << 4);  /* PLL1REN, PLL1RGE=01(2-4MHz) */
+    RCC_PLL1DIVR  = (120UL - 1UL);            /* N1=119 (reg=N-1), R1=0 (reg=R-1) */
+
+    /* 3. Enable PLL1 and wait for ready */
+    RCC_CR |= RCC_CR_PLL1ON;
+    while (!(RCC_CR & RCC_CR_PLL1RDY)) { }
+
+    /* 4. Flash latency 4 wait states for 480MHz operation */
+    FLASH_ACR = (FLASH_ACR & ~0xFUL) | 4UL;
+
+    /* 5. Bus prescalers: D1HPRE=/2 (HCLK=240MHz), D1CPRE=/1 (CPU=480MHz) */
+    RCC_D1CFGR = 0x00000008UL;  /* D1HPRE=0b1000 (/2), D1CPRE=0 (/1) */
+
+    /* 6. Switch system clock to PLL1 */
+    RCC_CFGR = 0x3UL;  /* SW=PLL1 */
+    while ((RCC_CFGR & 0xCUL) != 0xCUL) { }  /* wait for SWS=PLL1 */
+
+    /* 7. Update global clock variable */
+    SystemCoreClock = 480000000UL;
 }
 
+/* MX_GPIO_Init: PA4(CS output), PA5-PA7(SPI1 AF5), PA9-PA10(USART1 AF7) */
 static void MX_GPIO_Init(void) {
-#warning "MX_GPIO_Init is a placeholder: enable GPIOA clock, set PA4(CS) output / PA5-PA7 SPI1 AF / PA9-PA10 USART1 AF"
+    /* Enable GPIOA clock */
+    RCC_AHB4ENR |= (1UL << 0);  /* GPIOAEN */
+
+    /* MODER: PA4=01(output), PA5/6/7=10(AF), PA9/10=10(AF) */
+    {
+        uint32_t m = GPIOA->MODER;
+        m &= ~((0x3UL << 8)  | (0x3UL << 10) | (0x3UL << 12) |
+                (0x3UL << 14) | (0x3UL << 18) | (0x3UL << 20));
+        m |=  (0x1UL << 8)   /* PA4 output */
+            | (0x2UL << 10)  /* PA5 AF */
+            | (0x2UL << 12)  /* PA6 AF */
+            | (0x2UL << 14)  /* PA7 AF */
+            | (0x2UL << 18)  /* PA9 AF */
+            | (0x2UL << 20); /* PA10 AF */
+        GPIOA->MODER = m;
+    }
+
+    /* OTYPER: PA4 push-pull (default 0) */
+    GPIOA->OTYPER &= ~(1UL << 4);
+
+    /* OSPEEDR: high speed for SPI pins (PA5/6/7) */
+    GPIOA->OSPEEDR |= (0x3UL << 10) | (0x3UL << 12) | (0x3UL << 14);
+
+    /* AFR[0]: PA5/PA6/PA7 = AF5 (SPI1) */
+    {
+        uint32_t a = GPIOA->AFR[0];
+        a &= ~((0xFUL << 20) | (0xFUL << 24) | (0xFUL << 28));
+        a |=  (5UL << 20) | (5UL << 24) | (5UL << 28);
+        GPIOA->AFR[0] = a;
+    }
+    /* AFR[1]: PA9/PA10 = AF7 (USART1) */
+    {
+        uint32_t a = GPIOA->AFR[1];
+        a &= ~((0xFUL << 4) | (0xFUL << 8));
+        a |=  (7UL << 4) | (7UL << 8);
+        GPIOA->AFR[1] = a;
+    }
+
+    /* PA4 = high (CS inactive) */
+    GPIOA->ODR |= (1UL << 4);
 }
 
+/* MX_USART1_UART_Init: 115200 8N1, BRR=240MHz/115200~=2084 */
 static void MX_USART1_UART_Init(void) {
-#warning "MX_USART1_UART_Init is a placeholder: add USART1 register setup or call HAL_UART_Init(&huart1)"
+    /* Enable USART1 clock (APB2) */
+    RCC_APB2ENR |= (1UL << 4);  /* USART1EN */
+
     huart1.Instance = USART1;
     huart1.BaudRate = 115200U;
+
+    USART1->CR1 = 0;          /* disable before config */
+    USART1->BRR = 2084UL;     /* 240MHz / 115200 ~= 2084 */
+    USART1->CR1 = (1UL << 3) | (1UL << 2) | (1UL << 0);  /* TE | RE | UE */
 }
 
+/* MX_SPI1_Init: Master, CPOL=0, CPHA=0, /16 prescaler, SSM|SSI, SPE */
 static void MX_SPI1_Init(void) {
-#warning "MX_SPI1_Init is a placeholder: add SPI1 register setup or call HAL_SPI_Init(&hspi1)"
+    /* Enable SPI1 clock (APB2) */
+    RCC_APB2ENR |= (1UL << 12);  /* SPI1EN */
+
     hspi1.Instance = SPI1;
-    hspi1.Mode     = 0U; /* Master */
+    hspi1.Mode = 0U;  /* Master */
+
+    SPI1->CR1  = 0;                          /* disable before config */
+    SPI1->CFG1 = (3UL << 28) | 7UL;          /* MBR=/16, DSIZE=8-bit */
+    SPI1->CFG2 = (1UL << 2) | (1UL << 19);  /* MASTER, SSM (CPOL=0, CPHA=0) */
+    SPI1->CR1  = (1UL << 12) | (1UL << 0);   /* SSI | SPE */
 }
 
 /* ---------------- main ---------------- */

@@ -1,72 +1,6 @@
-# Ark C Compiler - generated x86 (32-bit cdecl) assembly
-    .data
-    .globl _g_cpu_table
-_g_cpu_table:
-    .long ark_str_33
-    .long 6
-    .long 0
-    .long 0
-    .long 0
-    .long 0
-    .long 1
-    .long 0
-    .long ark_str_34
-    .long 6
-    .long 0
-    .long 0
-    .long 0
-    .long 0
-    .long 1
-    .long 0
-    .long ark_str_35
-    .long 6
-    .long 0
-    .long 0
-    .long 0
-    .long 0
-    .long 1
-    .long 0
-    .long ark_str_36
-    .long 7
-    .long 0
-    .long 0
-    .long 0
-    .long 0
-    .long 1
-    .long 0
-    .long ark_str_37
-    .long 7
-    .long 1
-    .long 1
-    .long 1
-    .long 0
-    .long 1
-    .long ark_str_38
-    .long ark_str_39
-    .long 7
-    .long 1
-    .long 1
-    .long 1
-    .long 1
-    .long 1
-    .long ark_str_40
-    .long ark_str_41
-    .long 8
-    .long 0
-    .long 0
-    .long 0
-    .long 0
-    .long 1
-    .long 0
-    .long ark_str_42
-    .long 8
-    .long 1
-    .long 1
-    .long 1
-    .long 0
-    .long 1
-    .long ark_str_43
-    .section .rdata,"dr"
+# Ark C Compiler - generated x86 32-bit (cdecl) assembly
+    .intel_syntax noprefix
+    .section .rodata
 ark_str_0:
     .asciz "Cortex-"
 ark_str_1:
@@ -133,1539 +67,1821 @@ ark_str_31:
     .asciz "__TARGET_CPU_NAME"
 ark_str_32:
     .asciz "__TARGET_ARCH_M"
-ark_str_33:
-    .asciz "Cortex-M0"
-ark_str_34:
-    .asciz "Cortex-M0+"
-ark_str_35:
-    .asciz "Cortex-M1"
-ark_str_36:
-    .asciz "Cortex-M3"
-ark_str_37:
-    .asciz "Cortex-M4"
-ark_str_38:
-    .asciz "VFPv4-SP"
-ark_str_39:
-    .asciz "Cortex-M7"
-ark_str_40:
-    .asciz "VFPv5-D16"
-ark_str_41:
-    .asciz "Cortex-M23"
-ark_str_42:
-    .asciz "Cortex-M33"
-ark_str_43:
-    .asciz "VFPv5-SP"
+    .data
+    .globl g_cpu_table
+    .local g_cpu_table
+g_cpu_table:
+    .quad 27723460419
+    .quad 0
+    .quad 0
+    .quad 1
+    .quad 27723460419
+    .quad 0
+    .quad 0
+    .quad 1
+    .quad 27723460419
+    .quad 0
+    .quad 0
+    .quad 1
+    .quad 32018427715
+    .quad 0
+    .quad 0
+    .quad 1
+    .quad 32018427715
+    .quad 4294967297
+    .quad 1
+    .quad 8525391429793480705
+    .quad 32018427715
+    .quad 4294967297
+    .quad 4294967297
+    .quad 8525391429793480705
+    .quad 36313395011
+    .quad 0
+    .quad 0
+    .quad 1
+    .quad 36313395011
+    .quad 4294967297
+    .quad 1
+    .quad 8525391429793480705
     .text
-_cpu_strcaseeq:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $288, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -40(%ebp)
-    movl 12(%ebp), %eax
-    movl %eax, -32(%ebp)
+    .globl cpu_strcaseeq
+cpu_strcaseeq:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 332
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    mov eax, [ebp+12]
+    mov [ebp-56], eax
 .Lcpu_strcaseeq_0:
-    pushl -40(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lcpu_strcaseeq_2
-    pushl -32(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-48]
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lcpu_strcaseeq_2
+    push dword ptr [ebp-56]
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lcpu_strcaseeq_3
 .Lcpu_strcaseeq_2:
-    pushl $0
+    push 0
 .Lcpu_strcaseeq_3:
-    popl %eax
-    cmpl $0, %eax
-    je .Lcpu_strcaseeq_1
-    pushl -40(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    popl %eax
-    movb %al, -24(%ebp)
-    pushl -32(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    popl %eax
-    movb %al, -16(%ebp)
-    movzbl -24(%ebp), %eax
-    pushl %eax
-    pushl $65
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setge %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lcpu_strcaseeq_6
-    movzbl -24(%ebp), %eax
-    pushl %eax
-    pushl $90
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setle %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jz .Lcpu_strcaseeq_1
+    push dword ptr [ebp-48]
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    pop eax
+    mov [ebp-64], eax
+    push dword ptr [ebp-56]
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    pop eax
+    mov [ebp-72], eax
+    push dword ptr [ebp-64]
+    push 65
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setge al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lcpu_strcaseeq_6
+    push dword ptr [ebp-64]
+    push 90
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setle al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lcpu_strcaseeq_7
 .Lcpu_strcaseeq_6:
-    pushl $0
+    push 0
 .Lcpu_strcaseeq_7:
-    popl %eax
-    cmpl $0, %eax
-    je .Lcpu_strcaseeq_4
-    movzbl -24(%ebp), %eax
-    pushl %eax
-    pushl $65
-    popl %ecx
-    popl %eax
-    subl %ecx, %eax
-    pushl %eax
-    pushl $97
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movb %al, -24(%ebp)
-    pushl -24(%ebp)
-    addl $4, %esp
+    pop eax
+    test eax, eax
+    jz .Lcpu_strcaseeq_4
+    push dword ptr [ebp-64]
+    push 65
+    pop ecx
+    pop eax
+    sub eax, ecx
+    push eax
+    push 97
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-64], eax
+    push dword ptr [ebp-64]
+    add esp, 4
     jmp .Lcpu_strcaseeq_5
 .Lcpu_strcaseeq_4:
 .Lcpu_strcaseeq_5:
-    movzbl -16(%ebp), %eax
-    pushl %eax
-    pushl $65
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setge %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lcpu_strcaseeq_10
-    movzbl -16(%ebp), %eax
-    pushl %eax
-    pushl $90
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setle %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-72]
+    push 65
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setge al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lcpu_strcaseeq_10
+    push dword ptr [ebp-72]
+    push 90
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setle al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lcpu_strcaseeq_11
 .Lcpu_strcaseeq_10:
-    pushl $0
+    push 0
 .Lcpu_strcaseeq_11:
-    popl %eax
-    cmpl $0, %eax
-    je .Lcpu_strcaseeq_8
-    movzbl -16(%ebp), %eax
-    pushl %eax
-    pushl $65
-    popl %ecx
-    popl %eax
-    subl %ecx, %eax
-    pushl %eax
-    pushl $97
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movb %al, -16(%ebp)
-    pushl -16(%ebp)
-    addl $4, %esp
+    pop eax
+    test eax, eax
+    jz .Lcpu_strcaseeq_8
+    push dword ptr [ebp-72]
+    push 65
+    pop ecx
+    pop eax
+    sub eax, ecx
+    push eax
+    push 97
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-72], eax
+    push dword ptr [ebp-72]
+    add esp, 4
     jmp .Lcpu_strcaseeq_9
 .Lcpu_strcaseeq_8:
 .Lcpu_strcaseeq_9:
-    movzbl -24(%ebp), %eax
-    pushl %eax
-    movzbl -16(%ebp), %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lcpu_strcaseeq_12
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    push dword ptr [ebp-64]
+    push dword ptr [ebp-72]
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lcpu_strcaseeq_12
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
+    jmp .Lcpu_strcaseeq_13
 .Lcpu_strcaseeq_12:
 .Lcpu_strcaseeq_13:
-    pushl -40(%ebp)
-    pushl -40(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -40(%ebp)
-    addl $4, %esp
-    pushl -32(%ebp)
-    pushl -32(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -32(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-48]
+    push dword ptr [ebp-48]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-48], eax
+    add esp, 4
+    push dword ptr [ebp-56]
+    push dword ptr [ebp-56]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-56], eax
+    add esp, 4
     jmp .Lcpu_strcaseeq_0
 .Lcpu_strcaseeq_1:
-    pushl -40(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lcpu_strcaseeq_14
-    pushl -32(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-48]
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lcpu_strcaseeq_14
+    push dword ptr [ebp-56]
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lcpu_strcaseeq_15
 .Lcpu_strcaseeq_14:
-    pushl $0
+    push 0
 .Lcpu_strcaseeq_15:
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 
-_cpu_name_matches:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $320, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -72(%ebp)
-    movl 12(%ebp), %eax
-    movl %eax, -64(%ebp)
-    leal ark_str_0, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -56(%ebp)
-    pushl $7
-    popl %eax
-    movl %eax, -48(%ebp)
-    pushl -64(%ebp)
-    pushl -72(%ebp)
-    call _cpu_strcaseeq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lcpu_name_matches_0
-    pushl $1
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    .globl cpu_name_matches
+cpu_name_matches:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 364
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    mov eax, [ebp+12]
+    mov [ebp-56], eax
+    lea eax, [ark_str_0]
+    push eax
+    pop eax
+    mov [ebp-64], eax
+    push 7
+    pop eax
+    mov [ebp-72], eax
+    push dword ptr [ebp-56]
+    push dword ptr [ebp-48]
+    pop eax
+    mov [ebp-128], eax
+    pop eax
+    mov [ebp-132], eax
+    mov [ebp-112], esp
+    push dword ptr [ebp-132]
+    push dword ptr [ebp-128]
+    and esp, -16
+    call cpu_strcaseeq
+    mov esp, [ebp-112]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lcpu_name_matches_0
+    push 1
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
+    jmp .Lcpu_name_matches_1
 .Lcpu_name_matches_0:
 .Lcpu_name_matches_1:
-    pushl $0
-    popl %eax
-    movl %eax, -40(%ebp)
-    pushl -40(%ebp)
-    addl $4, %esp
+    push 0
+    pop eax
+    mov [ebp-80], eax
+    push dword ptr [ebp-80]
+    add esp, 4
 .Lcpu_name_matches_2:
-    pushl -40(%ebp)
-    pushl -48(%ebp)
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lcpu_name_matches_3
-    pushl -56(%ebp)
-    pushl -40(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    popl %eax
-    movb %al, -32(%ebp)
-    pushl -64(%ebp)
-    pushl -40(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    popl %eax
-    movb %al, -24(%ebp)
-    movzbl -32(%ebp), %eax
-    pushl %eax
-    pushl $65
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setge %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lcpu_name_matches_7
-    movzbl -32(%ebp), %eax
-    pushl %eax
-    pushl $90
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setle %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-80]
+    push dword ptr [ebp-72]
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lcpu_name_matches_3
+    push dword ptr [ebp-64]
+    push dword ptr [ebp-80]
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    pop eax
+    mov [ebp-88], eax
+    push dword ptr [ebp-56]
+    push dword ptr [ebp-80]
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    push dword ptr [ebp-88]
+    push 65
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setge al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lcpu_name_matches_7
+    push dword ptr [ebp-88]
+    push 90
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setle al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lcpu_name_matches_8
 .Lcpu_name_matches_7:
-    pushl $0
+    push 0
 .Lcpu_name_matches_8:
-    popl %eax
-    cmpl $0, %eax
-    je .Lcpu_name_matches_5
-    movzbl -32(%ebp), %eax
-    pushl %eax
-    pushl $65
-    popl %ecx
-    popl %eax
-    subl %ecx, %eax
-    pushl %eax
-    pushl $97
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movb %al, -32(%ebp)
-    pushl -32(%ebp)
-    addl $4, %esp
+    pop eax
+    test eax, eax
+    jz .Lcpu_name_matches_5
+    push dword ptr [ebp-88]
+    push 65
+    pop ecx
+    pop eax
+    sub eax, ecx
+    push eax
+    push 97
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-88], eax
+    push dword ptr [ebp-88]
+    add esp, 4
     jmp .Lcpu_name_matches_6
 .Lcpu_name_matches_5:
 .Lcpu_name_matches_6:
-    movzbl -24(%ebp), %eax
-    pushl %eax
-    pushl $65
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setge %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lcpu_name_matches_11
-    movzbl -24(%ebp), %eax
-    pushl %eax
-    pushl $90
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setle %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-96]
+    push 65
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setge al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lcpu_name_matches_11
+    push dword ptr [ebp-96]
+    push 90
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setle al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lcpu_name_matches_12
 .Lcpu_name_matches_11:
-    pushl $0
+    push 0
 .Lcpu_name_matches_12:
-    popl %eax
-    cmpl $0, %eax
-    je .Lcpu_name_matches_9
-    movzbl -24(%ebp), %eax
-    pushl %eax
-    pushl $65
-    popl %ecx
-    popl %eax
-    subl %ecx, %eax
-    pushl %eax
-    pushl $97
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movb %al, -24(%ebp)
-    pushl -24(%ebp)
-    addl $4, %esp
+    pop eax
+    test eax, eax
+    jz .Lcpu_name_matches_9
+    push dword ptr [ebp-96]
+    push 65
+    pop ecx
+    pop eax
+    sub eax, ecx
+    push eax
+    push 97
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    push dword ptr [ebp-96]
+    add esp, 4
     jmp .Lcpu_name_matches_10
 .Lcpu_name_matches_9:
 .Lcpu_name_matches_10:
-    movzbl -32(%ebp), %eax
-    pushl %eax
-    movzbl -24(%ebp), %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lcpu_name_matches_13
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    push dword ptr [ebp-88]
+    push dword ptr [ebp-96]
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lcpu_name_matches_13
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
+    jmp .Lcpu_name_matches_14
 .Lcpu_name_matches_13:
 .Lcpu_name_matches_14:
 .Lcpu_name_matches_4:
-    pushl -40(%ebp)
-    pushl -40(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -40(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-80]
+    push dword ptr [ebp-80]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-80], eax
+    add esp, 4
     jmp .Lcpu_name_matches_2
 .Lcpu_name_matches_3:
-    pushl -64(%ebp)
-    pushl -48(%ebp)
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -72(%ebp)
-    call _cpu_strcaseeq
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lcpu_name_matches_15
-    pushl $1
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    push dword ptr [ebp-56]
+    push dword ptr [ebp-72]
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-48]
+    pop eax
+    mov [ebp-128], eax
+    pop eax
+    mov [ebp-132], eax
+    mov [ebp-112], esp
+    push dword ptr [ebp-132]
+    push dword ptr [ebp-128]
+    and esp, -16
+    call cpu_strcaseeq
+    mov esp, [ebp-112]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lcpu_name_matches_15
+    push 1
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
+    jmp .Lcpu_name_matches_16
 .Lcpu_name_matches_15:
 .Lcpu_name_matches_16:
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 
-    .globl _cpu_lookup
-_cpu_lookup:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $272, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    popl %eax
-    cmpl $0, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lcpu_lookup_2
-    pushl -24(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    .globl cpu_lookup
+cpu_lookup:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 316
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    push dword ptr [ebp-48]
+    pop eax
+    test eax, eax
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lcpu_lookup_2
+    push dword ptr [ebp-48]
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    pop eax
+    test eax, eax
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lcpu_lookup_3
 .Lcpu_lookup_2:
-    pushl $1
+    push 1
 .Lcpu_lookup_3:
-    popl %eax
-    cmpl $0, %eax
-    je .Lcpu_lookup_0
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    pop eax
+    test eax, eax
+    jz .Lcpu_lookup_0
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
+    jmp .Lcpu_lookup_1
 .Lcpu_lookup_0:
 .Lcpu_lookup_1:
-    pushl $0
-    popl %eax
-    movl %eax, -16(%ebp)
-    pushl -16(%ebp)
-    addl $4, %esp
+    push 0
+    pop eax
+    mov [ebp-56], eax
+    push dword ptr [ebp-56]
+    add esp, 4
 .Lcpu_lookup_4:
-    pushl -16(%ebp)
-    pushl $256
-    pushl $32
-    popl %ecx
-    popl %eax
+    push dword ptr [ebp-56]
+    push 256
+    push 32
+    pop ecx
+    pop eax
     cdq
-    idivl %ecx
-    pushl %eax
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lcpu_lookup_5
-    movl $_g_cpu_table, %eax
-    pushl %eax
-    pushl -16(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -24(%ebp)
-    call _cpu_name_matches
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lcpu_lookup_7
-    movl $_g_cpu_table, %eax
-    pushl %eax
-    pushl -16(%ebp)
-    pushl $32
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    idiv ecx
+    push eax
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lcpu_lookup_5
+    lea eax, [g_cpu_table]
+    push eax
+    push dword ptr [ebp-56]
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-48]
+    pop eax
+    mov [ebp-80], eax
+    pop eax
+    mov [ebp-84], eax
+    mov [ebp-64], esp
+    push dword ptr [ebp-84]
+    push dword ptr [ebp-80]
+    and esp, -16
+    call cpu_name_matches
+    mov esp, [ebp-64]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lcpu_lookup_7
+    lea eax, [g_cpu_table]
+    push eax
+    push dword ptr [ebp-56]
+    push 32
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
+    jmp .Lcpu_lookup_8
 .Lcpu_lookup_7:
 .Lcpu_lookup_8:
 .Lcpu_lookup_6:
-    pushl -16(%ebp)
-    pushl -16(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -16(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-56]
+    push dword ptr [ebp-56]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-56], eax
+    add esp, 4
     jmp .Lcpu_lookup_4
 .Lcpu_lookup_5:
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 
-_int_to_str:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $320, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -72(%ebp)
-    movl 12(%ebp), %eax
-    movl %eax, -64(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -56(%ebp)
-    pushl -72(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lint_to_str_0
-    pushl -64(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $45
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -64(%ebp)
-    pushl -64(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -64(%ebp)
-    addl $4, %esp
-    pushl -72(%ebp)
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    addl $4, %esp
+    .globl int_to_str
+int_to_str:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 364
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    mov eax, [ebp+12]
+    mov [ebp-56], eax
+    push 0
+    pop eax
+    mov [ebp-64], eax
+    push dword ptr [ebp-48]
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lint_to_str_0
+    push dword ptr [ebp-56]
+    push 0
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 45
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
+    push dword ptr [ebp-56]
+    push dword ptr [ebp-56]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-56], eax
+    add esp, 4
+    push dword ptr [ebp-48]
+    pop eax
+    neg eax
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    push dword ptr [ebp-96]
+    add esp, 4
     jmp .Lint_to_str_1
 .Lint_to_str_0:
-    pushl -72(%ebp)
-    popl %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-48]
+    pop eax
+    mov [ebp-96], eax
+    push dword ptr [ebp-96]
+    add esp, 4
 .Lint_to_str_1:
-    pushl -24(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lint_to_str_2
-    leal -48(%ebp), %eax
-    pushl %eax
-    pushl -56(%ebp)
-    pushl -56(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -56(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $48
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
+    push dword ptr [ebp-96]
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lint_to_str_2
+    lea eax, [ebp-72]
+    push eax
+    push dword ptr [ebp-64]
+    push dword ptr [ebp-64]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-64], eax
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 48
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
     jmp .Lint_to_str_3
 .Lint_to_str_2:
 .Lint_to_str_3:
 .Lint_to_str_4:
-    pushl -24(%ebp)
-    popl %eax
-    cmpl $0, %eax
-    je .Lint_to_str_5
-    leal -48(%ebp), %eax
-    pushl %eax
-    pushl -56(%ebp)
-    pushl -56(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -56(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $48
-    pushl -24(%ebp)
-    pushl $10
-    popl %ecx
-    popl %eax
-    xorl %edx, %edx
-    divl %ecx
-    pushl %edx
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl $10
-    popl %ecx
-    popl %eax
-    xorl %edx, %edx
-    divl %ecx
-    pushl %eax
-    popl %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-96]
+    pop eax
+    test eax, eax
+    jz .Lint_to_str_5
+    lea eax, [ebp-72]
+    push eax
+    push dword ptr [ebp-64]
+    push dword ptr [ebp-64]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-64], eax
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 48
+    push dword ptr [ebp-96]
+    push 10
+    pop ecx
+    pop eax
+    xor edx, edx
+    div ecx
+    push edx
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
+    push dword ptr [ebp-96]
+    push 10
+    pop ecx
+    pop eax
+    xor edx, edx
+    div ecx
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    push dword ptr [ebp-96]
+    add esp, 4
     jmp .Lint_to_str_4
 .Lint_to_str_5:
-    pushl -56(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    subl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -32(%ebp)
-    pushl -32(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-64]
+    push 1
+    pop ecx
+    pop eax
+    sub eax, ecx
+    push eax
+    pop eax
+    mov [ebp-88], eax
+    push dword ptr [ebp-88]
+    add esp, 4
 .Lint_to_str_6:
-    pushl -32(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setge %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lint_to_str_7
-    pushl -64(%ebp)
-    pushl -56(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    subl %ecx, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    popl %ecx
-    popl %eax
-    subl %ecx, %eax
-    pushl %eax
-    pushl $1
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    leal -48(%ebp), %eax
-    pushl %eax
-    pushl -32(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
+    push dword ptr [ebp-88]
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setge al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lint_to_str_7
+    push dword ptr [ebp-56]
+    push dword ptr [ebp-64]
+    push 1
+    pop ecx
+    pop eax
+    sub eax, ecx
+    push eax
+    push dword ptr [ebp-88]
+    pop ecx
+    pop eax
+    sub eax, ecx
+    push eax
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    lea eax, [ebp-72]
+    push eax
+    push dword ptr [ebp-88]
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
 .Lint_to_str_8:
-    pushl -32(%ebp)
-    pushl -32(%ebp)
-    pushl $-1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -32(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-88]
+    push dword ptr [ebp-88]
+    push -1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-88], eax
+    add esp, 4
     jmp .Lint_to_str_6
 .Lint_to_str_7:
-    pushl -64(%ebp)
-    pushl -56(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    push dword ptr [ebp-56]
+    push dword ptr [ebp-64]
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 
-    .globl _cpu_apply_predefines
-_cpu_apply_predefines:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $288, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -40(%ebp)
-    pushl -40(%ebp)
-    popl %eax
-    cmpl $0, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lcpu_apply_predefines_0
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    .globl cpu_apply_predefines
+cpu_apply_predefines:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 332
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    push dword ptr [ebp-48]
+    pop eax
+    test eax, eax
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lcpu_apply_predefines_0
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
+    jmp .Lcpu_apply_predefines_1
 .Lcpu_apply_predefines_0:
 .Lcpu_apply_predefines_1:
-    leal ark_str_1, %eax
-    pushl %eax
-    call _preproc_undef
-    addl $4, %esp
-    pushl %eax
-    addl $4, %esp
-    leal ark_str_2, %eax
-    pushl %eax
-    call _preproc_undef
-    addl $4, %esp
-    pushl %eax
-    addl $4, %esp
-    leal ark_str_3, %eax
-    pushl %eax
-    call _preproc_undef
-    addl $4, %esp
-    pushl %eax
-    addl $4, %esp
-    leal ark_str_4, %eax
-    pushl %eax
-    call _preproc_undef
-    addl $4, %esp
-    pushl %eax
-    addl $4, %esp
-    leal ark_str_5, %eax
-    pushl %eax
-    call _preproc_undef
-    addl $4, %esp
-    pushl %eax
-    addl $4, %esp
-    leal ark_str_6, %eax
-    pushl %eax
-    call _preproc_undef
-    addl $4, %esp
-    pushl %eax
-    addl $4, %esp
-    leal ark_str_7, %eax
-    pushl %eax
-    call _preproc_undef
-    addl $4, %esp
-    pushl %eax
-    addl $4, %esp
-    leal ark_str_8, %eax
-    pushl %eax
-    call _preproc_undef
-    addl $4, %esp
-    pushl %eax
-    addl $4, %esp
-    leal ark_str_9, %eax
-    pushl %eax
-    call _preproc_undef
-    addl $4, %esp
-    pushl %eax
-    addl $4, %esp
-    leal ark_str_10, %eax
-    pushl %eax
-    call _preproc_undef
-    addl $4, %esp
-    pushl %eax
-    addl $4, %esp
-    pushl -40(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -16(%ebp)
-    pushl -16(%ebp)
-    pushl $6
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lcpu_apply_predefines_3
-    pushl -16(%ebp)
-    pushl $7
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lcpu_apply_predefines_4
-    pushl -16(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    jne .Lcpu_apply_predefines_5
+    lea eax, [ark_str_1]
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-96]
+    and esp, -16
+    call preproc_undef
+    mov esp, [ebp-80]
+    push eax
+    lea eax, [ark_str_2]
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-96]
+    and esp, -16
+    call preproc_undef
+    mov esp, [ebp-80]
+    push eax
+    lea eax, [ark_str_3]
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-96]
+    and esp, -16
+    call preproc_undef
+    mov esp, [ebp-80]
+    push eax
+    lea eax, [ark_str_4]
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-96]
+    and esp, -16
+    call preproc_undef
+    mov esp, [ebp-80]
+    push eax
+    lea eax, [ark_str_5]
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-96]
+    and esp, -16
+    call preproc_undef
+    mov esp, [ebp-80]
+    push eax
+    lea eax, [ark_str_6]
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-96]
+    and esp, -16
+    call preproc_undef
+    mov esp, [ebp-80]
+    push eax
+    lea eax, [ark_str_7]
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-96]
+    and esp, -16
+    call preproc_undef
+    mov esp, [ebp-80]
+    push eax
+    lea eax, [ark_str_8]
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-96]
+    and esp, -16
+    call preproc_undef
+    mov esp, [ebp-80]
+    push eax
+    lea eax, [ark_str_9]
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-96]
+    and esp, -16
+    call preproc_undef
+    mov esp, [ebp-80]
+    push eax
+    lea eax, [ark_str_10]
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-96]
+    and esp, -16
+    call preproc_undef
+    mov esp, [ebp-80]
+    push eax
+    push dword ptr [ebp-48]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    mov [ebp-72], eax
+    push dword ptr [ebp-72]
+    push 6
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lcpu_apply_predefines_3
+    push dword ptr [ebp-72]
+    push 7
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lcpu_apply_predefines_4
+    push dword ptr [ebp-72]
+    push 8
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jnz .Lcpu_apply_predefines_5
     jmp .Lcpu_apply_predefines_6
 .Lcpu_apply_predefines_3:
-    leal ark_str_11, %eax
-    pushl %eax
-    leal ark_str_12, %eax
-    pushl %eax
-    call _preproc_define
-    addl $8, %esp
-    pushl %eax
-    addl $4, %esp
+    lea eax, [ark_str_11]
+    push eax
+    lea eax, [ark_str_12]
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call preproc_define
+    mov esp, [ebp-80]
+    push eax
     jmp .Lcpu_apply_predefines_2
 .Lcpu_apply_predefines_4:
-    pushl -40(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lcpu_apply_predefines_7
-    leal ark_str_13, %eax
-    pushl %eax
-    leal ark_str_14, %eax
-    pushl %eax
-    call _preproc_define
-    addl $8, %esp
-    pushl %eax
-    addl $4, %esp
+    push dword ptr [ebp-48]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lcpu_apply_predefines_7
+    lea eax, [ark_str_13]
+    push eax
+    lea eax, [ark_str_14]
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call preproc_define
+    mov esp, [ebp-80]
+    push eax
     jmp .Lcpu_apply_predefines_8
 .Lcpu_apply_predefines_7:
-    leal ark_str_15, %eax
-    pushl %eax
-    leal ark_str_16, %eax
-    pushl %eax
-    call _preproc_define
-    addl $8, %esp
-    pushl %eax
-    addl $4, %esp
+    lea eax, [ark_str_15]
+    push eax
+    lea eax, [ark_str_16]
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call preproc_define
+    mov esp, [ebp-80]
+    push eax
 .Lcpu_apply_predefines_8:
     jmp .Lcpu_apply_predefines_2
 .Lcpu_apply_predefines_5:
-    pushl -40(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lcpu_apply_predefines_9
-    leal ark_str_17, %eax
-    pushl %eax
-    leal ark_str_18, %eax
-    pushl %eax
-    call _preproc_define
-    addl $8, %esp
-    pushl %eax
-    addl $4, %esp
+    push dword ptr [ebp-48]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lcpu_apply_predefines_9
+    lea eax, [ark_str_17]
+    push eax
+    lea eax, [ark_str_18]
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call preproc_define
+    mov esp, [ebp-80]
+    push eax
     jmp .Lcpu_apply_predefines_10
 .Lcpu_apply_predefines_9:
-    leal ark_str_19, %eax
-    pushl %eax
-    leal ark_str_20, %eax
-    pushl %eax
-    call _preproc_define
-    addl $8, %esp
-    pushl %eax
-    addl $4, %esp
+    lea eax, [ark_str_19]
+    push eax
+    lea eax, [ark_str_20]
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call preproc_define
+    mov esp, [ebp-80]
+    push eax
 .Lcpu_apply_predefines_10:
-    leal ark_str_21, %eax
-    pushl %eax
-    leal ark_str_22, %eax
-    pushl %eax
-    call _preproc_define
-    addl $8, %esp
-    pushl %eax
-    addl $4, %esp
+    lea eax, [ark_str_21]
+    push eax
+    lea eax, [ark_str_22]
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call preproc_define
+    mov esp, [ebp-80]
+    push eax
     jmp .Lcpu_apply_predefines_2
 .Lcpu_apply_predefines_6:
     jmp .Lcpu_apply_predefines_2
 .Lcpu_apply_predefines_2:
-    pushl -40(%ebp)
-    pushl $12
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lcpu_apply_predefines_11
-    leal ark_str_23, %eax
-    pushl %eax
-    leal ark_str_24, %eax
-    pushl %eax
-    call _preproc_define
-    addl $8, %esp
-    pushl %eax
-    addl $4, %esp
+    push dword ptr [ebp-48]
+    push 12
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lcpu_apply_predefines_11
+    lea eax, [ark_str_23]
+    push eax
+    lea eax, [ark_str_24]
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call preproc_define
+    mov esp, [ebp-80]
+    push eax
     jmp .Lcpu_apply_predefines_12
 .Lcpu_apply_predefines_11:
 .Lcpu_apply_predefines_12:
-    pushl -40(%ebp)
-    pushl $16
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lcpu_apply_predefines_13
-    leal ark_str_25, %eax
-    pushl %eax
-    leal ark_str_26, %eax
-    pushl %eax
-    call _preproc_define
-    addl $8, %esp
-    pushl %eax
-    addl $4, %esp
-    pushl -40(%ebp)
-    pushl $28
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lcpu_apply_predefines_15
-    pushl -40(%ebp)
-    pushl $28
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $86
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lcpu_apply_predefines_25
-    pushl -40(%ebp)
-    pushl $28
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $70
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    push dword ptr [ebp-48]
+    push 16
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lcpu_apply_predefines_13
+    lea eax, [ark_str_25]
+    push eax
+    lea eax, [ark_str_26]
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call preproc_define
+    mov esp, [ebp-80]
+    push eax
+    push dword ptr [ebp-48]
+    push 28
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lcpu_apply_predefines_15
+    push dword ptr [ebp-48]
+    push 28
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 0
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 86
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lcpu_apply_predefines_25
+    push dword ptr [ebp-48]
+    push 28
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 1
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 70
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lcpu_apply_predefines_26
 .Lcpu_apply_predefines_25:
-    pushl $0
+    push 0
 .Lcpu_apply_predefines_26:
-    popl %eax
-    cmpl $0, %eax
-    je .Lcpu_apply_predefines_23
-    pushl -40(%ebp)
-    pushl $28
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $2
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $80
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jz .Lcpu_apply_predefines_23
+    push dword ptr [ebp-48]
+    push 28
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 2
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 80
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lcpu_apply_predefines_24
 .Lcpu_apply_predefines_23:
-    pushl $0
+    push 0
 .Lcpu_apply_predefines_24:
-    popl %eax
-    cmpl $0, %eax
-    je .Lcpu_apply_predefines_21
-    pushl -40(%ebp)
-    pushl $28
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $3
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $118
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jz .Lcpu_apply_predefines_21
+    push dword ptr [ebp-48]
+    push 28
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 3
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 118
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lcpu_apply_predefines_22
 .Lcpu_apply_predefines_21:
-    pushl $0
+    push 0
 .Lcpu_apply_predefines_22:
-    popl %eax
-    cmpl $0, %eax
-    je .Lcpu_apply_predefines_19
-    pushl -40(%ebp)
-    pushl $28
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    pushl $53
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    sete %al
-    movzbl %al, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setne %al
-    movzbl %al, %eax
-    pushl %eax
+    pop eax
+    test eax, eax
+    jz .Lcpu_apply_predefines_19
+    push dword ptr [ebp-48]
+    push 28
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 4
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    push 53
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    sete al
+    movzx eax, al
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setne al
+    movzx eax, al
+    push eax
     jmp .Lcpu_apply_predefines_20
 .Lcpu_apply_predefines_19:
-    pushl $0
+    push 0
 .Lcpu_apply_predefines_20:
-    popl %eax
-    cmpl $0, %eax
-    je .Lcpu_apply_predefines_17
-    leal ark_str_27, %eax
-    pushl %eax
-    leal ark_str_28, %eax
-    pushl %eax
-    call _preproc_define
-    addl $8, %esp
-    pushl %eax
-    addl $4, %esp
+    pop eax
+    test eax, eax
+    jz .Lcpu_apply_predefines_17
+    lea eax, [ark_str_27]
+    push eax
+    lea eax, [ark_str_28]
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call preproc_define
+    mov esp, [ebp-80]
+    push eax
     jmp .Lcpu_apply_predefines_18
 .Lcpu_apply_predefines_17:
 .Lcpu_apply_predefines_18:
     jmp .Lcpu_apply_predefines_16
 .Lcpu_apply_predefines_15:
 .Lcpu_apply_predefines_16:
-    pushl -40(%ebp)
-    pushl $20
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lcpu_apply_predefines_27
-    leal ark_str_29, %eax
-    pushl %eax
-    leal ark_str_30, %eax
-    pushl %eax
-    call _preproc_define
-    addl $8, %esp
-    pushl %eax
-    addl $4, %esp
+    push dword ptr [ebp-48]
+    push 20
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lcpu_apply_predefines_27
+    lea eax, [ark_str_29]
+    push eax
+    lea eax, [ark_str_30]
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call preproc_define
+    mov esp, [ebp-80]
+    push eax
     jmp .Lcpu_apply_predefines_28
 .Lcpu_apply_predefines_27:
 .Lcpu_apply_predefines_28:
     jmp .Lcpu_apply_predefines_14
 .Lcpu_apply_predefines_13:
 .Lcpu_apply_predefines_14:
-    pushl -40(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    leal ark_str_31, %eax
-    pushl %eax
-    call _preproc_define
-    addl $8, %esp
-    pushl %eax
-    addl $4, %esp
-    leal -32(%ebp), %eax
-    pushl %eax
-    pushl -40(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    call _int_to_str
-    addl $8, %esp
-    pushl %eax
-    addl $4, %esp
-    leal -32(%ebp), %eax
-    pushl %eax
-    leal ark_str_32, %eax
-    pushl %eax
-    call _preproc_define
-    addl $8, %esp
-    pushl %eax
-    addl $4, %esp
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    push dword ptr [ebp-48]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    lea eax, [ark_str_31]
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call preproc_define
+    mov esp, [ebp-80]
+    push eax
+    lea eax, [ebp-56]
+    push eax
+    push dword ptr [ebp-48]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call int_to_str
+    mov esp, [ebp-80]
+    lea eax, [ebp-56]
+    push eax
+    lea eax, [ark_str_32]
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call preproc_define
+    mov esp, [ebp-80]
+    push eax
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 

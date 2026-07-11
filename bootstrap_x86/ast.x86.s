@@ -1,2105 +1,2591 @@
-# Ark C Compiler - generated x86 (32-bit cdecl) assembly
-    .data
-    .section .rdata,"dr"
+# Ark C Compiler - generated x86 32-bit (cdecl) assembly
+    .intel_syntax noprefix
+    .section .rodata
 ark_str_0:
     .asciz ""
+    .data
     .text
-    .globl _ast_new
-_ast_new:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $288, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -40(%ebp)
-    movl 12(%ebp), %eax
-    movl %eax, -32(%ebp)
-    pushl $144
-    call _mem_pool_alloc
-    addl $4, %esp
-    pushl %eax
-    popl %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -40(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl $16
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    movl .L_dbl_0, %eax
-    pushl %eax
-    movl .L_dbl_0+4, %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    popl %ecx
-    movl %eax, (%ecx)
-    movl %edx, 4(%ecx)
-    pushl %eax
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    .globl ast_new
+ast_new:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 332
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    mov eax, [ebp+12]
+    mov [ebp-56], eax
+    push 144
+    pop eax
+    mov [ebp-96], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-96]
+    and esp, -16
+    call mem_pool_alloc
+    mov esp, [ebp-80]
+    push eax
+    pop eax
+    mov [ebp-64], eax
+    push dword ptr [ebp-64]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-48]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-64]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-64]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-56]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-64]
+    push 16
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    mov eax, 0
+    push eax
+    mov eax, 0
+    push eax
+    pop edx
+    pop ecx
+    pop eax
+    mov dword ptr [eax], edx
+    mov dword ptr [eax+4], ecx
+    push edx
+    add esp, 4
+    add esp, 4
+    push dword ptr [ebp-64]
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-
-    .globl _ast_num
-_ast_num:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $288, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -40(%ebp)
-    movl 12(%ebp), %eax
-    movl %eax, -36(%ebp)
-    movl 16(%ebp), %eax
-    movl %eax, -32(%ebp)
-    pushl -32(%ebp)
-    pushl $16
-    call _ast_new
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    call _type_int
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -40(%ebp)
-    pushl -36(%ebp)
-    popl %edx
-    popl %eax
-    popl %ecx
-    movl %eax, (%ecx)
-    movl %edx, 4(%ecx)
-    pushl %eax
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
-    ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 
-    .globl _ast_str
-_ast_str:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $288, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -40(%ebp)
-    movl 12(%ebp), %eax
-    movl %eax, -32(%ebp)
-    pushl -32(%ebp)
-    pushl $21
-    call _ast_new
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    call _type_char
-    pushl %eax
-    call _type_pointer
-    addl $4, %esp
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -40(%ebp)
-    popl %eax
-    cmpl $0, %eax
-    je .Last_str_0
-    pushl -40(%ebp)
+    .globl ast_num
+ast_num:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 332
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    mov eax, [ebp+12]
+    mov [ebp-56], eax
+    push dword ptr [ebp-56]
+    push 16
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call ast_new
+    mov esp, [ebp-80]
+    push eax
+    pop eax
+    mov [ebp-64], eax
+    push dword ptr [ebp-64]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    mov [ebp-80], esp
+    and esp, -16
+    call type_int
+    mov esp, [ebp-80]
+    push eax
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-64]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-48]
+    pop edx
+    pop ecx
+    pop eax
+    mov dword ptr [eax], edx
+    mov dword ptr [eax+4], ecx
+    push edx
+    add esp, 4
+    add esp, 4
+    push dword ptr [ebp-64]
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+
+    .globl ast_str
+ast_str:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 332
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    mov eax, [ebp+12]
+    mov [ebp-56], eax
+    push dword ptr [ebp-56]
+    push 21
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call ast_new
+    mov esp, [ebp-80]
+    push eax
+    pop eax
+    mov [ebp-64], eax
+    push dword ptr [ebp-64]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    mov [ebp-80], esp
+    and esp, -16
+    call type_char
+    mov esp, [ebp-80]
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-96]
+    and esp, -16
+    call type_pointer
+    mov esp, [ebp-80]
+    push eax
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-64]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-48]
+    pop eax
+    test eax, eax
+    jz .Last_str_0
+    push dword ptr [ebp-48]
     jmp .Last_str_1
 .Last_str_0:
-    leal ark_str_0, %eax
-    pushl %eax
+    lea eax, [ark_str_0]
+    push eax
 .Last_str_1:
-    call _mem_strdup
-    addl $4, %esp
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    pop eax
+    mov [ebp-96], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-96]
+    and esp, -16
+    call mem_strdup
+    mov esp, [ebp-80]
+    push eax
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-64]
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-
-    .globl _ast_var
-_ast_var:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $288, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -40(%ebp)
-    movl 12(%ebp), %eax
-    movl %eax, -32(%ebp)
-    pushl -32(%ebp)
-    pushl $17
-    call _ast_new
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -40(%ebp)
-    call _mem_strdup
-    addl $4, %esp
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
-    ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 
-    .globl _ast_binary
-_ast_binary:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $304, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -56(%ebp)
-    movl 12(%ebp), %eax
-    movl %eax, -48(%ebp)
-    movl 16(%ebp), %eax
-    movl %eax, -40(%ebp)
-    movl 20(%ebp), %eax
-    movl %eax, -32(%ebp)
-    pushl -32(%ebp)
-    pushl $12
-    call _ast_new
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -56(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -48(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -40(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    .globl ast_var
+ast_var:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 332
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    mov eax, [ebp+12]
+    mov [ebp-56], eax
+    push dword ptr [ebp-56]
+    push 17
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call ast_new
+    mov esp, [ebp-80]
+    push eax
+    pop eax
+    mov [ebp-64], eax
+    push dword ptr [ebp-64]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-48]
+    pop eax
+    mov [ebp-96], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-96]
+    and esp, -16
+    call mem_strdup
+    mov esp, [ebp-80]
+    push eax
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-64]
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 
-    .globl _ast_unary
-_ast_unary:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $288, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -40(%ebp)
-    movl 12(%ebp), %eax
-    movl %eax, -32(%ebp)
-    movl 16(%ebp), %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    pushl $13
-    call _ast_new
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    movl %eax, -16(%ebp)
-    pushl -16(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -40(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -16(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -16(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -16(%ebp)
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    .globl ast_binary
+ast_binary:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 348
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    mov eax, [ebp+12]
+    mov [ebp-56], eax
+    mov eax, [ebp+16]
+    mov [ebp-64], eax
+    mov eax, [ebp+20]
+    mov [ebp-72], eax
+    push dword ptr [ebp-72]
+    push 12
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ast_new
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    mov [ebp-80], eax
+    push dword ptr [ebp-80]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-48]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-80]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-56]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-80]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-64]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-80]
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-
-    .globl _ast_assign
-_ast_assign:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $304, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -56(%ebp)
-    movl 12(%ebp), %eax
-    movl %eax, -48(%ebp)
-    movl 16(%ebp), %eax
-    movl %eax, -40(%ebp)
-    movl 20(%ebp), %eax
-    movl %eax, -32(%ebp)
-    pushl -32(%ebp)
-    pushl $15
-    call _ast_new
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -56(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -48(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -40(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
-    ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 
-    .globl _ast_if
-_ast_if:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $304, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -56(%ebp)
-    movl 12(%ebp), %eax
-    movl %eax, -48(%ebp)
-    movl 16(%ebp), %eax
-    movl %eax, -40(%ebp)
-    movl 20(%ebp), %eax
-    movl %eax, -32(%ebp)
-    pushl -32(%ebp)
-    pushl $6
-    call _ast_new
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -56(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -48(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -40(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    .globl ast_unary
+ast_unary:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 332
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    mov eax, [ebp+12]
+    mov [ebp-56], eax
+    mov eax, [ebp+16]
+    mov [ebp-64], eax
+    push dword ptr [ebp-64]
+    push 13
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call ast_new
+    mov esp, [ebp-80]
+    push eax
+    pop eax
+    mov [ebp-72], eax
+    push dword ptr [ebp-72]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-48]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-72]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-56]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-72]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-72]
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-
-    .globl _ast_while
-_ast_while:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $288, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -40(%ebp)
-    movl 12(%ebp), %eax
-    movl %eax, -32(%ebp)
-    movl 16(%ebp), %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    pushl $7
-    call _ast_new
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    movl %eax, -16(%ebp)
-    pushl -16(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -40(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -16(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -16(%ebp)
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
-    ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 
-    .globl _ast_for
-_ast_for:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $304, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -56(%ebp)
-    movl 12(%ebp), %eax
-    movl %eax, -48(%ebp)
-    movl 16(%ebp), %eax
-    movl %eax, -40(%ebp)
-    movl 20(%ebp), %eax
-    movl %eax, -32(%ebp)
-    movl 24(%ebp), %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    pushl $8
-    call _ast_new
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    movl %eax, -16(%ebp)
-    pushl -16(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -56(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -16(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -48(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -16(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -40(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -16(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $12
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -16(%ebp)
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    .globl ast_assign
+ast_assign:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 348
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    mov eax, [ebp+12]
+    mov [ebp-56], eax
+    mov eax, [ebp+16]
+    mov [ebp-64], eax
+    mov eax, [ebp+20]
+    mov [ebp-72], eax
+    push dword ptr [ebp-72]
+    push 15
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ast_new
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    mov [ebp-80], eax
+    push dword ptr [ebp-80]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-48]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-80]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-56]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-80]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-64]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-80]
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-
-    .globl _ast_block
-_ast_block:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $272, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    pushl $4
-    call _ast_new
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    movl %eax, -16(%ebp)
-    pushl -16(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -16(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -16(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -16(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $12
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -16(%ebp)
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
-    ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 
-    .globl _block_add_stmt
-_block_add_stmt:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $288, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -40(%ebp)
-    movl 12(%ebp), %eax
-    movl %eax, -32(%ebp)
-    pushl -40(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    pushl -40(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setge %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lblock_add_stmt_0
-    pushl -40(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lblock_add_stmt_2
-    pushl -40(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $2
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
+    .globl ast_if
+ast_if:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 348
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    mov eax, [ebp+12]
+    mov [ebp-56], eax
+    mov eax, [ebp+16]
+    mov [ebp-64], eax
+    mov eax, [ebp+20]
+    mov [ebp-72], eax
+    push dword ptr [ebp-72]
+    push 6
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ast_new
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    mov [ebp-80], eax
+    push dword ptr [ebp-80]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-48]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-80]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-56]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-80]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-64]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-80]
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+
+    .globl ast_while
+ast_while:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 332
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    mov eax, [ebp+12]
+    mov [ebp-56], eax
+    mov eax, [ebp+16]
+    mov [ebp-64], eax
+    push dword ptr [ebp-64]
+    push 7
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call ast_new
+    mov esp, [ebp-80]
+    push eax
+    pop eax
+    mov [ebp-72], eax
+    push dword ptr [ebp-72]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-48]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-72]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-56]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-72]
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+
+    .globl ast_for
+ast_for:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 348
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    mov eax, [ebp+12]
+    mov [ebp-56], eax
+    mov eax, [ebp+16]
+    mov [ebp-64], eax
+    mov eax, [ebp+20]
+    mov [ebp-72], eax
+    mov eax, [ebp+24]
+    mov [ebp-80], eax
+    push dword ptr [ebp-80]
+    push 8
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ast_new
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    mov [ebp-88], eax
+    push dword ptr [ebp-88]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-48]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-88]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-56]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-88]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-64]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-88]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 12
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-72]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-88]
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+
+    .globl ast_block
+ast_block:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 316
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    push dword ptr [ebp-48]
+    push 4
+    pop eax
+    mov [ebp-80], eax
+    pop eax
+    mov [ebp-84], eax
+    mov [ebp-64], esp
+    push dword ptr [ebp-84]
+    push dword ptr [ebp-80]
+    and esp, -16
+    call ast_new
+    mov esp, [ebp-64]
+    push eax
+    pop eax
+    mov [ebp-56], eax
+    push dword ptr [ebp-56]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-56]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-56]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-56]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 12
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-56]
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+
+    .globl block_add_stmt
+block_add_stmt:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 332
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    mov eax, [ebp+12]
+    mov [ebp-56], eax
+    push dword ptr [ebp-48]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    mov [ebp-64], eax
+    push dword ptr [ebp-64]
+    push dword ptr [ebp-48]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setge al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lblock_add_stmt_0
+    push dword ptr [ebp-48]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lblock_add_stmt_2
+    push dword ptr [ebp-48]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 2
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
     jmp .Lblock_add_stmt_3
 .Lblock_add_stmt_2:
-    pushl $8
+    push 8
 .Lblock_add_stmt_3:
-    popl %eax
-    movl %eax, -16(%ebp)
-    pushl -40(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -16(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    pushl -40(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $4
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    pushl -40(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    call _mem_realloc
-    addl $12, %esp
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -40(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -16(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
+    pop eax
+    mov [ebp-72], eax
+    push dword ptr [ebp-48]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-72]
+    push 4
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    push dword ptr [ebp-48]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 4
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    push dword ptr [ebp-48]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    pop eax
+    mov [ebp-104], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-104]
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call mem_realloc
+    mov esp, [ebp-80]
+    push eax
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-48]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-72]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
     jmp .Lblock_add_stmt_1
 .Lblock_add_stmt_0:
 .Lblock_add_stmt_1:
-    pushl -40(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl -24(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -40(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -24(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    push dword ptr [ebp-48]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push dword ptr [ebp-64]
+    push 4
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-56]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-48]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-64]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
-    ret
-
-    .globl _ast_func_def
-_ast_func_def:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $320, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -72(%ebp)
-    movl 12(%ebp), %eax
-    movl %eax, -64(%ebp)
-    movl 16(%ebp), %eax
-    movl %eax, -56(%ebp)
-    movl 20(%ebp), %eax
-    movl %eax, -48(%ebp)
-    movl 24(%ebp), %eax
-    movl %eax, -40(%ebp)
-    movl 28(%ebp), %eax
-    movl %eax, -32(%ebp)
-    pushl -32(%ebp)
-    pushl $1
-    call _ast_new
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -72(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -64(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -56(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $12
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -48(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $16
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -40(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $20
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $28
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
-    ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 
-    .globl _ast_var_decl
-_ast_var_decl:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $304, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -56(%ebp)
-    movl 12(%ebp), %eax
-    movl %eax, -48(%ebp)
-    movl 16(%ebp), %eax
-    movl %eax, -40(%ebp)
-    movl 20(%ebp), %eax
-    movl %eax, -32(%ebp)
-    pushl -32(%ebp)
-    pushl $3
-    call _ast_new
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -56(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -48(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -40(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $12
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $16
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $20
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    .globl ast_func_def
+ast_func_def:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 364
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    mov eax, [ebp+12]
+    mov [ebp-56], eax
+    mov eax, [ebp+16]
+    mov [ebp-64], eax
+    mov eax, [ebp+20]
+    mov [ebp-72], eax
+    mov eax, [ebp+24]
+    mov [ebp-80], eax
+    mov eax, [ebp+28]
+    mov [ebp-88], eax
+    push dword ptr [ebp-88]
+    push 1
+    pop eax
+    mov [ebp-128], eax
+    pop eax
+    mov [ebp-132], eax
+    mov [ebp-112], esp
+    push dword ptr [ebp-132]
+    push dword ptr [ebp-128]
+    and esp, -16
+    call ast_new
+    mov esp, [ebp-112]
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    push dword ptr [ebp-96]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-48]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-96]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-56]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-96]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-64]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-96]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 12
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-72]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-96]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 16
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-80]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-96]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 20
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-96]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-96]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 28
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-96]
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-
-    .globl _ast_func_call
-_ast_func_call:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $304, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -56(%ebp)
-    movl 12(%ebp), %eax
-    movl %eax, -48(%ebp)
-    movl 16(%ebp), %eax
-    movl %eax, -40(%ebp)
-    movl 20(%ebp), %eax
-    movl %eax, -32(%ebp)
-    pushl -32(%ebp)
-    pushl $19
-    call _ast_new
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -56(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -48(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -40(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $16
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
-    ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 
-    .globl _ast_array_access
-_ast_array_access:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $288, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -40(%ebp)
-    movl 12(%ebp), %eax
-    movl %eax, -32(%ebp)
-    movl 16(%ebp), %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    pushl $18
-    call _ast_new
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    movl %eax, -16(%ebp)
-    pushl -16(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -40(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -16(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -16(%ebp)
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    .globl ast_var_decl
+ast_var_decl:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 348
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    mov eax, [ebp+12]
+    mov [ebp-56], eax
+    mov eax, [ebp+16]
+    mov [ebp-64], eax
+    mov eax, [ebp+20]
+    mov [ebp-72], eax
+    push dword ptr [ebp-72]
+    push 3
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ast_new
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    mov [ebp-80], eax
+    push dword ptr [ebp-80]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-48]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-80]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-56]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-80]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-64]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-80]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 12
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-80]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 16
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-80]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 20
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-80]
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-
-    .globl _ast_member
-_ast_member:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $304, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -56(%ebp)
-    movl 12(%ebp), %eax
-    movl %eax, -48(%ebp)
-    movl 16(%ebp), %eax
-    movl %eax, -40(%ebp)
-    movl 20(%ebp), %eax
-    movl %eax, -32(%ebp)
-    pushl -32(%ebp)
-    pushl $23
-    call _ast_new
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -56(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -48(%ebp)
-    call _mem_strdup
-    addl $4, %esp
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -40(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $12
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
-    ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 
-    .globl _ast_cast
-_ast_cast:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $288, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -40(%ebp)
-    movl 12(%ebp), %eax
-    movl %eax, -32(%ebp)
-    movl 16(%ebp), %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    pushl $22
-    call _ast_new
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    movl %eax, -16(%ebp)
-    pushl -16(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -16(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -16(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -40(%ebp)
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -16(%ebp)
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    .globl ast_func_call
+ast_func_call:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 348
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    mov eax, [ebp+12]
+    mov [ebp-56], eax
+    mov eax, [ebp+16]
+    mov [ebp-64], eax
+    mov eax, [ebp+20]
+    mov [ebp-72], eax
+    push dword ptr [ebp-72]
+    push 19
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ast_new
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    mov [ebp-80], eax
+    push dword ptr [ebp-80]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-48]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-80]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-56]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-80]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-64]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-80]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 16
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-80]
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-
-    .globl _ast_sizeof_val
-_ast_sizeof_val:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $288, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -40(%ebp)
-    movl 12(%ebp), %eax
-    movl %eax, -32(%ebp)
-    pushl -32(%ebp)
-    pushl $24
-    call _ast_new
-    addl $8, %esp
-    pushl %eax
-    popl %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    pushl $24
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -40(%ebp)
-    popl %eax
-    pushl %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    negl %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    popl %ecx
-    movl %eax, (%ecx)
-    movl %edx, 4(%ecx)
-    pushl %eax
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    call _type_int
-    pushl %eax
-    popl %edx
-    popl %eax
-    movl %edx, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -24(%ebp)
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
-    ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 
-    .section .rdata,"dr"
-.L_flt_0:
-    .long 0x00000000
-.L_dbl_0:
-    .long 0x00000000
-    .long 0x00000000
-    .text
+    .globl ast_array_access
+ast_array_access:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 332
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    mov eax, [ebp+12]
+    mov [ebp-56], eax
+    mov eax, [ebp+16]
+    mov [ebp-64], eax
+    push dword ptr [ebp-64]
+    push 18
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call ast_new
+    mov esp, [ebp-80]
+    push eax
+    pop eax
+    mov [ebp-72], eax
+    push dword ptr [ebp-72]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-48]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-72]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-56]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-72]
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+
+    .globl ast_member
+ast_member:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 348
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    mov eax, [ebp+12]
+    mov [ebp-56], eax
+    mov eax, [ebp+16]
+    mov [ebp-64], eax
+    mov eax, [ebp+20]
+    mov [ebp-72], eax
+    push dword ptr [ebp-72]
+    push 23
+    pop eax
+    mov [ebp-112], eax
+    pop eax
+    mov [ebp-116], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-116]
+    push dword ptr [ebp-112]
+    and esp, -16
+    call ast_new
+    mov esp, [ebp-96]
+    push eax
+    pop eax
+    mov [ebp-80], eax
+    push dword ptr [ebp-80]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-48]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-80]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-56]
+    pop eax
+    mov [ebp-112], eax
+    mov [ebp-96], esp
+    push dword ptr [ebp-112]
+    and esp, -16
+    call mem_strdup
+    mov esp, [ebp-96]
+    push eax
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-80]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-64]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-80]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 12
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-80]
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+
+    .globl ast_cast
+ast_cast:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 332
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    mov eax, [ebp+12]
+    mov [ebp-56], eax
+    mov eax, [ebp+16]
+    mov [ebp-64], eax
+    push dword ptr [ebp-64]
+    push 22
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call ast_new
+    mov esp, [ebp-80]
+    push eax
+    pop eax
+    mov [ebp-72], eax
+    push dword ptr [ebp-72]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-56]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-72]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-72]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-48]
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-72]
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+
+    .globl ast_sizeof_val
+ast_sizeof_val:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 332
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    mov eax, [ebp+12]
+    mov [ebp-56], eax
+    push dword ptr [ebp-56]
+    push 24
+    pop eax
+    mov [ebp-96], eax
+    pop eax
+    mov [ebp-100], eax
+    mov [ebp-80], esp
+    push dword ptr [ebp-100]
+    push dword ptr [ebp-96]
+    and esp, -16
+    call ast_new
+    mov esp, [ebp-80]
+    push eax
+    pop eax
+    mov [ebp-64], eax
+    push dword ptr [ebp-64]
+    push 24
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-48]
+    mov eax, [esp]
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    neg eax
+    push eax
+    pop edx
+    pop ecx
+    pop eax
+    mov dword ptr [eax], edx
+    mov dword ptr [eax+4], ecx
+    push edx
+    add esp, 4
+    add esp, 4
+    push dword ptr [ebp-64]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    mov [ebp-80], esp
+    and esp, -16
+    call type_int
+    mov esp, [ebp-80]
+    push eax
+    pop edx
+    pop eax
+    mov dword ptr [eax], edx
+    push edx
+    add esp, 4
+    push dword ptr [ebp-64]
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+

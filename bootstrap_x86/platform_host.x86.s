@@ -1,20 +1,6 @@
-# Ark C Compiler - generated x86 (32-bit cdecl) assembly
-    .data
-    .globl _ark_sl_ark_get_date_time_mon_names
-_ark_sl_ark_get_date_time_mon_names:
-    .long ark_str_4
-    .long ark_str_5
-    .long ark_str_6
-    .long ark_str_7
-    .long ark_str_8
-    .long ark_str_9
-    .long ark_str_10
-    .long ark_str_11
-    .long ark_str_12
-    .long ark_str_13
-    .long ark_str_14
-    .long ark_str_15
-    .section .rdata,"dr"
+# Ark C Compiler - generated x86 32-bit (cdecl) assembly
+    .intel_syntax noprefix
+    .section .rodata
 ark_str_0:
     .asciz "Jan  1 1970"
 ark_str_1:
@@ -23,891 +9,1084 @@ ark_str_2:
     .asciz ""
 ark_str_3:
     .asciz "[arkcc] FATAL: %s\n"
-ark_str_4:
-    .asciz "Jan"
-ark_str_5:
-    .asciz "Feb"
-ark_str_6:
-    .asciz "Mar"
-ark_str_7:
-    .asciz "Apr"
-ark_str_8:
-    .asciz "May"
-ark_str_9:
-    .asciz "Jun"
-ark_str_10:
-    .asciz "Jul"
-ark_str_11:
-    .asciz "Aug"
-ark_str_12:
-    .asciz "Sep"
-ark_str_13:
-    .asciz "Oct"
-ark_str_14:
-    .asciz "Nov"
-ark_str_15:
-    .asciz "Dec"
+    .data
+    .globl ark_sl_ark_get_date_time_mon_names
+    .local ark_sl_ark_get_date_time_mon_names
+ark_sl_ark_get_date_time_mon_names:
+    .quad 27695899046994250
+    .quad 32211571827695949
+    .quad 31091208134156621
+    .quad 29120844641629514
+    .quad 32760288259368275
+    .quad 27977365434298190
     .text
-    .globl _ark_get_date_time
-_ark_get_date_time:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $320, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -72(%ebp)
-    movl 12(%ebp), %eax
-    movl %eax, -64(%ebp)
-    pushl $0
-    call _time
-    addl $4, %esp
-    pushl %eax
-    popl %eax
-    movl %eax, -56(%ebp)
-    leal -56(%ebp), %eax
-    pushl %eax
-    call _localtime
-    addl $4, %esp
-    pushl %eax
-    popl %eax
-    movl %eax, -48(%ebp)
-    pushl -48(%ebp)
-    popl %eax
-    cmpl $0, %eax
-    je .Lark_get_date_time_0
-    pushl -48(%ebp)
-    pushl $12
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -40(%ebp)
-    pushl -48(%ebp)
-    pushl $20
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $1900
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -32(%ebp)
-    movl $_ark_sl_ark_get_date_time_mon_names, %eax
-    pushl %eax
-    pushl -48(%ebp)
-    pushl $16
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $12
-    popl %ecx
-    popl %eax
+    .globl ark_get_date_time
+ark_get_date_time:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 364
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    mov eax, [ebp+12]
+    mov [ebp-56], eax
+    push 0
+    pop eax
+    mov [ebp-128], eax
+    mov [ebp-112], esp
+    push dword ptr [ebp-128]
+    and esp, -16
+    call time
+    mov esp, [ebp-112]
+    push eax
+    pop eax
+    mov [ebp-64], eax
+    lea eax, [ebp-64]
+    push eax
+    pop eax
+    mov [ebp-128], eax
+    mov [ebp-112], esp
+    push dword ptr [ebp-128]
+    and esp, -16
+    call localtime
+    mov esp, [ebp-112]
+    push eax
+    pop eax
+    mov [ebp-72], eax
+    push dword ptr [ebp-72]
+    pop eax
+    test eax, eax
+    jz .Lark_get_date_time_0
+    push dword ptr [ebp-72]
+    push 12
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    mov [ebp-80], eax
+    push dword ptr [ebp-72]
+    push 20
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 1900
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-88], eax
+    lea eax, [ark_sl_ark_get_date_time_mon_names]
+    push eax
+    push dword ptr [ebp-72]
+    push 16
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 12
+    pop ecx
+    pop eax
     cdq
-    idivl %ecx
-    pushl %edx
-    pushl $4
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -24(%ebp)
-    pushl -72(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -24(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -72(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -24(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -72(%ebp)
-    pushl $2
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -24(%ebp)
-    pushl $2
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -72(%ebp)
-    pushl $3
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $32
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -72(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -40(%ebp)
-    pushl $10
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lark_get_date_time_2
-    pushl $32
+    idiv ecx
+    push edx
+    push 4
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    push dword ptr [ebp-48]
+    push 0
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-96]
+    push 0
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
+    push dword ptr [ebp-48]
+    push 1
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-96]
+    push 1
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
+    push dword ptr [ebp-48]
+    push 2
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-96]
+    push 2
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
+    push dword ptr [ebp-48]
+    push 3
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 32
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
+    push dword ptr [ebp-48]
+    push 4
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-80]
+    push 10
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lark_get_date_time_2
+    push 32
     jmp .Lark_get_date_time_3
 .Lark_get_date_time_2:
-    pushl $48
-    pushl -40(%ebp)
-    pushl $10
-    popl %ecx
-    popl %eax
+    push 48
+    push dword ptr [ebp-80]
+    push 10
+    pop ecx
+    pop eax
     cdq
-    idivl %ecx
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
+    idiv ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
 .Lark_get_date_time_3:
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -72(%ebp)
-    pushl $5
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $48
-    pushl -40(%ebp)
-    pushl $10
-    popl %ecx
-    popl %eax
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
+    push dword ptr [ebp-48]
+    push 5
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 48
+    push dword ptr [ebp-80]
+    push 10
+    pop ecx
+    pop eax
     cdq
-    idivl %ecx
-    pushl %edx
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -72(%ebp)
-    pushl $6
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $32
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -72(%ebp)
-    pushl $7
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $48
-    pushl -32(%ebp)
-    pushl $1000
-    popl %ecx
-    popl %eax
+    idiv ecx
+    push edx
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
+    push dword ptr [ebp-48]
+    push 6
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 32
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
+    push dword ptr [ebp-48]
+    push 7
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 48
+    push dword ptr [ebp-88]
+    push 1000
+    pop ecx
+    pop eax
     cdq
-    idivl %ecx
-    pushl %eax
-    pushl $10
-    popl %ecx
-    popl %eax
+    idiv ecx
+    push eax
+    push 10
+    pop ecx
+    pop eax
     cdq
-    idivl %ecx
-    pushl %edx
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -72(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $48
-    pushl -32(%ebp)
-    pushl $100
-    popl %ecx
-    popl %eax
+    idiv ecx
+    push edx
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
+    push dword ptr [ebp-48]
+    push 8
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 48
+    push dword ptr [ebp-88]
+    push 100
+    pop ecx
+    pop eax
     cdq
-    idivl %ecx
-    pushl %eax
-    pushl $10
-    popl %ecx
-    popl %eax
+    idiv ecx
+    push eax
+    push 10
+    pop ecx
+    pop eax
     cdq
-    idivl %ecx
-    pushl %edx
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -72(%ebp)
-    pushl $9
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $48
-    pushl -32(%ebp)
-    pushl $10
-    popl %ecx
-    popl %eax
+    idiv ecx
+    push edx
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
+    push dword ptr [ebp-48]
+    push 9
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 48
+    push dword ptr [ebp-88]
+    push 10
+    pop ecx
+    pop eax
     cdq
-    idivl %ecx
-    pushl %eax
-    pushl $10
-    popl %ecx
-    popl %eax
+    idiv ecx
+    push eax
+    push 10
+    pop ecx
+    pop eax
     cdq
-    idivl %ecx
-    pushl %edx
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -72(%ebp)
-    pushl $10
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $48
-    pushl -32(%ebp)
-    pushl $10
-    popl %ecx
-    popl %eax
+    idiv ecx
+    push edx
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
+    push dword ptr [ebp-48]
+    push 10
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 48
+    push dword ptr [ebp-88]
+    push 10
+    pop ecx
+    pop eax
     cdq
-    idivl %ecx
-    pushl %edx
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -72(%ebp)
-    pushl $11
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -64(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $48
-    pushl -48(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $10
-    popl %ecx
-    popl %eax
+    idiv ecx
+    push edx
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
+    push dword ptr [ebp-48]
+    push 11
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
+    push dword ptr [ebp-56]
+    push 0
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 48
+    push dword ptr [ebp-72]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 10
+    pop ecx
+    pop eax
     cdq
-    idivl %ecx
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -64(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $48
-    pushl -48(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $10
-    popl %ecx
-    popl %eax
+    idiv ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
+    push dword ptr [ebp-56]
+    push 1
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 48
+    push dword ptr [ebp-72]
+    push 8
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 10
+    pop ecx
+    pop eax
     cdq
-    idivl %ecx
-    pushl %edx
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -64(%ebp)
-    pushl $2
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $58
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -64(%ebp)
-    pushl $3
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $48
-    pushl -48(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $10
-    popl %ecx
-    popl %eax
+    idiv ecx
+    push edx
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
+    push dword ptr [ebp-56]
+    push 2
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 58
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
+    push dword ptr [ebp-56]
+    push 3
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 48
+    push dword ptr [ebp-72]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 10
+    pop ecx
+    pop eax
     cdq
-    idivl %ecx
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -64(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $48
-    pushl -48(%ebp)
-    pushl $4
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $10
-    popl %ecx
-    popl %eax
+    idiv ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
+    push dword ptr [ebp-56]
+    push 4
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 48
+    push dword ptr [ebp-72]
+    push 4
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 10
+    pop ecx
+    pop eax
     cdq
-    idivl %ecx
-    pushl %edx
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -64(%ebp)
-    pushl $5
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $58
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -64(%ebp)
-    pushl $6
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $48
-    pushl -48(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $10
-    popl %ecx
-    popl %eax
+    idiv ecx
+    push edx
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
+    push dword ptr [ebp-56]
+    push 5
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 58
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
+    push dword ptr [ebp-56]
+    push 6
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 48
+    push dword ptr [ebp-72]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 10
+    pop ecx
+    pop eax
     cdq
-    idivl %ecx
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -64(%ebp)
-    pushl $7
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $48
-    pushl -48(%ebp)
-    pushl $0
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    imull $4, %ecx
-    addl %ecx, %eax
-    movl (%eax), %eax
-    pushl %eax
-    pushl $10
-    popl %ecx
-    popl %eax
+    idiv ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
+    push dword ptr [ebp-56]
+    push 7
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 48
+    push dword ptr [ebp-72]
+    push 0
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    imul ecx, 4
+    add eax, ecx
+    movsx eax, dword ptr [eax]
+    push eax
+    push 10
+    pop ecx
+    pop eax
     cdq
-    idivl %ecx
-    pushl %edx
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl -64(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
+    idiv ecx
+    push edx
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
+    push dword ptr [ebp-56]
+    push 8
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
     jmp .Lark_get_date_time_1
 .Lark_get_date_time_0:
-    leal ark_str_0, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -40(%ebp)
-    leal ark_str_1, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -32(%ebp)
-    pushl $0
-    popl %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    addl $4, %esp
+    lea eax, [ark_str_0]
+    push eax
+    pop eax
+    mov [ebp-80], eax
+    lea eax, [ark_str_1]
+    push eax
+    pop eax
+    mov [ebp-88], eax
+    push 0
+    pop eax
+    mov [ebp-96], eax
+    push dword ptr [ebp-96]
+    add esp, 4
 .Lark_get_date_time_4:
-    pushl -24(%ebp)
-    pushl $11
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lark_get_date_time_5
-    pushl -72(%ebp)
-    pushl -24(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -40(%ebp)
-    pushl -24(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
+    push dword ptr [ebp-96]
+    push 11
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lark_get_date_time_5
+    push dword ptr [ebp-48]
+    push dword ptr [ebp-96]
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-80]
+    push dword ptr [ebp-96]
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
 .Lark_get_date_time_6:
-    pushl -24(%ebp)
-    pushl -24(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -24(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-96]
+    push dword ptr [ebp-96]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    add esp, 4
     jmp .Lark_get_date_time_4
 .Lark_get_date_time_5:
-    pushl -72(%ebp)
-    pushl $11
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
-    pushl $0
-    popl %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-48]
+    push 11
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
+    push 0
+    pop eax
+    mov [ebp-96], eax
+    push dword ptr [ebp-96]
+    add esp, 4
 .Lark_get_date_time_7:
-    pushl -24(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    cmpl %ecx, %eax
-    setl %al
-    movzbl %al, %eax
-    pushl %eax
-    popl %eax
-    cmpl $0, %eax
-    je .Lark_get_date_time_8
-    pushl -64(%ebp)
-    pushl -24(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl -32(%ebp)
-    pushl -24(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    imull %ecx, %eax
-    pushl %eax
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %ecx
-    popl %eax
-    movsbl (%eax), %eax
-    pushl %eax
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
+    push dword ptr [ebp-96]
+    push 8
+    pop ecx
+    pop eax
+    cmp eax, ecx
+    setl al
+    movzx eax, al
+    push eax
+    pop eax
+    test eax, eax
+    jz .Lark_get_date_time_8
+    push dword ptr [ebp-56]
+    push dword ptr [ebp-96]
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push dword ptr [ebp-88]
+    push dword ptr [ebp-96]
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop ecx
+    pop eax
+    movsx eax, byte ptr [eax]
+    push eax
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
 .Lark_get_date_time_9:
-    pushl -24(%ebp)
-    pushl -24(%ebp)
-    pushl $1
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -24(%ebp)
-    addl $4, %esp
+    push dword ptr [ebp-96]
+    push dword ptr [ebp-96]
+    push 1
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    pop eax
+    mov [ebp-96], eax
+    add esp, 4
     jmp .Lark_get_date_time_7
 .Lark_get_date_time_8:
-    pushl -64(%ebp)
-    pushl $8
-    popl %ecx
-    popl %eax
-    addl %ecx, %eax
-    pushl %eax
-    pushl $0
-    popl %edx
-    popl %eax
-    movb %dl, (%eax)
-    pushl %edx
-    addl $4, %esp
+    push dword ptr [ebp-56]
+    push 8
+    push 1
+    pop ecx
+    pop eax
+    imul eax, ecx
+    push eax
+    pop ecx
+    pop eax
+    add eax, ecx
+    push eax
+    push 0
+    pop edx
+    pop eax
+    mov byte ptr [eax], dl
+    push edx
+    add esp, 4
 .Lark_get_date_time_1:
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
-    ret
-
-    .globl _ark_log
-_ark_log:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $272, %esp
-    leal 12(%ebp), %eax
-    movl %eax, __ark_va_ptr
-    movl 8(%ebp), %eax
-    movl %eax, -24(%ebp)
-    movl __ark_va_ptr, %eax
-    pushl %eax
-    popl %eax
-    movl %eax, -16(%ebp)
-    pushl -16(%ebp)
-    addl $4, %esp
-    pushl -16(%ebp)
-    pushl -24(%ebp)
-    movl _stderr, %eax
-    pushl %eax
-    call _vfprintf
-    addl $12, %esp
-    pushl %eax
-    addl $4, %esp
-    pushl $0
-    addl $4, %esp
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
-    ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 
-    .globl _ark_abort
-_ark_abort:
-    pushl %ebp
-    movl %esp, %ebp
-    subl $272, %esp
-    movl 8(%ebp), %eax
-    movl %eax, -24(%ebp)
-    pushl -24(%ebp)
-    popl %eax
-    cmpl $0, %eax
-    je .Lark_abort_0
-    pushl -24(%ebp)
+    .globl ark_log
+ark_log:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 8364
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    mov eax, [ebp+8]
+    mov [ebp-8048], eax
+    mov eax, [ebp+12]
+    mov [ebp-8056], eax
+    mov eax, [ebp+16]
+    mov [ebp-8064], eax
+    mov eax, [ebp+20]
+    mov [ebp-8072], eax
+    mov eax, [ebp+24]
+    mov [ebp-8080], eax
+    mov eax, [ebp+28]
+    mov [ebp-8088], eax
+    mov eax, [ebp+32]
+    mov [ebp-8096], eax
+    mov eax, [ebp+36]
+    mov [ebp-8104], eax
+    lea eax, [ebp+12]
+    push eax
+    pop eax
+    mov [ebp-56], eax
+    push dword ptr [ebp-56]
+    add esp, 4
+    push dword ptr [ebp-56]
+    push dword ptr [ebp-48]
+    mov eax, [stderr]
+    push eax
+    pop eax
+    mov [ebp-8128], eax
+    pop eax
+    mov [ebp-8132], eax
+    pop eax
+    mov [ebp-8136], eax
+    mov [ebp-8112], esp
+    push dword ptr [ebp-8136]
+    push dword ptr [ebp-8132]
+    push dword ptr [ebp-8128]
+    and esp, -16
+    call vfprintf
+    mov esp, [ebp-8112]
+    push eax
+    add esp, 4
+    push 0
+    add esp, 4
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+
+    .globl ark_abort
+ark_abort:
+    push ebp
+    mov ebp, esp
+    push ebx
+    push esi
+    push edi
+    sub esp, 316
+    mov eax, [ebp+8]
+    mov [ebp-48], eax
+    push dword ptr [ebp-48]
+    pop eax
+    test eax, eax
+    jz .Lark_abort_0
+    push dword ptr [ebp-48]
     jmp .Lark_abort_1
 .Lark_abort_0:
-    leal ark_str_2, %eax
-    pushl %eax
+    lea eax, [ark_str_2]
+    push eax
 .Lark_abort_1:
-    leal ark_str_3, %eax
-    pushl %eax
-    movl _stderr, %eax
-    pushl %eax
-    call _fprintf
-    addl $12, %esp
-    pushl %eax
-    addl $4, %esp
-    pushl $1
-    call _exit
-    addl $4, %esp
-    pushl %eax
-    addl $4, %esp
-    pushl $0
-    popl %eax
-    movl %ebp, %esp
-    popl %ebp
+    lea eax, [ark_str_3]
+    push eax
+    mov eax, [stderr]
+    push eax
+    pop eax
+    mov [ebp-80], eax
+    pop eax
+    mov [ebp-84], eax
+    pop eax
+    mov [ebp-88], eax
+    mov [ebp-64], esp
+    push dword ptr [ebp-88]
+    push dword ptr [ebp-84]
+    push dword ptr [ebp-80]
+    and esp, -16
+    call fprintf
+    mov esp, [ebp-64]
+    push eax
+    add esp, 4
+    push 1
+    pop eax
+    mov [ebp-80], eax
+    mov [ebp-64], esp
+    push dword ptr [ebp-80]
+    and esp, -16
+    call exit
+    mov esp, [ebp-64]
+    push eax
+    push 0
+    pop eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
-    xorl %eax, %eax
-    movl %ebp, %esp
-    popl %ebp
+    xor eax, eax
+    lea esp, [ebp-12]
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 
