@@ -424,7 +424,7 @@ AXI = ARK_POOL_SIZE + ARK_ASM_BUF_SIZE + ARK_CODE_BUF_SIZE + ARK_OBJ_BUF_SIZE
 
 ## 10 armcc5 兼容路线图
 
-用户要求："电脑上有 armcc5，要求 arkCC 完全兼容 armcc5，能不对 MDK 工程做任何改动编译出可执行文件，然后能在 STM32 上跑 arkCC，实现 STM32 上编译 STM32 的程序"。
+**目标**：在装有 armcc5 的电脑上，arkCC 完全兼容 armcc5，能不对 MDK 工程做任何改动编译出可执行文件，然后能在 STM32 上运行 arkCC，实现 STM32 上编译 STM32 的程序。
 
 | 阶段 | 目标 | 状态 |
 | --- | --- | :---: |
