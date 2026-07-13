@@ -132,3 +132,12 @@ Thumbs.db
 build/
 out/
 dist/
+
+# Internal-only docs (bug reports / fix guides for AI assistants)
+# Not part of the open-source release.
+BUG_REPORT.md
+ARKCC_BUG_REPORT.md
+ARKCC_BUG_REPORT_ROUND3.md
+ARKCC_BUG_REPORT_ROUND4.md
+FULL_CAPABILITY_FIX_GUIDE.md
+QUALITY_FIX_GUIDE.md
