@@ -433,11 +433,12 @@ ARM 后端可解析 armcc 风格的 Scatter 文件（`.sct`），实现位于 `i
 **当前支持范围**：
 - ✅ 解析 `.sct`（`scatter_parse_file`）和 GNU `.ld`（`linker_script_parse_file`）
 - ✅ 互转：`.sct` ↔ `.ld`（在 `-S` 模式下）
-- ✅ 按段名查找执行地址（`scatter_lookup_addr`）
-- ❌ **不参与实际段放置/链接**：ARM 后端不查询 `ScatterDesc`，`arm_link()` 为空实现
-- 命令行：`--scatter <file>`、`-T <file>`、`--linker-script <file>`、`--script <file>`
+- ✅ 按段名查找执行地址（`scatter_lookup_addr`、`scatter_get_er_base_for_section`）
+- ✅ **scatter 感知链接**：`-link` 模式解析 `.sct`/`.ld` → 提取 flash_base/initial_sp → 生成 256 条目 Cortex-M 向量表 → 移动代码 → 调整符号/重定位偏移
+- ✅ 单文件 `.bin` 模式：`arm_link()` 实现向量表生成与偏移调整
+- 命令行：`--scatter <file>`、`-T <file>`、`--linker-script <file>`、`--script <file>`、`--uvprojx <file>`
 
-**实际段放置由谁负责？** 在 armcc5 路径下由 armlink 负责（通过 `--scatter=<sct>` 选项），arkCC 只输出汇编/对象代码。在自托管路径下（STM32 板上运行 arkCC），生成的机器码放入 `.ark_code` 段，由 scatter 文件路由到 AXI SRAM。
+**实际段放置由谁负责？** 在 armcc5 路径下由 armlink 负责（通过 `--scatter=<sct>` 选项），arkCC 只输出汇编/对象代码。在自托管路径下（STM32 板上运行 arkCC，`-link` 模式或单文件 `-c`/`-o .bin`），arkCC 自身的 `arm_link()` 解析 scatter 文件，生成 Cortex-M 向量表并完成符号/重定位偏移调整，机器码放入 `.ark_code` 段由 scatter 文件路由到 AXI SRAM。
 
 ### 5.6 汇编文件（`.s`/`.S`）输入
 
@@ -922,7 +923,7 @@ A：构建 arkcc 本身需要 gcc / MinGW / MSVC。若使用 MSVC，需修改 Ma
 A：v0.7.0 已覆盖 armcc 常用扩展的 98% 以上。HAL/CMSIS 中常见的 `__attribute__`、`__packed`、`__align`、内联汇编、`#pragma pack/anon_unions/location/...`、`__irq`/`__weak`/`__naked` 等均已支持。**armcc5 路径已打通**：`build_stm32_armcc.ps1` 可用 armcc 5.06 直接编译 arkCC 源码生成 `arkcc_stm32.hex/.bin` 烧录到 STM32H743（见 [附录 D](#附录-darmcc5-工具链与-mdk-构建详解)）。少数极端的宏戏法或 C++ 模式仍不支持；建议先用官方编译器编译 HAL/CMSIS，再用 arkcc 编译应用层代码。
 
 **Q3.1：arkCC 能解析 MDK 的 .sct 文件吗？**
-A：能解析与互转（`.sct` ↔ `.ld`），但**不参与实际段放置**。在 armcc5 路径下，段放置由 armlink 根据 `.sct` 完成（见 [5.5](#55-scatter-描述文件) 与 [附录 D.5](#d5-sct-文件与-armlink)）。在自托管路径下（STM32 上跑 arkCC），机器码固定放入 `.ark_code` 段，由 scatter 文件路由到 AXI SRAM。
+A：能解析、互转（`.sct` ↔ `.ld`）并**参与实际段放置/链接**。在 armcc5 路径下，段放置由 armlink 根据 `.sct` 完成（见 [5.5](#55-scatter-描述文件) 与 [附录 D.5](#d5-sct-文件与-armlink)）。在自托管路径下（STM32 上跑 arkCC，`-link` 模式或单文件 `-c`/`-o .bin`），`arm_link()` 解析 scatter 文件，提取 flash_base/initial_sp，生成 Cortex-M 向量表并调整符号/重定位偏移（见 [5.5](#55-scatter-描述文件)）。
 
 **Q3.2：arkCC 能编译 .s 汇编文件吗？**
 A：能。ARM 后端有完整的 Thumb-2 文本汇编器（`arm_assemble()`）。由文件扩展名触发：`.s` 或 `.S` 会被识别为汇编输入，跳过前端流程直接汇编为机器码。**不支持 `.asm`**（详见 [5.6](#56-汇编文件ss输入)）。
@@ -1163,7 +1164,11 @@ powershell -ExecutionPolicy Bypass -File build_stm32_armcc.ps1
 
 ### D.5 .sct 文件与 armlink
 
-arkCC 自身**不参与实际段放置/链接**（见 [5.5](#55-scatter-描述文件)）。在 armcc5 路径下，段放置由 armlink 根据 `.sct` 文件完成：
+arkCC 已实现 **scatter 感知链接**（见 [5.5](#55-scatter-描述文件)）：
+- **armcc5 路径**：arkCC 自身不参与段放置，段放置由 armlink 根据 `.sct` 文件完成；
+- **自托管路径**（STM32 上跑 arkCC，`-link` 模式或单文件 `-c`/`-o .bin`）：`arm_link()` 解析 `.sct`/`.ld`，提取 flash_base/initial_sp，生成 256 条目 Cortex-M 向量表，移动代码并调整符号/重定位偏移。
+
+armcc5 路径下的典型 `.sct` 示例：
 
 ```text
 LR_IROM1 0x08000000 0x00200000  {
