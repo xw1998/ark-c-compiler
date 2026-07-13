@@ -108,7 +108,7 @@ ark c compiler/
 ### 2.2 三分钟构建 + 测试
 
 ```powershell
-cd "<your-ark-cc-repo-path>"
+cd "<ark-cc-repo-path>"
 
 # 1. 构建 arkcc 本身
 make
@@ -560,7 +560,7 @@ armlink 关键选项：`--scatter=<sct>`，并通过 `system_stm32h7xx.c` 中的
    确认 `D:\Keil_v5\ARM\ARMCC\bin\armcc.exe`、`armlink.exe`、`fromelf.exe`、`armasm.exe` 存在，并加入 PATH（脚本支持自动探测该路径）。
 2. **运行构建脚本**
    ```powershell
-   cd "<your-ark-cc-repo-path>"
+   cd "<ark-cc-repo-path>"
    powershell -ExecutionPolicy Bypass -File build_stm32_armcc.ps1
    ```
    脚本会：编译 16 个核心 `.c` + 2 个 ARM 后端 + 2 个 STM32 port + 5 个 MDK 用户 `.c` + 1 个启动 `.s`，链接生成：
@@ -736,7 +736,7 @@ PC 侧：[port/host/platform_host.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/a
 将编译器移植到 Linux/ESP32/RISC-V 开发板，只需：
 
 1. 复制 [port/host/](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/port/host) 到 `port/<myplat>/`
-2. 修改 `platform_<myplat>.c` 中的输出实现，改为你自己的 UART/syscall
+2. 修改 `platform_<myplat>.c` 中的输出实现，改为目标平台的 UART/syscall
 3. 修改 `flash_fs_<myplat>.c` 中的文件读取实现，改为本地文件系统/SD 卡/网络
 4. 编写 `main_<myplat>.c` 入口（参考 `main_stm32.c`）
 5. 把 `port/<myplat>/*.c` 加入构建脚本
@@ -928,7 +928,7 @@ A：能解析与互转（`.sct` ↔ `.ld`），但**不参与实际段放置**�
 A：能。ARM 后端有完整的 Thumb-2 文本汇编器（`arm_assemble()`）。由文件扩展名触发：`.s` 或 `.S` 会被识别为汇编输入，跳过前端流程直接汇编为机器码。**不支持 `.asm`**（详见 [5.6](#56-汇编文件ss输入)）。
 
 **Q4：如何让编译出的程序在 STM32 上调用 HAL？**
-A：通过外部声明 + 链接重定位。编译后的代码声明 `extern void HAL_Delay(uint32_t)`；运行时 ARM 后端链接器把 `BL HAL_Delay` 的目标地址回填为 HAL 函数的实际地址（需要你提供地址表）。更简单的做法：把这些函数地址硬编码到一个数组里，让 arkcc 通过函数指针调用。
+A：通过外部声明 + 链接重定位。编译后的代码声明 `extern void HAL_Delay(uint32_t)`；运行时 ARM 后端链接器把 `BL HAL_Delay` 的目标地址回填为 HAL 函数的实际地址（需要提供地址表）。更简单的做法：把这些函数地址硬编码到一个数组里，让 arkcc 通过函数指针调用。
 
 **Q5：ARM 后端会使用 FPU 吗？**
 A：会。使用 `--fpu=hard`，或在 `arkcc.cfg` 中设置 `fpu_hw=1`，ARM 后端会直接输出 VFP 指令（`VADD/VMUL/VCVT/VCMP`），替代 `__aeabi_f*`/`__aeabi_d*` 软浮点桩；默认情况下使用软浮点桩以兼容不带 FPU 的 Cortex-M3。`double` 始终为真正的 64 位精度。
@@ -1097,7 +1097,7 @@ source .c
 ### D.2 一键构建
 
 ```powershell
-cd "<your-ark-cc-repo-path>"
+cd "<ark-cc-repo-path>"
 powershell -ExecutionPolicy Bypass -File build_stm32_armcc.ps1
 ```
 

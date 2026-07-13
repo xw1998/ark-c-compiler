@@ -56,7 +56,7 @@ arkCC 是一款用 C99 编写的自托管 C 编译器。本手册描述两种构
 ### 3.1 运行脚本
 
 ```powershell
-cd "<your-ark-cc-repo-path>"
+cd "<ark-cc-repo-path>"
 powershell -ExecutionPolicy Bypass -File build_stm32_armcc.ps1
 ```
 

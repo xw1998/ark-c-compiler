@@ -101,7 +101,7 @@ __attribute__((section(".ark_code"))) unsigned char ark_code_buffer[32 * 1024];
 5. **Flash and use the interactive shell**
    - Flash with ST-Link;
    - Connect the serial port 115200 (PA9/PA10) to a PC terminal (e.g. PuTTY, TeraTerm);
-   - After boot you will see an interactive shell prompt:
+   - After boot an interactive shell prompt appears:
 
      ```
      === Ark C Compiler on STM32H743 ===
