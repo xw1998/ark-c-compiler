@@ -11,7 +11,7 @@
  * global variable types cannot be resolved at parse time; arkcc only
  * supports sizeof(type) and sizeof(expr) where the type is known.
  *
- * Expected exit code: 7 + 7 + 14 + 99 = 127 */
+ * Expected exit code: 127   (g_x(7) + g_dim(7) + local(14) + g_buf[6](99)) */
 #define SIZE 5
 
 int g_x   = 1 + 2 * 3;                  /* 7: arithmetic folding */

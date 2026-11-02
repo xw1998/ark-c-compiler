@@ -1,3 +1,7 @@
+/* Regression expectation (machine-checked by examples/run_tests.ps1).
+ * CR after EN=1 and IE=1 promoted from the anonymous bitfield struct
+ * Expected exit code: 3
+ */
 /* test_anon_union.c - Anonymous union/struct field promotion verification.
  * In Timer: CR / EN(bitfield) / IE(bitfield) are accessible at the outer level;
  * after writing EN=1, IE=1, CR should be 3.

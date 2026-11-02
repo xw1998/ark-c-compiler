@@ -1,3 +1,7 @@
+/* Regression expectation (machine-checked by examples/run_tests.ps1).
+ * q(14) + r(2) + (0x12345 & 0xFF = 69) + 15
+ * Expected exit code: 100
+ */
 /* feat_div.c - Integer division, modulo, large immediates
  * Expected: 100 / 7 = 14; 100 % 7 = 2; 14 + 2 + 84 = 100
  */

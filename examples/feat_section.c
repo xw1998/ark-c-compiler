@@ -1,3 +1,7 @@
+/* Regression expectation (machine-checked by examples/run_tests.ps1).
+ * g_init(10) + g_zero(0) + g_ro(5)
+ * Expected exit code: 15
+ */
 /* feat_section.c ¡ª __attribute__((section(...)))
  * ÆÚÍû£ºg_init + g_zero + g_ro = 10 + 0 + 5 = 15
  */

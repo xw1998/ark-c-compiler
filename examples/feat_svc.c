@@ -1,3 +1,7 @@
+/* Regression expectation (machine-checked by examples/run_tests.ps1).
+ * SVC calls have ARM-only semantics; the host build only reaches return 0
+ * Expected exit code: 0
+ */
 /* feat_svc.c - __svc declaration (ARM Compiler 5 compatible)
  * The ARM backend should emit instructions like SVC #0x10
  */

@@ -208,7 +208,7 @@ ark c compiler/
 ├── stdlib/include/         内置标准库头文件
 ├── port/host/              PC 平台层
 ├── port/stm32/             STM32 平台层（platform/flash_fs/main_stm32 入口）
-├── examples/               62 个测试（.c + .s）
+├── examples/               75 个测试样例（.c；run_tests.ps1 运行其中 70 个用例）
 ├── mdk/STM32H743_ArkCC/    Keil MDK 工程
 ├── build_stm32_armcc.ps1   armcc5 构建 STM32 固件脚本（输出 arkcc_stm32.hex/.bin）
 ├── arkcc.cfg               默认运行时配置（INI 格式）
@@ -347,7 +347,7 @@ debug_info  = 0
 powershell -ExecutionPolicy Bypass -File examples\run_tests.ps1
 ```
 
-全部 62 个测试通过（ARM 汇编生成 + C 后端编译运行），覆盖：基本算术、函数/递归、struct/union/enum、位域、VLA、`_Complex`、`wchar_t`/`L"..."`、三字符组、内联汇编（基本+扩展）、完整 `__attribute__` 集、`__svc`/`__irq`/`__weak`/`__naked`/`__packed`/`__align`/`__at`/`__forceinline`、`__asm` 整函数体汇编、`#pragma pack/anon_unions/location/...`、TLS、`__packed` 指针非对齐访问、`split_sections`、双精度浮点、64 位整数、除法/取模、复合字面量、指定初始化、结构体按值传递、隐式转换、整数提升、64 位 `printf`、`setjmp/longjmp`、多文件链接、CPU 宏、调试信息、`$` 标识符等。
+全部 70 个用例通过（ARM 汇编生成 + C 后端编译运行，期望退出码逐文件机器校验），覆盖：基本算术、函数/递归、struct/union/enum、位域、VLA、`_Complex`、`wchar_t`/`L"..."`、三字符组、内联汇编（基本+扩展）、完整 `__attribute__` 集、`__svc`/`__irq`/`__weak`/`__naked`/`__packed`/`__align`/`__at`/`__forceinline`、`__asm` 整函数体汇编、`#pragma pack/anon_unions/location/...`、TLS、`__packed` 指针非对齐访问、`split_sections`、双精度浮点、64 位整数、除法/取模、复合字面量、指定初始化、结构体按值传递、隐式转换、整数提升、64 位 `printf`、`setjmp/longjmp`、多文件链接、CPU 宏、调试信息、`$` 标识符等。
 
 ## 移植到 STM32
 

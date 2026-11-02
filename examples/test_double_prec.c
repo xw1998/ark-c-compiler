@@ -9,7 +9,7 @@
  * backend uses the 0x200 double-precision flag and goes through the
  * __aeabi_d* family, also preserving 64-bit precision.
  *
- * Expected exit code: 77 */
+ * Expected exit code: 77   (2^40 + 1 > 2^40 proves 53-bit mantissa; 77 = pass, 1 = fail) */
 int main(void) {
     double a = 1099511627776.0;   /* 2^40 */
     double b = a + 1.0;           /* double precision: b > a; single precision: b == a */

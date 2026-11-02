@@ -1,5 +1,5 @@
 /* struct_test.c - struct, -> and sizeof
- * Expected exit code: 3 + 4 = 7 + sizeof(Point)(=8) = 15
+ * Expected exit code: 15   (3 + 4 + sizeof(struct Point)(=8))
  */
 struct Point {
     int x;

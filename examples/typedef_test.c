@@ -1,3 +1,7 @@
+/* Regression expectation (machine-checked by examples/run_tests.ps1).
+ * p.a(11) + p.b(22) through a typedef'd struct pointer
+ * Expected exit code: 33
+ */
 /* typedef_test.c - typedef + composite type alias + sizeof
  * Expected: 11 + 22 = 33
  */

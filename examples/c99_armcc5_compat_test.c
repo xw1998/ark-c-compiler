@@ -1,3 +1,7 @@
+/* Regression expectation (machine-checked by examples/run_tests.ps1).
+ * report-style test: main returns 0 unless the program faults; the [OK]/[WARN]/[FAIL] counters are printed, not encoded in the exit code
+ * Expected exit code: 0
+ */
 /**
  * ============================================================================
  *  C99 与 ARMCC5 (ARM Compiler 5) 完整兼容性测试程序

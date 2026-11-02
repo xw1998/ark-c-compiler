@@ -1,5 +1,5 @@
 /* test_flexarray.c - Flexible array member (C99)
- * Expected exit code: 4 (sizeof(struct Packet) == 4, data[] not counted)
+ * Expected exit code: 4   (sizeof(struct Packet); data[] is not counted)
  */
 struct Packet {
     int len;

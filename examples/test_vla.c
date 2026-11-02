@@ -1,3 +1,7 @@
+/* Regression expectation (machine-checked by examples/run_tests.ps1).
+ * sum_vla(5) = 1+2+3+4+5
+ * Expected exit code: 15
+ */
 /* VLA variable-length array test */
 int sum_vla(int n) {
     int a[n];  /* VLA */

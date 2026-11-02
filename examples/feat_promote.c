@@ -1,3 +1,7 @@
+/* Regression expectation (machine-checked by examples/run_tests.ps1).
+ * 10 + 20 + 5 + 15
+ * Expected exit code: 50
+ */
 /* feat_promote.c - char/short implicit promotion
  * Expected: 50
  */

@@ -1,5 +1,5 @@
 /* feat_init.c - Aggregate + designated initialization + string array init
- * Expected exit code: 1+2+3+4+5 + 12 + 'h' = 15+12+104 = 131?
+ * Expected exit code: 119   (sum(1..5) = 15 + greet[0] ('h') = 104)
  * Actually we use sum + greeting_len + first_char, simplified to 15 + 5 + 'h'(=104) = 124
  */
 int main(void) {

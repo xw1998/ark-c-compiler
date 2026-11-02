@@ -1,3 +1,7 @@
+/* Regression expectation (machine-checked by examples/run_tests.ps1).
+ * 10*20 accumulated 5 times = 1000, >500 so -100
+ * Expected exit code: 900
+ */
 int main(void) {
     int a = 10;
     int b = 20;

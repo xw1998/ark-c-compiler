@@ -1,3 +1,7 @@
+/* Regression expectation (machine-checked by examples/run_tests.ps1).
+ * parse/emit only; no MMIO behaviour is exercised on the host
+ * Expected exit code: 0
+ */
 /* test_at.c - __at(addr) / __attribute__((at(N))) / #pragma location parsing verification.
  * On host we do not verify MMIO behavior: just confirm it compiles and main returns 0.
  */

@@ -9,7 +9,7 @@
  *      (-1 converted to unsigned becomes 0xFFFFFFFF = 4294967295, greater than 1)
  *   3) short arithmetic-promoted to int, result can be negative
  *
- * Expected exit code: each case sets a bit; all pass = 1|2|4 = 7 */
+ * Expected exit code: 7   (one bit per passing case: 1|2|4) */
 int main(void) {
     int result = 0;
 

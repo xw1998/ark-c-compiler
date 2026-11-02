@@ -1,3 +1,7 @@
+/* Regression expectation (machine-checked by examples/run_tests.ps1).
+ * a[0] + a[4] = 1 + 5
+ * Expected exit code: 6
+ */
 /* Trigraph test: ??( -> [, ??) -> ], ??= -> # */
 /* Written with trigraph syntax to verify preprocessor substitution */
 int main(void) {

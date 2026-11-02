@@ -1,5 +1,5 @@
 /* test_align.c - __align(n) alignment test
- * Expected exit code: 1 (i.e. alignment takes effect)
+ * Expected exit code: 1   ((addr & 0xF) == 0, i.e. __align(16) took effect)
  */
 __align(16) static int aligned_buf[4];
 

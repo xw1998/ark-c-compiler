@@ -8,7 +8,7 @@
  * checks assembly generation (run_tests.ps1 runs -target arm -S -o nul
  * for every .c file).
  *
- * Expected exit code: 40  (1.5 + 2.5 = 4.0, 4.0 * 10 = 40)
+ * Expected exit code: 40   ((1.5 + 2.5) * 10)
  */
 float add_f(float a, float b) { return a + b; }
 

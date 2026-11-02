@@ -1,3 +1,7 @@
+/* Regression expectation (machine-checked by examples/run_tests.ps1).
+ * prints sum = 10 through va_arg, returns 0
+ * Expected exit code: 0
+ */
 #include <stdio.h>
 #include <stdarg.h>
 

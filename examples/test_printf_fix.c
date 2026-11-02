@@ -11,7 +11,7 @@
  *   32-bit unsigned range and must be stored in 64 bits. If truncated
  *   to a 32-bit int, r becomes -2.
  *
- * Expected exit code: 66 */
+ * Expected exit code: 66   (64-bit round-trip through IR_CALL not truncated; 66 = pass, 1 = fail) */
 long long echo(long long v) { return v; }
 
 int main(void) {

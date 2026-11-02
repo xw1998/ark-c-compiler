@@ -1,3 +1,7 @@
+/* Regression expectation (machine-checked by examples/run_tests.ps1).
+ * typedef/struct forward-reference bootstrap compiles; main returns 0
+ * Expected exit code: 0
+ */
 /* Minimal bootstrap typedef test */
 
 typedef enum {

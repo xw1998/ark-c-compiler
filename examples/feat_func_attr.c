@@ -1,3 +1,7 @@
+/* Regression expectation (machine-checked by examples/run_tests.ps1).
+ * len("main") + 1
+ * Expected exit code: 5
+ */
 /* feat_func_attr.c - __func__, __noreturn__, unused
  * Expected: __func__ string length 4 ("main") + 1 = 5
  */
