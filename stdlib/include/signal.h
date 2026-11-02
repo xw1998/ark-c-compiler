@@ -1,9 +1,9 @@
 /* Ark C Compiler stdlib - signal.h
- * C99 7.14??????
+ * C99 7.14: signal handling.
  *
- * ???C99 ??? signal ?? `void (*signal(int, void(*)(int)))(int)` ??
- * ????????????arkcc ??????????? typedef ????
- * ?POSIX sighandler_t ????????????? */
+ * The C99 declaration of signal is `void (*signal(int, void(*)(int)))(int)`,
+ * which arkcc cannot parse, so a POSIX sighandler_t typedef is used instead
+ * and signal returns the handler type directly. */
 #ifndef ARK_SIGNAL_H
 #define ARK_SIGNAL_H
 
@@ -20,8 +20,8 @@ typedef int sig_atomic_t;
 #define SIGKILL  9
 #define SIGHUP   1
 
-/* sighandler_t????????????POSIX ????
- * SIG_DFL/SIG_IGN/SIG_ERR ????????????? */
+/* sighandler_t: handler type (POSIX style).
+ * SIG_DFL / SIG_IGN / SIG_ERR are the usual special values. */
 typedef void (*sighandler_t)(int);
 
 #define SIG_DFL  ((sighandler_t)0)

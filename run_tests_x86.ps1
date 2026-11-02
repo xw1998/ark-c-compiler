@@ -1,12 +1,12 @@
 $ErrorActionPreference = 'Continue'
 
-# ????????????
+# Run from the repository root: arkcc.exe must already be built here.
 if (-not (Test-Path .\arkcc.exe)) {
     Write-Host "[run_tests_x86] arkcc.exe not found, please build first"
     exit 1
 }
 
-# ??????????????????? -link???????????
+# Multi-file cases need -link to be built together; skip them here.
 $skip = @('feat_multifile_a.c','feat_multifile_b.c','feat_multifile_main.c','test_multi_a.c','test_multi_b.c')
 $examples = Get-ChildItem examples\*.c | Where-Object { $_.Name -notin $skip -and $_.Name -notlike "*.gen.c" }
 
@@ -20,7 +20,7 @@ Write-Host ""
 foreach ($f in $examples) {
     $base = $f.BaseName
     $outS = "$base.x86.s"
-    # x86_64 ????????????System V ABI??Windows ???????????????
+    # The x86_64 backend follows System V ABI; only -S output is checked.
     & .\arkcc.exe $f.FullName -target x86_64 -S -o $outS 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) {
         Write-Host ("  [FAIL] {0,-30} x86_64 emit failed" -f $f.Name)

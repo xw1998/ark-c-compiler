@@ -1,5 +1,5 @@
 /* Ark C Compiler - lexer.h
- * ?????????????????????? Token ??????
+ * Lexical analysis: turns the source text into a Token stream.
  */
 #ifndef ARK_LEXER_H
 #define ARK_LEXER_H
@@ -12,8 +12,8 @@ typedef struct {
     double    fvalue;
     char     *str;
     int       line;
-    const char *src_start;  /* token ??????????????????? __asm ??????????? */
-    int       is_imag;      /* C99 ?????????????????? i/I/j/J ????????? */
+    const char *src_start;  /* start of the token in the source; used for __asm bodies */
+    int       is_imag;      /* C99 imaginary literal (i/I/j/J suffix) */
     int       is_float;     /* C99 float suffix (f/F): 1 = float literal, 0 = double */
     /* Integer literal suffix flags (C99 6.4.4.1). Dropping them made
      * `-1 < 1u` compare as signed and gave 0xFFFFFFFFu / 1u<<31 the wrong

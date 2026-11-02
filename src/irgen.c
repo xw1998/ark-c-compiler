@@ -1,12 +1,12 @@
 /* Ark C Compiler - irgen
- * AST -> ?? IR??
+ * AST -> stack-based IR.
  *
- * ???????????????????????
- *   - ???? 0..N-1 ???????????? PUSH ???????IR_CALL n ????????? n ???
- *     ???????????????/?????????? arg0..argN-1????
- *   - ?????????????????????????? GETARG ??????????
- *   - ????????????????????? + IR_PUSH_STR ??????
- *   - ????????? IR_PUSH_GLOBAL / IR_STORE_GLOBAL ??????
+ * Calling convention (coordinated with the backends):
+ *   - Arguments 0..N-1 are PUSHed onto the virtual stack before the call;
+ *     IR_CALL n makes the backend take the top n values into the matching
+ *     registers / stack arguments, in the order arg0..argN-1.
+ *   - String literals are referenced through the string pool + IR_PUSH_STR.
+ *   - Globals are referenced through IR_PUSH_GLOBAL / IR_STORE_GLOBAL.
  */
 #include "irgen.h"
 #include "symtab.h"
@@ -19,8 +19,8 @@
 /* Note: <stdio.h> intentionally NOT included to avoid pulling in semihosting-
  * dependent snprintf on STM32. sb_putf below uses a custom dtoa instead. */
 
-/* ???????????????? AST ????????????????? C ????????
- * 64 KB ????????????? */
+/* Internal buffer used to serialize an AST initializer list into a C source
+ * snippet. 64 KB is enough for ordinary examples. */
 typedef struct StrBuf {
     char *data;
     int   len;
@@ -47,8 +47,8 @@ static void sb_putd(StrBuf *b, long long v) {
     for (i = n - 1; i >= 0; i--) sb_putc(b, tmp[i]);
 }
 static void sb_putf(StrBuf *b, double v) {
-    /* ?? %.17g ???????????????????????????????
-     * ?????????????????? 1e-10???????????? 1e100???? */
+    /* Convert a double to a C floating literal. Scientific notation is used for
+     * very large or very small magnitudes, fixed point otherwise. */
     /* 自定义 double 转字符串，避免使用 snprintf（STM32 半主机依赖）。
      * 大数（v >= 1e16）和极小值（v < 1e-4）使用科学记数法，
      * 正常范围使用定点表示，保证输出为合法 C 浮点字面量。
@@ -171,7 +171,7 @@ static void sb_putstr_lit(StrBuf *b, const char *s) {
     sb_putc(b, '"');
 }
 
-/* ?? AST ??????? C ?????????? sb?????????????????????? */
+/* Append an AST expression to sb as C source; only constant expressions and simple operators are supported. */
 static void serialize_const_expr(StrBuf *b, AstNode *n) {
     if (!n) { sb_puts(b, "0"); return; }
     switch (n->kind) {
@@ -263,8 +263,8 @@ static void serialize_init(StrBuf *b, AstNode *n) {
     serialize_const_expr(b, n);
 }
 
-/* ?????????????????? char a[]="..." ??? init list???? C ????????????????????????
- * ??????????????????????????????????? */
+/* Code generator state for one function: output program, target function,
+ * frame cursor and the loop/switch label bookkeeping. */
 
 typedef struct {
     IrProgram *prog;
@@ -273,8 +273,8 @@ typedef struct {
     int        max_size;
     int        break_label;
     int        cont_label;
-    /* switch ????????? */
-    int       *case_labels;     /* ??? case ?????????? */
+    /* switch compile-time information */
+    int       *case_labels;     /* label id for each case value */
     long long *case_values;
     int        case_count;
     int        default_label;
@@ -287,17 +287,17 @@ static void irgen_lvalue_addr(IrGen *g, AstNode *node);
 static void irgen_cond_to_bool(IrGen *g, AstNode *cond);
 static void irgen_widen_to_64(IrGen *g, Type *src_t, Type *dst_t);
 static void irgen_truncate_int(IrGen *g, Type *dst_t);
-/* ????????????? init_list ???????????????? off ???? t ?????
- * ??? C99 ?????????????designated initializer??.field / [idx]???? */
+/* Recursively perform aggregate initialization: write the scalar values of
+ * init_list into the object of type t at frame offset off (C99 nested lists, designated initializers). */
 static void irgen_local_aggregate_init(IrGen *g, int off, Type *t, AstNode *init_list);
-/* C99 ?????????? (type){...}????????????? ark_cl_<n>?????????????
- * ????????????????????????????????? C99 ?????????????????????
+/* C99 compound literal (type){...}: allocate a block-scope object with
+ * automatic storage duration (C99 6.5.2.5). See the note below.
  * Bug-I7 FIX: Block-scope compound literals have automatic storage duration.
  * The function allocates a local stack slot, zero-initializes it, and applies
  * the initializer so each block entry re-initializes the object. Returns the
  * local frame offset. */
 static int irgen_compound_literal(IrGen *g, AstNode *node);
-/* ?????????????????????????????????????????????????????? */
+/* Global compound literal counter: process-wide unique names. */
 static int g_compound_lit_counter = 0;
 
 /* C 后端使用 8 字节 long long 槽，无需 32→64 位 widen/narrow 序列。
@@ -313,8 +313,8 @@ static int alloc_label(IrGen *g) {
 }
 
 static int alloc_local(IrGen *g, int size) {
-    /* ???? 8 ????????????????? long long / double ????????????
-     * ???? Windows LLP64 ?? long=4 ?? double=8 ???? union ??????????? */
+    /* Always align slots to 8 bytes so long long / double bit patterns fit intact;
+     * avoids losing the high half of a double when long=4 (LLP64) shares a union. */
     int s = (size + 7) & ~7;
     int off;
     if (s <= 0) s = 8;
@@ -324,9 +324,9 @@ static int alloc_local(IrGen *g, int size) {
     return off;
 }
 
-/* ??????? static ????????????????????ark_sl_<func>_<var>??
- * ???????????? static ???????????????????????????????????
- * ??????????????????????????????????? */
+/* Build a global-ised name for a function-scope static local: ark_sl_<func>_<var>.
+ * Same-named statics in different functions do not collide and stay separate
+ * from user-defined global names. */
 static char *static_local_name(const char *func, const char *var) {
     int nf = (int)ark_strlen(func);
     int nv = (int)ark_strlen(var);
@@ -341,7 +341,7 @@ static char *static_local_name(const char *func, const char *var) {
     return buf;
 }
 
-/* ???????? switch body????? case/default ????????? */
+/* First pass over a switch body: collect the label ids for case/default. */
 typedef struct CaseList {
     int *labels;
     long long *values;
@@ -375,7 +375,7 @@ static void collect_cases(IrGen *g, AstNode *node, CaseList *cl) {
         return;
     }
     if (node->kind == AST_SWITCH) {
-        return; /* ??? switch ???????????? */
+        return; /* a nested switch is handled by itself */
     }
     if (node->kind == AST_BLOCK) {
         int i;
@@ -484,7 +484,7 @@ IrProgram *irgen_program(AstNode *prog) {
                             gv->init_float = iv->fval;
                         }
                     } else if (iv->kind == AST_STR) {
-                        /* char a[]="hello" ?? char *p="..." */
+                        /* char a[]="hello" or char *p="..." */
                         gv->has_init = 1;
                         gv->init_str = iv->u.name;
                     } else if (iv->kind == AST_INIT_LIST) {
@@ -493,17 +493,17 @@ IrProgram *irgen_program(AstNode *prog) {
                         gv->has_init = 1;
                         gv->init_aggregate = sb.data;
                     } else if (iv->kind == AST_COMPOUND_LITERAL) {
-                        /* ?????????????????????????? init ???? */
+                        /* Compound literal initialising a global: expand its init list. */
                         StrBuf sb; sb_init(&sb);
                         serialize_init(&sb, iv->u.compound_lit.init);
                         gv->has_init = 1;
                         gv->init_aggregate = sb.data;
                     } else {
-                        /* ?????????????????????????????
-                         * (sizeof, 1+2, ???????????????)??
-                         * ?????????????????????? init_int???? ARM ???
-                         * ????????? .word ?????C ????? init_aggregate
-                         * ???????? enum ???????? */
+                        /* Non-literal initialiser: try constant evaluation first
+                         * (sizeof, 1+2, arithmetic on literals, ...).
+                         * On success store it as an integer literal in init_int so the ARM
+                         * backend can emit proper .word data; the C backend goes through
+                         * init_aggregate and passes the source text through (enum refs etc.). */
                         long long cv = 0;
                         gv->has_init = 1;
                         if (eval_const_expr(iv, &cv)) {
@@ -568,7 +568,7 @@ IrProgram *irgen_program(AstNode *prog) {
         } else if (d->kind == AST_TYPEDEF) {
             if (d->u.var.name) sym_add(SYM_TYPEDEF, d->u.var.name, d->u.var.var_type, 0);
         } else if (d->kind == AST_BLOCK) {
-            /* ????????? */
+            /* Reference to a global variable or enum constant: emit the name. */
             int j;
             for (j = 0; j < d->u.block.stmt_count; j++) {
                 AstNode *c = d->u.block.stmts[j];
@@ -709,7 +709,7 @@ IrProgram *irgen_program(AstNode *prog) {
             continue;
         }
         if (d->kind == AST_FUNC_DECL) {
-            /* ???????? alias_target ??????????? IrFunc????????????????? */
+            /* A declaration that only carries alias_target still needs an IrFunc so the backend can emit the alias. */
             if (d->u.func.alias_target) {
                 IrFunc *fn = ir_func_new(d->u.func.name);
                 fn->ret_type = d->u.func.ret_type;
@@ -767,8 +767,8 @@ IrProgram *irgen_program(AstNode *prog) {
             }
             g.fn->is_variadic = d->u.func.is_variadic;
             g.fn->is_static = d->u.func.is_static;
-            /* ???? ARM Compiler 5 ????????? IrFunc???????????
-             * __attribute__((weak/naked)) ?? __irq ???? */
+            /* Propagate ARM Compiler 5 function attributes to IrFunc so the backend can emit
+             * __attribute__((weak/naked)) and the __irq prologue note. */
             g.fn->is_irq   = d->u.func.is_irq;
             /* Auto-detect ARM interrupt handlers by name suffix.
              * STM32CubeMX/HAL code doesn't use __irq keyword; without this,
@@ -871,13 +871,13 @@ IrProgram *irgen_program(AstNode *prog) {
     return out;
 }
 
-/* ????????????? init_list ???????????????? off ???? t ?????
- * ??? C99 ????????????? designated initializer??
- *   - ??????? item ?? [idx] ?????????? off + idx*elem_sz??
- *     ?? item ?????? INIT_LIST?????????????
- *   - ???????? item ?? .field ?????????? off + field->offset??
- *     ?? item ?????? INIT_LIST?????????????
- * ?????????????????????????????????????????????? */
+/* Recursively perform aggregate initialization: write the scalar values of
+ * init_list into the object of type t at frame offset off (C99 nested lists
+ * and designated initializers).
+ *   - Array: each item goes to off + idx*elem_sz, by [idx] or position;
+ *     an INIT_LIST item recurses according to the element type.
+ *   - Struct: each item goes to off + field->offset, by .field or position;
+ *     an INIT_LIST item recurses according to the field type. */
 /* Store a string literal's bytes into the existing char array object at frame
  * offset `off` (type `arr_t`). Mirrors the `char a[]="..."` declaration path:
  * check for the element type outside, zero-fill is done by the caller, then
@@ -938,7 +938,7 @@ static void irgen_local_aggregate_init(IrGen *g, int off, Type *t, AstNode *init
             if (!it) continue;
             if (it->u.init_field.has_field) {
                 target = type_find_field(t, it->u.init_field.field);
-                /* designated ??positional cursor ???? target ??? */
+                /* after a designated item the positional cursor moves past target */
                 if (target) {
                     StructField *p = t->fields;
                     while (p && p != target) p = p->next;
@@ -965,7 +965,7 @@ static void irgen_local_aggregate_init(IrGen *g, int off, Type *t, AstNode *init
             }
         }
     }
-    /* ??????????????????????????? */
+    /* Only arrays and structs/unions are initialized here; other types are ignored. */
 }
 
 /* C99 compound literal (type){...} -- Bug-I7 FIX.
@@ -1084,7 +1084,7 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
         case AST_BLOCK: {
             int i;
             int saved_bp = g->bp;
-            /* ?????????????????????????????????????????? */
+            /* Enter a scope for this block and restore the frame cursor on exit. */
             if (!node->u.block.is_decl_list) sym_enter_scope();
             for (i = 0; i < node->u.block.stmt_count; i++) {
                 irgen_stmt(g, node->u.block.stmts[i]);
@@ -1102,10 +1102,10 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
             }
             if (!node->u.var.name) break;
             if (node->u.var.is_static) {
-                /* static ???????????????????????????? mangle ?
-                 * ark_sl_<func>_<var>???????????????????? is_static=1
-                 * ???? SYM_GLOBAL ???? AST_VAR/AST_ASSIGN ?? PUSH_GLOBAL/
-                 * STORE_GLOBAL ?????????????????????? sym_find ?????? */
+                /* static local: promoted to a function-level global whose mangled name is
+                 * ark_sl_<func>_<var>, so the value persists across calls. The symbol is
+                 * flagged is_static=1 and registered as SYM_GLOBAL so AST_VAR/AST_ASSIGN
+                 * use the PUSH_GLOBAL/STORE_GLOBAL path; the lookup name stays unmangled. */
                 char *mangled = static_local_name(g->fn->name, node->u.var.name);
                 IrGlobal *gv = ir_program_add_global(g->prog, mangled, node->u.var.var_type);
                 gv->is_static = 1;
@@ -1154,21 +1154,21 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
             s = sym_add(SYM_VAR, node->u.var.name, node->u.var.var_type, off);
             (void)s;
 #if ARKCC_FEATURE_VLA
-            /* B3: ??????var_type ????? is_vla ???????
-             * ??????????????????????4 ??????
-             * ???????????????? * ?????? ?? IR_ALLOCA ?? ???????? */
+            /* B3: variable-length array. var_type is already a pointer flagged is_vla;
+             * the slot holds a pointer to the dynamically allocated block (4 bytes).
+             * Runtime: element count * element size -> IR_ALLOCA -> store pointer in slot. */
             if (node->u.var.is_vla && g_config.enable_vla) {
                 Type *elem_t = node->u.var.var_type->base;
                 int elem_sz = type_size(elem_t);
                 if (elem_sz <= 0) elem_sz = 4;
-                /* ?????? */
+                /* Evaluate the element count */
                 irgen_expr(g, node->u.var.vla_size_expr);
-                /* * ?????? ?? ????? */
+                /* element count * element size -> total bytes */
                 ir_emit(g->fn, IR_PUSH_INT, elem_sz, 0, 0);
                 ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_MUL);
-                /* ?????????????? */
+                /* Allocate the block on the runtime stack */
                 ir_emit(g->fn, IR_ALLOCA, 0, 0, 0);
-                /* ??????? */
+                /* Save the resulting pointer into the local slot */
                 ir_emit(g->fn, IR_STORE, off, 0, 0);
                 break;
             }
@@ -1176,8 +1176,8 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
             if (node->u.var.init) {
                 AstNode *iv = node->u.var.init;
                 if (iv->kind == AST_INIT_LIST) {
-                    /* ????????????????????????????????????????????????
-                     * ?????? C99 ????????????? designated initializer?? */
+                    /* Local aggregate initialization: zero the whole region first, then write the
+                     * explicitly initialized elements (C99 nested lists, designated initializers). */
                     int total = sz;
                     int k;
                     for (k = 0; k < total; k += 4) {
@@ -1187,9 +1187,9 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
                     irgen_local_aggregate_init(g, off, node->u.var.var_type, iv);
                 } else if (iv->kind == AST_STR && node->u.var.var_type &&
                            node->u.var.var_type->kind == TYPE_ARRAY) {
-                    /* char a[]="..."?????? memcpy(frame+off, str, n)
-                     * ?????????irgen ???? push ??????c ??? stk[--sp]=arg0??
-                     * ??????????????push arg2, push arg1, push arg0?? */
+                    /* char a[]="...": call memcpy(frame+off, str, n). Arguments are pushed in
+                     * reverse order (the last push becomes arg0), so the forward sequence is
+                     * push n, push src, push dst. */
                     const char *s2 = iv->u.name;
                     int slen = ark_strlen(s2);
                     int total = type_size(node->u.var.var_type);
@@ -1199,12 +1199,12 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
                     if (arr_len <= 0) arr_len = slen + 1;
                     copy_n = slen + 1;
                     if (copy_n > arr_len) copy_n = arr_len;
-                    /* ???????? 4 ??????????? 8 ??? long long ???w??? */
+                    /* Zero-fill the whole array before copying the literal into it. */
                     for (kk = 0; kk < total; kk += 4) {
                         ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
                         ir_emit(g->fn, IR_STORE, off + kk, 0, 4);
                     }
-                    /* push n, src, dst??????????? arg0=dst?? */
+                    /* push n, src, dst (the last push becomes arg0 = dst) */
                     ir_emit(g->fn, IR_PUSH_INT, copy_n, 0, 0);
                     {
                         int id = ir_program_add_string(g->prog, s2, slen);
@@ -1513,16 +1513,16 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
             break;
         }
         case AST_CASE: {
-            /* ???????????????? case ???????????? switch ???
-             * ??????????????"????"??????????????????????? switch ????
-             * ???????????? POP??????????????????? switch ???
-             * ????????? case ??????? POP ???????????? switch ?????
-             * ???? fall-through???????? POP????????????????????
-             *   ??? case ??? POP ????? */
+            /* Emit the case label. The switch value is kept in a temp local (see AST_SWITCH
+             * above), so the stack is already balanced when control arrives here and no POP
+             * is needed on entry.
+             * This also keeps fall-through consistent: the stack depth never changes across
+             * case labels, so the fall-through path does not pop a second time.
+             *   Each case label entry therefore needs no POP at all. */
             ir_emit(g->fn, IR_LABEL, node->u.case_stmt.label_id, 0, 0);
-            /* ???fall-through ??????????????? POP????????? case
-             * ??????? switch ??????????????????????? switch ?????
-             * ?????????????????????????????? case label ???????? POP?? */
+            /* Fall-through note: the previous case reaches this label with a clean stack
+             * (the dispatch loop left nothing behind), so the body runs without any POP
+             * and the value is only read from the temp local inside the dispatch loop. */
             irgen_stmt(g, node->u.case_stmt.stmt);
             break;
         }
@@ -1553,18 +1553,18 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
             }
             break;
         case AST_ASM: {
-            /* ?????????????????????????????????? C ?????????
+            /* Extended inline assembly: glue the template and the three operand
              *   "asm_text" : outputs : inputs : clobbers
-             * ?? C ???????? gcc ????????????ARM ????????????????
-             * ??????? '@' ???"??????????"?????????IR_ASM ????????
-             *   - '@' ?????????????name ???? `"text" : outputs : inputs : clobbers`
-             *   - ?????????????name ????? IR_ASM ???????^ */
+             * sections into a complete C expression string. The C backend passes it
+             * through to gcc for operand handling; the ARM backend ignores operands.
+             * A leading '@' marks the "full extended form"; without it the name is the
+             * plain asm text. */
             const char *text = node->u.asm_stmt.text ? node->u.asm_stmt.text : "";
             const char *outs = node->u.asm_stmt.outputs;
             const char *ins  = node->u.asm_stmt.inputs;
             const char *clb  = node->u.asm_stmt.clobbers;
             if (outs || ins || clb) {
-                /* ?????????????????????????? */
+                /* Build the extended form with a leading '@'. */
                 StrBuf sb; sb_init(&sb);
                 sb_putc(&sb, '@');
                 sb_putstr_lit(&sb, text);
@@ -1595,9 +1595,9 @@ static void irgen_lvalue_addr(IrGen *g, AstNode *node) {
             /* &func / func in a pointer context: function address. */
             ir_emit(g->fn, IR_PUSH_FUNC, 0, node->u.name, 0);
         } else if (s && s->kind == SYM_GLOBAL) {
-            /* ?????????????? PUSH_GLOBAL_ADDR??????????????????
-             * ?????? PUSH_INT 0 ?????C ??????? name????????? 0????
-             * static ????????????????????????? mangle ??????? */
+            /* Taking the address of a global: emit PUSH_GLOBAL_ADDR so the backend pushes
+             * the variable's address. Replaces the old PUSH_INT 0 placeholder (the C backend
+             * ignored name and produced address 0). Static locals use the mangled name. */
             const char *gname = node->u.name;
             if (s->is_static) gname = static_local_name(g->fn->name, node->u.name);
             ir_emit(g->fn, IR_PUSH_GLOBAL_ADDR, 0, gname, 0);
@@ -1664,10 +1664,10 @@ static void irgen_lvalue_addr(IrGen *g, AstNode *node) {
     ark_log("[irgen] line %d: invalid lvalue\n", node->line);
 }
 
-/* ???? AST_MEMBER ????????????????
- * AST_MEMBER ????????? bit_offset/bit_width???? ast.h????????? obj ????
- * ????????????????????????? 1 ?????????0 ?????????????????
- * ?????*pbit_off = ???????????*pbit_width = ?????? */
+/* Find the bit-field info for an AST_MEMBER node.
+ * AST_MEMBER carries no bit_offset/bit_width (see ast.h), so look them up again
+ * in obj's struct field chain. Returns 1 for a bit-field, 0 for a non-bit-field
+ * or a failed lookup; *pbit_off / *pbit_width give the position inside the unit. */
 static int member_bitfield_info(AstNode *node, int *pbit_off, int *pbit_width) {
     AstNode *obj = node->u.member.obj;
     Type *st = 0;
@@ -1870,13 +1870,13 @@ static void irgen_expr(IrGen *g, AstNode *node) {
         ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
         return;
     }
-    g_ir_cur_line = node->line;  /* ?? DWARF .loc ??? */
+    g_ir_cur_line = node->line;  /* used for DWARF .loc */
     switch (node->kind) {
         case AST_NUM:
             if (node->type && node->type->kind == TYPE_COMPLEX) {
-                /* C99 ??????????num_val=-1 ????????? (0, fval)??
-                 * ????????????? (fval, 0)??
-                 * ?????????????????? IR_PUSH_FLOAT + aux 0x600??double+complex?????? */
+                /* C99 complex constant: num_val == -1 selects the imaginary part
+                 * (0, fval); otherwise the real part (fval, 0) is used.
+                 * Emitted as IR_PUSH_FLOAT with aux 0x600 (double + complex). */
                 double re, im;
                 if (node->u.num_val == -1) { re = 0.0; im = node->fval; }
                 else { re = node->fval; im = 0.0; }
@@ -1888,8 +1888,8 @@ static void irgen_expr(IrGen *g, AstNode *node) {
             }
             if (node->type && (node->type->kind == TYPE_FLOAT || node->type->kind == TYPE_DOUBLE)) {
                 int fid = ir_program_add_float(g->prog, node->fval);
-                /* aux ???? 0x200 ??? double ?????ARM ???????? 64 ????????
-                 * val ????????????????? */
+                /* aux high bit 0x200 marks double precision: the ARM backend then emits
+                 * a 64-bit constant. val is still the float constant pool index. */
                 int is_dbl = (node->type->kind == TYPE_DOUBLE);
                 ir_emit(g->fn, IR_PUSH_FLOAT, fid, 0, is_dbl ? 0x200 : 0);
             } else {
@@ -1913,8 +1913,8 @@ static void irgen_expr(IrGen *g, AstNode *node) {
             int slen = ark_strlen(node->u.name);
             int id = ir_program_add_string(g->prog, node->u.name, slen);
 #if ARKCC_FEATURE_WCHAR
-            /* B2: ?????????node->type ? wchar_t*???? ??? IrString??
-             * C ???????? L"..." ?? wchar_t ???? */
+            /* B2: wide string (node->type is wchar_t*) -> mark the IrString so the
+             * C backend emits L"..." and a wchar_t array. */
             if (g_config.enable_wchar && node->type &&
                 node->type->kind == TYPE_PTR &&
                 node->type->base && node->type->base->kind == TYPE_WCHAR) {
@@ -2000,12 +2000,12 @@ static void irgen_expr(IrGen *g, AstNode *node) {
             } else if (s->type && s->type->kind == TYPE_ARRAY) {
                 ir_emit(g->fn, IR_PUSH_ADDR, s->offset, node->u.name, 0);
             } else {
-                /* ??????????????? aux??????????????????????/???????
-                 * ???????????????? remquo ?? int*??????? int ?????????????
-                 * ????????? 4 ?????? 8 ????????? 4 ?????????????
-                 * ??????????? aux=0??8 ????????????????????????????????????
-                 * long/llong/ptr ??? 8 ????aux=0 ??????
-                 * aux ?? 8 ?? = ?????1/2/4????bit8 (0x100) = ???????? */
+                /* Encode the access width in aux. Narrow objects (e.g. the plain int
+                 * written by remquo through an int*) are still passed in an 8-byte slot,
+                 * so the load must sign/zero-extend the 4-byte object into the slot.
+                 * Objects that already fill the slot (long / long long / pointers) use
+                 * aux = 0, i.e. no extension.
+                 * aux bits 0..7 = width (1/2/4), bit 8 (0x100) = unsigned. */
                 int aux = 0;
                 if (s->type) {
                     int uns = s->type->is_unsigned ? 0x100 : 0;
@@ -2028,10 +2028,10 @@ static void irgen_expr(IrGen *g, AstNode *node) {
         }
         case AST_CAST:
             irgen_expr(g, node->u.unary.operand);
-            /* ???? <-> ???? ??????????/?????????? IR_F2I / IR_I2F??
-             * aux ???? 0x200 ??? double ??????? ARM ??????
-             * __aeabi_d2iz / __aeabi_i2d ???????????????????????
-             * F2I ?????????? double??I2F ???????????? double?? */
+            /* Float <-> int conversion: emit IR_F2I / IR_I2F per source/dest type.
+             * aux high bit 0x200 marks double precision so the ARM backend uses the
+             * double helpers (__aeabi_d2iz / __aeabi_i2d) instead of the single ones.
+             * F2I checks whether the source is double; I2F checks the destination. */
             {
                 Type *src_t = node->u.unary.operand ? node->u.unary.operand->type : 0;
                 Type *dst_t = node->type;
@@ -2107,13 +2107,13 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         irgen_truncate_int(g, dst_t);
                     }
                 }
-                /* complex -> real????????????????????? IR_F2I ??? 0x400 ????
-                 * ????? C ??????????? creal()????????? aux ????????????? */
+                /* complex -> real: use IR_F2I with aux 0x400 (the same encoding as
+                 * creal() in the C backend), so no extra conversion is required. */
                 if (src_t && src_t->kind == TYPE_COMPLEX &&
                     dst_t && (dst_t->kind == TYPE_FLOAT || dst_t->kind == TYPE_DOUBLE || type_is_integer(dst_t))) {
-                    ir_emit(g->fn, IR_F2I, 0, 0, 0x400);  /* 0x400=complex->real ???? */
+                    ir_emit(g->fn, IR_F2I, 0, 0, 0x400);  /* 0x400 = complex->real */
                 }
-                /* ???int??int / float??float / ??p?????????? */
+                /* Everything else (int->int, float->float, pointer->pointer) is a no-op. */
             }
             break;
         case AST_COMMA:
@@ -2157,7 +2157,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                 int is_unsigned = 0;
                 int is_double = 0;
                 int ptr_diff_div = 0;
-                int aux_op = op;  /* ?????????????????????????? */
+                int aux_op = op;  /* operator sent to the backend; high-bit flags may be added */
                 Type *lt = node->u.binary.left ? node->u.binary.left->type : 0;
                 Type *rt = node->u.binary.right ? node->u.binary.right->type : 0;
                 /* C99 6.5.6: ptr + int == int + ptr. Normalise to "pointer on
@@ -2175,20 +2175,20 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                 if ((lt && (lt->kind == TYPE_FLOAT || lt->kind == TYPE_DOUBLE)) ||
                     (rt && (rt->kind == TYPE_FLOAT || rt->kind == TYPE_DOUBLE))) {
                     is_float = 1;
-                    /* ????????????????????? double ???? double ???? */
+                    /* Double precision: if either operand is double, compute as double. */
                     if ((lt && lt->kind == TYPE_DOUBLE) ||
                         (rt && rt->kind == TYPE_DOUBLE)) {
                         is_double = 1;
                     }
                 }
                 if (!is_float) {
-                    /* C99 ?????????? (6.3.1.8)??
-                     *   - ????/??????????????????????????????????????????????
-                     *   - ???????????????????????????????????????????????????????????
-                     * irgen ??????????????????? sema ????????? is_unsigned ?????
-                     * ?????????????????/???????????????????????????? */
+                    /* C99 usual arithmetic conversions (6.3.1.8):
+                     *   - arithmetic/comparison ops promote both sides to the common type;
+                     *     signedness is taken from that common type.
+                     *   - shifts promote only the left operand, whose signedness decides.
+                     * irgen inserts no conversions; a correct is_unsigned lets the backend choose. */
                     if (op == (int)TOK_SHL || op == (int)TOK_SHR) {
-                        /* ??????usual_arith_conv(lt, 0) ???? promote_integer(lt) */
+                        /* Shift: usual_arith_conv(lt, 0) degenerates to promote_integer(lt) */
                         Type *pl = usual_arith_conv(lt, 0);
                         is_unsigned = pl && pl->is_unsigned;
                     } else {
@@ -2197,10 +2197,10 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         is_llong = common && common->kind == TYPE_LLONG;
                     }
                 }
-                /* C99 ???????????????????? TYPE_COMPLEX ?????????????
-                 * ???????????????????????????=0????????????????
-                 * 8 ????????? 8 ???????????????
-                 * aux 0x600 = double(0x200) + complex(0x400)?????? IR_FADD/FSUB/FMUL/FDIV?? */
+                /* C99 complex arithmetic: if either operand is TYPE_COMPLEX the operation
+                 * is performed on the pair. A real operand is treated as having an
+                 * imaginary part of 0, so both operands are 8-byte pairs (double re + im).
+                 * aux 0x600 = double (0x200) + complex (0x400), used by IR_FADD/FSUB/FMUL/FDIV. */
                 {
                     int is_complex = 0;
                     if (lt && lt->kind == TYPE_COMPLEX) is_complex = 1;
@@ -2210,7 +2210,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         irgen_widen_to_64(g, lt, is_unsigned ? type_ullong() : type_llong());
                     }
                     if (is_complex && lt && lt->kind != TYPE_COMPLEX) {
-                        /* ???????????????0x600=float??complex??0x700=int??complex */
+                        /* Widen the real operand to complex: 0x600 = float->complex, 0x700 = int->complex */
                         if (lt->kind == TYPE_FLOAT || lt->kind == TYPE_DOUBLE)
                             ir_emit(g->fn, IR_I2F, 0, 0, 0x600);
                         else
@@ -2247,7 +2247,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                             case (int)TOK_DIV:   fop = IR_FDIV; break;
                         }
                         ir_emit(g->fn, fop, 0, 0, op | 0x600);
-                        break;  /* ???? AST_BINARY ???? */
+                        break;  /* exit the AST_BINARY case */
                     }
                     if (is_complex && (op == (int)TOK_EQ || op == (int)TOK_NE)) {
                         ir_emit(g->fn, IR_FCMP, 0, 0, op | 0x600);
@@ -2267,32 +2267,32 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                             fop = IR_FCMP; break;
                         default: fop = IR_FADD; break;
                     }
-                    /* aux ???? 0x200 ??? double ?????ARM ????????
-                     * __aeabi_dadd / __aeabi_fadd ???C ???? double ????? */
+                    /* aux high bit 0x200 marks double precision: the ARM backend picks
+                     * __aeabi_dadd / __aeabi_fadd; the C backend stores it as double. */
                     ir_emit(g->fn, fop, 0, 0, op | (is_double ? 0x200 : 0));
                 } else if (is_llong) {
-                    /* 64 ??????C ???? IR_BINARY?????????? long long????
-                     * ARM ?????? 4 ???? 64 ????????? 2 ??? */
+                    /* 64-bit arithmetic: the C backend reuses IR_BINARY (slots already hold
+                     * long long); the ARM backend pops 4 slots, computes 64-bit, pushes 2. */
                     int is_cmp = (op == (int)TOK_EQ || op == (int)TOK_NE ||
                                   op == (int)TOK_LT || op == (int)TOK_GT ||
                                   op == (int)TOK_LE || op == (int)TOK_GE);
                     if (is_cmp) {
-                        /* ?? 32 ?? IR_BINARY ?????? aux ???? (0x100) ?????????????
-                         * ???????? (unsigned long long) ?????????? (?? ULLONG_MAX
-                         * ???? = -1) ????????????????????? LLONG_MAX?? */
+                        /* Plain 32-bit IR_BINARY cannot carry an unsigned flag for 64-bit
+                         * compares, so IR_64CMP takes it in aux (0x100): an unsigned compare
+                         * must not treat e.g. (unsigned long long)-1 as smaller than LLONG_MAX. */
                         ir_emit(g->fn, IR_64CMP, 0, 0, op | (is_unsigned ? 0x100 : 0));
                     } else {
                         ir_emit(g->fn, IR_64BINARY, 0, 0, op | (is_unsigned ? 0x100 : 0));
                     }
                 } else if (op == (int)TOK_DIV || op == (int)TOK_MOD) {
-                    /* ????????/??????? IR_DIV/IR_MOD??aux=1 ?????????
-                     * ?? ARM ?????? __aeabi_idiv / __aeabi_uidiv?? */
+                    /* Integer division / modulo use dedicated IR_DIV/IR_MOD with aux=1 meaning
+                     * unsigned, letting the ARM backend pick __aeabi_idiv / __aeabi_uidiv. */
                     IrOp dop = (op == (int)TOK_DIV) ? IR_DIV : IR_MOD;
                     ir_emit(g->fn, dop, 0, 0, is_unsigned ? 1 : 0);
                 } else {
-                    /* ?????????(TOK_LT/GT/LE/GE)??????(TOK_SHR)?? aux ????(0x100)
-                     * ???????????????????????????????? / ????????
-                     * EQ/NE ???????????????/?????????????????? */
+                    /* Unsigned comparisons (TOK_LT/GT/LE/GE) and right shift (TOK_SHR) carry
+                     * the unsigned flag in aux bit 8 (0x100) so the backend picks unsigned
+                     * compare conditions / logical shift. EQ/NE compare bits, so no flag is needed. */
                     if (is_unsigned && (op == (int)TOK_LT || op == (int)TOK_GT ||
                                         op == (int)TOK_LE || op == (int)TOK_GE ||
                                         op == (int)TOK_SHR)) {
@@ -2339,7 +2339,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                 }
                 irgen_expr(g, node->u.unary.operand);
                 ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
-                /* __packed ?????????aux 0x400 ??????????????????? */
+                /* __packed pointer dereference: aux 0x400 selects byte-wise unaligned access */
                 if (node->u.unary.operand->type &&
                     node->u.unary.operand->type->kind == TYPE_PTR &&
                     node->u.unary.operand->type->is_packed) {
@@ -2363,8 +2363,8 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                     Symbol *s = sym_find(operand->u.name);
                     if (!s) { ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0); break; }
                     if (s->kind == SYM_GLOBAL) {
-                        /* ???/static ?????????????? PUSH_GLOBAL/STORE_GLOBAL??
-                         * static ????? mangle ???????????????? frame[0]?? */
+                        /* Global / static-local increment and decrement go through
+                         * PUSH_GLOBAL/STORE_GLOBAL; static locals use the mangled name. */
                         const char *gname = operand->u.name;
                         if (s->is_static) gname = static_local_name(g->fn->name, operand->u.name);
                         if (node->u.unary.is_postfix) {
@@ -2455,9 +2455,9 @@ static void irgen_expr(IrGen *g, AstNode *node) {
             AstNode *L = node->u.binary.left;
             int op = node->u.binary.op;
             if (op == (int)TOK_ASSIGN) {
-                /* ????/???????????????? IR_MEMCPY ??????????
-                 * IR_MEMCPY ????????=dst, ????=src???????????
-                 * ????????????? dst ???????????? AST_EXPR_STMT ???????? */
+                /* Whole struct/union assignment: byte-copy via IR_MEMCPY. Stack: top = dst,
+                 * next = src, both popped; the expression value is the dst address, which
+                 * an enclosing AST_EXPR_STMT pops in statement context. */
                 if (L->type && (L->type->kind == TYPE_STRUCT || L->type->kind == TYPE_UNION)) {
                     int sz = type_size(L->type);
                     if (sz <= 0) sz = 4;
@@ -2492,7 +2492,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                 if (L->kind == AST_VAR) {
                     Symbol *s = sym_find(L->u.name);
                     irgen_expr(g, node->u.binary.right);
-                    /* ???? <-> ???? ?????????????? */
+                    /* float <-> int assignment needs an explicit conversion instruction */
                     {
                         AstNode *rv = node->u.binary.right;
                         Type *st = rv ? rv->type : 0;
@@ -2513,7 +2513,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                             if (st && st->is_unsigned) aux |= 0x400;
                             ir_emit(g->fn, IR_I2F, 0, 0, aux);
                         }
-                        /* _Bool ??Z????C99 6.3.1.2?? */
+                        /* _Bool assignment: normalise to 0/1 (C99 6.3.1.2) */
                         if (dt && dt->kind == TYPE_BOOL) {
                             ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
                             ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_NE);
@@ -2557,7 +2557,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                     if (arr->type && (arr->type->kind == TYPE_ARRAY || arr->type->kind == TYPE_PTR))
                         elem_sz = type_size(arr->type->base);
                     if (elem_sz <= 0) elem_sz = 4;
-                    /* __packed ???????????aux 0x400 ?????????? */
+                    /* __packed pointer subscript store: aux 0x400 selects byte-wise access */
                     if (arr->type && arr->type->kind == TYPE_PTR && arr->type->is_packed) {
                         packed_aux = 0x400;
                     }
@@ -2598,7 +2598,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                     if (elem_sz <= 0) elem_sz = 4;
                     irgen_expr(g, L->u.unary.operand);
                     irgen_expr(g, node->u.binary.right);
-                    /* __packed ???????aux 0x400 ??????????????????? */
+                    /* __packed pointer dereference store: aux 0x400 for byte-wise access */
                     if (L->u.unary.operand->type &&
                         L->u.unary.operand->type->kind == TYPE_PTR &&
                         L->u.unary.operand->type->is_packed) {
@@ -2864,39 +2864,39 @@ static void irgen_expr(IrGen *g, AstNode *node) {
             int is_indirect = (node->u.call.name && node->u.call.name[0] == '?');
             Symbol *s = is_indirect ? 0 : sym_find(node->u.call.name);
 
-            /* C99 ????????????????????????? IR?????? 8??????????
-             * ??????????? .c ????????16????????? IR_CALL ?? long long(8???)
-             * ????????????????????????????????????? */
+            /* C99 complex builtins: lower the common ones to plain IR here. The
+             * complex layout is 16 bytes (double re + double im) while IR_CALL passes
+             * one long long (8 bytes) per argument, so special-case them up front. */
             if (s && n == 1) {
                 const char *fn = node->u.call.name;
                 if (ark_streq(fn, "creal") || ark_streq(fn, "crealf") || ark_streq(fn, "creall")) {
                     irgen_expr(g, node->u.call.args[0]);
-                    ir_emit(g->fn, IR_F2I, 0, 0, 0x400);  /* 0x400=???? */
+                    ir_emit(g->fn, IR_F2I, 0, 0, 0x400);  /* 0x400 = complex->real */
                     break;
                 }
                 if (ark_streq(fn, "cimag") || ark_streq(fn, "cimagf") || ark_streq(fn, "cimagl")) {
                     irgen_expr(g, node->u.call.args[0]);
-                    ir_emit(g->fn, IR_I2F, 0, 0, 0x400);  /* 0x400=???? */
+                    ir_emit(g->fn, IR_I2F, 0, 0, 0x400);  /* 0x400 = complex->real (imag part) */
                     break;
                 }
                 if (ark_streq(fn, "conj") || ark_streq(fn, "conjf") || ark_streq(fn, "conjl")) {
                     irgen_expr(g, node->u.call.args[0]);
-                    ir_emit(g->fn, IR_UNARY, 0, 0, (int)TOK_BNOT | 0x400); /* ???????? */
+                    ir_emit(g->fn, IR_UNARY, 0, 0, (int)TOK_BNOT | 0x400); /* 0x400 = complex conjugate */
                     break;
                 }
                 if (ark_streq(fn, "cabs") || ark_streq(fn, "cabsf") || ark_streq(fn, "cabsl")) {
                     irgen_expr(g, node->u.call.args[0]);
-                    ir_emit(g->fn, IR_F2I, 0, 0, 0x500);  /* 0x500=?? cabs */
+                    ir_emit(g->fn, IR_F2I, 0, 0, 0x500);  /* 0x500 = complex cabs */
                     break;
                 }
                 if (ark_streq(fn, "carg") || ark_streq(fn, "cargf") || ark_streq(fn, "cargl")) {
                     irgen_expr(g, node->u.call.args[0]);
-                    ir_emit(g->fn, IR_I2F, 0, 0, 0x500);  /* 0x500=????? carg */
+                    ir_emit(g->fn, IR_I2F, 0, 0, 0x500);  /* 0x500 = complex carg */
                     break;
                 }
                 if (ark_streq(fn, "cexp") || ark_streq(fn, "cexpf") || ark_streq(fn, "cexpl")) {
                     irgen_expr(g, node->u.call.args[0]);
-                    ir_emit(g->fn, IR_FADD, 0, 0, 0x500);  /* 0x500=??????? cexp */
+                    ir_emit(g->fn, IR_FADD, 0, 0, 0x500);  /* 0x500 = complex cexp */
                     break;
                 }
             }
@@ -2953,7 +2953,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                 irgen_expr(g, node->u.call.callee);
                 n = n + 1;
             }
-            /* __svc(n) ?????????? SVC ?????? BL */
+            /* __svc(n) function: emit an SVC instruction instead of BL */
             /* A name that resolves to an object (function pointer variable)
              * is not a direct call; only real function symbols may become
              * SVC/SMC. sema normally rewrites such calls to indirect form;
@@ -2962,7 +2962,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                 ir_emit(g->fn, IR_SVC, s->svc_num, node->u.call.name, 0);
             }
 #if ARKCC_FEATURE_ARMCC_KEYWORDS
-            /* __smc(n) ?????????? SMC ?????? BL */
+            /* __smc(n) function: emit an SMC instruction instead of BL */
             else if (s && s->kind == SYM_FUNC && s->smc_num >= 0) {
                 ir_emit(g->fn, IR_SMC, s->smc_num, node->u.call.name, 0);
             }
@@ -3032,10 +3032,10 @@ static void irgen_expr(IrGen *g, AstNode *node) {
             int elem_sz;
             int packed_aux = 0;
             AstNode *arr = node->u.array_access.array;
-            /* ?????????????????? arr ??????/????????????????
-             * ???????????????????? matrix[1] ???? int[3]?????? C ????
-             * ??????????????????????????????? IR_LOAD_IDX??
-             * ????????????????? + 0 ????????????????? */
+            /* Infer the type of the subscript result: if arr is an array/pointer the
+             * result is the element type. An array-valued result (matrix[1] is still
+             * int[3]) decays to a pointer to its first element per C semantics -- push
+             * the address only, no IR_LOAD_IDX. Scalars load at offset 0 below. */
             if (!node->type && arr && arr->type &&
                 (arr->type->kind == TYPE_ARRAY || arr->type->kind == TYPE_PTR)) {
                 node->type = arr->type->base;
@@ -3049,7 +3049,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
             else
                 elem_sz = type_size(node->type ? node->type : type_int());
             if (elem_sz <= 0) elem_sz = 4;
-            /* __packed ???????????aux 0x400 ??????????????????? */
+            /* __packed pointer subscript load: aux 0x400 selects byte-wise unaligned access */
             if (arr->type && arr->type->kind == TYPE_PTR && arr->type->is_packed) {
                 packed_aux = 0x400;
             }
@@ -3070,9 +3070,9 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                 irgen_lvalue_addr(g, node);
                 ir_emit(g->fn, IR_LOAD_FLD, bo, 0, fld_aux);
             } else if (node->type && node->type->kind == TYPE_ARRAY) {
-                /* ????????????????? data[]??????????????????????????
-                 * ??????????? IR_LOAD_IDX???? AST_ARRAY_ACCESS ???????????
-                 * ????????????????????????????????????????????????????????? */
+                /* The result is an array type (e.g. data[]): decay to a pointer to the
+                 * first element. No IR_LOAD_IDX here; an array-typed lvalue yields its
+                 * address, which the caller then uses directly. */
                 irgen_lvalue_addr(g, node);
             } else {
                 int elem_sz = type_size(node->type ? node->type : type_int());

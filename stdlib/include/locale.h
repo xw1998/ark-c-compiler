@@ -1,5 +1,5 @@
 /* Ark C Compiler stdlib - locale.h
- * C99 7.4????????? */
+ * C99 7.11: localisation. */
 #ifndef ARK_LOCALE_H
 #define ARK_LOCALE_H
 

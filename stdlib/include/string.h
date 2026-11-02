@@ -1,5 +1,5 @@
 /* Ark C Compiler stdlib - string.h
- * C99 7.21????????????? */
+ * C99 7.21: string handling. */
 #ifndef ARK_STRING_H
 #define ARK_STRING_H
 

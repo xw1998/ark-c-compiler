@@ -1,5 +1,5 @@
 /* Ark C Compiler stdlib - errno.h
- * C99 7.5???????? */
+ * C99 7.5: error numbers. */
 #ifndef ARK_ERRNO_H
 #define ARK_ERRNO_H
 

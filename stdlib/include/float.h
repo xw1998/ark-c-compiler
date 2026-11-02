@@ -1,6 +1,6 @@
 /* Ark C Compiler stdlib - float.h
- * C99 5.2.4.2.2 ???????????????????
- * ??? IEEE-754 binary32/binary64 ?????? */
+ * C99 5.2.4.2.2: characteristics of the floating point types.
+ * Values assume IEEE-754 binary32 / binary64. */
 #ifndef ARK_FLOAT_H
 #define ARK_FLOAT_H
 

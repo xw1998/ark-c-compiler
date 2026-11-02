@@ -1,6 +1,6 @@
 /* Ark C Compiler - platform_host
- * Host ??????????????? stdio??
- * ?????????????? printf/fprintf/exit ?????????
+ * Host platform layer: everything goes through stdio.
+ * Used for the host build; logging, abort and date/time come from the C library.
  */
 #include "platform.h"
 #include <stdio.h>
@@ -8,8 +8,8 @@
 #include <stdlib.h>
 #include <time.h>
 
-/* C99 ?????? __DATE__/__TIME__ ?????????????????
- * ????? "Mmm dd yyyy" / "hh:mm:ss" ???? strftime ?????? */
+/* C99 predefined __DATE__/__TIME__ strings, formatted locally -- no
+ * strftime dependency: "Mmm dd yyyy" / "hh:mm:ss" are built by hand. */
 void ark_get_date_time(char *date_buf, char *time_buf) {
     static const char *mon_names[] = {
         "Jan","Feb","Mar","Apr","May","Jun",
@@ -21,7 +21,7 @@ void ark_get_date_time(char *date_buf, char *time_buf) {
         int day = lt->tm_mday;
         int yr  = lt->tm_year + 1900;
         const char *m = mon_names[lt->tm_mon % 12];
-        /* "Mmm dd yyyy" - day ?????? 2 ?? */
+        /* "Mmm dd yyyy" - the day field is 2 characters, space padded */
         date_buf[0] = m[0]; date_buf[1] = m[1]; date_buf[2] = m[2];
         date_buf[3] = ' ';
         date_buf[4] = (day < 10) ? ' ' : (char)('0' + day / 10);

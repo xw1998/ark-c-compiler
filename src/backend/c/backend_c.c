@@ -2142,7 +2142,7 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
                      * is a pointer to the struct. Copy the struct to a *static*
                      * ret buffer and return its address so the caller can memcpy.
                      * We use static (not `frame + 8176`) because `frame` is a
-                     * local stack array; returning its address is UB ?? after
+                     * local stack array; returning its address is UB: after
                      * the callee returns, the stack frame is destroyed and the
                      * caller's memcpy reads garbage. This was the root cause of
                      * the bootstrap crash when Token (40 bytes) was returned

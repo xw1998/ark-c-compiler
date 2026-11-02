@@ -1,5 +1,5 @@
 /* Ark C Compiler - ir
- * IR ???????
+ * IR: the intermediate representation.
  */
 #include "ir.h"
 #include "memory.h"
@@ -8,8 +8,8 @@
 
 #define IR_INIT_CAP 64
 
-/* ???????????irgen ????? ir_emit ??????ir.c ?????? IrInst.line??
- * ??? 0 ???????????? irgen ??????? */
+/* Current source line, set by irgen through ir_emit and copied into
+ * IrInst.line by ir.c. 0 means "unknown". */
 int g_ir_cur_line = 0;
 
 IrFunc *ir_func_new(const char *name) {
@@ -35,7 +35,7 @@ IrFunc *ir_func_new(const char *name) {
     f->is_deprecated = 0;
     f->alias_target = 0;
     f->asm_body = 0;
-    /* 0.6.x??armcc 5 ???????????????? */
+    /* 0.6.x: armcc 5 compatibility attributes carried over */
     f->is_value_in_regs = 0;
     f->is_pure = 0;
     f->is_const_attr = 0;
@@ -174,7 +174,7 @@ IrGlobal *ir_program_add_global(IrProgram *prog, const char *name, Type *t) {
     g->align_bytes = 0;
     g->is_used = 0;
     g->is_unused = 0;
-    /* 0.6.x??TLS / ??????????????? */
+    /* 0.6.x: TLS / register-variable attributes */
     g->is_tls = 0;
     g->global_reg = -1;
     if (n >= prog->global_capacity) {

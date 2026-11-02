@@ -1,5 +1,5 @@
 /* Ark C Compiler stdlib - stdlib.h
- * C99 7.20?????????? */
+ * C99 7.20: general utilities. */
 #ifndef ARK_STDLIB_H
 #define ARK_STDLIB_H
 

@@ -1,5 +1,5 @@
 /* Ark C Compiler - ast.h
- * ????????????????????
+ * Abstract syntax tree node definitions.
  */
 #ifndef ARK_AST_H
 #define ARK_AST_H
@@ -13,7 +13,7 @@ struct AstNode {
     AstNodeKind kind;
     Type       *type;
     int         line;
-    double      fval;     /* ???????????????? type ? float/double ?? kind=AST_NUM ??????? */
+    double      fval;     /* floating value; only for AST_NUM whose type is float/double */
     union {
         long long num_val;
         char *name;
@@ -33,28 +33,28 @@ struct AstNode {
             int      is_external;
             int      is_static;
             int      is_variadic;
-            int      svc_num;     /* __svc(n) ????0 ????? SVC ???? */
-            int      is_irq;      /* __irq ??????? */
-            int      is_weak;     /* __weak ?????? */
-            int      is_naked;    /* __naked ???? */
-            int      pack_align;  /* #pragma pack ???????0=??? */
+            int      svc_num;     /* __svc(n) number; 0 = plain SVC call */
+            int      is_irq;      /* __irq function */
+            int      is_weak;     /* __weak function */
+            int      is_naked;    /* __naked function */
+            int      pack_align;  /* #pragma pack alignment; 0 = default */
             int      is_used;     /* __attribute__((used)) */
             int      is_unused;   /* __attribute__((unused)) */
-            int      is_asm_func; /* __asm ???????? */
+            int      is_asm_func; /* __asm function body */
             int      forceinline; /* __forceinline */
             int      is_softfp;   /* __softfp */
             int      is_constructor; /* __attribute__((constructor)) */
             int      is_destructor;  /* __attribute__((destructor)) */
             int      is_deprecated;  /* __attribute__((deprecated)) */
             char    *alias_target;/* __attribute__((alias("xxx"))) */
-            char    *asm_body;    /* __asm ??????????????? */
-            /* 0.6.x??armcc 5 ????????????????????????????????????????? */
+            char    *asm_body;    /* __asm function body text */
+            /* 0.6.x: ARM Compiler 5 attributes carried over for compatibility */
             int      is_value_in_regs; /* __value_in_regs */
             int      is_pure;          /* __pure / __attribute__((pure)) */
             int      is_const_attr;    /* __attribute__((const)) */
-            int      is_interwork;     /* __interwork??????????*/
-            int      smc_num;          /* __smc(n) ????-1=????? */
-            int      global_reg;       /* __global_reg(n) ????????-1=????? */
+            int      is_interwork;     /* __interwork (ARM/Thumb interworking) */
+            int      smc_num;          /* __smc(n) number; -1 = not an SMC */
+            int      global_reg;       /* __global_reg(n) number; -1 = not set */
         } func;
         struct {
             char    *name;
@@ -63,18 +63,18 @@ struct AstNode {
             int      is_global;
             int      is_static;
             int      is_extern;
-            int      is_const;   /* const ??????????? .rodata ????? */
-            char    *section;    /* __attribute__((section("..."))) ????????0=??? */
-            unsigned at_addr;    /* __at(addr) / #pragma location=addr??0=????? */
-            int      has_at;     /* at_addr ??????? */
-            int      align_bytes;/* __align(n) / __attribute__((aligned(n)))??0=??? */
+            int      is_const;   /* const: placed in .rodata */
+            char    *section;    /* section from __attribute__((section("..."))); 0 = default */
+            unsigned at_addr;    /* __at(addr) / #pragma location=addr; 0 = no fixed address */
+            int      has_at;     /* at_addr is valid */
+            int      align_bytes;/* __align(n) / __attribute__((aligned(n))); 0 = default */
             int      is_used;    /* __attribute__((used)) */
             int      is_unused;  /* __attribute__((unused)) */
-            int      is_vla;     /* B3: ?????????var_type ????vla_size_expr ???????????? */
-            AstNode *vla_size_expr; /* B3: VLA ???????????????? */
-            /* 0.6.x??TLS / ??????????? */
-            int      is_tls;     /* __thread ???????? */
-            int      global_reg; /* __global_reg(n) ????????-1=????? */
+            int      is_vla;     /* B3: VLA flag; var_type is a pointer, vla_size_expr gives the count */
+            AstNode *vla_size_expr; /* B3: element count expression of a VLA */
+            /* 0.6.x: TLS and register-variable attributes */
+            int      is_tls;     /* __thread storage class */
+            int      global_reg; /* __global_reg(n) number; -1 = not set */
         } var;
         struct { AstNode *array; AstNode *index; } array_access;
         struct { char *name; AstNode **args; int arg_count; int arg_capacity; AstNode *callee; } call;

@@ -1,5 +1,5 @@
 /* Ark C Compiler stdlib - stdio.h
- * C99 7.9??????????? */
+ * C99 7.9: standard input/output. */
 #ifndef ARK_STDIO_H
 #define ARK_STDIO_H
 

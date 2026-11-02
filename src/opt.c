@@ -1,18 +1,18 @@
 /* Ark C Compiler - opt
- * IR ????? Pass????????? + ?????????? + ??????? + ???????????
+ * IR optimization passes: constant folding + dead code elimination + inlining + vectorization.
  *
- * ??????
- *   - ?? IR ?? IR_PUSH_INT a; IR_PUSH_INT b; IR_BINARY op ??????????
- *     ???? IR_PUSH_INT (a op b)????????????????? IR_NOP???????????
- *   - IR_BINARY ?? aux ?? 8 ??? TOK_xxx ???????0x100 ???????????
- *   - ????/????????????????????????
- *   - ????????????IR_RETURN / IR_JMP / IR_JMP_NAMED ????????
- *     IR_LABEL / IR_LABEL_NAMED ?????????????? IR_NOP??
- *   - ??????????????????????? 8 ????????????? (1+2*3)??
+ * Design notes:
+ *   - In the stack IR the triple IR_PUSH_INT a; IR_PUSH_INT b; IR_BINARY op folds
+ *     into a single IR_PUSH_INT (a op b). The two consumed instructions become
+ *     IR_NOP and are compacted away afterwards.
+ *   - IR_BINARY carries the TOK_xxx operator in aux bits 0..7, 0x100 = unsigned.
+ *   - Dead code elimination: code after IR_RETURN / IR_JMP / IR_JMP_NAMED and
+ *     before the next IR_LABEL / IR_LABEL_NAMED is unreachable -> IR_NOP.
+ *   - Passes repeat until a fixed point (or 8 iterations) so (1+2*3) cascades fold.
  *
- * ?????
- *   - ?????? #if ARKCC_FEATURE_OPT_CONSTFOLD / ARKCC_FEATURE_OPT_DCE
- *   - ????? g_config.enable_opt_constfold / enable_opt_dce
+ * Switches:
+ *   - compile time: #if ARKCC_FEATURE_OPT_CONSTFOLD / ARKCC_FEATURE_OPT_DCE
+ *   - run time: g_config.enable_opt_constfold / enable_opt_dce
  */
 #include "opt.h"
 #include "config.h"
@@ -20,7 +20,7 @@
 #include "common.h"
 #include "memory.h"
 
-/* ?? IR_NOP ???????? code[]?????? code_count?? */
+/* Remove the IR_NOP placeholders from code[] and update code_count. */
 static void compact_func(IrFunc *f) {
     int i;
     int w = 0;
@@ -33,9 +33,9 @@ static void compact_func(IrFunc *f) {
     f->code_count = w;
 }
 
-/* ???? a op b?????? 1 ????????????????? *out????0 ??????????
- * ?????????aux ? IR_BINARY ?? aux ????????????? 0x100????
- * ??? long long ???????? 64 ????????LLONG_MAX ????????????? */
+/* Evaluate a op b. Returns 1 when foldable (result in *out), 0 otherwise.
+ * aux uses the IR_BINARY layout: operator in bits 0..7, unsigned flag in 0x100.
+ * Arithmetic is done on long long (64-bit); unsigned ops cast to unsigned long long. */
 static int eval_binary(long long a, long long b, int aux, long long *out) {
     int is_unsigned = (aux & 0x100) != 0;
     int op = aux & ~0x100;
@@ -94,7 +94,7 @@ static int eval_binary(long long a, long long b, int aux, long long *out) {
         case (int)TOK_AND: r = (a && b) ? 1 : 0; break;
         case (int)TOK_OR:  r = (a || b) ? 1 : 0; break;
         default:
-            return 0;  /* ????????????? */
+            return 0;  /* unknown operator: never fold */
     }
     *out = r;
     return 1;
@@ -129,12 +129,12 @@ void opt_constfold_func(IrFunc *f) {
              * and documents the invariant. */
             if ((a->aux | b->aux | c->aux) & IR_AUX_VOLATILE) continue;
             if (!eval_binary(a->val, b->val, c->aux, &result)) continue;
-            /* ?????????????????????????? NOP */
+            /* Fold: the first instruction becomes the result, the next two become NOP */
             a->val = result;
             b->op = IR_NOP;
             c->op = IR_NOP;
             changed = 1;
-            /* ???????????????????????????????????? */
+            /* Keep scanning forward; cascades are handled by the next pass. */
         }
         if (changed) compact_func(f);
     }
@@ -146,7 +146,7 @@ void opt_dce_func(IrFunc *f) {
     for (i = 0; i < f->code_count; i++) {
         IrInst *I = &f->code[i];
         if (unreachable) {
-            /* ?????????????? */
+            /* Still unreachable: keep collecting. */
             if (I->op == IR_LABEL || I->op == IR_LABEL_NAMED) {
                 unreachable = 0;
                 continue;
@@ -155,13 +155,13 @@ void opt_dce_func(IrFunc *f) {
              * Volatile reads/writes must not be eliminated by the optimizer. */
             if (I->aux & IR_AUX_VOLATILE)
                 continue;
-            /* ?????????? NOP?????? FUNC_BEGIN/FUNC_END ?????? */
+            /* Mark the unreachable instruction as NOP (FUNC_BEGIN/FUNC_END stay) */
             if (I->op != IR_FUNC_BEGIN && I->op != IR_FUNC_END) {
                 I->op = IR_NOP;
             }
             continue;
         }
-        /* RETURN / ??????????????????? */
+        /* After RETURN / unconditional jump everything is unreachable. */
         if (I->op == IR_RETURN || I->op == IR_JMP || I->op == IR_JMP_NAMED) {
             unreachable = 1;
         }
@@ -207,7 +207,7 @@ void opt_run(IrProgram *prog, int level) {
      * where inline expansion assumes stack-slot parameters (not r0-r3). */
     if (level >= 2 && g_config.enable_opt_inline) {
         opt_inline(prog);
-        /* ?????????? DCE??????????????????? NOP????????????????? */
+        /* Inlining may leave unreachable code; run DCE so dead instructions become NOP and get compacted. */
         if (level >= 1) {
             for (i = 0; i < prog->func_count; i++) {
                 opt_dce_func(prog->funcs[i]);
@@ -223,36 +223,36 @@ void opt_run(IrProgram *prog, int level) {
 }
 
 /* =====================================================================
- * ?????????--autoinline / -O2??
+ * Function inlining (--autoinline / -O2)
  * =====================================================================
  *
- * ????????
- *   1. ?????????????????? IR?????"?????????"????? FUNC_BEGIN/
- *      FUNC_END/LABEL/NOP????????????????????????????????????????
- *      ?????????????????????
- *        - ????? ?? ARK_INLINE_THRESHOLD??forceinline ????????
- *        - param_count ?? 4
- *        - ?? variadic / irq / naked / asm_func / constructor / destructor
- *        - ????????????
- *   2. ????????????????? IR ??? IR_CALL?????????????????????????
- *      ?????????????????I??
- *   3. ??????I?????????? code[] ???????? memmove????
- *        - ????????? n ?? IR_STORE(temp_off_j)???? n ????????????
- *          ????????????temp_off_j = caller.local_size + j*4????
- *        - ??????????????FUNC_BEGIN..FUNC_END ?????
- *            * ?????? += L1??L1 = caller.local_size + n*4??
- *            * IR_GETARG(callee_off, j) ?? IR_PUSH_VAR(temp_off_j);
+ * Algorithm:
+ *   1. Mark the inlinable functions: walk each function's IR and exclude the
+ *      shapes that cannot be expanded (recursion, variadic, irq, naked, asm_func,
+ *      constructor/destructor, struct-by-value parameters).
+ *        - size rule: instruction count <= ARK_INLINE_THRESHOLD, or forceinline
+ *          which bypasses the limit;
+ *        - param_count <= 4;
+ *        - the expansion needs no memcpy for struct arguments.
+ *   2. Find every call site of an inlinable callee and expand it in place:
+ *      the caller's code[] is rebuilt with the callee body spliced in.
+ *   3. Expanding one site rebuilds code[] (no memmove, the whole array is written):
+ *        - store each of the n arguments with IR_STORE(temp_off_j), where
+ *          temp_off_j = caller.local_size + j*4;
+ *        - emit the callee body (FUNC_BEGIN..FUNC_END excluded), remapping:
+ *            * frame offsets += L1, with L1 = caller.local_size + n*4;
+ *            * IR_GETARG(callee_off, j) becomes IR_PUSH_VAR(temp_off_j);
  *              IR_STORE(L1 + callee_off)
- *            * IR_RETURN ?? IR_JMP(end_label)
- *            * IR_LABEL/IR_JMP/IR_JZ/IR_JNZ ????? += caller.label_count
- *            * IR_FUNC_BEGIN/IR_FUNC_END ?? IR_NOP
- *        - ????? IR_LABEL(end_label)
- *        - ???? caller.local_size = L1 + callee.local_size
- *        - ???? caller.label_count = end_label + 1
- *      ????? IR_CALL ?? n ????????? 1 ??????????????? n ?? STORE
- *      ?? n ???????????????????? IR_RETURN ???????????IR_JMP ?????????
- *      ??? LABEL ?????????????????
- *   4. ???????? opt_run ???? opt_dce_func ????????????
+ *            * IR_RETURN becomes IR_JMP(end_label);
+ *            * IR_LABEL/IR_JMP/IR_JZ/IR_JNZ labels += caller.label_count;
+ *            * IR_FUNC_BEGIN/IR_FUNC_END become IR_NOP;
+ *        - emit IR_LABEL(end_label);
+ *        - set caller.local_size = L1 + callee.local_size;
+ *        - set caller.label_count = end_label + 1.
+ *      The n call arguments are consumed by the n STOREs and the call result is
+ *      left on the stack: IR_RETURN is replaced by IR_JMP so every path reaching
+ *      the end label leaves the same number of slots, keeping the stack balanced
+ *      for the code that follows the call. 4) opt_run finally runs opt_dce_func.
  */
 #define ARK_INLINE_THRESHOLD 12
 
@@ -294,7 +294,7 @@ void opt_inline(IrProgram *prog) {
     InlineCandidate *cands;
     if (!prog || prog->func_count == 0) return;
 
-    /* 1. ????????? */
+    /* 1. Mark the inlinable functions */
     cands = (InlineCandidate *)mem_pool_alloc(
         (int)sizeof(InlineCandidate) * prog->func_count);
     for (i = 0; i < prog->func_count; i++) {
@@ -316,13 +316,13 @@ void opt_inline(IrProgram *prog) {
          * skip inlining such functions entirely. */
         if (has_struct_byval) continue;
         if (f->forceinline) {
-            cands[i].can_inline = 1;  /* forceinline ??????????? */
+            cands[i].can_inline = 1;  /* forceinline bypasses the size limit */
         } else if (cnt <= ARK_INLINE_THRESHOLD) {
             cands[i].can_inline = 1;
         }
     }
 
-    /* 2. ???????????? IR_CALL????????? */
+    /* 2. Rewrite the callers that contain an expandable call site. */
     for (i = 0; i < prog->func_count; i++) {
         IrFunc *caller = prog->funcs[i];
         int new_cap;
@@ -330,7 +330,7 @@ void opt_inline(IrProgram *prog) {
         IrInst *new_code;
         int has_site = 0;
 
-        /* ?????????????????????????? */
+        /* Does this caller contain at least one expandable call site? */
         for (j = 0; j < caller->code_count; j++) {
             IrInst *I = &caller->code[j];
             if (I->op != IR_CALL) continue;
@@ -346,7 +346,7 @@ void opt_inline(IrProgram *prog) {
         }
         if (!has_site) continue;
 
-        /* ?????????? code + ????????? (n_args + callee_code*2 + 4)
+        /* Allocate the new code: caller code + expansion room (n_args + callee_code*2 + 4)
          * NOTE: some C code generators (notably the arkcc self-hosted
          * bootstrap) can emit more slots than the tight upper bound
          * suggests due to subtle codegen differences. To make this
@@ -382,7 +382,7 @@ void opt_inline(IrProgram *prog) {
                 new_code[new_count++] = *I;
                 continue;
             }
-            /* ?????????????????? */
+            /* Find the callee of this IR_CALL. */
             for (k = 0; k < prog->func_count; k++) {
                 if (cands[k].can_inline && I->name &&
                     ark_streq(I->name, cands[k].func->name) &&
@@ -398,12 +398,12 @@ void opt_inline(IrProgram *prog) {
 
             n_args = I->val;
             if (n_args < 0) n_args = 0;
-            if (n_args > 4) n_args = 4;  /* AAPCS??? 4 ???? r0-r3 */
+            if (n_args > 4) n_args = 4;  /* AAPCS: only 4 arguments go in r0-r3 */
             L0 = caller->local_size;
             L1 = L0 + n_args * 4;
             end_label = caller->label_count + callee->label_count;
 
-            /* ????????????????FUNC_BEGIN..FUNC_END ??? */
+            /* Locate the callee body: everything between FUNC_BEGIN and FUNC_END. */
             for (k = 0; k < callee->code_count; k++) {
                 if (callee->code[k].op == IR_FUNC_BEGIN) {
                     body_begin = k + 1;
@@ -413,22 +413,22 @@ void opt_inline(IrProgram *prog) {
                 }
             }
             if (body_begin < 0 || body_end < 0) {
-                /* ?????????????????????????????? */
+                /* Malformed callee (no proper body): keep the call unchanged. */
                 new_code[new_count++] = *I;
                 continue;
             }
 
-            /* a. ?? n ?? IR_STORE(temp_off_j)??????? n ???????????????? */
+            /* a. Store the n arguments into temp slots (arg j at temp_off_j). */
             for (k = 0; k < n_args; k++) {
                 IrInst *s = &new_code[new_count++];
                 s->op = IR_STORE;
-                s->val = L0 + k * 4;  /* temp_off_k??arg0 ????? */
+                s->val = L0 + k * 4;  /* temp_off_k holds arg0..arg{n-1} */
                 s->name = 0;
                 s->aux = 0;
                 s->line = I->line;
             }
 
-            /* b. ???????????????????/???/GETARG/RETURN ??? */
+            /* b. Copy the body, remapping frame offsets / labels / GETARG / RETURN. */
             for (k = body_begin; k < body_end; k++) {
                 IrInst *src = &callee->code[k];
                 IrInst *dst = &new_code[new_count++];
@@ -441,8 +441,8 @@ void opt_inline(IrProgram *prog) {
                         dst->val = src->val + L1;
                         break;
                     case IR_GETARG: {
-                        /* ???????? r{j} ???? callee ??? off??
-                         * ??????? temp_off_j ????????? L1+off??
+                        /* GETARG r{j} targets callee frame offset off; load the value
+                         * from temp_off_j (argument store) and write it to L1+off.
                          * aux low 8 bits = arg index; high 24 bits = struct
                          * size (only present for struct-by-value params, which
                          * are excluded from inlining above). Mask to be safe. */
@@ -463,8 +463,8 @@ void opt_inline(IrProgram *prog) {
                         break;
                     }
                     case IR_RETURN:
-                        /* ?????????????????????? push????
-                         * ??I?????? end_label?? */
+                        /* IR_RETURN: the return value (if any) is already on the stack,
+                         * so replace it with IR_JMP(end_label). */
                         dst->op = IR_JMP;
                         dst->val = end_label;
                         dst->name = 0;
@@ -481,12 +481,12 @@ void opt_inline(IrProgram *prog) {
                         dst->op = IR_NOP;
                         break;
                     default:
-                        /* ?????????????? */
+                        /* Other opcodes are copied unchanged. */
                         break;
                 }
             }
 
-            /* c. ????? IR_LABEL(end_label) */
+            /* c. Emit IR_LABEL(end_label). */
             {
                 IrInst *l = &new_code[new_count++];
                 l->op = IR_LABEL;
@@ -496,12 +496,12 @@ void opt_inline(IrProgram *prog) {
                 l->line = I->line;
             }
 
-            /* ???? caller ?? */
+            /* Update the caller's frame and label counters. */
             caller->local_size = L1 + callee->local_size;
             caller->label_count = end_label + 1;
         }
 
-        /* ??I caller ?? code ???? */
+        /* Install the rebuilt code for this caller. */
         caller->code = new_code;
         caller->code_count = new_count;
         caller->code_capacity = new_cap;
@@ -509,38 +509,38 @@ void opt_inline(IrProgram *prog) {
 }
 
 /* =====================================================================
- * ???????????--vectorize / -O2??
+ * Basic-block vectorization (--vectorize / -O2)
  * =====================================================================
  *
- * ??????????????? for ??????????????? "c[i] = a[i] ?? b[i]"
- * ?? "c[i] = a[i] ?? K" ?????????? es ?? {1, 2}??
- *   - es == 2 (short) ?? SIMD ???? W = 2????? IR_SIMD_ADD16/SUB16
- *   - es == 1 (char)  ?? SIMD ???? W = 4????? IR_SIMD_ADD8/SUB8
+ * Detects counted loops of the shape "c[i] = a[i] op b[i]" or
+ * "c[i] = a[i] op K" when the element size es is {1, 2}:
+ *   - es == 2 (short): SIMD width W = 2, emit IR_SIMD_ADD16/SUB16
+ *   - es == 1 (char):  SIMD width W = 4, emit IR_SIMD_ADD8/SUB8
  *
- * ???? IR ????caller ??????????
+ * Expected IR shape (i is the induction variable):
  *   init:    PUSH_INT 0; STORE <i_off>; [PUSH_VAR i; POP]   (i = 0)
  *   LABEL <start_l>
  *   cond:    PUSH_VAR <i_off>; PUSH_INT N; BINARY <LT>; JZ <end_l>
- *   body:    ... ???? LOAD_IDX es / STORE_IDX es / BINARY ?? ...
+ *   body:    ... e.g. LOAD_IDX es / STORE_IDX es / BINARY op ...
  *   LABEL <cont_l>
  *   step:    ... PUSH_INT 1; BINARY PLUS; STORE <i_off> ...   (i++)
  *   JMP <start_l>
  *   LABEL <end_l>
  *
- * ?????
- *   - ???? PUSH_INT 1 ?? PUSH_INT W
- *   - ??????? LOAD_IDX es ?? LOAD_IDX (es * W)????????? W*es ????
- *   - ??????? STORE_IDX es ?? STORE_IDX (es * W)
- *   - ?????????????? LOAD_IDX ?? BINARY ?? ?? IR_SIMD_ADD16/SUB16/ADD8/SUB8
+ * Rewrite:
+ *   - the step PUSH_INT 1 becomes PUSH_INT W
+ *   - array LOAD_IDX es becomes LOAD_IDX (es * W) (W elements at a time)
+ *   - array STORE_IDX es becomes STORE_IDX (es * W)
+ *   - the element BINARY op becomes IR_SIMD_ADD16/SUB16/ADD8/SUB8
  *
- * ??????
- *   - ?????? N ??????????? N % W == 0???????????????????????????
- *   - ???????????????????? start_l..cont_l ???????? LABEL??
- *   - ?????????????????IR_CALL?????? IR_RETURN
- *   - ??????? LOAD_IDX/STORE_IDX ?? es ??????????????? + ?? -
+ * Limits:
+ *   - the trip count N must be a multiple of W, otherwise the loop is left alone
+ *   - the loop body must not contain a LABEL between start_l..cont_l
+ *   - no IR_CALL and no IR_RETURN in the body
+ *   - only LOAD_IDX/STORE_IDX with element size es, and only + / - are handled
  */
 
-/* ?? [start, end) ????????? IR_CALL / IR_RETURN / ??? LABEL */
+/* Return non-zero if [start, end) contains IR_CALL / IR_RETURN / a label. */
 static int body_has_unsafe_op(IrFunc *f, int start, int end) {
     int i;
     for (i = start; i < end; i++) {
@@ -551,11 +551,11 @@ static int body_has_unsafe_op(IrFunc *f, int start, int end) {
     return 0;
 }
 
-/* ?? body ???????????????????
- *   ... LOAD_IDX es ... LOAD_IDX es ... BINARY ?? ... STORE_IDX es ...
- * ??????????? *es_out, *op_out (TOK_PLUS/TOK_MINUS)??
- * ??? load_idx1, load_idx2, binary_idx, store_idx ?? code[] ??????????
- * ???? 1=???0=????? */
+/* Match a vectorizable body shape:
+ *   ... LOAD_IDX es ... LOAD_IDX es ... BINARY op ... STORE_IDX es ...
+ * On success fills *es_out and *op_out (TOK_PLUS/TOK_MINUS), plus
+ * load_idx1, load_idx2, binary_idx and store_idx with the code[] indices.
+ * Returns 1 on a match, 0 otherwise. */
 static int match_vectorize_body(IrFunc *f, int body_start, int body_end,
                                 int *es_out, int *op_out,
                                 int *load1_idx, int *load2_idx,
@@ -574,31 +574,31 @@ static int match_vectorize_body(IrFunc *f, int body_start, int body_end,
                 es = I->val;
             } else if (count_load == 1) {
                 li2 = i;
-                if (I->val != es) return 0;  /* ??????????? */
+                if (I->val != es) return 0;  /* element size mismatch */
             } else {
-                return 0;  /* ???? 2 ?? LOAD_IDX */
+                return 0;  /* only two LOAD_IDX are allowed */
             }
             count_load++;
         } else if (I->op == IR_STORE_IDX) {
-            if (count_store > 0) return 0;  /* ???? 1 ?? STORE_IDX */
+            if (count_store > 0) return 0;  /* only one STORE_IDX */
             si = i;
             if (es != 0 && I->val != es) return 0;
             if (es == 0) es = I->val;
             count_store++;
         } else if (I->op == IR_BINARY && count_load >= 2) {
-            /* ????????? LOAD_IDX ???? BINARY ?? ????????????
-             * ??????? BINARY ?? ??????????&base + i*es????
-             * ???????????LOAD_IDX ?? LOAD_IDX ?? BINARY ?? STORE_IDX?? */
+            /* Take the BINARY that follows the two LOAD_IDX as the element op.
+             * The address arithmetic (base + i*es) comes before the loads, so the
+             * matched op is exactly LOAD_IDX, LOAD_IDX, BINARY op, STORE_IDX. */
             int bop = I->aux & ~0x100;
             if (bop == (int)TOK_PLUS || bop == (int)TOK_MINUS) {
-                if (bi >= 0) return 0;  /* ???????? */
+                if (bi >= 0) return 0;  /* more than one candidate op */
                 bi = i;
                 op = bop;
             }
         }
     }
     if (count_load != 2 || count_store != 1 || bi < 0) return 0;
-    if (li2 < li1 || bi < li2 || si < bi) return 0;  /* ?????? */
+    if (li2 < li1 || bi < li2 || si < bi) return 0;  /* wrong instruction order */
     if (es != 1 && es != 2) return 0;
     *es_out = es;
     *op_out = op;
@@ -616,7 +616,7 @@ void opt_vectorize(IrProgram *prog) {
         IrFunc *f = prog->funcs[fi];
         int j;
 
-        /* ??????????IR_JMP(val=lab) ?????????? IR_LABEL(val=lab) */
+        /* Look for IR_JMP(val=lab) whose target is an IR_LABEL(val=lab). */
         for (j = 0; j < f->code_count; j++) {
             int start_lab = -1, end_lab = -1, cont_lab = -1;
             int start_lab_idx = -1, cont_lab_idx = -1;
@@ -632,7 +632,7 @@ void opt_vectorize(IrProgram *prog) {
             if (f->code[j].op != IR_JMP) continue;
             start_lab = f->code[j].val;
 
-            /* ????? IR_LABEL(val=start_lab) */
+            /* Find IR_LABEL(val=start_lab). */
             for (i = j - 1; i >= 0; i--) {
                 if (f->code[i].op == IR_LABEL && f->code[i].val == start_lab) {
                     start_lab_idx = i;
@@ -641,7 +641,7 @@ void opt_vectorize(IrProgram *prog) {
             }
             if (start_lab_idx < 0) continue;
 
-            /* ?? start_lab ????? IR_JZ <end_lab>??????????? */
+            /* From start_lab, find the IR_JZ <end_lab> that guards the loop. */
             end_lab = -1;
             for (i = start_lab_idx + 1; i < j; i++) {
                 if (f->code[i].op == IR_JZ) {
@@ -651,7 +651,7 @@ void opt_vectorize(IrProgram *prog) {
             }
             if (end_lab < 0) continue;
 
-            /* cont_lab ?? body ???JMP ???? LABEL */
+            /* cont_lab: the LABEL right before the JMP back. */
             for (i = j - 1; i > start_lab_idx; i--) {
                 if (f->code[i].op == IR_LABEL) {
                     cont_lab = f->code[i].val;
@@ -660,9 +660,9 @@ void opt_vectorize(IrProgram *prog) {
                 }
             }
             if (cont_lab < 0) continue;
-            if (cont_lab == end_lab) continue;  /* ?? body ????? */
+            if (cont_lab == end_lab) continue;  /* empty body */
 
-            /* end_lab_idx = j + 1??????? JMP ??? LABEL?? */
+            /* end_lab_idx = j + 1 must be the LABEL that follows the JMP. */
             if (j + 1 >= f->code_count) continue;
             if (f->code[j + 1].op != IR_LABEL ||
                 f->code[j + 1].val != end_lab) continue;
@@ -672,9 +672,9 @@ void opt_vectorize(IrProgram *prog) {
             step_start = cont_lab_idx + 1;
             step_end = j;
 
-            /* ???? cond??PUSH_VAR <i_off>; PUSH_INT N; BINARY <LT>; JZ end_lab */
+            /* Check the condition: PUSH_VAR <i_off>; PUSH_INT N; BINARY <LT>; JZ end_lab */
             {
-                /* ??? JZ ?????? */
+                /* Locate the JZ first. */
                 int jz_idx = -1;
                 int k;
                 for (k = start_lab_idx + 1; k < cont_lab_idx; k++) {
@@ -682,7 +682,7 @@ void opt_vectorize(IrProgram *prog) {
                 }
                 if (jz_idx < 0) continue;
                 body_start = jz_idx + 1;
-                /* ????PUSH_VAR i_off; PUSH_INT N; BINARY LT; JZ end_lab */
+                /* Read it back: PUSH_VAR i_off; PUSH_INT N; BINARY LT; JZ end_lab */
                 if (jz_idx - 3 < start_lab_idx) continue;
                 if (f->code[jz_idx - 3].op != IR_PUSH_VAR) continue;
                 if (f->code[jz_idx - 2].op != IR_PUSH_INT) continue;
@@ -696,14 +696,14 @@ void opt_vectorize(IrProgram *prog) {
                 N = f->code[jz_idx - 2].val;
             }
 
-            /* body ????? CALL/RETURN/??? LABEL */
+            /* The body must not contain CALL / RETURN / LABEL. */
             if (body_has_unsafe_op(f, body_start, body_end)) continue;
 
-            /* ??? body ?? */
+            /* Match the body shape. */
             if (!match_vectorize_body(f, body_start, body_end,
                                       &es, &bop, &li1, &li2, &bi, &si)) continue;
 
-            /* ??? SIMD ???????? */
+            /* Pick the SIMD opcode and width. */
             if (es == 2) {
                 W = 2;
                 simd_op = (bop == (int)TOK_PLUS) ? IR_SIMD_ADD16 : IR_SIMD_SUB16;
@@ -712,10 +712,10 @@ void opt_vectorize(IrProgram *prog) {
                 simd_op = (bop == (int)TOK_PLUS) ? IR_SIMD_ADD8 : IR_SIMD_SUB8;
             }
 
-            /* ??? N % W == 0?????????????????????????????? */
+            /* Require N % W == 0 so no epilogue is needed. */
             if (N <= 0 || (N % W) != 0) continue;
 
-            /* ??? step ???? PUSH_INT 1??????????????????????? BINARY PLUS; STORE i_off */
+            /* Find the step (PUSH_INT 1 ... BINARY PLUS; STORE i_off) and bump the stride. */
             {
                 int found_step = 0;
                 int k;
@@ -726,7 +726,7 @@ void opt_vectorize(IrProgram *prog) {
                         (f->code[k + 1].aux & ~0x100) == (int)TOK_PLUS &&
                         f->code[k + 2].op == IR_STORE &&
                         f->code[k + 2].val == i_off) {
-                        /* ??????? W */
+                        /* Change the stride to W. */
                         f->code[k].val = W;
                         found_step = 1;
                         break;
@@ -735,10 +735,10 @@ void opt_vectorize(IrProgram *prog) {
                 if (!found_step) continue;
             }
 
-            /* ??? body??
-             *   - LOAD_IDX es ?? LOAD_IDX (es * W)
-             *   - STORE_IDX es ?? STORE_IDX (es * W)
-             *   - ???????? BINARY ?? ?? simd_op
+            /* Rewrite the body:
+             *   - LOAD_IDX es -> LOAD_IDX (es * W)
+             *   - STORE_IDX es -> STORE_IDX (es * W)
+             *   - element BINARY op -> simd_op
              */
             f->code[li1].val = es * W;
             f->code[li2].val = es * W;
@@ -746,8 +746,8 @@ void opt_vectorize(IrProgram *prog) {
             f->code[bi].op = simd_op;
             f->code[bi].aux = 0;
 
-            /* ???????????????j ??????????????? val ??????????????
-             * ???????????????????????????????? */
+            /* The loop index j now points past the rewritten body, so the scan
+             * continues directly with the next loop. */
         }
     }
 }

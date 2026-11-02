@@ -1,6 +1,6 @@
 /* Ark C Compiler stdlib - inttypes.h
- * C99 7.8??????????? stdint ????? printf/scanf ??????????
- * ?????? int ? 32-bit??long long ? 64-bit???? host ?????? */
+ * C99 7.8: printf/scanf format macros for the stdint types.
+ * Assumes int is 32-bit and long long is 64-bit, matching the 32-bit host. */
 #ifndef ARK_INTTYPES_H
 #define ARK_INTTYPES_H
 
@@ -34,7 +34,7 @@
 #define PRIx64  "llx"
 #define PRIX64  "llX"
 
-/* ????/?????????? */
+/* PRI* macros for the least width and fast width types */
 #define PRIdLEAST8   "d"
 #define PRIiLEAST8   "i"
 #define PRIoLEAST8   "o"
@@ -98,7 +98,7 @@
 #define PRIxPTR  "x"
 #define PRIXPTR  "X"
 
-/* scanf ???????? */
+/* scanf format macros */
 #define SCNd8   "d"
 #define SCNu8   "u"
 #define SCNx8   "x"

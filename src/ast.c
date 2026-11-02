@@ -1,5 +1,5 @@
 /* Ark C Compiler - ast
- * AST ???????????
+ * AST node construction and destruction.
  */
 #include "ast.h"
 #include "memory.h"
