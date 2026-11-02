@@ -136,7 +136,7 @@ powershell -ExecutionPolicy Bypass -File examples\run_tests.ps1
 ...
 ```
 
-**70 个用例全部通过**（4 个 ARM 专属用例跳过 C 后端运行）。每个样例头部的 `Expected exit code` 由脚本解析后与真实退出码比对，不匹配即判失败。
+**75 个用例全部通过**（4 个 ARM 专属用例跳过 C 后端运行）。每个样例头部的 `Expected exit code` 由脚本解析后与真实退出码比对，不匹配即判失败。
 
 ### 2.3 编译自己的 .c 文件
 
@@ -967,7 +967,10 @@ v0.7.0 已实现完整的 C99 集合 + 98% 以上的 armcc 常用扩展，仅剩
 ### 部分支持
 
 - **跨翻译单元链接**：目前是"单翻译单元"模型——多个 `.c` 文件通过 `#include` 合并。`-link a.o b.o` 仅在 ARM 后端做 `BL` 偏移回填，不解析 ELF `.o` 文件格式。完整多 `.o` 链接在路线图中。
-- **`sizeof(函数调用表达式)` 恒为 4**：`sizeof` 的表达式形式在**语法分析阶段**求值，此时调用表达式还没有类型，只能落到默认的 4 字节。因此 `sizeof(sin(1.0))` 得到 4（正确值 8），`sizeof(g())`（`double g(void)`）同样得到 4。`sizeof(1.0)`、`sizeof("abc")`、`sizeof(arr[0])` 等非调用形态不受影响。修法需要把 `sizeof` 的类型求值推迟到语义分析阶段，属于流水线级改动，暂未实施。
+- **`sizeof(long double)` 为 8**：本编译器采用 LLP64 数据模型（与 armcc 默认一致），`long double` 与 `double` 同为 8 字节，而 32 位 x86 宿主 GCC 上是 12。依赖 `sizeof(long double)` 区分精度的代码不可移植，跨平台比对 `sizeof` 结果时须按目标模型而非宿主模型来判断。
+- **位域宽度上限 32 位**：`IR_LOAD_FLD`/`IR_STORE_FLD` 按 32 位容器读写，`long long x:40` 会读回错值。因此语法分析阶段直接报错（`bit-field width 40 exceeds 32`）、不生成代码，不做静默截断。
+- **`ret (*fn(params))(params)`（返回函数指针的函数）不可解析**：`(*name)` 形式目前要求名字后立刻是 `)`，不支持括号内再带一层参数表，因此 `int (*pick(int))(int,int){...}` 这类声明符会报语法错误。**当前行为是显式报错**（`[parser] ... syntax error(s); no code generated`），不会产出错误二进制。修法需要把 `parse_declarator` 改写成递归下降 + 占位类型替换，属结构性改动。
+- **`va_arg` 依赖小端目标**：`stdlib/include/stdarg.h` 的 `va_arg` 按"8 字节槽位地址重解释"取值（`*(type *)(ap++)`），整数/指针/`double` 通吃，但要求目标为小端。ARM Thumb-2 与全部宿主均满足；大端目标需改为按类型分派。
 
 ### 兼容性说明
 
