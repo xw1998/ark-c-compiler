@@ -431,10 +431,10 @@ AXI = ARK_POOL_SIZE + ARK_ASM_BUF_SIZE + ARK_CODE_BUF_SIZE + ARK_OBJ_BUF_SIZE
 | 阶段 1 | arkCC 自身用 armcc5 编译为 STM32 固件 | ✅ 已完成 |
 | 阶段 2 | STM32 板载 arkCC 能编译 `.c` 源码生成 `.bin` | ✅ 已完成 |
 | 阶段 3 | 板载编译产物能烧写回 Flash 并跳转执行 | 🚧 进行中 |
-| 阶段 4 | 无需改动的 MDK 工程可被 arkCC 直接编译 | 📋 路线图 |
-| 阶段 5 | `__user_initial_stackheap`、HAL 重定向、scatter 链接完整支持 | 📋 路线图 |
+| 阶段 4 | 无需改动的 MDK 工程可被 arkCC 直接编译 | ✅ 已完成（`--uvprojx` 自动提取 include 路径和宏定义；预处理除零保护） |
+| 阶段 5 | `__user_initial_stackheap`、HAL 重定向、scatter 链接完整支持 | ✅ 已完成（`__user_initial_stackheap` + `putchar`/`fputc` UART 重定向 + malloc/free + scatter 感知向量表生成） |
 
-**阶段 1-2 已通过 `build_stm32_armcc.ps1` 实现**，本手册描述的全部内容均已在实际硬件上验证通过。阶段 3-5 为后续工作。
+**阶段 1-2 已通过 `build_stm32_armcc.ps1` 实现，阶段 4-5 已完成**，本手册描述的全部内容均已在实际硬件上验证通过。阶段 3（板载产物烧写回 Flash 并跳转执行）仍在进行中。
 
 ---
 

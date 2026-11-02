@@ -193,7 +193,7 @@
 | --- | --- |
 | **ARM Thumb-2** | STM32 Cortex-M（默认，含软浮/硬件 FPU + 段分离 + 双精度桩 + AAPCS + 完整 DWARF + TLS + split_sections + scatter） |
 | **C 源码** | 宿主测试主路径（IR -> 可读 C，完整支持内联汇编操作数透传） |
-| **x86_64** | 输出 GAS 汇编 |
+| **x86** | i386 cdecl，输出 GAS 汇编（`-target` 亦接受别名 `x86_64`/`x86-64`/`i386`/`i686`） |
 | **RV32I** | 输出 RV32I 汇编 |
 
 ## 目录结构
@@ -204,7 +204,7 @@ ark c compiler/
 ├── src/                    编译器核心（lexer/parser/sema/ir/irgen/preproc/config/opt/cpu/scatter）
 ├── src/backend/arm/        ARM Thumb-2 后端（codegen + 汇编器 + 链接器 + 软浮/硬件 FPU + 完整 DWARF + TLS）
 ├── src/backend/c/          C 源码后端（宿主测试）
-├── src/backend/x86_64/     x86_64 汇编后端
+├── src/backend/x86_64/     x86（i386 cdecl）汇编后端
 ├── src/backend/riscv32/    RV32I 汇编后端
 ├── stdlib/include/         内置标准库头文件
 ├── port/host/              PC 平台层
@@ -245,11 +245,11 @@ powershell -ExecutionPolicy Bypass -File build_stm32_armcc.ps1
 arkcc <file.c|file.s> [选项]
   -o <file>          输出文件
   -S                 仅输出汇编文本
-  -c                 仅编译不链接（.ark_obj）
+  -c                 仅编译不链接（.ark_obj，ARKOBJ2 容器）
   -E                 仅预处理
-  -link a.o b.o      链接多个 .ark_obj
+  -link a.o b.o      链接多个 .ark_obj（多个对象各自带 .data/.bss 时报 SRAM 重叠）
   -v                 详细模式
-  -target <name>     arm | x86_64 | riscv32 | c（默认 arm）
+  -target <name>     arm | x86 | riscv32 | c（默认 arm；x86_64/i386 为 x86 的别名）
   -I <dir>           头文件搜索路径
   -O0/-O1/-O2        优化级别（0=无，1=基本常量折叠+DCE，2=激进）
   -g                 输出 DWARF 调试信息
@@ -345,14 +345,16 @@ debug_info  = 0
 ## 测试
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File examples\run_tests.ps1   # 75 个断言用例
+powershell -ExecutionPolicy Bypass -File examples\run_tests.ps1   # 75 个用例（71 断言 + 4 跳过）
 powershell -ExecutionPolicy Bypass -File run_full_test.ps1        # 73 个样例全量回归
 powershell -ExecutionPolicy Bypass -File run_asm_test.ps1         # 汇编输入门禁（.s/.S/.asm/.ASM）
+powershell -ExecutionPolicy Bypass -File run_arm_exec_test.ps1    # ARM 执行级：编译→链接→QEMU 真跑（需 qemu-system-arm）
 ```
 
 `run_asm_test.ps1` 校验汇编输入的扩展名路由：四种后缀产出逐字节相同的机器码、`-S` 对汇编输入是原样透传、缺失文件必须报错退出、`.c` 仍走正常前端（防止扩展名探测把 C 源当成汇编）。
+`run_arm_exec_test.ps1` 把 C 启动代码、汇编 semihosting 陷门和一个 C 工作负载编译链接成裸镜像，在 `qemu-system-arm -machine mps2-an385` 上执行，用 semihosting 退出码判定结果（两个不同负载必须分别返回 8 和 3）。QEMU 路径默认 `D:\qemu\mingw64\bin\qemu-system-arm.exe`，可用 `ARKCC_QEMU` 环境变量或 `-Qemu` 参数覆盖；装不上时脚本 `exit 2`，不会假装通过。这条门禁抓到并固化修复了三个真缺陷：向量表缺 Thumb 位（Cortex-M 会进 INVSTATE lockup）、`SVC`/`BKPT` 的无 `#` 立即数被静默编成 0、以及 `MUL r2, r2, r1` 被编成 `MUL r2, r2, r2`（导致所有整数取模算成 q\*q）。
 
-全部 75 个用例通过（ARM 汇编生成 + C 后端编译运行，期望退出码逐文件机器校验），覆盖：基本算术、函数/递归、struct/union/enum、位域、VLA、`_Complex`、`wchar_t`/`L"..."`、三字符组、内联汇编（基本+扩展）、完整 `__attribute__` 集、`__svc`/`__irq`/`__weak`/`__naked`/`__packed`/`__align`/`__at`/`__forceinline`、`__asm` 整函数体汇编、`#pragma pack/anon_unions/location/...`、TLS、`__packed` 指针非对齐访问、`split_sections`、双精度浮点、64 位整数、除法/取模、复合字面量、指定初始化、结构体按值传递、隐式转换、整数提升、64 位 `printf`、`setjmp/longjmp`、多文件链接、CPU 宏、调试信息、`$` 标识符等。
+71 个断言用例全部通过、4 个 ARM 专属用例跳过 C 后端运行（只查 ARM 发射，不计 pass）、0 失败（ARM 汇编生成 + C 后端编译运行，期望退出码逐文件机器校验），覆盖：基本算术、函数/递归、struct/union/enum、位域、VLA、`_Complex`、`wchar_t`/`L"..."`、三字符组、内联汇编（基本+扩展）、完整 `__attribute__` 集、`__svc`/`__irq`/`__weak`/`__naked`/`__packed`/`__align`/`__at`/`__forceinline`、`__asm` 整函数体汇编、`#pragma pack/anon_unions/location/...`、TLS、`__packed` 指针非对齐访问、`split_sections`、双精度浮点、64 位整数、除法/取模、复合字面量、指定初始化、结构体按值传递、隐式转换、整数提升、64 位 `printf`、`setjmp/longjmp`、多文件链接、CPU 宏、调试信息、`$` 标识符等。
 
 ## 移植到 STM32
 

@@ -32,7 +32,7 @@
 **Ark C Compiler**（简称 `arkcc`）是一款用 C99 编写的极简 C 语言编译器。当前版本 v0.7.0 覆盖了 ARM Compiler 5（armcc）常用扩展中的 98% 以上（仅缺 C++ 模式与高级优化）。设计目标：
 
 - **嵌入式自举**：编译器本身能在 STM32H743 等 Cortex-M7 微控制器上 **原生** 运行，从外部 SPI Flash 读取 `.c` 源码，就地生成机器码，然后直接跳转执行。`port/stm32/main_stm32.c` 提供了独立入口，构成"编译-链接-执行"的完整闭环，无需任何 PC 侧工具链。
-- **多后端**：核心前端只产生与目标无关的栈式虚拟机中间代码（IR），后端可以在 `arm` / `x86_64` / `riscv32` / `c` 之间自由切换。
+- **多后端**：核心前端只产生与目标无关的栈式虚拟机中间代码（IR），后端可以在 `arm` / `x86`（i386 cdecl，别名 `x86_64`）/ `riscv32` / `c` 之间自由切换。
 - **易于扩展**：各层（lexer/parser/sema/irgen/codegen/asm/linker）独立成文件，添加关键字、AST 节点或目标平台都有清晰的扩展点。
 - **易于在 Windows 上测试**：内置的 `c` 后端把 IR 翻译回可读的 C 代码，可直接用主机 gcc 编译执行，无需模拟器或真实硬件。
 
@@ -52,7 +52,7 @@
                                             +--------+
                                                 |
                                                 v
-                          backend = arm | x86_64 | riscv32 | c
+                          backend = arm | x86 | riscv32 | c
                                                 |
                                                 v
                            +---------------+--------------+
@@ -76,7 +76,7 @@ ark c compiler/
 │   └── backend/              所有后端
 │       ├── registry.c        后端注册表
 │       ├── arm/              ARM Cortex-M Thumb-2 后端
-│       ├── x86_64/           x86_64 GAS 后端
+│       ├── x86_64/           x86（i386 cdecl）GAS 后端
 │       ├── riscv32/          RV32I GAS 后端
 │       └── c/                主机测试后端（IR -> C）
 ├── stdlib/                   编译器自带的极简标准库
@@ -85,7 +85,7 @@ ark c compiler/
 ├── port/
 │   ├── host/                 PC 平台抽象（stdio）
 │   └── stm32/                STM32 平台抽象（HAL UART + W25Q + main_stm32.c 自举入口）
-├── examples/                 75 个测试样例（.c）
+├── examples/                 80 个测试样例（.c；回归脚本运行其中 75 个）
 ├── mdk/STM32H743_ArkCC/      Keil MDK 工程（STM32H743VIT6）
 ├── arkcc.cfg                 默认运行时配置（INI 格式）
 ├── Makefile                  主机构建脚本
@@ -136,7 +136,7 @@ powershell -ExecutionPolicy Bypass -File examples\run_tests.ps1
 ...
 ```
 
-**75 个用例全部通过**（4 个 ARM 专属用例跳过 C 后端运行）。每个样例头部的 `Expected exit code` 由脚本解析后与真实退出码比对，不匹配即判失败。
+**71 个断言用例全部通过、4 个用例跳过 C 后端运行、0 失败**（跳过的 4 个是 ARM 专属：内联汇编 2 个、STM32 硬件访问 2 个；脚本只对它们做 ARM 发射检查，**不计入 pass**）。每个样例头部的 `Expected exit code` 由脚本解析后与真实退出码比对，不匹配即判失败。
 
 ### 2.3 编译自己的 .c 文件
 
@@ -172,14 +172,14 @@ arkcc <file.c|file.s> [options]
 | --- | --- |
 | `-o <file>` | 输出文件；未指定时默认为 `<input>.bin`（机器码）或 `<input>.gen.c`（c 后端 + `-S`） |
 | `-S` | 只输出文本汇编/源码，不做汇编与链接 |
-| `-c` | 只编译不链接（`.ark_obj`） |
+| `-c` | 只编译不链接，产出 `.ark_obj`（ARKOBJ2 容器）。C 源与 `.s/.S/.asm` 汇编源走同一条路径 |
 | `-E` | 只做预处理 |
-| `-link a.o b.o` | 链接多个 `.ark_obj` 文件 |
-| `-target <name>` | 选择后端：`arm`（默认）、`x86_64`、`riscv32`、`c` |
+| `-link a.o b.o` | 链接多个 `.ark_obj`；任一对象带 `.data/.bss` 时做 SRAM 窗口重叠检查，重叠即报错不产出 |
+| `-target <name>` | 选择后端：`arm`（默认）、`x86`、`riscv32`、`c`。`x86_64`/`x86-64`/`i386`/`i686` 是 `x86` 的别名 |
 | `-I <dir>` | 添加额外的 `#include` 搜索路径（可多次使用） |
 | `-v` | 详细模式：打印每一阶段耗时与输出大小 |
 | `-O0/-O1/-O2` | 优化等级（0=无，1=基本常量折叠 + DCE，2=激进优化 + 内联） |
-| `-g` | 输出 DWARF 调试信息 |
+| `-g` | 输出 DWARF 调试信息，等价 `--dwarf2`；要 v3 需再加 `--dwarf3` |
 | `-config <file>` | 加载 INI 配置文件（默认 `arkcc.cfg`） |
 | `-f<feature>` / `-fno-<feature>` | 启用/关闭特性（vla/complex/wchar/trigraph/fpu/dwarf/opt-inline/opt-dce/opt-constfold/...） |
 | `-Wno-unused` | 抑制未使用警告 |
@@ -392,7 +392,7 @@ typedef struct ArkBackend {
 ```
 
 - `emit_asm`：把 IR 翻译成文本汇编（或目标 C 代码），写入 `out`，返回字节数。
-- `assemble`：把文本汇编编码为机器码。软件后端（c/x86_64/riscv32）可直接透传汇编文本，交给主机工具链处理。
+- `assemble`：把文本汇编编码为机器码。c/riscv32 后端直接透传汇编文本交给主机工具链；`x86` 后端走自己的编码器（`%N` 操作数会被拒绝）。
 - `link`：跨函数符号重定位（ARM 后端用它回填 `BL` 偏移）。
 
 ### 5.2 已实现的后端
@@ -400,20 +400,35 @@ typedef struct ArkBackend {
 | 后端 | 目录 | 入口符号 | 主要用途 |
 | --- | --- | --- | --- |
 | `arm` | [src/backend/arm/](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/backend/arm) | `ark_backend_arm()` | STM32 Cortex-M3/M4/M7/M33（Thumb-2），完整 DWARF + TLS + Scatter |
-| `x86_64` | [src/backend/x86_64/](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/backend/x86_64) | `ark_backend_x86_64()` | 生成主机 `as` 可用的 GAS 汇编 |
+| `x86` | [src/backend/x86_64/](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/backend/x86_64) | `ark_backend_x86_64()` | i386（32 位、cdecl）GAS 汇编；`-target` 亦接受 `x86_64`/`x86-64`/`x86_64-msvc`/`x86-msvc`/`i386`/`i686` |
 | `riscv32` | [src/backend/riscv32/](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/backend/riscv32) | `ark_backend_riscv32()` | 生成 RV32I 汇编（GAS） |
 | `c` | [src/backend/c/](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/backend/c) | `ark_backend_c()` | IR -> 可读 C 源码（主机测试主路径） |
 
-注册表：[src/backend/registry.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/backend/registry.c)。新增后端只需在此增加一行注册。
+注册表：[src/backend/registry.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/backend/registry.c)。新增后端只需在此增加一行注册。别名（`g_backend_aliases[]`）只在精确匹配失败后回退解析，不额外占用注册位，因此 `--list-backends` 每个后端仍只出现一次，并把该后端的别名打在 `aliases:` 行里。
 
 ### 5.3 选择后端
 
 ```powershell
 .\arkcc.exe --list-backends
-.\arkcc.exe foo.c -target x86_64 -S -o foo.s
+.\arkcc.exe foo.c -target x86 -S -o foo.s
+.\arkcc.exe foo.c -target x86_64 -S -o foo.s      # 别名，等价上一行
 .\arkcc.exe foo.c -target riscv32 -S -o foo.s
 .\arkcc.exe foo.c -target c -S -o foo.gen.c
 ```
+
+`--list-backends` 同时打印每个后端的别名，例如：
+
+```
+Available targets:
+  arm        armv7m-thumb2-eabi
+    aliases: thumb, thumb2, cortex-m
+  x86        i386-pc-linux-cdecl
+    aliases: x86_64, x86-64, x86_64-msvc, x86-msvc, i386, i686
+  riscv32    riscv32-unknown-elf
+  c          host-c-source
+```
+
+未知后端名直接 `exit 1` 并打印 `[arkcc] unknown target '...'`。
 
 ### 5.4 CPU 选择
 
@@ -456,6 +471,26 @@ arkCC 可直接编译 `.s`/`.S`/`.asm` 汇编文件为机器码，ARM 后端有�
 
 **与 `-S` 的区别**：`-S` 是**输出**模式（生成汇编文本），而 `.s` 文件输入是"汇编→机器码"路径。若同时给 `.s` 输入加 `-S`，则原样输出汇编文本（相当于 copy）。
 
+**汇编错误不静默**：遇到未知助记符、非法寄存器操作数、无法编码的立即数时，汇编器打印 `[asm-arm] error: ...` 并以非 0 退出，**不写出任何产物**（仅内部发 NOP 占位以继续扫描后续行，避免一次只报一个错）。这样"汇编通过"不会变成一句空话。
+
+### 5.7 对象格式（`-c` / `-link`）
+
+`-c` 产出 ARKOBJ2 容器：`"ARKOBJ2\n"`(8B) + u32 代码长度 + 代码体 + u32 符号数 + 符号（name_len/name/offset/type/weak）+ u32 重定位数 + 重定位。C 源和汇编源都走这一个写出函数，因此两条路径的对象格式完全一致。
+
+`.c` 与 `.s` 两种输入在 `-c` 下产出的对象可直接混合交给 `-link`：
+
+```powershell
+.\arkcc.exe a.c     -target arm -c -o a.ark_obj
+.\arkcc.exe b.s     -target arm -c -o b.ark_obj
+.\arkcc.exe -link a.ark_obj b.ark_obj -target arm -o ab.bin
+```
+
+链接期三条口径：
+
+1. **每个翻译单元各自放置自己的 `.data`/`.bss`**，对象尾部用保留符号 `__arkcc_ram_start`/`__arkcc_ram_end`（`type=2`，值是绝对地址）声明本单元占用的 SRAM 窗口。旧读者忽略符号表尾部这两条即可，头部格式不变。
+2. **两个对象都带 RAM 窗口时直接报错**：数据区不参与重定位，`[start,end)` 一旦重叠就打印 `[link] error: SRAM overlap between objects #i and #j` 并 `exit -8`，不产出镜像——因为静默出图会得到一个"两套全局变量压在同一个地址"的错误二进制。只有一个对象带 RAM（或都不带）时可以正常链接。
+3. **编译器私有运行时符号（名字以 `__` 开头，如 `__aeabi_*`）的重复定义静默合并**，链接结束打印一行 `[link] note: N duplicate compiler-runtime symbols merged`；用户符号的同名强定义仍逐条告警。
+
 ---
 
 ## 6 在 Windows 上测试
@@ -477,30 +512,67 @@ echo $LASTEXITCODE
 powershell -ExecutionPolicy Bypass -File examples\run_tests.ps1
 ```
 
+**仓库里的六套门禁**（都是可直接重跑、失败即非 0 退出的脚本；数字是 2026-11-02 的实测值）：
+
+| 门禁 | 覆盖什么 | 判据 | 实测 |
+| --- | --- | --- | --- |
+| `run_full_test.ps1` | 73 个样例 ARM 发射 + C 后端执行 | 每个样例的退出码不得为负（崩溃），并自检 IR 生成门 | `PASS=73 FAIL=0 CRASH=0`，`SELFCHECK irgen-gate: OK` |
+| `examples\run_tests.ps1` | 75 个样例的 ARM 发射 + C 后端执行 | 退出码必须等于样例头部 `Expected exit code: N`；skip 与 pass 分开计数 | `asserted pass 71 / failed 0 / skipped 4` |
+| `run_asm_test.ps1` | `.s/.asm` 输入路径 | 产物尺寸 + ARKOBJ2 头 + 与 armasm 黄金字节逐字节相同（含 `BKPT` 与三操作数 `MUL`）+ 未知助记符与三寄存器 `MUL` 都必须失败 | `pass=17 fail=0` |
+| `run_tests_x86.ps1` | `x86` 后端 | emit 成功、GAS 语法接受、别名逐字节等价、三条负向对照 | `pass=158 fail=0 skip=0` |
+| `run_link_test.ps1` | `-c` + `-link` 多对象 | ARKOBJ2 头、RAM 描述符、**输出不是原始对象拼接**、镜像长度 == 两对象代码长度之和、重叠必须报错且不留产物 | `pass=17 fail=0` |
+| `run_arm_exec_test.ps1` | ARM **执行级**（编译→链接→QEMU 真跑） | 向量表 SP/reset 向量合法（reset 向量必须带 Thumb 位）、两个不同负载分别返回 8 与 3、负向对照必须被拒；QEMU 缺失时 `exit 2` | `pass=13 fail=0` |
+
 ### 6.2 无硬件情况下验证 ARM 后端
 
-要检查"STM32 上产生的汇编是否正确"，可使用 QEMU 或 ARM 模拟器：
+**本机可用的验证手段**（开发机上没有 `arm-none-eabi-*`，WSL 也被禁用；QEMU 需另行安装，见第 4 层），所以 ARM 侧靠以下四层，全部是仓库内可重跑的门禁：
+
+1. **汇编层冒烟**：`examples/run_tests.ps1` 对每个样例跑 `-target arm -S`，只要后端发不出汇编就算失败。
+2. **汇编码逐字节取证**：`run_asm_test.ps1` 里内置一段 22 条指令（TST/CLZ/SXTB/SXTH/UXTB/UXTH/SVC/MOVS/SADD16/BKPT/MUL，含高寄存器形式）在 armcc5 `armasm` 上取到的**黄金字节串**，要求 arkCC 的二进制输出与之逐字节相同。取证方法（可复现）：
 
 ```powershell
-# 用 ARM GNU 工具链汇编 + 链接
-.\arkcc.exe foo.c -target arm -S -o foo.s
-arm-none-eabi-as foo.s -mcpu=cortex-m7 -mthumb -o foo.o
-arm-none-eabi-ld foo.o -Ttext=0x00 -o foo.elf
-qemu-arm foo.elf
+# Keil 装在 D:\Keil_v5（不是 C:\Keil_v5）；AREA 行不要写 THUMB 属性，
+# thumb 由命令行 --thumb 决定，否则报 A1221E。
+& "D:\Keil_v5\ARM\ARMCC\bin\armasm.exe" --thumb --cpu Cortex-M4 ref.s -o ref.o
+& "D:\Keil_v5\ARM\ARMCC\bin\fromelf.exe" -c ref.o    # --bin 对 ET_REL 不产出文件
 ```
 
-> 项目本身不依赖 QEMU；这只是验证后端正确性的常用方式。
-
-### 6.3 测试 x86_64/RISC-V 后端
+   `fromelf -c` 反汇编清单的 hex 列就是黄金字节（小端半字序）。该校验**不依赖**本机是否装 Keil，因为黄金字节已固化在脚本里。
+3. **汇编输入门禁**：`run_asm_test.ps1` 同时验证 `.s` 输入的产物尺寸、ARKOBJ2 头、以及"未知助记符必须大声失败"（负向对照）。
+4. **执行级验证**：`run_arm_exec_test.ps1` 把三个对象（C 启动代码 / 汇编 semihosting 陷门 / C 工作负载）用 `-c` 编译、`-link --scatter` 链接成裸镜像，再交给 `qemu-system-arm` **真的跑起来**，工作负载结果由 semihosting 退出码取回。判据是向量表合法（SP=0x20040000、reset 向量带 Thumb 位）加两个**不同**负载分别返回 8 与 3（常数或忽略退出码都过不了），外加一条负向对照（拿 9 去比必须被判失败）。QEMU 缺失时脚本 `exit 2` 并打印 `SKIP cannot verify`，不会静默变绿。
 
 ```powershell
-.\arkcc.exe foo.c -target x86_64 -S -o foo.s
-gcc foo.s -o foo.exe          # 注意：foo.s 需符合 GAS 语法
+$env:ARKCC_QEMU = 'D:\qemu\mingw64\bin\qemu-system-arm.exe'   # 或者用 -Qemu 参数
+powershell -ExecutionPolicy Bypass -File run_arm_exec_test.ps1
 ```
+
+**QEMU 侧的四个硬事实**（本轮实测或查源码确认）：
+
+- MSYS2 的 `qemu` 包**只有** `qemu-system-*`，没有用户态 `qemu-arm.exe`。裸机执行级验证本来就要 system 模式，`-machine mps2-an385`（Cortex-M3，代码基址 0）足够：`-kernel <raw.bin>` 把裸二进制放到 0，配 `-nographic -semihosting-config enable=on,target=native`。
+- **Cortex-M 的 semihosting 陷阱是 `BKPT 0xAB`，不是 `SVC 0xAB`**：QEMU 只在 `!ARM_FEATURE_M` 时把 SVC 交给 semihosting，M-profile 走 `trans_BKPT` 的 `imm==0xab`（`target/arm/tcg/translate.c`）。夹具 `tests/arm_exec/sh_call.s` 因此用 `BKPT 0xAB`。
+- **向量表里的地址必须置 Thumb 位**：异常入口从向量 bit0 装载 EPSR.T，偶数地址进 INVSTATE UsageFault 直接 lockup。真实 STM32 的向量表本来也是奇数地址，所以这条修在编译器里（`arm_link()` 与 `ld_build_vector_table()` 两处），不是修在夹具里。
+- 退出码用 `SYS_EXIT_EXTENDED(0x20)` + `{reason=0x20026, code}`；`SYS_EXIT(0x18)` 在部分版本上会退化成 0，不能用。
+
+**这一层抓到的三个编译器缺陷**（都已修复，回归已进对应门禁）：① 向量表未置 Thumb 位——任何真实板子都启动不了；② 汇编器 `SVC`/`BKPT` 遇到不带 `#` 的立即数（`SVC 0xAB`）静默编成 0；③ 汇编器 `MUL` 只解析两个操作数，`MUL r2, r2, r1` 被编成 `MUL r2, r2, r2`，使**所有整数取模都算成 q\*q**（`308 % 61` 返回 27 而不是 3）。
+
+**仍是缺口**：没有 STM32 硬件，所以"板载产物烧回 Flash 再跳转执行"这一层未验；x86 侧仍不跑程序（MinGW `gcc -m32` 只能汇编不能链接），见 6.3。
+
+### 6.3 测试 x86 / RISC-V 后端
+
+`x86` 后端产出的是 **i386（32 位）cdecl** GAS 汇编，不是 x86-64：
+
+```powershell
+.\arkcc.exe foo.c -target x86 -S -o foo.s
+gcc -m32 -c foo.s -o foo.o    # 只校验 GAS 是否接受（本机 MinGW 没有 32 位 CRT，无法链接执行）
+```
+
+`-target x86_64` 是同一后端的别名（历史名字），字节输出完全相同——`run_tests_x86.ps1` 里有逐字节等价断言。
+
+**执行级验证的缺口**：MinGW 的 `gcc -m32` 只能汇编不能链接（缺 32 位 crt 与 `_main`/`_printf` 前缀），所以 x86 侧不跑程序。`run_tests_x86.ps1` 用四段替代判据：emit 成功、GAS 语法接受、别名逐字节等价、三条负向对照（含内联汇编 `%N` 必须被拒）。这是"能保证语法与结构正确"，不是"能保证执行正确"。
 
 ```powershell
 .\arkcc.exe foo.c -target riscv32 -S -o foo.s
-riscv32-unknown-elf-gcc foo.s -o foo.elf
+riscv32-unknown-elf-gcc foo.s -o foo.elf    # 需自行安装对应工具链，本机未装
 ```
 
 ---
@@ -967,13 +1039,21 @@ v0.7.0 已实现完整的 C99 集合 + 98% 以上的 armcc 常用扩展，仅剩
 
 ### 部分支持
 
-- **跨翻译单元链接**：目前是"单翻译单元"模型——多个 `.c` 文件通过 `#include` 合并。`-link a.o b.o` 仅在 ARM 后端做 `BL` 偏移回填，不解析 ELF `.o` 文件格式。完整多 `.o` 链接在路线图中。
+- **跨翻译单元链接（ARKOBJ2，不是 ELF）**：`-c` 产出 arkCC 自有对象容器 ARKOBJ2，`-link` 只认这个格式（`ELF .o` 不支持）。`-link` 做的是符号合并 + 重定位回填 + 多对象 SRAM 重叠检查，**不做数据段重定位**——因此每个对象的 `.data/.bss` 必须落在自己的窗口里，两个对象都带全局变量时直接报 SRAM 重叠并不产出，而不是悄悄叠在一起。详见 5.7。
+- **x86 内联汇编的 `%N` 操作数被拒绝**：ARM 后端把 `%0..%3` 粗映射到 `r0..r3`，x86 cdecl 没有对应的操作数→寄存器约定，粗映射会静默给出错值，所以 x86 后端在汇编文本里发现 `%0..%9` 时直接报错、不产出（`test_asm_operand.c` 就是这条的预期失败项）。
+- **IR 生成不完整即失败**：`irgen` 遇到无法降级的赋值目标时会累计 `g_irgen_errors`，驱动看到非 0 就 `return ARK_ERR_IRGEN` 并不产出镜像（原先只打一行日志再 push 一个 0，会得到静默算错的二进制）。
 - **`sizeof(long double)` 为 8**：本编译器采用 LLP64 数据模型（与 armcc 默认一致），`long double` 与 `double` 同为 8 字节，而 32 位 x86 宿主 GCC 上是 12。依赖 `sizeof(long double)` 区分精度的代码不可移植，跨平台比对 `sizeof` 结果时须按目标模型而非宿主模型来判断。
 - **位域宽度上限 32 位**：`IR_LOAD_FLD`/`IR_STORE_FLD` 按 32 位容器读写，`long long x:40` 会读回错值。因此语法分析阶段直接报错（`bit-field width 40 exceeds 32`）、不生成代码，不做静默截断。
 - **`ret (*fn(params))(params)`（返回函数指针的函数）不可解析**：`(*name)` 形式目前要求名字后立刻是 `)`，不支持括号内再带一层参数表，因此 `int (*pick(int))(int,int){...}` 这类声明符会报语法错误。**当前行为是显式报错**（`[parser] ... syntax error(s); no code generated`），不会产出错误二进制。修法需要把 `parse_declarator` 改写成递归下降 + 占位类型替换，属结构性改动。
 - **`va_arg` 依赖小端目标**：`stdlib/include/stdarg.h` 的 `va_arg` 按"8 字节槽位地址重解释"取值（`*(type *)(ap++)`），整数/指针/`double` 通吃，但要求目标为小端。ARM Thumb-2 与全部宿主均满足；大端目标需改为按类型分派。
 
 ### 兼容性说明
+
+### 验证边界
+
+- **ARM 执行语义**：已由 `run_arm_exec_test.ps1` 在 `qemu-system-arm -machine mps2-an385` 上验证（编译→链接→真跑→semihosting 退出码，两个不同负载 8/3）；**仍未验**的是"板载产物烧回 Flash 再跳转"这一层（无硬件）。细节见 6.2。
+- **x86 执行语义未验证**：本机 MinGW `gcc -m32` 只能汇编不能链接，x86 侧只验 emit/GAS 语法/别名等价/负向对照，见 6.3。
+- **`__at` / `__global_reg` 在 `c` 后端降级为注释**：这两个是 ARM 特有的放置语义，C 后端只把 `__at(addr)` 输出成一条注释，`__global_reg` 仅做解析（提示性关键字），不改变生成代码。要它们真正生效请用 `-target arm`。
 
 - 部分高级优化（循环展开、循环不变量外提、PHI 节点合并等）暂未实现；对性能敏感的代码，建议使用 `__forceinline` 手动控制。
 - 少数罕见的 armcc 内建函数（`__builtin_*` 系列）尚未覆盖；如需要可用 `__asm` 内联汇编替代。
