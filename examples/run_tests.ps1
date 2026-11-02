@@ -69,9 +69,10 @@ $skipC = @{
     # Touches STM32 hardware registers (e.g. 0x580244E0) -> faults on host.
     "stm32_blink"               = "STM32 hardware access"
     "stm32_shell_blink"         = "STM32 hardware access"
-    # Multi-file programs: the extra .c files are not on the gcc command line.
-    "feat_multifile_main"       = "multi-file test (ARM emit only)"
-    "test_multi_main"           = "multi-file test (ARM emit only)"
+    # Multi-file programs are not listed here on purpose: the directory filter
+    # below excludes feat_multifile_* / test_multi_*, because their extra .c
+    # files are not on the gcc command line and the helpers are not standalone
+    # tests. Dead entries in this table would only mask that.
 }
 
 function Get-ExpectedExitCode {
@@ -160,8 +161,10 @@ foreach ($f in $examples) {
     # --- 2. C backend: emit -> gcc -> run -> compare exit code ---
     if ($skipC.ContainsKey($base)) {
         Write-Host "  [c]   SKIP ($($skipC[$base]))"
-        $skip += "$base ($($skipC[$base]))"
-        if ($fileFailures.Count -eq 0) { $pass += $base }
+        # A skipped C run is NOT a pass: only the ARM emit above was checked.
+        # Counting it as `pass` made the old summary claim coverage it never
+        # had, so skip and pass are now disjoint buckets.
+        if ($fileFailures.Count -eq 0) { $skip += "$base ($($skipC[$base]))" }
         else { $fail += @{ Name = $base; Reasons = $fileFailures; Detail = $detail } }
         continue
     }
@@ -246,8 +249,9 @@ Write-Host ""
 Write-Host "==================== summary ===================="
 Write-Host ("  asserted pass : {0}" -f $pass.Count)
 Write-Host ("  failed        : {0}" -f $fail.Count)
-Write-Host ("  c-run skipped : {0}" -f $skip.Count)
+Write-Host ("  c-run skipped : {0}  (arm emit checked; exit code NOT asserted)" -f $skip.Count)
 Write-Host ("  not asserted  : {0}" -f $noexp.Count)
+Write-Host ("  total listed  : {0}" -f ($pass.Count + $fail.Count + $skip.Count + $noexp.Count))
 
 if ($fail.Count -gt 0) {
     Write-Host ""

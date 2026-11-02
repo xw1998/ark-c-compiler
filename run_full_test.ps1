@@ -30,11 +30,40 @@ foreach ($x in $examples) {
     if ($LASTEXITCODE -ne 0) { $f++; Add-Content $log "FAIL $($x.Name) [gcc]"; continue }
     $null = & .\$exe 2>&1
     $rc = $LASTEXITCODE
+    if ($rc -lt 0) {
+        # A crash is NOT a pass: the old runner incremented $p unconditionally,
+        # so 0xC0000005 counted as green.
+        $c++
+        Add-Content $log "CRASH $($x.Name) [exit=$rc]"
+        Write-Host "[$p/$($examples.Count)] $($x.Name) CRASH exit=$rc"
+        continue
+    }
     $p++
-    if ($rc -lt 0) { $c++; Add-Content $log "CRASH $($x.Name) [exit=$rc]" }
     Write-Host "[$p/$($examples.Count)] $($x.Name) exit=$rc"
 }
 
+# ---- negative self-check: the IR-generation gate must actually fire ----------
+# "(a,b) += 3" is accepted by sema but has no lowering; before the gate existed
+# irgen logged one line and pushed a 0, so the binary silently computed garbage.
+$negSrc = Join-Path $env:TEMP "arkcc_irgen_gate.c"
+$negOut = Join-Path $env:TEMP "arkcc_irgen_gate.bin"
+Set-Content -Path $negSrc -Value 'int main(void){int a=1,b=2;(a,b)+=3;return a+b;}' -Encoding ASCII
+Remove-Item -LiteralPath $negOut -ErrorAction SilentlyContinue
+$negText = (& .\arkcc.exe $negSrc -target arm -o $negOut 2>&1 | Out-String)
+$negRc = $LASTEXITCODE
+$negOk = ($negRc -ne 0) -and ($negText -match "could not be lowered") -and (-not (Test-Path $negOut))
+$selfCk = if ($negOk) { "OK" } else { "FAIL" }
+if (-not $negOk) { $f++ }
+Add-Content $log "SELFCHECK irgen-gate: $selfCk (exit=$negRc, image=$([bool](Test-Path $negOut)))"
+Write-Host "SELFCHECK irgen-gate: $selfCk (exit=$negRc)"
+Remove-Item -LiteralPath $negSrc -ErrorAction SilentlyContinue
+
 Add-Content $log "==== PASS=$p FAIL=$f CRASH=$c ===="
+Write-Host "==== PASS=$p FAIL=$f CRASH=$c ===="
 Get-ChildItem *.gen.exe -ErrorAction SilentlyContinue | Remove-Item -Force
 Get-ChildItem *.gen.c -ErrorAction SilentlyContinue | Remove-Item -Force
+
+# Exit code is the gate: the old script always exited 0, so CI could not tell a
+# total failure from a clean run.
+if (($f -gt 0) -or ($c -gt 0)) { exit 1 }
+exit 0

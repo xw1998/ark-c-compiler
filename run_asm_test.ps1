@@ -96,6 +96,84 @@ try {
     } else {
         Check 'C source produced real assembly' $false 'no output written'
     }
+
+    # 5. Encoding golden bytes. These bytes were produced by MDK armasm 5.06
+    #    (--thumb --cpu Cortex-M4) and read back with fromelf, so this pins the
+    #    exact encoding of the mnemonics the ARM emitter relies on but which the
+    #    text assembler once reported as "unknown mnemonic" (they used to be
+    #    silently compiled to NOP). The check is self-contained: it does not
+    #    require armasm to be installed.
+    $encSrc = Join-Path $tmp 'encodings.s'
+    $encLines = @(
+        '    .text'
+        '    TST r4, r1'
+        '    CLZ r2, r0'
+        '    SXTB r0, r0'
+        '    SXTH r1, r2'
+        '    UXTB r3, r4'
+        '    UXTH r5, r6'
+        '    SVC #18'
+        '    MOVS r0, #42'
+        '    SADD16 r0, r0, r1'
+        '    TST r8, r9'
+        '    CLZ r12, r11'
+        '    SXTB r0, r8'
+        '    UXTH r9, r3'
+        '    MOVS r0, r1'
+        '    MOVS r12, r3'
+        '    SADD16 r9, r10, r11'
+        '    MOVS r0, #200'
+        '    SVC #255'
+        '    BKPT 0xAB'
+        '    BKPT #0x12'
+        '    MUL r2, r2, r1'
+        '    MUL r0, r1'
+    )
+    Set-Content -Path $encSrc -Value $encLines -Encoding ASCII
+    $encBin = Join-Path $tmp 'encodings.bin'
+    & .\arkcc.exe $encSrc -target arm -o $encBin 2>&1 | Out-Null
+    $rc = $LASTEXITCODE
+    Check "encoding sample assembles (exit=$rc)" ($rc -eq 0) "arkcc returned $rc"
+    # Golden: 0x420c 0xfab0f280 0xb240 0xb211 0xb2e3 0xb2b5 0xdf12 0x202a
+    #         0xfa90f001 0xea180f09 0xfabbfc8b 0xfa4ff088 0xfa1ff983 0x0008
+    #         0xea5f0c03 0xfa9af90b 0x20c8 0xdfff  (little-endian halfwords)
+    #   BKPT 0xAB -> 0xbeab, BKPT #0x12 -> 0xbe12 (semihosting trap),
+    #   MUL r2, r2, r1 -> 0x434a, MUL r0, r1 -> 0x4348 (two-operand form).
+    $goldenHex = '0c42b0fa80f240b211b2e3b2b5b212df2a2090fa01f018ea090fbbfa8bfc4ffa88f01ffa83f908005fea030c9afa0bf9c820ffdfabbe12be4a434843'
+    $golden = New-Object 'byte[]' ($goldenHex.Length / 2)
+    for ($i = 0; $i -lt $golden.Length; $i++) {
+        $golden[$i] = [Convert]::ToByte($goldenHex.Substring($i * 2, 2), 16)
+    }
+    if (Test-Path $encBin) {
+        $got = [System.IO.File]::ReadAllBytes($encBin)
+        $same = ($got.Length -eq $golden.Length)
+        $firstDiff = -2
+        if ($same) {
+            $firstDiff = -1
+            for ($i = 0; $i -lt $got.Length; $i++) {
+                if ($got[$i] -ne $golden[$i]) { $same = $false; $firstDiff = $i; break }
+            }
+        }
+        Check 'encoding matches armasm golden bytes' $same ("len got=$($got.Length) want=$($golden.Length) firstdiff=$firstDiff")
+    } else {
+        Check 'encoding matches armasm golden bytes' $false 'no .bin produced'
+    }
+
+    # 6. An unimplemented/typo'd mnemonic must fail the assembly instead of
+    #    silently becoming a NOP (regression guard for the hard-error path).
+    $badSrc = Join-Path $tmp 'bad.s'
+    Set-Content -Path $badSrc -Value @('    .text', '    BOGUSMNEM r0, r1') -Encoding ASCII
+    & .\arkcc.exe $badSrc -target arm -o (Join-Path $tmp 'bad.bin') 2>&1 | Out-Null
+    Check 'unknown mnemonic fails loudly' ($LASTEXITCODE -ne 0) "exit=$LASTEXITCODE"
+
+    # 7. MUL with three distinct registers needs the 32-bit T2 form, which the
+    #    text assembler does not emit. It must fail loudly instead of silently
+    #    dropping the third operand (that used to turn 'MUL r2, r2, r1' into
+    #    'MUL r2, r2, r2', i.e. every integer modulo computed q*q).
+    $mulSrc = Join-Path $tmp 'mul3.s'
+    Set-Content -Path $mulSrc -Value @('    .text', '    MUL r0, r1, r2') -Encoding ASCII
+    & .\arkcc.exe $mulSrc -target arm -o (Join-Path $tmp 'mul3.bin') 2>&1 | Out-Null
+    Check 'three-distinct-register MUL fails loudly' ($LASTEXITCODE -ne 0) "exit=$LASTEXITCODE"
 }
 finally {
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

@@ -1,0 +1,13 @@
+; Scatter file for qemu-system-arm -machine mps2-an385.
+; The MPS2 code SRAM is at 0x00000000, so the image base must not stay at the
+; STM32 default of 0x08000000.
+LR_IROM1 0x00000000 0x00400000 {
+  ER_IROM1 0x00000000 0x00400000 {
+    *.o (RESET, +First)
+    *(InRoot$$Sections)
+    .ANY (+RO)
+  }
+  RW_IRAM1 0x20000000 0x00040000 {
+    .ANY (+RW +ZI)
+  }
+}
