@@ -263,6 +263,8 @@ const char *ir_op_name(IrOp op) {
         case IR_SEXT:         return "SEXT";
         case IR_ZEXT:         return "ZEXT";
         case IR_CDECL64:      return "CDECL64";
+        case IR_PUSH_FUNC:    return "PUSH_FUNC";
+        case IR_TRUNC:        return "TRUNC";
         default:              return "NOP";
     }
 }

@@ -586,6 +586,8 @@ static int ir_stack_delta(IrInst *I) {
         case IR_PUSH_STR:
         case IR_PUSH_GLOBAL:
         case IR_PUSH_GLOBAL_ADDR:
+        case IR_PUSH_FUNC:
+        case IR_TRUNC:
         case IR_PUSH_FLOAT:
         case IR_64PUSH:
         case IR_DUP:
@@ -1220,7 +1222,7 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
             IrFunc *f = prog->funcs[ffi];
             for (ii = 0; ii < f->code_count; ii++) {
                 IrInst *I = &f->code[ii];
-                if (I->op != IR_CALL || !I->name) continue;
+                if ((I->op != IR_CALL && I->op != IR_PUSH_FUNC) || !I->name) continue;
                 if (I->name[0] == '?') continue;  /* indirect call placeholder */
                 if (is_libc_func(I->name)) continue;
                 if (is_wrapped_func(I->name)) continue;
@@ -1504,6 +1506,31 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
                     }
                     break;
                 }
+                case IR_TRUNC: {
+                    /* val = target width, aux = 1 zero-extend (unsigned). */
+                    const char *cty = "int";
+                    if (I->val == 8)       cty = I->aux ? "unsigned char" : "signed char";
+                    else if (I->val == 16) cty = I->aux ? "unsigned short" : "short";
+                    else                    cty = I->aux ? "unsigned int" : "int";
+                    asmbuf_puts(&buf, "stk[sp-1].i = (long long)(");
+                    asmbuf_puts(&buf, cty);
+                    asmbuf_puts(&buf, ")stk[sp-1].i;");
+                    break;
+                }
+                case IR_PUSH_FUNC:
+                    /* Function designator in value position: push the address
+                     * of the generated C function. Host libc entries have no
+                     * ark_ wrapper (same dispatch rule as IR_CALL), so their
+                     * address is the host symbol itself. */
+                    if (is_libc_func(I->name)) {
+                        asmbuf_puts(&buf, "stk[sp++].i = (long long)(intptr_t)(void*)&");
+                        asmbuf_puts(&buf, I->name);
+                    } else {
+                        asmbuf_puts(&buf, "stk[sp++].i = (long long)(intptr_t)(void*)&ark_");
+                        asmbuf_puts(&buf, I->name);
+                    }
+                    asmbuf_putc(&buf, ';');
+                    break;
                 case IR_PUSH_GLOBAL_ADDR:
                     /* Always push the address of the global (regardless of category). */
                     asmbuf_puts(&buf, "stk[sp++].i = (long long)(intptr_t)&");
@@ -2069,21 +2096,47 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
                     break;
                 /* === Bitfield store/load: val=bit offset, aux=bit width === */
                 case IR_STORE_FLD:
-                    asmbuf_puts(&buf, "{ long long _v = stk[--sp].i; long long _ad = stk[--sp].i; int _mask = (1 << ");
+                    /* aux = bit width. Use unsigned long long arithmetic so a
+                     * 32-bit field (`1 << 32`) is still well defined. */
+                    asmbuf_puts(&buf, "{ long long _v = stk[--sp].i; long long _ad = stk[--sp].i; unsigned long long _mask = ((unsigned long long)1 << ");
                     asmbuf_int(&buf, I->aux);
-                    asmbuf_puts(&buf, ") - 1; int *_p = (int*)(intptr_t)_ad; *_p = (*_p & ~(_mask << ");
+                    asmbuf_puts(&buf, ") - 1; unsigned int *_p = (unsigned int*)(intptr_t)_ad; *_p = (unsigned int)((*_p & ~(_mask << ");
                     asmbuf_int(&buf, I->val);
-                    asmbuf_puts(&buf, ")) | (((int)_v & _mask) << ");
+                    asmbuf_puts(&buf, ")) | ((((unsigned long long)_v) & _mask) << ");
                     asmbuf_int(&buf, I->val);
-                    asmbuf_puts(&buf, "); }");
+                    asmbuf_puts(&buf, ")); }");
                     break;
-                case IR_LOAD_FLD:
-                    asmbuf_puts(&buf, "{ long long _ad = stk[--sp].i; int _mask = (1 << ");
-                    asmbuf_int(&buf, I->aux);
-                    asmbuf_puts(&buf, ") - 1; stk[sp++].i = (long long)((*(unsigned int*)(intptr_t)_ad >> ");
+                case IR_LOAD_FLD: {
+                    /* aux low 8 bits = bit width, aux bit 8 (0x100) = the field
+                     * is signed. Signed fields must be sign-extended after the
+                     * extract (C99 6.3.1.3): without it `int c:4` holding -8
+                     * read back as +8. The ARM backend already does this; the
+                     * C backend used to ignore the flag and, worse, used
+                     * `1 << (width|0x100)` (undefined shift) as the mask. */
+                    int fld_w = I->aux & 0xFF;
+                    int fld_signed = (I->aux & 0x100) != 0;
+                    if (fld_w < 0) fld_w = 0;
+                    if (fld_w > 32) fld_w = 32;
+                    asmbuf_puts(&buf, "{ long long _ad = stk[--sp].i; unsigned long long _v = ((unsigned long long)(*(unsigned int*)(intptr_t)_ad) >> ");
                     asmbuf_int(&buf, I->val);
-                    asmbuf_puts(&buf, ") & _mask); }");
+                    asmbuf_puts(&buf, ") & (((unsigned long long)1 << ");
+                    asmbuf_int(&buf, fld_w);
+                    asmbuf_puts(&buf, ") - 1); ");
+                    if (fld_signed && fld_w > 0 && fld_w < 32) {
+                        /* Narrow through (int) before the arithmetic shift so
+                         * the sign bit lands where a 32-bit shift expects it
+                         * (_v is 64-bit, so <<28 of 8 would stay positive). */
+                        asmbuf_puts(&buf, "_v = (unsigned long long)((long long)(int)((unsigned int)_v << ");
+                        asmbuf_int(&buf, 32 - fld_w);
+                        asmbuf_puts(&buf, ") >> ");
+                        asmbuf_int(&buf, 32 - fld_w);
+                        asmbuf_puts(&buf, "); ");
+                    } else if (fld_signed && fld_w == 32) {
+                        asmbuf_puts(&buf, "_v = (unsigned long long)(long long)(int)(unsigned int)_v; ");
+                    }
+                    asmbuf_puts(&buf, "stk[sp++].i = (long long)_v; }");
                     break;
+                }
                 case IR_RETURN: {
                     /* Struct/union return by value (> 8 bytes): the stack top
                      * is a pointer to the struct. Copy the struct to a *static*
@@ -2143,7 +2196,9 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
                                       "stk[sp++].i=(long long)((unsigned)((b3<<24)|((b2&0xFF)<<16)|((b1&0xFF)<<8)|(b0&0xFF))); }");
                     break;
                 default:
-                    asmbuf_puts(&buf, "/* unknown ir */");
+                    asmbuf_puts(&buf, "/* unknown ir (op ");
+                    asmbuf_int(&buf, (int)I->op);
+                    asmbuf_puts(&buf, ") */");
                     break;
             }
             asmbuf_putc(&buf, '\n');

@@ -932,6 +932,23 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                 case IR_ARG:
                     break;
 
+                /* IR_TRUNC: val = target width, aux = 1 zero-extend. */
+                case IR_TRUNC:
+                    asmbuf_puts(&buf, "    pop eax\n");
+                    if (I->val == 8)
+                        asmbuf_puts(&buf, I->aux ? "    movzx eax, al\n" : "    movsx eax, al\n");
+                    else if (I->val == 16)
+                        asmbuf_puts(&buf, I->aux ? "    movzx eax, ax\n" : "    movsx eax, ax\n");
+                    asmbuf_puts(&buf, "    push eax\n");
+                    break;
+
+                /* IR_PUSH_FUNC: push the address of a function symbol. */
+                case IR_PUSH_FUNC:
+                    asmbuf_puts(&buf, "    lea eax, [");
+                    asmbuf_puts(&buf, I->name);
+                    asmbuf_puts(&buf, "]\n    push eax\n");
+                    break;
+
                 /* IR_PUSH_GLOBAL_ADDR: push &global (no dereference). */
                 case IR_PUSH_GLOBAL_ADDR:
                     asmbuf_puts(&buf, "    lea eax, [");

@@ -1063,6 +1063,32 @@ static char *codegen_arm(IrProgram *prog) {
                     }
                     break;
                 }
+                case IR_TRUNC:
+                    /* val = target width, aux = 1 zero-extend (unsigned).
+                     * 32-bit widths need no work: the stack word already holds
+                     * exactly the truncated 32-bit pattern. */
+                    if (I->val == 8 || I->val == 16) {
+                        char op8[8];
+                        op8[0] = I->aux ? 'U' : 'S';
+                        op8[1] = 'X';
+                        op8[2] = 'T';
+                        op8[3] = (I->val == 8) ? 'B' : 'H';
+                        op8[4] = 0;
+                        emit_pop_r0(&buf);
+                        asmbuf_puts(&buf, "    ");
+                        asmbuf_puts(&buf, op8);
+                        asmbuf_puts(&buf, " r0, r0\n");
+                        emit_push_r0(&buf);
+                    }
+                    break;
+                case IR_PUSH_FUNC:
+                    /* Address of a function = its label. Use the literal-pool
+                     * pseudo-instruction the string/double pools already use. */
+                    asmbuf_puts(&buf, "    LDR r0, =");
+                    asmbuf_puts(&buf, I->name);
+                    asmbuf_putc(&buf, '\n');
+                    emit_push_r0(&buf);
+                    break;
                 case IR_PUSH_GLOBAL_ADDR:
                     /* Take the global symbol address only (no dereference), for array/struct decay
                      * and compound literal scenarios. */

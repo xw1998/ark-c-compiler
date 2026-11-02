@@ -571,6 +571,20 @@ static Type *sema_expr(AstNode *node) {
                 Type *common = usual_arith_conv(lt, rt);
                 if (!is_cmp) {
                     t = common;
+                    /* C99 6.5.6: the result of pointer arithmetic is a pointer
+                     * (`ptr +/- int`, `int + ptr`) or ptrdiff_t (`ptr - ptr`),
+                     * not the usual-arithmetic-conversion type. Without this a
+                     * chained expression such as `(p + 3) - p` loses the
+                     * pointer type and the element-size scaling never runs. */
+                    {
+                        int lp = lt && (lt->kind == TYPE_PTR || lt->kind == TYPE_ARRAY);
+                        int rp = rt && (rt->kind == TYPE_PTR || rt->kind == TYPE_ARRAY);
+                        if (op == (int)TOK_PLUS || op == (int)TOK_MINUS) {
+                            if (lp && rp) t = type_int();
+                            else if (lp)
+                                t = (lt->kind == TYPE_ARRAY) ? type_pointer(lt->base) : lt;
+                        }
+                    }
                 }
                 /* Bug-I1: Cast both operands to the common type so irgen sees
                  * consistent operand types and emits proper IR_I2F / IR_F2I /
@@ -590,7 +604,11 @@ static Type *sema_expr(AstNode *node) {
             if (node->u.unary.op == (int)TOK_BAND) {
                 node->type = type_pointer(t);
             } else if (node->u.unary.op == (int)TOK_MUL) {
-                if (t && (t->kind == TYPE_PTR || t->kind == TYPE_ARRAY))
+                if (t && t->kind == TYPE_PTR && t->is_func_ptr) {
+                    /* *fp where fp points to a function: the designator decays
+                     * straight back to the same pointer type (C99 6.5.3.2p4). */
+                    node->type = t;
+                } else if (t && (t->kind == TYPE_PTR || t->kind == TYPE_ARRAY))
                     node->type = t->base;
                 else
                     node->type = type_int();
@@ -617,6 +635,19 @@ static Type *sema_expr(AstNode *node) {
         case AST_FUNC_CALL: {
             Symbol *s = sym_find(node->u.call.name);
             int i;
+            /* The parser only turns syntactic non-identifier callees into
+             * indirect calls (name "?indirect"). `fp(x)` where fp is a
+             * function pointer *variable* still arrives as a direct call
+             * named "fp", and sym_find returns the variable, not a function.
+             * Rewrite it to the indirect form here (the same shape the parser
+             * builds for `(*fp)(x)`), otherwise irgen's __smc/__svc matcher
+             * sees a symbol and mis-emits IR_SMC for the call. */
+            if (s && s->kind != SYM_FUNC && !node->u.call.callee) {
+                AstNode *callee = ast_var(node->u.call.name, node->line);
+                node->u.call.callee = callee;
+                node->u.call.name = mem_strdup("?indirect");
+                s = 0;
+            }
             if (!s || s->kind != SYM_FUNC) {
                 /* Indirect call (callee is a function pointer expression):
                  * must sema the callee so member offsets/types are resolved.
@@ -627,6 +658,16 @@ static Type *sema_expr(AstNode *node) {
                     if (ct && ct->kind == TYPE_PTR && ct->base &&
                         ct->base->kind == TYPE_FUNC) {
                         node->type = ct->base->base;
+                    } else if (ct && ct->kind == TYPE_PTR && ct->is_func_ptr) {
+                        /* (*fp)(...): return type of the pointed-to function is
+                         * not tracked for function-pointer declarators, so the
+                         * call result defaults to int (as for any unprototyped
+                         * call). */
+                        node->type = ct->base ? ct->base : type_int();
+                    } else if (ct && ct->kind == TYPE_FUNC) {
+                        /* callee written as (*fp): the designator decays to
+                         * the function type itself; the return type is base. */
+                        node->type = ct->base;
                     } else {
                         node->type = type_int();
                     }

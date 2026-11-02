@@ -128,6 +128,25 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                     asmbuf_int(&buf, 16 + I->val);
                     asmbuf_puts(&buf, "\n    addi sp, sp, -4\n    sw t0, 0(sp)\n");
                     break;
+                case IR_TRUNC:
+                    /* val = target width, aux = 1 zero-extend (unsigned). */
+                    asmbuf_puts(&buf, "    lw t0, 0(sp)\n");
+                    if (I->val == 8 || I->val == 16) {
+                        asmbuf_puts(&buf, "    slli t0, t0, ");
+                        asmbuf_int(&buf, I->val == 8 ? 24 : 16);
+                        asmbuf_puts(&buf, "\n    ");
+                        asmbuf_puts(&buf, I->aux ? "srli" : "srai");
+                        asmbuf_puts(&buf, " t0, t0, ");
+                        asmbuf_int(&buf, I->val == 8 ? 24 : 16);
+                        asmbuf_putc(&buf, '\n');
+                    }
+                    asmbuf_puts(&buf, "    sw t0, 0(sp)\n");
+                    break;
+                case IR_PUSH_FUNC:
+                    asmbuf_puts(&buf, "    la t0, ");
+                    asmbuf_puts(&buf, I->name);
+                    asmbuf_puts(&buf, "\n    addi sp, sp, -4\n    sw t0, 0(sp)\n");
+                    break;
                 case IR_PUSH_GLOBAL:
                     asmbuf_puts(&buf, "    la t1, ");
                     asmbuf_puts(&buf, I->name);

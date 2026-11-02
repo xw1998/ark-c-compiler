@@ -255,7 +255,10 @@ typedef enum {
      * uses 8-byte long long slots, so no conversion is needed). */
     IR_SEXT,           /* sign-extend top-of-stack int to long long (cdecl order) */
     IR_ZEXT,           /* zero-extend top-of-stack int to long long (cdecl order) */
-    IR_CDECL64         /* convert top long long from internal model to cdecl order */
+    IR_CDECL64,        /* convert top long long from internal model to cdecl order */
+    IR_PUSH_FUNC,      /* take the address of a function; name = source function name */
+    IR_TRUNC           /* truncate top-of-stack integer to val bits, re-extend:
+                        * val = 8/16/32 target width, aux = 1 zero-extend (unsigned) */
 } IrOp;
 
 /* Simple string comparison to avoid depending on string.h */

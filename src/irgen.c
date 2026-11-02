@@ -286,6 +286,7 @@ static void irgen_expr(IrGen *g, AstNode *node);
 static void irgen_lvalue_addr(IrGen *g, AstNode *node);
 static void irgen_cond_to_bool(IrGen *g, AstNode *cond);
 static void irgen_widen_to_64(IrGen *g, Type *src_t, Type *dst_t);
+static void irgen_truncate_int(IrGen *g, Type *dst_t);
 /* ????????????? init_list ???????????????? off ???? t ?????
  * ??? C99 ?????????????designated initializer??.field / [idx]???? */
 static void irgen_local_aggregate_init(IrGen *g, int off, Type *t, AstNode *init_list);
@@ -877,6 +878,29 @@ IrProgram *irgen_program(AstNode *prog) {
  *   - ???????? item ?? .field ?????????? off + field->offset??
  *     ?? item ?????? INIT_LIST?????????????
  * ?????????????????????????????????????????????? */
+/* Store a string literal's bytes into the existing char array object at frame
+ * offset `off` (type `arr_t`). Mirrors the `char a[]="..."` declaration path:
+ * check for the element type outside, zero-fill is done by the caller, then
+ * memcpy the literal (truncated to the array length). Without this, an
+ * aggregate initializer such as `struct Q q = {3, "abcd", 5}` fell through to
+ * the scalar path and stored the literal *pointer*'s low bytes into the array
+ * (observed: printing q.s produced garbage in the C backend). */
+static void irgen_local_store_str_lit(IrGen *g, int off, Type *arr_t, AstNode *val) {
+    const char *s = val->u.name;
+    int slen = s ? ark_strlen(s) : 0;
+    int arr_len = (arr_t && arr_t->size > 0) ? arr_t->size : slen + 1;
+    int copy_n = slen + 1;
+    if (copy_n > arr_len) copy_n = arr_len;
+    ir_emit(g->fn, IR_PUSH_INT, copy_n, 0, 0);
+    {
+        int id = ir_program_add_string(g->prog, s, slen);
+        ir_emit(g->fn, IR_PUSH_STR, id, s, 0);
+    }
+    ir_emit(g->fn, IR_PUSH_ADDR, off, 0, 0);
+    ir_emit(g->fn, IR_CALL, 3, "memcpy", 0);
+    ir_emit(g->fn, IR_POP, 0, 0, 0);
+}
+
 static void irgen_local_aggregate_init(IrGen *g, int off, Type *t, AstNode *init_list) {
     int i;
     if (!init_list || init_list->kind != AST_INIT_LIST || !t) return;
@@ -896,6 +920,10 @@ static void irgen_local_aggregate_init(IrGen *g, int off, Type *t, AstNode *init
             if (!val) continue;
             if (val->kind == AST_INIT_LIST) {
                 irgen_local_aggregate_init(g, off + idx * elem_sz, elem_t, val);
+            } else if (val->kind == AST_STR && elem_t->kind == TYPE_ARRAY &&
+                       elem_t->base && elem_t->base->kind == TYPE_CHAR) {
+                /* char m[2][6] = {"ab", "cd"}: element is itself an array. */
+                irgen_local_store_str_lit(g, off + idx * elem_sz, elem_t, val);
             } else {
                 irgen_expr(g, val);
                 ir_emit(g->fn, IR_STORE, off + idx * elem_sz, 0, elem_sz);
@@ -924,6 +952,11 @@ static void irgen_local_aggregate_init(IrGen *g, int off, Type *t, AstNode *init
             if (!target || !val) continue;
             if (val->kind == AST_INIT_LIST) {
                 irgen_local_aggregate_init(g, off + target->offset, target->type, val);
+            } else if (val->kind == AST_STR && target->type &&
+                       target->type->kind == TYPE_ARRAY && target->type->base &&
+                       target->type->base->kind == TYPE_CHAR) {
+                /* char s[6] member initialized from a string literal. */
+                irgen_local_store_str_lit(g, off + target->offset, target->type, val);
             } else {
                 int fsz = type_size(target->type);
                 if (fsz <= 0) fsz = 4;
@@ -1558,7 +1591,10 @@ static void irgen_lvalue_addr(IrGen *g, AstNode *node) {
     if (!node) return;
     if (node->kind == AST_VAR) {
         Symbol *s = sym_find(node->u.name);
-        if (s && s->kind == SYM_GLOBAL) {
+        if (s && s->kind == SYM_FUNC) {
+            /* &func / func in a pointer context: function address. */
+            ir_emit(g->fn, IR_PUSH_FUNC, 0, node->u.name, 0);
+        } else if (s && s->kind == SYM_GLOBAL) {
             /* ?????????????? PUSH_GLOBAL_ADDR??????????????????
              * ?????? PUSH_INT 0 ?????C ??????? name????????? 0????
              * static ????????????????????????? mangle ??????? */
@@ -1692,6 +1728,25 @@ static void irgen_widen_to_64(IrGen *g, Type *src_t, Type *dst_t) {
     }
 }
 
+/* C99 6.3.1.3: convert the top-of-stack integer to dst_t's representation,
+ * i.e. keep the low `bits` bits and re-extend them (sign for signed types,
+ * zero for unsigned types). Without this a cast like (char)300 leaves 300 on
+ * the stack and a (int)unsigned_4000000000 keeps the unsigned value, so both
+ * comparisons and arithmetic afterwards use the wrong value. */
+static void irgen_truncate_int(IrGen *g, Type *dst_t) {
+    int bits;
+    if (!dst_t || !type_is_integer(dst_t)) return;
+    switch (dst_t->kind) {
+        case TYPE_CHAR:  bits = 8;  break;
+        case TYPE_SHORT: bits = 16; break;
+        case TYPE_INT:
+        case TYPE_ENUM:
+        case TYPE_LONG:  bits = 32; break;
+        default:         return;    /* llong / bool handled elsewhere */
+    }
+    ir_emit(g->fn, IR_TRUNC, bits, 0, dst_t->is_unsigned ? 1 : 0);
+}
+
 /* After evaluating a condition expression, if its type is 64-bit (8 bytes),
  * collapse the two stack words [lo, hi] into a single 4-byte value
  * (lo | hi) so that IR_JZ/IR_JNZ can correctly test truthiness.
@@ -1711,9 +1766,37 @@ static void irgen_cond_to_bool(IrGen *g, AstNode *cond) {
 /* Emit a binary op with proper 64-bit handling. Used by compound
  * assignment paths (x op= rhs) to mirror AST_BINARY's logic.
  * Both operands are already on the stack. lt/rt are their types. */
+/* C99 6.5.6: size of the object a pointer/array operand points to.
+ * Returns 0 when the type is neither. */
+static int ptr_elem_size(Type *t) {
+    int s;
+    if (!t) return 0;
+    if (t->kind != TYPE_PTR && t->kind != TYPE_ARRAY) return 0;
+    if (!t->base) return 0;
+    s = type_size(t->base);
+    return s > 0 ? s : 1;
+}
+
 static void irgen_emit_binary_op(IrGen *g, int op, Type *lt, Type *rt) {
     int is_float = 0, is_llong = 0, is_unsigned = 0, is_double = 0;
     int aux_op = op;
+    int ptr_div = 0;
+    /* C99 6.5.6 pointer arithmetic. Both operands are already on the stack
+     * with rhs on top, so `ptr +/- int` can scale rhs by sizeof(*ptr) right
+     * here, and `ptr - ptr` can divide the byte difference after the sub. */
+    {
+        int les = ptr_elem_size(lt), res = ptr_elem_size(rt);
+        int lf  = lt && (lt->kind == TYPE_FLOAT || lt->kind == TYPE_DOUBLE);
+        int rf  = rt && (rt->kind == TYPE_FLOAT || rt->kind == TYPE_DOUBLE);
+        if (!lf && !rf && les && (op == (int)TOK_PLUS || op == (int)TOK_MINUS)) {
+            if (!res) {
+                ir_emit(g->fn, IR_PUSH_INT, les, 0, 0);
+                ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_MUL);
+            } else if (op == (int)TOK_MINUS) {
+                ptr_div = les;
+            }
+        }
+    }
     if ((lt && (lt->kind == TYPE_FLOAT || lt->kind == TYPE_DOUBLE)) ||
         (rt && (rt->kind == TYPE_FLOAT || rt->kind == TYPE_DOUBLE))) {
         is_float = 1;
@@ -1761,6 +1844,10 @@ static void irgen_emit_binary_op(IrGen *g, int op, Type *lt, Type *rt) {
                             op == (int)TOK_SHR))
             aux_op = op | 0x100;
         ir_emit(g->fn, IR_BINARY, 0, 0, aux_op);
+    }
+    if (ptr_div > 0) {
+        ir_emit(g->fn, IR_PUSH_INT, ptr_div, 0, 0);
+        ir_emit(g->fn, IR_DIV, 0, 0, 0);
     }
 }
 
@@ -1884,6 +1971,14 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                 ir_emit(g->fn, IR_PUSH_INT, 0, node->u.name, 0);
                 break;
             }
+            if (s->kind == SYM_FUNC) {
+                /* C99 6.3.2.1p4: a function designator used in a value
+                 * context decays to a pointer to that function. Emitting the
+                 * plain variable path here would read garbage from the frame
+                 * (function symbols carry offset 0), so take the address. */
+                ir_emit(g->fn, IR_PUSH_FUNC, 0, node->u.name, 0);
+                break;
+            }
             if (s->kind == SYM_GLOBAL) {
                 /* static global: keep the name; static local uses mangled name */
                 const char *gname = node->u.name;
@@ -2004,6 +2099,13 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                      * g_irgen_64bit_slots 标志：C 后端使用 8 字节 long long
                      * 槽时跳过 2 槽 widen/narrow 序列。 */
                     irgen_widen_to_64(g, src_t, dst_t);
+                    /* Same-width unsigned<->signed and narrowing casts must
+                     * actually reinterpret/truncate the value. */
+                    if (dst_t->kind != TYPE_BOOL &&
+                        (type_size(dst_t) < type_size(src_t) ||
+                         (type_size(dst_t) == 4 && src_t->is_unsigned != dst_t->is_unsigned))) {
+                        irgen_truncate_int(g, dst_t);
+                    }
                 }
                 /* complex -> real????????????????????? IR_F2I ??? 0x400 ????
                  * ????? C ??????????? creal()????????? aux ????????????? */
@@ -2054,9 +2156,22 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                 int is_llong = 0;
                 int is_unsigned = 0;
                 int is_double = 0;
+                int ptr_diff_div = 0;
                 int aux_op = op;  /* ?????????????????????????? */
                 Type *lt = node->u.binary.left ? node->u.binary.left->type : 0;
                 Type *rt = node->u.binary.right ? node->u.binary.right->type : 0;
+                /* C99 6.5.6: ptr + int == int + ptr. Normalise to "pointer on
+                 * the left" so the element-size scaling below can always be
+                 * applied to the (top-of-stack) right operand. Operand
+                 * evaluation order is unspecified in C, so swapping is safe. */
+                if (op == (int)TOK_PLUS && !ptr_elem_size(lt) && ptr_elem_size(rt)) {
+                    AstNode *txn = node->u.binary.left;
+                    Type *txt = lt;
+                    node->u.binary.left  = node->u.binary.right;
+                    node->u.binary.right = txn;
+                    lt = rt;
+                    rt = txt;
+                }
                 if ((lt && (lt->kind == TYPE_FLOAT || lt->kind == TYPE_DOUBLE)) ||
                     (rt && (rt->kind == TYPE_FLOAT || rt->kind == TYPE_DOUBLE))) {
                     is_float = 1;
@@ -2104,6 +2219,17 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                     irgen_expr(g, node->u.binary.right);
                     if (is_llong && !is_complex) {
                         irgen_widen_to_64(g, rt, is_unsigned ? type_ullong() : type_llong());
+                    }
+                    /* C99 6.5.6: scale the integer operand of `ptr +/- int` by
+                     * sizeof(*ptr). `ptr - ptr` divides after the subtraction. */
+                    if (!is_float && !is_complex && ptr_elem_size(lt) &&
+                        (op == (int)TOK_PLUS || op == (int)TOK_MINUS)) {
+                        if (!ptr_elem_size(rt)) {
+                            ir_emit(g->fn, IR_PUSH_INT, ptr_elem_size(lt), 0, 0);
+                            ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_MUL);
+                        } else if (op == (int)TOK_MINUS) {
+                            ptr_diff_div = ptr_elem_size(lt);
+                        }
                     }
                     if (is_complex && rt && rt->kind != TYPE_COMPLEX) {
                         if (rt->kind == TYPE_FLOAT || rt->kind == TYPE_DOUBLE)
@@ -2173,6 +2299,10 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         aux_op = op | 0x100;
                     }
                     ir_emit(g->fn, IR_BINARY, 0, 0, aux_op);
+                    if (ptr_diff_div > 0) {
+                        ir_emit(g->fn, IR_PUSH_INT, ptr_diff_div, 0, 0);
+                        ir_emit(g->fn, IR_DIV, 0, 0, 0);
+                    }
                 }
             }
             break;
@@ -2183,6 +2313,30 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                 irgen_lvalue_addr(g, node->u.unary.operand);
             } else if (op == (int)TOK_MUL) {
                 int packed_aux = 0;
+                /* C99 6.5.3.2p4: unary * applied to a pointer to a function
+                 * yields the function designator, which immediately decays
+                 * back to the same pointer. Loading through it would read the
+                 * first bytes of the function body as a data pointer. */
+                if (node->u.unary.operand && node->u.unary.operand->type &&
+                    node->u.unary.operand->type->kind == TYPE_PTR &&
+                    (node->u.unary.operand->type->is_func_ptr ||
+                     (node->u.unary.operand->type->base &&
+                      node->u.unary.operand->type->base->kind == TYPE_FUNC))) {
+                    irgen_expr(g, node->u.unary.operand);
+                    break;
+                }
+                /* C99 6.3.2.1: dereferencing a pointer to an array (or to a
+                 * struct/union) yields an lvalue that decays to its address in
+                 * a value context, exactly like arr[i] does. Loading through it
+                 * would read type_size bytes as one integer -- for `*(m + 1)`
+                 * on int[2][3] that meant a 12-byte "int" used as a pointer,
+                 * which segfaults. */
+                if (node->type && (node->type->kind == TYPE_ARRAY ||
+                                   node->type->kind == TYPE_STRUCT ||
+                                   node->type->kind == TYPE_UNION)) {
+                    irgen_expr(g, node->u.unary.operand);
+                    break;
+                }
                 irgen_expr(g, node->u.unary.operand);
                 ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
                 /* __packed ?????????aux 0x400 ??????????????????? */
@@ -2658,10 +2812,25 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                 } else if (L->kind == AST_MEMBER) {
                     int bo, bw;
                     if (member_bitfield_info(L, &bo, &bw)) {
-                        /* Bitfield compound-assign requires read-mask-modify-write;
-                         * too complex for now, fall back to no-op. */
-                        ark_log("[irgen] line %d: compound-assign on bitfield unsupported\n", node->line);
-                        ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
+                        /* Bitfield compound-assign: read-mask-modify-write.
+                         * The address is evaluated once and duplicated so side
+                         * effects in the base object are not repeated, exactly
+                         * like the non-bitfield member path below. IR_LOAD_FLD
+                         * leaves the extracted field on the stack and
+                         * IR_STORE_FLD consumes [addr, value], so the new value
+                         * is re-read afterwards to leave the expression's
+                         * result on the stack. */
+                        int fld_aux = bw;
+                        if (L->type && !L->type->is_unsigned) fld_aux |= 0x100;
+                        irgen_lvalue_addr(g, L);                       /* [addr] */
+                        ir_emit(g->fn, IR_DUP, 0, 0, 0);               /* [addr, addr] */
+                        ir_emit(g->fn, IR_LOAD_FLD, bo, 0, fld_aux);   /* [addr, old] */
+                        irgen_expr(g, node->u.binary.right);           /* [addr, old, rhs] */
+                        irgen_maybe_widen_for_binary(g, L->type, node->u.binary.right ? node->u.binary.right->type : 0);
+                        irgen_emit_binary_op(g, bop, L->type, node->u.binary.right ? node->u.binary.right->type : 0);
+                        ir_emit(g->fn, IR_STORE_FLD, bo, 0, bw);       /* [] */
+                        irgen_lvalue_addr(g, L);                       /* [addr] */
+                        ir_emit(g->fn, IR_LOAD_FLD, bo, 0, fld_aux);   /* [new] */
                     } else {
                         int elem_sz = type_size(L->type ? L->type : type_int());
                         int vol_aux = 0;
@@ -2785,12 +2954,16 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                 n = n + 1;
             }
             /* __svc(n) ?????????? SVC ?????? BL */
-            if (s && s->svc_num != 0) {
+            /* A name that resolves to an object (function pointer variable)
+             * is not a direct call; only real function symbols may become
+             * SVC/SMC. sema normally rewrites such calls to indirect form;
+             * this is the second line of defense. */
+            if (s && s->kind == SYM_FUNC && s->svc_num != 0) {
                 ir_emit(g->fn, IR_SVC, s->svc_num, node->u.call.name, 0);
             }
 #if ARKCC_FEATURE_ARMCC_KEYWORDS
             /* __smc(n) ?????????? SMC ?????? BL */
-            else if (s && s->smc_num >= 0) {
+            else if (s && s->kind == SYM_FUNC && s->smc_num >= 0) {
                 ir_emit(g->fn, IR_SMC, s->smc_num, node->u.call.name, 0);
             }
 #endif
