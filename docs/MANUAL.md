@@ -440,16 +440,17 @@ ARM 后端可解析 armcc 风格的 Scatter 文件（`.sct`），实现位于 `i
 
 **实际段放置由谁负责？** 在 armcc5 路径下由 armlink 负责（通过 `--scatter=<sct>` 选项），arkCC 只输出汇编/对象代码。在自托管路径下（STM32 板上运行 arkCC，`-link` 模式或单文件 `-c`/`-o .bin`），arkCC 自身的 `arm_link()` 解析 scatter 文件，生成 Cortex-M 向量表并完成符号/重定位偏移调整，机器码放入 `.ark_code` 段由 scatter 文件路由到 AXI SRAM。
 
-### 5.6 汇编文件（`.s`/`.S`）输入
+### 5.6 汇编文件（`.s`/`.S`/`.asm`）输入
 
-arkCC 可直接编译 `.s`/`.S` 汇编文件为机器码，ARM 后端有完整的 Thumb-2 文本汇编器（`arm_assemble()`）：
+arkCC 可直接编译 `.s`/`.S`/`.asm` 汇编文件为机器码，ARM 后端有完整的 Thumb-2 文本汇编器（`arm_assemble()`）：
 
 ```powershell
 .\arkcc.exe startup.s -target arm -o startup.bin
 .\arkcc.exe myfunc.S -target arm -c -o myfunc.ark_obj
+.\arkcc.exe main_asm.asm -target arm -o main_asm.bin   # armasm / MSVC 写法，等价
 ```
 
-**触发规则**：由文件扩展名决定（`.s` 或 `.S`，2 字符扩展名），**不支持 `.asm`**。检测到 `.s`/`.S` 后跳过前端流程（preproc/lex/parse/sema/irgen），直接调用 `be->assemble()`。
+**触发规则**：由文件扩展名决定，接受 `.s`、`.S`（传统写法）以及 `.asm`、`.ASM`（armasm / MSVC 写法），扩展名大小写不敏感，判定逻辑集中在 `is_asm_input()`（`src/compiler.c`）。命中后跳过前端流程（preproc/lex/parse/sema/irgen），直接调用 `be->assemble()`。
 
 **汇编器能力**：两遍汇编 + 重定位，识别 `.thumb`/`.thumb_func`/`.global`/`.section`/`.text`/`.data`/`.bss`/`.type`/`.size`/`.word` 等伪指令，并把 Thumb-2 指令编码为 16/32 位二进制。
 
@@ -926,7 +927,7 @@ A：v0.7.0 已覆盖 armcc 常用扩展的 98% 以上。HAL/CMSIS 中常见的 `
 A：能解析、互转（`.sct` ↔ `.ld`）并**参与实际段放置/链接**。在 armcc5 路径下，段放置由 armlink 根据 `.sct` 完成（见 [5.5](#55-scatter-描述文件) 与 [附录 D.5](#d5-sct-文件与-armlink)）。在自托管路径下（STM32 上跑 arkCC，`-link` 模式或单文件 `-c`/`-o .bin`），`arm_link()` 解析 scatter 文件，提取 flash_base/initial_sp，生成 Cortex-M 向量表并调整符号/重定位偏移（见 [5.5](#55-scatter-描述文件)）。
 
 **Q3.2：arkCC 能编译 .s 汇编文件吗？**
-A：能。ARM 后端有完整的 Thumb-2 文本汇编器（`arm_assemble()`）。由文件扩展名触发：`.s` 或 `.S` 会被识别为汇编输入，跳过前端流程直接汇编为机器码。**不支持 `.asm`**（详见 [5.6](#56-汇编文件ss输入)）。
+A：能。ARM 后端有完整的 Thumb-2 文本汇编器（`arm_assemble()`）。由文件扩展名触发：`.s`/`.S`/`.asm`/`.ASM` 都会被识别为汇编输入，跳过前端流程直接汇编为机器码（详见 [5.6](#56-汇编文件ssasm输入)）。
 
 **Q4：如何让编译出的程序在 STM32 上调用 HAL？**
 A：通过外部声明 + 链接重定位。编译后的代码声明 `extern void HAL_Delay(uint32_t)`；运行时 ARM 后端链接器把 `BL HAL_Delay` 的目标地址回填为 HAL 函数的实际地址（需要提供地址表）。更简单的做法：把这些函数地址硬编码到一个数组里，让 arkcc 通过函数指针调用。

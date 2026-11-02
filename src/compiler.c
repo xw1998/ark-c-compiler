@@ -51,6 +51,22 @@ static int derive_output(const char *input, char *out, int cap, const char *ext)
     return 0;
 }
 
+/* Assembly-input detection by file extension. ".s"/".S" is the traditional
+ * suffix; ".asm"/".ASM" (armasm / MSVC style) is accepted too, matching case
+ * insensitively so the same command line works on Windows-style trees. */
+static int is_asm_input(const char *path) {
+    int n;
+    if (!path) return 0;
+    n = ark_strlen(path);
+    if (n >= 4 && path[n - 4] == '.' &&
+        (path[n - 3] == 'a' || path[n - 3] == 'A') &&
+        (path[n - 2] == 's' || path[n - 2] == 'S') &&
+        (path[n - 1] == 'm' || path[n - 1] == 'M')) return 1;
+    if (n >= 2 && path[n - 2] == '.' &&
+        (path[n - 1] == 's' || path[n - 1] == 'S')) return 1;
+    return 0;
+}
+
 static int write_binary(const char *path, const unsigned char *data, int n) {
     int wr = fs_write_file(path, data, n);
     if (wr != n) {
@@ -502,67 +518,64 @@ int ark_compile(const ArkOptions *opts) {
 
     if (!opts->input_path) return ARK_ERR_ARG;
 
-    /* Detect .s / .S assembly files: hand directly to backend assemble, skip frontend pipeline */
-    {
-        int inlen = ark_strlen(opts->input_path);
-        if (inlen >= 2 &&
-            (opts->input_path[inlen-2] == '.' &&
-             (opts->input_path[inlen-1] == 's' || opts->input_path[inlen-1] == 'S'))) {
-            int asm_len;
-            int code_size;
-            const ArkBackend *be2;
-            char *asm_text;
+    /* Detect assembly input (.s / .S / .asm / .ASM): hand it straight to the
+     * backend assembler and skip the whole frontend pipeline
+     * (preproc -> lex -> parse -> sema -> irgen). */
+    if (is_asm_input(opts->input_path)) {
+        int asm_len;
+        int code_size;
+        const ArkBackend *be2;
+        char *asm_text;
 
-            be2 = opts->target ? ark_backend_find(opts->target) : ark_backend_default();
-            if (!be2) {
-                ark_log("[arkcc] unknown target '%s'\n", opts->target ? opts->target : "(null)");
-                return ARK_ERR_ARG;
-            }
-            mem_pool_reset();
-            asm_len = fs_read_file(opts->input_path, g_asm, ARK_ASM_BUF_SIZE);
-            if (asm_len < 0) {
-                ark_log("[arkcc] cannot read '%s'\n", opts->input_path);
-                return ARK_ERR_IO;
-            }
-            g_asm[asm_len] = 0;
-            asm_text = g_asm;
+        be2 = opts->target ? ark_backend_find(opts->target) : ark_backend_default();
+        if (!be2) {
+            ark_log("[arkcc] unknown target '%s'\n", opts->target ? opts->target : "(null)");
+            return ARK_ERR_ARG;
+        }
+        mem_pool_reset();
+        asm_len = fs_read_file(opts->input_path, g_asm, ARK_ASM_BUF_SIZE);
+        if (asm_len < 0) {
+            ark_log("[arkcc] cannot read '%s'\n", opts->input_path);
+            return ARK_ERR_IO;
+        }
+        g_asm[asm_len] = 0;
+        asm_text = g_asm;
 
-            if (opts->emit_asm) {
-                /* -S mode: output assembly text as-is */
-                if (opts->output_path && !ark_streq(opts->output_path, "-") &&
-                    !ark_streq(opts->output_path, "nul") && !ark_streq(opts->output_path, "NUL")) {
-                    return write_text(opts->output_path, asm_text);
-                } else if (!opts->output_path ||
-                           ark_streq(opts->output_path, "-")) {
-                    /* Write to stdout (fs_write_file handles the "-" path) */
-                    if (fs_write_file("-", (const unsigned char *)asm_text, asm_len) != asm_len)
-                        return ARK_ERR_IO;
-                }
-                return ARK_OK;
+        if (opts->emit_asm) {
+            /* -S mode: output assembly text as-is */
+            if (opts->output_path && !ark_streq(opts->output_path, "-") &&
+                !ark_streq(opts->output_path, "nul") && !ark_streq(opts->output_path, "NUL")) {
+                return write_text(opts->output_path, asm_text);
+            } else if (!opts->output_path ||
+                       ark_streq(opts->output_path, "-")) {
+                /* Write to stdout (fs_write_file handles the "-" path) */
+                if (fs_write_file("-", (const unsigned char *)asm_text, asm_len) != asm_len)
+                    return ARK_ERR_IO;
             }
+            return ARK_OK;
+        }
 
-            code_size = be2->assemble(asm_text, g_code, ARK_CODE_BUF_SIZE);
-            if (code_size < 0) {
-                ark_log("[arkcc] assembly of '%s' failed\n", opts->input_path);
-                return ARK_ERR_ASM;
+        code_size = be2->assemble(asm_text, g_code, ARK_CODE_BUF_SIZE);
+        if (code_size < 0) {
+            ark_log("[arkcc] assembly of '%s' failed\n", opts->input_path);
+            return ARK_ERR_ASM;
+        }
+        if (be2->link) {
+            int rc = be2->link(g_code, code_size, 0);
+            if (rc < 0) return ARK_ERR_LINK;
+        }
+        if (opts->verbose) ark_log("[arkcc] assembled assembly input: %d bytes\n", code_size);
+        {
+            char outpath[512];
+            const char *target;
+            if (opts->output_path) {
+                target = opts->output_path;
+            } else {
+                if (derive_output(opts->input_path, outpath, sizeof(outpath), ".bin") != 0)
+                    return ARK_ERR_ARG;
+                target = outpath;
             }
-            if (be2->link) {
-                int rc = be2->link(g_code, code_size, 0);
-                if (rc < 0) return ARK_ERR_LINK;
-            }
-            if (opts->verbose) ark_log("[arkcc] assembled .s: %d bytes\n", code_size);
-            {
-                char outpath[512];
-                const char *target;
-                if (opts->output_path) {
-                    target = opts->output_path;
-                } else {
-                    if (derive_output(opts->input_path, outpath, sizeof(outpath), ".bin") != 0)
-                        return ARK_ERR_ARG;
-                    target = outpath;
-                }
-                return write_binary(target, g_code, code_size);
-            }
+            return write_binary(target, g_code, code_size);
         }
     }
 
