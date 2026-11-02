@@ -109,9 +109,13 @@ static void emit_binop(AsmBuffer *b, int op) {
 static void emit_func_proto(AsmBuffer *b, IrFunc *f) {
     int i;
     /* Emit only the prototype; static linkage keeps it file-local.
-     * __weak/__naked are GCC attributes; __irq is emitted as a comment because
-     * host builds do not handle interrupt vectoring. */
-    if (f->is_weak)   asmbuf_puts(b, "__attribute__((weak)) ");
+     * __naked is a GCC attribute; __irq is emitted as a comment because host
+     * builds do not handle interrupt vectoring.
+     * __weak is dropped on host targets: mingw-gcc turns a weak definition into
+     * an unresolved weak external, so the call jumps to a bogus alias and
+     * faults at run time; weak linkage is not observable in a
+     * single-translation-unit host build. */
+    if (f->is_weak)   asmbuf_puts(b, "/* __weak (host: dropped) */ ");
     if (f->is_naked || f->is_asm_func) asmbuf_puts(b, "__attribute__((naked)) ");
     if (f->is_used)   asmbuf_puts(b, "__attribute__((used)) ");
     if (f->is_unused) asmbuf_puts(b, "__attribute__((unused)) ");
@@ -289,15 +293,17 @@ static int is_libc_func(const char *name) {
  * void functions are detected separately via prog->funcs in the IR_CALL
  * handler. */
 static int is_void_func(const char *name) {
+    /* Only functions that are *actually* void in C99 belong here. Getting the
+     * classification wrong is not symmetric: irgen decides whether to emit
+     * IR_POP from the declared return type, so calling an int/pointer-returning
+     * function "void" here makes the backend skip the result push while irgen
+     * still pops one -- sp silently drifts negative. (Observed: every
+     * `fesetround(x) == 0` in c99_test read garbage and failed.) The memory
+     * and string family all return the destination pointer, and the <fenv.h> setters all
+     * return int, so none of them may be listed. */
     static const char *voids[] = {
         "free", "exit", "_Exit", "abort", "srand", "qsort",
-        "setbuf", "setvbuf", "fflush", "fclose", "fputs", "fputc",
-        "putc", "fseek", "rewind", "remove", "rename", "perror",
-        "memcpy", "memmove", "memset", "strcpy", "strcat", "strncpy",
-        "strncat", "wcscpy", "wcsncpy", "wcscat", "wcsncat",
-        "feclearexcept", "fesetround", "fesetenv", "feholdexcept",
-        "feupdateenv", "fesetexceptflag",
-        "free", "exit", "atexit",
+        "setbuf", "rewind", "perror",
         0
     };
     int i;
@@ -383,7 +389,7 @@ static int is_wrapped_func(const char *name) {
         /* ARK_WRAP_DI: (double,int)->double */
         "ldexp", "scalbn",
         /* Special wrappers */
-        "scalbln", "nan", "nanf", "nanl",
+        "scalbln", "nexttoward", "nan", "nanf", "nanl",
         "strtod", "strtof", "strtold",
         "wcstod", "wcstof", "wcstold",
         "difftime",
@@ -812,6 +818,30 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
     asmbuf_puts(&buf, "/* ark_slot is 8 bytes for long long and overlaps with double; the C backend uses an LLP64 long=4 byte model. */\n");
     asmbuf_puts(&buf, "typedef union { long long i; double f; _Complex double c; } ark_slot;\n");
     asmbuf_puts(&buf, "static inline long long _AS_I(ark_slot s){return s.i;}\n");
+    /* Frame accessors. `frame` is a char array, so `*(long long*)(frame + N)`
+     * is a strict-aliasing violation: the object has declared type char[], and
+     * reading/writing it through a casted long long or int pointer lets an
+     * optimising host compiler assume the accesses do not alias each other (at
+     * -O2 gcc miscompiled test_struct_byval back to 0). memcpy is the one
+     * defined way to reinterpret an object representation, so every typed frame
+     * access goes through these helpers instead of a cast. */
+    asmbuf_puts(&buf,
+        "static inline long long ark_fld(char *f,int o,int sz,int u){long long v=0;\n"
+        "    if(sz==1){signed char t;memcpy(&t,f+o,1);v=u?(long long)(unsigned char)t:(long long)t;}\n"
+        "    else if(sz==2){short t;memcpy(&t,f+o,2);v=u?(long long)(unsigned short)t:(long long)t;}\n"
+        "    else if(sz==4){int t;memcpy(&t,f+o,4);v=u?(long long)(unsigned int)t:(long long)t;}\n"
+        "    else{long long t;memcpy(&t,f+o,8);v=t;}\n"
+        "    return v;}\n");
+    asmbuf_puts(&buf,
+        "static inline void ark_fst(char *f,int o,int sz,long long v){\n"
+        "    if(sz==1){signed char t=(signed char)v;memcpy(f+o,&t,1);}\n"
+        "    else if(sz==2){short t=(short)v;memcpy(f+o,&t,2);}\n"
+        "    else if(sz==4){int t=(int)v;memcpy(f+o,&t,4);}\n"
+        "    else{memcpy(f+o,&v,8);}\n}");
+    asmbuf_puts(&buf,
+        "static inline _Complex double ark_fldc(char *f,int o){_Complex double v;memcpy(&v,f+o,sizeof v);return v;}\n");
+    asmbuf_puts(&buf,
+        "static inline void ark_fstc(char *f,int o,_Complex double v){memcpy(f+o,&v,sizeof v);}\n");
     /* ark_<libc> wrapper macros: arkcc IR functions are declared as
      * (long long a0..a7) -> long long. These static inline helpers:
      *   1. Take long long slots and cast back to double/pointer/int as needed
@@ -855,6 +885,13 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
         "ARK_WRAP_DI(ldexp) ARK_WRAP_DI(scalbn)\n"
         /* (double,long)->double */
         "static inline long long ark_scalbln(long long a0,long long a1,long long a2,long long a3,long long a4,long long a5,long long a6,long long a7){(void)a2;(void)a3;(void)a4;(void)a5;(void)a6;(void)a7;return _ark_d2ll(scalbln(_ark_ll2d(a0),(long)a1));}\n"
+        /* nexttoward(double, long double)->double. arkcc maps long double to
+         * double, so the second argument must be widened back to long double
+         * before the call; the generic libc path would hand the host an
+         * 8-byte slot where a 12/16-byte x87 long double is expected (observed:
+         * nexttoward(1.0,2.0L) returned 0 instead of the next representable
+         * value). */
+        "static inline long long ark_nexttoward(long long a0,long long a1,long long a2,long long a3,long long a4,long long a5,long long a6,long long a7){(void)a2;(void)a3;(void)a4;(void)a5;(void)a6;(void)a7;return _ark_d2ll(nexttoward(_ark_ll2d(a0),(long double)_ark_ll2d(a1)));}\n"
         /* nan/nanf/nanl (const char*)->double */
         "static inline long long ark_nan(long long a0,long long a1,long long a2,long long a3,long long a4,long long a5,long long a6,long long a7){(void)a1;(void)a2;(void)a3;(void)a4;(void)a5;(void)a6;(void)a7;return _ark_d2ll(nan((const char*)(intptr_t)a0));}\n"
         "static inline long long ark_nanf(long long a0,long long a1,long long a2,long long a3,long long a4,long long a5,long long a6,long long a7){(void)a1;(void)a2;(void)a3;(void)a4;(void)a5;(void)a6;(void)a7;return _ark_d2ll((double)nanf((const char*)(intptr_t)a0));}\n"
@@ -1218,7 +1255,7 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
         /* alias target: __attribute__((alias(...))) handles body generation. */
         if (f->alias_target) continue;
 
-        if (f->is_weak)   asmbuf_puts(&buf, "__attribute__((weak)) ");
+        if (f->is_weak)   asmbuf_puts(&buf, "/* __weak (host: dropped) */ ");
         if (f->is_naked || f->is_asm_func) asmbuf_puts(&buf, "__attribute__((naked)) ");
         if (f->is_used)   asmbuf_puts(&buf, "__attribute__((used)) ");
         if (f->is_unused) asmbuf_puts(&buf, "__attribute__((unused)) ");
@@ -1339,11 +1376,11 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
                     int st_sz   = (I->aux >> 8) & 0xFFFFFF;
                     if (I->val >= 8000) {
                         /* 变参区域：a<arg_idx> 直接存储到 frame[val] */
-                        asmbuf_puts(&buf, "*(long long*)(frame + ");
+                        asmbuf_puts(&buf, "ark_fst(frame, ");
                         asmbuf_int(&buf, I->val);
-                        asmbuf_puts(&buf, ") = a");
+                        asmbuf_puts(&buf, ", 8, a");
                         asmbuf_int(&buf, arg_idx);
-                        asmbuf_putc(&buf, ';');
+                        asmbuf_puts(&buf, ");");
                     } else if (st_sz > 8) {
                         /* struct 按值传递（>8 字节）：a<param_idx> 是源指针 */
                         asmbuf_puts(&buf, "memcpy(frame + ");
@@ -1356,11 +1393,11 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
                         param_idx++;
                     } else {
                         /* 标量/指针/小 struct（<=8 字节）：直接存储 */
-                        asmbuf_puts(&buf, "*(long long*)(frame + ");
+                        asmbuf_puts(&buf, "ark_fst(frame, ");
                         asmbuf_int(&buf, I->val);
-                        asmbuf_puts(&buf, ") = a");
+                        asmbuf_puts(&buf, ", 8, a");
                         asmbuf_int(&buf, param_idx);
-                        asmbuf_putc(&buf, ';');
+                        asmbuf_puts(&buf, ");");
                         param_idx++;
                     }
                     break;
@@ -1411,33 +1448,21 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
                     int is_unsigned = I->aux & 0x100;
                     if (sz == 0) sz = 8;
                     if (sz == 16) {
-                        asmbuf_puts(&buf, "stk[sp++].c = *(_Complex double*)(frame + ");
+                        asmbuf_puts(&buf, "stk[sp++].c = ark_fldc(frame, ");
                         asmbuf_int(&buf, I->val);
                         asmbuf_puts(&buf, ");");
                         break;
                     }
-                    if (sz == 1) {
-                        if (is_unsigned)
-                            asmbuf_puts(&buf, "stk[sp++].i = (long long)(unsigned char)*(unsigned char*)(frame + ");
-                        else
-                            asmbuf_puts(&buf, "stk[sp++].i = (long long)(signed char)*(signed char*)(frame + ");
-                    }
-                    else if (sz == 2) {
-                        if (is_unsigned)
-                            asmbuf_puts(&buf, "stk[sp++].i = (long long)(unsigned short)*(unsigned short*)(frame + ");
-                        else
-                            asmbuf_puts(&buf, "stk[sp++].i = (long long)(short)*(short*)(frame + ");
-                    }
-                    else if (sz == 4) {
-                        if (is_unsigned)
-                            asmbuf_puts(&buf, "stk[sp++].i = (long long)(unsigned int)*(unsigned int*)(frame + ");
-                        else
-                            asmbuf_puts(&buf, "stk[sp++].i = (long long)(int)*(int*)(frame + ");
-                    }
-                    else
-                        asmbuf_puts(&buf, "stk[sp++].i = *(long long*)(frame + ");
+                    asmbuf_puts(&buf, "stk[sp++].i = ark_fld(frame, ");
                     asmbuf_int(&buf, I->val);
-                    asmbuf_puts(&buf, ");");
+                    if (sz == 1)
+                        asmbuf_puts(&buf, is_unsigned ? ", 1, 1);" : ", 1, 0);");
+                    else if (sz == 2)
+                        asmbuf_puts(&buf, is_unsigned ? ", 2, 1);" : ", 2, 0);");
+                    else if (sz == 4)
+                        asmbuf_puts(&buf, is_unsigned ? ", 4, 1);" : ", 4, 0);");
+                    else
+                        asmbuf_puts(&buf, ", 8, 0);");
                     break;
                 }
                 case IR_PUSH_ADDR:
@@ -1514,20 +1539,16 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
                     int sz = I->aux & ~IR_AUX_VOLATILE;
                     if (sz == 0) sz = 8;
                     if (sz == 16) {
-                        asmbuf_puts(&buf, "*(_Complex double*)(frame + ");
+                        asmbuf_puts(&buf, "ark_fstc(frame, ");
                         asmbuf_int(&buf, I->val);
-                        asmbuf_puts(&buf, ") = stk[--sp].c;");
-                    } else if (sz == 1)
-                        asmbuf_puts(&buf, "*(signed char*)(frame + ");
-                    else if (sz == 2)
-                        asmbuf_puts(&buf, "*(short*)(frame + ");
-                    else if (sz == 4)
-                        asmbuf_puts(&buf, "*(int*)(frame + ");
-                    else
-                        asmbuf_puts(&buf, "*(long long*)(frame + ");
-                    if (sz != 16) {
+                        asmbuf_puts(&buf, ", stk[--sp].c);");
+                    } else {
+                        asmbuf_puts(&buf, "ark_fst(frame, ");
                         asmbuf_int(&buf, I->val);
-                        asmbuf_puts(&buf, ") = stk[--sp].i;");
+                        if (sz == 1)      asmbuf_puts(&buf, ", 1, stk[--sp].i);");
+                        else if (sz == 2) asmbuf_puts(&buf, ", 2, stk[--sp].i);");
+                        else if (sz == 4) asmbuf_puts(&buf, ", 4, stk[--sp].i);");
+                        else              asmbuf_puts(&buf, ", 8, stk[--sp].i);");
                     }
                     break;
                 }
@@ -1843,9 +1864,18 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
                         /* setjmp: dispatched inline because .gen.c has #include <setjmp.h>.
                          * The IR folds jmp_buf as int[20]=80B; we cast the slot back to
                          * jmp_buf. Requires host jmp_buf to fit in 80B; if it grows,
-                         * extend the frame size or emit a dedicated buffer for jmp_buf. */
+                         * extend the frame size or emit a dedicated buffer for jmp_buf.
+                         *
+                         * sp MUST be saved before setjmp and restored after the longjmp
+                         * return: C99 7.13.2.1p3 makes any non-volatile automatic object
+                         * that is modified between setjmp and longjmp indeterminate. sp is
+                         * bumped by every IR op in between, so a plain
+                         * `stk[sp++] = setjmp(...)` resumes with a garbage sp and walks off
+                         * stk[] (observed as a segfault on the second traversal). ark_sp0 is
+                         * not modified after the setjmp, so its value is retained. */
                         asmbuf_puts(&buf,
-                            "stk[sp++].i = setjmp(*(jmp_buf*)(void*)(intptr_t)aa[0]);");
+                            "{ int ark_sp0 = sp, ark_rv = setjmp(*(jmp_buf*)(void*)(intptr_t)aa[0]); "
+                            "sp = ark_sp0; stk[sp++].i = ark_rv; }");
                     } else if (ark_streq(I->name, "longjmp")) {
                         /* longjmp: never returns; we still push a 0 result so gcc -O2
                          * does not delete the push. C mandates val==0 returns 1. */
@@ -1907,9 +1937,10 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
                                 asmbuf_int(&buf, k);
                                 asmbuf_puts(&buf, "]");
                             }
-                            asmbuf_puts(&buf, "); *( ");
-                            asmbuf_puts(&buf, tname);
-                            asmbuf_puts(&buf, "*)(frame + 8176) = _r; stk[sp++].i = (long long)(intptr_t)(frame + 8176); }");
+                            /* Store the returned aggregate with memcpy: writing through a casted
+                             * T* into the char[] frame is the same aliasing violation, and sizeof(_r)
+                             * keeps the copy exact without re-spelling the type name. */
+                            asmbuf_puts(&buf, "); memcpy(frame + 8176, &_r, sizeof(_r)); stk[sp++].i = (long long)(intptr_t)(frame + 8176); }");
                         } else if (is_complex_ret_func(I->name)) {
                             /* Complex-returning functions: store result via .c member, pass
                              * args from aac[] (_Complex array). Do NOT cast to long long

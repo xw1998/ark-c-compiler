@@ -19,8 +19,8 @@ typedef struct {
     int         link_mode;        /* -link: link multiple objects */
     const char *link_inputs[32];  /* -link inputs */
     int         link_input_count;
-    int         opt_level;        /* -O0/-O1/-O2: accepted but currently ignored */
-    int         debug_info;       /* -g: accepted but ignored */
+    int         opt_level;        /* -O0/-O1/-O2: applied by src/opt.c (range-fold + constant fold) */
+    int         debug_info;       /* -g: emits DWARF .debug_info/.debug_abbrev/.debug_line */
     int         no_unused_warn;   /* -Wno-unused */
     /* === 0.6.0 additions: armcc 5 compatibility === */
     const char *cpu;            /* --cpu/-mcpu target CPU name (e.g. Cortex-M4) */

@@ -107,6 +107,7 @@ double ldexp(double x, int exp);
 double frexp(double value, int *exp);
 double modf(double value, double *iptr);
 double nextafter(double x, double y);
+double nexttoward(double x, long double y);
 double nan(const char *s);
 float nanf(const char *s);
 long double nanl(const char *s);

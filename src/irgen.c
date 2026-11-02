@@ -1207,6 +1207,18 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
                         irgen_expr(g, iv);                        /* push src addr */
                         ir_emit(g->fn, IR_PUSH_ADDR, off, 0, 0);  /* push dst addr */
                         ir_emit(g->fn, IR_MEMCPY, struct_sz, 0, 0);
+                    } else if (iv && iv->kind == AST_COMPOUND_LITERAL) {
+                        /* C99 compound literal: irgen_expr(AST_COMPOUND_LITERAL)
+                         * pushes the ADDRESS of the literal's storage for
+                         * aggregate types, not the aggregate value. Storing
+                         * that as if it were the value wrote the POINTER into
+                         * the variable (observed: `struct point p =
+                         * (struct point){10,20}` then p.x read the pointer's
+                         * low half). Copy through the address instead.
+                         * Note this must run before the <=8B value path. */
+                        irgen_expr(g, iv);                        /* push src addr */
+                        ir_emit(g->fn, IR_PUSH_ADDR, off, 0, 0);  /* push dst addr */
+                        ir_emit(g->fn, IR_MEMCPY, struct_sz, 0, 0);
                     } else if (struct_sz <= 8) {
                         /* Small struct (<=8B): irgen_expr pushes the 8-byte
                          * value (covers AST_FUNC_CALL returning small struct
