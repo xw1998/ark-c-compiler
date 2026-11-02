@@ -138,6 +138,13 @@ AstNode *parse_program(Lexer *lex) {
             if (lexer_peek(lex).kind != TOK_EOF) lexer_advance(lex);
         }
     }
+    /* A syntax error means we do not know what the program says. Emitting code
+     * from a half-understood AST produces a binary that silently computes the
+     * wrong thing (or crashes), which is worse than refusing to build. */
+    if (p.error_count > 0) {
+        ark_log("[parser] %d syntax error(s); no code generated\n", p.error_count);
+        return 0;
+    }
     return prog;
 }
 
@@ -1039,6 +1046,24 @@ static AstNode *parse_struct_or_union(Parser *p, int is_union) {
                 /* Field trailing may have __attribute__((packed)) etc */
                 while (lexer_peek(p->lex).kind == TOK_ATTRIBUTE) parse_attribute(p, t);
                 if (bit_w >= 0) {
+                    /* C99 6.7.2.1p4: the width may not exceed the number of
+                     * bits in the declared type. Additionally every backend
+                     * extracts a bit-field from a 32-bit word, so widths above
+                     * 32 (legal only for long long containers) would silently
+                     * read back truncated. Report instead of clamping: a wrong
+                     * value with no diagnostic is worse than a hard error. */
+                    int ft_bits = (ft ? type_size(ft) : 4) * 8;
+                    if (bit_w > ft_bits) {
+                        ark_log("[parser] line %d: bit-field width %d exceeds its type (%d bits)\n",
+                                lexer_peek(p->lex).line, bit_w, ft_bits);
+                        p->error_count++;
+                        bit_w = ft_bits;
+                    } else if (bit_w > 32) {
+                        ark_log("[parser] line %d: bit-field width %d exceeds 32; only 32-bit containers are supported\n",
+                                lexer_peek(p->lex).line, bit_w);
+                        p->error_count++;
+                        bit_w = 32;
+                    }
                     type_struct_add_bitfield(t, fname ? fname : "", ft, bit_w);
                 } else if (fname) {
                     type_struct_add_field(t, fname, ft);
@@ -1173,8 +1198,11 @@ static Type *parse_declarator(Parser *p, Type *base, char **out_name) {
             }
             if (lexer_peek(p->lex).kind == TOK_RPAREN) lexer_advance(p->lex);
         }
-        /* Treat as function pointer */
+        /* Treat as function pointer. The pointee is a function, not a data
+         * object: mark it so `*fp` dereferences to the designator itself
+         * instead of loading the function's first bytes as a value. */
         t = type_pointer(t);
+        t->is_func_ptr = 1;
         return t;
     }
     if (lexer_peek(p->lex).kind == TOK_IDENT) {
@@ -1517,6 +1545,21 @@ static AstNode *parse_top_decl(Parser *p) {
             if (g_func_is_interwork)     func_is_interwork = 1;
             if (g_func_is_deprecated_kw) func_is_deprecated_kw = 1;
 #endif
+            /* Register the function in the parser symbol table. Purely
+             * syntactic folds run before sema and need the return type:
+             * `sizeof(f(...))` folds to a constant while parsing, and sema
+             * only fills AST types afterwards. Same rationale as the
+             * SYM_VAR registration for globals below. sema_func reuses this
+             * entry (it looks up sym_find_current first), so no duplicate
+             * definition appears. */
+            if (name) {
+                Symbol *fsym = sym_find_current(name);
+                if (!fsym || fsym->kind != SYM_FUNC) {
+                    fsym = sym_add(SYM_FUNC, name, ret_type, 0);
+                } else if (!fsym->type || fsym->type->kind == TYPE_VOID) {
+                    fsym->type = ret_type;
+                }
+            }
             if (lexer_peek(p->lex).kind == TOK_SEMICOLON) {
                 AstNode *n;
                 lexer_advance(p->lex);
@@ -2227,6 +2270,25 @@ static AstNode *parse_unary_expr(Parser *p) {
                 } else if (e && e->kind == AST_VAR) {
                     Symbol *sym = sym_find(e->u.name);
                     if (sym && sym->type) s = type_size(sym->type);
+                } else if (e && e->kind == AST_FUNC_CALL &&
+                           e->u.call.name && e->u.call.name[0] != '?') {
+                    /* sizeof(call): the parser runs before sema, so the call
+                     * node carries no type yet. Resolve the callee in the
+                     * symbol table and take its return type -- otherwise the
+                     * default 4 was reported for every call, e.g.
+                     * sizeof(gd()) with `double gd(void)` yielded 4 not 8. */
+                    Symbol *fsym = sym_find(e->u.call.name);
+                    if (fsym && fsym->type) {
+                        Type *ftype = fsym->type;
+                        if (fsym->kind == SYM_FUNC) {
+                            /* SYM_FUNC stores the return type directly. */
+                            s = type_size(ftype);
+                        } else {
+                            if (ftype->kind == TYPE_PTR && ftype->base) ftype = ftype->base;
+                            if (ftype->kind == TYPE_FUNC && ftype->base)
+                                s = type_size(ftype->base);
+                        }
+                    }
                 } else if (e && e->kind == AST_ARRAY_ACCESS) {
                     /* sizeof(arr[i]): resolve arr's type from symtab, then
                      * take the element type. Without this, sizeof returns
@@ -2340,8 +2402,19 @@ static AstNode *parse_primary_expr(Parser *p) {
         return node;
     }
     if (t.kind == TOK_NUM) {
+        AstNode *n;
         lexer_advance(p->lex);
-        return ast_num(t.value, line);
+        n = ast_num(t.value, line);
+        /* C99 6.4.4.1: an integer literal's type follows its suffix. Without
+         * this, `-1 < 1u` compared as signed and 0xFFFFFFFFu / 1u<<31 got
+         * the signed int type. */
+        if (t.lit_llong || t.lit_long) {
+            if (t.lit_unsigned) n->type = type_ullong();
+            else                n->type = type_llong();
+        } else if (t.lit_unsigned) {
+            n->type = type_uint();
+        }
+        return n;
     }
     if (t.kind == TOK_STR) {
         AstNode *sn;

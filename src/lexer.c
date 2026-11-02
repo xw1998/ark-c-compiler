@@ -121,7 +121,25 @@ static Token make_token(TokenKind kind, int line) {
     Token t;
     t.kind = kind; t.value = 0; t.fvalue = 0.0; t.str = 0; t.line = line;
     t.src_start = 0; t.is_imag = 0; t.is_float = 0;
+    t.lit_unsigned = 0; t.lit_long = 0; t.lit_llong = 0;
     return t;
+}
+
+/* Consume an integer literal suffix (u/U, l/L, ll/LL, ul, llu, ...) and
+ * report what was seen. C99 6.4.4.1: the suffix decides the literal's type. */
+static void scan_int_suffix(Lexer *lex, int *uns, int *lng, int *llng) {
+    int u = 0, l = 0, ll = 0;
+    for (;;) {
+        char ch = *lex->p;
+        if (ch == 'u' || ch == 'U') { u = 1; lex->p++; }
+        else if (ch == 'l' || ch == 'L') {
+            if (lex->p[1] == 'l' || lex->p[1] == 'L') { ll = 1; lex->p += 2; }
+            else { l = 1; lex->p++; }
+        } else break;
+    }
+    if (uns)  *uns  = u;
+    if (lng)  *lng  = l;
+    if (llng) *llng = ll;
 }
 
 static Token make_number(long long val, int line) {
@@ -528,10 +546,15 @@ static Token lexer_read_token(Lexer *lex) {
                 }
             }
             val = ipart;
-            /* Consume integer suffix u/U/l/L. */
-            while (*lex->p == 'u' || *lex->p == 'U' ||
-                   *lex->p == 'l' || *lex->p == 'L') lex->p++;
-            return make_number(val, line);
+            /* Consume integer suffix u/U/l/L/ll (recorded on the token). */
+            {
+                int u = 0, l = 0, ll = 0;
+                Token t;
+                scan_int_suffix(lex, &u, &l, &ll);
+                t = make_number(val, line);
+                t.lit_unsigned = u; t.lit_long = l; t.lit_llong = ll;
+                return t;
+            }
         }
 
         if (c == '0' && is_oct(lex->p[1])) {
@@ -541,9 +564,14 @@ static Token lexer_read_token(Lexer *lex) {
                 val = val * 8 + (*lex->p - '0');
                 lex->p++;
             }
-            while (*lex->p == 'u' || *lex->p == 'U' ||
-                   *lex->p == 'l' || *lex->p == 'L') lex->p++;
-            return make_number(val, line);
+            {
+                int u = 0, l = 0, ll = 0;
+                Token t;
+                scan_int_suffix(lex, &u, &l, &ll);
+                t = make_number(val, line);
+                t.lit_unsigned = u; t.lit_long = l; t.lit_llong = ll;
+                return t;
+            }
         }
 
         /* Decimal integer literal. */
@@ -650,10 +678,15 @@ static Token lexer_read_token(Lexer *lex) {
                 }
             }
         }
-        /* Consume integer suffix u/U/l/L. */
-        while (*lex->p == 'u' || *lex->p == 'U' ||
-               *lex->p == 'l' || *lex->p == 'L') lex->p++;
-        return make_number(val, line);
+        /* Consume integer suffix u/U/l/L/ll (recorded on the token). */
+        {
+            int u = 0, l = 0, ll = 0;
+            Token t;
+            scan_int_suffix(lex, &u, &l, &ll);
+            t = make_number(val, line);
+            t.lit_unsigned = u; t.lit_long = l; t.lit_llong = ll;
+            return t;
+        }
     }
 
     /* Character literal. */
