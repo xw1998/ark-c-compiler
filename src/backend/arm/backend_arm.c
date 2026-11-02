@@ -3631,6 +3631,10 @@ typedef struct {
     AsmLabel      *sets;
     int            set_count, set_cap;
     /* Literal pool for LDR rd,=label */
+    /* Genuine assembly errors (unknown mnemonic, unresolvable internal label).
+     * Kept separate from error_count, which also counts unresolved external
+     * references that the linker may still satisfy. */
+    int            hard_errors;
     AsmLiteral    *literals;
     int            literal_count, literal_cap;
     int            literal_pool_start;  /* pc where the pool begins (-1 = not yet) */
@@ -3793,6 +3797,41 @@ static int parse_imm_a(const char **p) {
     return neg ? -v : v;
 }
 
+/* Immediate operand where the '#' is optional (armasm accepts both
+ * "SVC 0xAB" and "SVC #0xAB"). Returns 0 and clears *ok when no number is
+ * present: parse_imm_a() would return 0 in that case as well, which turns a
+ * mangled operand into a silent SVC #0. */
+static int parse_imm_opt_hash_a(const char **p, int *ok) {
+    int neg = 0;
+    int v = 0;
+    int digits = 0;
+    skip_space_a(p);
+    if (**p == '#') { (*p)++; skip_space_a(p); }
+    if (**p == '-') { neg = 1; (*p)++; }
+    if (**p == '0' && ((*p)[1] == 'x' || (*p)[1] == 'X')) {
+        (*p) += 2;
+        for (;;) {
+            char c = **p;
+            int d;
+            if (c >= '0' && c <= '9') d = c - '0';
+            else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
+            else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
+            else break;
+            v = v * 16 + d;
+            digits++;
+            (*p)++;
+        }
+    } else {
+        while (**p >= '0' && **p <= '9') {
+            v = v * 10 + (**p - '0');
+            digits++;
+            (*p)++;
+        }
+    }
+    *ok = (digits > 0);
+    return neg ? -v : v;
+}
+
 static void eat_comma_a(const char **p) {
     skip_space_a(p);
     if (**p == ',') (*p)++;
@@ -3919,12 +3958,17 @@ static int op_size_a(const char *op) {
      * branches to jump to wrong locations). T3 lo word bit12=0 (0x8000 base). */
     if (strieq_a(op, "BEQ") || strieq_a(op, "BNE") || strieq_a(op, "BCS") ||
         strieq_a(op, "BCC") || strieq_a(op, "BGE") || strieq_a(op, "BLT") ||
-        strieq_a(op, "BGT") || strieq_a(op, "BLE")) return 4;
+        strieq_a(op, "BGT") || strieq_a(op, "BLE") ||
+        strieq_a(op, "BHI") || strieq_a(op, "BLS") ||
+        strieq_a(op, "BLO") || strieq_a(op, "BHS")) return 4;
     /* Barriers DMB/DSB/ISB use 32-bit T1 encoding (0xF3BF 0x8F4x/5x/6x).
      * 16-bit T2 (0xBF50/60/70) is not standard ARMv7-M; use 32-bit form. */
     if (strieq_a(op, "DMB") || strieq_a(op, "DSB") || strieq_a(op, "ISB")) return 4;
     /* RRX is encoded as MOV Rd, Rm, RRX (32-bit T2 data-processing). */
     if (strieq_a(op, "RRX")) return 4;
+    /* CLZ and SADD16 only exist as 32-bit Thumb-2 encodings. */
+    if (strieq_a(op, "CLZ"))    return 4;
+    if (strieq_a(op, "SADD16")) return 4;
     /* #1 FIX: VFP instructions are all 32-bit (two 16-bit halfwords).
      * Without this, pass1 counts 2 bytes but pass2 emits 4, causing
      * all subsequent labels/branches to be off by 2 bytes per VFP instr. */
@@ -4177,6 +4221,35 @@ static void pass1_a(ArmAsm *a) {
                 (void)parse_reg_a(&p);
                 pc += 2;  /* 16-bit MOV */
             }
+        } else if (strieq_a(first, "TST") ||
+                   strieq_a(first, "SXTB") || strieq_a(first, "SXTH") ||
+                   strieq_a(first, "UXTB") || strieq_a(first, "UXTH")) {
+            /* Two-register forms: 16-bit T1 for r0-r7 operands, 32-bit T2
+             * when either register is high (r8-r15). Must match pass2. */
+            int rd = parse_reg_a(&p);
+            eat_comma_a(&p);
+            {
+                int rm = parse_reg_a(&p);
+                if (rd >= 0 && rd <= 7 && rm >= 0 && rm <= 7) pc += 2;
+                else                                          pc += 4;
+            }
+        } else if (strieq_a(first, "MOVS")) {
+            /* MOVS Rd,#imm: 16-bit for rd in r0-r7 and imm 0..255.
+             * MOVS Rd,Rm  : 16-bit for two low registers.
+             * Everything else takes the 32-bit form. */
+            int rd = parse_reg_a(&p);
+            eat_comma_a(&p);
+            if (*p == '#') {
+                int imm = parse_imm_a(&p);
+                if (rd >= 0 && rd <= 7 && imm >= 0 && imm <= 255) pc += 2;
+                else                                              pc += 4;
+            } else {
+                int rm = parse_reg_a(&p);
+                if (rd >= 0 && rd <= 7 && rm >= 0 && rm <= 7) pc += 2;
+                else                                          pc += 4;
+            }
+        } else if (strieq_a(first, "SVC")) {
+            pc += 2;
         } else {
             pc += op_size_a(first);
         }
@@ -4293,6 +4366,36 @@ static int read_label_name_a(const char **p, char *buf, int cap) {
     }
     buf[n] = 0;
     return n;
+}
+
+/* Reverse of the Thumb-2 ThumbExpandImm() function: split a 32-bit
+ * constant into the (i, imm3, imm8) fields of a modified immediate.
+ *   rot = imm12[11:10]; value = ROR(bit7-replicated imm8, rot * 8)
+ *   rot == 0        : value = ZeroExtend(imm8)
+ * Returns 1 when the constant is representable, 0 otherwise. Used by the
+ * MOVS/CMP.W immediate forms so an unrepresentable constant is reported
+ * instead of being silently truncated to 8 bits. */
+static int thumb_imm12_a(unsigned val, unsigned *out_i, unsigned *out_imm3,
+                         unsigned *out_imm8) {
+    unsigned rot;
+    if (val <= 0xFFu) {
+        *out_i = 0; *out_imm3 = 0; *out_imm8 = val;
+        return 1;
+    }
+    for (rot = 1; rot < 4; rot++) {
+        unsigned sh = rot * 8;
+        unsigned unrot = (val << sh) | (val >> (32 - sh));   /* ROL by sh */
+        unsigned imm8 = unrot & 0xFFu;
+        unsigned cand;
+        if ((imm8 & 0x80u) == 0) continue;   /* bit7 must be set here */
+        cand = 0xFFFFFF00u | imm8;           /* '1':imm8 */
+        if (((cand >> sh) | (cand << (32 - sh))) != val) continue;
+        *out_i = (rot >> 1) & 1u;
+        *out_imm3 = rot & 7u;
+        *out_imm8 = imm8;
+        return 1;
+    }
+    return 0;
 }
 
 static void pass2_a(ArmAsm *a) {
@@ -4635,8 +4738,27 @@ static void pass2_a(ArmAsm *a) {
             }
         }
         else if (strieq_a(first, "MUL")) {
-            int rd = parse_reg_a(&p); int rm;
-            eat_comma_a(&p); rm = parse_reg_a(&p);
+            /* MULS T1 (16-bit): MULS <Rdn>, <Rn>, <Rdm> with Rd == Rn.
+             * The two-operand form MULS Rd, Rm is the same encoding (Rn = Rd).
+             * Three distinct registers need the 32-bit MUL T2 form, which this
+             * encoder does not emit: reject it loudly instead of silently
+             * dropping the third operand (MOD codegen emits "MUL r2, r2, r1"). */
+            int rd = parse_reg_a(&p); int rn, rm, second;
+            eat_comma_a(&p); second = parse_reg_a(&p);
+            skip_space_a(&p);
+            if (*p == ',') {
+                rn = second;                  /* three-operand: Rd, Rn, Rm */
+                eat_comma_a(&p); rm = parse_reg_a(&p);
+            } else {
+                rn = rd;                      /* two-operand: Rd = Rd * Rm */
+                rm = second;
+            }
+            if (rd != rn) {
+                ark_log("[asm-arm] error: MUL with three distinct registers "
+                        "(Rd=r%d, Rn=r%d) needs the 32-bit form, not supported\n",
+                        rd, rn);
+                a->hard_errors++;
+            }
             out16(a, 0x4340 | ((rm & 7) << 3) | (rd & 7));
         }
         else if (strieq_a(first, "ADC")) {
@@ -4778,13 +4900,21 @@ static void pass2_a(ArmAsm *a) {
                     /* T1 16-bit: CMP Rn, #imm8 */
                     out16(a, 0x2800 | ((rn & 7) << 8) | (imm & 0xFF));
                 } else {
-                    /* T2 32-bit: CMP.W Rn, #imm12 (ThumbExpandImm)
-                     * hi: 0xF1B0|Rn, lo: 0x0F00|(Rd=1111<<8)|imm8
-                     * For imm 0-255: i=0, imm3=0. Larger values need ThumbExpandImm. */
-                    unsigned hi = 0xF1B0u | (unsigned)(rn & 0xF);
-                    unsigned lo = 0x0F00u | (unsigned)(imm & 0xFF);
-                    out16(a, hi);
-                    out16(a, lo);
+                    /* T2 32-bit: CMP.W Rn, #imm12 (ThumbExpandImm).
+                     * hi: 0xF1B0 | i<<10 | Rn, lo: imm3<<12 | 0x0F00 | imm8.
+                     * Was truncating the constant to its low 8 bits, which
+                     * silently compared against the wrong value. */
+                    unsigned i, imm3, imm8;
+                    if (!thumb_imm12_a((unsigned)imm, &i, &imm3, &imm8)) {
+                        ark_log("[asm-arm] error: CMP immediate %d cannot be "
+                                "encoded as a modified immediate\n", imm);
+                        a->hard_errors++;
+                        out16(a, 0xBF00);
+                        out16(a, 0xBF00);
+                    } else {
+                        out16(a, 0xF1B0u | ((i & 1) << 10) | (unsigned)(rn & 0xF));
+                        out16(a, ((imm3 & 7) << 12) | 0x0F00u | imm8);
+                    }
                 }
             } else {
                 int rm = parse_reg_a(&p);
@@ -4965,7 +5095,9 @@ static void pass2_a(ArmAsm *a) {
                  strieq_a(first, "BNE") || strieq_a(first, "BLT") ||
                  strieq_a(first, "BGT") || strieq_a(first, "BLE") ||
                  strieq_a(first, "BGE") || strieq_a(first, "BCC") ||
-                 strieq_a(first, "BCS")) {
+                 strieq_a(first, "BCS") || strieq_a(first, "BHI") ||
+                 strieq_a(first, "BLS") || strieq_a(first, "BLO") ||
+                 strieq_a(first, "BHS")) {
             char name[64];
             int cond = -1;
             int is_uncond = (first[1] == 0);
@@ -4978,6 +5110,13 @@ static void pass2_a(ArmAsm *a) {
                 else if (strieq_a(first, "BLT")) cond = 11;
                 else if (strieq_a(first, "BGT")) cond = 12;
                 else if (strieq_a(first, "BLE")) cond = 13;
+                /* Unsigned comparisons: HI=8, LS=9, LO(CC)=3, HS(CS)=2.
+                 * Verified: BHI = 0xD8xx, BLS = 0xD9xx, BLO = 0xD3xx,
+                 * BHS = 0xD2xx in the 16-bit T1 form. */
+                else if (strieq_a(first, "BHI")) cond = 8;
+                else if (strieq_a(first, "BLS")) cond = 9;
+                else if (strieq_a(first, "BLO")) cond = 3;
+                else if (strieq_a(first, "BHS")) cond = 2;
             }
             read_label_name_a(&p, name, sizeof(name));
             {
@@ -5318,7 +5457,183 @@ static void pass2_a(ArmAsm *a) {
             out16(a, hi);
             out16(a, lo);
         }
+        else if (strieq_a(first, "TST")) {
+            /* TST (register): 16-bit T1 0100000000 Rm Rn for r0-r7,
+             * 32-bit T2 0xEA1n_0F0m for high registers.
+             * Encodings verified against armasm: TST r4,r1 = 0x420C,
+             * TST r8,r9 = 0xEA180F09, TST r0,r12 = 0xEA100F0C. */
+            int rn = parse_reg_a(&p);
+            int rm;
+            eat_comma_a(&p);
+            rm = parse_reg_a(&p);
+            if (rn >= 0 && rn <= 7 && rm >= 0 && rm <= 7) {
+                out16(a, 0x4200 | ((rm & 7) << 3) | (rn & 7));
+            } else if (rn >= 0 && rm >= 0) {
+                out16(a, 0xEA10 | (rn & 0xF));
+                out16(a, 0x0F00 | (rm & 0xF));
+            } else {
+                ark_log("[asm-arm] error: bad register operand for TST\n");
+                a->hard_errors++;
+                out16(a, 0xBF00);
+            }
+        }
+        else if (strieq_a(first, "CLZ")) {
+            /* CLZ Rd, Rm: 32-bit T1 111110101011 Rm 1111 1000 Rd 0000.
+             * Verified: CLZ r2,r0 = 0xFAB0F280, CLZ r12,r11 = 0xFABBFC8B. */
+            int rd = parse_reg_a(&p);
+            int rm;
+            eat_comma_a(&p);
+            rm = parse_reg_a(&p);
+            if (rd >= 0 && rm >= 0) {
+                out16(a, 0xFAB0 | (rm & 0xF));
+                out16(a, 0xF080 | ((rd & 0xF) << 8) | (rm & 0xF));
+            } else {
+                ark_log("[asm-arm] error: bad register operand for CLZ\n");
+                a->hard_errors++;
+                out16(a, 0xBF00);
+                out16(a, 0xBF00);
+            }
+        }
+        else if (strieq_a(first, "SXTB") || strieq_a(first, "SXTH") ||
+                 strieq_a(first, "UXTB") || strieq_a(first, "UXTH")) {
+            /* Sign/zero extend: 16-bit T1 (0xB240/0xB200/0xB2C0/0xB2B0)
+             * for low registers, 32-bit T2 (0xFA4F/0xFA0F/0xFA5F/0xFA1F
+             * F080 | Rd<<8 | Rm) otherwise.
+             * Verified: SXTB r7,r5 = 0xB26F, SXTH r6,r3 = 0xB21E,
+             *           UXTB r1,r2 = 0xB2D1, UXTH r0,r7 = 0xB2B8,
+             *           SXTB r0,r8 = 0xFA4FF088, UXTH r9,r3 = 0xFA1FF983. */
+            int rd = parse_reg_a(&p);
+            int rm;
+            unsigned lo_base = 0xB200u;
+            unsigned hi_base = 0xFA0Fu;
+            if (strieq_a(first, "SXTB")) { lo_base = 0xB240u; hi_base = 0xFA4Fu; }
+            else if (strieq_a(first, "UXTB")) { lo_base = 0xB2C0u; hi_base = 0xFA5Fu; }
+            else if (strieq_a(first, "UXTH")) { lo_base = 0xB2B0u; hi_base = 0xFA1Fu; }
+            eat_comma_a(&p);
+            rm = parse_reg_a(&p);
+            if (rd >= 0 && rd <= 7 && rm >= 0 && rm <= 7) {
+                out16(a, lo_base | ((rm & 7) << 3) | (rd & 7));
+            } else if (rd >= 0 && rm >= 0) {
+                out16(a, hi_base | (rm & 0xF));
+                out16(a, 0xF080 | ((rd & 0xF) << 8) | (rm & 0xF));
+            } else {
+                ark_log("[asm-arm] error: bad register operand for %.8s\n", first);
+                a->hard_errors++;
+                out16(a, 0xBF00);
+                out16(a, 0xBF00);
+            }
+        }
+        else if (strieq_a(first, "BKPT")) {
+            /* BKPT #imm8: 0xBE00 | imm8. On Cortex-M this - not SVC 0xAB -
+             * is the semihosting trap: QEMU only intercepts SVC 0xAB for
+             * A/R profile cores and sends BKPT 0xAB to the semihosting
+             * monitor on M-profile. Verified: BKPT #0xab = 0xBEAB (armasm
+             * 5.06 golden bytes). */
+            int imm;
+            int ok = 0;
+            skip_space_a(&p);
+            imm = parse_imm_opt_hash_a(&p, &ok);
+            if (!ok || imm < 0 || imm > 255) {
+                if (!ok)
+                    ark_log("[asm-arm] error: BKPT needs a numeric immediate\n");
+                else
+                    ark_log("[asm-arm] error: BKPT immediate %d out of range 0..255\n",
+                            imm);
+                a->hard_errors++;
+                imm = 0;
+            }
+            out16(a, 0xBE00 | (imm & 0xFF));
+        }
+        else if (strieq_a(first, "SVC")) {
+            /* SVC #imm8: 0xDF00 | imm8. Verified: SVC #18 = 0xDF12.
+             * The '#' is optional (armasm accepts "SVC 0xAB"), but the operand
+             * must be a number: a missing operand used to encode SVC #0, which
+             * silently breaks semihosting calls at run time. */
+            int imm;
+            int ok = 0;
+            skip_space_a(&p);
+            imm = parse_imm_opt_hash_a(&p, &ok);
+            if (!ok || imm < 0 || imm > 255) {
+                if (!ok)
+                    ark_log("[asm-arm] error: SVC needs a numeric immediate\n");
+                else
+                    ark_log("[asm-arm] error: SVC immediate %d out of range 0..255\n",
+                            imm);
+                a->hard_errors++;
+                imm = 0;
+            }
+            out16(a, 0xDF00 | (imm & 0xFF));
+        }
+        else if (strieq_a(first, "MOVS")) {
+            /* MOVS Rd,#imm: 16-bit 0x2000|Rd<<8|imm8, 32-bit MOVS.W
+             * (0xF05F base, S=1) otherwise.
+             * MOVS Rd,Rm: 16-bit 0x0000|Rm<<3|Rd (LSLS Rd,Rm,#0 alias),
+             * 32-bit 0xEA5F_0n0m for high registers.
+             * Verified: MOVS r0,#42 = 0x202A, MOVS r5,#7 = 0x2507,
+             *           MOVS r0,r1 = 0x0008, MOVS r12,r3 = 0xEA5F0C03. */
+            int rd = parse_reg_a(&p);
+            eat_comma_a(&p);
+            if (*p == '#') {
+                int imm = parse_imm_a(&p);
+                if (rd >= 0 && rd <= 7 && imm >= 0 && imm <= 255) {
+                    out16(a, 0x2000 | ((rd & 7) << 8) | (imm & 0xFF));
+                } else {
+                    unsigned i, imm3, imm8;
+                    if (rd < 0 || !thumb_imm12_a((unsigned)imm, &i, &imm3, &imm8)) {
+                        ark_log("[asm-arm] error: MOVS immediate %d (Rd=r%d) "
+                                "cannot be encoded\n", imm, rd);
+                        a->hard_errors++;
+                        out16(a, 0xBF00);
+                        out16(a, 0xBF00);
+                    } else {
+                        out16(a, 0xF05F | ((i & 1) << 10));
+                        out16(a, ((imm3 & 7) << 12) | ((rd & 0xF) << 8) | imm8);
+                    }
+                }
+            } else {
+                int rm = parse_reg_a(&p);
+                if (rd >= 0 && rd <= 7 && rm >= 0 && rm <= 7) {
+                    out16(a, 0x0000 | ((rm & 7) << 3) | (rd & 7));
+                } else if (rd >= 0 && rm >= 0) {
+                    out16(a, 0xEA5F);
+                    out16(a, ((rd & 0xF) << 8) | (rm & 0xF));
+                } else {
+                    ark_log("[asm-arm] error: bad register operand for MOVS\n");
+                    a->hard_errors++;
+                    out16(a, 0xBF00);
+                }
+            }
+        }
+        else if (strieq_a(first, "SADD16")) {
+            /* SADD16 Rd, Rn, Rm: 0xFA90_F000|Rn<<16|Rd<<8|Rm.
+             * Verified: SADD16 r0,r0,r1 = 0xFA90F001,
+             *           SADD16 r3,r7,r5 = 0xFA97F305. */
+            int rd = parse_reg_a(&p);
+            int rn, rm;
+            eat_comma_a(&p);
+            rn = parse_reg_a(&p);
+            eat_comma_a(&p);
+            rm = parse_reg_a(&p);
+            if (rd >= 0 && rn >= 0 && rm >= 0) {
+                out16(a, 0xFA90 | (rn & 0xF));
+                out16(a, 0xF000 | ((rd & 0xF) << 8) | (rm & 0xF));
+            } else {
+                ark_log("[asm-arm] error: bad register operand for SADD16\n");
+                a->hard_errors++;
+                out16(a, 0xBF00);
+                out16(a, 0xBF00);
+            }
+        }
         else {
+            /* Unknown mnemonic. This used to silently emit a 16-bit NOP, which
+             * turned a typo or an unimplemented instruction into a program that
+             * still compiled and linked but did something else. Report it and
+             * keep failing at the end of assembly. A NOP is still emitted so
+             * that label addresses stay close to the intent and later code does
+             * not cascade with bogus addresses. */
+            ark_log("[asm-arm] error: unknown mnemonic '%.32s' at pc 0x%X "
+                    "(no instruction emitted)\n", first, a->pc);
+            a->hard_errors++;
             out16(a, 0xBF00);
         }
         skip_to_eol_a(&p);
@@ -5409,6 +5724,7 @@ static int arm_assemble(const char *asm_text, unsigned char *out, int cap) {
     a.labels = 0; a.label_count = 0; a.label_cap = 0;
     a.refs = 0; a.ref_count = 0; a.ref_cap = 0;
     a.error_count = 0;
+    a.hard_errors = 0;
     a.sets = 0; a.set_count = 0; a.set_cap = 0;
     a.literals = 0; a.literal_count = 0; a.literal_cap = 0;
     a.literal_pool_start = -1;
@@ -5441,13 +5757,15 @@ static int arm_assemble(const char *asm_text, unsigned char *out, int cap) {
             ark_log("=== End Symbol Map ===\n");
         }
     }
-    /* Bug-A2: Don't fail on unresolved cross-object references.
-     * The error_count from resolve_refs_a includes refs to external
-     * symbols that the linker will resolve. Only fail on genuine
-     * assembly errors (not on unresolved external refs).
-     * Since we can't distinguish the two at this point without more
-     * context, we proceed and let the linker report truly missing
-     * symbols. */
+    /* Genuine assembly errors must fail the compile: continuing would hand
+     * back machine code that does not match the source. Unresolved external
+     * references are NOT in this counter (resolve_refs_a keeps them in
+     * error_count), because the linker may satisfy them later.
+     * Bug-A2: error_count alone therefore still does not fail the compile. */
+    if (a.hard_errors > 0) {
+        ark_log("[asm-arm] %d assembly error(s), no output written\n", a.hard_errors);
+        return -1;
+    }
     return a.pc;
 }
 
@@ -5553,6 +5871,14 @@ int arm_get_symbol_offset(int idx) { return g_arm_syms[idx].offset; }
 int arm_get_symbol_type(int idx) { return g_arm_syms[idx].type; }
 int arm_get_symbol_weak(int idx) { return g_arm_syms[idx].is_weak; }
 
+/* SRAM window covered by this translation unit's .data + .bss (absolute
+ * addresses; both equal g_data_base when the unit declares no RAM objects).
+ * Exported so the -link stage can detect two objects that were each laid out
+ * from the same SRAM base: -link concatenates code but does not relocate
+ * data, so such a pair would silently alias its globals. */
+unsigned arm_get_ram_start(void) { return g_data_sram_start; }
+unsigned arm_get_ram_end(void)   { return g_bss_sram_end; }
+
 /* Bug-A2: Export relocation info for the linker */
 int arm_get_reloc_count(void) { return g_arm_reloc_count; }
 const char *arm_get_reloc_name(int idx) { return g_arm_relocs[idx].name; }
@@ -5563,7 +5889,12 @@ int arm_get_reloc_type(int idx) { return g_arm_relocs[idx].type; }
  * If Reset_Handler is defined, generates a Cortex-M vector table at the start
  * of the binary. Safe because Thumb-2 branches use PC-relative offsets that
  * survive a uniform shift; absolute (.word) refs are already resolved by
- * resolve_refs_a within the object. */
+ * resolve_refs_a within the object.
+ *
+ * Every entry must carry the Thumb bit (bit 0): on exception entry the core
+ * loads EPSR.T from that bit, so an even address makes a Cortex-M core take
+ * an INVSTATE UsageFault instead of running the handler. Real STM32 vector
+ * tables are odd for the same reason. */
 #define ARM_VT_ENTRIES 256
 #define ARM_VT_SIZE   (ARM_VT_ENTRIES * 4)
 static const char *g_arm_vector_names[] = {
@@ -5615,8 +5946,9 @@ static int arm_link(unsigned char *code, int size, struct LinkContext *lc) {
 
     /* Generate vector table at code[0] */
     {
+        /* Bit 0 is the Thumb bit; a zero entry stays zero ("no handler"). */
         unsigned default_addr = (default_idx >= 0) ?
-            (flash_base + (unsigned)g_arm_syms[default_idx].offset) : 0;
+            ((flash_base + (unsigned)g_arm_syms[default_idx].offset) | 1u) : 0;
         /* Entry 0: initial SP */
         code[0] = (unsigned char)(initial_sp & 0xFF);
         code[1] = (unsigned char)((initial_sp >> 8) & 0xFF);
@@ -5635,7 +5967,7 @@ static int arm_link(unsigned char *code, int size, struct LinkContext *lc) {
                 int j;
                 for (j = 0; j < g_arm_sym_count; j++) {
                     if (ark_streq(g_arm_syms[j].name, g_arm_vector_names[i])) {
-                        unsigned addr = flash_base + (unsigned)g_arm_syms[j].offset;
+                        unsigned addr = (flash_base + (unsigned)g_arm_syms[j].offset) | 1u;
                         code[i*4]   = (unsigned char)(addr & 0xFF);
                         code[i*4+1] = (unsigned char)((addr >> 8) & 0xFF);
                         code[i*4+2] = (unsigned char)((addr >> 16) & 0xFF);

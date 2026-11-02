@@ -139,7 +139,9 @@ static void cmd_help(void) {
 
 static void cmd_ls(void) {
     shell_puts("\r\nFiles on flash FS:\r\n");
-    fs_list_files();
+    if (fs_list_files() < 0) {
+        shell_puts("Error: file listing is not available on this build\r\n");
+    }
 }
 
 static void cmd_cat(const char *path) {

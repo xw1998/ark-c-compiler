@@ -224,6 +224,12 @@ void config_apply_args(int argc, char **argv) {
         }
         if (ark_streq(a, "-g")) {
             g_config.debug_info = 1;
+            /* The ARM emitter gates .debug_info/.debug_abbrev/.debug_line on
+             * dwarf_version >= 2, so plain -g used to set a flag that nothing
+             * read and produced no debug sections at all. Map -g onto DWARF 2
+             * (the oldest supported level); an explicit --dwarf2/--dwarf3 seen
+             * later on the command line still wins. */
+            if (g_config.dwarf_version < 2) g_config.dwarf_version = 2;
             continue;
         }
         if (ark_streq(a, "-config") && i + 1 < argc) {

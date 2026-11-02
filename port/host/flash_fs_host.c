@@ -37,8 +37,10 @@ int fs_write_file(const char *path, const unsigned char *data, int len) {
     }
 }
 
-/* Host-side stub: no flash FS listing on host. */
+/* Host-side stub: the host has no flash FS backing store, so a listing is
+ * not available. Return -1 (error) rather than 0 (an empty listing) so that
+ * callers cannot mistake "not supported" for "no files present". */
 int fs_list_files(void) {
     ark_log("[flash_fs] fs_list_files: not implemented on host\r\n");
-    return 0;
+    return -1;
 }

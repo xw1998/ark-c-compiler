@@ -11,7 +11,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define ARK_VERSION "0.2.0"
+/* Keep in sync with README.md / docs/MANUAL.md, which advertise this
+ * version to users; the release notes are organised by this number. */
+#define ARK_VERSION "0.7.0"
 
 /* Error codes */
 #define ARK_OK              0

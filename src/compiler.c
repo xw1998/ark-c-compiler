@@ -105,6 +105,21 @@ typedef struct LdReloc {
     int  type;     /* 1=BL, 2=B.W, 3=B<cond>.W, 4=R_ARM_ABS32 */
 } LdReloc;
 
+/* Per-object SRAM footprint reported by the object's reserved
+ * __arkcc_ram_start / __arkcc_ram_end symbols (absolute addresses). */
+typedef struct LdRam {
+    unsigned start;
+    unsigned end;
+    int      have_start;
+    int      have_end;
+} LdRam;
+
+#define LD_MAX_OBJS 64
+static LdRam    g_ld_ram[LD_MAX_OBJS];
+static int      g_ld_ram_obj_count = 0;
+/* Number of duplicate compiler-runtime symbols silently merged (see ld_add_sym). */
+static int      ld_rt_dup_count = 0;
+
 static LdSym    g_ld_syms[LD_MAX_SYMS];
 static int      g_ld_sym_count = 0;
 static LdReloc  g_ld_relocs[LD_MAX_RELOCS];
@@ -141,8 +156,18 @@ static void ld_add_sym(const char *name, int offset, int is_weak) {
         return;
     }
     if (idx >= 0) {
-        if (!g_ld_syms[idx].is_weak && !is_weak)
-            ark_log("[link] warning: duplicate strong symbol '%s', using first definition\n", name);
+        if (!g_ld_syms[idx].is_weak && !is_weak) {
+            /* Every object re-emits the private runtime helpers (__aeabi_*,
+             * __arkcc_*). They are bit-identical, so "first definition wins"
+             * is correct and warning once per helper per object is pure noise;
+             * keep a count and report it in one line instead. */
+            if (name[0] == '_' && name[1] == '_') {
+                ld_rt_dup_count++;
+            } else {
+                ark_log("[link] warning: duplicate strong symbol '%s', "
+                        "using first definition\n", name);
+            }
+        }
         return;  /* duplicate (same strength), keep first */
     }
     n = 0;
@@ -242,8 +267,13 @@ static void ld_patch_ref(unsigned char *code, int code_size, int pc, int target,
  * a 4-byte little-endian address. Entry 0 = initial SP; entries 1-15 =
  * system exception handlers; entries 16+ = peripheral IRQ handlers.
  * Handler addresses are resolved from the global symbol table as
- * flash_base + symbol_offset. Unresolved entries are filled with
- * Default_Handler (if defined) or 0. */
+ * flash_base + symbol_offset, with the Thumb bit (bit 0) set: on exception
+ * entry the core loads EPSR.T from that bit, so an even address makes a
+ * Cortex-M core take an INVSTATE UsageFault instead of running the handler.
+ * Unresolved entries are filled with Default_Handler (if defined) or 0.
+ *
+ * NOTE: arm_link() in backend_arm.c builds the same table for the
+ * single-file path; both must keep the Thumb bit. */
 
 #define LD_VECTOR_TABLE_ENTRIES 256  /* 1024 bytes; covers STM32F4/H7 */
 
@@ -285,8 +315,8 @@ static int ld_build_vector_table(unsigned char *out_buf,
     /* Find Default_Handler for filling unresolved entries */
     {
         int idx = ld_find_global("Default_Handler");
-        if (idx >= 0)
-            default_addr = flash_base + (unsigned)g_ld_syms[idx].offset;
+        if (idx >= 0)   /* bit 0 = Thumb bit; 0 stays 0 ("no handler") */
+            default_addr = (flash_base + (unsigned)g_ld_syms[idx].offset) | 1u;
     }
 
     /* Entry 0: initial SP */
@@ -301,7 +331,7 @@ static int ld_build_vector_table(unsigned char *out_buf,
         if (g_ld_vector_names[i]) {
             int idx = ld_find_global(g_ld_vector_names[i]);
             if (idx >= 0) {
-                unsigned addr = flash_base + (unsigned)g_ld_syms[idx].offset;
+                unsigned addr = (flash_base + (unsigned)g_ld_syms[idx].offset) | 1u;
                 ld_write_word(out_buf, i * 4, addr);
             }
         }
@@ -309,6 +339,247 @@ static int ld_build_vector_table(unsigned char *out_buf,
     return vt_size;
 }
 
+/* Append one ARKOBJ2 symbol-table entry and return the new length:
+ * name_len(4) + name(name_len) + offset(4) + type(1) + is_weak(1). */
+static int obj_put_sym(unsigned char *buf, int ol, const char *nm,
+                       unsigned off, int type, int weak) {
+    int nl = ark_strlen(nm) + 1;
+    int k;
+    buf[ol++] = (unsigned char)(nl & 0xFF);
+    buf[ol++] = (unsigned char)((nl >> 8) & 0xFF);
+    buf[ol++] = (unsigned char)((nl >> 16) & 0xFF);
+    buf[ol++] = (unsigned char)((nl >> 24) & 0xFF);
+    for (k = 0; k < nl; k++) buf[ol++] = (unsigned char)nm[k];
+    buf[ol++] = (unsigned char)(off & 0xFF);
+    buf[ol++] = (unsigned char)((off >> 8) & 0xFF);
+    buf[ol++] = (unsigned char)((off >> 16) & 0xFF);
+    buf[ol++] = (unsigned char)((off >> 24) & 0xFF);
+    buf[ol++] = (unsigned char)type;
+    buf[ol++] = (unsigned char)weak;
+    return ol;
+}
+
+/* Reserved symbol names that describe the object's SRAM footprint rather than
+ * a code label. The -link stage consumes them instead of adding them to the
+ * resolution table (their "offset" field is an absolute address, not an
+ * offset relative to the object's code base). */
+#define OBJ_RAM_START_SYM "__arkcc_ram_start"
+#define OBJ_RAM_END_SYM   "__arkcc_ram_end"
+#define OBJ_SYM_TYPE_RAM  2
+
+/* Write an ARKOBJ2 object file: "ARKOBJ2\n" + u32 code size + code body +
+ * u32 symbol count + symbols + u32 reloc count + relocs (readers live in the
+ * -link implementation below). Shared by the C front end (-c) and by direct
+ * assembly input (.s/.S/.asm with -c), so that the two paths cannot drift.
+ *
+ * asm_len is the length of the assembly text in g_asm; bin_len is the length
+ * of the assembled machine code in g_code. Text backends (c/riscv32) have no
+ * assembly step and store the text itself, so bin_len is unused there.
+ * The caller must have run be->assemble() for arm/x86 before calling this.
+ */
+static int write_ark_obj(const ArkBackend *be, const ArkOptions *opts,
+                         int asm_len, int bin_len) {
+    char outpath[512];
+    const char *target;
+    static unsigned char obj_buf[ARK_OBJ_BUF_SIZE] __attribute__((section(".ark_buf")));
+    int ol = 0;
+    int is_obj_backend = ark_streq(be->name, "arm") || ark_streq(be->name, "x86");
+    int code_len = is_obj_backend ? bin_len : asm_len;
+    /* SRAM window of this unit, only meaningful for the ARM backend. */
+    unsigned ram_start = 0, ram_end = 0;
+    int ram_extra = 0;
+
+    if (opts->output_path) target = opts->output_path;
+    else {
+        if (derive_output(opts->input_path, outpath, sizeof(outpath), ".ark_obj") != 0)
+            return ARK_ERR_ARG;
+        target = outpath;
+    }
+
+    /* Write extended header "ARKOBJ2\n" (8 bytes) */
+    {
+        const char *hdr = "ARKOBJ2\n";
+        int hk;
+        for (hk = 0; hdr[hk]; hk++) obj_buf[ol++] = (unsigned char)hdr[hk];
+    }
+
+    /* Write code size (4 bytes, little-endian) */
+    {
+        int cs = code_len;
+        obj_buf[ol++] = (unsigned char)(cs & 0xFF);
+        obj_buf[ol++] = (unsigned char)((cs >> 8) & 0xFF);
+        obj_buf[ol++] = (unsigned char)((cs >> 16) & 0xFF);
+        obj_buf[ol++] = (unsigned char)((cs >> 24) & 0xFF);
+    }
+
+    /* Write code body */
+    if (code_len + ol > (int)sizeof(obj_buf)) {
+        ark_log("[arkcc] object output too large for buffer\n");
+        return ARK_ERR_IO;
+    }
+    {
+        int k;
+        const unsigned char *src = is_obj_backend ? g_code : (const unsigned char *)g_asm;
+        for (k = 0; k < code_len; k++) obj_buf[ol++] = src[k];
+    }
+
+    /* Symbol/reloc getters: ARM and x86 backends both emit ARKOBJ2 tables. */
+    int   (*p_sym_count)(void)       = 0;
+    const char *(*p_sym_name)(int)   = 0;
+    int   (*p_sym_offset)(int)       = 0;
+    int   (*p_sym_type)(int)         = 0;
+    int   (*p_sym_weak)(int)          = 0;
+    int   (*p_reloc_count)(void)     = 0;
+    const char *(*p_reloc_name)(int) = 0;
+    int   (*p_reloc_offset)(int)     = 0;
+    int   (*p_reloc_type)(int)       = 0;
+    if (ark_streq(be->name, "arm")) {
+        extern int   arm_get_symbol_count(void);
+        extern const char *arm_get_symbol_name(int idx);
+        extern int   arm_get_symbol_offset(int idx);
+        extern int   arm_get_symbol_type(int idx);
+        extern int   arm_get_symbol_weak(int idx);
+        extern int   arm_get_reloc_count(void);
+        extern const char *arm_get_reloc_name(int idx);
+        extern int   arm_get_reloc_offset(int idx);
+        extern int   arm_get_reloc_type(int idx);
+        p_sym_count   = arm_get_symbol_count;
+        p_sym_name    = arm_get_symbol_name;
+        p_sym_offset  = arm_get_symbol_offset;
+        p_sym_type    = arm_get_symbol_type;
+        p_sym_weak    = arm_get_symbol_weak;
+        {
+            extern unsigned arm_get_ram_start(void);
+            extern unsigned arm_get_ram_end(void);
+            ram_start = arm_get_ram_start();
+            ram_end   = arm_get_ram_end();
+            if (ram_end > ram_start) ram_extra = 2;
+        }
+        p_reloc_count = arm_get_reloc_count;
+        p_reloc_name  = arm_get_reloc_name;
+        p_reloc_offset= arm_get_reloc_offset;
+        p_reloc_type  = arm_get_reloc_type;
+    } else if (ark_streq(be->name, "x86")) {
+#if ARKCC_BACKEND_X86_64
+        extern int   x86_get_symbol_count(void);
+        extern const char *x86_get_symbol_name(int idx);
+        extern int   x86_get_symbol_offset(int idx);
+        extern int   x86_get_symbol_type(int idx);
+        extern int   x86_get_symbol_weak(int idx);
+        extern int   x86_get_reloc_count(void);
+        extern const char *x86_get_reloc_name(int idx);
+        extern int   x86_get_reloc_offset(int idx);
+        extern int   x86_get_reloc_type(int idx);
+        p_sym_count   = x86_get_symbol_count;
+        p_sym_name    = x86_get_symbol_name;
+        p_sym_offset  = x86_get_symbol_offset;
+        p_sym_type    = x86_get_symbol_type;
+        p_sym_weak    = x86_get_symbol_weak;
+        p_reloc_count = x86_get_reloc_count;
+        p_reloc_name  = x86_get_reloc_name;
+        p_reloc_offset= x86_get_reloc_offset;
+        p_reloc_type  = x86_get_reloc_type;
+#endif
+    }
+
+    /* Write symbol table for object backends (ARM/x86) */
+    if (p_sym_count) {
+        int sc = p_sym_count();
+        int si;
+        /* The RAM-footprint descriptor is appended after the real symbols so
+         * that older readers that ignore trailing symbols still work. */
+        int sc_total = sc + ram_extra;
+        /* symbol count (4 bytes LE) */
+        obj_buf[ol++] = (unsigned char)(sc_total & 0xFF);
+        obj_buf[ol++] = (unsigned char)((sc_total >> 8) & 0xFF);
+        obj_buf[ol++] = (unsigned char)((sc_total >> 16) & 0xFF);
+        obj_buf[ol++] = (unsigned char)((sc_total >> 24) & 0xFF);
+        for (si = 0; si < sc; si++) {
+            const char *sn = p_sym_name(si);
+            int nl = ark_strlen(sn) + 1; /* include null terminator */
+            int off = p_sym_offset(si);
+            int tp = p_sym_type(si);
+            int wk = p_sym_weak(si);
+            /* name length (4 bytes LE) */
+            obj_buf[ol++] = (unsigned char)(nl & 0xFF);
+            obj_buf[ol++] = (unsigned char)((nl >> 8) & 0xFF);
+            obj_buf[ol++] = (unsigned char)((nl >> 16) & 0xFF);
+            obj_buf[ol++] = (unsigned char)((nl >> 24) & 0xFF);
+            /* name bytes */
+            {
+                int k;
+                for (k = 0; k < nl; k++) obj_buf[ol++] = (unsigned char)sn[k];
+            }
+            /* offset (4 bytes LE) */
+            obj_buf[ol++] = (unsigned char)(off & 0xFF);
+            obj_buf[ol++] = (unsigned char)((off >> 8) & 0xFF);
+            obj_buf[ol++] = (unsigned char)((off >> 16) & 0xFF);
+            obj_buf[ol++] = (unsigned char)((off >> 24) & 0xFF);
+            /* type (1 byte) */
+            obj_buf[ol++] = (unsigned char)tp;
+            /* is_weak (1 byte): 1=weak symbol, 0=strong */
+            obj_buf[ol++] = (unsigned char)wk;
+        }
+        if (ram_extra) {
+            ol = obj_put_sym(obj_buf, ol, OBJ_RAM_START_SYM, ram_start,
+                             OBJ_SYM_TYPE_RAM, 0);
+            ol = obj_put_sym(obj_buf, ol, OBJ_RAM_END_SYM, ram_end,
+                             OBJ_SYM_TYPE_RAM, 0);
+        }
+    } else {
+        /* Non-object backend: write 0 symbol count */
+        obj_buf[ol++] = 0; obj_buf[ol++] = 0; obj_buf[ol++] = 0; obj_buf[ol++] = 0;
+    }
+
+    /* Bug-A2: Write relocation table for ARM backend.
+     * Format: reloc_count (4 bytes LE) + for each reloc:
+     *   name_len (4 bytes LE) + name (name_len bytes) + offset (4 bytes LE) + type (1 byte)
+     * This goes AFTER the symbol table. Existing readers that stop
+     * after the symbol table (like build_ark_test_fw.ps1) are unaffected. */
+    if (p_reloc_count) {
+        int rc = p_reloc_count();
+        int ri;
+        /* reloc count (4 bytes LE) */
+        obj_buf[ol++] = (unsigned char)(rc & 0xFF);
+        obj_buf[ol++] = (unsigned char)((rc >> 8) & 0xFF);
+        obj_buf[ol++] = (unsigned char)((rc >> 16) & 0xFF);
+        obj_buf[ol++] = (unsigned char)((rc >> 24) & 0xFF);
+        for (ri = 0; ri < rc; ri++) {
+            const char *rn = p_reloc_name(ri);
+            int nl = ark_strlen(rn) + 1;
+            int off = p_reloc_offset(ri);
+            int tp = p_reloc_type(ri);
+            /* name length (4 bytes LE) */
+            obj_buf[ol++] = (unsigned char)(nl & 0xFF);
+            obj_buf[ol++] = (unsigned char)((nl >> 8) & 0xFF);
+            obj_buf[ol++] = (unsigned char)((nl >> 16) & 0xFF);
+            obj_buf[ol++] = (unsigned char)((nl >> 24) & 0xFF);
+            /* name bytes */
+            {
+                int k;
+                for (k = 0; k < nl; k++) obj_buf[ol++] = (unsigned char)rn[k];
+            }
+            /* offset (4 bytes LE) */
+            obj_buf[ol++] = (unsigned char)(off & 0xFF);
+            obj_buf[ol++] = (unsigned char)((off >> 8) & 0xFF);
+            obj_buf[ol++] = (unsigned char)((off >> 16) & 0xFF);
+            obj_buf[ol++] = (unsigned char)((off >> 24) & 0xFF);
+            /* type (1 byte) */
+            obj_buf[ol++] = (unsigned char)tp;
+        }
+    }
+
+    if (fs_write_file(target, obj_buf, ol) != ol)
+        return ARK_ERR_IO;
+    {
+        if (opts->verbose) ark_log("[arkcc] wrote object '%s' (%d bytes code, %d syms, %d relocs)\n",
+            target, code_len,
+            p_sym_count   ? p_sym_count()   : 0,
+            p_reloc_count ? p_reloc_count() : 0);
+    }
+    return ARK_OK;
+
+}
 int ark_compile(const ArkOptions *opts) {
     int src_len;
     Lexer lex;
@@ -336,13 +607,19 @@ int ark_compile(const ArkOptions *opts) {
         const char *out_path;
         int li;
 
-        /* Detect ARKOBJ2 binary format from the first input */
+        /* Detect ARKOBJ2 binary format from the first input.
+         * NOTE: fs_read_file() reads at most max_len-1 bytes (it reserves one
+         * byte for the NUL terminator), so asking for an 8-byte header with an
+         * 8-byte limit returned 7 bytes and the magic never matched. Every
+         * -link therefore silently fell back to raw text concatenation and
+         * reported success. Use a wider buffer than the header we compare. */
         {
-            int pn = fs_read_file(opts->link_inputs[0], buf, 8);
-            if (pn >= 8 && (unsigned char)buf[0]=='A' && (unsigned char)buf[1]=='R' &&
-                (unsigned char)buf[2]=='K' && (unsigned char)buf[3]=='O' &&
-                (unsigned char)buf[4]=='B' && (unsigned char)buf[5]=='J' &&
-                (unsigned char)buf[6]=='2' && (unsigned char)buf[7]=='\n')
+            char hdr[16];
+            int pn = fs_read_file(opts->link_inputs[0], hdr, (int)sizeof(hdr));
+            if (pn >= 8 && hdr[0]=='A' && hdr[1]=='R' &&
+                hdr[2]=='K' && hdr[3]=='O' &&
+                hdr[4]=='B' && hdr[5]=='J' &&
+                hdr[6]=='2' && hdr[7]=='\n')
                 is_binary = 1;
         }
         out_path = opts->output_path ? opts->output_path :
@@ -352,6 +629,11 @@ int ark_compile(const ArkOptions *opts) {
             /* Binary ARM linker */
             g_ld_sym_count = 0;
             g_ld_reloc_count = 0;
+            g_ld_ram_obj_count = 0;
+            ld_rt_dup_count = 0;
+            { int k; for (k = 0; k < LD_MAX_OBJS; k++) {
+                  g_ld_ram[k].start = 0; g_ld_ram[k].end = 0;
+                  g_ld_ram[k].have_start = 0; g_ld_ram[k].have_end = 0; } }
             for (li = 0; li < opts->link_input_count; li++) {
                 int n = fs_read_file(opts->link_inputs[li], buf, sizeof(buf));
                 const unsigned char *up = (const unsigned char *)buf;
@@ -384,6 +666,23 @@ int ark_compile(const ArkOptions *opts) {
                     sym_off = rd_le32(up + pos); pos += 4;
                     pos += 1;           /* type (unused by linker) */
                     sym_weak = up[pos]; pos += 1;
+                    /* RAM footprint descriptors: the offset field is an
+                     * absolute address, so it must NOT get the object code
+                     * base added, and it is not a resolvable label. */
+                    if (ark_streq(sym_name, OBJ_RAM_START_SYM)) {
+                        if (li < LD_MAX_OBJS) {
+                            g_ld_ram[li].start = (unsigned)sym_off;
+                            g_ld_ram[li].have_start = 1;
+                        }
+                        continue;
+                    }
+                    if (ark_streq(sym_name, OBJ_RAM_END_SYM)) {
+                        if (li < LD_MAX_OBJS) {
+                            g_ld_ram[li].end = (unsigned)sym_off;
+                            g_ld_ram[li].have_end = 1;
+                        }
+                        continue;
+                    }
                     ld_add_sym(sym_name, base + sym_off, sym_weak);
                 }
                 /* Relocation table: count + entries
@@ -400,6 +699,48 @@ int ark_compile(const ArkOptions *opts) {
                     reloc_off = rd_le32(up + pos); pos += 4;
                     reloc_type = up[pos]; pos += 1;
                     ld_add_reloc(reloc_name, base + reloc_off, reloc_type);
+                }
+            }
+            if (ld_rt_dup_count > 0) {
+                ark_log("[link] note: %d duplicate compiler-runtime symbols "
+                        "merged (first definition kept)\n", ld_rt_dup_count);
+            }
+            /* === Multi-object SRAM overlap check ===
+             * -link concatenates code sections and resolves code relocations,
+             * but it does not relocate .data/.bss: every object was laid out
+             * from the same SRAM base (default 0x20000000, or the +RW/+ZI
+             * region of the shared scatter file). Linking two objects that
+             * both declare RAM objects therefore produces an image where the
+             * two sets of globals alias the same addresses. That used to be
+             * silent; fail loudly instead of shipping a wrong image. */
+            {
+                int obj_a, obj_b;
+                for (obj_a = 0; obj_a < LD_MAX_OBJS; obj_a++) {
+                    if (!g_ld_ram[obj_a].have_start || !g_ld_ram[obj_a].have_end)
+                        continue;
+                    for (obj_b = obj_a + 1; obj_b < LD_MAX_OBJS; obj_b++) {
+                        unsigned lo, hi;
+                        if (!g_ld_ram[obj_b].have_start || !g_ld_ram[obj_b].have_end)
+                            continue;
+                        lo = g_ld_ram[obj_a].start > g_ld_ram[obj_b].start ?
+                             g_ld_ram[obj_a].start : g_ld_ram[obj_b].start;
+                        hi = g_ld_ram[obj_a].end < g_ld_ram[obj_b].end ?
+                             g_ld_ram[obj_a].end : g_ld_ram[obj_b].end;
+                        if (lo < hi) {
+                            ark_log("[link] error: SRAM overlap between objects #%d "
+                                    "and #%d: both place .data/.bss in "
+                                    "0x%08X..0x%08X; the overlapping range is "
+                                    "0x%08X..0x%08X\n",
+                                    obj_a, obj_b,
+                                    g_ld_ram[obj_a].start, g_ld_ram[obj_a].end,
+                                    lo, hi);
+                            ark_log("[link] error: -link does not relocate data "
+                                    "sections, so globals from different objects "
+                                    "would silently share one address; link a "
+                                    "single object or merge the translation units\n");
+                            return ARK_ERR_LINK;
+                        }
+                    }
                 }
             }
             /* === Scatter-aware linking: generate vector table ===
@@ -559,6 +900,12 @@ int ark_compile(const ArkOptions *opts) {
         if (code_size < 0) {
             ark_log("[arkcc] assembly of '%s' failed\n", opts->input_path);
             return ARK_ERR_ASM;
+        }
+        /* -c on an assembly input used to be silently ignored and still
+         * produced a flat .bin, so the flag changed nothing. Emit a real
+         * ARKOBJ2 object now, using the same writer as the C front end. */
+        if (opts->compile_only) {
+            return write_ark_obj(be2, opts, asm_len, code_size);
         }
         if (be2->link) {
             int rc = be2->link(g_code, code_size, 0);
@@ -791,6 +1138,12 @@ int ark_compile(const ArkOptions *opts) {
     }
     ir = irgen_program(ast);
     if (!ir) return ARK_ERR_IRGEN;
+    if (g_irgen_errors > 0) {
+        /* IR generation could not lower part of the program; the emitted code
+         * would be silently wrong, so refuse to produce an image. */
+        ark_log("[arkcc] %d construct(s) could not be lowered to IR\n", g_irgen_errors);
+        return ARK_ERR_IRGEN;
+    }
     ir->source_file = opts->input_path;  /* Used for DWARF .file/.loc */
 
     /* IR-level optimization: constant folding + dead code elimination.
@@ -807,15 +1160,9 @@ int ark_compile(const ArkOptions *opts) {
     if (asm_len < 0) return ARK_ERR_CODEGEN;
     g_asm[asm_len] = 0;
 
-    /* -c mode: generate .ark_obj with binary code + symbol table for ARM backend */
+    /* -c mode: write an ARKOBJ2 object instead of a flat binary. */
     if (opts->compile_only) {
-        char outpath[512];
-        const char *target;
-        static unsigned char obj_buf[ARK_OBJ_BUF_SIZE] __attribute__((section(".ark_buf")));
-        int ol = 0;
-        int code_len = asm_len;  /* default: text assembly for non-ARM backends */
-
-        /* For ARM/x86 backends: assemble text to binary first */
+        int code_len = asm_len;
         if (ark_streq(be->name, "arm") || ark_streq(be->name, "x86")) {
             code_len = be->assemble(g_asm, g_code, ARK_CODE_BUF_SIZE);
             if (code_len < 0) {
@@ -823,180 +1170,7 @@ int ark_compile(const ArkOptions *opts) {
                 return ARK_ERR_ASM;
             }
         }
-
-        if (opts->output_path) target = opts->output_path;
-        else {
-            if (derive_output(opts->input_path, outpath, sizeof(outpath), ".ark_obj") != 0)
-                return ARK_ERR_ARG;
-            target = outpath;
-        }
-
-        /* Write extended header "ARKOBJ2\n" (8 bytes) */
-        {
-            const char *hdr = "ARKOBJ2\n";
-            int hk;
-            for (hk = 0; hdr[hk]; hk++) obj_buf[ol++] = (unsigned char)hdr[hk];
-        }
-
-        /* Write code size (4 bytes, little-endian) */
-        {
-            int cs = code_len;
-            obj_buf[ol++] = (unsigned char)(cs & 0xFF);
-            obj_buf[ol++] = (unsigned char)((cs >> 8) & 0xFF);
-            obj_buf[ol++] = (unsigned char)((cs >> 16) & 0xFF);
-            obj_buf[ol++] = (unsigned char)((cs >> 24) & 0xFF);
-        }
-
-        /* Write code body */
-        if (code_len + ol > (int)sizeof(obj_buf)) {
-            ark_log("[arkcc] object output too large for buffer\n");
-            return ARK_ERR_IO;
-        }
-        {
-            int k;
-            const unsigned char *src = (ark_streq(be->name, "arm") || ark_streq(be->name, "x86")) ? g_code : (const unsigned char *)g_asm;
-            for (k = 0; k < code_len; k++) obj_buf[ol++] = src[k];
-        }
-
-        /* Symbol/reloc getters: ARM and x86 backends both emit ARKOBJ2 tables. */
-        int   (*p_sym_count)(void)       = 0;
-        const char *(*p_sym_name)(int)   = 0;
-        int   (*p_sym_offset)(int)       = 0;
-        int   (*p_sym_type)(int)         = 0;
-        int   (*p_sym_weak)(int)          = 0;
-        int   (*p_reloc_count)(void)     = 0;
-        const char *(*p_reloc_name)(int) = 0;
-        int   (*p_reloc_offset)(int)     = 0;
-        int   (*p_reloc_type)(int)       = 0;
-        if (ark_streq(be->name, "arm")) {
-            extern int   arm_get_symbol_count(void);
-            extern const char *arm_get_symbol_name(int idx);
-            extern int   arm_get_symbol_offset(int idx);
-            extern int   arm_get_symbol_type(int idx);
-            extern int   arm_get_symbol_weak(int idx);
-            extern int   arm_get_reloc_count(void);
-            extern const char *arm_get_reloc_name(int idx);
-            extern int   arm_get_reloc_offset(int idx);
-            extern int   arm_get_reloc_type(int idx);
-            p_sym_count   = arm_get_symbol_count;
-            p_sym_name    = arm_get_symbol_name;
-            p_sym_offset  = arm_get_symbol_offset;
-            p_sym_type    = arm_get_symbol_type;
-            p_sym_weak    = arm_get_symbol_weak;
-            p_reloc_count = arm_get_reloc_count;
-            p_reloc_name  = arm_get_reloc_name;
-            p_reloc_offset= arm_get_reloc_offset;
-            p_reloc_type  = arm_get_reloc_type;
-        } else if (ark_streq(be->name, "x86")) {
-#if ARKCC_BACKEND_X86_64
-            extern int   x86_get_symbol_count(void);
-            extern const char *x86_get_symbol_name(int idx);
-            extern int   x86_get_symbol_offset(int idx);
-            extern int   x86_get_symbol_type(int idx);
-            extern int   x86_get_symbol_weak(int idx);
-            extern int   x86_get_reloc_count(void);
-            extern const char *x86_get_reloc_name(int idx);
-            extern int   x86_get_reloc_offset(int idx);
-            extern int   x86_get_reloc_type(int idx);
-            p_sym_count   = x86_get_symbol_count;
-            p_sym_name    = x86_get_symbol_name;
-            p_sym_offset  = x86_get_symbol_offset;
-            p_sym_type    = x86_get_symbol_type;
-            p_sym_weak    = x86_get_symbol_weak;
-            p_reloc_count = x86_get_reloc_count;
-            p_reloc_name  = x86_get_reloc_name;
-            p_reloc_offset= x86_get_reloc_offset;
-            p_reloc_type  = x86_get_reloc_type;
-#endif
-        }
-
-        /* Write symbol table for object backends (ARM/x86) */
-        if (p_sym_count) {
-            int sc = p_sym_count();
-            int si;
-            /* symbol count (4 bytes LE) */
-            obj_buf[ol++] = (unsigned char)(sc & 0xFF);
-            obj_buf[ol++] = (unsigned char)((sc >> 8) & 0xFF);
-            obj_buf[ol++] = (unsigned char)((sc >> 16) & 0xFF);
-            obj_buf[ol++] = (unsigned char)((sc >> 24) & 0xFF);
-            for (si = 0; si < sc; si++) {
-                const char *sn = p_sym_name(si);
-                int nl = ark_strlen(sn) + 1; /* include null terminator */
-                int off = p_sym_offset(si);
-                int tp = p_sym_type(si);
-                int wk = p_sym_weak(si);
-                /* name length (4 bytes LE) */
-                obj_buf[ol++] = (unsigned char)(nl & 0xFF);
-                obj_buf[ol++] = (unsigned char)((nl >> 8) & 0xFF);
-                obj_buf[ol++] = (unsigned char)((nl >> 16) & 0xFF);
-                obj_buf[ol++] = (unsigned char)((nl >> 24) & 0xFF);
-                /* name bytes */
-                {
-                    int k;
-                    for (k = 0; k < nl; k++) obj_buf[ol++] = (unsigned char)sn[k];
-                }
-                /* offset (4 bytes LE) */
-                obj_buf[ol++] = (unsigned char)(off & 0xFF);
-                obj_buf[ol++] = (unsigned char)((off >> 8) & 0xFF);
-                obj_buf[ol++] = (unsigned char)((off >> 16) & 0xFF);
-                obj_buf[ol++] = (unsigned char)((off >> 24) & 0xFF);
-                /* type (1 byte) */
-                obj_buf[ol++] = (unsigned char)tp;
-                /* is_weak (1 byte): 1=weak symbol, 0=strong */
-                obj_buf[ol++] = (unsigned char)wk;
-            }
-        } else {
-            /* Non-object backend: write 0 symbol count */
-            obj_buf[ol++] = 0; obj_buf[ol++] = 0; obj_buf[ol++] = 0; obj_buf[ol++] = 0;
-        }
-
-        /* Bug-A2: Write relocation table for ARM backend.
-         * Format: reloc_count (4 bytes LE) + for each reloc:
-         *   name_len (4 bytes LE) + name (name_len bytes) + offset (4 bytes LE) + type (1 byte)
-         * This goes AFTER the symbol table. Existing readers that stop
-         * after the symbol table (like build_ark_test_fw.ps1) are unaffected. */
-        if (p_reloc_count) {
-            int rc = p_reloc_count();
-            int ri;
-            /* reloc count (4 bytes LE) */
-            obj_buf[ol++] = (unsigned char)(rc & 0xFF);
-            obj_buf[ol++] = (unsigned char)((rc >> 8) & 0xFF);
-            obj_buf[ol++] = (unsigned char)((rc >> 16) & 0xFF);
-            obj_buf[ol++] = (unsigned char)((rc >> 24) & 0xFF);
-            for (ri = 0; ri < rc; ri++) {
-                const char *rn = p_reloc_name(ri);
-                int nl = ark_strlen(rn) + 1;
-                int off = p_reloc_offset(ri);
-                int tp = p_reloc_type(ri);
-                /* name length (4 bytes LE) */
-                obj_buf[ol++] = (unsigned char)(nl & 0xFF);
-                obj_buf[ol++] = (unsigned char)((nl >> 8) & 0xFF);
-                obj_buf[ol++] = (unsigned char)((nl >> 16) & 0xFF);
-                obj_buf[ol++] = (unsigned char)((nl >> 24) & 0xFF);
-                /* name bytes */
-                {
-                    int k;
-                    for (k = 0; k < nl; k++) obj_buf[ol++] = (unsigned char)rn[k];
-                }
-                /* offset (4 bytes LE) */
-                obj_buf[ol++] = (unsigned char)(off & 0xFF);
-                obj_buf[ol++] = (unsigned char)((off >> 8) & 0xFF);
-                obj_buf[ol++] = (unsigned char)((off >> 16) & 0xFF);
-                obj_buf[ol++] = (unsigned char)((off >> 24) & 0xFF);
-                /* type (1 byte) */
-                obj_buf[ol++] = (unsigned char)tp;
-            }
-        }
-
-        if (fs_write_file(target, obj_buf, ol) != ol)
-            return ARK_ERR_IO;
-        {
-            if (opts->verbose) ark_log("[arkcc] wrote object '%s' (%d bytes code, %d syms, %d relocs)\n",
-                target, code_len,
-                p_sym_count   ? p_sym_count()   : 0,
-                p_reloc_count ? p_reloc_count() : 0);
-        }
-        return ARK_OK;
+        return write_ark_obj(be, opts, asm_len, code_len);
     }
 
     if (opts->emit_asm) {

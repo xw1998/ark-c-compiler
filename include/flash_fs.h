@@ -18,7 +18,8 @@ int fs_read_file(const char *path, char *buf, int max_len);
 int fs_write_file(const char *path, const unsigned char *data, int len);
 
 /* List all files on the flash FS (STM32 only; prints via ark_log).
- * Returns the number of files found.
+ * Returns the number of files found, or -1 if the backing store cannot be
+ * listed at all (e.g. the host port, which has no flash FS).
  */
 int fs_list_files(void);
 

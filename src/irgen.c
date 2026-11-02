@@ -405,9 +405,13 @@ static void collect_cases(IrGen *g, AstNode *node, CaseList *cl) {
     }
 }
 
+/* See include/irgen.h. Counted, never cleared implicitly except at entry. */
+int g_irgen_errors = 0;
+
 IrProgram *irgen_program(AstNode *prog) {
     IrProgram *out = ir_program_new();
     int i;
+    g_irgen_errors = 0;
     sym_init();
 
     /* Pre-pass: register all function/global symbols so cross-references
@@ -1662,6 +1666,7 @@ static void irgen_lvalue_addr(IrGen *g, AstNode *node) {
         return;
     }
     ark_log("[irgen] line %d: invalid lvalue\n", node->line);
+    g_irgen_errors++;
 }
 
 /* Find the bit-field info for an AST_MEMBER node.
@@ -2689,6 +2694,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                     }
                 } else {
                     ark_log("[irgen] line %d: invalid assignment target\n", node->line);
+                    g_irgen_errors++;
                     ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
                 }
             } else {
@@ -2853,6 +2859,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                     }
                 } else {
                     ark_log("[irgen] line %d: compound-assign target unsupported\n", node->line);
+                    g_irgen_errors++;
                     ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
                 }
             }

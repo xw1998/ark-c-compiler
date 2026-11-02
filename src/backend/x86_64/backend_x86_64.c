@@ -448,6 +448,9 @@ static void emit_aggregate_init(AsmBuffer *out, Type *t, const char *init_str) {
     }
 }
 
+/* Set when the emitter produced text it knows is not assemblable. */
+static int x86_emit_errors;
+
 static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
     AsmBuffer buf;
     int fi;
@@ -474,11 +477,13 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
         for (i = 0; i < prog->global_count; i++) {
             IrGlobal *g = prog->globals[i];
             if (g->is_extern) continue;  /* extern: no definition */
-            asmbuf_puts(&buf, "    .globl ");
-            asmbuf_puts(&buf, g->name);
-            asmbuf_putc(&buf, '\n');
-            if (g->is_static) {
-                asmbuf_puts(&buf, "    .local ");
+            /* Only non-static globals get external linkage. Emitting ".globl"
+             * together with ".local" for the same symbol was contradictory (and
+             * ".local" is rejected by the PE-targeted GNU as shipped with some
+             * toolchains); a plain label is already local, so statics need no
+             * directive at all. The ARM backend guards the same way. */
+            if (!g->is_static) {
+                asmbuf_puts(&buf, "    .globl ");
                 asmbuf_puts(&buf, g->name);
                 asmbuf_putc(&buf, '\n');
             }
@@ -556,9 +561,13 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
             sret_off = local_size + 48 + 200;
         }
 
-        asmbuf_puts(&buf, "    .globl ");
-        asmbuf_puts(&buf, f->name);
-        asmbuf_putc(&buf, '\n');
+        /* Static functions must stay file-local; exporting them as strong
+         * globals made two translation units with same-named statics collide. */
+        if (!f->is_static) {
+            asmbuf_puts(&buf, "    .globl ");
+            asmbuf_puts(&buf, f->name);
+            asmbuf_putc(&buf, '\n');
+        }
         asmbuf_puts(&buf, f->name);
         asmbuf_puts(&buf, ":\n");
         /* cdecl prologue: push ebp; mov ebp, esp; save callee-saved (ebx, esi,
@@ -711,11 +720,11 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                         asmbuf_puts(&buf, "    push eax\n");
                         break;
                     } else {
-                        /* 4-byte (default) */
-                        if (is_unsigned)
-                            asmbuf_puts(&buf, "    mov eax, dword ptr [eax]\n");
-                        else
-                            asmbuf_puts(&buf, "    movsx eax, dword ptr [eax]\n");
+                        /* 4-byte (default): a dword load already writes all of
+                         * eax, so signed and unsigned agree. "movsx eax, dword
+                         * ptr [eax]" is a 32->32 sign extension, which does not
+                         * exist and is rejected by GNU as, so never emit it. */
+                        asmbuf_puts(&buf, "    mov eax, dword ptr [eax]\n");
                     }
                     asmbuf_puts(&buf, "    push eax\n");
                     break;
@@ -1290,7 +1299,12 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                     break;
                 }
 
-                /* IR_ASM: inline assembly. Emit as-is. */
+                /* IR_ASM: inline assembly. The template is written out verbatim.
+                 * Extended form ("@template : outs : ins : clobbers") carries the
+                 * placeholders but not the operand -> register assignment, so the
+                 * x86 backend cannot substitute %N the way the ARM backend does.
+                 * Emitting the template anyway produced assembly that no assembler
+                 * accepts, so report it as an error instead of shipping garbage. */
                 case IR_ASM:
                     if (I->name) {
                         const char *s = I->name;
@@ -1298,6 +1312,16 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                             s++;
                             while (*s == ' ' || *s == '\t') s++;
                             if (*s == '"') {
+                                const char *q = s + 1;
+                                while (*q && *q != '"') {
+                                    if (*q == '%' && q[1] >= '0' && q[1] <= '9') {
+                                        ark_log("[x86] error: inline asm operand %%%c cannot be "
+                                                "substituted by the x86 backend\n", q[1]);
+                                        x86_emit_errors++;
+                                        break;
+                                    }
+                                    q++;
+                                }
                                 s++;
                                 while (*s && *s != '"') {
                                     asmbuf_putc(&buf, *s);
@@ -1344,6 +1368,13 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
     {
         int n = buf.len;
         int i;
+        int errs = x86_emit_errors;
+        x86_emit_errors = 0;
+        if (errs) {
+            ark_log("[x86] error: %d unsupported construct(s), no output written\n", errs);
+            if (cap > 0) out[0] = 0;
+            return -1;
+        }
         if (n + 1 > cap) n = cap - 1;
         for (i = 0; i < n; i++) out[i] = buf.buf[i];
         out[n] = 0;
