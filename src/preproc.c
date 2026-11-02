@@ -181,6 +181,41 @@ static void buf_puts(char *buf, int *plen, int cap, const char *s) {
     while (*s) buf_putc(buf, plen, cap, *s++);
 }
 
+/* Append the stringified form of a macro argument (C99 6.10.3.2 `#` operator):
+ * leading/trailing whitespace is deleted, each interior whitespace run becomes
+ * one space, and every " or \ is escaped so the result is a valid string
+ * literal body. Whitespace inside a character/string literal that appears in
+ * the argument is preserved verbatim.
+ * Without this, a macro whose replacement list starts on the continuation line
+ * (`#define M(a,b) \<newline>    do{...}while(0)`) surfaced that leading
+ * indentation inside the quoted result, so XSTR(M(1,2))[0] was ' ' not 'd'. */
+static void buf_put_stringified(char *buf, int *plen, int cap, const char *s) {
+    int pending_space = 0;
+    int emitted = 0;
+    char open_quote = 0;
+    const char *p = s;
+    if (!s) return;
+    for (; *p; p++) {
+        char c = *p;
+        if (open_quote) {
+            if (c == '\\' || c == '"') buf_putc(buf, plen, cap, '\\');
+            buf_putc(buf, plen, cap, c);
+            if (c == open_quote) open_quote = 0;
+            continue;
+        }
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+            pending_space = 1;
+            continue;
+        }
+        if (pending_space && emitted) buf_putc(buf, plen, cap, ' ');
+        pending_space = 0;
+        if (c == '"' || c == '\'') open_quote = c;
+        if (c == '"' || c == '\\') buf_putc(buf, plen, cap, '\\');
+        buf_putc(buf, plen, cap, c);
+        emitted = 1;
+    }
+}
+
 /* Format a signed int into the output buffer. */
 static void emit_int(char *buf, int *plen, int cap, int v) {
     char tmp[16];
@@ -513,13 +548,8 @@ static void expand_func_macro(Macro *m, char **args, int argc,
                 for (i = 0; i < m->param_count; i++)
                     if (ark_streq(m->params[i], nm)) { found = i; break; }
                 if (found >= 0 && found < argc) {
-                    const char *s = args[found];
                     buf_putc(out, out_len, out_cap, '"');
-                    while (*s) {
-                        if (*s == '"' || *s == '\\') buf_putc(out, out_len, out_cap, '\\');
-                        buf_putc(out, out_len, out_cap, *s);
-                        s++;
-                    }
+                    buf_put_stringified(out, out_len, out_cap, args[found]);
                     buf_putc(out, out_len, out_cap, '"');
                     p = q;
                     continue;
