@@ -1,0 +1,4 @@
+"pp_include_missing.c", line 1: Error:  #5: cannot open source input file "no_such_header.h": No such file or directory
+  #include "no_such_header.h"
+                             ^
+pp_include_missing.c: 0 warnings, 1 error

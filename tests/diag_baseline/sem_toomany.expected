@@ -1,0 +1,4 @@
+"sem_toomany.c", line 2: Error:  #140: too many arguments in function call
+  int f(void) { return g( 1 , 2 ); }
+                              ^
+sem_toomany.c: 0 warnings, 1 error

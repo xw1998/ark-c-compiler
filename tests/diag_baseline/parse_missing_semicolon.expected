@@ -1,0 +1,4 @@
+"parse_missing_semicolon.c", line 1: Error:  #65: expected a ";"
+  int f(void) { return 0 }
+                         ^
+parse_missing_semicolon.c: 0 warnings, 1 error

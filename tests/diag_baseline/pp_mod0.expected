@@ -1,0 +1,4 @@
+"pp_mod0.c", line 1: Error:  #179: right operand of "%" is zero
+  #if 1%0
+       ^
+pp_mod0.c: 0 warnings, 1 error

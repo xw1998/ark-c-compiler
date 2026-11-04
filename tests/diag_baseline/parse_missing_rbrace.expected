@@ -1,0 +1,2 @@
+"parse_missing_rbrace.c", line 1: Error: At end of source:  #67: expected a "}"
+parse_missing_rbrace.c: 0 warnings, 1 error

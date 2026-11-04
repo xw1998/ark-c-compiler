@@ -55,6 +55,8 @@ $coreFiles = @(
     @{src="src\compiler.c";         obj="compiler.o"},
     @{src="src\config.c";           obj="config.o"},
     @{src="src\cpu.c";              obj="cpu.o"},
+    @{src="src\diag.c";             obj="diag.o"},
+    @{src="src\diag_msg_table.c";   obj="diag_msg_table.o"},
     @{src="src\ir.c";               obj="ir.o"},
     @{src="src\irgen.c";            obj="irgen.o"},
     @{src="src\lexer.c";            obj="lexer.o"},
@@ -114,17 +116,9 @@ Write-Host "AS startup_stm32h743xx.s" -ForegroundColor Cyan
 if ($LASTEXITCODE -ne 0) { Write-Host "FAIL: startup (exit $LASTEXITCODE)" -ForegroundColor Red; exit 1 }
 
 # === 6. Link ===
-$objs = @(
-    "$OBJDIR\startup_stm32h743xx.o",
-    "$OBJDIR\ast.o", "$OBJDIR\codegen_common.o", "$OBJDIR\compiler.o", "$OBJDIR\config.o",
-    "$OBJDIR\cpu.o", "$OBJDIR\ir.o", "$OBJDIR\irgen.o", "$OBJDIR\lexer.o", "$OBJDIR\memory.o",
-    "$OBJDIR\opt.o", "$OBJDIR\parser.o", "$OBJDIR\preproc.o", "$OBJDIR\scatter.o",
-    "$OBJDIR\sema.o", "$OBJDIR\symtab.o", "$OBJDIR\type.o",
-    "$OBJDIR\backend_arm.o", "$OBJDIR\registry.o",
-    "$OBJDIR\flash_fs_stm32.o", "$OBJDIR\platform_stm32.o",
-    "$OBJDIR\mdk_main.o", "$OBJDIR\stm32h7xx_it.o", "$OBJDIR\stm32h7xx_hal_msp.o",
-    "$OBJDIR\system_stm32h7xx.o", "$OBJDIR\bsp_w25q.o"
-)
+# Derived from $allFiles on purpose: a hand-maintained second list is exactly
+# how a new module gets compiled but never linked.
+$objs = @("$OBJDIR\startup_stm32h743xx.o") + ($allFiles | ForEach-Object { "$OBJDIR\$($_.obj)" })
 
 Write-Host "`nLINK arkcc_stm32.elf" -ForegroundColor Cyan
 $linkArgs = @(

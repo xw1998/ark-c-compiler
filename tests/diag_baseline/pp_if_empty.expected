@@ -1,0 +1,7 @@
+"pp_if_empty.c", line 1: Error:  #29: expected an expression
+  #if
+     ^
+"pp_if_empty.c", line 1: Error:  #37: the #endif for this directive is missing
+  #if
+   ^
+pp_if_empty.c: 0 warnings, 2 errors

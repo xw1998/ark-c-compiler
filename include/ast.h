@@ -13,6 +13,10 @@ struct AstNode {
     AstNodeKind kind;
     Type       *type;
     int         line;
+    int         col;      /* 1-based column of the anchor token; 0 = unknown.
+                           * Diagnostics use it to place the caret, so only
+                           * nodes built directly from an identifier token are
+                           * stamped by the parser. */
     double      fval;     /* floating value; only for AST_NUM whose type is float/double */
     union {
         long long num_val;

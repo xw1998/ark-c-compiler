@@ -1,0 +1,4 @@
+"sem_toofew.c", line 2: Error:  #165: too few arguments in function call
+  int f(void) { return g(); }
+                         ^
+sem_toofew.c: 0 warnings, 1 error

@@ -11,11 +11,38 @@
  *   - Operators: . / -> / ...
  */
 #include "lexer.h"
+#include "diag.h"
 #include "memory.h"
 #include "platform.h"
 #include "config.h"
 #include "arkcc_config.h"
 #include "type.h"
+
+/* Display column of `p` inside the current line: one cell per ASCII byte, one
+ * for a 2-byte UTF-8 sequence, two for a 3- or 4-byte one. That is exactly the
+ * width diag.c's caret replay uses, so the caret lands on the character the
+ * message names instead of walking past it on CJK lines. A tab counts as one
+ * cell, because the caret line replays it as a tab.
+ *
+ * lexing only moves forward, so the walk is continued from the previous
+ * position instead of restarting at the line start: a token costs the few
+ * characters after its predecessor, not the whole line. */
+static int lex_col(Lexer *lex, const char *p) {
+    if (!lex->line_start || p < lex->line_start) return 0;
+    if (!lex->col_p || lex->col_p < lex->line_start || lex->col_p > p) {
+        lex->col_p = lex->line_start;
+        lex->col_cells = 1;
+    }
+    while (lex->col_p < p) {
+        unsigned char c = (unsigned char)*lex->col_p;
+        if (c < 0x80)                { lex->col_cells += 1; lex->col_p += 1; }
+        else if ((c & 0xE0) == 0xC0) { lex->col_cells += 1; lex->col_p += 2; }
+        else if ((c & 0xF0) == 0xE0) { lex->col_cells += 2; lex->col_p += 3; }
+        else if ((c & 0xF8) == 0xF0) { lex->col_cells += 2; lex->col_p += 4; }
+        else                         { lex->col_cells += 1; lex->col_p += 1; }
+    }
+    return lex->col_cells;
+}
 
 static Token lexer_read_token(Lexer *lex);
 
@@ -60,13 +87,13 @@ static Token lexer_read_token_with_pos(Lexer *lex) {
         while (*lex->p) {
             char c = *lex->p;
             if (c == ' ' || c == '\t' || c == '\r') lex->p++;
-            else if (c == '\n') { lex->line++; lex->p++; }
+            else if (c == '\n') { lex->line++; lex->p++; lex->line_start = lex->p; }
             else if (c == '/' && lex->p[1] == '/') {
                 while (*lex->p && *lex->p != '\n') lex->p++;
             } else if (c == '/' && lex->p[1] == '*') {
                 lex->p += 2;
                 while (*lex->p && !(lex->p[0]=='*' && lex->p[1]=='/')) {
-                    if (*lex->p == '\n') lex->line++;
+                    if (*lex->p == '\n') { lex->line++; lex->line_start = lex->p + 1; }
                     lex->p++;
                 }
                 if (*lex->p) lex->p += 2;
@@ -76,6 +103,8 @@ static Token lexer_read_token_with_pos(Lexer *lex) {
     p_before = lex->p;
     t = lexer_read_token(lex);
     if (!t.src_start) t.src_start = p_before;
+    /* Column of the token start, in display cells (see lex_col). */
+    t.col = lex_col(lex, p_before);
     return t;
 }
 
@@ -119,7 +148,7 @@ static int hex_val(char c) {
 
 static Token make_token(TokenKind kind, int line) {
     Token t;
-    t.kind = kind; t.value = 0; t.fvalue = 0.0; t.str = 0; t.line = line;
+    t.kind = kind; t.value = 0; t.fvalue = 0.0; t.str = 0; t.line = line; t.col = 0;
     t.src_start = 0; t.is_imag = 0; t.is_float = 0;
     t.lit_unsigned = 0; t.lit_long = 0; t.lit_llong = 0;
     return t;
@@ -269,12 +298,13 @@ static void skip_ws_and_comments(Lexer *lex) {
         } else if (c == '\n') {
             lex->line++;
             lex->p++;
+            lex->line_start = lex->p;
         } else if (c == '/' && lex->p[1] == '/') {
             while (*lex->p && *lex->p != '\n') lex->p++;
         } else if (c == '/' && lex->p[1] == '*') {
             lex->p += 2;
             while (*lex->p && !(lex->p[0]=='*' && lex->p[1]=='/')) {
-                if (*lex->p == '\n') lex->line++;
+                if (*lex->p == '\n') { lex->line++; lex->line_start = lex->p + 1; }
                 lex->p++;
             }
             if (*lex->p) lex->p += 2;
@@ -762,7 +792,7 @@ static Token lexer_read_token(Lexer *lex) {
             {
                 const char *q = lex->p;
                 while (*q == ' ' || *q == '\t' || *q == '\r' || *q == '\n') {
-                    if (*q == '\n') lex->line++;
+                    if (*q == '\n') { lex->line++; lex->line_start = q + 1; }
                     q++;
                 }
                 if (*q == '"') {
@@ -849,7 +879,16 @@ static Token lexer_read_token(Lexer *lex) {
             if (*lex->p == '=') { lex->p++; return make_token(TOK_OR_ASSIGN, line); }
             return make_token(TOK_BOR, line);
         default:
-            ark_log("[lexer] line %d: unknown char '%c' (0x%02X)\n", line, c, (unsigned char)c);
+            /* armcc reports this as #7 "unrecognized token" with the caret on
+             * the offending character and no extra detail, so we do the same
+             * instead of leaking a hex code. */
+            {
+                DiagLoc loc;
+                loc.file = 0;
+                loc.line = line;
+                loc.col = lex_col(lex, lex->p);
+                diag_report(7, DIAG_SEV_ERROR, &loc, 0, 0, 0);
+            }
             return make_token(TOK_EOF, line);
     }
 }
@@ -858,6 +897,10 @@ void lexer_init(Lexer *lex, const char *input) {
     lex->input = input;
     lex->p = input;
     lex->line = 1;
+    lex->line_start = input;
+    lex->last_line = 0;
+    lex->col_p = 0;
+    lex->col_cells = 1;
     lex->current = lexer_read_token_with_pos(lex);
     lex->ahead = lexer_read_token_with_pos(lex);
 }
@@ -869,6 +912,7 @@ Token lexer_next(Lexer *lex) {
     Token t = lex->current;
     lex->current = lex->ahead;
     lex->ahead = lexer_read_token_with_pos(lex);
+    if (t.kind != TOK_EOF && t.line > 0) lex->last_line = t.line;
     return t;
 }
 
@@ -876,10 +920,71 @@ void lexer_advance(Lexer *lex) {
     (void)lexer_next(lex);
 }
 
+/* Spelling of the token a caller expected, so the message reads like
+ * "expected a \";\"" instead of exposing the TokenKind enum. */
+static const char *expect_name(TokenKind k) {
+    switch (k) {
+        case TOK_SEMICOLON: return "a \";\"";
+        case TOK_RPAREN:    return "a \")\"";
+        case TOK_RBRACE:    return "a \"}\"";
+        case TOK_RBRACKET:  return "a \"]\"";
+        case TOK_LBRACE:    return "a \"{\"";
+        case TOK_LPAREN:    return "a \"(\"";
+        case TOK_IDENT:     return "an identifier";
+        default:            return "a token";
+    }
+}
+
+/* armcc codes for the "expected a X" family, measured one by one:
+ *   int a[2;        -> #17 expected a "]"
+ *   f(1, 2;         -> #18 expected a ")"
+ *   int a = ;       -> #29 expected an expression
+ *   missing ;       -> #65 expected a ";"
+ *   unclosed {      -> #67 expected a "}"  (positioned at the EOF token)
+ * `{`/`(` and identifiers have no measured code, so they keep the arkc
+ * wording. */
+static int expect_code(TokenKind k) {
+    switch (k) {
+        case TOK_SEMICOLON: return 65;
+        case TOK_RPAREN:    return 18;
+        case TOK_RBRACE:    return 67;
+        case TOK_RBRACKET:  return 17;
+        default:            return DIAG_NO_CODE;
+    }
+}
+
 int lexer_expect(Lexer *lex, TokenKind kind) {
     if (lex->current.kind != kind) {
-        ark_log("[parser] line %d: expected token kind %d but got %d\n",
-                lex->current.line, (int)kind, (int)lex->current.kind);
+        DiagLoc loc;
+        int code;
+        loc.file = 0;
+        loc.line = lex->current.line;
+        loc.col  = lex->current.col;
+        code = expect_code(kind);
+        if (lex->current.kind == TOK_EOF) {
+            /* Nothing left to point at: armcc anchors these at the line of the
+             * last real token and adds "At end of source" instead of echoing
+             * the line. */
+            /* armcc anchors the message on the line the final newline
+             * terminates, which is one before the EOF token (measured on
+             * 1-, 3- and 5-line files). */
+            if (loc.line > 1) {
+                loc.line--;
+            } else if (lex->last_line > 0) {
+                loc.line = lex->last_line;
+            }
+            loc.col = 0;
+            if (code >= 0) diag_report_at_eof(code, DIAG_SEV_ERROR, &loc);
+            else diag_report_msg(DIAG_SEV_ERROR, &loc, "expected %s",
+                                 expect_name(kind), 0, 0);
+            return 0;
+        }
+        if (code >= 0) {
+            diag_report(code, DIAG_SEV_ERROR, &loc, 0, 0, 0);
+        } else {
+            diag_report_msg(DIAG_SEV_ERROR, &loc, "expected %s",
+                            expect_name(kind), 0, 0);
+        }
         return 0;
     }
     lexer_advance(lex);

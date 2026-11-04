@@ -9,6 +9,7 @@ AstNode *ast_new(AstNodeKind kind, int line) {
     n->kind = kind;
     n->type = 0;
     n->line = line;
+    n->col = 0;
     n->fval = 0.0;
     return n;
 }

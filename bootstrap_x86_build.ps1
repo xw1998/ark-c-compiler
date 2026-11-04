@@ -67,7 +67,7 @@ if (-not (Test-Path ".\arkcc.exe")) {
 if (-not (Test-Path $OUTDIR)) { New-Item -ItemType Directory -Path $OUTDIR | Out-Null }
 
 $srcFiles = @(
-    'ast','codegen_common','compiler','config','cpu','ir','irgen','lexer',
+    'ast','codegen_common','compiler','config','cpu','diag','diag_msg_table','ir','irgen','lexer',
     'main','memory','opt','parser','preproc','scatter','sema','symtab','type'
 )
 $backendFiles = @(

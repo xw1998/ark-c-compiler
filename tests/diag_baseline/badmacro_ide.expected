@@ -1,0 +1,2 @@
+no source : error command-line:  #992: invalid macro definition: 1BAD=1
+armcc : clean.c: 0 warnings, 1 error

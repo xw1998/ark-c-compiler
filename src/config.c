@@ -10,6 +10,7 @@
 #include "config.h"
 #include "platform.h"
 #include "flash_fs.h"
+#include "diag.h"
 
 ArkccConfig g_config;
 
@@ -117,7 +118,9 @@ void config_load_file(const char *path) {
      * Silently fall back to compile-time defaults on failure. */
     len = fs_read_file(path, cfg_buf, (int)sizeof(cfg_buf) - 1);
     if (len < 0) {
-        ark_log("[config] cannot open config file '%s' (ignored)\n", path);
+        diag_tool(DIAG_SEV_WARNING, path,
+                  "cannot open config file, compile-time defaults are used",
+                  0,0,0,0,0,0);
         return;
     }
     cfg_buf[len] = 0;
@@ -240,7 +243,11 @@ void config_apply_args(int argc, char **argv) {
         }
         /* --cpp: arkcc does not support C++; report error explicitly */
         if (ark_streq(a, "--cpp")) {
-            ark_log("[arkcc] error: C++ (--cpp) is not supported\n");
+            /* Counted as an error, so the driver's exit code is non-zero:
+             * telling the user "not supported" and then exiting 0 is the same
+             * silent-wrong-answer failure the diagnostic layer exists to stop. */
+            diag_tool(DIAG_SEV_ERROR, "arkcc",
+                      "C++ (--cpp) is not supported", 0,0,0,0,0,0);
             continue;
         }
         /* 0.6.x: armcc 5 style --xxx options */

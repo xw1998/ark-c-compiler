@@ -216,6 +216,7 @@ ark c compiler/
 ├── Makefile                gcc 主机构建脚本
 ├── docs/MANUAL.md          用户手册（中文，UTF-8）
 ├── docs/STM32_BUILD.md     STM32 + armcc5 构建手册（中文，UTF-8）
+├── docs/DIAGNOSTICS.md     诊断层：与 armcc 逐字节对齐的排版契约（中文，UTF-8）
 └── README.md               项目简介（UTF-8）
 ```
 
@@ -258,6 +259,10 @@ arkcc <file.c|file.s> [选项]
   -fno-<feature>     禁用特性
   -Wno-unused        抑制未使用警告
   --list-backends    列出后端
+
+  诊断输出
+  --diag_style <s>   arm（默认）| ide；ide 为 uVision 的 File(line,col) 风格
+  --errors <file>    把整条诊断流写入文件（同 armcc）
 
   目标 CPU 选择
   -mcpu <name>       Cortex-M3/M4/M7/M33 等
@@ -347,12 +352,24 @@ debug_info  = 0
 ```powershell
 powershell -ExecutionPolicy Bypass -File examples\run_tests.ps1   # 75 个用例（71 断言 + 4 跳过）
 powershell -ExecutionPolicy Bypass -File run_full_test.ps1        # 73 个样例全量回归
+python tests/run_diag_tests.py                                    # 诊断排版门禁（需 armcc）
+python tests/run_diag_boundary.py                                 # 诊断边界契约（长行/上限/CJK/tab，无需 armcc）
 powershell -ExecutionPolicy Bypass -File run_asm_test.ps1         # 汇编输入门禁（.s/.S/.asm/.ASM）
 powershell -ExecutionPolicy Bypass -File run_arm_exec_test.ps1    # ARM 执行级：编译→链接→QEMU 真跑（需 qemu-system-arm）
 ```
 
 `run_asm_test.ps1` 校验汇编输入的扩展名路由：四种后缀产出逐字节相同的机器码、`-S` 对汇编输入是原样透传、缺失文件必须报错退出、`.c` 仍走正常前端（防止扩展名探测把 C 源当成汇编）。
 `run_arm_exec_test.ps1` 把 C 启动代码、汇编 semihosting 陷门和一个 C 工作负载编译链接成裸镜像，在 `qemu-system-arm -machine mps2-an385` 上执行，用 semihosting 退出码判定结果（两个不同负载必须分别返回 8 和 3）。QEMU 路径默认 `D:\qemu\mingw64\bin\qemu-system-arm.exe`，可用 `ARKCC_QEMU` 环境变量或 `-Qemu` 参数覆盖；装不上时脚本 `exit 2`，不会假装通过。这条门禁抓到并固化修复了三个真缺陷：向量表缺 Thumb 位（Cortex-M 会进 INVSTATE lockup）、`SVC`/`BKPT` 的无 `#` 立即数被静默编成 0、以及 `MUL r2, r2, r1` 被编成 `MUL r2, r2, r2`（导致所有整数取模算成 q\*q）。
+
+`tests/run_diag_tests.py` 把 arkc 的诊断输出与**真实 armcc 5.06** 的输出逐字节比对：
+能逐字节比的用例标 `exact`，arkc 错误恢复与 armcc 不同、只能比对每行拼写的标 `shape`，
+`--errors` 文件落盘标 `sink`。基线由 `--regen` 用真 armcc 重新生成；
+既没有 armcc 又没有基线时退出码是 2（拒绝假通过）。
+
+`tests/run_diag_boundary.py` 覆盖逐字节比不了的边界契约——超长行（`DIAG_LINE_MAX` 512）
+的截断与"画不出的 caret 就不画"、30 条错误上限、同一行多条诊断各自的 caret、
+CJK 按显示单元计列、tab 原样重放。它不需要 armcc，断言的是 arkc 自己写明的行为。
+排版规则与设计说明见 [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md)。
 
 71 个断言用例全部通过、4 个 ARM 专属用例跳过 C 后端运行（只查 ARM 发射，不计 pass）、0 失败（ARM 汇编生成 + C 后端编译运行，期望退出码逐文件机器校验），覆盖：基本算术、函数/递归、struct/union/enum、位域、VLA、`_Complex`、`wchar_t`/`L"..."`、三字符组、内联汇编（基本+扩展）、完整 `__attribute__` 集、`__svc`/`__irq`/`__weak`/`__naked`/`__packed`/`__align`/`__at`/`__forceinline`、`__asm` 整函数体汇编、`#pragma pack/anon_unions/location/...`、TLS、`__packed` 指针非对齐访问、`split_sections`、双精度浮点、64 位整数、除法/取模、复合字面量、指定初始化、结构体按值传递、隐式转换、整数提升、64 位 `printf`、`setjmp/longjmp`、多文件链接、CPU 宏、调试信息、`$` 标识符等。
 

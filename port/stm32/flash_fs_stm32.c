@@ -37,6 +37,12 @@ static void ensure_table(void) {
     s_table_loaded = 1;
 }
 
+/* The flash FS knows "not found" but nothing finer, so it reports exactly that
+ * much; callers must not read it as a syscall errno. */
+const char *fs_last_error(void) {
+    return "No such file or directory";
+}
+
 int fs_read_file(const char *path, char *buf, int max_len) {
     int i;
     if (!path || !buf || max_len <= 0) return -1;
@@ -50,6 +56,19 @@ int fs_read_file(const char *path, char *buf, int max_len) {
             buf[len] = 0;
             return (int)len;
         }
+    }
+    return -1;
+}
+
+/* Size of a file in the flash directory, or -1 if it is not there. */
+int fs_file_size(const char *path) {
+    int i;
+    if (!path) return -1;
+    ensure_table();
+    for (i = 0; i < MAX_FILES; i++) {
+        if (s_table[i].name[0] == 0) continue;
+        if (my_streq(s_table[i].name, path))
+            return (int)s_table[i].size;
     }
     return -1;
 }

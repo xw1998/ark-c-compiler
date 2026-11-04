@@ -1,0 +1,4 @@
+"pp_error.c", line 1: Error:  #35: #error directive: boom
+  #error boom
+   ^
+pp_error.c: 0 warnings, 1 error

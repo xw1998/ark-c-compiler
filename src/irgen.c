@@ -14,6 +14,7 @@
 #include "platform.h"
 #include "common.h"
 #include "sema.h"
+#include "diag.h"
 #include "config.h"
 #include "arkcc_config.h"
 /* Note: <stdio.h> intentionally NOT included to avoid pulling in semihosting-
@@ -1665,7 +1666,14 @@ static void irgen_lvalue_addr(IrGen *g, AstNode *node) {
         ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_PLUS);
         return;
     }
-    ark_log("[irgen] line %d: invalid lvalue\n", node->line);
+    {
+        DiagLoc loc;
+        loc.file = 0;
+        loc.line = node->line;
+        loc.col  = node->col;
+        /* armcc #137, measured on both `(a+1) = 2` and `(a+1) += 2`. */
+        diag_report(137, DIAG_SEV_ERROR, &loc, 0, 0, 0);
+    }
     g_irgen_errors++;
 }
 
@@ -2693,7 +2701,14 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, 0);
                     }
                 } else {
-                    ark_log("[irgen] line %d: invalid assignment target\n", node->line);
+                    {
+                        DiagLoc loc;
+                        loc.file = 0;
+                        loc.line = node->line;
+                        loc.col  = node->col;
+                        /* armcc #137, measured. */
+                        diag_report(137, DIAG_SEV_ERROR, &loc, 0, 0, 0);
+                    }
                     g_irgen_errors++;
                     ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
                 }
@@ -2858,7 +2873,14 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, vol_aux); /* [new_val] */
                     }
                 } else {
-                    ark_log("[irgen] line %d: compound-assign target unsupported\n", node->line);
+                    {
+                        DiagLoc loc;
+                        loc.file = 0;
+                        loc.line = node->line;
+                        loc.col  = node->col;
+                        /* armcc #137, measured on `(a+1) += 2` too. */
+                        diag_report(137, DIAG_SEV_ERROR, &loc, 0, 0, 0);
+                    }
                     g_irgen_errors++;
                     ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
                 }

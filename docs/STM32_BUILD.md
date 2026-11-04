@@ -63,9 +63,10 @@ powershell -ExecutionPolicy Bypass -File build_stm32_armcc.ps1
 ### 3.2 脚本做了什么
 
 1. **探测 armcc5**：先尝试 PATH，再尝试 `D:\Keil_v5\ARM\ARMCC\bin\`。
-2. **编译 16 个核心 `.c`**（`src/*.c`）：
+2. **编译 18 个核心 `.c`**（`src/*.c`）：
    - `compiler.c` `lexer.c` `parser.c` `sema.c` `ir.c` `irgen.c` `ast.c` `type.c`
    - `symtab.c` `memory.c` `preproc.c` `codegen_common.c` `cpu.c` `scatter.c` `config.c` `opt.c`
+   - `diag.c` `diag_msg_table.c`（诊断层；清单在脚本的 `$coreFiles` 里是显式列出的）
 3. **编译 2 个 ARM 后端**：`backend/arm/backend_arm.c` + `backend/registry.c`
 4. **编译 2 个 STM32 port**：`port/stm32/platform_stm32.c` + `port/stm32/flash_fs_stm32.c`
 5. **编译 5 个 MDK 用户文件**：`mdk/STM32H743_ArkCC/User/{main,stm32h7xx_it,stm32h7xx_hal_msp,system_stm32h7xx,bsp_w25q}.c`

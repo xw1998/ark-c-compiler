@@ -1,0 +1,2 @@
+no source : error  #5: cannot open source input file "nosuchfile.c": No such file or directory
+armcc : nosuchfile.c: 0 warnings, 1 error

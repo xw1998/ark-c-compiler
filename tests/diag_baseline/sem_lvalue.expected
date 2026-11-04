@@ -1,0 +1,4 @@
+"sem_lvalue.c", line 1: Error:  #137: expression must be a modifiable lvalue
+  int f(int a) { (a+1) = 2; return a; }
+                 ^
+sem_lvalue.c: 0 warnings, 1 error

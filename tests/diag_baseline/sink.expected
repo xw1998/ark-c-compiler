@@ -1,0 +1,4 @@
+"undefok.c", line 1: Error:  #20: identifier "c" is undefined
+  int f(void){ int b = c; return b; }
+                       ^
+undefok.c: 0 warnings, 1 error

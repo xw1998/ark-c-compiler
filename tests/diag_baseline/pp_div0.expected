@@ -1,0 +1,4 @@
+"pp_div0.c", line 1: Error:  #39: division by zero
+  #if 1/0
+       ^
+pp_div0.c: 0 warnings, 1 error

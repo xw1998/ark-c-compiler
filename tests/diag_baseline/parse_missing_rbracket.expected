@@ -1,0 +1,4 @@
+"parse_missing_rbracket.c", line 2: Error:  #17: expected a "]"
+  int a[2;
+         ^
+parse_missing_rbracket.c: 0 warnings, 1 error

@@ -1,0 +1,4 @@
+"pp_ifdef_empty.c", line 1: Error:  #40: expected an identifier
+  #ifdef
+        ^
+pp_ifdef_empty.c: 0 warnings, 1 error

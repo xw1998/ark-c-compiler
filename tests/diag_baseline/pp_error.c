@@ -1,0 +1,2 @@
+#error boom
+int live;

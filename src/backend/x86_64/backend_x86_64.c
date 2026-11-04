@@ -18,6 +18,7 @@
 #include "platform.h"
 #include "common.h"
 #include "ir.h"
+#include "diag.h"
 
 /* cdecl has no integer-class argument registers; all args are on the stack. */
 static const char *arg_reg(int i, int abi) {
@@ -2344,7 +2345,8 @@ static void xa_process_line(X86Asm *a, const char *line) {
     } else {
         /* Unknown instruction: emit nop to keep pc advancing */
         a->error_count++;
-        ark_log("[asm-x86] unknown instruction '%s'\n", mn);
+        diag_tool(DIAG_SEV_ERROR, "arkcc", "unknown instruction %sq", mn,
+                  0,0,0,0,0);
     }
     (void)nop;
 }

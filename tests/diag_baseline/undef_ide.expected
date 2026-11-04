@@ -1,0 +1,2 @@
+undefok.c(1,22) : error  #20: identifier "c" is undefined
+armcc : undefok.c: 0 warnings, 1 error

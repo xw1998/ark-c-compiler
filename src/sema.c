@@ -7,6 +7,7 @@
 #include "memory.h"
 #include "platform.h"
 #include "common.h"
+#include "diag.h"
 
 static int g_errors;
 
@@ -16,8 +17,41 @@ static void sema_stmt(AstNode *node);
 static Type *sema_expr(AstNode *node);
 static AstNode *sema_implicit_cast(AstNode *node, Type *target);
 
-static void err(AstNode *node, const char *msg) {
-    ark_log("[sema] line %d: %s\n", node ? node->line : 0, msg);
+/* Diagnostics raised here carry an armcc code when one has been measured for
+ * the condition (see src/diag_msg_table.c), and arkc's own wording otherwise.
+ * Columns are not tracked on AST nodes yet, so IDE-style output for these
+ * omits the column (registered limitation, docs/DIAGNOSTICS.md). */
+static DiagLoc loc_of(const AstNode *node) {
+    DiagLoc loc;
+    loc.file = 0;
+    loc.line = node ? node->line : 0;
+    loc.col  = node ? node->col : 0;
+    return loc;
+}
+
+/* Report a semantic error using an armcc code, with `a0` filling its
+ * placeholder (usually the offending identifier). */
+/* armcc's %n is a *kind-qualified* name: it expands to e.g. `function "g" `
+ * (trailing space included, which is why the printed text has two spaces
+ * before "has"). Composing that here keeps the generated template word-for-word
+ * armcc's instead of inventing a parallel wording. Single-threaded, used
+ * immediately, so one buffer is enough. */
+static const char *qual_name(const char *kind, const char *name) {
+    static char buf[192];
+    int n = 0, i = 0;
+    for (i = 0; kind[i] && n < (int)sizeof(buf) - 4; i++) buf[n++] = kind[i];
+    if (n < (int)sizeof(buf) - 4) buf[n++] = ' ';
+    if (n < (int)sizeof(buf) - 4) buf[n++] = '"';
+    for (i = 0; name[i] && n < (int)sizeof(buf) - 4; i++) buf[n++] = name[i];
+    if (n < (int)sizeof(buf) - 4) buf[n++] = '"';
+    if (n < (int)sizeof(buf) - 4) buf[n++] = ' ';
+    buf[n] = 0;
+    return buf;
+}
+
+static void err_code(AstNode *node, int code, const char *a0) {
+    DiagLoc loc = loc_of(node);
+    diag_report(code, DIAG_SEV_ERROR, &loc, a0, 0, 0);
     g_errors++;
 }
 
@@ -264,7 +298,7 @@ static void sema_func(AstNode *node) {
     int i;
     if (existing) {
         if (existing->kind != SYM_FUNC) {
-            err(node, "redefinition of identifier as function");
+            err_code(node, 101, name);
             return;
         }
         if (existing->is_defined && node->u.func.body) {
@@ -274,7 +308,10 @@ static void sema_func(AstNode *node) {
              * redefinition of an already-defined non-weak function is
              * silently ignored. Two non-weak definitions remain an error. */
             if (!existing->is_weak && !node->u.func.is_weak) {
-                err(node, "function redefinition");
+                DiagLoc loc = loc_of(node);
+                diag_report(247, DIAG_SEV_ERROR, &loc,
+                            qual_name("function", name), 0, 0);
+                g_errors++;
                 return;
             }
             if (!existing->is_weak && node->u.func.is_weak) {
@@ -344,7 +381,7 @@ static void sema_func(AstNode *node) {
         for (i = 0; i < node->u.func.param_count; i++) {
             AstNode *pp = node->u.func.params[i];
             if (sym_find_current(pp->u.var.name)) {
-                err(pp, "duplicate parameter");
+                err_code(pp, 100, pp->u.var.name);
             } else {
                 Symbol *psym = sym_add(SYM_PARAM, pp->u.var.name, pp->u.var.var_type, 0);
                 (void)psym;
@@ -391,7 +428,7 @@ static void sema_decl(AstNode *node) {
                  * Only error on actual redefinition (two non-extern definitions). */
                 if (node->u.var.is_extern) return;
                 if (existing->is_extern) return;
-                err(node, "redeclaration of global variable");
+                err_code(node, 101, name);
                 return;
             }
             {
@@ -442,7 +479,7 @@ static void sema_stmt(AstNode *node) {
             char *name = node->u.var.name;
             if (!name) break;
             if (sym_find_current(name)) {
-                err(node, "redeclaration of local variable");
+                err_code(node, 101, name);
             } else {
                 sym_add(SYM_VAR, name, node->u.var.var_type, 0);
             }
@@ -546,7 +583,7 @@ static Type *sema_expr(AstNode *node) {
         case AST_VAR: {
             Symbol *s = sym_find(node->u.name);
             if (!s) {
-                err(node, "undeclared identifier");
+                err_code(node, 20, node->u.name);
                 node->type = type_int();
                 return node->type;
             }
@@ -644,6 +681,7 @@ static Type *sema_expr(AstNode *node) {
              * sees a symbol and mis-emits IR_SMC for the call. */
             if (s && s->kind != SYM_FUNC && !node->u.call.callee) {
                 AstNode *callee = ast_var(node->u.call.name, node->line);
+                callee->col = node->col;
                 node->u.call.callee = callee;
                 node->u.call.name = mem_strdup("?indirect");
                 s = 0;
@@ -693,8 +731,18 @@ static Type *sema_expr(AstNode *node) {
             }
             if (s->param_count >= 0 && !s->is_variadic &&
                 s->param_count != node->u.call.arg_count) {
-                ark_log("[sema] line %d: warning: argument count mismatch for '%s'\n",
-                        node->line, node->u.call.name);
+                /* armcc splits this by direction: #165 for too few, #140 for
+                 * too many (both measured, see docs/DIAGNOSTICS.md). */
+                DiagLoc wloc = loc_of(node);
+                if (node->u.call.arg_count < s->param_count) {
+                    diag_report(165, DIAG_SEV_ERROR, &wloc, 0, 0, 0);
+                } else {
+                    /* armcc points #140 at the first argument that has no
+                     * parameter, not at the call. */
+                    const AstNode *extra = node->u.call.args[s->param_count];
+                    if (extra && extra->col > 0) wloc = loc_of(extra);
+                    diag_report(140, DIAG_SEV_ERROR, &wloc, 0, 0, 0);
+                }
             }
             node->type = s->type;
             return node->type;

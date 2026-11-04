@@ -12,6 +12,9 @@ typedef struct {
     double    fvalue;
     char     *str;
     int       line;
+    int       col;          /* 1-based display column of the token start, for
+                             * IDE-style diagnostics and the caret. 0 = unknown
+                             * (tokens not produced by lexer_next). */
     const char *src_start;  /* start of the token in the source; used for __asm bodies */
     int       is_imag;      /* C99 imaginary literal (i/I/j/J suffix) */
     int       is_float;     /* C99 float suffix (f/F): 1 = float literal, 0 = double */
@@ -27,8 +30,16 @@ typedef struct {
     const char *input;
     const char *p;
     int         line;
+    const char *line_start; /* first byte of the current source line; the
+                             * column of a token is start - line_start + 1 */
     Token       current;
     Token       ahead;
+    int         last_line;  /* line of the last non-EOF token; an end-of-source
+                             * diagnostic is anchored there (armcc does the
+                             * same, the EOF token itself sits one line later
+                             * whenever the file ends with a newline) */
+    const char *col_p;      /* incremental column cursor (see lex_col) */
+    int         col_cells;
 } Lexer;
 
 void  lexer_init(Lexer *lex, const char *input);

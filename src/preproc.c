@@ -21,6 +21,7 @@
 #include "config.h"
 #include "arkcc_config.h"
 #include "type.h"   /* type_set_pack/type_get_pack drive #pragma pack handling. */
+#include "diag.h"   /* codes, caret positioning, summary line. */
 
 /* PP_BUF_SIZE and PP_MAX_INC_DEPTH come from arkcc_config.h (profile-aware).
  * STM32 profile: 64KB output / 8 include depth.
@@ -267,10 +268,104 @@ void preproc_set_main_file(const char *path) {
     g_main_file[n] = 0;
 }
 
-/* Read an include file by name; search include dirs if not found; -1 on miss. */
-static int read_include(const char *name, char *buf, int cap) {
+/* ---------------------------------------------------------------------------
+ * Diagnostics
+ *
+ * The preprocessor diagnoses in the file it is *currently* reading, which is
+ * not always the translation unit: an #include switches it for the duration of
+ * the nested process() call. The position of the directive under inspection is
+ * therefore file-scope state here, shared with the expression evaluator (a
+ * separate function, which has to point the caret at the operator that divided
+ * by zero).
+ *
+ * Columns are 1-based and measured against the source line, because the caret
+ * line in diag.c replays the same line. A column of 0 means "not established"
+ * (the text was joined from several lines, or it came from a macro body); the
+ * IDE style then omits it rather than printing a made-up number.
+ * ------------------------------------------------------------------------- */
+static const char *g_pp_file;        /* file being read; 0 = the main file */
+static const char *g_pp_line_start;  /* first byte of the current line */
+static int         g_pp_line;        /* 1-based line number inside g_pp_file */
+static const char *g_pp_expr_base;   /* text handed to the expression evaluator */
+static int         g_pp_expr_len;
+static int         g_pp_expr_col;    /* column of g_pp_expr_base[0]; 0 = unknown */
+
+/* 1-based column of `q` on the current line. Callers pass the position armcc
+ * points at, which for directive-level errors is usually one past the last
+ * character it consumed. */
+static int pp_col(const char *q) {
+    return (int)(q - g_pp_line_start) + 1;
+}
+
+static void pp_diag(int line, int col, int code, DiagSeverity sev,
+                    const char *a0, const char *a1, const char *a2) {
+    DiagLoc loc;
+    loc.file = g_pp_file;
+    loc.line = line;
+    loc.col  = col;
+    diag_report(code, sev, &loc, a0, a1, a2);
+}
+
+/* Conditions armcc has no code for (arkc limits such as the include depth, and
+ * the macro size caps) are reported without a number instead of borrowing a
+ * neighbouring one. */
+static void pp_diag_msg(int line, int col, DiagSeverity sev, const char *msg,
+                        const char *a0, const char *a1) {
+    DiagLoc loc;
+    loc.file = g_pp_file;
+    loc.line = line;
+    loc.col  = col;
+    diag_report_msg(sev, &loc, msg, a0, a1, 0);
+}
+
+/* Point the caret machinery at the expression about to be evaluated.
+ * `start` is where expression text begins on the source line; `spliced` records
+ * that the text was joined from several lines, which makes a text offset unable
+ * to name a column. */
+static void pp_expr_begin(const char *expr, const char *start, int spliced) {
+    g_pp_expr_base = expr;
+    g_pp_expr_len  = ark_strlen(expr);
+    g_pp_expr_col  = spliced ? 0 : pp_col(start);
+}
+
+/* Column of a byte inside the expression being evaluated, or 0 when it cannot
+ * be derived (see pp_expr_begin). A macro body evaluated inline lives in a
+ * different buffer, so an offset outside [base, base+len) is not ours. */
+static int pp_expr_col(const char *at) {
+    if (!at || !g_pp_expr_base || g_pp_expr_col <= 0) return 0;
+    if (at < g_pp_expr_base || at >= g_pp_expr_base + g_pp_expr_len) return 0;
+    return g_pp_expr_col + (int)(at - g_pp_expr_base);
+}
+
+/* A header that does not fit in `cap` used to be truncated in silence: the
+ * tail of a big CMSIS header holds its closing #endif, so the only symptom was
+ * "#37 the #endif for this directive is missing" with the caret at the top of
+ * the file. Report the real cause and return READ_INCLUDE_CUT so the caller
+ * does not also blame a missing file.
+ *   >= 0  bytes read
+ *   -1    not found anywhere
+ *   -2    found but larger than the buffer (already reported) */
+#define READ_INCLUDE_CUT (-2)
+
+static int read_include_one(const char *name, char *buf, int cap) {
     int rd = fs_read_file(name, buf, cap);
-    if (rd >= 0) return rd;
+    if (rd < 0) return -1;
+    if (fs_file_size(name) > rd) {
+        char b1[12], b2[12];
+        pp_diag_msg(g_pp_line, 1, DIAG_SEV_ERROR,
+                    "include file is %s bytes, larger than the %s-byte "
+                    "include buffer; rebuild arkcc with a bigger PP_INC_BUF",
+                    diag_num(b1, fs_file_size(name)), diag_num(b2, cap));
+        return READ_INCLUDE_CUT;
+    }
+    return rd;
+}
+
+/* Read an include file by name; search include dirs if not found.
+ * -1 on miss, READ_INCLUDE_CUT on a file that did not fit. */
+static int read_include(const char *name, char *buf, int cap) {
+    int rd = read_include_one(name, buf, cap);
+    if (rd != -1) return rd;
     {
         int i;
         for (i = 0; i < g_inc_dir_count; i++) {
@@ -283,8 +378,8 @@ static int read_include(const char *name, char *buf, int cap) {
             path[dl] = '/';
             for (k = 0; k < nl; k++) path[dl + 1 + k] = name[k];
             path[dl + 1 + nl] = 0;
-            rd = fs_read_file(path, buf, cap);
-            if (rd >= 0) return rd;
+            rd = read_include_one(path, buf, cap);
+            if (rd != -1) return rd;
         }
     }
     return -1;
@@ -294,7 +389,29 @@ static int read_include(const char *name, char *buf, int cap) {
 static const char *expr_p;
 static long long eval_expr(int min_prec);
 
-static void skip_ws_p(void) { while (*expr_p == ' ' || *expr_p == '\t') expr_p++; }
+/* Whitespace and comments are both "space" to the preprocessor expression
+ * evaluator (C99 6.10.1 evaluates the directive's token sequence, and a
+ * comment is not a token).  Without the comment cases a trailing comment on
+ * a #if line reads as a division whose right operand is '*': a bogus #39. */
+static void skip_ws_p(void) {
+    for (;;) {
+        while (*expr_p == ' ' || *expr_p == '\t' || *expr_p == '\r' ||
+               *expr_p == '\n') expr_p++;
+        if (expr_p[0] == '/' && expr_p[1] == '*') {
+            const char *p = expr_p + 2;
+            while (*p && !(p[0] == '*' && p[1] == '/')) p++;
+            expr_p = (*p) ? p + 2 : p;
+            continue;
+        }
+        if (expr_p[0] == '/' && expr_p[1] == '/') {
+            const char *p = expr_p + 2;
+            while (*p && *p != '\n') p++;
+            expr_p = p;
+            continue;
+        }
+        break;
+    }
+}
 
 static long long parse_primary(void) {
     long long v = 0;
@@ -380,7 +497,9 @@ static long long eval_expr(int min_prec) {
     long long lhs = parse_primary();
     for (;;) {
         int prec = -1, op = 0;
+        const char *op_pos;
         skip_ws_p();
+        op_pos = expr_p;   /* caret target for division-by-zero */
         if (expr_p[0] == '&' && expr_p[1] == '&') { prec = 1; op = 1; }
         else if (expr_p[0] == '|' && expr_p[1] == '|') { prec = 0; op = 2; }
         else if (expr_p[0] == '=' && expr_p[1] == '=') { prec = 2; op = 3; }
@@ -417,13 +536,27 @@ static long long eval_expr(int min_prec) {
                 case 9:  lhs = lhs +  rhs; break;
                 case 10: lhs = lhs -  rhs; break;
                 case 11: lhs = lhs *  rhs; break;
-                case 12: if (rhs == 0) { ark_log("[preproc] error: division by zero in #if\n"); lhs = 0; } else lhs = lhs / rhs; break;
+                case 12:
+                    if (rhs == 0) {
+                        pp_diag(g_pp_line, pp_expr_col(op_pos), 39,
+                                DIAG_SEV_ERROR, 0, 0, 0);
+                        lhs = 0;
+                    } else lhs = lhs / rhs;
+                    break;
                 case 13: lhs = lhs << rhs; break;
                 case 14: lhs = lhs >> rhs; break;
                 case 15: lhs = lhs &  rhs; break;
                 case 16: lhs = lhs |  rhs; break;
                 case 17: lhs = lhs ^  rhs; break;
-                case 18: if (rhs == 0) { ark_log("[preproc] error: modulo by zero in #if\n"); lhs = 0; } else lhs = lhs % rhs; break;
+                case 18:
+                    if (rhs == 0) {
+                        /* Measured: armcc has a separate code for "%" (#179)
+                         * and points the caret at the "%". */
+                        pp_diag(g_pp_line, pp_expr_col(op_pos), 179,
+                                DIAG_SEV_ERROR, 0, 0, 0);
+                        lhs = 0;
+                    } else lhs = lhs % rhs;
+                    break;
                 default: break;
             }
         }
@@ -445,7 +578,8 @@ static int g_macro_expand;
 static char g_build_date[12];
 static char g_build_time[9];
 
-static void process(const char *src, char *out, int *out_len, int out_cap);
+static void process(const char *src, char *out, int *out_len, int out_cap,
+                    int is_file);
 
 /* Parse macro arguments: p must point at '('. Returns pointer past matching ')'.
  * Args are stored in args[] (max_args entries, currently 16). */
@@ -492,8 +626,12 @@ static const char *parse_macro_args(const char *p, char **args, int *parg_count,
         if (bl < 1023) buf[bl++] = *p;
         p++;
     }
-    if (bl >= 1023)
-        ark_log("[preproc] warning: macro argument truncated at 1023 bytes\n");
+    if (bl >= 1023) {
+        /* arkc limit, not an armcc behaviour: no code to borrow, and no column
+         * worth guessing (the argument may span lines). */
+        pp_diag_msg(g_pp_line, 0, DIAG_SEV_WARNING,
+                    "macro argument truncated at 1023 bytes", 0, 0);
+    }
     *parg_count = n;
     return p;
 }
@@ -573,7 +711,7 @@ static void expand_func_macro(Macro *m, char **args, int argc,
                     if (vi > m->param_count)
                         buf_puts(out, out_len, out_cap, ", ");
                     /* Rescan the argument so nested macros expand. */
-                    process(args[vi], out, out_len, out_cap);
+                    process(args[vi], out, out_len, out_cap, 0);
                 }
                 continue;
             }
@@ -581,7 +719,7 @@ static void expand_func_macro(Macro *m, char **args, int argc,
                 if (ark_streq(m->params[i], nm)) { matched = i; break; }
             if (matched >= 0 && matched < argc) {
                 /* Rescan substituted argument so its macros expand. */
-                process(args[matched], out, out_len, out_cap);
+                process(args[matched], out, out_len, out_cap, 0);
             } else {
                 int k;
                 for (k = 0; k < nl; k++) buf_putc(out, out_len, out_cap, st[k]);
@@ -606,6 +744,33 @@ static void expand_func_macro(Macro *m, char **args, int argc,
 
 static int handle_if(const char *expr_text) {
     return eval_pp_expr(expr_text) ? 1 : 0;
+}
+
+/* #pragma diag_suppress <n>[, <n>...]  and  #pragma diag_default <n>...
+ * armcc also has diag_warning / diag_error, which *change* a message's
+ * severity; arkc does not implement severity remapping, so those are left
+ * alone rather than half-honoured. */
+static void handle_pragma_diag(const char *r) {
+    char word[32];
+    int n = 0;
+    int suppress;
+
+    while (*r && is_alnum(*r) && n < 31) word[n++] = *r++;
+    word[n] = 0;
+    if (ark_streq(word, "diag_suppress")) suppress = 1;
+    else if (ark_streq(word, "diag_default")) suppress = 0;
+    else return;
+
+    for (;;) {
+        while (*r == ' ' || *r == '\t' || *r == ',') r++;
+        if (*r < '0' || *r > '9') break;
+        {
+            int code = 0;
+            while (*r >= '0' && *r <= '9') { code = code * 10 + (*r - '0'); r++; }
+            if (suppress) diag_suppress(code);
+            else          diag_default(code);
+        }
+    }
 }
 
 /* Handle the #pragma pack directive; q points right after the "pack" token.
@@ -668,9 +833,15 @@ static int handle_pragma_pack(const char *q) {
     return 0;
 }
 
-/* Main processing entry point. */
-static void process(const char *src, char *out, int *out_len, int out_cap) {
+/* Main processing entry point.
+ *
+ * is_file separates a real file from a macro body being rescanned: only a real
+ * file has a file identity, line numbers of its own, and can be left with an
+ * unclosed #if at its end. */
+static void process(const char *src, char *out, int *out_len, int out_cap,
+                    int is_file) {
     const char *p = src;
+    const char *outer_file = g_pp_file;   /* the file our caller was reading */
     /* Skip UTF-8 BOM (EF BB BF) if present at start of file. */
     if ((unsigned char)p[0] == 0xEF && (unsigned char)p[1] == 0xBB && (unsigned char)p[2] == 0xBF) {
         p += 3;
@@ -678,6 +849,8 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
     /* Conditional compilation stack: tracks both taken state and skip mask. */
     int cond_stack[32];
     int cond_taken[32];   /* parent already-taken mask for skipping branches */
+    int cond_line[32];    /* line of the #if that opened each level */
+    int cond_else[32];    /* an #else was already seen at this level */
     int cond_top = 0;
     int active = 1;
     int saved_line = g_cur_line;
@@ -700,6 +873,7 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
         const char *line_start = p;
         const char *q;
         int is_pp_line = 0;
+        if (is_file) { g_pp_line_start = line_start; g_pp_line = line_no; }
         while (*p == ' ' || *p == '\t') p++;
         if (*p == '#') {
             is_pp_line = 1;
@@ -728,6 +902,9 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
                 int bl = 0;
                 while (*q && is_alnum(*q) && nl < 63) name[nl++] = *q++;
                 name[nl] = 0;
+                if (nl == 0) {
+                    pp_diag(g_pp_line, pp_col(q), 40, DIAG_SEV_ERROR, 0, 0, 0);
+                }
                 if (*q == '(') {
                     is_fn = 1;
                     q++;
@@ -791,7 +968,9 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
                     body[bl++] = *q++;
                 }
                 if (bl >= 16383 && *q && *q != '\n') {
-                    ark_log("[preproc] warning: macro '%s' body truncated at 16383 bytes\n", nl > 0 ? name : "?");
+                    pp_diag_msg(g_pp_line, 0, DIAG_SEV_WARNING,
+                                "macro '%s' body truncated at 16383 bytes",
+                                nl > 0 ? name : "?", 0);
                 }
                 /* If macro body was truncated (exceeded buffer), consume the rest of
                  * the macro definition (including line continuations) to avoid emitting
@@ -818,13 +997,16 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
                 while (*q && is_alnum(*q) && nl < 63) name[nl++] = *q++;
                 name[nl] = 0;
                 if (nl > 0) remove_macro(name);
+                else pp_diag(g_pp_line, pp_col(q), 40, DIAG_SEV_ERROR, 0, 0, 0);
             }
             else if (ark_streq(cmd, "include") && ACTIVE()) {
                 char path[256];
                 int pl = 0;
                 char quote;
                 if (*q != '"' && *q != '<') {
-                    /* skip */
+                    /* Measured: "#13: expected a file name" with the caret one
+                     * past the end of the directive. */
+                    pp_diag(g_pp_line, pp_col(q), 13, DIAG_SEV_ERROR, 0, 0, 0);
                 } else {
                     quote = (*q == '<') ? '>' : '"';
                     q++;
@@ -832,12 +1014,27 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
                     path[pl] = 0;
                     if (*q == quote) q++;
                     if (g_inc_depth >= PP_MAX_INC_DEPTH) {
-                        ark_log("[preproc] include too deeply nested: '%s'\n", path);
+                        char d1[12], d2[12];
+                        /* armcc has no depth limit (400 levels compile
+                         * silently), so there is no code to borrow: this is an
+                         * arkc limit and is reported as one. */
+                        pp_diag_msg(g_pp_line, pp_col(q), DIAG_SEV_ERROR,
+                                    "include nested too deeply (%s levels, limit %s)",
+                                    diag_num(d1, g_inc_depth),
+                                    diag_num(d2, PP_MAX_INC_DEPTH));
                     } else {
                         char *inc_buf = g_inc_bufs[g_inc_depth];
                         int rd = read_include(path, inc_buf, PP_INC_BUF);
-                        if (rd < 0) {
-                            ark_log("[preproc] cannot include '%s'\n", path);
+                        if (rd == READ_INCLUDE_CUT) {
+                            /* read_include already reported the size; adding
+                             * "cannot open source input file" here would name
+                             * the wrong cause. */
+                        } else if (rd < 0) {
+                            /* Same code and shape as a missing main input file,
+                             * with the caret one past the closing quote and the
+                             * reason from the file layer (measured). */
+                            pp_diag(g_pp_line, pp_col(q), 5, DIAG_SEV_ERROR,
+                                    "source", path, fs_last_error());
                         } else {
                             /* Record include for -MMD dependency output. We
                              * mem_strdup because the path buffer goes out of
@@ -845,9 +1042,18 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
                             if (g_inc_file_count < PP_MAX_INC_FILES) {
                                 g_inc_files[g_inc_file_count++] = mem_strdup(path);
                             }
-                            g_inc_depth++;
-                            process(inc_buf, out, out_len, out_cap);
-                            g_inc_depth--;
+                            {
+                                /* Diagnostics inside the header name the header,
+                                 * not the translation unit. `path` outlives the
+                                 * nested call, and the pointer is only used while
+                                 * a diagnostic is being emitted. */
+                                const char *caller_file = g_pp_file;
+                                g_pp_file = path;
+                                g_inc_depth++;
+                                process(inc_buf, out, out_len, out_cap, 1);
+                                g_inc_depth--;
+                                g_pp_file = caller_file;
+                            }
                         }
                     }
                 }
@@ -856,19 +1062,35 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
                 int v = 0;
                 char expr[512];
                 int el = 0;
-                while (*q && *q != '\n' && el < 511) {
+                const char *expr_start = q;
+                int spliced = 0;
+                /* '\r' ends the line too: sources here are CRLF, and letting it
+                 * into the expression would make an empty one look non-empty. */
+                while (*q && *q != '\n' && *q != '\r' && el < 511) {
                     /* Line continuation: backslash-newline joins lines */
                     if (*q == '\\' && (q[1] == '\n' || (q[1] == '\r' && q[2] == '\n'))) {
                         q += (q[1] == '\r') ? 3 : 2;
                         line_no++;
                         expr[el++] = ' ';
+                        spliced = 1;
                         continue;
                     }
                     expr[el++] = *q++;
                 }
                 expr[el] = 0;
+                while (el > 0 && (expr[el - 1] == ' ' || expr[el - 1] == '\t'))
+                    expr[--el] = 0;
+                if (el == 0) {
+                    /* Measured: "#29: expected an expression" at the end of the
+                     * directive line. The group still opens, so a missing
+                     * #endif is reported separately. */
+                    pp_diag(g_pp_line, pp_col(q), 29, DIAG_SEV_ERROR, 0, 0, 0);
+                }
+                pp_expr_begin(expr, expr_start, spliced);
                 if (cond_top < 32) {
                     cond_stack[cond_top] = ACTIVE();
+                    cond_else[cond_top] = 0;
+                    cond_line[cond_top] = g_pp_line;
                     if (ACTIVE()) {
                         v = handle_if(expr);
                         cond_taken[cond_top] = v;
@@ -885,8 +1107,13 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
                 int nl = 0;
                 while (*q && is_alnum(*q) && nl < 63) name[nl++] = *q++;
                 name[nl] = 0;
+                if (nl == 0) {
+                    pp_diag(g_pp_line, pp_col(q), 40, DIAG_SEV_ERROR, 0, 0, 0);
+                }
                 if (cond_top < 32) {
                     cond_stack[cond_top] = ACTIVE();
+                    cond_else[cond_top] = 0;
+                    cond_line[cond_top] = g_pp_line;
                     if (ACTIVE()) {
                         int defined = find_macro(name) ? 1 : 0;
                         int v = neg ? !defined : defined;
@@ -899,34 +1126,62 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
                 }
             }
             else if (ark_streq(cmd, "elif")) {
-                if (cond_top > 0) {
-                    int outer = cond_stack[cond_top - 1];
-                    if (cond_taken[cond_top - 1]) {
-                        active = 0;
-                    } else if (outer) {
-                        char expr[512]; int el = 0;
-                        int v;
-                        while (*q && *q != '\n' && el < 511) {
-                            if (*q == '\\' && (q[1] == '\n' || (q[1] == '\r' && q[2] == '\n'))) {
-                                q += (q[1] == '\r') ? 3 : 2;
-                                line_no++;
-                                expr[el++] = ' ';
-                                continue;
-                            }
-                            expr[el++] = *q++;
-                        }
-                        expr[el] = 0;
-                        v = handle_if(expr);
-                        cond_taken[cond_top - 1] = v;
-                        active = v;
-                    } else {
-                        active = 0;
+                /* The expression is collected even when the branch is already
+                 * dead: armcc still checks the directive there, and reports an
+                 * empty one as a warning rather than an error. */
+                char expr[512];
+                int el = 0;
+                const char *expr_start = q;
+                int spliced = 0;
+                /* '\r' ends the line too: sources here are CRLF, and letting it
+                 * into the expression would make an empty one look non-empty. */
+                while (*q && *q != '\n' && *q != '\r' && el < 511) {
+                    if (*q == '\\' && (q[1] == '\n' || (q[1] == '\r' && q[2] == '\n'))) {
+                        q += (q[1] == '\r') ? 3 : 2;
+                        line_no++;
+                        expr[el++] = ' ';
+                        spliced = 1;
+                        continue;
                     }
+                    expr[el++] = *q++;
+                }
+                expr[el] = 0;
+                while (el > 0 && (expr[el - 1] == ' ' || expr[el - 1] == '\t'))
+                    expr[--el] = 0;
+                pp_expr_begin(expr, expr_start, spliced);
+
+                if (cond_top == 0) {
+                    pp_diag(g_pp_line, 2, 36, DIAG_SEV_ERROR, 0, 0, 0);
+                } else if (cond_else[cond_top - 1]) {
+                    pp_diag(g_pp_line, 2, 38, DIAG_SEV_ERROR, 0, 0, 0);
+                    active = 0;
+                } else if (cond_taken[cond_top - 1]) {
+                    if (el == 0) {
+                        pp_diag(g_pp_line, pp_col(q), 29, DIAG_SEV_WARNING,
+                                0, 0, 0);
+                    }
+                    active = 0;
+                } else if (cond_stack[cond_top - 1]) {
+                    int v;
+                    if (el == 0) {
+                        pp_diag(g_pp_line, pp_col(q), 29, DIAG_SEV_ERROR,
+                                0, 0, 0);
+                    }
+                    v = handle_if(expr);
+                    cond_taken[cond_top - 1] = v;
+                    active = v;
+                } else {
+                    active = 0;
                 }
             }
             else if (ark_streq(cmd, "else")) {
-                if (cond_top > 0) {
+                if (cond_top == 0) {
+                    pp_diag(g_pp_line, 2, 36, DIAG_SEV_ERROR, 0, 0, 0);
+                } else if (cond_else[cond_top - 1]) {
+                    pp_diag(g_pp_line, 2, 38, DIAG_SEV_ERROR, 0, 0, 0);
+                } else {
                     int outer = cond_stack[cond_top - 1];
+                    cond_else[cond_top - 1] = 1;
                     if (cond_taken[cond_top - 1]) active = 0;
                     else if (outer) { cond_taken[cond_top - 1] = 1; active = 1; }
                     else active = 0;
@@ -936,19 +1191,23 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
                 if (cond_top > 0) {
                     cond_top--;
                     active = cond_stack[cond_top];
+                } else {
+                    pp_diag(g_pp_line, 2, 36, DIAG_SEV_ERROR, 0, 0, 0);
                 }
             }
             else if (ark_streq(cmd, "error") && ACTIVE()) {
                 char msg[256]; int ml = 0;
-                while (*q && *q != '\n' && ml < 255) msg[ml++] = *q++;
+                while (*q && *q != '\n' && *q != '\r' && ml < 255) msg[ml++] = *q++;
                 msg[ml] = 0;
-                ark_log("[preproc] error: %s\n", msg);
+                /* Measured: the caret sits at column 2 (just past the '#'),
+                 * and the text is the rest of the line. */
+                pp_diag(g_pp_line, 2, 35, DIAG_SEV_ERROR, msg, 0, 0);
             }
             else if (ark_streq(cmd, "warning") && ACTIVE()) {
                 char msg[256]; int ml = 0;
-                while (*q && *q != '\n' && ml < 255) msg[ml++] = *q++;
+                while (*q && *q != '\n' && *q != '\r' && ml < 255) msg[ml++] = *q++;
                 msg[ml] = 0;
-                ark_log("[preproc] warning: %s\n", msg);
+                pp_diag(g_pp_line, 2, 1215, DIAG_SEV_WARNING, msg, 0, 0);
             }
             else if (ark_streq(cmd, "pragma")) {
                 /* Pragma dispatch. q points right after "pragma"; we look at the
@@ -1001,14 +1260,14 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
                     }
                 }
                 /* Silently ignored armcc pragmas: arkcc does not implement
-                 *   diag_suppress / diag_warning / diag_error / diag_default
+                 *   diag_warning / diag_error
                  *   arm / thumb (arkcc always emits Thumb-2)
                  *   import(__use_no_semihosting)
                  *   push / pop pragma stack (only #pragma pack uses a stack)
                  *   O0/O1/O2/O3/Ospace/Otime/optimize
                  * We emit a comment in the output to preserve line numbers. */
                 else if (r[0] == 'd' && r[1] == 'i' && r[2] == 'a' && r[3] == 'g' && r[4] == '_') {
-                    /* diag_suppress / diag_warning / diag_error / diag_default */
+                    handle_pragma_diag(r);
                 }
                 else if (ark_streq(r, "arm") || ark_streq(r, "thumb")) {
                     /* #pragma arm / #pragma thumb */
@@ -1030,7 +1289,14 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
                 }
             }
             else if (ark_streq(cmd, "line")) {
-                /* #pragma line: not supported. */
+                /* #line: accepted and ignored (no line remapping yet). */
+            }
+            else if (cmd[0] && ACTIVE()) {
+                /* armcc rejects directives it does not know; a bare '#' (null
+                 * directive) is legal C and stays silent. Measured: the caret
+                 * sits at column 2 and the id keeps the -D tag even though the
+                 * message is reported as an error. */
+                pp_diag(g_pp_line, 2, 11, DIAG_SEV_ERROR, 0, 0, 0);
             }
             // skip to EOL, but properly consume multi-line slash-star comments
             // that started on the directive line (e.g. ARM HAL style
@@ -1258,7 +1524,7 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
                                 g_blue_top++;
                             }
                             g_macro_depth++;
-                            process(temp, out, out_len, out_cap);
+                            process(temp, out, out_len, out_cap, 0);
                             g_macro_depth--;
                             if (g_blue_top > 0 && g_blue_stack[g_blue_top - 1] == saved_blue) {
                                 g_blue_top--;
@@ -1275,7 +1541,74 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
                         continue;
                     }
                 }
-                /* Object-like macro: rescan the body for further expansion. */
+                /* Object-like macro: rescan the body for further expansion.
+                 *
+                 * C99 6.10.3.4p1 rescans the replacement list *together with
+                 * the rest of the source file*, so with
+                 *     #define REAL(x) ((x)+1)
+                 *     #define ALIAS REAL
+                 *     ALIAS(2)
+                 * the argument list belongs to REAL. Expanding the body on its
+                 * own left the parentheses behind and turned ALIAS(2) into a
+                 * call to a function named REAL (unresolved at link time).
+                 * A body that is exactly one identifier is the shape vendor HAL
+                 * headers use for clock-source aliases
+                 * (__HAL_RCC_GET_I2C1_SOURCE -> __HAL_RCC_GET_I2C123_SOURCE),
+                 * so follow such a chain and, when it ends at a function-like
+                 * macro whose argument list follows in the input, expand it
+                 * here. Any other body is expanded alone, as before. */
+                {
+                    Macro *fm = m;
+                    int hops = 0;
+                    while (fm && !fm->is_func && hops < 8) {
+                        char idb[128];
+                        int n = 0;
+                        const char *b = fm->body;
+                        Macro *next;
+                        while (*b == ' ' || *b == '\t') b++;
+                        while (is_alnum(*b) && n < (int)sizeof(idb) - 1) idb[n++] = *b++;
+                        while (*b == ' ' || *b == '\t') b++;
+                        idb[n] = 0;
+                        if (n == 0 || *b != 0 || !is_alpha(idb[0])) break;
+                        if (is_blue_painted(idb)) break;
+                        next = find_macro(idb);
+                        if (!next || next == fm) break;
+                        fm = next;
+                        hops++;
+                    }
+                    if (fm && fm != m && fm->is_func) {
+                        const char *r2 = p;
+                        while (*r2 == ' ' || *r2 == '\t') r2++;
+                        if (*r2 == '(') {
+                            char *args[16] = {0};
+                            int argc = 0;
+                            char temp[16384];
+                            int temp_len = 0;
+                            const char *saved_blue = 0;
+                            r2 = parse_macro_args(r2, args, &argc, 16);
+                            expand_func_macro(fm, args, argc, temp, &temp_len,
+                                              (int)sizeof(temp) - 1);
+                            temp[temp_len] = 0;
+                            if (g_macro_depth < 64) {
+                                if (g_blue_top < PP_BLUE_STACK) {
+                                    g_blue_stack[g_blue_top] = fm->name;
+                                    saved_blue = g_blue_stack[g_blue_top];
+                                    g_blue_top++;
+                                }
+                                g_macro_depth++;
+                                process(temp, out, out_len, out_cap, 0);
+                                g_macro_depth--;
+                                if (g_blue_top > 0 &&
+                                    g_blue_stack[g_blue_top - 1] == saved_blue)
+                                    g_blue_top--;
+                            } else {
+                                buf_puts(out, out_len, out_cap, temp);
+                            }
+                            p = r2;
+                            continue;
+                        }
+                    }
+                }
                 if (g_macro_depth < 64) {
                     const char *saved_blue = 0;
                     if (g_blue_top < PP_BLUE_STACK) {
@@ -1284,7 +1617,7 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
                         g_blue_top++;
                     }
                     g_macro_depth++;
-                    process(m->body, out, out_len, out_cap);
+                    process(m->body, out, out_len, out_cap, 0);
                     g_macro_depth--;
                     if (g_blue_top > 0 && g_blue_stack[g_blue_top - 1] == saved_blue) {
                         g_blue_top--;
@@ -1305,6 +1638,14 @@ static void process(const char *src, char *out, int *out_len, int out_cap) {
         if (ACTIVE()) buf_putc(out, out_len, out_cap, *p);
         p++;
     }
+    /* An #if left open when the file ends. Measured: armcc reports the
+     * innermost open directive first and then walks outwards, each at column 2
+     * of the #if line that opened it. */
+    while (is_file && cond_top > 0) {
+        cond_top--;
+        pp_diag(cond_line[cond_top], 2, 37, DIAG_SEV_ERROR, 0, 0, 0);
+    }
+    g_pp_file = outer_file;
     g_cur_line = saved_line;
 }
 
@@ -1369,7 +1710,7 @@ char *preproc_process(const char *src) {
      * is set for ARM/Thumb interworking support (always enabled in our config). */
     if (!find_macro("__EDG__"))             add_object_macro("__EDG__", "1");
     if (!find_macro("__APCS_INTERWORK"))    add_object_macro("__APCS_INTERWORK", "1");
-    process(src_ptr, out, &out_len, PP_BUF_SIZE - 1);
+    process(src_ptr, out, &out_len, PP_BUF_SIZE - 1, 1);
     out[out_len] = 0;
     return out;
 }

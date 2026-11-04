@@ -25,6 +25,7 @@
 #include "sema.h"
 #include "config.h"
 #include "arkcc_config.h"
+#include "diag.h"
 
 static AstNode *parse_top_decl(Parser *p);
 static AstNode *parse_block(Parser *p);
@@ -99,9 +100,17 @@ static int is_decl_start(Parser *p) {
     return 0;
 }
 
+/* Syntax errors are reported at the current token: that is the position armcc
+ * points its caret at, and the only position whose column we know exactly.
+ * `msg` is arkc's own wording unless a measured armcc code exists, so these go
+ * through diag_report_msg and carry no fabricated code number. */
 static void perror_at(Parser *p, const char *msg) {
     Token t = lexer_peek(p->lex);
-    ark_log("[parser] line %d: %s (got token kind %d)\n", t.line, msg, (int)t.kind);
+    DiagLoc loc;
+    loc.file = 0;
+    loc.line = t.line;
+    loc.col  = t.col;
+    diag_report_msg(DIAG_SEV_ERROR, &loc, msg, 0, 0, 0);
     p->error_count++;
 }
 
@@ -141,10 +150,9 @@ AstNode *parse_program(Lexer *lex) {
     /* A syntax error means we do not know what the program says. Emitting code
      * from a half-understood AST produces a binary that silently computes the
      * wrong thing (or crashes), which is worse than refusing to build. */
-    if (p.error_count > 0) {
-        ark_log("[parser] %d syntax error(s); no code generated\n", p.error_count);
-        return 0;
-    }
+    /* No extra line here: armcc's own summary is printed once, by
+     * diag_shutdown(). The exit code carries the failure. */
+    if (p.error_count > 0) return 0;
     return prog;
 }
 
@@ -457,7 +465,7 @@ static AstNode *parse_init_list(Parser *p) {
                         has_sub_index = 1;
                         lexer_advance(p->lex);
                     }
-                    if (lexer_peek(p->lex).kind == TOK_RBRACKET) lexer_advance(p->lex);
+                    lexer_expect(p->lex, TOK_RBRACKET);
                 }
                 if (lexer_peek(p->lex).kind == TOK_ASSIGN) lexer_advance(p->lex);
                 {
@@ -503,7 +511,9 @@ static AstNode *parse_init_list(Parser *p) {
                 has_index = 1;
                 lexer_advance(p->lex);
             }
-            if (lexer_peek(p->lex).kind == TOK_RBRACKET) lexer_advance(p->lex);
+            /* A missing "]" used to be skipped silently, so `int a[2;`
+             * compiled with no diagnostic at all. Report it (armcc #17). */
+            lexer_expect(p->lex, TOK_RBRACKET);
             if (lexer_peek(p->lex).kind == TOK_ASSIGN) lexer_advance(p->lex);
         }
         value = parse_initializer(p);
@@ -1053,16 +1063,27 @@ static AstNode *parse_struct_or_union(Parser *p, int is_union) {
                      * read back truncated. Report instead of clamping: a wrong
                      * value with no diagnostic is worse than a hard error. */
                     int ft_bits = (ft ? type_size(ft) : 4) * 8;
-                    if (bit_w > ft_bits) {
-                        ark_log("[parser] line %d: bit-field width %d exceeds its type (%d bits)\n",
-                                lexer_peek(p->lex).line, bit_w, ft_bits);
+                    if (bit_w > ft_bits || bit_w > 32) {
+                        /* arkc-specific condition (no measured armcc code), so
+                         * the wording is ours; the position is the token the
+                         * parser is looking at. */
+                        char nb[12], fb[12];
+                        DiagLoc loc;
+                        Token bt = lexer_peek(p->lex);
+                        loc.file = 0; loc.line = bt.line; loc.col = bt.col;
+                        if (bit_w > ft_bits) {
+                            diag_report_msg(DIAG_SEV_ERROR, &loc,
+                                            "bit-field width %d exceeds its type (%d bits)",
+                                            diag_num(nb, bit_w),
+                                            diag_num(fb, ft_bits), 0);
+                            bit_w = ft_bits;
+                        } else {
+                            diag_report_msg(DIAG_SEV_ERROR, &loc,
+                                            "bit-field width %d exceeds 32; only 32-bit containers are supported",
+                                            diag_num(nb, bit_w), 0, 0);
+                            bit_w = 32;
+                        }
                         p->error_count++;
-                        bit_w = ft_bits;
-                    } else if (bit_w > 32) {
-                        ark_log("[parser] line %d: bit-field width %d exceeds 32; only 32-bit containers are supported\n",
-                                lexer_peek(p->lex).line, bit_w);
-                        p->error_count++;
-                        bit_w = 32;
                     }
                     type_struct_add_bitfield(t, fname ? fname : "", ft, bit_w);
                 } else if (fname) {
@@ -1160,6 +1181,8 @@ static AstNode *parse_enum(Parser *p) {
  */
 static Type *parse_declarator(Parser *p, Type *base, char **out_name) {
     Type *t = base;
+    p->name_line = 0;
+    p->name_col  = 0;
     /* Pointer */
     while (lexer_peek(p->lex).kind == TOK_MUL) {
         int ptr_vol = 0, ptr_const = 0;
@@ -1183,6 +1206,8 @@ static Type *parse_declarator(Parser *p, Type *base, char **out_name) {
         while (lexer_peek(p->lex).kind == TOK_MUL) lexer_advance(p->lex);
         if (lexer_peek(p->lex).kind == TOK_IDENT) {
             if (out_name) *out_name = mem_strdup(lexer_peek(p->lex).str);
+            p->name_line = lexer_peek(p->lex).line;
+            p->name_col  = lexer_peek(p->lex).col;
             lexer_advance(p->lex);
         }
         lexer_expect(p->lex, TOK_RPAREN);
@@ -1207,6 +1232,8 @@ static Type *parse_declarator(Parser *p, Type *base, char **out_name) {
     }
     if (lexer_peek(p->lex).kind == TOK_IDENT) {
         if (out_name) *out_name = mem_strdup(lexer_peek(p->lex).str);
+        p->name_line = lexer_peek(p->lex).line;
+        p->name_col  = lexer_peek(p->lex).col;
         lexer_advance(p->lex);
     }
     /* armcc/GCC register binding: `register T name __asm("reg")`.
@@ -1273,7 +1300,9 @@ static Type *parse_declarator(Parser *p, Type *base, char **out_name) {
 #endif
                 }
             }
-            if (lexer_peek(p->lex).kind == TOK_RBRACKET) lexer_advance(p->lex);
+            /* A missing "]" used to be skipped silently, so `int a[2;`
+             * compiled with no diagnostic at all. Report it (armcc #17). */
+            lexer_expect(p->lex, TOK_RBRACKET);
             if (dim_count < 8) dims[dim_count++] = v;
         }
         if (dim_count > 0) {
@@ -1353,6 +1382,7 @@ static int parse_smc(Parser *p) {
 static AstNode *parse_top_decl(Parser *p) {
     int storage = 0;
     int is_td = 0;
+    int decl_name_col = 0;        /* column of the declared name; for carets */
     Type *base;
     int line = lexer_peek(p->lex).line;
     int func_mods = 0;            /* __irq/__weak/__naked bitmask: 1/2/4 */
@@ -1477,6 +1507,9 @@ static AstNode *parse_top_decl(Parser *p) {
             perror_at(p, "expected identifier in declaration");
             return 0;
         }
+        /* Where the name itself was: declaration-level diagnostics are anchored
+         * to the identifier, so the node has to remember the column. */
+        decl_name_col = p->name_col;
 
         /* Function definition */
         if (lexer_peek(p->lex).kind == TOK_LPAREN) {
@@ -1516,6 +1549,7 @@ static AstNode *parse_top_decl(Parser *p) {
                     if (!pname) pname = mem_strdup("_anon");
                     {
                         AstNode *param = ast_var_decl(pname, pt, 0, line);
+                        param->col = p->name_col;   /* for the caret on #100 */
                         if (param_count >= param_capacity) {
                             int nc = param_capacity ? param_capacity * 2 : 4;
                             params = (AstNode **)mem_realloc(params,
@@ -1564,6 +1598,7 @@ static AstNode *parse_top_decl(Parser *p) {
                 AstNode *n;
                 lexer_advance(p->lex);
                 n = ast_func_def(name, ret_type, params, param_count, 0, line);
+                if (n) n->col = decl_name_col;
                 n->kind = AST_FUNC_DECL;
                 n->u.func.is_variadic = is_variadic;
                 n->u.func.is_static = (storage & STO_STATIC) ? 1 : 0;
@@ -1637,6 +1672,7 @@ static AstNode *parse_top_decl(Parser *p) {
                     }
                 }
                 n = ast_func_def(name, ret_type, params, param_count, 0, line);
+                if (n) n->col = decl_name_col;
                 n->kind = AST_ASM_FUNC;
                 n->u.func.is_variadic = is_variadic;
                 n->u.func.is_static = (storage & STO_STATIC) ? 1 : 0;
@@ -1664,6 +1700,7 @@ static AstNode *parse_top_decl(Parser *p) {
             body = parse_block(p);
             {
                 AstNode *n = ast_func_def(name, ret_type, params, param_count, body, line);
+                if (n) n->col = decl_name_col;
                 n->u.func.is_variadic = is_variadic;
                 n->u.func.is_static = (storage & STO_STATIC) ? 1 : 0;
                 n->u.func.svc_num = svc_num;
@@ -1739,6 +1776,7 @@ static AstNode *parse_top_decl(Parser *p) {
             sym_add(SYM_VAR, name, t, 0);
             {
                 AstNode *n = ast_var_decl(name, t, init, line);
+                n->col = decl_name_col;
                 n->u.var.is_global = 1;
                 n->u.var.is_static = (storage & STO_STATIC) ? 1 : 0;
                 n->u.var.is_extern = (storage & STO_EXTERN) ? 1 : 0;
@@ -1775,6 +1813,7 @@ static AstNode *parse_top_decl(Parser *p) {
                     if (nm2) sym_add(SYM_VAR, nm2, t2, 0);
                     if (nm2) {
                         AstNode *n2 = ast_var_decl(nm2, t2, init2, line);
+                        n2->col = p->name_col;
                         n2->u.var.is_global = 1;
                         n2->u.var.is_static = (storage & STO_STATIC) ? 1 : 0;
                         n2->u.var.is_extern = (storage & STO_EXTERN) ? 1 : 0;
@@ -1825,6 +1864,7 @@ static AstNode *parse_local_var_decl(Parser *p, Type *base, int storage, int is_
     for (;;) {
         char *name = 0;
         Type *t = parse_declarator(p, base, &name);
+        int decl_name_col = p->name_col;
         AstNode *init = 0;
         char *cur_section = 0;
         if (!name) {
@@ -1846,6 +1886,7 @@ static AstNode *parse_local_var_decl(Parser *p, Type *base, int storage, int is_
         infer_array_size_from_init(t, init);
         {
             AstNode *n = ast_var_decl(name, t, init, line);
+            n->col = decl_name_col;
             /* For char buf[sizeof(x)] form, deduce size via sizeof at parse time.
              * z is a placeholder; actual size computed during sema. parse_block handles this.
              * This is a compile-time construct; sema does the actual size computation. */
@@ -2119,6 +2160,16 @@ static AstNode *parse_expr(Parser *p) {
     return e;
 }
 
+/* Source column for the caret. Nodes built from a token record that token's
+ * start column; derived nodes inherit the column of the sub-expression they
+ * stand for, so the caret lands on the construct the message talks about
+ * rather than at the start of the line. 0 means "column unknown" and the
+ * source echo is printed without a caret. */
+static AstNode *anchor(AstNode *n, int col) {
+    if (n && n->col <= 0) n->col = col;
+    return n;
+}
+
 static AstNode *parse_assign_expr(Parser *p) {
     AstNode *left = parse_cond_expr(p);
     Token t = lexer_peek(p->lex);
@@ -2130,7 +2181,8 @@ static AstNode *parse_assign_expr(Parser *p) {
         AstNode *right;
         lexer_advance(p->lex);
         right = parse_assign_expr(p);
-        return ast_assign(op, left, right, t.line);
+        return anchor(ast_assign(op, left, right, t.line),
+                      left && left->col > 0 ? left->col : t.col);
     }
     return left;
 }
@@ -2160,11 +2212,12 @@ static AstNode *fn(Parser *p) {                                  \
     while (1) {                                                   \
         TokenKind k = lexer_peek(p->lex).kind;                    \
         if (cond_expr) {                                          \
-            int line = lexer_peek(p->lex).line;                   \
+            Token op = lexer_peek(p->lex);                        \
             AstNode *right;                                       \
             lexer_advance(p->lex);                                \
             right = next(p);                                      \
-            left = ast_binary((int)k, left, right, line);         \
+            left = anchor(ast_binary((int)k, left, right, op.line), \
+                          left && left->col > 0 ? left->col : op.col); \
         } else break;                                             \
     }                                                             \
     return left;                                                  \
@@ -2238,14 +2291,14 @@ static AstNode *parse_unary_expr(Parser *p) {
         case TOK_DEC: {
             int op = (int)t.kind;
             lexer_advance(p->lex);
-            return ast_unary(op, parse_cast_expr(p), line);
+            return anchor(ast_unary(op, parse_cast_expr(p), line), t.col);
         }
         case TOK_MUL:
             lexer_advance(p->lex);
-            return ast_unary((int)TOK_MUL, parse_cast_expr(p), line);
+            return anchor(ast_unary((int)TOK_MUL, parse_cast_expr(p), line), t.col);
         case TOK_BAND:
             lexer_advance(p->lex);
-            return ast_unary((int)TOK_BAND, parse_cast_expr(p), line);
+            return anchor(ast_unary((int)TOK_BAND, parse_cast_expr(p), line), t.col);
         case TOK_SIZEOF: {
             int sz;
             lexer_advance(p->lex);
@@ -2321,7 +2374,8 @@ static AstNode *parse_postfix_expr(Parser *p) {
             lexer_advance(p->lex);
             idx = parse_expr(p);
             lexer_expect(p->lex, TOK_RBRACKET);
-            node = ast_array_access(node, idx, line);
+            node = anchor(ast_array_access(node, idx, line),
+                          node->col > 0 ? node->col : t.col);
         } else if (t.kind == TOK_LPAREN) {
             AstNode **args = 0;
             int arg_count = 0;
@@ -2344,17 +2398,26 @@ static AstNode *parse_postfix_expr(Parser *p) {
                     } else break;
                 }
             }
-            lexer_expect(p->lex, TOK_RPAREN);
-            if (node->kind != AST_VAR) {
-                /* Function pointer call: set callee_name to placeholder and
-                 * save the callee expression (function pointer) for irgen. */
-                AstNode *callee = node;
-                callee_name = mem_strdup("?indirect");
-                node = ast_func_call(callee_name, args, arg_count, line);
-                node->u.call.callee = callee;
-            } else {
-                callee_name = node->u.name;
-                node = ast_func_call(callee_name, args, arg_count, line);
+            {
+                /* armcc anchors "too few arguments" (#165) on the ')' that
+                 * closes the argument list -- measured with `g()`, `g(1)` and
+                 * `g( 1 , 2 )` -- so the call node carries that column. #140
+                 * is moved onto the first surplus argument in sema.c. */
+                Token rp = lexer_peek(p->lex);
+                int call_col = rp.col > 0 ? rp.col : t.col;
+                lexer_expect(p->lex, TOK_RPAREN);
+                if (node->kind != AST_VAR) {
+                    /* Function pointer call: set callee_name to placeholder and
+                     * save the callee expression (function pointer) for irgen. */
+                    AstNode *callee = node;
+                    callee_name = mem_strdup("?indirect");
+                    node = ast_func_call(callee_name, args, arg_count, line);
+                    node->u.call.callee = callee;
+                } else {
+                    callee_name = node->u.name;
+                    node = ast_func_call(callee_name, args, arg_count, line);
+                }
+                node = anchor(node, call_col);
             }
         } else if (t.kind == TOK_DOT || t.kind == TOK_ARROW) {
             int is_arrow = (t.kind == TOK_ARROW);
@@ -2366,11 +2429,13 @@ static AstNode *parse_postfix_expr(Parser *p) {
                 return node;
             }
             lexer_advance(p->lex);
-            node = ast_member(node, mt.str, is_arrow, line);
+            node = anchor(ast_member(node, mt.str, is_arrow, line),
+                          node->col > 0 ? node->col : t.col);
         } else if (t.kind == TOK_INC || t.kind == TOK_DEC) {
             AstNode *u;
             lexer_advance(p->lex);
-            u = ast_unary((int)t.kind, node, line);
+            u = anchor(ast_unary((int)t.kind, node, line),
+                       node->col > 0 ? node->col : t.col);
             u->u.unary.is_postfix = 1;
             node = u;
         } else break;
@@ -2385,7 +2450,7 @@ static AstNode *parse_primary_expr(Parser *p) {
         /* Floating-point literal: reuse AST_NUM node, with new field fval and type=double */
         AstNode *node;
         lexer_advance(p->lex);
-        node = ast_new(AST_NUM, line);
+        node = anchor(ast_new(AST_NUM, line), t.col);
         node->u.num_val = (int)t.fvalue;
         node->fval = t.fvalue;
         if (t.is_imag) {
@@ -2404,13 +2469,22 @@ static AstNode *parse_primary_expr(Parser *p) {
     if (t.kind == TOK_NUM) {
         AstNode *n;
         lexer_advance(p->lex);
-        n = ast_num(t.value, line);
+        n = anchor(ast_num(t.value, line), t.col);
         /* C99 6.4.4.1: an integer literal's type follows its suffix. Without
          * this, `-1 < 1u` compared as signed and 0xFFFFFFFFu / 1u<<31 got
          * the signed int type. */
-        if (t.lit_llong || t.lit_long) {
+        /* FIX(long-literal): the `L`/`UL` suffix must map to long /
+         * unsigned long, not to long long.  long is 32-bit on every
+         * target we model, so mapping UL to ullong forced 64-bit
+         * arithmetic for constants such as 0xE000E000UL; the 64-bit
+         * path then produced the wrong low word (SCB 0xE000ED24 came
+         * out as 0x24, i.e. a wild store -> IMPRECISERR HardFault). */
+        if (t.lit_llong) {
             if (t.lit_unsigned) n->type = type_ullong();
             else                n->type = type_llong();
+        } else if (t.lit_long) {
+            if (t.lit_unsigned) n->type = type_ulong();
+            else                n->type = type_long();
         } else if (t.lit_unsigned) {
             n->type = type_uint();
         }
@@ -2457,7 +2531,7 @@ static AstNode *parse_primary_expr(Parser *p) {
             concat[0] = 0;
         }
         concat[len] = 0;
-        sn = ast_str(concat, line);
+        sn = anchor(ast_str(concat, line), t.col);
 #if ARKCC_FEATURE_WCHAR
         if (is_wide) {
             sn->type = type_pointer(type_wchar());
@@ -2479,14 +2553,37 @@ static AstNode *parse_primary_expr(Parser *p) {
             return ast_num(s->enum_value, line);
         }
         lexer_advance(p->lex);
-        return ast_var(t.str, line);
+        {
+            /* Keep the token column: semantic diagnostics are anchored to the
+             * identifier itself, and the caret has to land under it. */
+            AstNode *id = ast_var(t.str, line);
+            id->col = t.col;
+            return id;
+        }
     }
     if (t.kind == TOK_LPAREN) {
         AstNode *e;
         lexer_advance(p->lex);
         e = parse_expr(p);
         lexer_expect(p->lex, TOK_RPAREN);
+        /* The visible start of a parenthesised expression is its '(', so the
+         * caret is moved there even when the inner node already has a column
+         * (armcc does the same for `(a+1) = 2` -> #137 under the '('). */
+        if (e) e->col = t.col;
         return e;
+    }
+    /* A delimiter where an expression was required is armcc #29, measured on
+     * `int a = ;`. The delimiter is deliberately left in the stream so the
+     * enclosing parser consumes it the way it normally would: that is why
+     * armcc reports one error here instead of a cascade of follow-ons. */
+    if (t.kind == TOK_SEMICOLON || t.kind == TOK_RPAREN || t.kind == TOK_COMMA ||
+        t.kind == TOK_RBRACKET || t.kind == TOK_RBRACE) {
+        DiagLoc loc;
+        loc.file = 0;
+        loc.line = t.line;
+        loc.col  = t.col;
+        diag_report(29, DIAG_SEV_ERROR, &loc, 0, 0, 0);
+        return ast_num(0, line);
     }
     perror_at(p, "unexpected token in expression");
     lexer_advance(p->lex);

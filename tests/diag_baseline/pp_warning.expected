@@ -1,0 +1,4 @@
+"pp_warning.c", line 1: Warning:  #1215-D: #warning directive: hi
+  #warning hi
+   ^
+pp_warning.c: 1 warning, 0 errors

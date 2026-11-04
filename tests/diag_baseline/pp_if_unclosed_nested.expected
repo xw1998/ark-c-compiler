@@ -1,0 +1,7 @@
+"pp_if_unclosed_nested.c", line 2: Error:  #37: the #endif for this directive is missing
+  #if 1
+   ^
+"pp_if_unclosed_nested.c", line 1: Error:  #37: the #endif for this directive is missing
+  #if 1
+   ^
+pp_if_unclosed_nested.c: 0 warnings, 2 errors

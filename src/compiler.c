@@ -17,6 +17,7 @@
 #include "arkcc_config.h"
 #include "opt.h"
 #include "scatter.h"
+#include "diag.h"
 /* Note: <stdio.h> intentionally NOT included - all file I/O goes through
  * fs_read_file/fs_write_file (flash_fs abstraction) to avoid pulling in
  * semihosting-dependent C library functions on STM32. */
@@ -70,7 +71,7 @@ static int is_asm_input(const char *path) {
 static int write_binary(const char *path, const unsigned char *data, int n) {
     int wr = fs_write_file(path, data, n);
     if (wr != n) {
-        ark_log("[arkcc] cannot write output '%s'\n", path);
+        diag_tool(DIAG_SEV_ERROR, path, "cannot write output file", 0,0,0,0,0,0);
         return ARK_ERR_IO;
     }
     return ARK_OK;
@@ -80,18 +81,42 @@ static int write_text(const char *path, const char *s) {
     int n = ark_strlen(s);
     int wr = fs_write_file(path, (const unsigned char *)s, n);
     if (wr != n) {
-        ark_log("[arkcc] cannot write output '%s'\n", path);
+        diag_tool(DIAG_SEV_ERROR, path, "cannot write output file", 0,0,0,0,0,0);
         return ARK_ERR_IO;
     }
     return ARK_OK;
+}
+
+/* Name the tool-stage diagnostics are anchored to. armlink reports against the
+ * output image; we do the same, and fall back to a literal when no image name
+ * is in scope yet. */
+static const char *g_ld_image = "<link>";
+
+/* "0x%08X" for diagnostics: diag_num only renders decimal, and a hex address
+ * in decimal would be unreadable and unsearchable. */
+static const char *ld_hex(char *buf, unsigned v) {
+    static const char hexd[] = "0123456789ABCDEF";
+    int i;
+    buf[0] = '0'; buf[1] = 'x';
+    for (i = 0; i < 8; i++) buf[2 + i] = hexd[(v >> ((7 - i) * 4)) & 0xF];
+    buf[10] = 0;
+    return buf;
 }
 
 /* === Binary ARM linker (ARKOBJ2) ===
  * Merges multiple .ark_obj files: concatenates code sections, builds a global
  * symbol table with weak-symbol precedence (strong > weak, first weak wins),
  * and resolves cross-object relocations (BL/B.W/B<cond>.W/R_ARM_ABS32). */
-#define LD_MAX_SYMS   256
-#define LD_MAX_RELOCS 512
+/* Sizes come from arkcc_config.h so a big program can raise them without
+ * touching the linker; overflow is reported (see ld_table_overflow). */
+#ifndef ARK_LINK_MAX_SYMS
+#define ARK_LINK_MAX_SYMS   256
+#endif
+#ifndef ARK_LINK_MAX_RELOCS
+#define ARK_LINK_MAX_RELOCS 512
+#endif
+#define LD_MAX_SYMS   ARK_LINK_MAX_SYMS
+#define LD_MAX_RELOCS ARK_LINK_MAX_RELOCS
 
 typedef struct LdSym {
     char name[128];
@@ -119,6 +144,10 @@ static LdRam    g_ld_ram[LD_MAX_OBJS];
 static int      g_ld_ram_obj_count = 0;
 /* Number of duplicate compiler-runtime symbols silently merged (see ld_add_sym). */
 static int      ld_rt_dup_count = 0;
+/* Entries that did not fit in the symbol / relocation table. Any drop makes
+ * the image wrong (e.g. Reset_Handler disappears -> no vector table), so the
+ * link refuses to write output when this is non-zero. */
+static int      ld_table_overflow = 0;
 
 static LdSym    g_ld_syms[LD_MAX_SYMS];
 static int      g_ld_sym_count = 0;
@@ -147,7 +176,7 @@ static int ld_find_global(const char *name) {
 /* Add a symbol; strong overrides weak, weak skipped if strong exists. */
 static void ld_add_sym(const char *name, int offset, int is_weak) {
     int idx, n;
-    if (g_ld_sym_count >= LD_MAX_SYMS) return;
+    if (g_ld_sym_count >= LD_MAX_SYMS) { ld_table_overflow++; return; }
     idx = ld_find_global(name);
     if (idx >= 0 && !g_ld_syms[idx].is_weak && is_weak) return;  /* strong exists, skip weak */
     if (idx >= 0 && g_ld_syms[idx].is_weak && !is_weak) {       /* strong overrides weak */
@@ -164,8 +193,9 @@ static void ld_add_sym(const char *name, int offset, int is_weak) {
             if (name[0] == '_' && name[1] == '_') {
                 ld_rt_dup_count++;
             } else {
-                ark_log("[link] warning: duplicate strong symbol '%s', "
-                        "using first definition\n", name);
+                diag_tool(DIAG_SEV_WARNING, g_ld_image,
+                          "duplicate strong symbol %sq, using first definition",
+                          name, 0,0,0,0,0);
             }
         }
         return;  /* duplicate (same strength), keep first */
@@ -182,7 +212,7 @@ static void ld_add_sym(const char *name, int offset, int is_weak) {
 
 static void ld_add_reloc(const char *name, int offset, int type) {
     int n;
-    if (g_ld_reloc_count >= LD_MAX_RELOCS) return;
+    if (g_ld_reloc_count >= LD_MAX_RELOCS) { ld_table_overflow++; return; }
     n = 0;
     while (name[n] && n < (int)sizeof(g_ld_relocs[g_ld_reloc_count].name) - 1) {
         g_ld_relocs[g_ld_reloc_count].name[n] = name[n]; n++;
@@ -196,7 +226,12 @@ static void ld_add_reloc(const char *name, int offset, int type) {
 /* Patch a Thumb-2 branch or absolute reference in the merged code buffer. */
 static void ld_patch_ref(unsigned char *code, int code_size, int pc, int target, int type) {
     if (pc < 0 || pc + 4 > code_size) {
-        ark_log("[link] error: relocation offset %d out of bounds (code size %d)\n", pc, code_size);
+        {
+            char b1[12], b2[12];
+            diag_tool(DIAG_SEV_ERROR, g_ld_image,
+                      "relocation offset %s out of bounds (code size %s)",
+                      diag_num(b1, pc), diag_num(b2, code_size), 0,0,0,0);
+        }
         return;
     }
     if (type == 4) {
@@ -414,7 +449,7 @@ static int write_ark_obj(const ArkBackend *be, const ArkOptions *opts,
 
     /* Write code body */
     if (code_len + ol > (int)sizeof(obj_buf)) {
-        ark_log("[arkcc] object output too large for buffer\n");
+        diag_tool(DIAG_SEV_ERROR, target, "object output too large for buffer", 0,0,0,0,0,0);
         return ARK_ERR_IO;
     }
     {
@@ -600,7 +635,12 @@ int ark_compile(const ArkOptions *opts) {
      * symbol resolution with weak-symbol precedence + relocation patching).
      * Legacy text objects are concatenated (C backend). */
     if (opts->link_mode) {
-        char buf[64 * 1024];
+        /* Sized like the output buffer, not 64 KB: an object bigger than the
+         * read buffer used to be truncated silently and the linker then copied
+         * the code size it had read from the header out of whatever followed
+         * the buffer, producing a corrupt image with exit code 0 (and a
+         * segfault under -v). */
+        static char buf[ARK_LINK_BUF_SIZE] __attribute__((section(".ark_buf")));
         static unsigned char out_buf[ARK_LINK_BUF_SIZE] __attribute__((section(".ark_buf")));
         int out_len = 0;
         int is_binary = 0;
@@ -624,6 +664,8 @@ int ark_compile(const ArkOptions *opts) {
         }
         out_path = opts->output_path ? opts->output_path :
                    (is_binary ? "a.out.bin" : "a.out.c");
+        g_ld_image = out_path;
+        diag_set_main_file(out_path);
 
         if (is_binary) {
             /* Binary ARM linker */
@@ -634,6 +676,7 @@ int ark_compile(const ArkOptions *opts) {
             { int k; for (k = 0; k < LD_MAX_OBJS; k++) {
                   g_ld_ram[k].start = 0; g_ld_ram[k].end = 0;
                   g_ld_ram[k].have_start = 0; g_ld_ram[k].have_end = 0; } }
+            ld_table_overflow = 0;
             for (li = 0; li < opts->link_input_count; li++) {
                 int n = fs_read_file(opts->link_inputs[li], buf, sizeof(buf));
                 const unsigned char *up = (const unsigned char *)buf;
@@ -641,13 +684,27 @@ int ark_compile(const ArkOptions *opts) {
                 int base = out_len;
                 int code_sz, sym_cnt, reloc_cnt, si, ri;
                 if (n < 0) {
-                    ark_log("[arkcc] cannot read object '%s'\n", opts->link_inputs[li]);
+                    diag_tool(DIAG_SEV_ERROR, opts->link_inputs[li],
+                              "cannot read object file", 0,0,0,0,0,0);
                     return ARK_ERR_IO;
+                }
+                {
+                    /* Refuse a partially read object instead of linking with
+                     * whatever happened to sit after the buffer. */
+                    char b1[12], b2[12];
+                    int fsz = fs_file_size(opts->link_inputs[li]);
+                    if (fsz < 0 || fsz > n) {
+                        diag_tool(DIAG_SEV_ERROR, opts->link_inputs[li],
+                                  "object file is %s bytes but only %s could be "
+                                  "read; raise ARK_LINK_BUF_SIZE and relink",
+                                  diag_num(b1, fsz), diag_num(b2, n), 0,0,0,0);
+                        return ARK_ERR_IO;
+                    }
                 }
                 /* Code size (4 bytes LE) + code body */
                 code_sz = rd_le32(up + pos); pos += 4;
                 if (out_len + code_sz > (int)sizeof(out_buf)) {
-                    ark_log("[arkcc] link output too large\n");
+                    diag_tool(DIAG_SEV_ERROR, g_ld_image, "link output too large", 0,0,0,0,0,0);
                     return ARK_ERR_IO;
                 }
                 { int k; for (k = 0; k < code_sz; k++) out_buf[out_len++] = up[pos + k]; }
@@ -727,17 +784,21 @@ int ark_compile(const ArkOptions *opts) {
                         hi = g_ld_ram[obj_a].end < g_ld_ram[obj_b].end ?
                              g_ld_ram[obj_a].end : g_ld_ram[obj_b].end;
                         if (lo < hi) {
-                            ark_log("[link] error: SRAM overlap between objects #%d "
-                                    "and #%d: both place .data/.bss in "
-                                    "0x%08X..0x%08X; the overlapping range is "
-                                    "0x%08X..0x%08X\n",
-                                    obj_a, obj_b,
-                                    g_ld_ram[obj_a].start, g_ld_ram[obj_a].end,
-                                    lo, hi);
-                            ark_log("[link] error: -link does not relocate data "
-                                    "sections, so globals from different objects "
-                                    "would silently share one address; link a "
-                                    "single object or merge the translation units\n");
+                            char b1[12], b2[12], b3[12], b4[12], b5[12], b6[12];
+                            diag_tool(DIAG_SEV_ERROR, g_ld_image,
+                                      "SRAM overlap between objects #%s and #%s: "
+                                      "both place .data/.bss in %s..%s; the "
+                                      "overlapping range is %s..%s",
+                                      diag_num(b1, obj_a), diag_num(b2, obj_b),
+                                      ld_hex(b3, g_ld_ram[obj_a].start),
+                                      ld_hex(b4, g_ld_ram[obj_a].end),
+                                      ld_hex(b5, lo), ld_hex(b6, hi));
+                            diag_tool(DIAG_SEV_ERROR, g_ld_image,
+                                      "-link does not relocate data sections, so "
+                                      "globals from different objects would "
+                                      "silently share one address; link a single "
+                                      "object or merge the translation units",
+                                      0,0,0,0,0,0);
                             return ARK_ERR_LINK;
                         }
                     }
@@ -780,7 +841,8 @@ int ark_compile(const ArkOptions *opts) {
                 if (ld_find_global("Reset_Handler") >= 0) {
                     vt_size = LD_VECTOR_TABLE_ENTRIES * 4;
                     if (out_len + vt_size > (int)sizeof(out_buf)) {
-                        ark_log("[arkcc] link: vector table exceeds output buffer\n");
+                        diag_tool(DIAG_SEV_ERROR, g_ld_image,
+                                  "vector table exceeds output buffer", 0,0,0,0,0,0);
                         return ARK_ERR_IO;
                     }
                     /* Move existing code right by vt_size bytes */
@@ -812,11 +874,24 @@ int ark_compile(const ArkOptions *opts) {
                         ld_patch_ref(out_buf, out_len, g_ld_relocs[ri].offset,
                                      g_ld_syms[idx].offset, g_ld_relocs[ri].type);
                     else
-                        ark_log("[arkcc] link: unresolved symbol '%s'\n", g_ld_relocs[ri].name);
+                        diag_tool(DIAG_SEV_ERROR, g_ld_image,
+                                  "unresolved symbol %sq", g_ld_relocs[ri].name,
+                                  0,0,0,0,0);
                 }
             }
+            if (ld_table_overflow > 0) {
+                char b1[12], b2[12];
+                diag_tool(DIAG_SEV_ERROR, g_ld_image,
+                          "%s symbol/relocation entries did not fit (limit %s); "
+                          "the image would be missing code or references, so "
+                          "nothing was written - raise ARK_LINK_MAX_SYMS / "
+                          "ARK_LINK_MAX_RELOCS and relink",
+                          diag_num(b1, ld_table_overflow),
+                          diag_num(b2, ARK_LINK_MAX_SYMS), 0,0,0,0);
+                return ARK_ERR_LINK;
+            }
             if (fs_write_file(out_path, out_buf, out_len) != out_len) {
-                ark_log("[arkcc] cannot write link output '%s'\n", out_path);
+                diag_tool(DIAG_SEV_ERROR, out_path, "cannot write link output file", 0,0,0,0,0,0);
                 return ARK_ERR_IO;
             }
             if (opts->verbose) ark_log("[arkcc] linked %d objects -> %s (%d bytes, %d syms)\n",
@@ -829,8 +904,22 @@ int ark_compile(const ArkOptions *opts) {
                 int rem;
                 const char *p;
                 if (n < 0) {
-                    ark_log("[arkcc] cannot read object '%s'\n", opts->link_inputs[li]);
+                    diag_tool(DIAG_SEV_ERROR, opts->link_inputs[li],
+                              "cannot read object file", 0,0,0,0,0,0);
                     return ARK_ERR_IO;
+                }
+                {
+                    /* Same guard as the binary path: a truncated text object
+                     * would be concatenated as if it were complete. */
+                    char b1[12], b2[12];
+                    int fsz = fs_file_size(opts->link_inputs[li]);
+                    if (fsz < 0 || fsz > n) {
+                        diag_tool(DIAG_SEV_ERROR, opts->link_inputs[li],
+                                  "object file is %s bytes but only %s could be "
+                                  "read; raise ARK_LINK_BUF_SIZE and relink",
+                                  diag_num(b1, fsz), diag_num(b2, n), 0,0,0,0);
+                        return ARK_ERR_IO;
+                    }
                 }
                 p = buf;
                 rem = n;
@@ -842,14 +931,14 @@ int ark_compile(const ArkOptions *opts) {
                     while (rem > 0 && (*p == '\n' || *p == '\r')) { p++; rem--; }
                 }
                 if (out_len + rem + 1 > (int)sizeof(out_buf)) {
-                    ark_log("[arkcc] link output too large\n");
+                    diag_tool(DIAG_SEV_ERROR, g_ld_image, "link output too large", 0,0,0,0,0,0);
                     return ARK_ERR_IO;
                 }
                 { int k; for (k = 0; k < rem; k++) out_buf[out_len++] = (unsigned char)p[k]; }
                 out_buf[out_len++] = '\n';
             }
             if (fs_write_file(out_path, out_buf, out_len) != out_len) {
-                ark_log("[arkcc] cannot write link output '%s'\n", out_path);
+                diag_tool(DIAG_SEV_ERROR, out_path, "cannot write link output file", 0,0,0,0,0,0);
                 return ARK_ERR_IO;
             }
             if (opts->verbose) ark_log("[arkcc] linked %d objects -> %s\n", opts->link_input_count, out_path);
@@ -870,13 +959,15 @@ int ark_compile(const ArkOptions *opts) {
 
         be2 = opts->target ? ark_backend_find(opts->target) : ark_backend_default();
         if (!be2) {
-            ark_log("[arkcc] unknown target '%s'\n", opts->target ? opts->target : "(null)");
+            diag_tool(DIAG_SEV_ERROR, "arkcc", "unknown target %sq",
+                      opts->target ? opts->target : "(null)", 0,0,0,0,0);
             return ARK_ERR_ARG;
         }
         mem_pool_reset();
         asm_len = fs_read_file(opts->input_path, g_asm, ARK_ASM_BUF_SIZE);
         if (asm_len < 0) {
-            ark_log("[arkcc] cannot read '%s'\n", opts->input_path);
+            diag_tool(DIAG_SEV_ERROR, opts->input_path,
+                      "cannot read source file", 0,0,0,0,0,0);
             return ARK_ERR_IO;
         }
         g_asm[asm_len] = 0;
@@ -898,7 +989,7 @@ int ark_compile(const ArkOptions *opts) {
 
         code_size = be2->assemble(asm_text, g_code, ARK_CODE_BUF_SIZE);
         if (code_size < 0) {
-            ark_log("[arkcc] assembly of '%s' failed\n", opts->input_path);
+            diag_tool(DIAG_SEV_ERROR, opts->input_path, "assembly failed", 0,0,0,0,0,0);
             return ARK_ERR_ASM;
         }
         /* -c on an assembly input used to be silently ignored and still
@@ -971,8 +1062,9 @@ int ark_compile(const ArkOptions *opts) {
     if (opts->cpu) {
         const CpuInfo *cpu = cpu_lookup(opts->cpu);
         if (!cpu) {
-            ark_log("[arkcc] unknown CPU '%s' (supported: Cortex-M0/M0+/M1/M3/M4/M7/M23/M33)\n",
-                    opts->cpu);
+            diag_tool(DIAG_SEV_ERROR, "arkcc",
+                      "unknown CPU %sq (supported: Cortex-M0/M0+/M1/M3/M4/M7/M23/M33)",
+                      opts->cpu, 0,0,0,0,0);
             return ARK_ERR_ARG;
         }
         cpu_apply_predefines(cpu);
@@ -1010,12 +1102,43 @@ int ark_compile(const ArkOptions *opts) {
      * so ARM/C backends emit a separate section before each function. */
     if (opts->split_sections) g_config.split_sections = 1;
 
+    {
+        /* fs_read_file() truncates at ARK_SRC_BUF_SIZE-1 without saying so,
+         * which turns a too-small buffer into a stream of bogus syntax errors
+         * (a real 2 MB CMSIS device header reported "#37 the #endif ... is
+         * missing" because the tail was never read). Report the real cause. */
+        char b1[12], b2[12];
+        int fsz = fs_file_size(opts->input_path);
+        if (fsz >= ARK_SRC_BUF_SIZE) {
+            diag_tool(DIAG_SEV_ERROR, opts->input_path,
+                      "input file is %s bytes, larger than the %s-byte source "
+                      "buffer; rebuild arkcc with a bigger ARK_SRC_BUF_SIZE",
+                      diag_num(b1, fsz), diag_num(b2, ARK_SRC_BUF_SIZE),
+                      0,0,0,0);
+            return ARK_ERR_IO;
+        }
+    }
     src_len = fs_read_file(opts->input_path, g_src, ARK_SRC_BUF_SIZE);
     if (src_len < 0) {
-        ark_log("[arkcc] cannot read '%s'\n", opts->input_path);
+        /* armcc's shape:  "no source": Error:  #5: cannot open source input
+         * file "x": <reason>. The reason comes from the file layer so that it
+         * describes what actually happened instead of a guess. */
+        DiagLoc loc;
+        loc.file = DIAG_NO_SOURCE_TEXT;
+        loc.line = 0;
+        loc.col  = 0;
+        diag_report(5, DIAG_SEV_ERROR, &loc, "source", opts->input_path,
+                    fs_last_error());
         return ARK_ERR_IO;
     }
+    /* Preprocessing diagnoses against the raw text: that is what the user sees
+     * in their editor, and its line numbers are the ones the directives are on. */
+    diag_init(opts->input_path, g_src);
     preprocessed = preproc_process(g_src);
+    /* Line numbers in every later diagnostic refer to the *preprocessed*
+     * buffer (that is what the lexer counts), so the echo buffer must be the
+     * same text or the caret would point at a different line. */
+    diag_set_source(preprocessed);
 
     /* -MMD/--depend: generate dependency file (Makefile style, gcc -MMD compatible).
      * Format: "<output>: <source> <header1> <header2> ...\n"
@@ -1091,7 +1214,8 @@ int ark_compile(const ArkOptions *opts) {
             }
             dep_buf[dl++] = '\n';
             if (fs_write_file(dep_target, (const unsigned char *)dep_buf, dl) != dl) {
-                ark_log("[arkcc] cannot write dependency file '%s'\n", dep_target);
+                diag_tool(DIAG_SEV_WARNING, dep_target,
+                          "cannot write dependency file", 0,0,0,0,0,0);
                 return ARK_ERR_IO;
             }
             if (opts->verbose) ark_log("[arkcc] wrote dependency file '%s' (%d includes)\n", dep_target, ninc);
@@ -1112,7 +1236,8 @@ int ark_compile(const ArkOptions *opts) {
 
     be = opts->target ? ark_backend_find(opts->target) : ark_backend_default();
     if (!be) {
-        ark_log("[arkcc] unknown target '%s'\n", opts->target ? opts->target : "(null)");
+        diag_tool(DIAG_SEV_ERROR, "arkcc", "unknown target %sq",
+                      opts->target ? opts->target : "(null)", 0,0,0,0,0);
         return ARK_ERR_ARG;
     }
     if (opts->verbose) ark_log("[arkcc] target=%s, source=%d bytes\n", be->name, src_len);
@@ -1127,22 +1252,34 @@ int ark_compile(const ArkOptions *opts) {
     irgen_set_64bit_slots(ark_streq(be->name, "c"));
     lexer_init(&lex, preprocessed);
     ast = parse_program(&lex);
-    if (!ast) {
-        ark_log("[arkcc] parse failed\n");
-        return ARK_ERR_PARSE;
-    }
+    if (!ast) return ARK_ERR_PARSE;      /* diagnostics were already printed */
+    /* A frontend error means the tree we would hand to sema/codegen is not the
+     * program the user wrote. armcc stops here too; continuing only adds
+     * follow-on messages ("unresolved label", "cannot be lowered") that point
+     * at the symptom instead of the cause. Warnings do not count. */
+    if (diag_errors() > 0) return ARK_ERR_PARSE;
     sema_errs = sema_check(ast);
-    if (sema_errs > 0) {
-        ark_log("[arkcc] %d semantic error(s)\n", sema_errs);
-        return ARK_ERR_SEMA;
-    }
-    ir = irgen_program(ast);
-    if (!ir) return ARK_ERR_IRGEN;
-    if (g_irgen_errors > 0) {
-        /* IR generation could not lower part of the program; the emitted code
-         * would be silently wrong, so refuse to produce an image. */
-        ark_log("[arkcc] %d construct(s) could not be lowered to IR\n", g_irgen_errors);
-        return ARK_ERR_IRGEN;
+    if (sema_errs > 0) return ARK_ERR_SEMA;
+    if (diag_errors() > 0) return ARK_ERR_SEMA;
+    {
+        int diag_before_irgen = diag_errors();
+        ir = irgen_program(ast);
+        if (!ir) return ARK_ERR_IRGEN;
+        if (g_irgen_errors > diag_before_irgen) {
+            /* IR generation could not lower part of the program; the emitted
+             * code would be silently wrong, so refuse to produce an image.
+             * When irgen already reported a specific diagnostic (e.g. #137) the
+             * generic line adds nothing but noise, so it is only printed for
+             * failures that were otherwise silent. No armcc code covers this
+             * stage, hence no code. */
+            if (g_irgen_errors == diag_before_irgen) {
+                char nb[12];
+                diag_report_msg(DIAG_SEV_ERROR, 0,
+                                "%d construct(s) could not be lowered to IR",
+                                diag_num(nb, g_irgen_errors), 0, 0);
+            }
+            return ARK_ERR_IRGEN;
+        }
     }
     ir->source_file = opts->input_path;  /* Used for DWARF .file/.loc */
 
@@ -1166,7 +1303,7 @@ int ark_compile(const ArkOptions *opts) {
         if (ark_streq(be->name, "arm") || ark_streq(be->name, "x86")) {
             code_len = be->assemble(g_asm, g_code, ARK_CODE_BUF_SIZE);
             if (code_len < 0) {
-                ark_log("[arkcc] assembly failed\n");
+                diag_tool(DIAG_SEV_ERROR, g_ld_image, "assembly failed", 0,0,0,0,0,0);
                 return ARK_ERR_ASM;
             }
         }
@@ -1231,7 +1368,7 @@ int ark_compile(const ArkOptions *opts) {
 
     code_size = be->assemble(g_asm, g_code, ARK_CODE_BUF_SIZE);
     if (code_size < 0) {
-        ark_log("[arkcc] assembly failed\n");
+        diag_tool(DIAG_SEV_ERROR, "arkcc", "assembly failed", 0,0,0,0,0,0);
         return ARK_ERR_ASM;
     }
     if (be->link) {
@@ -1250,7 +1387,7 @@ int ark_compile(const ArkOptions *opts) {
             const char *ext = ".bin";
             if (ark_streq(be->name, "c")) ext = ".gen.c";
             if (derive_output(opts->input_path, outpath, sizeof(outpath), ext) != 0) {
-                ark_log("[arkcc] failed to derive output name\n");
+                diag_tool(DIAG_SEV_ERROR, "arkcc", "failed to derive output name", 0,0,0,0,0,0);
                 return ARK_ERR_ARG;
             }
             target = outpath;

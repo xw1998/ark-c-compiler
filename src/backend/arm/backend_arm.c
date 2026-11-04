@@ -14,6 +14,7 @@
 #include "platform.h"
 #include "common.h"
 #include "config.h"
+#include "diag.h"
 #include "scatter.h"
 #include "arkcc_config.h"
 /* On host, <stdlib.h> provides getenv() for the ARKCC_DUMP_SYMS debug flag.
@@ -205,10 +206,18 @@ static void emit_unary(AsmBuffer *b, int op) {
             emit_line(b, "MVN r0, r0");
             break;
         case (int)TOK_NOT:
+            /* FIX(logical-not): the old sequence was
+               CMP / MOV r0,#0 / IT EQ / MOVEQ r0,#1.
+               "MOV r0, #0" assembles to 16-bit "movs r0,#0" which
+               overwrites the flags set by CMP, so IT EQ always fired
+               and "!x" was constantly 1 (this deadlocked
+               while(!__HAL_PWR_GET_FLAG(PWR_FLAG_VOSRDY)) on the H7).
+               Use the same ITE + two conditional MOV shape as
+               TOK_EQ/TOK_NE: conditional MOVs do not update flags. */
             emit_line(b, "CMP r0, #0");
-            emit_line(b, "MOV r0, #0");
-            emit_line(b, "IT EQ");
+            emit_line(b, "ITE EQ");
             emit_line(b, "MOVEQ r0, #1");
+            emit_line(b, "MOVNE r0, #0");
             break;
         default:
             emit_line(b, "; unknown unary op");
@@ -1787,12 +1796,15 @@ static char *codegen_arm(IrProgram *prog) {
                         ark_streq(I->name, "__dsb") ||
                         ark_streq(I->name, "__dmb") ||
                         ark_streq(I->name, "__memory_changed") ||
+                        ark_streq(I->name, "__schedule_barrier") ||
+                        ark_streq(I->name, "__force_stores") ||
                         ark_streq(I->name, "__disable_irq") ||
                         ark_streq(I->name, "__enable_irq") ||
                         ark_streq(I->name, "__wfi") ||
                         ark_streq(I->name, "__wfe") ||
                         ark_streq(I->name, "__sev") ||
-                        ark_streq(I->name, "__clz"))) {
+                        ark_streq(I->name, "__clz") ||
+                        ark_streq(I->name, "__rbit"))) {
                         int reg_args = (real_args > 4) ? 4 : real_args;
                         int stack_args = (real_args > 4) ? (real_args - 4) : 0;
                         for (k = 0; k < reg_args; k++) {
@@ -1810,12 +1822,23 @@ static char *codegen_arm(IrProgram *prog) {
                         else if (ark_streq(I->name, "__dsb"))    asmbuf_puts(&buf, "    DSB SY\n");
                         else if (ark_streq(I->name, "__dmb"))    asmbuf_puts(&buf, "    DMB SY\n");
                         else if (ark_streq(I->name, "__memory_changed")) ; /* compiler barrier: no-op */
+                        else if (ark_streq(I->name, "__schedule_barrier")) ; /* CMSIS barrier fence: no instruction */
+                        /* armcc __force_stores: flush the compiler's pending
+                         * stores. Our codegen always emits the store where the
+                         * statement is, so there is nothing to flush and no
+                         * instruction is required (it is not a hardware
+                         * barrier; that is __dsb). */
+                        else if (ark_streq(I->name, "__force_stores")) ;
                         else if (ark_streq(I->name, "__disable_irq")) asmbuf_puts(&buf, "    CPSID i\n");
                         else if (ark_streq(I->name, "__enable_irq"))  asmbuf_puts(&buf, "    CPSIE i\n");
                         else if (ark_streq(I->name, "__wfi"))    asmbuf_puts(&buf, "    WFI\n");
                         else if (ark_streq(I->name, "__wfe"))   asmbuf_puts(&buf, "    WFE\n");
                         else if (ark_streq(I->name, "__sev"))   asmbuf_puts(&buf, "    SEV\n");
                         else if (ark_streq(I->name, "__clz"))   asmbuf_puts(&buf, "    CLZ r0, r0\n");
+                        /* armcc __rbit: CMSIS __RBIT maps onto it in the
+                         * __CC_ARM branch, so vendor code (HAL_CRYP) calls it
+                         * with one argument; the result is uint32_t. */
+                        else if (ark_streq(I->name, "__rbit"))  asmbuf_puts(&buf, "    RBIT r0, r0\n");
                         emit_push_r0(&buf);
                         break;
                     }
@@ -2821,6 +2844,35 @@ static char *codegen_arm(IrProgram *prog) {
         asmbuf_puts(&buf, "    PUSH {lr}\n");
         asmbuf_puts(&buf, "    MOV r1, #0\n");           /* sign = positive */
         asmbuf_puts(&buf, "    B .L_i2f_conv\n\n");
+        /* __aeabi_ul2f: unsigned long long (r0=low, r1=high) -> float (r0).
+         * Split-and-scale: high * 2^32 + low, both halves through ui2f. The
+         * multiply by a power of two is exact, and every other step matches
+         * the truncating behaviour of the rest of this TU-local runtime. */
+        asmbuf_puts(&buf, ".global __aeabi_ul2f\n.thumb_func\n__aeabi_ul2f:\n");
+        asmbuf_puts(&buf, "    CMP r1, #0\n");
+        asmbuf_puts(&buf, "    BNE .L_ul2f_hi\n");
+        asmbuf_puts(&buf, "    PUSH {lr}\n");            /* high word zero: 32-bit path */
+        asmbuf_puts(&buf, "    BL __aeabi_ui2f\n");
+        asmbuf_puts(&buf, "    POP {r0}\n");
+        asmbuf_puts(&buf, "    BX r0\n");
+        asmbuf_puts(&buf, ".L_ul2f_hi:\n");
+        asmbuf_puts(&buf, "    PUSH {r4, lr}\n");
+        asmbuf_puts(&buf, "    MOV r4, r0\n");           /* keep low half */
+        asmbuf_puts(&buf, "    MOV r0, r1\n");
+        asmbuf_puts(&buf, "    BL __aeabi_ui2f\n");     /* float(high) */
+        asmbuf_puts(&buf, "    VMOV s0, r0\n");
+        asmbuf_puts(&buf, "    MOVW r0, #0x0000\n");     /* 2^32 as float = 0x4F800000 */
+        asmbuf_puts(&buf, "    MOVT r0, #0x4F80\n");
+        asmbuf_puts(&buf, "    VMOV s1, r0\n");
+        asmbuf_puts(&buf, "    VMUL.F32 s0, s0, s1\n");
+        asmbuf_puts(&buf, "    MOV r0, r4\n");
+        asmbuf_puts(&buf, "    BL __aeabi_ui2f\n");     /* float(low) */
+        asmbuf_puts(&buf, "    VMOV s1, r0\n");
+        asmbuf_puts(&buf, "    VADD.F32 s0, s0, s1\n");
+        asmbuf_puts(&buf, "    VMOV r0, s0\n");
+        asmbuf_puts(&buf, "    POP {r4}\n");            /* r0 keeps the result */
+        asmbuf_puts(&buf, "    POP {r1}\n");            /* r1 = return address */
+        asmbuf_puts(&buf, "    BX r1\n\n");
 
         /* __aeabi_fadd: float (r0) + float (r1) -> float (r0)
          * 真正的 IEEE 754 单精度加法：提取符号/指数/尾数，对齐指数，
@@ -3769,6 +3821,28 @@ static void read_vfp_suffix_a(const char **p, char *out, int cap) {
     out[n] = 0;
 }
 
+
+/* FIX(vfp-encode): Split an S/D register number into the two fields the VFP
+ * encoders actually use.
+ *
+ * The classic ARM ARM shorthand "Sd = D:Vd" reads as if a single-precision
+ * register number were (16 * half_bit + 4-bit field); that is what this file
+ * originally assumed.  Measured against armasm 5.06
+ * (--cpu Cortex-M7 --fpu=FPv5_D16, see h7test/v3.lst / v4.lst) the field holds
+ * reg[4:1] and the separate "half" bit holds reg[0]:
+ *     VADD.F32 S0, S0, S16 -> 0xEE300A08   (field 8 = 16>>1, half 0 = 16&1)
+ *     VADD.F32 S0, S0, S1  -> 0xEE300A20   (field 0 =  1>>1, half 1 =  1&1)
+ *     VADD.F32 S1, S2, S3  -> 0xEE710A21   (every field shifted the same way)
+ * D0-D15 put the whole number in the 4-bit field and leave the half bit clear.
+ * The half bit sits at bit22 for Vd, bit7 for Vn and bit5 for Vm. */
+static unsigned ark_vfp_nib(int reg, int is_dbl) {
+    if (reg < 0) reg = 0;
+    return is_dbl ? (unsigned)(reg & 0xF) : (unsigned)((reg >> 1) & 0xF);
+}
+static unsigned ark_vfp_half(int reg, int is_dbl) {
+    if (reg < 0) reg = 0;
+    return is_dbl ? (unsigned)((reg >> 4) & 1) : (unsigned)(reg & 1);
+}
 static int parse_imm_a(const char **p) {
     int neg = 0;
     int v = 0;
@@ -3966,8 +4040,9 @@ static int op_size_a(const char *op) {
     if (strieq_a(op, "DMB") || strieq_a(op, "DSB") || strieq_a(op, "ISB")) return 4;
     /* RRX is encoded as MOV Rd, Rm, RRX (32-bit T2 data-processing). */
     if (strieq_a(op, "RRX")) return 4;
-    /* CLZ and SADD16 only exist as 32-bit Thumb-2 encodings. */
+    /* CLZ, RBIT and SADD16 only exist as 32-bit Thumb-2 encodings. */
     if (strieq_a(op, "CLZ"))    return 4;
+    if (strieq_a(op, "RBIT"))   return 4;
     if (strieq_a(op, "SADD16")) return 4;
     /* #1 FIX: VFP instructions are all 32-bit (two 16-bit halfwords).
      * Without this, pass1 counts 2 bytes but pass2 emits 4, causing
@@ -4754,9 +4829,13 @@ static void pass2_a(ArmAsm *a) {
                 rm = second;
             }
             if (rd != rn) {
-                ark_log("[asm-arm] error: MUL with three distinct registers "
-                        "(Rd=r%d, Rn=r%d) needs the 32-bit form, not supported\n",
-                        rd, rn);
+                {
+                    char b1[12], b2[12];
+                    diag_tool(DIAG_SEV_ERROR, "arkcc",
+                              "MUL with three distinct registers (Rd=r%s, Rn=r%s) "
+                              "needs the 32-bit form, not supported",
+                              diag_num(b1, rd), diag_num(b2, rn), 0,0,0,0);
+                }
                 a->hard_errors++;
             }
             out16(a, 0x4340 | ((rm & 7) << 3) | (rd & 7));
@@ -4906,8 +4985,13 @@ static void pass2_a(ArmAsm *a) {
                      * silently compared against the wrong value. */
                     unsigned i, imm3, imm8;
                     if (!thumb_imm12_a((unsigned)imm, &i, &imm3, &imm8)) {
-                        ark_log("[asm-arm] error: CMP immediate %d cannot be "
-                                "encoded as a modified immediate\n", imm);
+                        {
+                            char b1[12];
+                            diag_tool(DIAG_SEV_ERROR, "arkcc",
+                                      "CMP immediate %s cannot be encoded as a "
+                                      "modified immediate", diag_num(b1, imm),
+                                      0,0,0,0,0);
+                        }
                         a->hard_errors++;
                         out16(a, 0xBF00);
                         out16(a, 0xBF00);
@@ -4947,7 +5031,9 @@ static void pass2_a(ArmAsm *a) {
                 } else {
                     addr = find_label_a(a, sym);
                     if (addr < 0) {
-                        ark_log("[asm-arm] unresolved symbol '%s' in LDR =label\n", sym);
+                        diag_tool(DIAG_SEV_ERROR, "arkcc",
+                                  "unresolved symbol %sq in LDR =label", sym,
+                                  0,0,0,0,0);
                         a->error_count++;
                         addr = 0;
                     } else {
@@ -5076,6 +5162,23 @@ static void pass2_a(ArmAsm *a) {
             else if (strieq_a(first, "ITE"))  mask = ((cb ^ 1) << 3) | 0x4;
             else                              mask = (cb << 3) | (cb << 2) | 0x2; /* ITTT */
             out16(a, 0xBF00 | (cv << 4) | mask);
+        }
+        else if (strieq_a(first, "BLX")) {
+            /* BLX <Rm>: 16-bit 0x4780 | Rm<<3 (Thumb-2 T1). The backend emits
+             * this for an indirect call (obj->fnptr()), so without it every
+             * function-pointer call became an "unknown mnemonic" and the whole
+             * image failed to assemble. Only the register form exists here:
+             * the label form is 32-bit and is never emitted by this backend,
+             * so a non-register operand is reported rather than mistranslated. */
+            int rm = parse_reg_a(&p);
+            if (rm < 0) {
+                diag_tool(DIAG_SEV_ERROR, "arkcc",
+                          "BLX needs a register operand", 0,0,0,0,0,0);
+                a->hard_errors++;
+                out16(a, 0xBF00);
+            } else {
+                out16(a, 0x4780 | ((rm & 0xF) << 3));
+            }
         }
         else if (strieq_a(first, "BL")) {
             char name[64];
@@ -5257,11 +5360,15 @@ static void pass2_a(ArmAsm *a) {
          * making every float operation a no-op. Now each is properly
          * encoded as a 32-bit Thumb-2 VFP instruction.
          *
-         * VFP register encoding (S<n>, n=0..31):
-         *   Sd = D:Vd  (D=bit22=Sn[4], Vd=bits15:12=Sn[3:0])
-         *   Sn = N:Vn  (N=bit7,           Vn=bits19:16)
-         *   Sm = M:Vm  (M=bit5,           Vm=bits3:0)
-         * D registers use same fields (D0=S0:S1, D1=S2:S3, ...).
+         * VFP register encoding (S<n>, n=0..31 ; D<n>, n=0..15):
+         *   the 4-bit register field holds n[4:1] for single precision and
+         *   the whole n for double precision; the neighbouring "half" bit
+         *   holds n[0] for single precision and is 0 for double.
+         *     Vd = field at bits15:12, half at bit22
+         *     Vn = field at bits19:16, half at bit7
+         *     Vm = field at bits3:0,   half at bit5
+         *   The split is done by ark_vfp_nib()/ark_vfp_half(); the bit
+         *   positions above are the ones those helpers feed into.
          * sz bit (bit8): 0=F32 single, 1=F64 double. */
         else if (strieq_a(first, "VMOV")) {
             /* VMOV Sn, Rt (core -> VFP) or VMOV Rt, Sn (VFP -> core) */
@@ -5274,8 +5381,8 @@ static void pass2_a(ArmAsm *a) {
                 if (sn < 0) sn = 0;
                 eat_comma_a(&p);
                 rt = parse_reg_a(&p);
-                vn = (unsigned)(sn & 0xF);
-                n_bit = (unsigned)(sn >> 4);
+                vn = ark_vfp_nib(sn, 0);
+                n_bit = ark_vfp_half(sn, 0);
                 hi = 0xEE00u | vn;
                 lo = 0x0A10u | (unsigned)((rt & 0xF) << 12) | (n_bit << 7);
                 out16(a, hi);
@@ -5288,8 +5395,8 @@ static void pass2_a(ArmAsm *a) {
                 eat_comma_a(&p);
                 sn = parse_vfp_sreg_a(&p);
                 if (sn < 0) sn = 0;
-                vn = (unsigned)(sn & 0xF);
-                n_bit = (unsigned)(sn >> 4);
+                vn = ark_vfp_nib(sn, 0);
+                n_bit = ark_vfp_half(sn, 0);
                 hi = 0xEE10u | vn;   /* bit20=1 means VFP->core */
                 lo = 0x0A10u | (unsigned)((rt & 0xF) << 12) | (n_bit << 7);
                 out16(a, hi);
@@ -5310,7 +5417,8 @@ static void pass2_a(ArmAsm *a) {
             if      (strieq_a(first, "VADD")) base = is_f64 ? 0xEE300B00u : 0xEE300A00u;
             else if (strieq_a(first, "VSUB")) base = is_f64 ? 0xEE300B40u : 0xEE300A40u;
             else if (strieq_a(first, "VMUL")) base = is_f64 ? 0xEE200B00u : 0xEE200A00u;
-            else                              base = is_f64 ? 0xEE000B40u : 0xEE000A40u;
+            /* FIX(vfp-encode): VDIV was 0xEE000A40/0xEE000B40 = VMLS, so every float division lost its division. */
+            else                              base = is_f64 ? 0xEE800B00u : 0xEE800A00u;
             if (is_f64) {
                 sd = parse_vfp_dreg_a(&p); eat_comma_a(&p);
                 sn = parse_vfp_dreg_a(&p); eat_comma_a(&p);
@@ -5321,69 +5429,134 @@ static void pass2_a(ArmAsm *a) {
                 sm = parse_vfp_sreg_a(&p);
             }
             if (sd < 0) sd = 0; if (sn < 0) sn = 0; if (sm < 0) sm = 0;
-            d = (unsigned)(sd >> 4); vd = (unsigned)(sd & 0xF);
-            n_bit = (unsigned)(sn >> 4); vn = (unsigned)(sn & 0xF);
-            m = (unsigned)(sm >> 4); vm = (unsigned)(sm & 0xF);
+            d     = ark_vfp_half(sd, is_f64);   /* bit22   = Sd[0] */
+            vd    = ark_vfp_nib (sd, is_f64);   /* bits15:12 = Sd[4:1] */
+            n_bit = ark_vfp_half(sn, is_f64);   /* bit7    = Sn[0] */
+            vn    = ark_vfp_nib (sn, is_f64);   /* bits19:16 = Sn[4:1] */
+            m     = ark_vfp_half(sm, is_f64);   /* bit5    = Sm[0] */
+            vm    = ark_vfp_nib (sm, is_f64);   /* bits3:0 = Sm[4:1] */
             hi = (base >> 16) | (d << 6) | vn;
             lo = (base & 0xFFFF) | (vd << 12) | (n_bit << 7) | (m << 5) | vm;
             out16(a, hi);
             out16(a, lo);
         }
         else if (strieq_a(first, "VCVT")) {
-            /* VCVT.S32.F32 Sd,Sm   (float -> int, single)
-             * VCVT.F32.S32 Sd,Sm   (int -> float, single)
-             * VCVT.S32.F64 Sd,Dm   (double -> int)
-             * VCVT.F64.S32 Dd,Sm   (int -> double) */
+            /* VCVT register conversions.  Every base below is the encoding for
+             * the S0/D0 form, measured with armasm (h7test/v3.lst, v4.lst):
+             *   VCVT.S32.F32 = 0xEEBD0AC0   VCVT.U32.F32 = 0xEEBC0AC0
+             *   VCVT.F32.S32 = 0xEEB80AC0   VCVT.F32.U32 = 0xEEB80A40
+             *   VCVT.S32.F64 = 0xEEBD0BC0   VCVT.U32.F64 = 0xEEBC0BC0
+             *   VCVT.F64.S32 = 0xEEB80BC0   VCVT.F64.U32 = 0xEEB80B40
+             *   VCVT.F32.F64 = 0xEEB70BC0   VCVT.F64.F32 = 0xEEB70AC0
+             * FIX(vfp-encode): the U32 variants and the .F32.F64/.F64.F32 pairs
+             * used to fall through to the S32.F32 base, so unsigned
+             * conversions and float<->double casts silently became S32.F32. */
             char suf[32];
             unsigned base;
             int sd = 0, sm = 0;
+            int dst_dbl, src_dbl;
             unsigned d, vd, m, vm;
             unsigned hi, lo;
             read_vfp_suffix_a(&p, suf, (int)sizeof(suf));
             if      (strieq_a(suf, "S32F32")) base = 0xEEBD0AC0u;
+            else if (strieq_a(suf, "U32F32")) base = 0xEEBC0AC0u;
             else if (strieq_a(suf, "F32S32")) base = 0xEEB80AC0u;
+            else if (strieq_a(suf, "F32U32")) base = 0xEEB80A40u;
             else if (strieq_a(suf, "S32F64")) base = 0xEEBD0BC0u;
+            else if (strieq_a(suf, "U32F64")) base = 0xEEBC0BC0u;
             else if (strieq_a(suf, "F64S32")) base = 0xEEB80BC0u;
-            else                              base = 0xEEBD0AC0u;
-            if (strieq_a(suf, "S32F64")) {
-                sd = parse_vfp_sreg_a(&p); eat_comma_a(&p);
-                sm = parse_vfp_dreg_a(&p);
-            } else if (strieq_a(suf, "F64S32")) {
-                sd = parse_vfp_dreg_a(&p); eat_comma_a(&p);
-                sm = parse_vfp_sreg_a(&p);
-            } else {
-                sd = parse_vfp_sreg_a(&p); eat_comma_a(&p);
-                sm = parse_vfp_sreg_a(&p);
+            else if (strieq_a(suf, "F64U32")) base = 0xEEB80B40u;
+            else if (strieq_a(suf, "F32F64")) base = 0xEEB70BC0u;
+            else if (strieq_a(suf, "F64F32")) base = 0xEEB70AC0u;
+            else {
+                /* Do not guess: an unknown suffix used to be encoded as
+                 * VCVT.S32.F32, i.e. a silently wrong operation. */
+                diag_tool(DIAG_SEV_ERROR, "arkcc",
+                          "unsupported VCVT suffix", 0,0,0,0,0,0);
+                a->hard_errors++;
+                base = 0xEEBD0AC0u;
             }
+            dst_dbl = strieq_a(suf, "F64S32") || strieq_a(suf, "F64U32") ||
+                      strieq_a(suf, "F64F32");
+            src_dbl = strieq_a(suf, "S32F64") || strieq_a(suf, "U32F64") ||
+                      strieq_a(suf, "F32F64");
+            if (dst_dbl) { sd = parse_vfp_dreg_a(&p); eat_comma_a(&p); }
+            else         { sd = parse_vfp_sreg_a(&p); eat_comma_a(&p); }
+            if (src_dbl) sm = parse_vfp_dreg_a(&p);
+            else         sm = parse_vfp_sreg_a(&p);
             if (sd < 0) sd = 0; if (sm < 0) sm = 0;
-            d = (unsigned)(sd >> 4); vd = (unsigned)(sd & 0xF);
-            m = (unsigned)(sm >> 4); vm = (unsigned)(sm & 0xF);
+            d  = ark_vfp_half(sd, dst_dbl);
+            vd = ark_vfp_nib (sd, dst_dbl);
+            m  = ark_vfp_half(sm, src_dbl);
+            vm = ark_vfp_nib (sm, src_dbl);
             hi = (base >> 16) | (d << 6);
             lo = (base & 0xFFFF) | (vd << 12) | (m << 5) | vm;
             out16(a, hi);
             out16(a, lo);
         }
         else if (strieq_a(first, "VCMP")) {
-            /* VCMP.F32 Sd,Sm  or  VCMP.F64 Dd,Dm */
+            /* VCMP.F32 Sd,Sm / VCMP.F64 Dd,Dm / VCMP.F32|F64 Sd,#0.0
+             * Bases measured with armasm (h7test/v3.lst, v5.lst):
+             *   VCMP.F32 Sd,Sm    = 0xEEB40A40 + regs
+             *   VCMP.F64 Dd,Dm    = 0xEEB40B40 + regs
+             *   VCMP.F32 Sd,#0.0  = 0xEEB50A40 + Sd
+             *   VCMP.F64 Dd,#0.0  = 0xEEB50B40 + Dd
+             * FIX(vfp-encode): "#0.0" used to make parse_vfp_sreg_a() return
+             * -1, which was clamped to 0, i.e. the compare silently became
+             * "against S0/D0".  It is now encoded properly, and any other
+             * immediate is a hard error instead of a wrong answer. */
             char suf[16];
-            int is_f64;
+            int is_f64, cmp_zero = 0;
             unsigned base;
-            int sd, sm;
+            int sd, sm = 0;
             unsigned d, vd, m, vm;
             unsigned hi, lo;
             read_vfp_suffix_a(&p, suf, (int)sizeof(suf));
             is_f64 = strieq_a(suf, "F64");
             base = is_f64 ? 0xEEB40B40u : 0xEEB40A40u;
-            if (is_f64) {
-                sd = parse_vfp_dreg_a(&p); eat_comma_a(&p);
+            if (is_f64) sd = parse_vfp_dreg_a(&p);
+            else        sd = parse_vfp_sreg_a(&p);
+            if (sd < 0) {
+                diag_tool(DIAG_SEV_ERROR, "arkcc",
+                          "bad destination register for VCMP", 0,0,0,0,0,0);
+                a->hard_errors++;
+                sd = 0;
+            }
+            eat_comma_a(&p);
+            skip_space_a(&p);
+            if (*p == '#') {
+                int nonzero = 0, ndig = 0;
+                p++;
+                skip_space_a(&p);
+                if (*p == '-') p++;
+                while ((*p >= '0' && *p <= '9') || *p == '.') {
+                    if (*p >= '1' && *p <= '9') nonzero = 1;
+                    if (*p != '.') ndig++;
+                    p++;
+                }
+                if (nonzero || ndig == 0) {
+                    diag_tool(DIAG_SEV_ERROR, "arkcc",
+                              "VCMP supports only #0.0 as an immediate operand",
+                              0,0,0,0,0,0);
+                    a->hard_errors++;
+                }
+                cmp_zero = 1;
+                base = is_f64 ? 0xEEB50B40u : 0xEEB50A40u;
+            } else if (is_f64) {
                 sm = parse_vfp_dreg_a(&p);
             } else {
-                sd = parse_vfp_sreg_a(&p); eat_comma_a(&p);
                 sm = parse_vfp_sreg_a(&p);
             }
-            if (sd < 0) sd = 0; if (sm < 0) sm = 0;
-            d = (unsigned)(sd >> 4); vd = (unsigned)(sd & 0xF);
-            m = (unsigned)(sm >> 4); vm = (unsigned)(sm & 0xF);
+            if (!cmp_zero && sm < 0) {
+                diag_tool(DIAG_SEV_ERROR, "arkcc",
+                          "bad operand register for VCMP", 0,0,0,0,0,0);
+                a->hard_errors++;
+                sm = 0;
+            }
+            d  = ark_vfp_half(sd, is_f64);
+            vd = ark_vfp_nib (sd, is_f64);
+            m  = cmp_zero ? 0u : ark_vfp_half(sm, is_f64);
+            vm = cmp_zero ? 0u : ark_vfp_nib (sm, is_f64);
             hi = (base >> 16) | (d << 6);
             lo = (base & 0xFFFF) | (vd << 12) | (m << 5) | vm;
             out16(a, hi);
@@ -5405,9 +5578,11 @@ static void pass2_a(ArmAsm *a) {
             unsigned hi, lo;
             read_vfp_suffix_a(&p, suf, (int)sizeof(suf));
             is_f64 = strieq_a(suf, "F64");
-            if      (strieq_a(first, "VNEG"))  base = is_f64 ? 0xEEB10BC0u : 0xEEB10AC0u;
+            /* FIX(vfp-encode): VNEG is 0xEEB10A40/0xEEB10B40 (0xEEB10AC0 is VSQRT). */
+            if      (strieq_a(first, "VNEG"))  base = is_f64 ? 0xEEB10B40u : 0xEEB10A40u;
             else if (strieq_a(first, "VABS"))  base = is_f64 ? 0xEEB00BC0u : 0xEEB00AC0u;
-            else                               base = is_f64 ? 0xEEB11BC0u : 0xEEB11AC0u;
+            /* FIX(vfp-encode): VSQRT is 0xEEB10AC0/0xEEB10BC0 (0xEEB11AC0 does not exist). */
+            else                               base = is_f64 ? 0xEEB10BC0u : 0xEEB10AC0u;
             if (is_f64) {
                 sd = parse_vfp_dreg_a(&p); eat_comma_a(&p);
                 sm = parse_vfp_dreg_a(&p);
@@ -5416,8 +5591,10 @@ static void pass2_a(ArmAsm *a) {
                 sm = parse_vfp_sreg_a(&p);
             }
             if (sd < 0) sd = 0; if (sm < 0) sm = 0;
-            d = (unsigned)(sd >> 4); vd = (unsigned)(sd & 0xF);
-            m = (unsigned)(sm >> 4); vm = (unsigned)(sm & 0xF);
+            d  = ark_vfp_half(sd, is_f64);
+            vd = ark_vfp_nib (sd, is_f64);
+            m  = ark_vfp_half(sm, is_f64);
+            vm = ark_vfp_nib (sm, is_f64);
             hi = (base >> 16) | (d << 6);
             lo = (base & 0xFFFF) | (vd << 12) | (m << 5) | vm;
             out16(a, hi);
@@ -5435,7 +5612,8 @@ static void pass2_a(ArmAsm *a) {
             unsigned hi, lo;
             unsigned imm8;
             read_vfp_suffix_a(&p, suf, (int)sizeof(suf));
-            is_f64 = strieq_a(suf, "F64");
+            /* armasm also accepts the ".32"/".64" spelling of the same suffix. */
+            is_f64 = strieq_a(suf, "F64") || strieq_a(suf, "64");
             if (strieq_a(first, "VLDR")) base = is_f64 ? 0xED900B00u : 0xED900A00u;
             else                         base = is_f64 ? 0xED800B00u : 0xED800A00u;
             if (is_f64) sd = parse_vfp_dreg_a(&p);
@@ -5450,7 +5628,8 @@ static void pass2_a(ArmAsm *a) {
             if (*p == ',') { p++; imm = parse_imm_a(&p); }
             skip_space_a(&p);
             if (*p == ']') p++;
-            d = (unsigned)(sd >> 4); vd = (unsigned)(sd & 0xF);
+            d  = ark_vfp_half(sd, is_f64);
+            vd = ark_vfp_nib (sd, is_f64);
             imm8 = (unsigned)((imm >> 2) & 0xFF);
             hi = (base >> 16) | (d << 6) | (unsigned)(rn & 0xF);
             lo = (base & 0xFFFF) | (vd << 12) | imm8;
@@ -5472,7 +5651,8 @@ static void pass2_a(ArmAsm *a) {
                 out16(a, 0xEA10 | (rn & 0xF));
                 out16(a, 0x0F00 | (rm & 0xF));
             } else {
-                ark_log("[asm-arm] error: bad register operand for TST\n");
+                diag_tool(DIAG_SEV_ERROR, "arkcc",
+                          "bad register operand for TST", 0,0,0,0,0,0);
                 a->hard_errors++;
                 out16(a, 0xBF00);
             }
@@ -5488,7 +5668,28 @@ static void pass2_a(ArmAsm *a) {
                 out16(a, 0xFAB0 | (rm & 0xF));
                 out16(a, 0xF080 | ((rd & 0xF) << 8) | (rm & 0xF));
             } else {
-                ark_log("[asm-arm] error: bad register operand for CLZ\n");
+                diag_tool(DIAG_SEV_ERROR, "arkcc",
+                          "bad register operand for CLZ", 0,0,0,0,0,0);
+                a->hard_errors++;
+                out16(a, 0xBF00);
+                out16(a, 0xBF00);
+            }
+        }
+        else if (strieq_a(first, "RBIT")) {
+            /* RBIT Rd, Rm: 32-bit T1 111110101001 Rm 1111 Rd 1010 Rm.
+             * Verified with armasm 5.06u7 (Cortex-M7):
+             *   RBIT r0,r0  = 0xFA90F0A0   RBIT r3,r1   = 0xFA91F3A1
+             *   RBIT r9,r12 = 0xFA9CF9AC */
+            int rd = parse_reg_a(&p);
+            int rm;
+            eat_comma_a(&p);
+            rm = parse_reg_a(&p);
+            if (rd >= 0 && rm >= 0) {
+                out16(a, 0xFA90 | (rm & 0xF));
+                out16(a, 0xF0A0 | ((rd & 0xF) << 8) | (rm & 0xF));
+            } else {
+                diag_tool(DIAG_SEV_ERROR, "arkcc",
+                          "bad register operand for RBIT", 0,0,0,0,0,0);
                 a->hard_errors++;
                 out16(a, 0xBF00);
                 out16(a, 0xBF00);
@@ -5517,7 +5718,14 @@ static void pass2_a(ArmAsm *a) {
                 out16(a, hi_base | (rm & 0xF));
                 out16(a, 0xF080 | ((rd & 0xF) << 8) | (rm & 0xF));
             } else {
-                ark_log("[asm-arm] error: bad register operand for %.8s\n", first);
+                {
+                    char mn[9];
+                    int mi;
+                    for (mi = 0; mi < 8 && first[mi]; mi++) mn[mi] = first[mi];
+                    mn[mi] = 0;
+                    diag_tool(DIAG_SEV_ERROR, "arkcc",
+                              "bad register operand for %s", mn, 0,0,0,0,0);
+                }
                 a->hard_errors++;
                 out16(a, 0xBF00);
                 out16(a, 0xBF00);
@@ -5535,10 +5743,15 @@ static void pass2_a(ArmAsm *a) {
             imm = parse_imm_opt_hash_a(&p, &ok);
             if (!ok || imm < 0 || imm > 255) {
                 if (!ok)
-                    ark_log("[asm-arm] error: BKPT needs a numeric immediate\n");
+                    diag_tool(DIAG_SEV_ERROR, "arkcc",
+                              "BKPT needs a numeric immediate", 0,0,0,0,0,0);
                 else
-                    ark_log("[asm-arm] error: BKPT immediate %d out of range 0..255\n",
-                            imm);
+                    {
+                        char b1[12];
+                        diag_tool(DIAG_SEV_ERROR, "arkcc",
+                                  "BKPT immediate %s out of range 0..255",
+                                  diag_num(b1, imm), 0,0,0,0,0);
+                    }
                 a->hard_errors++;
                 imm = 0;
             }
@@ -5555,10 +5768,15 @@ static void pass2_a(ArmAsm *a) {
             imm = parse_imm_opt_hash_a(&p, &ok);
             if (!ok || imm < 0 || imm > 255) {
                 if (!ok)
-                    ark_log("[asm-arm] error: SVC needs a numeric immediate\n");
+                    diag_tool(DIAG_SEV_ERROR, "arkcc",
+                              "SVC needs a numeric immediate", 0,0,0,0,0,0);
                 else
-                    ark_log("[asm-arm] error: SVC immediate %d out of range 0..255\n",
-                            imm);
+                    {
+                        char b1[12];
+                        diag_tool(DIAG_SEV_ERROR, "arkcc",
+                                  "SVC immediate %s out of range 0..255",
+                                  diag_num(b1, imm), 0,0,0,0,0);
+                    }
                 a->hard_errors++;
                 imm = 0;
             }
@@ -5580,8 +5798,13 @@ static void pass2_a(ArmAsm *a) {
                 } else {
                     unsigned i, imm3, imm8;
                     if (rd < 0 || !thumb_imm12_a((unsigned)imm, &i, &imm3, &imm8)) {
-                        ark_log("[asm-arm] error: MOVS immediate %d (Rd=r%d) "
-                                "cannot be encoded\n", imm, rd);
+                        {
+                            char b1[12], b2[12];
+                            diag_tool(DIAG_SEV_ERROR, "arkcc",
+                                      "MOVS immediate %s (Rd=r%s) cannot be encoded",
+                                      diag_num(b1, imm), diag_num(b2, rd),
+                                      0,0,0,0);
+                        }
                         a->hard_errors++;
                         out16(a, 0xBF00);
                         out16(a, 0xBF00);
@@ -5598,7 +5821,8 @@ static void pass2_a(ArmAsm *a) {
                     out16(a, 0xEA5F);
                     out16(a, ((rd & 0xF) << 8) | (rm & 0xF));
                 } else {
-                    ark_log("[asm-arm] error: bad register operand for MOVS\n");
+                    diag_tool(DIAG_SEV_ERROR, "arkcc",
+                              "bad register operand for MOVS", 0,0,0,0,0,0);
                     a->hard_errors++;
                     out16(a, 0xBF00);
                 }
@@ -5618,7 +5842,8 @@ static void pass2_a(ArmAsm *a) {
                 out16(a, 0xFA90 | (rn & 0xF));
                 out16(a, 0xF000 | ((rd & 0xF) << 8) | (rm & 0xF));
             } else {
-                ark_log("[asm-arm] error: bad register operand for SADD16\n");
+                diag_tool(DIAG_SEV_ERROR, "arkcc",
+                          "bad register operand for SADD16", 0,0,0,0,0,0);
                 a->hard_errors++;
                 out16(a, 0xBF00);
                 out16(a, 0xBF00);
@@ -5631,8 +5856,17 @@ static void pass2_a(ArmAsm *a) {
              * keep failing at the end of assembly. A NOP is still emitted so
              * that label addresses stay close to the intent and later code does
              * not cascade with bogus addresses. */
-            ark_log("[asm-arm] error: unknown mnemonic '%.32s' at pc 0x%X "
-                    "(no instruction emitted)\n", first, a->pc);
+            {
+                char mn[33];
+                char b1[12];
+                int mi;
+                for (mi = 0; mi < 32 && first[mi]; mi++) mn[mi] = first[mi];
+                mn[mi] = 0;
+                diag_tool(DIAG_SEV_ERROR, "arkcc",
+                          "unknown mnemonic %sq at code offset %s "
+                          "(no instruction emitted)", mn, diag_num(b1, a->pc),
+                          0,0,0,0);
+            }
             a->hard_errors++;
             out16(a, 0xBF00);
         }
@@ -5647,7 +5881,15 @@ static void resolve_refs_a(ArmAsm *a) {
         AsmRef *r = &a->refs[i];
         int addr = find_label_a(a, r->name);
         if (addr < 0) {
-            ark_log("[asm-arm] unresolved label '%s'\n", r->name);
+            /* Not a local label: this is a cross-object reference and has
+             * already been kept as a relocation by arm_save_relocs(), so the
+             * linker owns it from here. Reporting it as an error here would
+             * make every -c compile of a multi-file program exit non-zero on
+             * a valid object (see ARK_DIAG_UNRESOLVED_LOCAL). */
+#if ARK_DIAG_UNRESOLVED_LOCAL
+            diag_tool(DIAG_SEV_ERROR, "arkcc",
+                      "unresolved label %sq", r->name, 0,0,0,0,0);
+#endif
             a->error_count++;
             continue;
         }
@@ -5763,7 +6005,12 @@ static int arm_assemble(const char *asm_text, unsigned char *out, int cap) {
      * error_count), because the linker may satisfy them later.
      * Bug-A2: error_count alone therefore still does not fail the compile. */
     if (a.hard_errors > 0) {
-        ark_log("[asm-arm] %d assembly error(s), no output written\n", a.hard_errors);
+        {
+            char b1[12];
+            diag_tool(DIAG_SEV_ERROR, "arkcc",
+                      "%s assembly error(s), no output written",
+                      diag_num(b1, a.hard_errors), 0,0,0,0,0);
+        }
         return -1;
     }
     return a.pc;

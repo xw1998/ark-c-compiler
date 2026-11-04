@@ -184,6 +184,12 @@ arkcc <file.c|file.s> [options]
 | `-f<feature>` / `-fno-<feature>` | 启用/关闭特性（vla/complex/wchar/trigraph/fpu/dwarf/opt-inline/opt-dce/opt-constfold/...） |
 | `-Wno-unused` | 抑制未使用警告 |
 | `--list-backends` | 列出所有可用后端 |
+| `--diag_style <arm\|ide>` | 诊断排版：`arm`（默认，同 armcc 默认）或 `ide`（uVision 的 `文件(行,列) : error 码: 消息` 风格） |
+| `--diag_suppress=<n>[,<n>]` | 抑制指定码的诊断（同 armcc：非数字或越界码静默忽略；无值时报 `C3901U`） |
+| `--diag_remark=<n>[,<n>]` | 与 `--diag_suppress` 不可区分（实测 armcc 亦然），复用同一套抑制位 |
+| `--diag_error=<n>[,<n>]` | 把指定码升级为 error；`-D` 后缀仍按该码的内在类别保留 |
+| `--diag_warning=<n>[,<n>]` | 接受但无操作（实测 armcc 对同一条 error 也无任何可观察变化） |
+| `--errors <file>` | 把整条诊断流写入文件，而不是 stderr |
 | `-h`, `--help` | 显示帮助 |
 
 ### 3.2 目标 CPU 选择
@@ -617,7 +623,7 @@ armlink 关键选项：`--scatter=<sct>`，并通过 `system_stm32h7xx.c` 中的
 
 - **Application/User**：`main.c` `stm32h7xx_it.c` `stm32h7xx_hal_msp.c` `system_stm32h7xx.c` `bsp_w25q.c`
 - **Application/Startup**：`startup_stm32h743xx.s`
-- **ArkCC/Core**：`..\..\src\compiler.c` `lexer.c` `parser.c` `sema.c` `ir.c` `irgen.c` `ast.c` `type.c` `symtab.c` `memory.c` `preproc.c` `codegen_common.c` `cpu.c` `scatter.c` `config.c` `opt.c`
+- **ArkCC/Core**：`..\..\src\compiler.c` `lexer.c` `parser.c` `sema.c` `ir.c` `irgen.c` `ast.c` `type.c` `symtab.c` `memory.c` `preproc.c` `codegen_common.c` `cpu.c` `scatter.c` `config.c` `opt.c` `diag.c` `diag_msg_table.c`
 - **ArkCC/Backend**：`..\..\src\backend\registry.c` `..\..\src\backend\arm\backend_arm.c`
 - **ArkCC/Port**：`..\..\port\stm32\platform_stm32.c` `..\..\port\stm32\flash_fs_stm32.c`
 - **Drivers/HAL**：占位头文件位于 `Drivers/CMSIS/Device/ST/STM32H7xx/Include/`
@@ -776,6 +782,9 @@ arkCC 在 STM32 上使用三层内存区域：
 | [src/opt.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/opt.c) | IR 优化 pass（常量折叠 + DCE + 内联） |
 | [src/cpu.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/cpu.c) | CPU 选择实现 |
 | [src/scatter.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/scatter.c) | Scatter 文件解析实现 |
+| [include/diag.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/diag.h) | 诊断层接口（各阶段只 include 这一个头） |
+| [src/diag.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/diag.c) | 诊断排版：风格 / 源码回显 / caret / 汇总 / 抑制 / 上限 |
+| [src/diag_msg_table.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/diag_msg_table.c) | 码 → 消息模板表（**生成物**，见 `tools/gen_diag_table.py`） |
 | [src/backend/registry.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/backend/registry.c) | 后端注册表 |
 | [port/stm32/main_stm32.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/port/stm32/main_stm32.c) | STM32 自举入口（替代 PC 的 `main.c`） |
 

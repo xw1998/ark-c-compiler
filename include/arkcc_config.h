@@ -158,7 +158,42 @@
 #define ARKCC_FEATURE_SCATTER         1   /* scatter load description file parsing */
 
 /* ===========================================================================
- * 7. Runtime memory budget (tunable per profile)
+ * 7. Diagnostics
+ *
+ * DIAG_SINK is the only part of the diagnostic layer that needs stdio (the
+ * --errors=<file> sink). On STM32 there is no stdio, so diagnostics go to
+ * ark_log() only and diag_open_sink() reports failure.
+ * ========================================================================= */
+/* DIAG is the master switch for the diagnostic layer (codes, layout, echo,
+ * caret, counting, suppression, --errors sink, the generated message table).
+ *
+ *   1  the shipped behaviour: armcc-compatible presentation (docs/DIAGNOSTICS.md)
+ *   0  minimal last resort for footprint-sensitive builds: every entry point
+ *      keeps its signature, but a message is printed as one ark_log() line --
+ *      no code, no source echo, no caret, no summary, no suppression, no sink,
+ *      and src/diag_msg_table.c compiles to nothing. Errors and warnings are
+ *      still counted, so the driver's exit code is unchanged.
+ *
+ * Default 1. The switch exists so the layer can be measured and removed; it is
+ * not a runtime option (a runtime flag would have to keep all the code). */
+#ifndef ARKCC_FEATURE_DIAG
+#   define ARKCC_FEATURE_DIAG 1
+#endif
+
+#if !ARKCC_FEATURE_DIAG
+#   undef  ARKCC_FEATURE_DIAG_SINK
+#   define ARKCC_FEATURE_DIAG_SINK 0
+#endif
+#ifndef ARKCC_FEATURE_DIAG_SINK
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_DIAG_SINK  0   /* no stdio on the target */
+# else
+#   define ARKCC_FEATURE_DIAG_SINK  1
+# endif
+#endif
+
+/* ===========================================================================
+ * 8. Runtime memory budget (tunable per profile)
  *
  * These are pool/buffer sizes for arkcc's own arena allocator.
  * STM32 profile uses smaller pools to fit in RAM budget.
@@ -246,6 +281,36 @@
 # else
 #   define ARM_MAX_GVARS         2048
 # endif
+#endif
+
+/* Binary linker tables. A symbol that did not fit used to be dropped without
+ * a word, which made -link build an image whose Reset_Handler was missing (no
+ * vector table) while still exiting 0; exceeding them is now a hard link
+ * error, so the fix is to raise these. LdSym / LdReloc are ~136 bytes each. */
+#ifndef ARK_LINK_MAX_SYMS
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARK_LINK_MAX_SYMS     512
+# else
+#   define ARK_LINK_MAX_SYMS     16384
+# endif
+#endif
+#ifndef ARK_LINK_MAX_RELOCS
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARK_LINK_MAX_RELOCS   512
+# else
+#   define ARK_LINK_MAX_RELOCS   16384
+# endif
+#endif
+
+/* Report assembler references that no label in the current translation unit
+ * can satisfy. With -c (object) mode this is the NORMAL case: the symbol is
+ * cross-object and has been recorded as a relocation for -link, so reporting
+ * it as an error only makes noise and sets a failing exit code on a file that
+ * produced a perfectly good object. Default 0 = stay quiet, -link reports the
+ * symbols that really stay unresolved. Set to 1 to debug a missing *local*
+ * label (e.g. a codegen bug that loses a label). */
+#ifndef ARK_DIAG_UNRESOLVED_LOCAL
+# define ARK_DIAG_UNRESOLVED_LOCAL 0
 #endif
 
 #endif /* ARKCC_CONFIG_H */

@@ -24,6 +24,7 @@
 #include "platform.h"
 #include "common.h"
 #include "flash_fs.h"
+#include "diag.h"
 #include <stdarg.h>
 #include <string.h>
 
@@ -255,7 +256,7 @@ int scatter_parse_file(const char *path, ScatterDesc *out) {
     src = (char *)mem_pool_alloc(cap);
     read = fs_read_file(path, src, cap);
     if (read <= 0) {
-        ark_log("[scatter] cannot open %s\n", path);
+        diag_tool(DIAG_SEV_ERROR, path, "cannot open scatter file", 0,0,0,0,0,0);
         mem_pool_free(src, cap);
         return 1;
     }
@@ -263,7 +264,12 @@ int scatter_parse_file(const char *path, ScatterDesc *out) {
      * the buffer is full the file was larger and got truncated. Refuse to
      * parse a truncated scatter description. */
     if (read >= cap - 1) {
-        ark_log("[scatter] file too large (>= %d), truncated\n", cap - 1);
+        {
+            char b1[12];
+            diag_tool(DIAG_SEV_ERROR, path,
+                      "scatter file too large (>= %s bytes), refusing to parse "
+                      "a truncated description", diag_num(b1, cap - 1), 0,0,0,0,0);
+        }
         mem_pool_free(src, cap);
         return 1;
     }
@@ -647,12 +653,17 @@ int linker_script_parse_file(const char *path, ScatterDesc *out) {
     src = (char *)mem_pool_alloc(cap);
     read = fs_read_file(path, src, cap);
     if (read <= 0) {
-        ark_log("[ld] cannot open %s\n", path);
+        diag_tool(DIAG_SEV_ERROR, path, "cannot open linker script", 0,0,0,0,0,0);
         mem_pool_free(src, cap);
         return 1;
     }
     if (read >= cap - 1) {
-        ark_log("[ld] file too large (>= %d), truncated\n", cap - 1);
+        {
+            char b1[12];
+            diag_tool(DIAG_SEV_ERROR, path,
+                      "linker script too large (>= %s bytes), refusing to parse "
+                      "a truncated description", diag_num(b1, cap - 1), 0,0,0,0,0);
+        }
         mem_pool_free(src, cap);
         return 1;
     }

@@ -51,7 +51,11 @@ Set-Content -Path $negSrc -Value 'int main(void){int a=1,b=2;(a,b)+=3;return a+b
 Remove-Item -LiteralPath $negOut -ErrorAction SilentlyContinue
 $negText = (& .\arkcc.exe $negSrc -target arm -o $negOut 2>&1 | Out-String)
 $negRc = $LASTEXITCODE
-$negOk = ($negRc -ne 0) -and ($negText -match "could not be lowered") -and (-not (Test-Path $negOut))
+# The negative control is "an unlowerable construct must fail loudly and write
+# no image". Since the diagnostic layer now names the problem itself (#137 for
+# an assignment to a comma expression) the generic "could not be lowered" line
+# is only printed when irgen failed without a diagnostic, so accept either.
+$negOk = ($negRc -ne 0) -and ($negText -match "could not be lowered|#137") -and (-not (Test-Path $negOut))
 $selfCk = if ($negOk) { "OK" } else { "FAIL" }
 if (-not $negOk) { $f++ }
 Add-Content $log "SELFCHECK irgen-gate: $selfCk (exit=$negRc, image=$([bool](Test-Path $negOut)))"

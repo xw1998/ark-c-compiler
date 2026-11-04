@@ -1,0 +1,4 @@
+"pp_unknown_directive.c", line 1: Error:  #11-D: unrecognized preprocessing directive
+  #foo bar
+   ^
+pp_unknown_directive.c: 0 warnings, 1 error

@@ -1,0 +1,4 @@
+"pp_stray_else.c", line 1: Error:  #36: the #if for this directive is missing
+  #else
+   ^
+pp_stray_else.c: 0 warnings, 1 error

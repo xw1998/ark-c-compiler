@@ -1,0 +1,3 @@
+#ifdef
+int live;
+#endif

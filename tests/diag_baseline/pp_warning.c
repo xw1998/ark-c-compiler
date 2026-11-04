@@ -1,0 +1,2 @@
+#warning hi
+int live;

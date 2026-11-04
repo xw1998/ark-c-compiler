@@ -34,6 +34,12 @@ if errorlevel 1 echo FAILED: config && exit /b 1
 arkcc.exe %FLAGS% %SRC%\cpu.c -o %OUT%\cpu.x86.s
 if errorlevel 1 echo FAILED: cpu && exit /b 1
 
+arkcc.exe %FLAGS% %SRC%\diag.c -o %OUT%\diag.x86.s
+if errorlevel 1 echo FAILED: diag && exit /b 1
+
+arkcc.exe %FLAGS% %SRC%\diag_msg_table.c -o %OUT%\diag_msg_table.x86.s
+if errorlevel 1 echo FAILED: diag_msg_table && exit /b 1
+
 arkcc.exe %FLAGS% %SRC%\ir.c -o %OUT%\ir.x86.s
 if errorlevel 1 echo FAILED: ir && exit /b 1
 

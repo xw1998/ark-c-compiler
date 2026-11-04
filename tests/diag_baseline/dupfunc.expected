@@ -1,0 +1,4 @@
+"dup.c", line 2: Error:  #247: function "g"  has already been defined
+  int g(void){return 1;}
+      ^
+dup.c: 0 warnings, 1 error

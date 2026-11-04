@@ -1,0 +1,4 @@
+"pp_elif_empty_dead.c", line 2: Warning:  #29-D: expected an expression
+  #elif
+       ^
+pp_elif_empty_dead.c: 1 warning, 0 errors

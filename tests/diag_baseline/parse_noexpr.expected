@@ -1,0 +1,4 @@
+"parse_noexpr.c", line 1: Error:  #29: expected an expression
+  int a = ;
+          ^
+parse_noexpr.c: 0 warnings, 1 error
