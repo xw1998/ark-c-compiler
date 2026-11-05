@@ -834,15 +834,35 @@ int ark_compile(const ArkOptions *opts) {
                     }
                 }
             }
-            /* === Scatter-aware linking: generate vector table ===
+            /* === Scatter-aware linking: fill the hole, never shift ===
              * If a scatter file (.sct or .ld) is provided, parse it to derive
-             * flash_base and initial_sp. If Reset_Handler is found in the symbol
-             * table, generate a Cortex-M vector table at the start of the binary,
- * shift code right by vt_size, and adjust all symbol/reloc offsets. */
+             * flash_base, the RW window and initial_sp.
+             *
+             * arkc bakes absolute addresses into the instruction stream
+             * (movw/movt pairs and literal slots); only external symbols become
+             * relocations.  Prepending a 0x400-byte table and shifting the
+             * image therefore moved the code but not the constants baked into
+             * it: every string literal stayed 0x400 too low.  Measured, not
+             * guessed -- "ARKMAKE: link ok" sat at payload +0xA1E while the
+             * code held 0x08000000, and the app loaded, printed nothing and
+             * exited.
+             *
+             * The fix is to stop moving anything: the object linked first is
+             * compiled with --vector-table, so it reserves a 0x400-byte hole at
+             * the front and bases its own addresses at base+0x400.  The linker
+             * writes the table INTO that hole.  Code does not move, so every
+             * baked address stays correct.
+             *
+             * That is also why every object of a multi-object link is compiled
+             * against its own base (see cc_pack in the Ark RTOS port): with
+             * baked addresses, an object's base is not something the linker can
+             * choose afterwards. */
             {
                 unsigned flash_base = 0x08000000u;
                 unsigned initial_sp = 0x20020000u;
-                int vt_size = 0;
+                unsigned ram_lo = 0x20000000u;
+                unsigned ram_hi = 0u;
+                int have_ram_win = 0;
 #if ARKCC_FEATURE_SCATTER
                 {
                     ScatterDesc ld_scatter;
@@ -852,44 +872,102 @@ int ark_compile(const ArkOptions *opts) {
                         scatter_parse_file(g_config.scatter_file, &ld_scatter) == 0) {
                         flash_base = scatter_get_flash_base(&ld_scatter);
                         {   ScatterExecRegion *er_rw = scatter_find_er_by_attr(&ld_scatter, SCATTER_ATTR_RW);
-                            if (er_rw && er_rw->size > 0)
+                            if (er_rw && er_rw->size > 0) {
                                 initial_sp = er_rw->load_addr + er_rw->size;
+                                ram_lo = er_rw->load_addr;
+                                ram_hi = initial_sp;
+                                have_ram_win = 1;
+                            }
                         }
                         scatter_free(&ld_scatter);
                     } else if (g_config.linker_script && g_config.linker_script[0] &&
                                linker_script_parse_file(g_config.linker_script, &ld_scatter) == 0) {
                         flash_base = scatter_get_flash_base(&ld_scatter);
                         {   ScatterExecRegion *er_rw = scatter_find_er_by_attr(&ld_scatter, SCATTER_ATTR_RW);
-                            if (er_rw && er_rw->size > 0)
+                            if (er_rw && er_rw->size > 0) {
                                 initial_sp = er_rw->load_addr + er_rw->size;
+                                ram_lo = er_rw->load_addr;
+                                ram_hi = initial_sp;
+                                have_ram_win = 1;
+                            }
                         }
                         scatter_free(&ld_scatter);
                     }
                 }
 #endif
-                /* Generate vector table if Reset_Handler symbol exists */
-                if (ld_find_global("Reset_Handler") >= 0) {
-                    vt_size = LD_VECTOR_TABLE_ENTRIES * 4;
-                    if (out_len + vt_size > (int)sizeof(out_buf)) {
-                        char b1[12], b2[12], b3[12];
-                        diag_tool(DIAG_SEV_ERROR, g_ld_image,
-                                  "vector table exceeds output buffer: %s bytes linked + "
-                                  "%s-byte table does not fit the %s-byte ARK_LINK_BUF_SIZE",
-                                  diag_num(b1, out_len), diag_num(b2, vt_size),
-                                  diag_num(b3, (int)sizeof(out_buf)), 0,0,0);
-                        return ARK_ERR_IO;
+                /* --vector-table: the first object reserved 0x400 for us, so
+                 * write the table there.  0x400 is the size codegen reserves,
+                 * and the hole must still be untouched: if anything but zero
+                 * sits there, the first object was built without the flag and
+                 * the table would land on top of somebody's code. */
+                if ((ld_find_global("Reset_Handler") >= 0) && (opts->vector_table)) {
+                    int vt_size = LD_VECTOR_TABLE_ENTRIES * 4;
+                    int hole_ok = (out_len >= vt_size);
+                    int hk;
+                    for (hk = 0; hole_ok && (hk < vt_size); hk++) {
+                        if (out_buf[hk] != 0) hole_ok = 0;
                     }
-                    /* Move existing code right by vt_size bytes */
-                    { int k; for (k = out_len - 1; k >= 0; k--) out_buf[k + vt_size] = out_buf[k]; }
-                    /* Adjust all symbol offsets by vt_size */
-                    for (li = 0; li < g_ld_sym_count; li++)
-                        g_ld_syms[li].offset += vt_size;
-                    /* Adjust all relocation offsets by vt_size */
-                    for (li = 0; li < g_ld_reloc_count; li++)
-                        g_ld_relocs[li].offset += vt_size;
-                    /* Generate vector table at the beginning */
+                    if (!hole_ok) {
+                        char b1[12], b2[12];
+                        diag_tool(DIAG_SEV_ERROR, g_ld_image,
+                                  "the first %s bytes of the linked image are not a "
+                                  "free vector-table hole (image is %s bytes): link "
+                                  "an object built with --vector-table first, or "
+                                  "drop --vector-table",
+                                  diag_num(b1, vt_size), diag_num(b2, out_len), 0,0,0,0);
+                        return ARK_ERR_LINK;
+                    }
                     ld_build_vector_table(out_buf, flash_base, initial_sp);
-                    out_len += vt_size;
+                    if (opts->verbose) {
+                        ark_log("[link] vector table written into the %d-byte hole "
+                                "the first object reserved (SP=0x%08X, entry=0x%08X)\n",
+                                vt_size,
+                                (unsigned)rd_le32((const unsigned char *)out_buf),
+                                (unsigned)(rd_le32((const unsigned char *)out_buf + 4) & ~1u));
+                    }
+                }
+                /* No --vector-table: the image must already carry a usable table
+                 * (that is what a single object built with the flag does).  Check
+                 * it instead of trusting it. */
+                if ((ld_find_global("Reset_Handler") >= 0) && (!opts->vector_table)) {
+                    unsigned sp_w = (out_len >= 4) ?
+                        (unsigned)rd_le32((const unsigned char *)out_buf) : 0u;
+                    unsigned en_w = (out_len >= 8) ?
+                        (unsigned)rd_le32((const unsigned char *)out_buf + 4) : 0u;
+                    unsigned en_a = en_w & ~1u;
+                    int why = 0;
+                    if (!have_ram_win) {
+                        /* No scatter: the only bound left is the default initial
+                         * SP the encoder assumes, so check 0x20000000..that
+                         * instead of inventing a window. */
+                        ram_lo = 0x20000000u;
+                        ram_hi = initial_sp;
+                    }
+                    if ((out_len < 8) || ((en_w & 1u) == 0u)) {
+                        why = 1;    /* no Thumb entry word at all */
+                    } else if ((en_a < flash_base) ||
+                               ((en_a - flash_base) >= (unsigned)out_len)) {
+                        why = 2;    /* entry outside the image */
+                    } else if ((sp_w < ram_lo) || (sp_w > ram_hi)) {
+                        why = 3;    /* stack pointer outside the RW window */
+                    }
+                    if (why != 0) {
+                        char b1[12], b2[12], b3[12], b4[12], b5[12];
+                        diag_tool(DIAG_SEV_ERROR, g_ld_image,
+                                  "the linked image carries no usable vector table "
+                                  "(SP=%s entry=%s; flash %s+%s, RAM from %s): "
+                                  "compile the object that defines Reset_Handler "
+                                  "with --vector-table, then relink",
+                                  ld_hex(b1, sp_w), ld_hex(b2, en_w),
+                                  ld_hex(b3, flash_base), diag_num(b4, out_len),
+                                  ld_hex(b5, ram_lo), 0);
+                        return ARK_ERR_LINK;
+                    }
+                    if (opts->verbose) {
+                        ark_log("[link] objects carry the vector table: SP=0x%08X, "
+                                "entry=0x%08X (flash base 0x%08X)\n",
+                                sp_w, en_a, flash_base);
+                    }
                     /* The backend emits `BL __arkcc_init_globals` at the top of
                      * Reset_Handler only when *that* translation unit owns
                      * .data/.bss (the call is written next to the init body it
@@ -967,10 +1045,9 @@ int ark_compile(const ArkOptions *opts) {
                     }
                     if (opts->verbose) {
                         int ri = ld_find_global("Reset_Handler");
-                        ark_log("[arkcc] link: vector table %d bytes, SP=0x%08X, Flash=0x%08X\n",
-                                vt_size, initial_sp, flash_base);
                         if (ri >= 0)
-                            ark_log("  Reset     = 0x%08X\n", flash_base + (unsigned)g_ld_syms[ri].offset);
+                            ark_log("  Reset     = 0x%08X\n",
+                                    flash_base + (unsigned)g_ld_syms[ri].offset);
                     }
                 }
             }
