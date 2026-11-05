@@ -130,6 +130,12 @@ AstNode *parse_program(Lexer *lex) {
     prog->u.program.decl_capacity = 0;
 
     while (lexer_peek(lex).kind != TOK_EOF) {
+        /* C11 6.8.2 allows a lone ';' as an empty declaration, and both
+         * armcc and GCC accept it at file scope.  Real headers rely on
+         * it: a declaration macro that already ends with ';' is often
+         * used at a point that supplies another one.  Skip it instead
+         * of reporting "expected declaration at top level". */
+        if (lexer_peek(lex).kind == TOK_SEMICOLON) { lexer_advance(lex); continue; }
         AstNode *decl = parse_top_decl(&p);
         if (decl) {
             int count = prog->u.program.decl_count;

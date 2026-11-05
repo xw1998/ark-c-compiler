@@ -321,6 +321,27 @@ int g_arm_dump_syms = 0;
 /* Parse g_config.scatter_file (if set) into g_scatter and derive the Flash /
  * data / bss base addresses from the described execution regions. Called once
  * per compilation so the backend places sections per the scatter layout. */
+/* Derive the code / .data / .bss base addresses from an already parsed
+ * scatter description. The .sct path and the -T/--linker-script path must
+ * share this rule: when only the linker-script branch derived the bases,
+ * "--scatter <file>" parsed fine but left every address at the hardcoded
+ * defaults, i.e. it was a silent no-op for code generation. */
+#if ARKCC_FEATURE_SCATTER
+static void arm_scatter_derive_bases(void) {
+    g_flash_base = scatter_get_flash_base(&g_scatter);
+    /* +RW region is the load origin for .data; +ZI for .bss.
+     * If a +ZI region exists separately, .bss starts there, otherwise it
+     * follows .data (set bss_base = data_base; gvar_assign lays them out
+     * contiguously and records the real bss_start boundary). */
+    g_data_base = scatter_get_data_base(&g_scatter, SCATTER_ATTR_RW);
+    if (scatter_find_er_by_attr(&g_scatter, SCATTER_ATTR_ZI)) {
+        g_bss_base = scatter_get_data_base(&g_scatter, SCATTER_ATTR_ZI);
+    } else {
+        g_bss_base = g_data_base;
+    }
+}
+#endif
+
 static void arm_scatter_load(void) {
     g_scatter_loaded = 0;
     g_scatter.load_regions = 0;
@@ -332,26 +353,17 @@ static void arm_scatter_load(void) {
     if (g_config.scatter_file && g_config.scatter_file[0] &&
         scatter_parse_file(g_config.scatter_file, &g_scatter) == 0) {
         g_scatter_loaded = 1;
+        arm_scatter_derive_bases();
     } else if (g_config.linker_script && g_config.linker_script[0] &&
                linker_script_parse_file(g_config.linker_script, &g_scatter) == 0) {
         /* -T/--linker-script: parse GNU ld script the same way as .sct */
         g_scatter_loaded = 1;
-        g_flash_base = scatter_get_flash_base(&g_scatter);
-        /* +RW region is the load origin for .data; +ZI for .bss.
-         * If a +ZI region exists separately, .bss starts there, otherwise it
-         * follows .data (set bss_base = data_base; gvar_assign lays them out
-         * contiguously and records the real bss_start boundary). */
-        g_data_base = scatter_get_data_base(&g_scatter, SCATTER_ATTR_RW);
-        if (scatter_find_er_by_attr(&g_scatter, SCATTER_ATTR_ZI)) {
-            g_bss_base = scatter_get_data_base(&g_scatter, SCATTER_ATTR_ZI);
-        } else {
-            g_bss_base = g_data_base;
-        }
-        if (g_arm_dump_syms) {
-            ark_log("[scatter] flash=0x%08X data=0x%08X bss=0x%08X\n",
-                    g_flash_base, g_data_base, g_bss_base);
-            scatter_dump(&g_scatter);
-        }
+        arm_scatter_derive_bases();
+    }
+    if (g_scatter_loaded && g_arm_dump_syms) {
+        ark_log("[scatter] flash=0x%08X data=0x%08X bss=0x%08X\n",
+                g_flash_base, g_data_base, g_bss_base);
+        scatter_dump(&g_scatter);
     }
 #endif
 }
