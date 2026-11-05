@@ -25,6 +25,9 @@ static void usage(void) {
         "  -c                 compile only (produce .ark_obj)\n"
         "  -E                 preprocess only, write expanded source\n"
         "  -link a.o b.o      link multiple .ark_obj files (use with -o)\n"
+        "  --vector-table     reserve ARM_VT_SIZE (0x400) at the front of the image and\n"
+        "                     emit a Cortex-M vector table there.  Link addresses stay\n"
+        "                     valid: nothing is shifted, unlike the implicit table.\n"
         "  -v                 verbose\n"
         "  -target <name>     select backend (arm|x86|riscv32|c)\n"
         "  -I <dir>           additional include path\n"
@@ -217,6 +220,7 @@ static void reset_opts(ArkOptions *o) {
     o->compile_only = 0;
     o->preprocess_only = 0;
     o->link_mode = 0;
+    o->vector_table = 0;
     for (i = 0; i < 32; i++) o->link_inputs[i] = 0;
     o->link_input_count = 0;
     o->opt_level = 0;
@@ -477,6 +481,9 @@ int main(int argc, char **argv) {
         else if (strcmp(a, "-ffunction-sections") == 0 ||
                  strcmp(a, "--split_sections") == 0) {
             opts.split_sections = 1;
+        }
+        else if (strcmp(a, "--vector-table") == 0) {
+            opts.vector_table = 1;
         }
         else if (strcmp(a, "-link") == 0) {
             opts.link_mode = 1;
