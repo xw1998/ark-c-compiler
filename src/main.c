@@ -12,6 +12,7 @@
 #include "arkcc_config.h"
 #include "diag.h"
 #include "cpu.h"
+#include "memory.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -565,6 +566,13 @@ int main(int argc, char **argv) {
     }
 #endif
     rc = ark_compile(&opts);
+    if (opts.verbose) {
+        /* Arena high-water mark: the figure the board's ARK_POOL_SIZE should be
+         * set from.  Printed for links too, where the compile part of the run
+         * is what usually decides it. */
+        fprintf(stderr, "[arkcc] arena peak %d/%d B\n",
+                mem_pool_high(), mem_pool_capacity());
+    }
     if (rc != ARK_OK && diag_errors() == 0) {
         /* Failures that never reached the diagnostic layer still need a
          * reason; failures that did produce diagnostics already explained
