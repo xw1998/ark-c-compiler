@@ -1,0 +1,6 @@
+# DEFS / INCS 的探针：probe() 只有在两个开关都到位时才返回 42
+TARGET = probe
+OUT    = /mnt/nor/probe.svcm
+SRCS   = /mnt/nor/defs_probe.c /mnt/nor/defs_probe_main.c
+DEFS   = ARKMAKE_DEFS_PROBE
+INCS   = /mnt/nor

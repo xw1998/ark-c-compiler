@@ -1,7 +1,9 @@
 # Ark C 编译器
 
 一个多目标 C99 编译器，可在 Windows / Linux / macOS 上用 gcc 构建运行，
-也可**原生自托管**于 STM32（Cortex-M7），从外部 SPI Flash 读取 `.c` 文件就地编译执行。
+也可**原生自托管**于 STM32（Cortex-M7）：从外部 SPI Flash 读取 `.c` 文件就地编译，
+**并在同一颗芯片上把它跑起来**（2026-11-05 首次端到端跑通，见[里程碑](#里程碑在-stm32-上编译在-stm32-上跑)与
+[`examples/stm32_selfhost_build/`](examples/stm32_selfhost_build/)）。
 覆盖 98% 以上的 ARM Compiler 5 (armcc) 常用扩展（仅缺 C++ 模式与高级优化）。
 **STM32H743 + armcc5 工具链已打通完整构建流水线**：用 armcc5 编译 arkCC 源码可生成
 可直接烧录的 `arkcc_stm32.hex/.bin`，目标板启动后从 W25Q Flash 读取 `.c` 源码就地编译执行。
@@ -14,11 +16,48 @@
 | --- | --- | :---: |
 | 阶段 1 | arkCC 自身用 armcc5 编译为 STM32 固件 | ✅ 已完成 |
 | 阶段 2 | STM32 板载 arkCC 能编译 `.c` 源码生成 `.bin` | ✅ 已完成 |
-| 阶段 3 | 板载编译产物能烧写回 Flash 并跳转执行 | 🚧 进行中 |
+| 阶段 3a | 板载产物能在板上装载执行（RAM 池借块，`mini run`） | ✅ 已完成（2026-11-05） |
+| 阶段 3b | 板载产物掉电保留（外部 QSPI NOR + littlefs） | ✅ 已完成 |
+| 阶段 3c | 产物烧写回**内部 Flash** 并由引导跳转执行 | 🚧 进行中 |
 | 阶段 4 | 无需改动的 MDK 工程可被 arkCC 直接编译 | ✅ 已完成（`--uvprojx` 自动提取 include 路径和宏定义；预处理除零保护） |
 | 阶段 5 | `__user_initial_stackheap`、HAL 重定向、scatter 链接完整支持 | ✅ 已完成（`__user_initial_stackheap` + `putchar`/`fputc` UART 重定向 + malloc/free + scatter 感知向量表生成） |
 
-详见 [docs/STM32_BUILD.md](docs/STM32_BUILD.md) 与 [docs/MANUAL.md](docs/MANUAL.md)。
+
+路线图各阶段的构建细节见 [docs/STM32_BUILD.md](docs/STM32_BUILD.md) 与 [docs/MANUAL.md](docs/MANUAL.md)。
+
+## 里程碑：在 STM32 上编译、在 STM32 上跑
+
+"板上一体化"这条线分五段。**2026-11-05 第一次走到第 ③④ 段的终点**，判据不是"编译
+没有报错"，而是板上跑起来的程序自己从串口打出来的字。
+
+| # | 里程碑 | 状态 | 板上读数 |
+| --- | --- | :---: | --- |
+| ① | arkcc 自身被编成 STM32 固件并运行 | ✅ | 见 [docs/STM32_BUILD.md](docs/STM32_BUILD.md) |
+| ② | 板上把一份 `.c` 编成机器码（`.bin`） | ✅ | `cc hello.c` |
+| ③ | **多份 `.c` → 一个可装载镜像 → 在板上执行** | ✅ 2026-11-05 | `make` 打出 `app.svcm` 4776 B；`mini run` 打出 `ARKMAKE: link ok` / `ARKMAKE: cross-file add3=6` |
+| ④ | 产物掉电保留（外部 QSPI NOR + littlefs） | ✅ | 产物在 `/mnt/nor`，复位后仍在，可直接 `mini run` |
+| ⑤ | 产物烧写回**内部 Flash** 并由引导跳转执行 | 🚧 未打通 | —— |
+
+第 ③ 段值得单列，因为它一次性排除了三类**看起来成功**的失败：
+
+- **链接时把另一个编译单元丢了**——镜像照样链接成功，只是少了那个 TU。判据是
+  跨 TU 调用真的返回了结果（`add3(1,2,3)==6`），而不是"编过了"。
+- **对象被链接器搬了位置**——arkcc 在 codegen 期把绝对地址烤进指令
+  （`movw/movt` 成对、literal slot），对象里只有外部符号是重定位。按旧做法
+  "前置 0x400 向量表再把整镜像右移"，实测结果是字符串指针偏低 0x400：**装载成功、
+  一个字都打不出来、立刻退出**。现在改成"第一个对象预留空洞、`-link` 只填表、
+  永不位移"。
+- **四遍差分的前提不成立**——如果链接结果依赖基址，四份镜像的字节差就不是"地址
+  造成的位移"，差分表会把优化差异当成地址补掉。判据是四遍尺寸逐字节相同
+  （`A/B/C/D` 四行同值）。
+
+最小可复现例子在 [`examples/stm32_selfhost_build/`](examples/stm32_selfhost_build/)：
+两份源 + 一份工程描述 + 一条 `make` + 一条 `mini run`，附五条判据与"已知限制"
+（4 源上限、池预算、耗时不稳定）。工程描述这一层由
+[`ark_make`](https://gitee.com/xw19981010/ark_make) 提供，`make` 的打包回调就是
+`cc --pack` 的本体——镜像只允许有一种生成方式，否则"在板上验证过的"和"make 打出来的"
+迟早分家。
+
 
 ## 功能特性 (v0.7.0)
 
@@ -210,6 +249,7 @@ ark c compiler/
 ├── port/host/              PC 平台层
 ├── port/stm32/             STM32 平台层（platform/flash_fs/main_stm32 入口）
 ├── examples/               80 个测试样例（.c；run_tests.ps1 运行其中 75 个用例）
+├── examples/stm32_selfhost_build/  板上自举例程（多源 .c → app.svcm → 板上执行）
 ├── mdk/STM32H743_ArkCC/    Keil MDK 工程
 ├── build_stm32_armcc.ps1   armcc5 构建 STM32 固件脚本（输出 arkcc_stm32.hex/.bin）
 ├── arkcc.cfg               默认运行时配置（INI 格式）
