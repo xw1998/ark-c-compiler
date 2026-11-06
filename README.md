@@ -86,6 +86,8 @@
 | 初始化 | 是 | 标量、聚合 `{1,2,3}`、嵌套 `{{1,2},{3,4}}`、指定初始化 `.x=1/[2]=5`、字符串 `char s[]="hi"`、全局非字面量初始化（常量表达式折叠） |
 | 复合字面量 | 是 | `(int[]){1,2,3}` / `(struct P){.x=1,.y=2}` |
 | 结构体按值传递 | 是 | 通过隐藏指针参数实现 |
+| 寄存器分配 | 可选 | `-fopt-regalloc`（`ARKCC_FEATURE_OPT_REGALLOC`，宿主/交叉 1、板端 0，默认关）：发射后的文本遍把最热的帧槽搬进 `r8-r11`，只搬"每一处提及都是 `LDR r0,[r6,#n]` / `STR r0,[r6,#n]`"的槽；取地址、`volatile`、8 位/16 位/64 位访问一律留在内存。热点用例 `[r6,#]` 引用 29→9，两个负例逐字节不变 |
+| 汇编器覆盖面 | 是 | LDR/STR 全地址模式（`[Rn]`/`[Rn,#imm]`/`[Rn,Rm]`/`[Rn,Rm,LSL #0..3]`/`[Rn,#imm]!`/`[Rn],#imm`、`[sp,#imm]`、`[pc,#imm]`）、`VLDM/VSTM/VPUSH/VPOP`、`LDMFD/STMFD/LDMEA/STMEA` 别名、`ADDW/SUBW`；体系结构不存在的形态（`LDMIB/LDMDA/STMIB/STMDA`、寄存器索引写回）明确报错 |
 | 预处理 | 是 | 对象/函数宏（`#/##`）、`#if/#elif/#else/#endif/#ifdef/#ifndef/#undef/#error/#warning/#pragma`、嵌套 `#include`（<=8 层）、`__VA_ARGS__`、`-I` 路径、三字符组替换 |
 | 注释 | 是 | `//` 和 `/* */` |
 
@@ -423,6 +425,8 @@ powershell -ExecutionPolicy Bypass -File run_arm_exec_test.ps1    # ARM 执行�
 python tests/arm_exec/run_arm_exec.py                             # ARM 执行级（unicorn，无 qemu 也能跑；每例同时跑 --reg-top 臂）
 python tests/asm_cases/run_asm_cmp.py                             # 汇编器对拍：arkc vs arm-none-eabi-as，含 --asm-extra 开关契约
 python tests/run_capacity_tests.py                                  # 容量门禁：120 对象 / 1200 头文件 / 520 条 -D / 129 条 -I（宿主不许有人为上限）
+python tests/run_regalloc_tests.py                                  # 寄存器分配门禁：关就是关 / 开确实改了 / unicorn 上答案不变，外加 volatile 与取地址两个负例要求文本逐字节不变
+python tests/arm_exec/run_arm_exec.py --extra=-fopt-regalloc        # 同一套执行级用例，打开寄存器分配再跑一遍
 ```
 
 `tests/arm_exec/run_arm_exec.py` 是本仓库唯一"真的执行机器码"的宿主门禁：把 arkc
@@ -443,10 +447,22 @@ python tests/run_capacity_tests.py                                  # 容量门�
 各编一遍，比较的是 **`objdump` 解码出来的指令文本**而不是字节：同一条指令常有
 多种合法编码（GAS 偏爱 mod-imm 形式），字节不等不代表错；能执行的东西一致才是
 一致。第二张表验证开关的另一半——关掉时 30 个助记符必须逐个报 unknown
-mnemonic。七组样例分别覆盖带标志的算术、`LDM/STM`（16 位与 32 位、写回与不写回、
-增前与减前、高寄存器与 `lr`/`pc`）、乘加、系统寄存器、PC 相对、`TBB/TBH` 与
-`LDRD/STRD`、以及 VFP 的单/双精度与字面量池。没有 GNU ARM 工具链时 `exit 2`，
-不会假装通过。
+mnemonic；第三张表是反过来的契约——15 行**必须报错且必须报对原因**的输入（不存
+在的寄存器索引写回、不连续的 VFP 列表、越界立即数、`LDMIB`/`STMDA`），因为这几
+种形态以前都是"编过但编成别的指令"。十组样例分别覆盖带标志的算术、`LDM/STM`
+（16 位与 32 位、写回与不写回、增前与减前、高寄存器与 `lr`/`pc`）、乘加、系统寄
+存器、PC 相对、`TBB/TBH` 与 `LDRD/STRD`、VFP 的单/双精度与字面量池、LDR/STR 的
+全部地址模式、VFP 多寄存器存取、以及 armasm 的四个块传送别名。没有 GNU ARM 工
+具链时 `exit 2`，不会假装通过。
+
+`tests/run_regalloc_tests.py` 守的是 `-fopt-regalloc` 的三条独立断言：默认文本里
+不出现 `r8-r11`（关就是关，默认产物与上一版逐字节相同）、打开后热点用例的
+`[r6, #]` 引用确实下降（开确实改了，29 → 9）、以及三个用例在 unicorn 上真跑的返
+回值与 Python 逐值一致（答案不变）。另外两个负例——`volatile` 局部与取地址局
+部——要求文本**逐字节不变**：它们一旦开始被改写，就说明"每一处提及都是那两种
+形状"的 taint 规则破了，前面的正例也就失去意义。这条规则在实现时确实抓到两个
+真问题（取地址发的是 `ADD r0, r6, #off`，不带方括号；`volatile` 走的是完全相同
+的两条指令）。
 
 `tests/run_capacity_tests.py` 守的是另一条线：**宿主不许有人为上限**。它生成
 120 个 `.c` 各编成一个对象再 `--reloc-data` 链成一个镜像、一个 `#include` 1200
