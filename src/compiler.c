@@ -107,14 +107,9 @@ static const char *ld_hex(char *buf, unsigned v) {
  * Merges multiple .ark_obj files: concatenates code sections, builds a global
  * symbol table with weak-symbol precedence (strong > weak, first weak wins),
  * and resolves cross-object relocations (BL/B.W/B<cond>.W/R_ARM_ABS32). */
-/* Sizes come from arkcc_config.h so a big program can raise them without
- * touching the linker; overflow is reported (see ld_table_overflow). */
-#ifndef ARK_LINK_MAX_SYMS
-#define ARK_LINK_MAX_SYMS   256
-#endif
-#ifndef ARK_LINK_MAX_RELOCS
-#define ARK_LINK_MAX_RELOCS 512
-#endif
+/* Sizes come from arkcc_config.h (section 9) so a big program can raise them
+ * without touching the linker; overflow is reported (see ld_table_overflow).
+ * The per-profile numbers there are the truth -- do not redefine them here. */
 #define LD_MAX_SYMS   ARK_LINK_MAX_SYMS
 #define LD_MAX_RELOCS ARK_LINK_MAX_RELOCS
 
@@ -140,7 +135,11 @@ typedef struct LdRam {
     int      have_end;
 } LdRam;
 
-#define LD_MAX_OBJS 64
+/* Per-object bookkeeping. Sized from arkcc_config.h (host 1024 / board 64);
+ * going over it used to be silent (the object's code was merged but its RAM
+ * window and __arkcc_init_globals body were skipped), so the count is now
+ * checked up front. */
+#define LD_MAX_OBJS ARK_LINK_MAX_OBJS
 static LdRam    g_ld_ram[LD_MAX_OBJS];
 static int      g_ld_ram_obj_count = 0;
 /* --reloc-data: how far each object's data window had to move, and the address
@@ -856,6 +855,16 @@ int ark_compile(const ArkOptions *opts) {
 
         if (is_binary) {
             /* Binary ARM linker */
+            if (opts->link_input_count > LD_MAX_OBJS) {
+                char b1[12], b2[12];
+                diag_tool(DIAG_SEV_ERROR, g_ld_image,
+                          "%s objects were given but this arkcc links %s; raise "
+                          "ARK_LINK_MAX_OBJS and relink (the per-object RAM "
+                          "window and init body would otherwise be skipped)",
+                          diag_num(b1, opts->link_input_count),
+                          diag_num(b2, LD_MAX_OBJS), 0,0,0,0);
+                return ARK_ERR_LINK;
+            }
             g_ld_sym_count = 0;
             g_ld_reloc_count = 0;
             g_ld_ram_obj_count = 0;
@@ -1664,11 +1673,18 @@ int ark_compile(const ArkOptions *opts) {
      * Format: "<output>: <source> <header1> <header2> ...\n"
      * Output path is given by -MF, otherwise defaults to "<input>.d". */
     if (opts->gen_depend) {
-        /* 依赖文件能收多少个头文件，由与预处理器共用的一条上限决定
-         * （ARKCC_MAX_INC_FILES）。之前这里写死 64，于是预处理器即使记录了
-         * 更多，写出来的 .d 文件也还是被截到 64 条——两处上限必须同源。 */
+        /* 依赖文件能收多少个头文件：宿主与预处理器同源——预处理器记录多少就
+         * 取多少（表按实际条数从池里分配），板端仍用 ARKCC_MAX_INC_FILES 的
+         * 定长表。两处上限必须同源，否则预处理器记全了、写出来的 .d 还是被截。 */
+#if ARKCC_FEATURE_DEP_FILES_DYN
+        int ninc_all = preproc_included_count();
+        const char **incs = (const char **)mem_pool_alloc(
+            (ninc_all > 0 ? ninc_all : 1) * (int)sizeof(*incs));
+        int ninc = preproc_get_included_files(incs, ninc_all);
+#else
         const char *incs[ARKCC_MAX_INC_FILES];
         int ninc = preproc_get_included_files(incs, ARKCC_MAX_INC_FILES);
+#endif
         char dep_path[512];
         const char *dep_target;
         /* Derive output target name: prefer -o (strip extension and add .o), otherwise <input>.o */
@@ -1718,21 +1734,41 @@ int ark_compile(const ArkOptions *opts) {
         }
         /* Build dependency file content: "<obj>: <source> <h1> <h2> ...\n" */
         {
-            static char dep_buf[8192] __attribute__((section(".ark_buf")));
+            /* 8 KB 就够写几十个头文件，于是头文件一多，.d 会被截断而构建系统
+             * 不再察觉某个头文件改过。宿主按实际条数精确分配，板端保留定长。 */
+#if ARKCC_FEATURE_DEP_FILES_DYN
+            int dep_cap = 3;
+            char *dep_buf;
+            {
+                int k;
+                for (k = 0; obj_name[k]; k++) dep_cap++;
+                for (k = 0; opts->input_path[k]; k++) dep_cap++;
+                for (k = 0; k < ninc; k++) {
+                    int j;
+                    for (j = 0; incs[k][j]; j++) dep_cap++;
+                    dep_cap++;
+                }
+            }
+            dep_buf = (char *)mem_pool_alloc(dep_cap + 1);
+#else
+            static char dep_buf_store[8192] __attribute__((section(".ark_buf")));
+            char *dep_buf = dep_buf_store;
+            int dep_cap = (int)sizeof(dep_buf_store);
+#endif
             int dl = 0;
             int k;
             /* Output target */
-            for (k = 0; obj_name[k] && dl < (int)sizeof(dep_buf) - 1; k++) dep_buf[dl++] = obj_name[k];
+            for (k = 0; obj_name[k] && dl < dep_cap - 1; k++) dep_buf[dl++] = obj_name[k];
             dep_buf[dl++] = ':';
             dep_buf[dl++] = ' ';
             /* Source file */
-            for (k = 0; opts->input_path[k] && dl < (int)sizeof(dep_buf) - 1; k++) dep_buf[dl++] = opts->input_path[k];
+            for (k = 0; opts->input_path[k] && dl < dep_cap - 1; k++) dep_buf[dl++] = opts->input_path[k];
             /* Dependent header files */
-            for (k = 0; k < ninc && dl < (int)sizeof(dep_buf) - 2; k++) {
+            for (k = 0; k < ninc && dl < dep_cap - 2; k++) {
                 dep_buf[dl++] = ' ';
                 {
                     int j;
-                    for (j = 0; incs[k][j] && dl < (int)sizeof(dep_buf) - 1; j++) dep_buf[dl++] = incs[k][j];
+                    for (j = 0; incs[k][j] && dl < dep_cap - 1; j++) dep_buf[dl++] = incs[k][j];
                 }
             }
             dep_buf[dl++] = '\n';
@@ -1969,13 +2005,13 @@ int ark_compile_and_run(const char *path) {
     o.emit_asm = 0;
     o.verbose = 1;
     o.target = 0;
-    for (i = 0; i < 16; i++) o.include_dirs[i] = 0;
+    for (i = 0; i < ARK_PP_MAX_INC_DIRS; i++) o.include_dirs[i] = 0;
     o.include_dir_count = 0;
     o.list_backends = 0;
     o.compile_only = 0;
     o.preprocess_only = 0;
     o.link_mode = 0;
-    for (i = 0; i < 32; i++) o.link_inputs[i] = 0;
+    for (i = 0; i < ARK_LINK_MAX_OBJS; i++) o.link_inputs[i] = 0;
     o.link_input_count = 0;
     o.opt_level = 0;
     o.debug_info = 0;

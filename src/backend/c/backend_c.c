@@ -658,7 +658,9 @@ static int ir_stack_delta(IrInst *I) {
  * be HIGHER than the sp at that label reached via the fall-through path.
  * The linear-only approach underestimates stk[] in such cases, causing
  * stack overflow at runtime in the generated C code. */
-#define MAX_LABELS_FOR_SP  4096
+/* Label table for the C backend's stack bookkeeping. Host 16384 / board 4096
+ * (the C backend is trimmed on the board anyway), overridable. */
+#define MAX_LABELS_FOR_SP  ARK_C_MAX_LABELS
 static int compute_max_sp(IrFunc *f) {
     /* Collect named labels and assign them indices after numeric labels. */
     int named_count = 0;

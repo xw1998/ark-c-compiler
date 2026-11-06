@@ -405,4 +405,68 @@
 # define ARK_DIAG_UNRESOLVED_LOCAL 0
 #endif
 
+/* ===========================================================================
+ * 9. 容量上限 -- host is complete, the board trims by configuration
+ *
+ * 原则：**宿主/交叉编译不许有会挡住真实工程的人为上限**；板端的每一处上限都是
+ * 一个可 -D 覆盖的宏，裁剪掉的是"这张板子放不下的量"，不是"语言能力"。
+ *
+ * 每一项都在越界时**报错并拒绝产出**（不是静默丢弃），所以把数字调小只是
+ * 更早失败，不会生成一个看起来成功的错镜像。
+ *
+ * 覆盖方法（板端裁剪的正式入口）：
+ *     make CFLAGS+="-DARK_LINK_MAX_OBJS=32 -DARK_PP_MAX_INC_DIRS=8"
+ * ========================================================================= */
+/* -link 一次能合并的目标文件个数。宿主 1024（真实 STM32 工程常见 100~300 个），
+ * 板端 64。超过就报错，而不是静默跳过按对象的 RAM 处理。 */
+#ifndef ARK_LINK_MAX_OBJS
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARK_LINK_MAX_OBJS     64
+# else
+#   define ARK_LINK_MAX_OBJS     1024
+# endif
+#endif
+/* -I 搜索路径条数。旧实现满 16 条后**静默丢弃**，症状是
+ * "cannot open source input file"；宿主给 128。 */
+#ifndef ARK_PP_MAX_INC_DIRS
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARK_PP_MAX_INC_DIRS   16
+# else
+#   define ARK_PP_MAX_INC_DIRS   128
+# endif
+#endif
+/* --scatter 里能跟踪的命名段个数（#pragma arm section / __attribute__((section)) 的落点）。 */
+#ifndef ARK_MAX_CUSTOM_SECTIONS
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARK_MAX_CUSTOM_SECTIONS 16
+# else
+#   define ARK_MAX_CUSTOM_SECTIONS 128
+# endif
+#endif
+/* -target c 后端：函数内标签数上限（只影响宿主上的可读性调试输出）。 */
+#ifndef ARK_C_MAX_LABELS
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARK_C_MAX_LABELS      4096
+# else
+#   define ARK_C_MAX_LABELS      16384
+# endif
+#endif
+/* 符号表哈希桶数。只影响查找速度：128 桶在几千个符号时退化成链表扫描。 */
+#ifndef ARK_SYM_HASH_SIZE
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARK_SYM_HASH_SIZE     128
+# else
+#   define ARK_SYM_HASH_SIZE     4096
+# endif
+#endif
+/* -MMD 依赖表的文件名数组：宿主按需翻倍扩容（没有人为条数上限），板端用
+ * ARKCC_MAX_INC_FILES 的定长表并在越界时告警一次。 */
+#ifndef ARKCC_FEATURE_DEP_FILES_DYN
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_DEP_FILES_DYN 0
+# else
+#   define ARKCC_FEATURE_DEP_FILES_DYN 1
+# endif
+#endif
+
 #endif /* ARKCC_CONFIG_H */

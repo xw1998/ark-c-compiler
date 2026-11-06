@@ -8,7 +8,9 @@
 #include "symtab.h"
 #include "memory.h"
 
-#define SYM_HASH_SIZE 128
+/* Bucket count for the per-scope symbol chain. Only affects lookup speed;
+ * 128 buckets degrade to list scans on a few thousand symbols. */
+#define SYM_HASH_SIZE ARK_SYM_HASH_SIZE
 
 static Symbol *g_table[SYM_HASH_SIZE];
 static int     g_current_scope;

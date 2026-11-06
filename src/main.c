@@ -130,7 +130,7 @@ static void parse_uvprojx(const char *uvprojx_path, ArkOptions *opts) {
                     if (end && end < cads_end) {
                         /* Split by ';' and add each path */
                         char *p = inc_start;
-                        while (p < end && opts->include_dir_count < 16) {
+                        while (p < end && opts->include_dir_count < ARK_PP_MAX_INC_DIRS) {
                             char *sep = strchr(p, ';');
                             char *path_end = sep ? sep : end;
                             int plen = (int)(path_end - p);
@@ -222,7 +222,7 @@ static void reset_opts(ArkOptions *o) {
     o->preprocess_only = 0;
     o->link_mode = 0;
     o->vector_table = 0;
-    for (i = 0; i < 32; i++) o->link_inputs[i] = 0;
+    for (i = 0; i < ARK_LINK_MAX_OBJS; i++) o->link_inputs[i] = 0;
     o->link_input_count = 0;
     o->opt_level = 0;
     o->debug_info = 0;
@@ -469,9 +469,17 @@ int main(int argc, char **argv) {
             opts.target = argv[++i];
         }
         else if (strcmp(a, "-I") == 0 && i + 1 < argc) {
-            if (opts.include_dir_count < 16)
+            if (opts.include_dir_count < ARK_PP_MAX_INC_DIRS) {
                 opts.include_dirs[opts.include_dir_count++] = argv[++i];
-            else i++;
+            } else {
+                /* Silence here means the header is "not found" later even
+                 * though the path was on the command line. */
+                fprintf(stderr,
+                        "Fatal error: C3900U: more than %d -I search paths; "
+                        "raise ARK_PP_MAX_INC_DIRS and rebuild arkcc\n",
+                        (int)ARK_PP_MAX_INC_DIRS);
+                return 1;
+            }
         }
         else if (strcmp(a, "-mcpu") == 0 || strcmp(a, "--cpu") == 0) {
             if (i + 1 < argc) opts.cpu = argv[++i];
@@ -498,8 +506,17 @@ int main(int argc, char **argv) {
             while (i + 1 < argc) {
                 const char *nx = argv[i + 1];
                 if (nx[0] == '-') break;
-                if (opts.link_input_count < 32)
+                if (opts.link_input_count < ARK_LINK_MAX_OBJS) {
                     opts.link_inputs[opts.link_input_count++] = nx;
+                } else {
+                    /* Dropping an object here produces an image that exits 0
+                     * but is missing code; refuse instead. */
+                    fprintf(stderr,
+                            "Fatal error: C3900U: more than %d -link inputs; "
+                            "raise ARK_LINK_MAX_OBJS and rebuild arkcc\n",
+                            (int)ARK_LINK_MAX_OBJS);
+                    return 1;
+                }
                 i++;
             }
         }

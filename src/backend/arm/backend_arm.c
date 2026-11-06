@@ -292,7 +292,9 @@ static int         g_gvar_count = 0;
  * description and allocates variables contiguously from that base. Each
  * entry tracks the next free offset for one named section. Reset per
  * compilation in gvar_assign. */
-#define ARM_MAX_CUSTOM_SECTIONS 16
+/* Named sections tracked for #pragma arm section / __attribute__((section)).
+ * Host 128 / board 16, overridable with -DARK_MAX_CUSTOM_SECTIONS. */
+#define ARM_MAX_CUSTOM_SECTIONS ARK_MAX_CUSTOM_SECTIONS
 static struct {
     const char *name;     /* section name (points into IrGlobal, lives through codegen) */
     unsigned    cur_addr; /* next free address within this section's exec region */
@@ -695,7 +697,17 @@ static unsigned custom_sect_alloc(const char *section_name, int sz) {
         }
     }
     /* New section: resolve its base from the scatter description. */
-    if (g_custom_sect_count >= ARM_MAX_CUSTOM_SECTIONS) return 0;
+    if (g_custom_sect_count >= ARM_MAX_CUSTOM_SECTIONS) {
+        /* Returning 0 makes the caller fall back to default SRAM, i.e. the
+         * variable lands at an address the scatter file did not ask for.
+         * Report it so the build fails instead of shipping the wrong address. */
+        char b1[12];
+        diag_tool(DIAG_SEV_ERROR, "arkcc",
+                  "more than %s distinct named sections; raise "
+                  "ARK_MAX_CUSTOM_SECTIONS and rebuild arkcc",
+                  diag_num(b1, ARM_MAX_CUSTOM_SECTIONS), 0,0,0,0,0);
+        return 0;
+    }
 #if ARKCC_FEATURE_SCATTER
     base = scatter_get_er_base_for_section(&g_scatter, section_name);
 #else

@@ -38,7 +38,10 @@
 #   define PP_INC_BUF  (1024 * 1024)      /* 1 MB per include for host */
 # endif
 #endif
-#define PP_MAX_INC_DIRS  16
+/* Search-path table. The host gets ARK_PP_MAX_INC_DIRS (128) because real
+ * projects pass many -I; the board keeps 16 and can be trimmed further with
+ * -DARK_PP_MAX_INC_DIRS. Overflow is reported, never silently dropped. */
+#define PP_MAX_INC_DIRS  ARK_PP_MAX_INC_DIRS
 #define PP_PACK_STACK    32
 
 #if ARKCC_FEATURE_TRIGRAPH
@@ -105,9 +108,18 @@ static char   g_main_file[256];
 #ifndef PP_MAX_INC_FILES
 #   define PP_MAX_INC_FILES ARKCC_MAX_INC_FILES
 #endif
-static const char *g_inc_files[PP_MAX_INC_FILES];
+#if ARKCC_FEATURE_DEP_FILES_DYN
+/* Host: the dependency list grows by doubling, so there is no "too many
+ * headers" failure at all -- the only cost is a realloc into the arena.
+ * Board: a fixed table (ARKCC_MAX_INC_FILES) plus one warning on overflow. */
+static const char **g_inc_files;
+static int          g_inc_file_cap;
+#else
+static const char  *g_inc_files[PP_MAX_INC_FILES];
+#endif
 static int         g_inc_file_count;
 static int         g_inc_file_overflow;   /* 已告警过超限 */
+
 /* #pragma pack(push/pop) stack for struct alignment control. */
 static int    g_pack_stack[PP_PACK_STACK];
 static int    g_pack_top;
@@ -161,6 +173,35 @@ static void remove_macro(const char *name) {
  * 宏表函数附近才能用到 find_macro，所以这里先给一个原型。 */
 static void pp_diag_msg(int line, int col, DiagSeverity sev, const char *msg,
                         const char *a0, const char *a1);
+
+/* Record one included file for -MMD. */
+static void dep_file_record(const char *path) {
+#if ARKCC_FEATURE_DEP_FILES_DYN
+    if (g_inc_file_count == g_inc_file_cap) {
+        int ncap = g_inc_file_cap ? g_inc_file_cap * 2 : 32;
+        /* mem_realloc copies when the array is not the newest allocation, so
+         * this is safe even though headers were allocated in between. */
+        g_inc_files = (const char **)mem_realloc((void *)g_inc_files,
+                        g_inc_file_cap * (int)sizeof(*g_inc_files),
+                        ncap * (int)sizeof(*g_inc_files));
+        g_inc_file_cap = ncap;
+    }
+    g_inc_files[g_inc_file_count++] = mem_strdup(path);
+#else
+    if (g_inc_file_count < PP_MAX_INC_FILES) {
+        g_inc_files[g_inc_file_count++] = mem_strdup(path);
+    } else if (!g_inc_file_overflow) {
+        char cap_s[12];
+        /* 静默丢弃会让 -MMD 生成的依赖文件缺项，构建系统就不会在某个头文件
+         * 改动后重编。 */
+        g_inc_file_overflow = 1;
+        pp_diag_msg(__LINE__, 0, DIAG_SEV_WARNING,
+                    "more than %s included files; the dependency file (-MMD) "
+                    "will be incomplete (host builds grow this table instead)",
+                    diag_num(cap_s, PP_MAX_INC_FILES), 0);
+    }
+#endif
+}
 
 #if ARKCC_FEATURE_MACRO_REDEF_CHECK
 /* C99 6.10.3p2：同名宏可以重定义，前提是「形式（对象宏/函数宏）、形参表、
@@ -329,6 +370,12 @@ void preproc_reset(void) {
     g_inc_dir_count = 0;
     g_main_file[0] = 0;
     g_inc_file_count = 0;
+#if ARKCC_FEATURE_DEP_FILES_DYN
+    /* The list lives in the bump allocator, which preproc_reset's caller wipes
+     * between translation units; keep no pointer into it. */
+    g_inc_files = 0;
+    g_inc_file_cap = 0;
+#endif
     g_pack_top = 0;
     g_macro_depth = 0;
     g_blue_top = 0;
@@ -349,6 +396,17 @@ void preproc_undef(const char *name) {
 void preproc_add_include_dir(const char *dir) {
     if (g_inc_dir_count < PP_MAX_INC_DIRS) {
         g_inc_dirs[g_inc_dir_count++] = mem_strdup(dir);
+        return;
+    }
+    /* Dropping a search path silently produces "cannot open source input file"
+     * for a header that is right there, which is the worst possible symptom:
+     * the message names the wrong cause. Say what actually happened. */
+    {
+        char b1[12];
+        diag_tool(DIAG_SEV_ERROR, "arkcc",
+                  "more than %s -I search paths were given; raise "
+                  "ARK_PP_MAX_INC_DIRS and rebuild arkcc",
+                  diag_num(b1, PP_MAX_INC_DIRS), 0,0,0,0,0);
     }
 }
 
@@ -1169,20 +1227,10 @@ static void process(const char *src, char *out, int *out_len, int out_cap,
                             pp_diag(g_pp_line, pp_col(q), 5, DIAG_SEV_ERROR,
                                     "source", path, fs_last_error());
                         } else {
-                            /* Record include for -MMD dependency output. We
-                             * mem_strdup because the path buffer goes out of
-                             * scope after this block exits. */
-                            if (g_inc_file_count < PP_MAX_INC_FILES) {
-                                g_inc_files[g_inc_file_count++] = mem_strdup(path);
-                            } else if (!g_inc_file_overflow) {
-                                char cap_s[12];
-                                /* 静默丢弃会让 -MMD 生成的依赖文件缺项，构建
-                                 * 系统就不会在某个头文件改动后重编。 */
-                                g_inc_file_overflow = 1;
-                                pp_diag_msg(g_pp_line, pp_col(q), DIAG_SEV_WARNING,
-                                            "more than %s included files; the dependency file (-MMD) will be incomplete",
-                                            diag_num(cap_s, PP_MAX_INC_FILES), 0);
-                            }
+                            /* Record include for -MMD dependency output. The
+                             * path is mem_strdup'ed because the buffer goes out
+                             * of scope after this block exits. */
+                            dep_file_record(path);
                             {
                                 /* Diagnostics inside the header name the header,
                                  * not the translation unit. `path` outlives the
@@ -1887,6 +1935,10 @@ char *preproc_process(const char *src) {
  * Both "... " and <...> forms are recorded; the array is filled into out
  * up to max_count entries and the actual count is returned. The caller
  * owns the storage; the strings themselves are owned by the preproc state. */
+int preproc_included_count(void) {
+    return g_inc_file_count;
+}
+
 int preproc_get_included_files(const char **out, int max_count) {
     int i;
     int n = g_inc_file_count;

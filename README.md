@@ -203,6 +203,7 @@
 | `float` ↔ `double` 显式转换（`VCVT.F32.F64` / `VCVT.F64.F32`） | 是 |
 | 浮点常量表达式折叠（`eval_const_expr` 支持浮点） | 是 |
 | 汇编器扩展指令集 `--asm-extra`（ADDS/SUBS/…/MRS/MSR、`LDM`/`STM` 的 32 位与减前形式、`TBB`/`TBH`、`LDRD`/`STRD` 共 30 个助记符 + `.W`/`.N` 后缀） | 是（默认关；关时报 unknown mnemonic） |
+| 容量上限（宿主做全 / 板端可裁剪） | 是（`include/arkcc_config.h` 第 9 节，一处定义两套默认值，逐项 `-D` 覆盖；越界一律报错不静默丢弃） |
 
 ### `.sct` / `.s` 文件支持矩阵
 
@@ -421,6 +422,7 @@ powershell -ExecutionPolicy Bypass -File run_asm_test.ps1         # 汇编输入
 powershell -ExecutionPolicy Bypass -File run_arm_exec_test.ps1    # ARM 执行级：编译→链接→QEMU 真跑（需 qemu-system-arm）
 python tests/arm_exec/run_arm_exec.py                             # ARM 执行级（unicorn，无 qemu 也能跑；每例同时跑 --reg-top 臂）
 python tests/asm_cases/run_asm_cmp.py                             # 汇编器对拍：arkc vs arm-none-eabi-as，含 --asm-extra 开关契约
+python tests/run_capacity_tests.py                                  # 容量门禁：120 对象 / 1200 头文件 / 129 条 -I（宿主不许有人为上限）
 ```
 
 `tests/arm_exec/run_arm_exec.py` 是本仓库唯一"真的执行机器码"的宿主门禁：把 arkc
@@ -445,6 +447,15 @@ mnemonic。七组样例分别覆盖带标志的算术、`LDM/STM`（16 位与 32
 增前与减前、高寄存器与 `lr`/`pc`）、乘加、系统寄存器、PC 相对、`TBB/TBH` 与
 `LDRD/STRD`、以及 VFP 的单/双精度与字面量池。没有 GNU ARM 工具链时 `exit 2`，
 不会假装通过。
+
+`tests/run_capacity_tests.py` 守的是另一条线：**宿主不许有人为上限**。它生成
+120 个 `.c` 各编成一个对象再 `--reloc-data` 链成一个镜像、一个 `#include` 1200
+个不同头文件的翻译单元（开 `-MMD`，`.d` 必须一个不少）、以及 129 条 `-I`（第
+129 条必须**报错**并点名 `ARK_PP_MAX_INC_DIRS`）。这三条都是"表满了就静默丢"
+的形状：改前 120 个对象只有 32 个进得去（镜像 55 KB，现在 206 KB）、`.d` 停在
+1024 条、第 17 条以后的 `-I` 直接消失，症状是后来报"找不到头文件"——报错指向
+了错误的原因。板端仍是定长表（`ARKCC_MAX_INC_FILES` / 64 个对象），改前改后
+`.bss` 逐字节相同，裁剪入口是 `-D`（见 `include/arkcc_config.h` 第 9 节）。
 
 `run_asm_test.ps1` 校验汇编输入的扩展名路由：四种后缀产出逐字节相同的机器码、`-S` 对汇编输入是原样透传、缺失文件必须报错退出、`.c` 仍走正常前端（防止扩展名探测把 C 源当成汇编）。
 `run_arm_exec_test.ps1` 把 C 启动代码、汇编 semihosting 陷门和一个 C 工作负载编译链接成裸镜像，在 `qemu-system-arm -machine mps2-an385` 上执行，用 semihosting 退出码判定结果（两个不同负载必须分别返回 8 和 3）。QEMU 路径默认 `D:\qemu\mingw64\bin\qemu-system-arm.exe`，可用 `ARKCC_QEMU` 环境变量或 `-Qemu` 参数覆盖；装不上时脚本 `exit 2`，不会假装通过。这条门禁抓到并固化修复了三个真缺陷：向量表缺 Thumb 位（Cortex-M 会进 INVSTATE lockup）、`SVC`/`BKPT` 的无 `#` 立即数被静默编成 0、以及 `MUL r2, r2, r1` 被编成 `MUL r2, r2, r2`（导致所有整数取模算成 q\*q）。

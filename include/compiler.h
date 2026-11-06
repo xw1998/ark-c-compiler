@@ -3,6 +3,7 @@
 #define ARK_COMPILER_H
 
 #include "common.h"
+#include "arkcc_config.h"   /* ARK_PP_MAX_INC_DIRS / ARK_LINK_MAX_OBJS */
 
 typedef struct {
     const char *input_path;
@@ -10,7 +11,12 @@ typedef struct {
     int         emit_asm;     /* -S */
     int         verbose;
     const char *target;       /* -target <name>; NULL = default */
-    const char *include_dirs[16];
+    /* Sized from arkcc_config.h (host 128 / board 16, overridable). Both the
+     * -I list and the -link input list used to be hard-coded here and filled
+     * with a bare `if (count < N)`, so going over them dropped arguments in
+     * silence: the 17th search path vanished (surfacing later as "cannot open
+     * source input file") and the 33rd object never reached the linker. */
+    const char *include_dirs[ARK_PP_MAX_INC_DIRS];
     int         include_dir_count;
     int         list_backends;
     /* === 0.3.0 additions === */
@@ -20,7 +26,7 @@ typedef struct {
     int         vector_table;     /* --vector-table: reserve ARM_VT_SIZE at the
                                    * front of the image and emit a Cortex-M
                                    * vector table there (no image shift) */
-    const char *link_inputs[32];  /* -link inputs */
+    const char *link_inputs[ARK_LINK_MAX_OBJS];  /* -link inputs */
     int         link_input_count;
     int         opt_level;        /* -O0/-O1/-O2: applied by src/opt.c (range-fold + constant fold) */
     int         debug_info;       /* -g: emits DWARF .debug_info/.debug_abbrev/.debug_line */

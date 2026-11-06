@@ -31,5 +31,8 @@ char *preproc_process(const char *src);
  * out array is caller-provided, up to max_count entries; returns the actual count filled.
  * Paths come from preproc's internal include tracking, kept as-is (relative/absolute). */
 int preproc_get_included_files(const char **out, int max_count);
+/* Number of files recorded for -MMD so far. The host grows that list instead
+ * of capping it, so callers size their destination from this value. */
+int preproc_included_count(void);
 
 #endif /* ARK_PREPROC_H */
