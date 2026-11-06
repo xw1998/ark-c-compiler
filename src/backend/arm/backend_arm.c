@@ -3586,7 +3586,10 @@ static char *codegen_arm(IrProgram *prog) {
         asmbuf_puts(&buf, "    B .L_f2iz_sign\n");
         asmbuf_puts(&buf, ".L_f2iz_shl:\n");
         asmbuf_puts(&buf, "    SUB r2, r1, #150\n");     /* shift left amount */
-        asmbuf_puts(&buf, "    MOV r0, #0x800000\n");    /* implied 1 bit */
+        /* 0x800000 is the implied leading 1 of a float: 24 bits, so neither
+         * MOVS (imm8) nor MOVW (imm16) can hold it.  It used to assemble to
+         * "movs r0,#0", which made every left-shifted result 0. */
+        asmbuf_puts(&buf, "    MOVW r0, #0\n    MOVT r0, #0x80\n");
         asmbuf_puts(&buf, "    LSL r0, r0, r2\n");       /* shift left */
         asmbuf_puts(&buf, ".L_f2iz_sign:\n");
         asmbuf_puts(&buf, "    LSR r1, r0, #31\n");      /* r1 = sign bit */
@@ -4842,10 +4845,31 @@ static int ark_asm_extra_name(const char *op) {
 }
 #endif
 
+/* armasm spells four of these differently.  Canonicalising the mnemonic, rather
+ * than teaching every branch a second name, keeps the size pass and the emit
+ * pass looking at exactly one spelling -- a rule they cannot disagree about. */
+static void canon_alias_a(char *m) {
+    const char *to = 0;
+    if (strieq_a(m, "LDMFD"))      to = "LDMIA";
+    else if (strieq_a(m, "STMFD")) to = "STMDB";
+    else if (strieq_a(m, "LDMEA")) to = "LDMDB";
+    else if (strieq_a(m, "STMEA")) to = "STMIA";
+    if (to) {
+        int i = 0;
+        while (to[i]) { m[i] = to[i]; i++; }
+        m[i] = '\0';
+    }
+}
+
 static int op_size_a(const char *op) {
     if (strieq_a(op, "BL"))   return 4;
     if (strieq_a(op, "MOVW")) return 4;
     if (strieq_a(op, "MOVT")) return 4;
+    if (strieq_a(op, "ADDW") || strieq_a(op, "SUBW")) return 4;
+    /* VFP multi-register load/store: one encoding, always 32 bits. */
+    if (strieq_a(op, "VLDMIA") || strieq_a(op, "VLDM") || strieq_a(op, "VLDMDB") ||
+        strieq_a(op, "VSTMIA") || strieq_a(op, "VSTM") || strieq_a(op, "VSTMDB") ||
+        strieq_a(op, "VPUSH") || strieq_a(op, "VPOP")) return 4;
     if (strieq_a(op, "SDIV")) return 4;
     if (strieq_a(op, "UDIV")) return 4;
     if (strieq_a(op, "UMULL")) return 4;
@@ -4895,6 +4919,270 @@ static int op_size_a(const char *op) {
     return 2;
 }
 
+/* ============================ LDR/STR family =============================
+ * One parser and one encoder for LDR/STR/LDRB/STRB/LDRH/STRH/LDRSB/LDRSH.
+ *
+ * Address modes on ARMv7-M (all four measured against arm-none-eabi-as):
+ *   [Rn]                 [Rn, #imm]            [Rn, Rm]
+ *   [Rn, Rm, LSL #0..3]  [Rn, #imm]!           [Rn], #imm
+ * Register-indexed *writeback* ([Rn, Rm]! and [Rn], Rm) does not exist in
+ * Thumb at all -- GAS refuses those lines, and so does this assembler.
+ *
+ * Widths:
+ *   kind 0 word   16-bit T1 (imm5 scaled by 4) | 32-bit T3 (imm12 in bytes)
+ *   kind 1 byte   16-bit T1 (imm5)              | 32-bit T3
+ *   kind 2 half   16-bit T1 (imm5 scaled by 2)  | 32-bit T3
+ *   kind 3 ldrsb  no 16-bit immediate form, 32-bit only
+ *   kind 4 ldrsh  same
+ * The 32-bit imm12 is a plain 0..4095 byte offset for *every* width; only the
+ * 16-bit T1 imm5 is scaled.  (Measured: GAS assembles `ldr.w r0,[r1,#128]` to
+ * f8d1 0080, i.e. 0x80 -- scaling belongs to VLDR, not to LDR/STR.)
+ * The 32-bit register-offset and writeback forms share one header word
+ * (T3 base with bit 7 cleared); the immediate bits differ.
+ *
+ * Pass 1 asks ldr_str_size2_a() and pass 2 emits on the same answer, so the
+ * two passes cannot disagree about a width -- getting that wrong shifts every
+ * later label in the file.  */
+typedef struct ArmMemOp {
+    int rn;      /* base register, -1 = missing */
+    int rm;      /* index register, -1 = none */
+    int shift;   /* LSL amount for rm, 0..3 */
+    int imm;     /* immediate offset, or the post-index value */
+    int wb;      /* a writeback form: "!" or a post-index operand */
+    int post;    /* post-indexed ([Rn], #imm) rather than pre-indexed */
+} ArmMemOp;
+
+/* 0 = LDR/STR, 1 = byte, 2 = halfword, 3 = LDRSB, 4 = LDRSH. -1 if not ours. */
+static int ldr_str_kind_a(const char *m, int *is_load) {
+    if (m[0] == 'S' || m[0] == 's') *is_load = 0; else *is_load = 1;
+    if (strieq_a(m, "LDR") || strieq_a(m, "STR"))   return 0;
+    if (strieq_a(m, "LDRB") || strieq_a(m, "STRB")) return 1;
+    if (strieq_a(m, "LDRH") || strieq_a(m, "STRH")) return 2;
+    if (strieq_a(m, "LDRSB")) return 3;
+    if (strieq_a(m, "LDRSH")) return 4;
+    return -1;
+}
+
+static int is_ldr_str_a(const char *m) {
+    int dummy = 0;
+    return ldr_str_kind_a(m, &dummy) >= 0;
+}
+
+/* quiet != 0 is pass 1: it only needs the same size answer, and reporting the
+ * same error twice (once per pass) reads like two separate defects. */
+static void parse_memop_a(ArmAsm *a, const char **p, ArmMemOp *m, int quiet) {
+    m->rn = -1; m->rm = -1; m->shift = 0; m->imm = 0; m->wb = 0; m->post = 0;
+    skip_space_a(p);
+    if (**p == '[') { (*p)++; skip_space_a(p); }
+    m->rn = parse_reg_a(p);
+    skip_space_a(p);
+    if (**p == ',') {
+        (*p)++; skip_space_a(p);
+        if (**p == '#') {
+            m->imm = parse_imm_a(p);
+        } else {
+            m->rm = parse_reg_a(p);
+            skip_space_a(p);
+            if (**p == ',') {                  /* , LSL #imm2 */
+                char opn[8];
+                (*p)++; skip_space_a(p);
+                read_word_a(p, opn, (int)sizeof(opn));
+                skip_space_a(p);
+                if (**p == '#') m->shift = parse_imm_a(p);
+                if (!strieq_a(opn, "LSL") || m->shift < 0 || m->shift > 3) {
+                    if (!quiet) {
+                        diag_tool(DIAG_SEV_ERROR, "arkcc",
+                                  "a register offset may only use 'LSL #0'..'LSL #3' "
+                                  "(other shifts and ASR/LSR do not exist here)",
+                                  0,0,0,0,0,0);
+                        a->hard_errors++;
+                    }
+                    m->shift = 0;
+                }
+            }
+        }
+    }
+    skip_space_a(p);
+    if (**p == ']') (*p)++;
+    skip_space_a(p);
+    if (**p == '!') {
+        m->wb = 1;
+        (*p)++;
+    } else if (**p == ',') {                   /* post-indexed */
+        (*p)++; skip_space_a(p);
+        m->wb = 1;
+        m->post = 1;
+        if (**p == '#') m->imm = parse_imm_a(p);
+        else            m->rm = parse_reg_a(p);
+    }
+}
+
+/* 2 or 4 bytes. Both passes must get the same answer. */
+static int ldr_str_size2_a(int kind, int rt, const ArmMemOp *m) {
+    int low = (rt >= 0 && rt <= 7 && m->rn >= 0 && m->rn <= 7);
+    if (m->rm >= 0) {
+        if (low && m->rm <= 7 && m->shift == 0 && !m->wb) return 2;
+        return 4;
+    }
+    if (m->wb) return 4;
+    if (kind == 0 && rt >= 0 && rt <= 7 && m->imm >= 0 && m->imm <= 1020 &&
+        (m->imm & 3) == 0 && (m->rn == 13 || m->rn == 15))
+        return 2;                            /* SP-relative / literal pool */
+    switch (kind) {
+    case 1:  return (low && m->imm >= 0 && m->imm <= 31) ? 2 : 4;
+    case 2:  return (low && m->imm >= 0 && m->imm <= 62 && (m->imm & 1) == 0) ? 2 : 4;
+    case 0:  return (low && m->imm >= 0 && m->imm <= 124 && (m->imm & 3) == 0) ? 2 : 4;
+    default: return 4;                       /* LDRSB/LDRSH: no imm16 form */
+    }
+}
+
+static void emit_ldr_str_a(ArmAsm *a, int kind, int is_load, int rt,
+                           const ArmMemOp *m) {
+    /* 16-bit T1 bases: [kind][0] = store, [kind][1] = load. */
+    static const unsigned t1_imm[5][2] = {
+        {0x6000u, 0x6800u},   /* STR   / LDR  */
+        {0x7000u, 0x7800u},   /* STRB  / LDRB */
+        {0x8000u, 0x8800u},   /* STRH  / LDRH */
+        {0x0000u, 0x0000u},   /* LDRSB: no 16-bit immediate form */
+        {0x0000u, 0x0000u}    /* LDRSH: same */
+    };
+    static const unsigned t1_reg[5][2] = {
+        {0x5000u, 0x5800u},   /* STR   / LDR  */
+        {0x5400u, 0x5C00u},   /* STRB  / LDRB */
+        {0x5200u, 0x5A00u},   /* STRH  / LDRH */
+        {0x0000u, 0x5600u},   /* LDRSB (load only) */
+        {0x0000u, 0x5E00u}    /* LDRSH (load only) */
+    };
+    static const unsigned t3[5][2] = {          /* 32-bit immediate form */
+        {0xF8C0u, 0xF8D0u},   /* STR.W   / LDR.W  */
+        {0xF880u, 0xF890u},   /* STRB.W  / LDRB.W */
+        {0xF8A0u, 0xF8B0u},   /* STRH.W  / LDRH.W */
+        {0x0000u, 0xF990u},   /* LDRSB.W */
+        {0x0000u, 0xF9B0u}    /* LDRSH.W */
+    };
+    int sz;
+    unsigned base;
+
+    if (!is_load && (kind == 3 || kind == 4)) {
+        diag_tool(DIAG_SEV_ERROR, "arkcc",
+                  "LDRSB/LDRSH are loads only; there is no signed store", 0,0,0,0,0,0);
+        a->hard_errors++;
+        kind = 0;
+    }
+    if (rt < 0 || rt > 15) {
+        diag_tool(DIAG_SEV_ERROR, "arkcc",
+                  "LDR/STR needs a destination/source register", 0,0,0,0,0,0);
+        a->hard_errors++;
+        rt = 0;
+    }
+    if (m->rn < 0 || m->rn > 15) {
+        diag_tool(DIAG_SEV_ERROR, "arkcc",
+                  "LDR/STR needs a base register inside []", 0,0,0,0,0,0);
+        a->hard_errors++;
+    }
+    if (m->rm >= 0 && m->rm > 15) {
+        diag_tool(DIAG_SEV_ERROR, "arkcc",
+                  "index register out of range", 0,0,0,0,0,0);
+        a->hard_errors++;
+    }
+    if (m->wb && m->rm >= 0) {
+        /* Thumb has no register-indexed writeback form: not "unimplemented",
+         * simply absent from the architecture (GAS refuses the same lines). */
+        diag_tool(DIAG_SEV_ERROR, "arkcc",
+                  "register-indexed writeback ([Rn, Rm]! / [Rn], Rm) does not "
+                  "exist in Thumb; use an immediate offset or a separate ADD",
+                  0,0,0,0,0,0);
+        a->hard_errors++;
+    }
+
+    /* A writeback with a register index is unencodable: fall back to the plain
+     * register-offset form so the object still has the right size. */
+    {
+        ArmMemOp mm = *m;
+        if (mm.wb && mm.rm >= 0) mm.wb = 0;
+        sz = ldr_str_size2_a(kind, rt, &mm);
+        m = &mm;
+    }
+    base = t3[kind][is_load ? 1 : 0];
+
+    if (sz == 2) {
+        if (m->rm < 0 && m->rn == 13) {
+            /* SP-relative T1: 1001 L imm8 | Rt | imm8/4 (word only). */
+            out16(a, (is_load ? 0x9800u : 0x9000u) |
+                      ((unsigned)(rt & 7) << 8) | (unsigned)((m->imm >> 2) & 0xFF));
+            return;
+        }
+        if (m->rm < 0 && m->rn == 15) {
+            /* PC-relative literal load, 01001 Rt imm8 (loads only). */
+            out16(a, 0x4800u | ((unsigned)(rt & 7) << 8) |
+                      (unsigned)((m->imm >> 2) & 0xFF));
+            return;
+        }
+        if (m->rm >= 0) {
+            out16(a, t1_reg[kind][is_load ? 1 : 0] |
+                      ((unsigned)(m->rm & 7) << 6) |
+                      ((unsigned)(m->rn & 7) << 3) | (unsigned)(rt & 7));
+        } else {
+            unsigned imm5;
+            if (kind == 1)      imm5 = (unsigned)(m->imm & 0x1F);
+            else if (kind == 2) imm5 = (unsigned)((m->imm >> 1) & 0x1F);
+            else                imm5 = (unsigned)((m->imm >> 2) & 0x1F);
+            out16(a, t1_imm[kind][is_load ? 1 : 0] | (imm5 << 6) |
+                      ((unsigned)(m->rn & 7) << 3) | (unsigned)(rt & 7));
+        }
+        return;
+    }
+
+    /* 32-bit forms. */
+    if (m->rm >= 0) {
+        /* Register offset: same header as the writeback form. */
+        out16(a, (base & ~0x80u) | (unsigned)(m->rn & 0xF));
+        out16(a, ((unsigned)(rt & 0xF) << 12) |
+                 ((unsigned)(m->shift & 3) << 4) | (unsigned)(m->rm & 0xF));
+        return;
+    }
+    if (m->wb) {
+        int pre = !m->post;
+        int neg = (m->imm < 0);
+        int mag = neg ? -m->imm : m->imm;
+        if (mag > 255) {
+            diag_tool(DIAG_SEV_ERROR, "arkcc",
+                      "a writeback offset must be within -255..255", 0,0,0,0,0,0);
+            a->hard_errors++;
+            mag = 0;
+        }
+        out16(a, (base & ~0x80u) | (unsigned)(m->rn & 0xF));
+        out16(a, ((unsigned)(rt & 0xF) << 12) | 0x800u |
+                 (unsigned)(pre ? 0x400 : 0) | (unsigned)(neg ? 0 : 0x200) |
+                 0x100u | (unsigned)mag);
+        return;
+    }
+    if (m->imm >= 0) {
+        int off = m->imm;
+        if (off > 4095) {
+            diag_tool(DIAG_SEV_ERROR, "arkcc",
+                      "offset out of range: a 32-bit LDR/STR takes 0..4095 bytes",
+                      0,0,0,0,0,0);
+            a->hard_errors++;
+            off = 0;
+        }
+        out16(a, base | (unsigned)(m->rn & 0xF));
+        out16(a, ((unsigned)(rt & 0xF) << 12) | (unsigned)(off & 0xFFF));
+        return;
+    }
+    {
+        int mag = -m->imm;                       /* negative, no writeback */
+        if (mag > 255) {
+            diag_tool(DIAG_SEV_ERROR, "arkcc",
+                      "a negative offset must be within -255..-1", 0,0,0,0,0,0);
+            a->hard_errors++;
+            mag = 0;
+        }
+        out16(a, (base & ~0x80u) | (unsigned)(m->rn & 0xF));
+        out16(a, ((unsigned)(rt & 0xF) << 12) | 0x800u | 0x400u | (unsigned)mag);
+    }
+}
+
 /* Forward declaration: needed in pass1 to decide whether PUSH/POP is T1 or T2 encoded */
 static int parse_reglist_a(const char **p, int *has_lr, int *has_pc);
 
@@ -4915,6 +5203,7 @@ static void pass1_a(ArmAsm *a) {
         if (*p == ';') { skip_to_eol_a(&p); continue; }
         if (*p == '\0') break;
         n = read_word_a(&p, first, (int)sizeof(first));
+        canon_alias_a(first);
         if (n == 0) { skip_to_eol_a(&p); continue; }
         skip_space_a(&p);
         if (*p == ':') {
@@ -4923,6 +5212,7 @@ static void pass1_a(ArmAsm *a) {
             skip_space_a(&p);
             if (*p == '\n' || *p == ';' || *p == '\0') { if (*p == ';') skip_to_eol_a(&p); if (*p == '\n') p++; continue; }
             n = read_word_a(&p, first, (int)sizeof(first));
+            canon_alias_a(first);
             if (n == 0) { skip_to_eol_a(&p); continue; }
         }
         if (first[0] == '.') {
@@ -5056,19 +5346,13 @@ static void pass1_a(ArmAsm *a) {
                 skip_space_a(&p);
             }
             if (0) {
-            } else if (strieq_a(first, "LDR") || strieq_a(first, "LDRB") ||
-                       strieq_a(first, "STR") || strieq_a(first, "STRB") ||
-                       strieq_a(first, "LDRH") || strieq_a(first, "STRH") ||
-                       strieq_a(first, "LDRSH") || strieq_a(first, "LDRSB")) {
-                /* LDR/STR size depends on offset: T1 (2B) for small offsets,
-                 * T3 (4B) for offsets beyond T1 imm5 range. Must match pass2. */
-                int is_byte = (first[3] == 'B' || first[3] == 'b' ||
-                               (first[0] == 'L' && first[2] == 'B') ||
-                               (first[0] == 'S' && first[2] == 'B'));
-                int is_half = (strieq_a(first, "LDRH") || strieq_a(first, "STRH") ||
-                               strieq_a(first, "LDRSH") || strieq_a(first, "LDRSB"));
-                int rd = parse_reg_a(&p);
-                (void)rd;
+            } else if (is_ldr_str_a(first)) {
+                /* Width comes from ldr_str_size2_a() and nothing else, so pass 1
+                 * and pass 2 cannot disagree (a 2-byte disagreement shifts every
+                 * later label in the file). */
+                int is_load1 = 1;
+                int kind1 = ldr_str_kind_a(first, &is_load1);
+                int rt1 = parse_reg_a(&p);
                 skip_space_a(&p);
                 if (*p == ',') { p++; skip_space_a(&p); }
                 if (*p == '=') {
@@ -5079,17 +5363,22 @@ static void pass1_a(ArmAsm *a) {
                     (void)n;
                     pc += 8;
                 } else {
-                    /* Parse [Rn, #imm] to determine T1 vs T3 size */
-                    int imm = 0;
-                    if (*p == '[') { p++; skip_space_a(&p); }
-                    int rn = parse_reg_a(&p);
-                    (void)rn;
-                    skip_space_a(&p);
-                    if (*p == ',') {
-                        p++; skip_space_a(&p);
-                        if (*p == '#') imm = parse_imm_a(&p);
-                    }
-                    pc += ldr_str_size_a(imm, is_byte, is_half);
+                    ArmMemOp m1;
+                    parse_memop_a(a, &p, &m1, 1);
+                    pc += ldr_str_size2_a(kind1, rt1, &m1);
+                }
+            } else if (strieq_a(first, "MOV")) {
+                /* Same rule as pass 2: the 16-bit form only covers r0-r7 with
+                 * an 8-bit immediate; everything else is MOVW (4 bytes). */
+                int rd1 = parse_reg_a(&p);
+                skip_space_a(&p);
+                if (*p == ',') { p++; skip_space_a(&p); }
+                if (*p == '#') {
+                    int imm1 = parse_imm_a(&p);
+                    pc += (rd1 >= 0 && rd1 <= 7 && imm1 >= 0 && imm1 <= 255) ? 2 : 4;
+                } else {
+                    (void)parse_reg_a(&p);
+                    pc += 2;
                 }
             } else if (strieq_a(first, "PUSH") || strieq_a(first, "POP")) {
                 /* PUSH/POP may be 16-bit T1 (r0-r7 + lr/pc only) or 32-bit T2
@@ -5112,10 +5401,14 @@ static void pass1_a(ArmAsm *a) {
                 if (*p == ',') { p++; skip_space_a(&p); }
                 if (*p == '#') {
                     int imm = parse_imm_a(&p);
-                    if (rd == 13 && rn == 13) pc += 2;       /* ADD/SUB sp, sp, #imm */
-                    else if (rd == rn) pc += 2;               /* ADD/SUB rd, rd, #imm8 */
-                    else if (imm <= 7 && rd <= 7 && rn <= 7) pc += 2;  /* T1 3-bit imm */
-                    else pc += 4;                              /* T3 32-bit */
+                    if (rn < 0) rn = rd;                       /* two-operand form */
+                    if (rd == 13 && rn == 13)                  /* ADD/SUB sp, #imm7*4 */
+                        pc += (imm >= 0 && imm <= 508 && (imm & 3) == 0) ? 2 : 4;
+                    else if (rd == rn && rd >= 0 && rd <= 7 &&
+                             imm >= 0 && imm <= 255) pc += 2;  /* rd, #imm8 */
+                    else if (imm >= 0 && imm <= 7 && rd >= 0 && rd <= 7 && rn >= 0 && rn <= 7)
+                        pc += 2;                               /* T1 3-bit imm */
+                    else pc += 4;                              /* ADDW / SUBW */
                 } else {
                     pc += 2;  /* register variant, 16-bit */
                 }
@@ -5389,6 +5682,175 @@ static int thumb_imm12_a(unsigned val, unsigned *out_i, unsigned *out_imm3,
     return 0;
 }
 
+/* ADDW/SUBW (T4): a plain 12-bit immediate, 0000..4095, no rotation and no
+ * flags.  This is the form for every immediate that the 16-bit encodings cannot
+ * take: the T3 form takes a *modified* immediate (an 8-bit value rotated by an
+ * even amount), so writing a raw 12-bit value into its i:imm3:imm8 fields
+ * encodes a different number -- "SUB sp,#2016" used to come out as 480. */
+static void emit_addw_a(ArmAsm *a, int is_sub, int rd, int rn, int imm) {
+    unsigned i = ((unsigned)imm >> 11) & 1;
+    unsigned imm3 = ((unsigned)imm >> 8) & 7;
+    unsigned imm8 = (unsigned)imm & 0xFF;
+    out16(a, (unsigned)(is_sub ? 0xF2A0 : 0xF200) | (i << 10) | (unsigned)(rn & 0xF));
+    out16(a, (imm3 << 12) | ((unsigned)(rd & 0xF) << 8) | imm8);
+}
+
+/* MOVW: a plain 16-bit immediate into any register. */
+static void emit_movw_a(ArmAsm *a, int rd, int imm) {
+    unsigned ii = ((unsigned)imm >> 11) & 1;
+    unsigned imm4 = ((unsigned)imm >> 12) & 0xF;
+    unsigned imm3 = ((unsigned)imm >> 8) & 7;
+    unsigned imm8 = (unsigned)imm & 0xFF;
+    out16(a, 0xF240u | (ii << 10) | imm4);
+    out16(a, (imm3 << 12) | ((unsigned)(rd & 0xF) << 8) | imm8);
+}
+
+/* --------------------- VFP multi-register load/store ---------------------
+ * VLDMIA/VLDMDB/VSTMIA/VSTMDB/VPUSH/VPOP.  The encoding carries only "first
+ * register + how many", so a register list must be a contiguous run -- {s0-s3}
+ * or {s8, s9}, never {s0, s2}.  All bit patterns below were taken from
+ * arm-none-eabi-as output (see tests/asm_cases/09_vfp_ldstm.s).
+ *
+ *   hw1 = 1110 110 P U D W L Rn          0xEC00 | P<<8 | U<<7 | D<<6 | W<<5 | L<<4 | Rn
+ *   hw2 = Vd 101 1 imm8  (double)        0x0B00 | count*2
+ *         Vd 101 0 imm8  (single)        0x0A00 | count
+ * IA sets U, DB sets P; VPUSH is VSTMDB sp! and VPOP is VLDMIA sp!.
+ * D16-D31 are reachable through the D bit, but they only exist on an FPU with
+ * 32 double registers (fpv5-d32); on fpv5-d16 the hardware has d0-d15 only. */
+typedef struct ArmVfpList {
+    int first;      /* first register number, -1 = none */
+    int count;      /* how many registers */
+    int is_double;  /* d-registers rather than s-registers */
+    int ok;
+} ArmVfpList;
+
+static int parse_vfp_num_a(const char **p) {
+    int v = 0, seen = 0;
+    while (**p >= '0' && **p <= '9') { v = v * 10 + (**p - '0'); (*p)++; seen = 1; }
+    return seen ? v : -1;
+}
+
+static ArmVfpList parse_vfplist_a(ArmAsm *a, const char **p, int quiet) {
+    ArmVfpList l;
+    int last;
+    l.first = -1; l.count = 0; l.is_double = 0; l.ok = 0;
+    last = -1;
+    skip_space_a(p);
+    if (**p != '{') {
+        if (!quiet) {
+            diag_tool(DIAG_SEV_ERROR, "arkcc",
+                      "a VFP register list looks like {s0-s3} or {d0-d1}", 0,0,0,0,0,0);
+            a->hard_errors++;
+        }
+        return l;
+    }
+    (*p)++;
+    for (;;) {
+        int start, end, is_dbl;
+        skip_space_a(p);
+        if (**p == '}') { (*p)++; break; }
+        if (**p != 's' && **p != 'S' && **p != 'd' && **p != 'D') {
+            if (!quiet) {
+                diag_tool(DIAG_SEV_ERROR, "arkcc",
+                          "a VFP register list names s0-s31 or d0-d31", 0,0,0,0,0,0);
+                a->hard_errors++;
+            }
+            while (**p && **p != '}') (*p)++;
+            if (**p == '}') (*p)++;
+            l.count = 0;
+            return l;
+        }
+        is_dbl = (**p == 'd' || **p == 'D');
+        (*p)++;
+        start = parse_vfp_num_a(p);
+        skip_space_a(p);
+        if (**p == '-') {
+            (*p)++; skip_space_a(p);
+            /* GAS writes the kind on both ends: {s0-s3}, not {s0-3}. */
+            if (**p == 's' || **p == 'S' || **p == 'd' || **p == 'D') (*p)++;
+            end = parse_vfp_num_a(p);
+        }
+        else            end = start;
+        if (start < 0 || end < 0 || end < start) {
+            if (!quiet) {
+                diag_tool(DIAG_SEV_ERROR, "arkcc",
+                          "malformed VFP register range", 0,0,0,0,0,0);
+                a->hard_errors++;
+            }
+            while (**p && **p != '}') (*p)++;
+            if (**p == '}') (*p)++;
+            l.count = 0;
+            return l;
+        }
+        if (l.first < 0) { l.first = start; l.is_double = is_dbl; }
+        else if (is_dbl != l.is_double || start != last + 1) {
+            /* One encoding = one contiguous run of one kind.  Anything else
+             * would silently load the wrong registers. */
+            if (!quiet) {
+                diag_tool(DIAG_SEV_ERROR, "arkcc",
+                          "a VFP load/store list must be one contiguous run of "
+                          "the same register kind ({s0-s3}, {d0-d1}); the "
+                          "encoding has no way to name a gap", 0,0,0,0,0,0);
+                a->hard_errors++;
+            }
+            l.count = 0;
+        }
+        last = end;
+        if (l.count >= 0 && l.first >= 0) l.count = last - l.first + 1;
+        skip_space_a(p);
+        if (**p == ',') (*p)++;
+    }
+    if (l.first >= 0) {
+        int top = l.is_double ? 31 : 31;
+        if (last < 0 || last > top) {
+            if (!quiet) {
+                diag_tool(DIAG_SEV_ERROR, "arkcc",
+                          "VFP register number out of range (s0-s31, d0-d31)", 0,0,0,0,0,0);
+                a->hard_errors++;
+            }
+            l.count = 0;
+        }
+        if (l.is_double && l.count > 16) {
+            if (!quiet) {
+                diag_tool(DIAG_SEV_ERROR, "arkcc",
+                          "a VFP store/load moves at most 16 double registers", 0,0,0,0,0,0);
+                a->hard_errors++;
+            }
+        }
+    }
+    l.ok = (l.count > 0);
+    return l;
+}
+
+static void emit_vfp_ldstm_a(ArmAsm *a, int is_load, int is_db, int wb, int rn,
+                             const ArmVfpList *l) {
+    unsigned hw1, hw2;
+    int vd, dbit, words;
+    if (!l->ok || rn < 0 || rn > 15) {
+        diag_tool(DIAG_SEV_ERROR, "arkcc",
+                  "VLDM/VSTM needs a base register and a register list", 0,0,0,0,0,0);
+        a->hard_errors++;
+        out16(a, 0xBF00); out16(a, 0xBF00);
+        return;
+    }
+    if (l->is_double) {
+        vd = l->first & 0xF;
+        dbit = (l->first >> 4) & 1;
+        words = l->count * 2;
+    } else {
+        vd = l->first >> 1;
+        dbit = l->first & 1;
+        words = l->count;
+    }
+    hw1 = 0xEC00u | (unsigned)(is_db ? 0x100 : 0) | (unsigned)(is_db ? 0 : 0x80) |
+          (unsigned)(dbit << 6) | (unsigned)(wb ? 0x20 : 0) |
+          (unsigned)(is_load ? 0x10 : 0) | (unsigned)(rn & 0xF);
+    hw2 = ((unsigned)(vd & 0xF) << 12) |
+          (unsigned)(l->is_double ? 0x0B00 : 0x0A00) | (unsigned)(words & 0xFF);
+    out16(a, hw1);
+    out16(a, hw2);
+}
+
 static void pass2_a(ArmAsm *a) {
     const char *p = a->src;
     a->pc = g_arm_vt_reserve ? ARM_VT_SIZE : 0;
@@ -5401,6 +5863,7 @@ static void pass2_a(ArmAsm *a) {
         if (*p == ';') { skip_to_eol_a(&p); continue; }
         if (*p == '\0') break;
         n = read_word_a(&p, first, (int)sizeof(first));
+        canon_alias_a(first);
         if (n == 0) { skip_to_eol_a(&p); continue; }
         skip_space_a(&p);
         if (*p == ':') {
@@ -5412,6 +5875,7 @@ static void pass2_a(ArmAsm *a) {
                 continue;
             }
             n = read_word_a(&p, first, (int)sizeof(first));
+            canon_alias_a(first);
             if (n == 0) { skip_to_eol_a(&p); continue; }
         }
         if (first[0] == '.') {
@@ -5630,7 +6094,21 @@ static void pass2_a(ArmAsm *a) {
             eat_comma_a(&p);
             if (*p == '#') {
                 int imm = parse_imm_a(&p);
-                out16(a, 0x2000 | ((rd & 7) << 8) | (imm & 0xFF));
+                if (rd >= 0 && rd <= 7 && imm >= 0 && imm <= 255) {
+                    out16(a, 0x2000 | ((rd & 7) << 8) | imm);  /* MOVS rd, #imm8 */
+                } else if (rd >= 0 && imm >= 0 && imm <= 0xFFFF) {
+                    /* 16-bit MOVS cannot name r8-r15 and its imm8 would turn
+                     * "MOV r0, #300" into 44.  MOVW carries the whole value
+                     * into any register (and does not touch the flags). */
+                    emit_movw_a(a, rd, imm);
+                } else {
+                    char b1[12];
+                    diag_tool(DIAG_SEV_ERROR, "arkcc",
+                              "MOV immediate is out of range (0..65535) at code offset %s",
+                              diag_num(b1, a->pc), 0,0,0,0,0);
+                    a->hard_errors++;
+                    emit_movw_a(a, rd < 0 ? 0 : rd, 0);
+                }
             } else {
                 int rm = parse_reg_a(&p);
                 out16(a, 0x4600 | (((rd >> 3) & 1) << 7) | ((rm & 0xF) << 3) | (rd & 7));
@@ -5691,6 +6169,52 @@ static void pass2_a(ArmAsm *a) {
                 out16(a, hi); out16(a, lo);
             }
         }
+        else if (strieq_a(first, "VLDMIA") || strieq_a(first, "VLDM") ||
+                 strieq_a(first, "VLDMDB") || strieq_a(first, "VSTMIA") ||
+                 strieq_a(first, "VSTM") || strieq_a(first, "VSTMDB") ||
+                 strieq_a(first, "VPUSH") || strieq_a(first, "VPOP")) {
+            int is_load, is_db = 0, wb = 0, rn;
+            ArmVfpList vl;
+            if (strieq_a(first, "VPUSH") || strieq_a(first, "VPOP")) {
+                is_load = strieq_a(first, "VPOP");
+                is_db = !is_load;             /* VPUSH = VSTMDB sp!, VPOP = VLDMIA sp! */
+                wb = 1;
+                rn = 13;
+                eat_comma_a(&p);
+            } else {
+                is_load = (my_toupper_a(first[1]) == 'L');
+                is_db = (strieq_a(first, "VLDMDB") || strieq_a(first, "VSTMDB"));
+                rn = parse_reg_a(&p);
+                skip_space_a(&p);
+                if (*p == '!') { wb = 1; p++; }
+                eat_comma_a(&p);
+            }
+            vl = parse_vfplist_a(a, &p, 0);
+            emit_vfp_ldstm_a(a, is_load, is_db, wb, rn, &vl);
+        }
+        else if (strieq_a(first, "ADDW") || strieq_a(first, "SUBW")) {
+            /* Always the 32-bit form with a plain 12-bit immediate: never the
+             * 16-bit ADD/SUB (which sets the flags) and never the rotated T3
+             * immediate.  That is the whole point of spelling ADDW. */
+            int is_sub_w = strieq_a(first, "SUBW");
+            int rd = parse_reg_a(&p);
+            int rn, imm = -1;
+            eat_comma_a(&p);
+            rn = parse_reg_a(&p);
+            if (rn < 0) rn = rd;
+            eat_comma_a(&p);
+            if (*p == '#') imm = parse_imm_a(&p);
+            if (rd < 0 || rn < 0 || imm < 0 || imm > 4095) {
+                char b1[12];
+                diag_tool(DIAG_SEV_ERROR, "arkcc",
+                          "ADDW/SUBW needs Rd, Rn and a 0..4095 immediate at code offset %s",
+                          diag_num(b1, a->pc), 0,0,0,0,0);
+                a->hard_errors++;
+                emit_addw_a(a, is_sub_w, rd < 0 ? 0 : rd, rn < 0 ? 0 : rn, 0);
+            } else {
+                emit_addw_a(a, is_sub_w, rd, rn, imm);
+            }
+        }
         else if (strieq_a(first, "ADD")) {
             int rd = parse_reg_a(&p); int rn;
             eat_comma_a(&p);
@@ -5698,20 +6222,22 @@ static void pass2_a(ArmAsm *a) {
             eat_comma_a(&p);
             if (*p == '#') {
                 int imm = parse_imm_a(&p);
-                if (rd == 13 && rn == 13) out16(a, 0xB000 | (((imm + 3) / 4) & 0x7F));
-                else if (rd == rn) out16(a, 0x3000 | ((rd & 7) << 8) | (imm & 0xFF));
-                else if (imm <= 7 && rd <= 7 && rn <= 7)
+                if (rn < 0) rn = rd;      /* "ADD r0, #5" == "ADD r0, r0, #5" */
+                if (rd == 13 && rn == 13 && imm >= 0 && imm <= 508 && (imm & 3) == 0)
+                    out16(a, 0xB000 | (imm >> 2));            /* ADD sp, #imm7*4 */
+                else if (rd == rn && rd >= 0 && rd <= 7 && imm >= 0 && imm <= 255)
+                    out16(a, 0x3000 | ((rd & 7) << 8) | imm);  /* ADDS rdn, #imm8 */
+                else if (imm >= 0 && imm <= 7 && rd >= 0 && rd <= 7 && rn >= 0 && rn <= 7)
                     out16(a, 0x1C00 | ((imm & 7) << 6) | ((rn & 7) << 3) | (rd & 7));
+                else if (rd >= 0 && rn >= 0 && imm >= 0 && imm <= 4095)
+                    emit_addw_a(a, 0, rd, rn, imm);       /* ADDW, plain imm12 */
                 else {
-                    /* T3: ADD.W Rd, Rn, #imm12
-                     * Encoding: 11110 i 0 10000 Rn | 0 imm3 Rd imm8
-                     * op=1000 (ADD), S=0 -> bits[8:4]=10000 -> first halfword base 0xF100
-                     * BUGFIX: was 0xF040 (op=0010=ORR), caused ADD.W to decode as ORR.W */
-                    int i = (imm >> 11) & 1;
-                    int imm3 = (imm >> 8) & 7;
-                    int imm8 = imm & 0xFF;
-                    out16(a, 0xF100 | (i << 10) | (rn & 0xF));
-                    out16(a, (imm3 << 12) | ((rd & 0xF) << 8) | imm8);
+                    char b1[12];
+                    diag_tool(DIAG_SEV_ERROR, "arkcc",
+                              "ADD immediate is out of range (0..4095) at code offset %s",
+                              diag_num(b1, a->pc), 0,0,0,0,0);
+                    a->hard_errors++;
+                    emit_addw_a(a, 0, rd, rn, 0);
                 }
             } else {
                 /* Register forms: `ADD Rd, Rn, Rm` (T1) and the two-operand
@@ -5747,24 +6273,22 @@ static void pass2_a(ArmAsm *a) {
             eat_comma_a(&p);
             if (*p == '#') {
                 int imm = parse_imm_a(&p);
-                if (rd == 13 && rn == 13) out16(a, 0xB080 | (((imm + 3) / 4) & 0x7F));
-                else if (rd == rn) out16(a, 0x3800 | ((rd & 7) << 8) | (imm & 0xFF));
-                else if (imm <= 7 && rd <= 7 && rn <= 7)
+                if (rn < 0) rn = rd;      /* "SUB sp, #12" == "SUB sp, sp, #12" */
+                if (rd == 13 && rn == 13 && imm >= 0 && imm <= 508 && (imm & 3) == 0)
+                    out16(a, 0xB080 | (imm >> 2));            /* SUB sp, #imm7*4 */
+                else if (rd == rn && rd >= 0 && rd <= 7 && imm >= 0 && imm <= 255)
+                    out16(a, 0x3800 | ((rd & 7) << 8) | imm);  /* SUBS rdn, #imm8 */
+                else if (imm >= 0 && imm <= 7 && rd >= 0 && rd <= 7 && rn >= 0 && rn <= 7)
                     out16(a, 0x1E00 | ((imm & 7) << 6) | ((rn & 7) << 3) | (rd & 7));
+                else if (rd >= 0 && rn >= 0 && imm >= 0 && imm <= 4095)
+                    emit_addw_a(a, 1, rd, rn, imm);       /* SUBW, plain imm12 */
                 else {
-                    /* T3: SUB.W Rd, Rn, #imm12
-                     * Encoding: 11110 i 0 1101 0 Rn | 0 imm3 Rd imm8
-                     * op=1101 (SUB), S=0 -> bits[8:4]=11010 -> first halfword base 0xF1A0.
-                     * BUGFIX 2: the base used to be 0xF160, i.e. op=1011 = SBC.
-                     * It was invisible because the 16-bit forms cover rd==rn and
-                     * every small immediate; "y = x - 300" with distinct registers
-                     * fell through to the 32-bit path and came out as SBC.W
-                     * (subtract with carry), measured with arm-none-eabi-objdump. */
-                    int i = (imm >> 11) & 1;
-                    int imm3 = (imm >> 8) & 7;
-                    int imm8 = imm & 0xFF;
-                    out16(a, 0xF1A0 | (i << 10) | (rn & 0xF));
-                    out16(a, (imm3 << 12) | ((rd & 0xF) << 8) | imm8);
+                    char b1[12];
+                    diag_tool(DIAG_SEV_ERROR, "arkcc",
+                              "SUB immediate is out of range (0..4095) at code offset %s",
+                              diag_num(b1, a->pc), 0,0,0,0,0);
+                    a->hard_errors++;
+                    emit_addw_a(a, 1, rd, rn, 0);
                 }
             } else {
                 /* Same two shapes as ADD: `SUB Rd, Rn, Rm` (T1) and the
@@ -6282,9 +6806,9 @@ static void pass2_a(ArmAsm *a) {
                      * register instead, so refuse and let the author write
                      * the address arithmetic out. */
                     diag_tool(DIAG_SEV_ERROR, "arkcc",
-                              "register-offset addressing ([Rn, Rm]) is not "
-                              "emitted; compute the address into a register "
-                              "with ADD first", 0,0,0,0,0,0);
+                              "register-offset addressing ([Rn, Rm]) does "
+                              "not exist for this instruction in Thumb; compute "
+                              "the address with ADD first", 0,0,0,0,0,0);
                     a->hard_errors++;
                 }
             }
@@ -6440,13 +6964,11 @@ static void pass2_a(ArmAsm *a) {
                 out16(a, 0x4280 | ((rm & 7) << 3) | (rn & 7));
             }
         }
-        else if (strieq_a(first, "LDR") || strieq_a(first, "LDRB") ||
-                 strieq_a(first, "STR") || strieq_a(first, "STRB")) {
-            int is_load = (first[0] == 'L' || first[0] == 'l');
-            int is_byte = (first[2] == 'B' || first[2] == 'b' || first[3] == 'B' || first[3] == 'b');
+        else if (is_ldr_str_a(first)) {
+            int is_load = 1;
+            int kind = ldr_str_kind_a(first, &is_load);
             int rd = parse_reg_a(&p);
-            int rn;
-            int imm = 0;
+            ArmMemOp m;
             eat_comma_a(&p);
             if (*p == '=') {
                 /* LDR rd, =label - emit MOVW+MOVT to load absolute address.
@@ -6502,53 +7024,8 @@ static void pass2_a(ArmAsm *a) {
                 if (*p == '\n') p++;
                 continue;
             }
-            if (*p == '[') { p++; skip_space_a(&p); }
-            rn = parse_reg_a(&p);
-            skip_space_a(&p);
-            if (*p == ',') {
-                p++; skip_space_a(&p);
-                if (*p == '#') imm = parse_imm_a(&p);
-                else {
-                    /* Register-offset addressing ([Rn, Rm]) has no encoder
-                     * here.  Ignoring Rm would silently address the base
-                     * register instead, so refuse and let the author write
-                     * the address arithmetic out. */
-                    diag_tool(DIAG_SEV_ERROR, "arkcc",
-                              "register-offset addressing ([Rn, Rm]) is not "
-                              "emitted; compute the address into a register "
-                              "with ADD first", 0,0,0,0,0,0);
-                    a->hard_errors++;
-                }
-            }
-            skip_space_a(&p);
-            if (*p == ']') p++;
-            check_no_index_writeback_a(a, &p);
-            {
-                if (ldr_str_size_a(imm, is_byte, 0) == 4) {
-                    /* T3 32-bit encoding: LDR.W/STR.W/LDRB.W/STRB.W Rt, [Rn, #imm12] */
-                    unsigned hi, lo;
-                    unsigned imm12 = (unsigned)(imm & 0xFFF);
-                    if (is_load && !is_byte)      hi = 0xF8D0u | (unsigned)(rn & 0xF);  /* LDR.W */
-                    else if (is_load && is_byte)  hi = 0xF890u | (unsigned)(rn & 0xF);  /* LDRB.W */
-                    else if (!is_load && !is_byte)hi = 0xF8C0u | (unsigned)(rn & 0xF);  /* STR.W */
-                    else                          hi = 0xF880u | (unsigned)(rn & 0xF);  /* STRB.W */
-                    lo = ((unsigned)(rd & 0xF) << 12) | imm12;
-                    out16(a, hi);
-                    out16(a, lo);
-                } else {
-                    /* T1 16-bit encoding */
-                    unsigned imm5;
-                    if (is_byte) imm5 = imm & 0x1F;
-                    else         imm5 = (unsigned)((imm >> 2) & 0x1F);
-                    if (is_load) {
-                        if (is_byte) out16(a, 0x7800 | (imm5 << 6) | ((rn & 7) << 3) | (rd & 7));
-                        else         out16(a, 0x6800 | (imm5 << 6) | ((rn & 7) << 3) | (rd & 7));
-                    } else {
-                        if (is_byte) out16(a, 0x7000 | (imm5 << 6) | ((rn & 7) << 3) | (rd & 7));
-                        else         out16(a, 0x6000 | (imm5 << 6) | ((rn & 7) << 3) | (rd & 7));
-                    }
-                }
-            }
+            parse_memop_a(a, &p, &m, 0);
+            emit_ldr_str_a(a, kind, is_load, rd, &m);
         }
         else if (strieq_a(first, "BX")) {
             int rm = parse_reg_a(&p);
@@ -6699,60 +7176,6 @@ static void pass2_a(ArmAsm *a) {
                         emit_bcond_w_a(a, cond, addr);
                     }
                 }
-            }
-        }
-        else if (strieq_a(first, "STRH") || strieq_a(first, "LDRH") ||
-                 strieq_a(first, "LDRSH") || strieq_a(first, "LDRSB")) {
-            /* Halfword load/store: T1 (16-bit) for small offsets, T3 (32-bit) for large.
-             * T1: imm5=(offset>>1)&0x1F, max 62 bytes (even).
-             * T3: imm12=offset, max 4095 bytes.
-             *   STRH.W:  0xF8A0|Rn,  LDRH.W:  0xF8B0|Rn
-             *   LDRSH.W: 0xF9B0|Rn,  LDRSB.W: 0xF990|Rn */
-            int rd = parse_reg_a(&p);
-            int rn;
-            int imm = 0;
-            eat_comma_a(&p);
-            if (*p == '[') { p++; skip_space_a(&p); }
-            rn = parse_reg_a(&p);
-            skip_space_a(&p);
-            if (*p == ',') {
-                p++; skip_space_a(&p);
-                if (*p == '#') imm = parse_imm_a(&p);
-                else {
-                    /* Register-offset addressing ([Rn, Rm]) has no encoder
-                     * here.  Ignoring Rm would silently address the base
-                     * register instead, so refuse and let the author write
-                     * the address arithmetic out. */
-                    diag_tool(DIAG_SEV_ERROR, "arkcc",
-                              "register-offset addressing ([Rn, Rm]) is not "
-                              "emitted; compute the address into a register "
-                              "with ADD first", 0,0,0,0,0,0);
-                    a->hard_errors++;
-                }
-            }
-            skip_space_a(&p);
-            if (*p == ']') p++;
-            check_no_index_writeback_a(a, &p);
-            if (ldr_str_size_a(imm, 0, 1) == 4) {
-                /* T3 32-bit encoding */
-                unsigned hi, lo;
-                unsigned imm12 = (unsigned)(imm & 0xFFF);
-                if      (strieq_a(first, "STRH"))  hi = 0xF8A0u | (unsigned)(rn & 0xF);
-                else if (strieq_a(first, "LDRH"))  hi = 0xF8B0u | (unsigned)(rn & 0xF);
-                else if (strieq_a(first, "LDRSH")) hi = 0xF9B0u | (unsigned)(rn & 0xF);
-                else                               hi = 0xF990u | (unsigned)(rn & 0xF);  /* LDRSB */
-                lo = ((unsigned)(rd & 0xF) << 12) | imm12;
-                out16(a, hi);
-                out16(a, lo);
-            } else {
-                /* T1 16-bit encoding */
-                unsigned imm5 = (unsigned)((imm >> 1) & 0x1F);
-                unsigned base;
-                if      (strieq_a(first, "STRH"))  base = 0x8000;
-                else if (strieq_a(first, "LDRH"))  base = 0x8800;
-                else if (strieq_a(first, "LDRSH")) base = 0x9800;
-                else                               base = 0x9000;  /* LDRSB */
-                out16(a, base | (imm5 << 6) | ((rn & 7) << 3) | (rd & 7));
             }
         }
         else if (strieq_a(first, "CPSID") || strieq_a(first, "CPSIE")) {
@@ -7125,9 +7548,9 @@ static void pass2_a(ArmAsm *a) {
                          * register instead, so refuse and let the author write
                          * the address arithmetic out. */
                         diag_tool(DIAG_SEV_ERROR, "arkcc",
-                                  "register-offset addressing ([Rn, Rm]) is not "
-                                  "emitted; compute the address into a register "
-                                  "with ADD first", 0,0,0,0,0,0);
+                                  "register-offset addressing ([Rn, Rm]) does "
+                                  "not exist for this instruction in Thumb; compute "
+                                  "the address with ADD first", 0,0,0,0,0,0);
                         a->hard_errors++;
                     }
                 }

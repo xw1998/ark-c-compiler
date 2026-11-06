@@ -58,6 +58,9 @@ CASES = [
     "05_pcrel.s",
     "06_table_ldrd.s",
     "07_vfp_literal.s",
+    "08_ldr_str_addr.s",
+    "09_vfp_ldstm.s",
+    "10_armasm_alias.s",
 ]
 
 # --asm-extra switch contract.  Each entry is (mnemonic, source line that must
@@ -100,8 +103,11 @@ SWITCH_CASES = [
 def gas_image(asm, objcopy, path):
     obj = path + ".gas.o"
     blob = path + ".gas.bin"
-    proc = subprocess.run([asm, "-mthumb", "-mcpu=cortex-m7", "-o", obj, path],
-                          capture_output=True, text=True)
+    # -mfpu matters: without it GAS refuses even "vldmia r0!, {s0-s3}" with
+    # "selected FPU does not support instruction", i.e. the check would look
+    # like a difference between the encoders when it is a missing -mfpu.
+    proc = subprocess.run([asm, "-mthumb", "-mcpu=cortex-m7", "-mfpu=fpv5-d16",
+                           "-o", obj, path], capture_output=True, text=True)
     if proc.returncode != 0:
         return None, proc.stderr.strip()
     proc = subprocess.run([objcopy, "-O", "binary", obj, blob],
@@ -193,6 +199,54 @@ def check_switch(arkcc, workdir):
     return bad == 0
 
 
+
+# Address forms that ARMv7-M does not have, and immediates that do not fit.
+# Each entry is (source line, text the message must contain).  Every one of
+# these used to assemble to *something* -- a different register, a truncated
+# immediate, a silently dropped writeback -- so "it is rejected, and for this
+# reason" is the whole contract.  A gate that only walked the happy path would
+# go green again the day someone restored a mask.
+REFUSE_CASES = [
+    ("ldr r0, [r1, r2]!",   "does not exist in Thumb"),
+    ("ldr r0, [r1], r2",    "does not exist in Thumb"),
+    ("vldmia r0!, {s0, s2}", "contiguous"),
+    ("vldmia r0!, {s0, d1}", "contiguous"),
+    ("vpush {s0, s2}",      "contiguous"),
+    ("ldrd r0, r1, [r2, r3]", "not exist for this instruction"),
+    ("vldr s0, [r1, r2]",   "not exist for this instruction"),
+    ("ldr r0, [r1, #4096]", "0..4095"),
+    ("mov r0, #0x12345",    "0..65535"),
+    ("add r0, r1, #5000",   "0..4095"),
+    ("sub sp, sp, #5000",   "0..4095"),
+    ("addw r0, r1, #5000",  "0..4095"),
+    ("ldmib r0!, {r1}",     "unknown mnemonic"),
+    ("stmda r0!, {r1}",     "unknown mnemonic"),
+    ("strd r8, r9, [r10, r11, lsl #2]", "not exist for this instruction"),
+]
+
+def check_refusals(arkcc, workdir):
+    """Lines that must be refused, and refused for the stated reason."""
+    bad = 0
+    idx = 0
+    for line, needle in REFUSE_CASES:
+        path = os.path.join(workdir, "rf_%d.s" % idx)
+        idx += 1
+        with open(path, "w", newline="\n") as fh:
+            fh.write(".syntax unified\n.thumb\n.text\n    %s\n    nop\n" % line)
+        img, err = arkc_image(arkcc, path, ["--asm-extra"])
+        text = err or ""
+        if img is not None:
+            print("[FAIL] refused?  %-34s assembled anyway" % line)
+            bad += 1
+        elif needle not in text:
+            print("[FAIL] refused?  %-34s wrong reason: %s"
+                  % (line, text.splitlines()[0][:70] if text else "(no message)"))
+            bad += 1
+    if bad == 0:
+        print("[ok  ] refusals            %d lines rejected with the stated reason"
+              % len(REFUSE_CASES))
+    return bad == 0
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--arkcc", default=None)
@@ -227,6 +281,10 @@ def main(argv=None):
         else:
             bad += 1
     if check_switch(arkcc, workdir):
+        ok += 1
+    else:
+        bad += 1
+    if check_refusals(arkcc, workdir):
         ok += 1
     else:
         bad += 1
