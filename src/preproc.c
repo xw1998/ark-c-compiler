@@ -1678,8 +1678,20 @@ char *preproc_process(const char *src) {
     ark_get_date_time(g_build_date, g_build_time);
     /* Predefined ARM Compiler 5 (armcc) macros so existing MDK/STM32 source
      * files compile unchanged. User code may #undef these to override.
-     * __FILE__/__LINE__/__STDC__/__ARK_CC__ are handled inline above and
-     * therefore do not need a macro entry here. */
+     *
+     * __FILE__/__LINE__ are dynamic and are handled inline in the expander, so
+     * they must NOT get a macro entry (the body would be frozen at parse time).
+     *
+     * __STDC__ / __ARK_CC__ / __ARK_VERSION__ are constants, and they need a
+     * macro-table entry **in addition to** the inline special case: the expander
+     * checks the name first and substitutes inline, but #ifdef and #if look the
+     * name up in this table only. Without an entry `#ifdef __STDC__` was false
+     * and `#if __STDC__` evaluated to 0 (measured 2026-11-06), which silently
+     * sends every guarded code path down the wrong branch — a conformance bug
+     * (C99 6.10.8.1: __STDC__ is predefined to 1), not a style issue. */
+    if (!find_macro("__STDC__"))            add_object_macro("__STDC__", "1");
+    if (!find_macro("__ARK_CC__"))          add_object_macro("__ARK_CC__", "1");
+    if (!find_macro("__ARK_VERSION__"))     add_object_macro("__ARK_VERSION__", "\"" ARK_VERSION "\"");
     if (!find_macro("__arm__"))             add_object_macro("__arm__", "1");
     if (!find_macro("__thumb__"))           add_object_macro("__thumb__", "2");
     /* armcc 5 also accepts the no-underscore forms of __arm/__thumb. */
