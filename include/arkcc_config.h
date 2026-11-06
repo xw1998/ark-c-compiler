@@ -438,6 +438,15 @@
 #   define ARK_PP_MAX_INC_DIRS   128
 # endif
 #endif
+/* -D 预定义宏条数。宿主 512（Makefile 驱动的工程常常一次给几十上百个），
+ * 板端 64，可 -D 覆盖。 */
+#ifndef ARK_MAX_PRE_DEFINES
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARK_MAX_PRE_DEFINES   64
+# else
+#   define ARK_MAX_PRE_DEFINES   512
+# endif
+#endif
 /* --scatter 里能跟踪的命名段个数（#pragma arm section / __attribute__((section)) 的落点）。 */
 #ifndef ARK_MAX_CUSTOM_SECTIONS
 # if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN

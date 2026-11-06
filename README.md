@@ -422,7 +422,7 @@ powershell -ExecutionPolicy Bypass -File run_asm_test.ps1         # 汇编输入
 powershell -ExecutionPolicy Bypass -File run_arm_exec_test.ps1    # ARM 执行级：编译→链接→QEMU 真跑（需 qemu-system-arm）
 python tests/arm_exec/run_arm_exec.py                             # ARM 执行级（unicorn，无 qemu 也能跑；每例同时跑 --reg-top 臂）
 python tests/asm_cases/run_asm_cmp.py                             # 汇编器对拍：arkc vs arm-none-eabi-as，含 --asm-extra 开关契约
-python tests/run_capacity_tests.py                                  # 容量门禁：120 对象 / 1200 头文件 / 129 条 -I（宿主不许有人为上限）
+python tests/run_capacity_tests.py                                  # 容量门禁：120 对象 / 1200 头文件 / 520 条 -D / 129 条 -I（宿主不许有人为上限）
 ```
 
 `tests/arm_exec/run_arm_exec.py` 是本仓库唯一"真的执行机器码"的宿主门禁：把 arkc
@@ -450,9 +450,9 @@ mnemonic。七组样例分别覆盖带标志的算术、`LDM/STM`（16 位与 32
 
 `tests/run_capacity_tests.py` 守的是另一条线：**宿主不许有人为上限**。它生成
 120 个 `.c` 各编成一个对象再 `--reloc-data` 链成一个镜像、一个 `#include` 1200
-个不同头文件的翻译单元（开 `-MMD`，`.d` 必须一个不少）、以及 129 条 `-I`（第
-129 条必须**报错**并点名 `ARK_PP_MAX_INC_DIRS`）。这三条都是"表满了就静默丢"
-的形状：改前 120 个对象只有 32 个进得去（镜像 55 KB，现在 206 KB）、`.d` 停在
+个不同头文件的翻译单元（开 `-MMD`，`.d` 必须一个不少）、500 条 `-D` 必须编过而
+520 条必须被拒绝、以及 129 条 `-I`（第 129 条必须**报错**并点名
+`ARK_PP_MAX_INC_DIRS`）。这四条都是"表满了就静默丢"的形状：改前 120 个对象只有 32 个进得去（镜像 55 KB，现在 206 KB）、`.d` 停在
 1024 条、第 17 条以后的 `-I` 直接消失，症状是后来报"找不到头文件"——报错指向
 了错误的原因。板端仍是定长表（`ARKCC_MAX_INC_FILES` / 64 个对象），改前改后
 `.bss` 逐字节相同，裁剪入口是 `-D`（见 `include/arkcc_config.h` 第 9 节）。镜像缓冲

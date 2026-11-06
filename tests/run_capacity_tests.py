@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Capacity gates: the host build must have no artificial limits.
 
-Three checks, each aimed at a limit that used to be profile-shaped:
+Four checks, each aimed at a limit that used to be profile-shaped:
 
   1. objects   -- 120 .c files, one object each, linked into one image.
                   The old LD_MAX_OBJS was 64 and objects past it were merged
@@ -12,7 +12,11 @@ Three checks, each aimed at a limit that used to be profile-shaped:
                   with -MMD.  The dependency list grows by doubling on the
                   host (ARKCC_FEATURE_DEP_FILES_DYN); the board keeps the
                   fixed table.  The .d file must name every header.
-  3. include dirs -- 129 -I paths.  The old table held 16 and dropped the
+  3. defines  -- 520 -D options.  The table held 64 and the 65th vanished
+                  (worse with the space-separated form, which left the name to be
+                  parsed as the input file).  Host table is 512; the 513th must
+                  be refused, and 500 must compile.
+  4. include dirs -- 129 -I paths.  The old table held 16 and dropped the
                   rest without a word, which surfaced as "cannot open source
                   input file" for a header that was there.  128 is the host
                   table, so the 129th must be a reported error.
@@ -103,6 +107,29 @@ def case_headers(tmp):
                        % (N_HDRS - len(missing), N_HDRS, missing[0]))
     return True, "%d headers all present in the dependency file" % N_HDRS
 
+def case_defines(tmp):
+    src = os.path.join(tmp, "defs")
+    os.makedirs(src)
+    with open(os.path.join(src, "main.c"), "w") as f:
+        f.write("int main(void) { return 0; }\n")
+    okargs = []
+    for i in range(500):
+        okargs += ["-D", "D%d=%d" % (i, i)]
+    rc, out = run(["-c", "main.c", "-target", "arm"] + okargs +
+                  ["-o", "ok.o"], src)
+    if rc != 0:
+        return False, "500 -D options were refused:\n%s" % out
+    badargs = []
+    for i in range(520):
+        badargs += ["-D", "D%d=%d" % (i, i)]
+    rc, out = run(["-c", "main.c", "-target", "arm"] + badargs +
+                  ["-o", "bad.o"], src)
+    if rc == 0:
+        return False, "520 -D options were accepted; the 513th must be refused"
+    if "ARK_MAX_PRE_DEFINES" not in out:
+        return False, "the 513th -D was refused without saying why:\n%s" % out
+    return True, "500 -D accepted, 520 -> reported error naming ARK_MAX_PRE_DEFINES"
+
 def case_incdirs(tmp):
     src = os.path.join(tmp, "dirs")
     os.makedirs(src)
@@ -129,14 +156,14 @@ def main():
     fails = 0
     try:
         for name, fn in (("objects", case_objects), ("headers", case_headers),
-                         ("incdirs", case_incdirs)):
+                         ("defines", case_defines), ("incdirs", case_incdirs)):
             ok, msg = fn(tmp)
             print("%-10s %s  %s" % (name, "PASS" if ok else "FAIL", msg))
             if not ok:
                 fails += 1
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-    print("capacity: %d passed, %d failed" % (3 - fails, fails))
+    print("capacity: %d passed, %d failed" % (4 - fails, fails))
     return 0 if fails == 0 else 1
 
 if __name__ == "__main__":

@@ -7477,6 +7477,7 @@ imm32  = S:I1:I2:imm10:imm11:0（符号扩展）
 | `ARK_LINK_MAX_SYMS` / `ARK_LINK_MAX_RELOCS` | 16384 / 16384 | 512 / 512 | 链接器的符号表与重定位表 |
 | `ARK_PP_MAX_INC_DIRS` | 128 | 16 | `-I` 搜索路径条数 |
 | `ARK_MAX_CUSTOM_SECTIONS` | 128 | 16 | 能跟踪的命名段个数 |
+| `ARK_MAX_PRE_DEFINES` | 512 | 64 | `-D` 预定义宏条数（`--uvprojx` 导入的也算） |
 | `ARK_SYM_HASH_SIZE` | 4096 | 128 | 符号表哈希桶（只影响查找速度） |
 | `ARK_C_MAX_LABELS` | 16384 | 4096 | `-target c` 后端的标签表 |
 | `ARKCC_FEATURE_DEP_FILES_DYN` | 1（按需翻倍，无条数上限） | 0（定长表 + 告警一次） | `-MMD` 依赖文件名表 |
@@ -7515,12 +7516,13 @@ make CFLAGS+="-DARK_LINK_MAX_OBJS=32 -DARK_PP_MAX_INC_DIRS=8"
 | `backend_arm.c` | 8960 | **8960**（不变） | 27392 | 28288（+896） |
 
 板端四个数字一个字节都没动，这就是"裁剪默认值不变"的证据；宿主多出的 36 KB
-只买"不再有人为上限"，换来的是门禁 `tests/run_capacity_tests.py` 的三条：
+只买"不再有人为上限"，换来的是门禁 `tests/run_capacity_tests.py` 的四条：
 
 | 用例 | 内容 | 判据 |
 |---|---|---|
 | `objects` | 120 个 `.c` 各成一个对象，用 `--reloc-data` 链成一个镜像 | 成功且镜像 ≥ 120×8 字节（改前只有 32 个对象进得去，镜像 55 KB；现在 120 个，206 KB） |
 | `headers` | 一个翻译单元 `#include` 1200 个不同头文件，开 `-MMD` | `.d` 文件里 1200 个头文件**一个不少**（改前停在 1024） |
+| `defines` | 500 条 `-D` 必须编过、520 条必须拒绝 | 第 513 条**报错**并点名 `ARK_MAX_PRE_DEFINES`（改前第 65 条起静默消失，`-D NAME` 的空格形式还会把宏名当成输入文件） |
 | `incdirs` | 129 条 `-I` | 第 129 条**报错**且错误文本点名 `ARK_PP_MAX_INC_DIRS`（改前静默接受，后面报"找不到头文件"） |
 
 镜像缓冲单独量了一次：一个 `const unsigned int big[100000]`（约 1.2 MB 镜像）在改前会停在

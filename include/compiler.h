@@ -40,7 +40,7 @@ typedef struct {
     const char *scatter_file;  /* --scatter <file>: ARM scatter .sct file */
     const char *linker_script; /* -T <file>: GNU ld linker script .ld file */
     /* === 0.7.1 additions: -D command-line macro defines === */
-    const char *pre_defines[64]; /* -DNAME or -DNAME=VALUE entries */
+    const char *pre_defines[ARK_MAX_PRE_DEFINES]; /* -DNAME or -DNAME=VALUE entries */
     int         pre_define_count;
     /* === 0.8.0 additions: MDK project auto-discovery === */
     const char *uvprojx;  /* --uvprojx <file>: MDK .uvprojx to auto-extract -I/-D */

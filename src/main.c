@@ -192,9 +192,22 @@ static void parse_uvprojx(const char *uvprojx_path, ArkOptions *opts) {
                                 }
                                 tmp[ti] = 0;
                                 if (ti > 0) {
-                                    char *dup = (char *)malloc(strlen(tmp) + 1);
-                                    if (dup) { strcpy(dup, tmp); }
-                                    opts->pre_defines[opts->pre_define_count++] = dup;
+                                    if (opts->pre_define_count >= ARK_MAX_PRE_DEFINES) {
+                                        /* parse_uvprojx returns void and its caller keeps
+                                         * going, so stopping the process is the only way
+                                         * to keep a half-imported project from compiling. */
+                                        fprintf(stderr,
+                                                "Fatal error: C3900U: more than %d macro "
+                                                "definitions in %s; raise "
+                                                "ARK_MAX_PRE_DEFINES and rebuild arkcc\n",
+                                                (int)ARK_MAX_PRE_DEFINES, uvprojx_path);
+                                        exit(1);
+                                    }
+                                    {
+                                        char *dup = (char *)malloc(strlen(tmp) + 1);
+                                        if (dup) { strcpy(dup, tmp); }
+                                        opts->pre_defines[opts->pre_define_count++] = dup;
+                                    }
                                 }
                             }
                             p = def_end + 1;
@@ -233,7 +246,7 @@ static void reset_opts(ArkOptions *o) {
     o->split_sections = 0;
     o->scatter_file = 0;
     o->linker_script = 0;
-    for (i = 0; i < 64; i++) o->pre_defines[i] = 0;
+    for (i = 0; i < ARK_MAX_PRE_DEFINES; i++) o->pre_defines[i] = 0;
     o->pre_define_count = 0;
     o->uvprojx = 0;
     /* 0.8.0：新增字段必须在这里清零。漏了它们时 build_date/build_time 是栈上
@@ -544,14 +557,28 @@ int main(int argc, char **argv) {
             return 0;
         }
         else if (strcmp(a, "-D") == 0 && i + 1 < argc) {
-            /* -D NAME or -D NAME=VALUE: space-separated form */
-            if (opts.pre_define_count < 64)
-                opts.pre_defines[opts.pre_define_count++] = argv[++i];
+            /* -D NAME or -D NAME=VALUE: space-separated form. Refusing here
+             * matters: silently skipping the body would leave NAME to be parsed
+             * as the input file, which reports a missing file instead. */
+            if (opts.pre_define_count >= ARK_MAX_PRE_DEFINES) {
+                fprintf(stderr,
+                        "Fatal error: C3900U: more than %d macro definitions; "
+                        "raise ARK_MAX_PRE_DEFINES and rebuild arkcc\n",
+                        (int)ARK_MAX_PRE_DEFINES);
+                return 1;
+            }
+            opts.pre_defines[opts.pre_define_count++] = argv[++i];
         }
         else if (strncmp(a, "-D", 2) == 0 && a[2] != 0) {
             /* -DNAME or -DNAME=VALUE: attached form */
-            if (opts.pre_define_count < 64)
-                opts.pre_defines[opts.pre_define_count++] = a + 2;
+            if (opts.pre_define_count >= ARK_MAX_PRE_DEFINES) {
+                fprintf(stderr,
+                        "Fatal error: C3900U: more than %d macro definitions; "
+                        "raise ARK_MAX_PRE_DEFINES and rebuild arkcc\n",
+                        (int)ARK_MAX_PRE_DEFINES);
+                return 1;
+            }
+            opts.pre_defines[opts.pre_define_count++] = a + 2;
         }
         else if (a[0] == '-') {
             /* Unknown options are fatal, as in armcc. Silently ignoring them
