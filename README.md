@@ -24,6 +24,7 @@
 
 
 路线图各阶段的构建细节见 [docs/STM32_BUILD.md](docs/STM32_BUILD.md) 与 [docs/MANUAL.md](docs/MANUAL.md)。
+想从零理解这套实现（而不是只想用），读 [docs/从零写一个C编译器.md](docs/从零写一个C编译器.md)。
 
 ## 里程碑：在 STM32 上编译、在 STM32 上跑
 
@@ -257,6 +258,7 @@ ark c compiler/
 ├── docs/MANUAL.md          用户手册（中文，UTF-8）
 ├── docs/STM32_BUILD.md     STM32 + armcc5 构建手册（中文，UTF-8）
 ├── docs/DIAGNOSTICS.md     诊断层：与 armcc 逐字节对齐的排版契约（中文，UTF-8）
+├── docs/从零写一个C编译器.md  逐代码实现教程：从 30 行到 3 万行（中文，UTF-8）
 └── README.md               项目简介（UTF-8）
 ```
 
