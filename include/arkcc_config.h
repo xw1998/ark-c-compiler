@@ -323,7 +323,10 @@
 # if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
 #   define ARK_LINK_BUF_SIZE     (4 * 1024)       /* 4 KB (link mode unused on STM32) */
 # else
-#   define ARK_LINK_BUF_SIZE     (256 * 1024)     /* 256 KB */
+#   define ARK_LINK_BUF_SIZE     (8 * 1024 * 1024) /* 8 MB: a real STM32H743
+#                                        * image is 1-2 MB, and this buffer
+#                                        * holds both the largest object and
+#                                        * the linked image (host only) */
 # endif
 #endif
 #ifndef ARK_OBJ_BUF_SIZE

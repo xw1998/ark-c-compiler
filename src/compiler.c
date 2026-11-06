@@ -140,6 +140,11 @@ typedef struct LdRam {
  * window and __arkcc_init_globals body were skipped), so the count is now
  * checked up front. */
 #define LD_MAX_OBJS ARK_LINK_MAX_OBJS
+
+/* The two image-sized link buffers are static arrays on the board but come from
+ * the pool on the host, so their capacity cannot be recovered with sizeof();
+ * every size check uses this one name. */
+#define LD_BUF_SIZE ARK_LINK_BUF_SIZE
 static LdRam    g_ld_ram[LD_MAX_OBJS];
 static int      g_ld_ram_obj_count = 0;
 /* --reloc-data: how far each object's data window had to move, and the address
@@ -803,8 +808,24 @@ int ark_compile(const ArkOptions *opts) {
          * the code size it had read from the header out of whatever followed
          * the buffer, producing a corrupt image with exit code 0 (and a
          * segfault under -v). */
+#if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
         static char buf[ARK_LINK_BUF_SIZE] __attribute__((section(".ark_buf")));
         static unsigned char out_buf[ARK_LINK_BUF_SIZE] __attribute__((section(".ark_buf")));
+#else
+        /* Host: carve the two image-sized buffers out of the arena on first use
+         * rather than into .bss. 8 MB each as static arrays put 16 MB of zeroes
+         * into the executable; the pool is 64 MB and the linker owns it
+         * exclusively after the reset below, so allocation is equivalent at run
+         * time and costs nothing at rest.  `once` keeps a second -link in the
+         * same process (not a thing today, but cheap to keep honest) from
+         * allocating twice. */
+        static char *buf;
+        static unsigned char *out_buf;
+        if (!buf) {
+            buf = (char *)mem_pool_alloc(ARK_LINK_BUF_SIZE);
+            out_buf = (unsigned char *)mem_pool_alloc(ARK_LINK_BUF_SIZE);
+        }
+#endif
         int out_len = 0;
         int is_binary = 0;
         const char *out_path;
@@ -835,7 +856,7 @@ int ark_compile(const ArkOptions *opts) {
          * concatenated objects as text until "link output too large". A failed
          * probe is a read error with a reason, never "not an object". */
         {
-            int pn = fs_read_file(opts->link_inputs[0], buf, (int)sizeof(buf));
+            int pn = fs_read_file(opts->link_inputs[0], buf, LD_BUF_SIZE);
             if (pn < 0) {
                 diag_tool(DIAG_SEV_ERROR, opts->link_inputs[0],
                           "cannot read link input: %s", fs_last_error(),
@@ -876,7 +897,7 @@ int ark_compile(const ArkOptions *opts) {
             g_ld_data_top = 0;
             ld_table_overflow = 0;
             for (li = 0; li < opts->link_input_count; li++) {
-                int n = fs_read_file(opts->link_inputs[li], buf, sizeof(buf));
+                int n = fs_read_file(opts->link_inputs[li], buf, LD_BUF_SIZE);
                 const unsigned char *up = (const unsigned char *)buf;
                 int pos = 8;  /* skip "ARKOBJ2\n" header */
                 int base = out_len;
@@ -901,13 +922,13 @@ int ark_compile(const ArkOptions *opts) {
                 }
                 /* Code size (4 bytes LE) + code body */
                 code_sz = rd_le32(up + pos); pos += 4;
-                if (out_len + code_sz > (int)sizeof(out_buf)) {
+                if (out_len + code_sz > LD_BUF_SIZE) {
                     char b1[12], b2[12], b3[12];
                     diag_tool(DIAG_SEV_ERROR, g_ld_image,
                               "link output too large: %s bytes placed + %s from the object "
                               "does not fit the %s-byte ARK_LINK_BUF_SIZE",
                               diag_num(b1, out_len), diag_num(b2, code_sz),
-                              diag_num(b3, (int)sizeof(out_buf)), 0,0,0);
+                              diag_num(b3, LD_BUF_SIZE), 0,0,0);
                     return ARK_ERR_IO;
                 }
                 { int k; for (k = 0; k < code_sz; k++) out_buf[out_len++] = up[pos + k]; }
@@ -1195,7 +1216,7 @@ int ark_compile(const ArkOptions *opts) {
                         if (init_idx >= 0 && reset_idx >= 0 && !calls_init) {
                             int t0;
                             if ((out_len & 3) != 0) {
-                                if (out_len + 2 > (int)sizeof(out_buf)) {
+                                if (out_len + 2 > LD_BUF_SIZE) {
                                     diag_tool(DIAG_SEV_ERROR, g_ld_image,
                                               "no room for the __arkcc_init_globals "
                                               "trampoline; raise ARK_LINK_BUF_SIZE",
@@ -1205,7 +1226,7 @@ int ark_compile(const ArkOptions *opts) {
                                 out_buf[out_len++] = 0xBF;  /* NOP (align to 4) */
                                 out_buf[out_len++] = 0x00;
                             }
-                            if (out_len + 8 > (int)sizeof(out_buf)) {
+                            if (out_len + 8 > LD_BUF_SIZE) {
                                 diag_tool(DIAG_SEV_ERROR, g_ld_image,
                                           "no room for the __arkcc_init_globals "
                                           "trampoline; raise ARK_LINK_BUF_SIZE",
@@ -1282,7 +1303,7 @@ int ark_compile(const ArkOptions *opts) {
                             return ARK_ERR_LINK;
                         }
                     }
-                    if (out_len + 2 > (int)sizeof(out_buf)) {
+                    if (out_len + 2 > LD_BUF_SIZE) {
                         diag_tool(DIAG_SEV_ERROR, g_ld_image,
                                   "no room for the __arkcc_init_globals stub; "
                                   "raise ARK_LINK_BUF_SIZE", 0,0,0,0,0,0);
@@ -1312,7 +1333,7 @@ int ark_compile(const ArkOptions *opts) {
                 if (idx >= 0 && nb > 1) {
                     int chain, t;
                     if ((out_len & 3) != 0) {
-                        if (out_len + 2 > (int)sizeof(out_buf)) {
+                        if (out_len + 2 > LD_BUF_SIZE) {
                             diag_tool(DIAG_SEV_ERROR, g_ld_image,
                                       "no room for the init chain; raise "
                                       "ARK_LINK_BUF_SIZE", 0,0,0,0,0,0);
@@ -1321,7 +1342,7 @@ int ark_compile(const ArkOptions *opts) {
                         out_buf[out_len++] = 0xBF;   /* NOP (align to 4) */
                         out_buf[out_len++] = 0x00;
                     }
-                    if (out_len + 4 * (nb + 1) + 4 > (int)sizeof(out_buf)) {
+                    if (out_len + 4 * (nb + 1) + 4 > LD_BUF_SIZE) {
                         diag_tool(DIAG_SEV_ERROR, g_ld_image,
                                   "no room for the init chain; raise "
                                   "ARK_LINK_BUF_SIZE", 0,0,0,0,0,0);
@@ -1397,7 +1418,7 @@ int ark_compile(const ArkOptions *opts) {
         } else {
             /* Text concatenation (C backend) */
             for (li = 0; li < opts->link_input_count; li++) {
-                int n = fs_read_file(opts->link_inputs[li], buf, sizeof(buf));
+                int n = fs_read_file(opts->link_inputs[li], buf, LD_BUF_SIZE);
                 int rem;
                 const char *p;
                 if (n < 0) {
@@ -1427,13 +1448,13 @@ int ark_compile(const ArkOptions *opts) {
                 if (li > 0) {
                     while (rem > 0 && (*p == '\n' || *p == '\r')) { p++; rem--; }
                 }
-                if (out_len + rem + 1 > (int)sizeof(out_buf)) {
+                if (out_len + rem + 1 > LD_BUF_SIZE) {
                     char b1[12], b2[12], b3[12];
                     diag_tool(DIAG_SEV_ERROR, g_ld_image,
                               "link output too large: %s bytes already concatenated + "
                               "%s more does not fit the %s-byte ARK_LINK_BUF_SIZE",
                               diag_num(b1, out_len), diag_num(b2, rem + 1),
-                              diag_num(b3, (int)sizeof(out_buf)), 0,0,0);
+                              diag_num(b3, LD_BUF_SIZE), 0,0,0);
                     return ARK_ERR_IO;
                 }
                 { int k; for (k = 0; k < rem; k++) out_buf[out_len++] = (unsigned char)p[k]; }

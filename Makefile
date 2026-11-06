@@ -19,7 +19,10 @@ endif
 
 all: $(ARKCC)
 
-$(ARKCC): $(SRC)
+$(ARKCC): $(SRC) $(wildcard include/*.h)
+# Headers are prerequisites too: a header-only change (a size macro, a
+# profile default) used to leave the old binary in place, and 'make' said
+# "Nothing to be done" while the source tree said otherwise.
 	$(CC) $(CFLAGS) $(SRC) -o $(ARKCC) $(LDFLAGS)
 
 test: test-arm test-c
