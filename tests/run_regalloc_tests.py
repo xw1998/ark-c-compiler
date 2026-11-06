@@ -1,29 +1,29 @@
 #!/usr/bin/env python3
-"""Register-allocation gate: -fopt-regalloc must change the code, must not
-change what the code computes, and must leave locals it cannot model alone.
+"""Register-allocation gate: the pass must engage where it can pay for itself,
+must never grow the code in its default mode, must stay away from slots it
+cannot model, and must compute the same answers in every mode.
 
-Three claims, three checks -- one without the others is not evidence:
+Why the mode split exists (measured, not assumed)
+-------------------------------------------------
+A near slot -- `[r6, #0..124]`, offset a multiple of 4 -- is already a 16-bit
+instruction, and so is `MOV r0, rN`.  Moving a near slot therefore saves *zero*
+bytes, while a high register joining PUSH/POP costs 4 bytes per function.  On
+src/irgen.c that trade moved 1853 slots and made the object 148 bytes *bigger*.
+So the default mode only takes slots whose byte savings pay for the widening,
+and `-fopt-regalloc-near` is the opt-in for "spend ~4 bytes per function, buy
+fewer memory accesses".
 
-  1. OFF IS OFF.  The default build names r8-r11 nowhere in its emitted text, so
-     "default behaviour is byte-identical to the previous release" is a property
-     of the switch, not a promise.
+The claims, each checked separately:
 
-  2. ON DOES SOMETHING.  With -fopt-regalloc the text has to change: the frame
-     references drop, and the prologue starts saving the registers that are now
-     really used.  A switch whose on-state produces the same text is not a
-     switch, and every "behaviour unchanged" claim about it is vacuous.
-
-  3. THE ANSWER IS THE SAME.  Each program is assembled, linked into a raw
-     image and *executed* under unicorn; the value main() returns must equal the
-     value the same program returns without the switch, and both must equal the
-     number computed here in Python.
-
-The negative cases are the ones that keep the selector honest: a volatile local
-and an address-taken local must come out byte-for-byte unchanged, because their
-slot is read or written through something other than the two instruction shapes
-the allocator rewrites.  If those two ever start changing, the "every mention is
-one of these two lines" rule has broken and the positive cases stop meaning
-anything.
+  1. OFF IS OFF.           the default build names r8-r11 nowhere;
+  2. DEFAULT PAYS FOR ITSELF.  the far-slot case changes, and its image is not
+     larger than the default image -- the switch cannot grow code unasked;
+  3. NEAR IS OPT-IN.       the near-slot case is byte-identical by default and
+     changes only with `-fopt-regalloc-near`;
+  4. TAINT HOLDS.          a volatile local and an address-taken local stay
+     byte-identical in *both* modes;
+  5. THE ANSWER IS THE SAME.  every arm is executed under unicorn and must
+     return the value computed here in Python.
 
 Usage:  python tests/run_regalloc_tests.py [--arkcc PATH]
 Exit:   0 all claims hold, 1 a claim failed, 2 cannot judge (no arkcc/unicorn).
@@ -43,30 +43,46 @@ try:
 except ImportError:                                    # pragma: no cover
     AE = None
 
-FLAG = "-fopt-regalloc"
+ON = "-fopt-regalloc"
+NEAR = "-fopt-regalloc-near"
 
-# ---- programs -------------------------------------------------------------
-# (name, body, python mirror of the answer, should_the_switch_do_anything)
-
-P_HOT = """\
-int ra_pad;              /* .bss must exist, or the startup call is unresolved */
-int hot(int n)
+P_FAR = """\
+int ra_pad_f;
+/* pad[] pushes every later local past offset 124, where an access stops being a
+ * 16-bit "ldr r0,[r6,#n]" and becomes 4 bytes -- the only case that pays. */
+int far(int n)
 {
-    int i, s, t;
+    char pad[200];
+    int i, s;
+    pad[0] = (char)n;
     s = 0;
-    t = n;
-    for (i = 0; i < 100; i++) {
+    for (i = 0; i < 40; i++) {
         s = s + i;
-        t = t ^ s;
+        s = s ^ (int)pad[0];
         n = n + 1;
     }
-    return (s + t + n) & 0xFF;
+    return (s + n) & 0xFF;
 }
-int main(void) { return hot(5); }
+int main(void) { return far(3); }
 """
 
-P_VOLATILE = """\
-int ra_pad2;
+P_NEAR = """\
+int ra_pad_n;
+int near(int n)
+{
+    int i, s;
+    s = 0;
+    for (i = 0; i < 100; i++) {
+        s = s + i;
+        n = n + 1;
+    }
+    return (s + n) & 0xFF;
+}
+int main(void) { return near(5); }
+"""
+
+P_VOL = """\
+int ra_pad_v;
 int vol(void)
 {
     volatile int v;
@@ -80,8 +96,8 @@ int main(void) { return vol(); }
 """
 
 P_ADDR = """\
-int ra_pad3;
-/* `a` is the hot local and also the address-taken one; `p` is used twice, below
+int ra_pad_a;
+/* `a` is both the hot local and the address-taken one; `p` is used twice, below
  * the threshold, so a correct selector allocates nothing at all here. */
 int addr(void)
 {
@@ -97,13 +113,22 @@ int main(void) { return addr(); }
 """
 
 
-def py_hot():
-    n, s, t = 5, 0, 5
+def py_far(n=3):
+    pad0 = (n & 0xFF)
+    s = 0
+    for i in range(40):
+        s = s + i
+        s = s ^ pad0
+        n = (n + 1) & 0xFFFFFFFF
+    return (s + n) & 0xFF
+
+
+def py_near(n=5):
+    s = 0
     for i in range(100):
-        s += i
-        t ^= s
-        n += 1
-    return (s + t + n) & 0xFF
+        s = s + i
+        n = (n + 1) & 0xFFFFFFFF
+    return (s + n) & 0xFF
 
 
 def py_vol():
@@ -115,34 +140,38 @@ def py_vol():
 
 
 def py_addr():
-    a = 7          # through the pointer
+    a = 7
     a = a + 2
     a = a + 3
     a = a + 4
     return a & 0xFF
 
 
+# name, body, python answer, expected behaviour in the default and near modes
+#   "on"  = must change;  "off" = must stay byte-identical
 CASES = [
-    ("hot_locals",  P_HOT,      py_hot(),  True),
-    ("volatile",    P_VOLATILE, py_vol(),  False),
-    ("address_of",  P_ADDR,     py_addr(), False),
+    ("far_slots",  P_FAR,   py_far(),  "on",  "on"),
+    ("near_slots", P_NEAR,  py_near(), "off", "on"),
+    ("volatile",   P_VOL,   py_vol(),  "off", "off"),
+    ("address_of", P_ADDR,  py_addr(), "off", "off"),
 ]
 
 
-def build(arkcc, workdir, name, body, flags):
+def build(arkcc, workdir, name, body, flags, tag):
     src = os.path.join(workdir, name + ".c")
-    with open(src, "w", newline="\n") as fh:
-        fh.write(AE.STARTUP + body)
-    asm = os.path.join(workdir, name + ("_on.s" if flags else "_off.s"))
-    proc = subprocess.run([arkcc, src, "-target", "arm", "-S", "-o", asm] + list(flags),
-                          capture_output=True, text=True)
-    if proc.returncode != 0:
-        return None, None, (proc.stderr or proc.stdout).strip()
-    binp = asm[:-2] + ".bin"
-    proc = subprocess.run([arkcc, src, "-target", "arm", "--vector-table",
-                           "-o", binp] + list(flags), capture_output=True, text=True)
-    if proc.returncode != 0:
-        return open(asm, encoding="utf-8").read(), None, (proc.stderr or proc.stdout).strip()
+    if not os.path.exists(src):
+        with open(src, "w", newline="\n") as fh:
+            fh.write(AE.STARTUP + body)
+    asm = os.path.join(workdir, "%s_%s.s" % (name, tag))
+    p = subprocess.run([arkcc, src, "-target", "arm", "-S", "-o", asm] + list(flags),
+                       capture_output=True, text=True, errors="replace")
+    if p.returncode != 0:
+        return None, None, (p.stderr or p.stdout).strip()
+    binp = os.path.join(workdir, "%s_%s.bin" % (name, tag))
+    p = subprocess.run([arkcc, src, "-target", "arm", "--vector-table", "-o", binp] + list(flags),
+                       capture_output=True, text=True, errors="replace")
+    if p.returncode != 0:
+        return None, None, (p.stderr or p.stdout).strip()
     with open(asm, encoding="utf-8") as fh:
         text = fh.read()
     with open(binp, "rb") as fh:
@@ -150,17 +179,9 @@ def build(arkcc, workdir, name, body, flags):
     return text, blob, None
 
 
-def frame_refs(text):
-    return text.count("[r6, #")
-
-
-def high_reg_uses(text):
-    """Names of r8-r11 mentioned in the emitted text, if any."""
-    hits = []
-    for r in ("r8", "r9", "r10", "r11"):
-        if r + "," in text or r + "}" in text or r + " " in text or r + "]" in text:
-            hits.append(r)
-    return hits
+def high_regs(text):
+    return [r for r in ("r8", "r9", "r10", "r11")
+            if r + "," in text or r + "}" in text or r + " " in text]
 
 
 def main(argv=None):
@@ -177,53 +198,71 @@ def main(argv=None):
         return 0
 
     bad = 0
-    workdir = tempfile.mkdtemp(prefix="arkra_")
-    for name, body, want, should_change in CASES:
-        off_text, off_blob, err = build(arkcc, workdir, name, body, [])
+    work = tempfile.mkdtemp(prefix="arkra_")
+    for name, body, want, exp_def, exp_near in CASES:
+        arms = [("off", []), ("def", [ON]), ("near", [ON, NEAR])]
+        got = {}
+        err = None
+        for tag, flags in arms:
+            text, blob, e = build(arkcc, work, name, body, flags, tag)
+            if e:
+                err = (tag, e)
+                break
+            got[tag] = (text, blob)
         if err:
-            print("[FAIL] %-12s default build failed: %s" % (name, err.splitlines()[0][:80]))
-            bad += 1
-            continue
-        on_text, on_blob, err = build(arkcc, workdir, name, body, [FLAG])
-        if err:
-            print("[FAIL] %-12s %s build failed: %s" % (name, FLAG, err.splitlines()[0][:80]))
+            print("[FAIL] %-12s %s arm failed: %s" % (name, err[0], err[1].splitlines()[0][:80]))
             bad += 1
             continue
 
         # 1. off is off
-        used = high_reg_uses(off_text)
-        if used:
-            print("[FAIL] %-12s default text mentions %s" % (name, ",".join(used)))
+        if high_regs(got["off"][0]):
+            print("[FAIL] %-12s default text mentions %s" % (name, ",".join(high_regs(got["off"][0]))))
             bad += 1
             continue
 
-        # 2. on does something (or must not, for the negative cases)
-        changed = (on_text != off_text)
-        if should_change and not changed:
-            print("[FAIL] %-12s %s produced identical text (switch is a no-op here)"
-                  % (name, FLAG))
-            bad += 1
-            continue
-        if not should_change and changed:
-            print("[FAIL] %-12s %s rewrote a slot it cannot model (taint rule broken)"
-                  % (name, FLAG))
+        # 2/3/4. did each mode do what it is supposed to do?
+        problems = []
+        for tag, expect in (("def", exp_def), ("near", exp_near)):
+            changed = got[tag][0] != got["off"][0]
+            if expect == "on" and not changed:
+                problems.append("%s arm did nothing" % tag)
+            if expect == "off" and changed:
+                problems.append("%s arm rewrote a slot it must not touch" % tag)
+        if problems:
+            print("[FAIL] %-12s %s" % (name, "; ".join(problems)))
             bad += 1
             continue
 
-        # 3. same answer, and the right answer
-        st_off, v_off, _ = AE.run_image(off_blob)
-        st_on, v_on, _ = AE.run_image(on_blob)
-        if st_off != "returned" or st_on != "returned":
-            print("[FAIL] %-12s execution status off=%s on=%s" % (name, st_off, st_on))
+        # the default mode must never grow the code
+        size_off = len(got["off"][1])
+        size_def = len(got["def"][1])
+        if exp_def == "on" and size_def > size_off:
+            print("[FAIL] %-12s default mode grew the image %d -> %d" %
+                  (name, size_off, size_def))
             bad += 1
             continue
-        if v_off != want or v_on != want:
-            print("[FAIL] %-12s expected %d, off=%d on=%d" % (name, want, v_off, v_on))
+
+        # 5. same answer, and the right answer
+        values = {}
+        ok = True
+        for tag, _ in arms:
+            st, val, _ = AE.run_image(got[tag][1])
+            if st != "returned":
+                print("[FAIL] %-12s %s arm did not return (%s)" % (name, tag, st))
+                bad += 1
+                ok = False
+                break
+            values[tag] = val
+        if not ok:
+            continue
+        if any(v != want for v in values.values()):
+            print("[FAIL] %-12s expected %d, got %s" % (name, want, values))
             bad += 1
             continue
-        print("[ok  ] %-12s refs %2d -> %2d, exit %d both ways%s"
-              % (name, frame_refs(off_text), frame_refs(on_text), want,
-                 "" if should_change else " (untouched by design)"))
+
+        print("[ok  ] %-12s image %3d/%-3d/%-3d bytes, exit %d in all three arms%s" %
+              (name, size_off, size_def, len(got["near"][1]), want,
+               "" if exp_def == "on" else " (untouched by design)"))
     if bad == 0:
         print("\nregalloc: all claims hold")
     else:

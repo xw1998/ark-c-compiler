@@ -251,8 +251,56 @@ int ll_pad;\nstruct LS { int tag; long long v; };\nstatic long long arr[4];\nsta
 int sb_pad;\nstruct P { int x, y; };\nstruct Q { int x, y, z; };\nstruct S3 { char a, b, c; };\nstruct Pair { struct P p; int tag; };\nunion U { int i; struct P p; };\nstruct P mk(int x, int y) { struct P r; r.x = x; r.y = y; return r; }\nint psum(struct P a) { return a.x + a.y; }\nint qsum(struct Q q) { return q.x + q.y + q.z; }\nint s3sum(struct S3 s) { return s.a + s.b + s.c; }\nint pairsum(struct Pair v) { return v.p.x + v.p.y + v.tag; }\nint usum(union U u) { return u.i; }\nstruct P swapxy(struct P v) { struct P r; r.x = v.y; r.y = v.x; return r; }\nint mixed(int a, struct P p, int b, struct Q q, int c) { return a + p.x + p.y + b + q.x + q.y + q.z + c; }\nint main(void)\n{\n  struct P a = {1, 2}, b;\n  struct Q q = {10, 20, 30};\n  struct S3 s = {1, 2, 3};\n  struct Pair pr;\n  union U u;\n  struct P arr[3];\n  pr.p = a; pr.tag = 5;\n  u.i = 0x00040003;\n  arr[1] = a;\n  arr[2] = mk(7, 8);\n  b = mk(4, 9);\n  if (psum(a) != 3) return 1;\n  if (psum(b) != 13) return 2;\n  if (qsum(q) != 60) return 3;\n  if (s3sum(s) != 6) return 4;\n  if (pairsum(pr) != 8) return 5;\n  if (usum(u) != 0x00040003) return 6;\n  b = swapxy(a);\n  if (b.x != 2 || b.y != 1) return 7;\n  if (psum(arr[1]) != 3) return 8;\n  if (psum(arr[2]) != 15) return 9;\n  if (psum(*arr) != 0 && 0) return 10;\n  if (mixed(1, a, 2, q, 3) != 1+1+2+2+10+20+30+3) return 11;\n  if (mk(5, 6).y != 6) return 12;\n  if (psum(mk(11, 12)) != 23) return 13;\n  return 50;\n}
 """,
         },
-        "build": [(["v.c", "-target", "arm", "--vector-table", "-o", "out.bin"], "out.bin")],
+    "build": [(["v.c", "-target", "arm", "--vector-table", "-o", "out.bin"], "out.bin")],
         "expect": 50,
+    },
+    {
+        "name": "big_frame",
+        "why": "a frame above 4095 bytes: one SUBW cannot do it, and the old "
+               "single 'SUB sp, sp, #N' was truncated to (N/4) & 0x7f * 4 -- the "
+               "stack pointer itself was wrong, so every slot offset was too. "
+               "The prologue/epilogue now split the adjustment into <=4095 pieces.",
+        "files": {
+            "f.c": STARTUP + """\
+int bf_pad;
+int big(void)
+{
+    char buf[5000];
+    int i, s;
+    for (i = 0; i < 5000; i++) buf[i] = (char)(i * 7 + 3);
+    s = 0;
+    for (i = 0; i < 5000; i += 97) s += (unsigned char)buf[i];
+    s += (unsigned char)buf[4999];
+    return s & 0xFF;
+}
+int main(void) { return big(); }
+""",
+        },
+        "build": [(["f.c", "-target", "arm", "--vector-table", "-o", "out.bin"], "out.bin")],
+        "expect": 82,
+    },
+    {
+        "name": "far_addr",
+        "why": "the address of a local beyond 4095 bytes: 'ADD r0, r6, #off' cannot encode a 12-bit plain immediate that big, so it is rewritten to 'MOVW/MOVT ip' + 'ADD r0, r6, ip'. The first version of that rewrite reused the bracketed shape and emitted 'ADD r0, [ip]', which the assembler rejects -- and a big frame hits this before it hits a plain far load, because every array past 4095 bytes is reached through its address.",
+        "files": {
+            "f.c": STARTUP + """\
+int fa_pad;
+int far(void)
+{
+    char pad[6000];
+    int tail[4];
+    int *p;
+    pad[0] = 1;
+    tail[0] = 11; tail[1] = 22; tail[2] = 33; tail[3] = 44;
+    p = tail;
+    pad[5999] = 5;
+    return p[1] + (int)(unsigned char)pad[5999] + tail[2] - tail[0];
+}
+int main(void) { return far(); }
+""",
+        },
+        "build": [(["f.c", "-target", "arm", "--vector-table", "-o", "out.bin"], "out.bin")],
+        "expect": 49,
     },
 ]
 

@@ -59,6 +59,7 @@ void config_init(void) {
     /* 寄存器分配：代码按 profile 编进来（宿主 1 / 板端 0），但默认一律关——
      * 默认产物必须与旧版本逐字节相同，只有 -fopt-regalloc/--regalloc 才开。 */
     g_config.enable_opt_regalloc  = 0;
+    g_config.enable_opt_regalloc_near = 0;
     g_config.enable_opt_inline    = ARKCC_FEATURE_OPT_INLINE;
     g_config.enable_opt_vectorize = ARKCC_FEATURE_OPT_VECTORIZE;
     /* 0.8.0 的五个实验性开关：代码按 profile 编进来（见 arkcc_config.h），
@@ -371,6 +372,8 @@ void config_apply_args(int argc, char **argv) {
                 g_config.enable_opt_dce                 = enable;
             else if (ark_streq(name, "opt-regalloc") || ark_streq(name, "regalloc"))
                 g_config.enable_opt_regalloc            = enable;
+            else if (ark_streq(name, "opt-regalloc-near") || ark_streq(name, "regalloc-near"))
+                g_config.enable_opt_regalloc_near       = enable;
             else if (ark_streq(name, "opt-inline") || ark_streq(name, "autoinline"))
                 g_config.enable_opt_inline              = enable;
             else if (ark_streq(name, "opt-vectorize") || ark_streq(name, "vectorize"))
@@ -391,9 +394,9 @@ void config_print(void) {
             g_config.enable_wchar, g_config.enable_trigraph);
     ark_log("  fpu_hw=%d dwarf=%d\n",
             g_config.enable_fpu_hw, g_config.enable_dwarf);
-    ark_log("  opt_constfold=%d opt_dce=%d opt_regalloc=%d\n",
+    ark_log("  opt_constfold=%d opt_dce=%d opt_regalloc=%d opt_regalloc_near=%d\n",
             g_config.enable_opt_constfold, g_config.enable_opt_dce,
-            g_config.enable_opt_regalloc);
+            g_config.enable_opt_regalloc, g_config.enable_opt_regalloc_near);
     ark_log("  opt_inline=%d opt_vectorize=%d\n",
             g_config.enable_opt_inline, g_config.enable_opt_vectorize);
     ark_log("  dce_cfg=%d reloc_data=%d reg_top=%d rt_lazy=%d asm_extra=%d\n",

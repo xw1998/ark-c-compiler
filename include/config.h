@@ -18,6 +18,7 @@ typedef struct {
     int enable_opt_constfold;
     int enable_opt_dce;
     int enable_opt_regalloc;
+    int enable_opt_regalloc_near;   /* -fopt-regalloc-near: 近槽也搬（每函数 +4 字节） */
     int enable_opt_inline;   /* --autoinline / -O2 */
     int enable_opt_vectorize;/* --vectorize / -O2 */
     int opt_level;          /* 0=none, 1=basic, 2=aggressive */

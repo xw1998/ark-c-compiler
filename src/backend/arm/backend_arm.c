@@ -227,6 +227,132 @@ static void emit_unary(AsmBuffer *b, int op) {
     }
 }
 
+/* ------------------- frame accesses past the imm12 range -------------------
+ * "[r6, #off]" carries a 12-bit byte offset.  A function whose frame is larger
+ * than that cannot reach its high slots in one instruction -- and a single
+ * `char buf[5000];` is enough to push every later local past 4095.  That used to
+ * be encoded as "off & 0xFFF", i.e. a load or store of the *wrong* slot with no
+ * diagnostic at all.
+ *
+ * The fix is the base computation the instruction needs:
+ *     LDR r0, [r6, #5000]
+ *   ->MOVW ip, #5000 / MOVT ip, #0 / ADD ip, r6, ip / LDR r0, [ip]
+ * and the same for "ADD rX, r6, #off" (taking a local's address).  ip (r12) is
+ * the only register no emitted sequence keeps alive across a local access.
+ *
+ * This is a correctness pass, not an optimisation: it runs unconditionally and
+ * only touches lines that would otherwise be refused by the encoder. */
+static void ark_fix_far_offset(AsmBuffer *b, int from) {
+    AsmBuffer out;
+    int pos = from;
+    int changed = 0;
+    char line[256];
+
+    /* Cheap first look: most functions have no such access at all. */
+    {
+        int p2 = from, found = 0;
+        while (p2 + 8 <= b->len) {
+            if (b->buf[p2] == 'r' && b->buf[p2+1] == '6' && b->buf[p2+2] == ',' &&
+                b->buf[p2+3] == ' ') {
+                long n = 0;
+                const char *q = b->buf + p2 + 4;   /* '#' of "r6, #" */
+                int ok = 1;
+                if (*q == '#') {
+                    q++;
+                    if (*q < '0' || *q > '9') ok = 0;
+                    while (ok && *q >= '0' && *q <= '9') { n = n * 10 + (*q - '0'); q++; }
+                    if (ok && n > 4095) { found = 1; break; }
+                }
+            }
+            p2++;
+        }
+        if (!found) return;
+    }
+
+    asmbuf_init(&out);
+    for (pos = from; pos < b->len; ) {
+        int len = 0, i;
+        long n = 0;
+        int big = 0;
+        const char *br = 0;
+        const char *s;
+        while (pos + len < b->len && b->buf[pos + len] != '\n') len++;
+        if (len >= (int)sizeof(line)) {
+            for (i = 0; i < len; i++) asmbuf_putc(&out, b->buf[pos + i]);
+            asmbuf_putc(&out, '\n');
+            pos += len + 1;
+            continue;
+        }
+        for (i = 0; i < len; i++) line[i] = b->buf[pos + i];
+        line[len] = 0;
+
+        /* locate "r6, #<n>" and decide whether n is out of range */
+        s = line;
+        while (*s && !(s[0] == 'r' && s[1] == '6' && s[2] == ',' && s[3] == ' ')) s++;
+        if (*s) {
+            const char *q = s + 4;              /* '#' of "r6, #" */
+            int ok = (*q == '#');
+            if (ok) {
+                q++;
+                if (*q < '0' || *q > '9') ok = 0;
+                while (ok && *q >= '0' && *q <= '9') { n = n * 10 + (*q - '0'); q++; }
+            }
+            if (ok && n > 4095) {
+                big = 1;
+                br = s;              /* points at "r6, #..." */
+                if (br > line && br[-1] == '[') br--;   /* include the '[' */
+            }
+        }
+
+        if (!big) {
+            for (i = 0; i < len; i++) asmbuf_putc(&out, b->buf[pos + i]);
+            asmbuf_putc(&out, '\n');
+            pos += len + 1;
+            continue;
+        }
+
+        /* Emit the address computation, then the original instruction against
+         * it.  Two shapes reach here and they need different rewrites:
+         *   "    LDR r0, [r6, #4904]"  ->  MOVW/MOVT, ADD ip,r6,ip, "LDR r0, [ip]"
+         *   "    ADD r0, r6, #4904"    ->  MOVW/MOVT,             "ADD r0, r6, ip"
+         * The second shape takes the address of a far local, and a big frame
+         * hits it first: every array past 4095 bytes is reached through its
+         * address.  Two separate bugs came from treating it like the first:
+         * copying the head and appending "[ip]" produced "ADD r0, [ip]", which
+         * the assembler rejects; and emitting "ADD ip, r6, ip" first made the
+         * next "ADD r0, r6, ip" compute r6 + (r6 + n), which faults at once.
+         */
+        asmbuf_puts(&out, "    MOVW ip, #");
+        asmbuf_int(&out, (long)n & 0xFFFF);
+        asmbuf_putc(&out, '\n');
+        asmbuf_puts(&out, "    MOVT ip, #");
+        asmbuf_int(&out, ((long)n >> 16) & 0xFFFF);
+        asmbuf_putc(&out, '\n');
+        if (br != s) {
+            int head = (int)(br - line);   /* just before the '[' */
+            asmbuf_puts(&out, "    ADD ip, r6, ip\n");
+            for (i = 0; i < head; i++) asmbuf_putc(&out, line[i]);
+            asmbuf_puts(&out, "[ip]\n");
+        } else {
+            int head = (int)(br - line);   /* "    ADD Rt, " */
+            for (i = 0; i < head; i++) asmbuf_putc(&out, line[i]);
+            asmbuf_puts(&out, "r6, ip\n");
+        }
+        changed++;
+        pos += len + 1;
+    }
+
+    if (changed) {
+        asmbuf_reserve(b, from + out.len);
+        if (from + out.len + 1 <= b->cap) {
+            int i;
+            for (i = 0; i < out.len; i++) b->buf[from + i] = out.buf[i];
+            b->buf[from + out.len] = 0;
+            b->len = from + out.len;
+        }
+    }
+}
+
 #if ARKCC_FEATURE_OPT_REGALLOC
 /* --------------------------- register allocation -------------------------
  * What this is, exactly: after a function has been emitted, its text is walked
@@ -248,7 +374,20 @@ static void emit_unary(AsmBuffer *b, int op) {
  * safety argument, and tests/run_regalloc_tests.py fails if it is ever wrong.
  *
  * r8-r11 are the registers: the backend never names them, and AAPCS makes them
- * callee-saved, so they survive calls to __aeabi_* helpers and to user code. */
+ * callee-saved, so they survive calls to __aeabi_* helpers and to user code.
+ *
+ * The cost model, measured rather than assumed: a near slot ("LDR r0,[r6,#0..124]"
+ * with a multiple-of-4 offset) is a 16-bit instruction, and so is "MOV r0, rN" --
+ * moving a near slot saves *nothing*.  Only a far slot (offset > 124, or not a
+ * multiple of 4) is 32-bit and saves 2 bytes.  The prologue/epilogue PUSH/POP
+ * grow by 2 bytes each the moment a high register joins the list, so a function
+ * pays 4 bytes once, no matter how many registers it takes.  Taking near slots
+ * anyway was measured on src/irgen.c: 1853 slots moved, code grew 148 bytes.
+ * Hence two modes:
+ *   default              take a slot only when its byte savings pay for the
+ *                        4-byte PUSH/POP widening -> the function never grows;
+ *   -fopt-regalloc-near  also take near slots (>= 3 accesses): fewer memory
+ *                        accesses in the hot path, at ~4 bytes per function. */
 #define RA_MAX_SLOTS 96
 #define RA_MAX_REGS  4
 #define RA_MIN_USES  3      /* 2 bytes saved per use, 4 bytes of PUSH/POP to pay */
@@ -256,6 +395,7 @@ static void emit_unary(AsmBuffer *b, int op) {
 typedef struct {
     int off;
     int uses;
+    int saves;    /* bytes of instruction text this slot would save */
     int taint;
     int reg;
 } RaSlot;
@@ -276,7 +416,7 @@ static int ra_pre8(const char *s, const char *pat) {
  *    0  exactly "LDR r0, [r6, #n]"   (*off, *is_ldr = 1)
  *    1  exactly "STR r0, [r6, #n]"   (*off, *is_ldr = 0)
  *    2  names that slot in any other shape -- cannot be kept in a register */
-static int ra_classify(const char *ln, int *off, int *is_ldr) {
+static int ra_classify(const char *ln, int *off, int *is_ldr, int *wide) {
     const char *p = ln;
     const char *br;
     int n = 0;
@@ -299,6 +439,10 @@ static int ra_classify(const char *ln, int *off, int *is_ldr) {
     p++;
     while (*p == ' ' || *p == '\t' || *p == '\r') p++;
     if (*p) return 2;                     /* trailing text: not the shape we model */
+    /* Same rule the encoder uses: the 16-bit form covers offsets 0..124 that
+     * are a multiple of 4.  Everything else is 32-bit, and only that case makes
+     * replacing the access with a MOV smaller. */
+    *wide = (n > 124 || (n & 3) != 0);
     {
         const char *s = ln;
         while (*s == ' ' || *s == '\t') s++;
@@ -315,6 +459,7 @@ static int ra_slot(RaSlot *slots, int *n, int off) {
     if (*n >= RA_MAX_SLOTS) return -1;    /* table full: treat as tainted */
     slots[*n].off = off;
     slots[*n].uses = 0;
+    slots[*n].saves = 0;
     slots[*n].taint = 0;
     slots[*n].reg = 0;
     return (*n)++;
@@ -337,7 +482,7 @@ static void ark_regalloc_function(AsmBuffer *b, int from, IrFunc *f) {
 
     /* Pass 1: every mention of every frame slot. */
     for (pos = from; pos < b->len; ) {
-        int len = 0, off = 0, is_ldr = 0, kind;
+        int len = 0, off = 0, is_ldr = 0, wide = 0, kind;
         while (pos + len < b->len && b->buf[pos + len] != '\n') len++;
         if (len >= (int)sizeof(line)) { pos += len + 1; continue; }
         for (i = 0; i < len; i++) line[i] = b->buf[pos + i];
@@ -345,12 +490,16 @@ static void ark_regalloc_function(AsmBuffer *b, int from, IrFunc *f) {
         if (line[0] == ' ' && line[1] == ' ' && line[2] == ' ' && line[3] == ' ' &&
             ra_pre8(line + 4, "PUSH {r5"))
             have_prologue = 1;
-        kind = ra_classify(line, &off, &is_ldr);
+        kind = ra_classify(line, &off, &is_ldr, &wide);
         if (kind >= 0) {
             int s = ra_slot(slots, &nslots, off);
             if (s < 0) { pos += len + 1; continue; }
-            if (kind == 2) slots[s].taint = 1;
-            else           slots[s].uses++;
+            if (kind == 2) {
+                slots[s].taint = 1;
+            } else {
+                slots[s].uses++;
+                if (wide) slots[s].saves += 2;
+            }
         }
         pos += len + 1;
     }
@@ -373,26 +522,58 @@ static void ark_regalloc_function(AsmBuffer *b, int from, IrFunc *f) {
 
     if (!have_prologue || nslots == 0) return;   /* __naked or nothing to do */
 
-    /* Pick the hottest clean slots.  A tie goes to the lower offset so the same
-     * source always produces the same register assignment. */
-    for (k = 0; k < RA_MAX_REGS; k++) {
-        int best = -1;
-        for (i = 0; i < nslots; i++) {
-            if (slots[i].reg || slots[i].taint || slots[i].uses < RA_MIN_USES) continue;
-            if (best < 0 || slots[i].uses > slots[best].uses ||
-                (slots[i].uses == slots[best].uses && slots[i].off < slots[best].off))
-                best = i;
+    /* Pick the clean slots that pay for themselves.  Default: rank by bytes
+     * saved and stop once the 4-byte PUSH/POP widening is covered, so a
+     * function never grows.  -fopt-regalloc-near: rank by access count and take
+     * near slots too.  Ties go to the lower offset, so the same source always
+     * gets the same assignment. */
+    {
+        int budget = 4;            /* one wider PUSH + one wider POP */
+        int near_mode = g_config.enable_opt_regalloc_near ? 1 : 0;
+        for (k = 0; k < RA_MAX_REGS; k++) {
+            int best = -1;
+            for (i = 0; i < nslots; i++) {
+                if (slots[i].reg || slots[i].taint) continue;
+                if (near_mode) {
+                    if (slots[i].uses < RA_MIN_USES) continue;
+                } else {
+                    if (slots[i].saves <= 0) continue;
+                }
+                if (best < 0) { best = i; continue; }
+                if (near_mode) {
+                    if (slots[i].uses > slots[best].uses ||
+                        (slots[i].uses == slots[best].uses && slots[i].off < slots[best].off))
+                        best = i;
+                } else {
+                    if (slots[i].saves > slots[best].saves ||
+                        (slots[i].saves == slots[best].saves && slots[i].off < slots[best].off))
+                        best = i;
+                }
+            }
+            if (best < 0) break;
+            if (!near_mode) {
+                if (budget - slots[best].saves < 0 && nregs > 0) break;
+                budget -= slots[best].saves;
+            }
+            slots[best].reg = 8 + k;
+            made[nregs++] = 8 + k;
         }
-        if (best < 0) break;
-        slots[best].reg = 8 + k;
-        made[nregs++] = 8 + k;
+        if (!near_mode && nregs > 0 && budget > 0) {
+            /* The savings did not cover the wider PUSH/POP after all: hand the
+             * registers back rather than grow the function. */
+            int j, s2;
+            for (j = 0; j < nregs; j++)
+                for (s2 = 0; s2 < nslots; s2++)
+                    if (slots[s2].reg == made[j]) slots[s2].reg = 0;
+            nregs = 0;
+        }
     }
     if (nregs == 0) return;
 
     /* Pass 2: rebuild the text of this function. */
     asmbuf_init(&out);
     for (pos = from; pos < b->len; ) {
-        int len = 0, off = 0, is_ldr = 0, kind;
+        int len = 0, off = 0, is_ldr = 0, wide = 0, kind;
         while (pos + len < b->len && b->buf[pos + len] != '\n') len++;
         if (len >= (int)sizeof(line)) {
             for (i = 0; i < len; i++) asmbuf_putc(&out, b->buf[pos + i]);
@@ -405,7 +586,7 @@ static void ark_regalloc_function(AsmBuffer *b, int from, IrFunc *f) {
 
         kind = -1;
         if (line[0] == ' ' && line[1] == ' ' && line[2] == ' ' && line[3] == ' ')
-            kind = ra_classify(line, &off, &is_ldr);
+            kind = ra_classify(line, &off, &is_ldr, &wide);
         if (kind == 0 || kind == 1) {
             int s = ra_slot(slots, &nslots, off);
             int r = (s >= 0) ? slots[s].reg : 0;
@@ -445,10 +626,9 @@ static void ark_regalloc_function(AsmBuffer *b, int from, IrFunc *f) {
         pos += len + 1;
     }
 
-    /* Splice back.  Every rewritten line is 2 bytes shorter and the PUSH/POP
-     * header grows by 2 bytes per register, so with RA_MIN_USES == 3 the result
-     * is always shorter; the guard is here so a future change cannot silently
-     * overflow the buffer. */
+    /* Splice back.  In the default mode the selected slots pay for the wider
+     * PUSH/POP, so the result is never longer; the guard is here so a future
+     * change cannot silently overflow the buffer. */
     if (from + out.len + 1 <= b->cap) {
         for (i = 0; i < out.len; i++) b->buf[from + i] = out.buf[i];
         b->buf[from + out.len] = 0;
@@ -456,6 +636,23 @@ static void ark_regalloc_function(AsmBuffer *b, int from, IrFunc *f) {
     }
 }
 #endif /* ARKCC_FEATURE_OPT_REGALLOC */
+
+/* Frame adjustment that does not fit one encoding.  SUBW/ADDW take 0..4095 and
+ * the 16-bit forms at most 508, but a function's frame can be larger than that:
+ * preproc.c's process() reserves 17208 bytes.  That used to be emitted as a
+ * single "SUB sp, sp, #17208", which the assembler truncated with "& 0x7F" and
+ * turned into "sub sp, #312" -- a wrong answer on a stack pointer, and it is
+ * now a hard error instead.  Split it into <=4095 pieces: a handful of extra
+ * instructions, once per function. */
+static void emit_sp_adjust(AsmBuffer *b, int amount, int is_sub) {
+    while (amount > 0) {
+        int piece = (amount > 4095) ? 4095 : amount;
+        asmbuf_puts(b, is_sub ? "    SUB sp, sp, #" : "    ADD sp, sp, #");
+        asmbuf_int(b, piece);
+        asmbuf_putc(b, '\n');
+        amount -= piece;
+    }
+}
 
 static void emit_prologue(AsmBuffer *b, const char *fn_name, int local_size,
                           int is_irq, int is_naked, int dbg) {
@@ -475,11 +672,7 @@ static void emit_prologue(AsmBuffer *b, const char *fn_name, int local_size,
     } else {
         emit_line(b, "PUSH {r5, r6, r7, lr}");
     }
-    if (local_size > 0) {
-        asmbuf_puts(b, "    SUB sp, sp, #");
-        asmbuf_int(b, local_size);
-        asmbuf_putc(b, '\n');
-    }
+    if (local_size > 0) emit_sp_adjust(b, local_size, 1);
     emit_line(b, "MOV r6, sp");
 }
 
@@ -495,11 +688,7 @@ static void emit_epilogue_return(AsmBuffer *b, int local_size,
      * caller did not model it, this is the original emit_pop_r0(). */
     if (!value_in_r0) emit_pop_r0(b);
     emit_line(b, "MOV sp, r6");
-    if (local_size > 0) {
-        asmbuf_puts(b, "    ADD sp, sp, #");
-        asmbuf_int(b, local_size);
-        asmbuf_putc(b, '\n');
-    }
+    if (local_size > 0) emit_sp_adjust(b, local_size, 0);
     if (is_irq) {
         emit_line(b, "POP {r5, r6, r7, pc}");
     } else {
@@ -3244,6 +3433,9 @@ static char *codegen_arm(IrProgram *prog) {
          * buffer, so the rewrite sees exactly this function and nothing else. */
         ark_regalloc_function(&buf, fstart, f);
 #endif
+        /* Correctness, not an option: a frame slot beyond 4095 bytes cannot be
+         * reached by "[r6, #off]" at all. */
+        ark_fix_far_offset(&buf, fstart);
 
         /* __attribute__((constructor/destructor)): register the function address in .init_array/.fini_array;
          * the C runtime startup code iterates and calls them before/after main.
@@ -5649,7 +5841,18 @@ static void pass1_a(ArmAsm *a) {
                         pc += 2;                               /* T1 3-bit imm */
                     else pc += 4;                              /* ADDW / SUBW */
                 } else {
-                    pc += 2;  /* register variant, 16-bit */
+                    /* Register forms: the 16-bit encodings only name r0-r7.
+                     * ADD with Rd == Rn has a 16-bit form for every register;
+                     * SUB has one only for low registers.  Same rule as pass 2. */
+                    int rm1 = parse_reg_a(&p);
+                    int is_sub1 = strieq_a(first, "SUB") || strieq_a(first, "SUBS");
+                    if (rm1 >= 0) {
+                        if (rd <= 7 && rn <= 7 && rm1 <= 7) pc += 2;
+                        else                                  pc += 4;
+                    } else {
+                        if (is_sub1) pc += (rd >= 0 && rd <= 7 && rn >= 0 && rn <= 7) ? 2 : 4;
+                        else         pc += 2;
+                    }
                 }
             } else if (strieq_a(first, "LSLS") || strieq_a(first, "LSRS") ||
                        strieq_a(first, "ASRS")) {
@@ -5932,6 +6135,16 @@ static void emit_addw_a(ArmAsm *a, int is_sub, int rd, int rn, int imm) {
     unsigned imm8 = (unsigned)imm & 0xFF;
     out16(a, (unsigned)(is_sub ? 0xF2A0 : 0xF200) | (i << 10) | (unsigned)(rn & 0xF));
     out16(a, (imm3 << 12) | ((unsigned)(rd & 0xF) << 8) | imm8);
+}
+
+/* ADD/SUB (register) T2: the 32-bit form, where every operand may be any of
+ * r0-r15 (SP included).  The 16-bit T1 form only names r0-r7 and silently masks
+ * the rest: "ADD ip, r6, ip" came out as "adds r4, r6, r4", and a base address
+ * became a write into nothing.  Measured with arm-none-eabi-as:
+ *   add.w ip, r6, ip = eb06 0c0c    sub.w sp, sp, r7 = ebad 0d07 */
+static void emit_addsub_reg_w_a(ArmAsm *a, int is_sub, int rd, int rn, int rm) {
+    out16(a, (unsigned)(is_sub ? 0xEBA0 : 0xEB00) | (unsigned)(rn & 0xF));
+    out16(a, ((unsigned)(rd & 0xF) << 8) | (unsigned)(rm & 0xF));
 }
 
 /* MOVW: a plain 16-bit immediate into any register. */
@@ -6503,9 +6716,19 @@ static void pass2_a(ArmAsm *a) {
                  * lost its carry fix-up: 0x123456789ABCDEF0 * 2 came out with
                  * a high word 1 too small (measured in unicorn). */
                 int rm = parse_reg_a(&p);
-                if (rm >= 0) {
-                    out16(a, 0x1800 | ((rm & 7) << 6) | ((rn & 7) << 3) | (rd & 7));
-                } else if (rd >= 0 && rn >= 0) {
+                if (rd >= 0 && rn >= 0 && rm >= 0) {
+                    if (rd <= 7 && rn <= 7 && rm <= 7) {
+                        /* T1 -- note it sets the flags, which is exactly what
+                         * the 64-bit helpers' "ADD low / ADC high" pair wants,
+                         * and what this encoder has always done. */
+                        out16(a, 0x1800 | ((rm & 7) << 6) | ((rn & 7) << 3) | (rd & 7));
+                    } else {
+                        /* T2: any registers, no flags.  The T1 path used to mask
+                         * the operands with &7 here and silently add the wrong
+                         * ones ("ADD ip, r6, ip" became "adds r4, r6, r4"). */
+                        emit_addsub_reg_w_a(a, 0, rd, rn, rm);
+                    }
+                } else if (rm < 0 && rd >= 0 && rn >= 0) {
                     /* ADD (register) T2: 0100 0100 D Rm Rdn -- Rd = Rd + Rm,
                      * and unlike T1 it accepts the high registers r8-r15. */
                     out16(a, 0x4400 | (((rd >> 3) & 1) << 7) | ((rn & 0xF) << 3) | (rd & 7));
@@ -6549,11 +6772,18 @@ static void pass2_a(ArmAsm *a) {
                  * two-operand subtract, so that case is rejected rather than
                  * emitted with a silently wrong register. */
                 int rm = parse_reg_a(&p);
-                if (rm >= 0) {
-                    out16(a, 0x1A00 | ((rm & 7) << 6) | ((rn & 7) << 3) | (rd & 7));
-                } else if (rd >= 0 && rd <= 7 && rn >= 0 && rn <= 7) {
+                if (rd >= 0 && rn >= 0 && rm >= 0) {
+                    if (rd <= 7 && rn <= 7 && rm <= 7) {
+                        out16(a, 0x1A00 | ((rm & 7) << 6) | ((rn & 7) << 3) | (rd & 7));
+                    } else {
+                        emit_addsub_reg_w_a(a, 1, rd, rn, rm);
+                    }
+                } else if (rm < 0 && rd >= 0 && rd <= 7 && rn >= 0 && rn <= 7) {
                     /* SUB Rdn, Rm is SUB Rdn, Rdn, Rm */
                     out16(a, 0x1A00 | ((rn & 7) << 6) | ((rd & 7) << 3) | (rd & 7));
+                } else if (rm < 0 && rd >= 0 && rn >= 0) {
+                    /* high registers: no 16-bit two-operand SUB exists */
+                    emit_addsub_reg_w_a(a, 1, rd, rd, rn);
                 } else {
                     char b1[12];
                     diag_tool(DIAG_SEV_ERROR, "arkcc",
