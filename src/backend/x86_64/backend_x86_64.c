@@ -1177,11 +1177,20 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                         asmbuf_puts(&buf, " edx, ebx\n");
                         asmbuf_puts(&buf, "    push edx\n    push eax\n");
                     } else if (op == (int)TOK_SHL) {
-                        /* Simplified: shift count from low dword of b */
+                        /* 64-bit left shift.  `shld`/`shl` use cl & 31, so the
+                         * n >= 32 half has to be a separate path or 1ULL << 32
+                         * silently answers 1 (the old code did exactly that):
+                         *   n <  32:  hi = shld(hi,lo,n); lo = lo << n
+                         *   n >= 32:  hi = lo << (n-32); lo = 0 (bits pushed
+                         *             past bit 63 are discarded)
+                         * The count comes from the low dword of b. */
                         asmbuf_puts(&buf, "    pop ecx\n    add esp, 4\n");  /* shift count, skip hi */
                         asmbuf_puts(&buf, "    pop eax\n    pop edx\n");  /* a (lo,hi) */
-                        asmbuf_puts(&buf, "    shld edx, eax, cl\n    shl eax, cl\n");
-                        asmbuf_puts(&buf, "    push edx\n    push eax\n");
+                        asmbuf_puts(&buf, "    mov ebx, ecx\n    and cl, 31\n");
+                        asmbuf_puts(&buf, "    cmp ebx, 32\n    jb 1f\n");
+                        asmbuf_puts(&buf, "    mov edx, eax\n    shl edx, cl\n    xor eax, eax\n    jmp 2f\n");
+                        asmbuf_puts(&buf, "1:  shld edx, eax, cl\n    shl eax, cl\n");
+                        asmbuf_puts(&buf, "2:  push edx\n    push eax\n");
                     } else {
                         /* mul/div/mod/shr/comparisons: fall back to 32-bit behavior
                          * for syntactic validity. Full 64-bit would require a helper. */
@@ -1203,10 +1212,23 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                                     asmbuf_puts(&buf, "    pop ecx\n    add esp, 4\n    pop eax\n    add esp, 4\n    cdq\n    idiv ecx\n    push 0\n    push edx\n");
                                 break;
                             case (int)TOK_SHR:
+                                /* 64-bit right shift, same n < 32 / n >= 32 split
+                                 * as the left shift above (cl is masked to 5 bits
+                                 * by the hardware, so a single shift is not enough):
+                                 *   n <  32:  lo = shrd(lo,hi,n); hi = hi >> n
+                                 *   n >= 32:  lo = hi >> (n-32); hi = 0 or sign(hi) */
+                                asmbuf_puts(&buf, "    pop ecx\n    add esp, 4\n    pop eax\n    pop edx\n");
+                                asmbuf_puts(&buf, "    mov ebx, ecx\n    and cl, 31\n");
+                                asmbuf_puts(&buf, "    cmp ebx, 32\n    jb 1f\n");
                                 if (I->aux & 0x100)
-                                    asmbuf_puts(&buf, "    pop ecx\n    add esp, 4\n    pop eax\n    add esp, 4\n    shr eax, cl\n    push 0\n    push eax\n");
+                                    asmbuf_puts(&buf, "    mov eax, edx\n    shr eax, cl\n    xor edx, edx\n    jmp 2f\n");
                                 else
-                                    asmbuf_puts(&buf, "    pop ecx\n    add esp, 4\n    pop eax\n    add esp, 4\n    sar eax, cl\n    push edx\n    push eax\n");
+                                    asmbuf_puts(&buf, "    mov eax, edx\n    sar eax, cl\n    sar edx, 31\n    jmp 2f\n");
+                                if (I->aux & 0x100)
+                                    asmbuf_puts(&buf, "1:  shrd eax, edx, cl\n    shr edx, cl\n");
+                                else
+                                    asmbuf_puts(&buf, "1:  shrd eax, edx, cl\n    sar edx, cl\n");
+                                asmbuf_puts(&buf, "2:  push edx\n    push eax\n");
                                 break;
                             case (int)TOK_EQ: cc = "sete";  goto cmp64;
                             case (int)TOK_NE: cc = "setne"; goto cmp64;

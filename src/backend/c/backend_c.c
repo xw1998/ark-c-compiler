@@ -66,7 +66,7 @@ static void emit_str_literal(AsmBuffer *b, const char *data, int len) {
  * For the 32-bit path (IR_BINARY), we cast to (unsigned int); for the 64-bit
  * path (IR_64BINARY), 32-bit cast is unnecessary.
  * This matters for shifts and comparisons, e.g. int -1 vs unsigned 0xFFFFFFFF. */
-static void emit_binop(AsmBuffer *b, int op) {
+static void emit_binop(AsmBuffer *b, int op, int is64) {
     int is_unsigned = (op & 0x100) != 0;
     int base_op = op & ~0x100;
     /* lhs op rhs form; operands are loaded into ark_a/ark_c before emission. */
@@ -81,7 +81,12 @@ static void emit_binop(AsmBuffer *b, int op) {
         case (int)TOK_BXOR:  asmbuf_puts(b, "(ark_a ^ ark_c)"); break;
         case (int)TOK_SHL:   asmbuf_puts(b, "(ark_a << ark_c)"); break;
         case (int)TOK_SHR:
-            if (is_unsigned) asmbuf_puts(b, "((unsigned int)ark_a >> ark_c)");
+            /* The cast must match the *operand* width: a 32-bit unsigned right
+             * shift has to clear the high bits of a 32-bit value, a 64-bit one
+             * must keep all 64.  ark_a is a long long in both cases, so without
+             * this the 64-bit form was truncated to 32 bits. */
+            if (is_unsigned) asmbuf_puts(b, is64 ? "((unsigned long long)ark_a >> ark_c)"
+                                                : "((unsigned int)ark_a >> ark_c)");
             else             asmbuf_puts(b, "(ark_a >> ark_c)");
             break;
         case (int)TOK_EQ:    asmbuf_puts(b, "(ark_a == ark_c)"); break;
@@ -1625,7 +1630,7 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
                 }
                 case IR_BINARY:
                     asmbuf_puts(&buf, "ark_c = stk[--sp].i; ark_a = stk[--sp].i; stk[sp++].i = ");
-                    emit_binop(&buf, I->aux);
+                    emit_binop(&buf, I->aux, 0);
                     asmbuf_putc(&buf, ';');
                     break;
                 case IR_FADD:
@@ -2058,7 +2063,7 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
                 case IR_64BINARY:
                     /* Same as IR_BINARY but a/c are long long, preserving 64-bit. */
                     asmbuf_puts(&buf, "ark_c = stk[--sp].i; ark_a = stk[--sp].i; stk[sp++].i = ");
-                    emit_binop(&buf, I->aux);
+                    emit_binop(&buf, I->aux, 1);
                     asmbuf_putc(&buf, ';');
                     break;
                 case IR_64CMP: {

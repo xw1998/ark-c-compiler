@@ -1868,8 +1868,16 @@ static void irgen_emit_binary_op(IrGen *g, int op, Type *lt, Type *rt) {
     }
     if (!is_float) {
         if (op == (int)TOK_SHL || op == (int)TOK_SHR) {
+            /* C99 6.5.7: the result type is the *promoted left* operand, so
+             * `long long v; v >> 8` is a 64-bit shift even though the count is
+             * an int.  Without is_llong here the shift was emitted as a plain
+             * IR_BINARY and only the low word moved -- measured: 300LL >> 8
+             * answered 0 on the ARM target while the C backend answered 1.
+             * Note the count type never matters: `x << (long long)n` is still a
+             * 32-bit shift when x is int. */
             Type *pl = usual_arith_conv(lt, 0);
             is_unsigned = pl && pl->is_unsigned;
+            is_llong = pl && pl->kind == TYPE_LLONG;
         } else {
             Type *common = usual_arith_conv(lt, rt);
             is_unsigned = common && common->is_unsigned;
@@ -2251,9 +2259,15 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                      *   - shifts promote only the left operand, whose signedness decides.
                      * irgen inserts no conversions; a correct is_unsigned lets the backend choose. */
                     if (op == (int)TOK_SHL || op == (int)TOK_SHR) {
-                        /* Shift: usual_arith_conv(lt, 0) degenerates to promote_integer(lt) */
+                        /* Shift: usual_arith_conv(lt, 0) degenerates to promote_integer(lt).
+                         * C99 6.5.7 makes the *promoted left operand* the result type, so a
+                         * long long left operand needs the 64-bit op (IR_64BINARY); the count
+                         * is widened too, because that op pops a 64-bit right operand. A
+                         * 32-bit left operand stays a 32-bit shift no matter how wide the
+                         * count is. */
                         Type *pl = usual_arith_conv(lt, 0);
                         is_unsigned = pl && pl->is_unsigned;
+                        is_llong = pl && pl->kind == TYPE_LLONG;
                     } else {
                         Type *common = usual_arith_conv(lt, rt);
                         is_unsigned = common && common->is_unsigned;
@@ -2430,7 +2444,23 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                          * PUSH_GLOBAL/STORE_GLOBAL; static locals use the mangled name. */
                         const char *gname = operand->u.name;
                         if (s->is_static) gname = static_local_name(g->fn->name, operand->u.name);
-                        if (node->u.unary.is_postfix) {
+                        if (s->type && s->type->kind == TYPE_LLONG) {
+                            /* 64-bit global ++/--: same fix as the local case
+                             * below -- one 32-bit add would wrap the low half
+                             * and leave the high half untouched. */
+                            if (node->u.unary.is_postfix) {
+                                ir_emit(g->fn, IR_PUSH_GLOBAL, 0, gname, 0);
+                                ir_emit(g->fn, IR_PUSH_GLOBAL, 0, gname, 0);
+                            } else {
+                                ir_emit(g->fn, IR_PUSH_GLOBAL, 0, gname, 0);
+                            }
+                            ir_emit(g->fn, IR_PUSH_INT, delta, 0, 0);
+                            ir_emit(g->fn, IR_PUSH_INT, delta < 0 ? -1 : 0, 0, 0);
+                            ir_emit(g->fn, IR_64BINARY, 0, 0, (int)TOK_PLUS);
+                            ir_emit(g->fn, IR_STORE_GLOBAL, 0, gname, 0);
+                            if (!node->u.unary.is_postfix)
+                                ir_emit(g->fn, IR_PUSH_GLOBAL, 0, gname, 0);
+                        } else if (node->u.unary.is_postfix) {
                             ir_emit(g->fn, IR_PUSH_GLOBAL, 0, gname, 0);
                             ir_emit(g->fn, IR_PUSH_GLOBAL, 0, gname, 0);
                             ir_emit(g->fn, IR_PUSH_INT, delta, 0, 0);
@@ -2443,6 +2473,25 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                             ir_emit(g->fn, IR_STORE_GLOBAL, 0, gname, 0);
                             ir_emit(g->fn, IR_PUSH_GLOBAL, 0, gname, 0);
                         }
+                    } else if (s->type && s->type->kind == TYPE_LLONG) {
+                        /* 64-bit ++/--: the generic path below pushes one word
+                         * and adds 1 with a 32-bit ADD, so `unsigned long long
+                         * a = 0xFFFFFFFF; a++;` wrapped the low half and left the
+                         * high half alone (measured: a came out 0x0000000000000000
+                         * instead of 0x0000000100000000). Use the 64-bit add and
+                         * the 8-byte store, and push both halves of the delta. */
+                        if (node->u.unary.is_postfix) {
+                            ir_emit(g->fn, IR_PUSH_VAR, s->offset, operand->u.name, 8);
+                            ir_emit(g->fn, IR_PUSH_VAR, s->offset, operand->u.name, 8);
+                        } else {
+                            ir_emit(g->fn, IR_PUSH_VAR, s->offset, operand->u.name, 8);
+                        }
+                        ir_emit(g->fn, IR_PUSH_INT, delta, 0, 0);          /* low half */
+                        ir_emit(g->fn, IR_PUSH_INT, delta < 0 ? -1 : 0, 0, 0); /* high half */
+                        ir_emit(g->fn, IR_64BINARY, 0, 0, (int)TOK_PLUS);
+                        ir_emit(g->fn, IR_STORE, s->offset, operand->u.name, 8);
+                        if (!node->u.unary.is_postfix)
+                            ir_emit(g->fn, IR_PUSH_VAR, s->offset, operand->u.name, 8);
                     } else if (node->u.unary.is_postfix) {
                         ir_emit(g->fn, IR_PUSH_VAR, s->offset, operand->u.name, 0);
                         ir_emit(g->fn, IR_PUSH_VAR, s->offset, operand->u.name, 0);
@@ -2610,8 +2659,28 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                             if (s->type->is_volatile) store_aux |= IR_AUX_VOLATILE;
                         }
                         ir_emit(g->fn, IR_STORE, s->offset, L->u.name, store_aux);
-                        ir_emit(g->fn, IR_PUSH_VAR, s->offset, L->u.name,
-                                (s && s->type && s->type->is_volatile) ? IR_AUX_VOLATILE : 0);
+                        /* Re-load the stored value: `a = b` keeps a value on the
+                         * stack for the enclosing expression. The reload MUST
+                         * carry the same storage width as the store, otherwise a
+                         * 64-bit assignment pushes one word while
+                         * irgen_discard_result pops two -- four bytes of stack
+                         * leak per statement, which eventually walks the frame
+                         * pointer past the saved r5/r6/r7/lr area and makes the
+                         * function return to whatever the shifted push wrote
+                         * there (measured: `unsigned long long h; h = v >> 8;`
+                         * jumped to 0x789ABCDE, the low half of the value).
+                         * The narrow widths also matter for the value itself:
+                         * without them `char c; c = 300;` reloads the stale high
+                         * bytes of the frame slot instead of the sign-extended
+                         * byte. Complex (16) is left alone: it has never pushed
+                         * more than one word here. */
+                        {
+                            int push_aux = store_aux & 0xFF;
+                            if (push_aux == 16) push_aux = 0;
+                            if (s && s->type && s->type->is_unsigned) push_aux |= 0x100;
+                            if (s && s->type && s->type->is_volatile) push_aux |= IR_AUX_VOLATILE;
+                            ir_emit(g->fn, IR_PUSH_VAR, s->offset, L->u.name, push_aux);
+                        }
                     }
                 } else if (L->kind == AST_ARRAY_ACCESS) {
                     AstNode *arr = L->u.array_access.array;

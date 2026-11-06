@@ -589,6 +589,9 @@ static int ark_top_try(AsmBuffer *b, IrInst *I, int *top, int *ret_in_r0) {
         *top = 1;
         return 1;
     case IR_UNARY:
+        /* 64-bit forms touch two stack slots (I->val carries the width), so the
+         * one-word model does not apply: fall back with the stack top drained. */
+        if (I->val == 2) { ark_top_drain(b, top); return 0; }
         if (!*top) emit_pop_r0(b);
         emit_unary(b, I->aux);
         *top = 1;
@@ -958,6 +961,72 @@ static int rt_prune_asm_text(char *text, int len) {
 }
 #endif /* ARKCC_FEATURE_RT_LAZY */
 
+/* AAPCS32 parameter assignment (base standard: core registers then stack).
+ *
+ * sizes[i] is how many bytes argument i occupies on the wire: 8 for a
+ * double-word scalar (long long / double), anything else for one word (a
+ * struct passed by value is a pointer word here, which is this compiler's own
+ * convention).  Outputs are indexed by cumulative *slot* (one slot = one word),
+ * which is what irgen stamps into IR_GETARG:
+ *   reg[slot]  = r0..r3 for the word held in a register, -1 if it is on the stack
+ *   soff[slot] = byte offset inside the caller's stack argument block for a
+ *                stacked word, -1 if it is in a register
+ * Returns the size of that block in bytes (NSAA), before the caller rounds it
+ * so that sp is 8-byte aligned at the call.
+ *
+ * The rules (AAPCS32 5.5, base standard):
+ *   * a double-word argument must start in an even-numbered core register and
+ *     needs two of them; if there is no such pair left it goes on the stack,
+ *     and NCRN is set to 4 (no further argument goes in a register);
+ *   * a double-word argument on the stack is aligned to 8 bytes;
+ *   * a single-word argument goes to the next core register while NCRN < 4,
+ *     otherwise to the next word of the stack block.
+ *
+ * Caller and callee MUST agree, so both sides call this.  They used to keep
+ * two hand-written versions of the same rule; the caller laid 64-bit stack
+ * arguments out high-word-first while the callee read them low-word-first, so
+ * `f(1LL, 2LL, 3LL)` summed the wrong halves (measured in unicorn). */
+static int aapcs_assign(const int *sizes, int n, int ncrn_start,
+                        int *reg, int *soff) {
+    int ncrn = ncrn_start;
+    int nsaa = 0;
+    int slot = 0;
+    int i;
+    for (i = 0; i < n; i++) {
+        if (sizes[i] == 8) {
+            int r = ncrn;
+            if (r & 1) r++;                     /* start on an even register */
+            if (r <= 2) {
+                reg[slot] = r;
+                reg[slot + 1] = r + 1;
+                soff[slot] = -1;
+                soff[slot + 1] = -1;
+                ncrn = r + 2;
+            } else {
+                ncrn = 4;                       /* nothing else in a register */
+                nsaa = (nsaa + 7) & ~7;         /* 8-byte aligned on the stack */
+                reg[slot] = -1;
+                reg[slot + 1] = -1;
+                soff[slot] = nsaa;
+                soff[slot + 1] = nsaa + 4;
+                nsaa += 8;
+            }
+            slot += 2;
+        } else {
+            if (ncrn < 4) {
+                reg[slot] = ncrn++;
+                soff[slot] = -1;
+            } else {
+                reg[slot] = -1;
+                soff[slot] = nsaa;
+                nsaa += 4;
+            }
+            slot += 1;
+        }
+    }
+    return nsaa;
+}
+
 static char *codegen_arm(IrProgram *prog) {
     AsmBuffer buf;
     int fi;
@@ -1259,36 +1328,27 @@ static char *codegen_arm(IrProgram *prog) {
          * number (r0-r3), accounting for 64-bit even-pair alignment.
          * -1 = slot not used (gap in struct-by-value slot space). */
         int aapcs_map[64];
+        int aapcs_soff[64];
         {
-            int aapcs_slot = 0;
-            int aapcs_reg = is_sret ? 1 : 0;  /* sret: r0=ptr, args start at r1 */
+            /* Slot -> register (aapcs_map) and slot -> byte offset in the
+             * caller's stack argument block (aapcs_soff), from the one shared
+             * rule in aapcs_assign() so the callee reads exactly what the
+             * caller wrote. */
+            int psz[64];
             int pj;
-            for (pj = 0; pj < 64; pj++) aapcs_map[pj] = -1;
-            for (pj = 0; pj < f->param_count; pj++) {
+            for (pj = 0; pj < 64; pj++) { aapcs_map[pj] = -1; aapcs_soff[pj] = -1; }
+            for (pj = 0; pj < f->param_count && pj < 64; pj++) {
                 Type *pt = (f->param_types && pj < f->param_count)
                            ? f->param_types[pj] : 0;
-                int psz = pt ? type_size(pt) : 4;
-                int is_sv = (pt && (pt->kind == TYPE_STRUCT ||
-                                    pt->kind == TYPE_UNION) && psz > 8);
-                if (psz <= 0) psz = 4;
-                if (is_sv) {
-                    /* Struct-by-value: 1 register holds pointer, sz/4 slots */
-                    if (aapcs_slot < 64) aapcs_map[aapcs_slot] = aapcs_reg;
-                    aapcs_reg += 1;
-                    aapcs_slot += (psz + 3) / 4;
-                } else if (psz > 4) {
-                    /* 64-bit: align to even register pair (r0/r1 or r2/r3) */
-                    if (aapcs_reg & 1) aapcs_reg++;
-                    if (aapcs_slot < 64) aapcs_map[aapcs_slot] = aapcs_reg;
-                    if (aapcs_slot + 1 < 64) aapcs_map[aapcs_slot + 1] = aapcs_reg + 1;
-                    aapcs_reg += 2;
-                    aapcs_slot += 2;
-                } else {
-                    if (aapcs_slot < 64) aapcs_map[aapcs_slot] = aapcs_reg;
-                    aapcs_reg += 1;
-                    aapcs_slot += 1;
-                }
+                int sz = pt ? type_size(pt) : 4;
+                if (sz <= 0) sz = 4;
+                /* A struct passed by value travels as a pointer word. */
+                if (pt && (pt->kind == TYPE_STRUCT || pt->kind == TYPE_UNION) && sz > 8)
+                    sz = 4;
+                psz[pj] = sz;
             }
+            aapcs_assign(psz, (f->param_count < 64) ? f->param_count : 64,
+                         is_sret ? 1 : 0, aapcs_map, aapcs_soff);
         }
         /* --reg-top state: whether the IR stack top is in r0, and whether the
          * IR_RETURN being emitted can skip its pop.  Both stay 0 when the
@@ -1344,7 +1404,7 @@ static char *codegen_arm(IrProgram *prog) {
                             asmbuf_int(&buf, reg);
                             asmbuf_puts(&buf, "\n");
                         } else {
-                            int stack_off = local_size + 16 + (reg - 4) * 4;
+                            int stack_off = local_size + 16 + aapcs_soff[arg_idx];
                             asmbuf_puts(&buf, "    LDR r3, [r6, #");
                             asmbuf_int(&buf, stack_off);
                             asmbuf_puts(&buf, "]\n");
@@ -1378,7 +1438,7 @@ static char *codegen_arm(IrProgram *prog) {
                             asmbuf_int(&buf, dst_off);
                             asmbuf_puts(&buf, "]\n");
                         } else {
-                            int soff = local_size + 16 + (reg - 4) * 4;
+                            int soff = local_size + 16 + aapcs_soff[arg_idx];
                             asmbuf_puts(&buf, "    LDR r0, [r6, #");
                             asmbuf_int(&buf, soff);
                             asmbuf_puts(&buf, "]\n    STR r0, [r6, #");
@@ -1393,7 +1453,7 @@ static char *codegen_arm(IrProgram *prog) {
                             asmbuf_int(&buf, dst_off + 4);
                             asmbuf_puts(&buf, "]\n");
                         } else {
-                            int soff = local_size + 16 + (reg_hi - 4) * 4;
+                            int soff = local_size + 16 + aapcs_soff[arg_idx + 1];
                             asmbuf_puts(&buf, "    LDR r0, [r6, #");
                             asmbuf_int(&buf, soff);
                             asmbuf_puts(&buf, "]\n    STR r0, [r6, #");
@@ -1409,7 +1469,7 @@ static char *codegen_arm(IrProgram *prog) {
                             asmbuf_int(&buf, dst_off);
                             asmbuf_puts(&buf, "]\n");
                         } else {
-                            int soff = local_size + 16 + (reg - 4) * 4;
+                            int soff = local_size + 16 + aapcs_soff[arg_idx];
                             asmbuf_puts(&buf, "    LDR r0, [r6, #");
                             asmbuf_int(&buf, soff);
                             asmbuf_puts(&buf, "]\n    STR r0, [r6, #");
@@ -1744,6 +1804,30 @@ static char *codegen_arm(IrProgram *prog) {
                     emit_push_r0(&buf);
                     break;
                 case IR_UNARY:
+                    if (I->val == 2 &&
+                        (I->aux == (int)TOK_MINUS || I->aux == (int)TOK_BNOT)) {
+                        /* 64-bit negate / complement (irgen marks the width in
+                         * I->val: 2 = two stack slots).  Both words belong to one
+                         * value, so both have to change -- the old single-word
+                         * path flipped only the high half and left the low half
+                         * as it was (measured: -100LL compared unequal to -100
+                         * and shifted as +100).
+                         * Negate is two's complement: invert both words, add one,
+                         * and push the carry from the low word into the high one.
+                         * The 16-bit ADD sets the flags the ADC needs. */
+                        emit_pop_r1(&buf);
+                        emit_pop_r0(&buf);
+                        emit_line(&buf, "MVN r0, r0");
+                        emit_line(&buf, "MVN r1, r1");
+                        if (I->aux == (int)TOK_MINUS) {
+                            emit_line(&buf, "ADD r0, r0, #1");
+                            emit_line(&buf, "MOV r2, #0");
+                            emit_line(&buf, "ADC r1, r2");
+                        }
+                        asmbuf_puts(&buf, "    PUSH {r0}\n");
+                        asmbuf_puts(&buf, "    PUSH {r1}\n");
+                        break;
+                    }
                     emit_pop_r0(&buf);
                     emit_unary(&buf, I->aux);
                     emit_push_r0(&buf);
@@ -2367,43 +2451,113 @@ static char *codegen_arm(IrProgram *prog) {
                         asmbuf_puts(&buf, "    POP {ip}\n");
                         asmbuf_puts(&buf, "    ORR ip, ip, #1\n");
                     }
-                    for (kk = 0; kk < real_args; kk++) {
-                        int is_64 = (argmask >> (2 * kk + 1)) & 1;
-                        total_slots += is_64 ? 2 : 1;
-                    }
-                    for (kk = 0; kk < real_args; kk++) {
-                        int is_64 = (argmask >> (2 * kk + 1)) & 1;
-                        if (is_64) {
-                            if (aapcs_reg & 1) aapcs_reg++;  /* even-pair align */
-                            if (aapcs_reg + 1 <= 3) {
+                    /* Argument placement: one rule, shared with the callee
+                     * (aapcs_assign).  The IR pushes arguments in reverse order
+                     * (arg0 ends up on top) and pushes the two words of a
+                     * 64-bit value high word first, so the stack arguments have
+                     * to be *permuted* into the AAPCS block, not just padded:
+                     * the block is laid out in argument order, each double-word
+                     * argument low word first and 8-byte aligned.
+                     *
+                     * Before this the caller copied the pushed words straight
+                     * through, so a 64-bit argument that missed the registers
+                     * arrived with its halves swapped (`f(1LL, 2LL, 3LL)` summed
+                     * garbage) and an argument that landed at an odd word offset
+                     * was misaligned with respect to AAPCS. */
+                    {
+                        int asz[64];
+                        int aslot_reg[128];
+                        int aslot_soff[128];
+                        int areg[64];
+                        int asoff[64];
+                        int sl = 0;
+                        int nsaa;
+                        int i;
+                        for (i = 0; i < 128; i++) { aslot_reg[i] = -1; aslot_soff[i] = -1; }
+                        for (kk = 0; kk < real_args && kk < 64; kk++) {
+                            asz[kk] = ((argmask >> (2 * kk + 1)) & 1) ? 8 : 4;
+                            total_slots += (asz[kk] == 8) ? 2 : 1;
+                        }
+                        nsaa = aapcs_assign(asz, (real_args < 64) ? real_args : 64,
+                                            0, aslot_reg, aslot_soff);
+                        for (kk = 0; kk < real_args && kk < 64; kk++) {
+                            areg[kk] = (sl < 128) ? aslot_reg[sl] : -1;
+                            asoff[kk] = (sl < 128) ? aslot_soff[sl] : -1;
+                            sl += (asz[kk] == 8) ? 2 : 1;
+                        }
+                        /* Pop the register arguments.  They are always the
+                         * leading ones: once an argument is placed on the stack
+                         * NCRN is 4, so every later argument is stacked too. */
+                        for (kk = 0; kk < real_args && kk < 64; kk++) {
+                            if (areg[kk] < 0) break;
+                            if (asz[kk] == 8) {
                                 asmbuf_puts(&buf, "    POP {r");
-                                asmbuf_int(&buf, aapcs_reg + 1);
+                                asmbuf_int(&buf, areg[kk] + 1);   /* high word */
                                 asmbuf_puts(&buf, "}\n");
                                 asmbuf_puts(&buf, "    POP {r");
-                                asmbuf_int(&buf, aapcs_reg);
+                                asmbuf_int(&buf, areg[kk]);       /* low word */
                                 asmbuf_puts(&buf, "}\n");
                                 reg_slots += 2;
-                                aapcs_reg += 2;
                             } else {
-                                break;  /* remaining args stay on stack */
-                            }
-                        } else {
-                            if (aapcs_reg <= 3) {
                                 asmbuf_puts(&buf, "    POP {r");
-                                asmbuf_int(&buf, aapcs_reg);
+                                asmbuf_int(&buf, areg[kk]);
                                 asmbuf_puts(&buf, "}\n");
                                 reg_slots += 1;
-                                aapcs_reg += 1;
-                            } else {
-                                break;
                             }
                         }
-                    }
-                    stack_args = total_slots - reg_slots;
-                    if (stack_args < 0) stack_args = 0;
-                    need_align = (stack_args & 1) != 0;
-                    if (need_align) {
-                        asmbuf_puts(&buf, "    SUB sp, sp, #4\n");
+                        stack_args = total_slots - reg_slots;
+                        if (stack_args < 0) stack_args = 0;
+                        if (stack_args > 0) {
+                            /* Build the block strictly below the pushed words
+                             * and point sp at it.  r5 keeps the old sp and is
+                             * also the copy source; r4 is the new sp; r7 is the
+                             * data scratch.  r0-r3 already hold register
+                             * arguments and r6 is the frame pointer, so none of
+                             * those may be touched here. */
+                            int si = 0;
+                            asmbuf_puts(&buf, "    MOV r5, sp\n");
+                            asmbuf_puts(&buf, "    SUB r4, sp, #");
+                            asmbuf_int(&buf, (nsaa > 0) ? nsaa : 4);
+                            asmbuf_puts(&buf, "\n");
+                            /* Round the new sp down to an 8-byte boundary.  The
+                             * IR stack depth at the call is not tracked, so the
+                             * AAPCS alignment is enforced instead of assumed;
+                             * the extra word (if any) lands at the top of the
+                             * block where nothing reads it. */
+                            asmbuf_puts(&buf, "    MOV r7, #7\n");
+                            asmbuf_puts(&buf, "    MVN r7, r7\n");
+                            asmbuf_puts(&buf, "    AND r4, r7\n");
+                            asmbuf_puts(&buf, "    MOV sp, r4\n");
+                            for (kk = 0; kk < real_args && kk < 64; kk++) {
+                                int s_off, d_off;
+                                if (areg[kk] >= 0) continue;
+                                s_off = 4 * si;
+                                d_off = asoff[kk];
+                                if (asz[kk] == 8) {
+                                    asmbuf_puts(&buf, "    LDR r7, [r5, #");
+                                    asmbuf_int(&buf, s_off + 4);  /* low word (pushed second) */
+                                    asmbuf_puts(&buf, "]\n");
+                                    asmbuf_puts(&buf, "    STR r7, [r4, #");
+                                    asmbuf_int(&buf, d_off);
+                                    asmbuf_puts(&buf, "]\n");
+                                    asmbuf_puts(&buf, "    LDR r7, [r5, #");
+                                    asmbuf_int(&buf, s_off);      /* high word */
+                                    asmbuf_puts(&buf, "]\n");
+                                    asmbuf_puts(&buf, "    STR r7, [r4, #");
+                                    asmbuf_int(&buf, d_off + 4);
+                                    asmbuf_puts(&buf, "]\n");
+                                    si += 2;
+                                } else {
+                                    asmbuf_puts(&buf, "    LDR r7, [r5, #");
+                                    asmbuf_int(&buf, s_off);
+                                    asmbuf_puts(&buf, "]\n");
+                                    asmbuf_puts(&buf, "    STR r7, [r4, #");
+                                    asmbuf_int(&buf, d_off);
+                                    asmbuf_puts(&buf, "]\n");
+                                    si += 1;
+                                }
+                            }
+                        }
                     }
                     if (is_indirect) {
                         asmbuf_puts(&buf, "    BLX ip\n");
@@ -2412,13 +2566,10 @@ static char *codegen_arm(IrProgram *prog) {
                         asmbuf_puts(&buf, I->name);
                         asmbuf_putc(&buf, '\n');
                     }
-                    if (need_align) {
-                        asmbuf_puts(&buf, "    ADD sp, sp, #4\n");
-                    }
                     if (stack_args > 0) {
-                        asmbuf_puts(&buf, "    ADD sp, sp, #");
-                        asmbuf_int(&buf, stack_args * 4);
-                        asmbuf_putc(&buf, '\n');
+                        /* r5 still holds the sp from before the argument block
+                         * (r4-r11 are callee-saved). */
+                        asmbuf_puts(&buf, "    MOV sp, r5\n");
                     }
                     /* #9 FIX: Check if called function returns 64-bit (long long/double).
                      * If so, push both r0 (low) and r1 (high).
@@ -2520,12 +2671,27 @@ static char *codegen_arm(IrProgram *prog) {
                         case (int)TOK_MUL:   helper = "__aeabi_lmul"; break;
                         case (int)TOK_DIV:   helper = is_unsigned ? "__aeabi_uldivmod" : "__aeabi_ldivmod"; is_div = 1; break;
                         case (int)TOK_MOD:   helper = is_unsigned ? "__aeabi_uldivmod" : "__aeabi_ldivmod"; is_mod = 1; break;
+                        /* Shifts: value in r0:r1, count in r2 (0..63).  These are
+                         * the standard AEABI helper names, so an image linked
+                         * against a real runtime library also resolves them. */
+                        case (int)TOK_SHL:   helper = "__aeabi_llsl"; break;
+                        case (int)TOK_SHR:   helper = is_unsigned ? "__aeabi_llsr"
+                                                                  : "__aeabi_lasr"; break;
                         default: break;
                     }
                     emit_line(&buf, "POP {r3}");
                     emit_line(&buf, "POP {r2}");
                     emit_line(&buf, "POP {r1}");
                     emit_line(&buf, "POP {r0}");
+                    /* Bitwise AND/OR/XOR need no helper: both words are
+                     * independent.  They used to fall through with no helper at
+                     * all, i.e. the result was whatever happened to be in
+                     * r0:r1 -- measured: `(-100LL & 1)` did not behave like 0,
+                     * which quietly broke the standard "clear the low bit"
+                     * idiom used by the reference code in the shift tests. */
+                    if (op == (int)TOK_BAND) { emit_line(&buf, "AND r0, r2"); emit_line(&buf, "AND r1, r3"); }
+                    else if (op == (int)TOK_BOR)  { emit_line(&buf, "ORR r0, r2"); emit_line(&buf, "ORR r1, r3"); }
+                    else if (op == (int)TOK_BXOR) { emit_line(&buf, "EOR r0, r2"); emit_line(&buf, "EOR r1, r3"); }
                     if (helper) {
                         asmbuf_puts(&buf, "    BL ");
                         asmbuf_puts(&buf, helper);
@@ -3037,6 +3203,102 @@ static char *codegen_arm(IrProgram *prog) {
         asmbuf_puts(&buf, "    ADD r1, r4\n");          /* r1 += a_lo*b_hi */
         asmbuf_puts(&buf, "    ADD r1, r5\n");          /* r1 += a_hi*b_lo */
         asmbuf_puts(&buf, "    POP {r4, r5, pc}\n\n");
+
+        /* __aeabi_llsl / __aeabi_llsr / __aeabi_lasr: 64-bit shifts.
+         * Input: r0:r1 = value (low:high), r2 = count.  Output: r0:r1.
+         * Counts are C shift counts: 0..63 for a 64-bit operand, and >= 64 is
+         * undefined behaviour in C, so it is not defined here either.
+         *
+         * Hand-written because a 64-bit shift used to be lowered to a 32-bit
+         * one and answered 0 for 300LL >> 8.  The 0..31 / 32..63 split is
+         * deliberate: there is no "shift by 32" encoding to lean on (the 16-bit
+         * forms use imm5, where 0 means 32).  Only operand shapes this assembler
+         * encodes literally are used: 2-operand register shifts (Rd = Rd op Rs),
+         * immediate shifts, and the 3-operand immediate form `ASR Rd, Rm, #imm`. */
+        asmbuf_puts(&buf, ".global __aeabi_llsl\n");
+        asmbuf_puts(&buf, ".thumb_func\n");
+        asmbuf_puts(&buf, "__aeabi_llsl:\n");
+        asmbuf_puts(&buf, "    CMP r2, #32\n");
+        asmbuf_puts(&buf, "    BHS .L_llsl_hi\n");
+        asmbuf_puts(&buf, "    CMP r2, #0\n");
+        asmbuf_puts(&buf, "    BEQ .L_llsl_done\n");
+        asmbuf_puts(&buf, "    PUSH {r4, r5}\n");
+        asmbuf_puts(&buf, "    MOV r4, #32\n");
+        asmbuf_puts(&buf, "    SUB r4, r4, r2\n");        /* r4 = 32 - n */
+        asmbuf_puts(&buf, "    MOV r5, r0\n");
+        asmbuf_puts(&buf, "    LSR r5, r4\n");            /* r5 = lo >> (32-n) */
+        asmbuf_puts(&buf, "    MOV r4, r1\n");
+        asmbuf_puts(&buf, "    LSL r4, r2\n");            /* r4 = hi << n */
+        asmbuf_puts(&buf, "    ORR r4, r5\n");
+        asmbuf_puts(&buf, "    LSL r0, r2\n");            /* lo <<= n */
+        asmbuf_puts(&buf, "    MOV r1, r4\n");
+        asmbuf_puts(&buf, "    POP {r4, r5}\n");
+        asmbuf_puts(&buf, "    BX lr\n");
+        asmbuf_puts(&buf, ".L_llsl_hi:\n");
+        asmbuf_puts(&buf, "    SUB r2, r2, #32\n");
+        /* value << n for n >= 32 keeps only the old low word, moved up by
+         * (n-32) into the new high word; the low word becomes 0 and anything
+         * shifted past bit 63 is discarded.  (Getting these two swapped is the
+         * classic way to answer 0 for 1ULL << 32.) */
+        asmbuf_puts(&buf, "    MOV r1, r0\n");
+        asmbuf_puts(&buf, "    LSL r1, r2\n");            /* hi = lo << (n-32) */
+        asmbuf_puts(&buf, "    MOV r0, #0\n");
+        asmbuf_puts(&buf, ".L_llsl_done:\n");
+        asmbuf_puts(&buf, "    BX lr\n\n");
+
+        asmbuf_puts(&buf, ".global __aeabi_llsr\n");
+        asmbuf_puts(&buf, ".thumb_func\n");
+        asmbuf_puts(&buf, "__aeabi_llsr:\n");
+        asmbuf_puts(&buf, "    CMP r2, #32\n");
+        asmbuf_puts(&buf, "    BHS .L_llsr_hi\n");
+        asmbuf_puts(&buf, "    CMP r2, #0\n");
+        asmbuf_puts(&buf, "    BEQ .L_llsr_done\n");
+        asmbuf_puts(&buf, "    PUSH {r4, r5}\n");
+        asmbuf_puts(&buf, "    MOV r4, #32\n");
+        asmbuf_puts(&buf, "    SUB r4, r4, r2\n");
+        asmbuf_puts(&buf, "    MOV r5, r1\n");
+        asmbuf_puts(&buf, "    LSL r5, r4\n");            /* r5 = hi << (32-n) */
+        asmbuf_puts(&buf, "    MOV r4, r0\n");
+        asmbuf_puts(&buf, "    LSR r4, r2\n");            /* r4 = lo >> n */
+        asmbuf_puts(&buf, "    ORR r4, r5\n");
+        asmbuf_puts(&buf, "    MOV r0, r4\n");
+        asmbuf_puts(&buf, "    LSR r1, r2\n");            /* hi >>= n (logical) */
+        asmbuf_puts(&buf, "    POP {r4, r5}\n");
+        asmbuf_puts(&buf, "    BX lr\n");
+        asmbuf_puts(&buf, ".L_llsr_hi:\n");
+        asmbuf_puts(&buf, "    SUB r2, r2, #32\n");
+        asmbuf_puts(&buf, "    MOV r0, r1\n");
+        asmbuf_puts(&buf, "    LSR r0, r2\n");            /* lo = hi >> (n-32) */
+        asmbuf_puts(&buf, "    MOV r1, #0\n");
+        asmbuf_puts(&buf, ".L_llsr_done:\n");
+        asmbuf_puts(&buf, "    BX lr\n\n");
+
+        asmbuf_puts(&buf, ".global __aeabi_lasr\n");
+        asmbuf_puts(&buf, ".thumb_func\n");
+        asmbuf_puts(&buf, "__aeabi_lasr:\n");
+        asmbuf_puts(&buf, "    CMP r2, #32\n");
+        asmbuf_puts(&buf, "    BHS .L_lasr_hi\n");
+        asmbuf_puts(&buf, "    CMP r2, #0\n");
+        asmbuf_puts(&buf, "    BEQ .L_lasr_done\n");
+        asmbuf_puts(&buf, "    PUSH {r4, r5}\n");
+        asmbuf_puts(&buf, "    MOV r4, #32\n");
+        asmbuf_puts(&buf, "    SUB r4, r4, r2\n");
+        asmbuf_puts(&buf, "    MOV r5, r1\n");
+        asmbuf_puts(&buf, "    LSL r5, r4\n");            /* r5 = hi << (32-n) */
+        asmbuf_puts(&buf, "    MOV r4, r0\n");
+        asmbuf_puts(&buf, "    LSR r4, r2\n");            /* r4 = lo >> n */
+        asmbuf_puts(&buf, "    ORR r4, r5\n");
+        asmbuf_puts(&buf, "    MOV r0, r4\n");
+        asmbuf_puts(&buf, "    ASR r1, r2\n");            /* hi >>= n (arithmetic) */
+        asmbuf_puts(&buf, "    POP {r4, r5}\n");
+        asmbuf_puts(&buf, "    BX lr\n");
+        asmbuf_puts(&buf, ".L_lasr_hi:\n");
+        asmbuf_puts(&buf, "    SUB r2, r2, #32\n");
+        asmbuf_puts(&buf, "    MOV r0, r1\n");
+        asmbuf_puts(&buf, "    ASR r0, r2\n");            /* lo = hi >> (n-32) */
+        asmbuf_puts(&buf, "    ASR r1, r1, #31\n");       /* hi = sign of hi */
+        asmbuf_puts(&buf, ".L_lasr_done:\n");
+        asmbuf_puts(&buf, "    BX lr\n\n");
 
         /* __aeabi_lcmp: 64-bit signed compare (a = r0:r1, b = r2:r3 -> r0 = -1/0/1)
          * MOV r0, #-1 is buggy (encodes as #255), use MOV+MVN for -1. */
@@ -5321,8 +5583,30 @@ static void pass2_a(ArmAsm *a) {
                     out16(a, (imm3 << 12) | ((rd & 0xF) << 8) | imm8);
                 }
             } else {
+                /* Register forms: `ADD Rd, Rn, Rm` (T1) and the two-operand
+                 * `ADD Rdn, Rm` (T2). The two-operand form used to fall into
+                 * the three-operand encoder, which then read a *third* register
+                 * operand past the end of the line: parse_reg_a returns -1
+                 * there and (-1 & 7) == 7, so `ADD r1, r4` silently assembled
+                 * as `ADD r1, r4, r7`. That is not theoretical -- __aeabi_lmul
+                 * is written in exactly this shape, so every 64-bit multiply
+                 * lost its carry fix-up: 0x123456789ABCDEF0 * 2 came out with
+                 * a high word 1 too small (measured in unicorn). */
                 int rm = parse_reg_a(&p);
-                out16(a, 0x1800 | ((rm & 7) << 6) | ((rn & 7) << 3) | (rd & 7));
+                if (rm >= 0) {
+                    out16(a, 0x1800 | ((rm & 7) << 6) | ((rn & 7) << 3) | (rd & 7));
+                } else if (rd >= 0 && rn >= 0) {
+                    /* ADD (register) T2: 0100 0100 D Rm Rdn -- Rd = Rd + Rm,
+                     * and unlike T1 it accepts the high registers r8-r15. */
+                    out16(a, 0x4400 | (((rd >> 3) & 1) << 7) | ((rn & 0xF) << 3) | (rd & 7));
+                } else {
+                    char b1[12];
+                    diag_tool(DIAG_SEV_ERROR, "arkcc",
+                              "ADD needs a register or immediate operand at code offset %s",
+                              diag_num(b1, a->pc), 0, 0, 0, 0, 0);
+                    a->hard_errors++;
+                    out16(a, 0xBF00);
+                }
             }
         }
         else if (strieq_a(first, "SUB")) {
@@ -5352,8 +5636,24 @@ static void pass2_a(ArmAsm *a) {
                     out16(a, (imm3 << 12) | ((rd & 0xF) << 8) | imm8);
                 }
             } else {
+                /* Same two shapes as ADD: `SUB Rd, Rn, Rm` (T1) and the
+                 * two-operand `SUB Rdn, Rm`. Thumb has no high-register
+                 * two-operand subtract, so that case is rejected rather than
+                 * emitted with a silently wrong register. */
                 int rm = parse_reg_a(&p);
-                out16(a, 0x1A00 | ((rm & 7) << 6) | ((rn & 7) << 3) | (rd & 7));
+                if (rm >= 0) {
+                    out16(a, 0x1A00 | ((rm & 7) << 6) | ((rn & 7) << 3) | (rd & 7));
+                } else if (rd >= 0 && rd <= 7 && rn >= 0 && rn <= 7) {
+                    /* SUB Rdn, Rm is SUB Rdn, Rdn, Rm */
+                    out16(a, 0x1A00 | ((rn & 7) << 6) | ((rd & 7) << 3) | (rd & 7));
+                } else {
+                    char b1[12];
+                    diag_tool(DIAG_SEV_ERROR, "arkcc",
+                              "two-operand SUB needs low registers at code offset %s",
+                              diag_num(b1, a->pc), 0, 0, 0, 0, 0);
+                    a->hard_errors++;
+                    out16(a, 0xBF00);
+                }
             }
         }
         else if (strieq_a(first, "MUL")) {
