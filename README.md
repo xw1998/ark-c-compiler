@@ -197,6 +197,12 @@
 | `--split_sections` 每函数一段（`.text.fn`） | 是 |
 | Scatter 加载描述文件解析（`include/scatter.h` + `src/scatter.c`） | 是（解析 + scatter 感知链接 + 向量表生成；见下表） |
 | CPU 选择（`-mcpu`/`--cpu`，`include/cpu.h` + `src/cpu.c`） | 是 |
+| 多对象数据段搬迁 `--reloc-data`（`.arkdata` 标记 + 链接期 MOVW/MOVT 改写） | 是（默认关；关时按旧行为报 SRAM 重叠） |
+| 运行库按需发射 `--rt-lazy`（只发可达的 `__aeabi_*` 块） | 是（默认关；`add3.c` 1578 → 60 字节） |
+| IR 栈顶驻留 r0 `--reg-top`（有界寄存器化，非分配器） | 是（默认关；80 样例指令数 −7.1%） |
+| `float` ↔ `double` 显式转换（`VCVT.F32.F64` / `VCVT.F64.F32`） | 是 |
+| 浮点常量表达式折叠（`eval_const_expr` 支持浮点） | 是 |
+| 汇编器扩展指令集 `--asm-extra`（ADDS/SUBS/…/MRS/MSR 共 24 个助记符 + `.W`/`.N` 后缀） | 是（默认关；关时报 unknown mnemonic） |
 
 ### `.sct` / `.s` 文件支持矩阵
 
@@ -333,7 +339,22 @@ arkcc <file.c|file.s> [选项]
   DWARF 调试版本
   --dwarf2           DWARF v2
   --dwarf3           DWARF v3
+
+  本轮新增（运行期默认全关，不加选项时产物与旧版逐字节相同）
+  --reloc-data       多对象数据段搬迁（不加则多对象共用全局时仍报 SRAM overlap）
+  --rt-lazy          运行库按需发射（只发可达块）
+  --reg-top          IR 栈顶值驻留 r0
+  --asm-extra        汇编器扩展指令集；--no-asm-extra 显式关掉
+  --dce-cfg          基本块级可达性 DCE（只删"能到但永不执行"的代码）
+  --build-date <s>   固定 __DATE__（如 "May 28 2026"）
+  --build-time <s>   固定 __TIME__（如 "20:26:40"）
+  --source-date-epoch <n>
+                     用 Unix 时间戳同时确定 __DATE__/__TIME__（可复现构建）
 ```
+
+构建时间、宏重定义检查、scatter 布局校验、依赖文件上限这几项只有编译期宏
+（见 `include/arkcc_config.h`），默认值与行为见
+[docs/从零写一个C编译器.md](docs/从零写一个C编译器.md) 附录 D.4「开关总表」。
 
 ## 配置系统
 
@@ -398,7 +419,21 @@ python tests/run_diag_tests.py                                    # 诊断排版
 python tests/run_diag_boundary.py                                 # 诊断边界契约（长行/上限/CJK/tab，无需 armcc）
 powershell -ExecutionPolicy Bypass -File run_asm_test.ps1         # 汇编输入门禁（.s/.S/.asm/.ASM）
 powershell -ExecutionPolicy Bypass -File run_arm_exec_test.ps1    # ARM 执行级：编译→链接→QEMU 真跑（需 qemu-system-arm）
+python tests/arm_exec/run_arm_exec.py                             # ARM 执行级（unicorn，无 qemu 也能跑；每例同时跑 --reg-top 臂）
+python tests/asm_cases/run_asm_cmp.py                             # 汇编器对拍：arkc vs arm-none-eabi-as，含 --asm-extra 开关契约
 ```
+
+`tests/arm_exec/run_arm_exec.py` 是本仓库唯一"真的执行机器码"的宿主门禁：把 arkc
+产出的裸镜像装进 unicorn（一个 QEMU 核），从复位向量开始跑，读 `main()` 的返回
+值。语义错（编错一条指令、链接期地址算错、`--reg-top` 回退路径没摆回状态）只有
+这条路能看见——`run_tests.ps1` 走的是 C 后端，看不到 ARM 编码。没有 unicorn 时
+自报 skipped 并 `exit 0`（编译器本身不依赖 Python 包）。
+
+`tests/asm_cases/run_asm_cmp.py` 把 `--asm-extra` 的每个助记符用两个独立汇编器
+各编一遍，比较的是 **`objdump` 解码出来的指令文本**而不是字节：同一条指令常有
+多种合法编码（GAS 偏爱 mod-imm 形式），字节不等不代表错；能执行的东西一致才是
+一致。第二张表验证开关的另一半——关掉时 24 个助记符必须逐个报 unknown
+mnemonic。没有 GNU ARM 工具链时 `exit 2`，不会假装通过。
 
 `run_asm_test.ps1` 校验汇编输入的扩展名路由：四种后缀产出逐字节相同的机器码、`-S` 对汇编输入是原样透传、缺失文件必须报错退出、`.c` 仍走正常前端（防止扩展名探测把 C 源当成汇编）。
 `run_arm_exec_test.ps1` 把 C 启动代码、汇编 semihosting 陷门和一个 C 工作负载编译链接成裸镜像，在 `qemu-system-arm -machine mps2-an385` 上执行，用 semihosting 退出码判定结果（两个不同负载必须分别返回 8 和 3）。QEMU 路径默认 `D:\qemu\mingw64\bin\qemu-system-arm.exe`，可用 `ARKCC_QEMU` 环境变量或 `-Qemu` 参数覆盖；装不上时脚本 `exit 2`，不会假装通过。这条门禁抓到并固化修复了三个真缺陷：向量表缺 Thumb 位（Cortex-M 会进 INVSTATE lockup）、`SVC`/`BKPT` 的无 `#` 立即数被静默编成 0、以及 `MUL r2, r2, r1` 被编成 `MUL r2, r2, r2`（导致所有整数取模算成 q\*q）。

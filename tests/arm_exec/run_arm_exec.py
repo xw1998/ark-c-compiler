@@ -181,6 +181,27 @@ int main(void) { g_z = (char)(g_c + 1); return (int)g_z + (int)(g_s / 100); }
         "build": [(["w.c", "-target", "arm", "--vector-table", "-o", "out.bin"], "out.bin")],
         "expect": 11,
     },
+    {
+        "name": "longlong_args",
+        "why": "64-bit values cross a call in r0:r1 (low:high) and come back the "
+               "same way; also the --reg-top path for 64-bit locals",
+        "files": {
+            "ll.c": STARTUP + """\
+int ll_pad;
+long long ll_id(long long a) { return a; }
+long long ll_add(long long a, long long b) { return a + b; }
+int main(void)
+{
+    long long c = ll_add(100, 200);   /* 300 through r0:r1 twice */
+    long long d = c / 100;            /* 3, through __aeabi_ldivmod */
+    if (ll_id(7) != 7) return 99;     /* high half must survive the return */
+    return (int)d + 47;               /* 50 */
+}
+""",
+        },
+        "build": [(["ll.c", "-target", "arm", "--vector-table", "-o", "out.bin"], "out.bin")],
+        "expect": 50,
+    },
 ]
 
 
