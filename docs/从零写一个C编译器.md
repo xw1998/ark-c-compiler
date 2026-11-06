@@ -7481,6 +7481,22 @@ imm32  = S:I1:I2:imm10:imm11:0（符号扩展）
 | `ARK_C_MAX_LABELS` | 16384 | 4096 | `-target c` 后端的标签表 |
 | `ARKCC_FEATURE_DEP_FILES_DYN` | 1（按需翻倍，无条数上限） | 0（定长表 + 告警一次） | `-MMD` 依赖文件名表 |
 | `ARK_LINK_BUF_SIZE` | 8 MB | 4 KB | 单个目标文件与链接后镜像的缓冲（宿主原来 256 KB，比真实 H743 的镜像还小） |
+| `ARM_MAX_GVARS` | 2048 | 512 | 单个文件里能分配地址的全局对象数 |
+| `ARM_MAX_SYMBOLS` / `ARM_MAX_RELOCS` | 4096 / 4096 | 1024 / 1024 | 单个目标文件导出的符号与重定位 |
+
+后三张表本来就分了 profile，但溢出时是**在循环条件里悄悄停下**：全局对象拿不到
+地址、符号进不了 `.o`、跨对象 `BL` 留在原地。现在三处都改成先计数（或边数边记），
+超出即报错并点名宏。这三条不是"读代码看着对"就算数的——用一个把上限压到 4 / 4 / 2
+重编的 arkcc 真跑，三条用例各自拿到：
+
+```
+arkcc: Error: 6 global objects in this file but the address table holds 4; raise ARM_MAX_GVARS and rebuild arkcc
+arkcc: Error: 44 symbols did not fit the 4-entry object symbol table; raise ARM_MAX_SYMBOLS and rebuild arkcc
+arkcc: Error: more than 2 cross-object relocations in this file; raise ARM_MAX_RELOCS and rebuild arkcc
+```
+
+（重定位那条只在"真的需要装进表"时才计一次：本地解析得掉的引用不算，否则一个
+本地引用很多的文件会误报"表满"。）
 
 裁剪的正式入口就是 `-D`：
 

@@ -727,6 +727,23 @@ static void gvar_assign(IrProgram *prog) {
     unsigned bss_sram;                  /* .bss origin (computed below) */
     int gi;
     g_gvar_count = 0;
+    /* Both passes below stop at ARM_MAX_GVARS, and a global without an address
+     * is worse than a failure: the emit path either reports something obscure
+     * or uses a stale address.  Count first, refuse once, name the macro. */
+    {
+        int need = 0, k;
+        for (k = 0; k < prog->global_count; k++) {
+            if (!prog->globals[k]->is_extern) need++;
+        }
+        if (need > ARM_MAX_GVARS) {
+            char b1[12], b2[12];
+            diag_tool(DIAG_SEV_ERROR, "arkcc",
+                      "%s global objects in this file but the address table holds "
+                      "%s; raise ARM_MAX_GVARS and rebuild arkcc",
+                      diag_num(b1, need), diag_num(b2, ARM_MAX_GVARS), 0,0,0,0);
+            return;
+        }
+    }
     g_custom_sect_count = 0;  /* SCT-1/SCT-3: reset custom section tracking */
     g_data_sram_start = data_sram;  /* will be updated if .data globals exist */
     g_data_sram_end = data_sram;
@@ -7665,15 +7682,26 @@ static int      g_arm_reloc_count = 0;
 /* Save symbol table after assembly */
 static void arm_save_syms(ArmAsm *a) {
     int i;
+    int dropped = 0;
     g_arm_sym_count = 0;
-    for (i = 0; i < a->label_count && g_arm_sym_count < ARM_MAX_SYMBOLS; i++) {
+    for (i = 0; i < a->label_count; i++) {
         /* Skip local labels (starting with .L) */
         if (a->labels[i].name[0] == '.' && a->labels[i].name[1] == 'L') continue;
+        if (g_arm_sym_count >= ARM_MAX_SYMBOLS) { dropped++; continue; }
         g_arm_syms[g_arm_sym_count].name   = a->labels[i].name;
         g_arm_syms[g_arm_sym_count].offset = a->labels[i].addr;
         g_arm_syms[g_arm_sym_count].type   = 0;  /* code label */
         g_arm_syms[g_arm_sym_count].is_weak = a->labels[i].is_weak;
         g_arm_sym_count++;
+    }
+    if (dropped) {
+        /* A symbol missing from the object is a symbol -link cannot resolve. */
+        char b1[12], b2[12];
+        diag_tool(DIAG_SEV_ERROR, "arkcc",
+                  "%s symbols did not fit the %s-entry object symbol table; raise "
+                  "ARM_MAX_SYMBOLS and rebuild arkcc",
+                  diag_num(b1, dropped), diag_num(b2, ARM_MAX_SYMBOLS), 0,0,0,0);
+        a->hard_errors++;
     }
 }
 
@@ -7682,8 +7710,9 @@ static void arm_save_syms(ArmAsm *a) {
  * whose target is not defined in the current object. */
 static void arm_save_relocs(ArmAsm *a) {
     int i;
+    int dropped = 0;
     g_arm_reloc_count = 0;
-    for (i = 0; i < a->ref_count && g_arm_reloc_count < ARM_MAX_RELOCS; i++) {
+    for (i = 0; i < a->ref_count; i++) {
         AsmRef *r = &a->refs[i];
         int addr;
         if (r->type == 6) {
@@ -7691,6 +7720,11 @@ static void arm_save_relocs(ArmAsm *a) {
              * MOVW/MOVT pair the -link stage may have to shift.  It is saved
              * whether or not the object ends up being relocated, so that the
              * decision stays with the linker (which knows every object). */
+            /* Only an entry that is really dropped counts: a ref resolved
+             * inside this object never reaches the table. Breaking out of the
+             * loop instead would report a full table for a file that has few
+             * cross-object refs but many local ones. */
+            if (g_arm_reloc_count >= ARM_MAX_RELOCS) { dropped = 1; continue; }
             g_arm_relocs[g_arm_reloc_count].name   = r->name;
             g_arm_relocs[g_arm_reloc_count].offset = r->pc;
             g_arm_relocs[g_arm_reloc_count].type   = 6;
@@ -7701,11 +7735,20 @@ static void arm_save_relocs(ArmAsm *a) {
         if (addr < 0) {
             /* Unresolved: this is a cross-object reference.
              * Save it as a relocation for the linker. */
+            if (g_arm_reloc_count >= ARM_MAX_RELOCS) { dropped = 1; continue; }
             g_arm_relocs[g_arm_reloc_count].name   = r->name;
             g_arm_relocs[g_arm_reloc_count].offset = r->pc;
             g_arm_relocs[g_arm_reloc_count].type   = r->type;
             g_arm_reloc_count++;
         }
+    }
+    if (dropped) {
+        char b1[12];
+        diag_tool(DIAG_SEV_ERROR, "arkcc",
+                  "more than %s cross-object relocations in this file; raise "
+                  "ARM_MAX_RELOCS and rebuild arkcc",
+                  diag_num(b1, ARM_MAX_RELOCS), 0,0,0,0,0);
+        a->hard_errors++;
     }
 }
 
