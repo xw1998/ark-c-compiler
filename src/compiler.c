@@ -127,7 +127,8 @@ typedef struct LdSym {
 typedef struct LdReloc {
     char name[128];
     int  offset;   /* offset within merged code (adjusted by object base) */
-    int  type;     /* 1=BL, 2=B.W, 3=B<cond>.W, 4=R_ARM_ABS32 */
+    int  type;     /* 1=BL, 2=B.W, 3=B<cond>.W, 4=R_ARM_ABS32, 6=data addr */
+    int  obj;      /* 0-based index of the object it came from (--reloc-data) */
 } LdReloc;
 
 /* Per-object SRAM footprint reported by the object's reserved
@@ -142,6 +143,14 @@ typedef struct LdRam {
 #define LD_MAX_OBJS 64
 static LdRam    g_ld_ram[LD_MAX_OBJS];
 static int      g_ld_ram_obj_count = 0;
+/* --reloc-data: how far each object's data window had to move, and the address
+ * of its own __arkcc_init_globals body (-1 = the object has none).  Both are
+ * filled while loading, then used once the whole link set is known. */
+static int      g_ld_data_delta[LD_MAX_OBJS];
+static int      g_ld_init_body[LD_MAX_OBJS];
+/* Highest SRAM address the relocated data reaches; checked against the stack
+ * pointer once the scatter file (if any) has been read. */
+static unsigned g_ld_data_top = 0;
 /* Number of duplicate compiler-runtime symbols silently merged (see ld_add_sym). */
 static int      ld_rt_dup_count = 0;
 /* Entries that did not fit in the symbol / relocation table. Any drop makes
@@ -210,7 +219,7 @@ static void ld_add_sym(const char *name, int offset, int is_weak) {
     g_ld_sym_count++;
 }
 
-static void ld_add_reloc(const char *name, int offset, int type) {
+static void ld_add_reloc(const char *name, int offset, int type, int obj) {
     int n;
     if (g_ld_reloc_count >= LD_MAX_RELOCS) { ld_table_overflow++; return; }
     n = 0;
@@ -220,7 +229,85 @@ static void ld_add_reloc(const char *name, int offset, int type) {
     g_ld_relocs[g_ld_reloc_count].name[n] = 0;
     g_ld_relocs[g_ld_reloc_count].offset = offset;
     g_ld_relocs[g_ld_reloc_count].type = type;
+    g_ld_relocs[g_ld_reloc_count].obj = obj;
     g_ld_reloc_count++;
+}
+
+/* Implemented in the ARM backend (same encoder the assembler uses, so the
+ * linker cannot drift from it). */
+extern int arm_patch_movw_movt(unsigned char *code, int code_len, int off, int delta);
+
+/* --reloc-data: give every object its own slice of SRAM.
+ *
+ * Why the linker needs the compiler's help here: an ARM image carries absolute
+ * data addresses baked into MOVW/MOVT pairs, so a data section cannot simply be
+ * copied elsewhere at link time -- the instructions that use it have to be
+ * rewritten too.  Codegen marks those pairs (.arkdata -> relocation type 6) and
+ * the assembler records their offsets; this function decides the new bases and
+ * applies the delta.
+ *
+ * Object 0 keeps the base it was compiled against, so a single-object link is
+ * unaffected; each following window is placed after the previous one, 8-byte
+ * aligned (AAPCS).  A pair whose bytes do not decode as MOVW+same-register-MOVT
+ * is a hard error: that object was built without --reloc-data and writing the
+ * image anyway would run with stale addresses.
+ *
+ * Returns 0 on success, -1 when the image must not be written. */
+static int ld_relocate_data(unsigned char *code, int code_len) {
+    int i, k, placed = 0;
+    unsigned cursor = 0;
+    g_ld_data_top = 0;
+    for (i = 0; i < LD_MAX_OBJS; i++) {
+        LdRam *r = &g_ld_ram[i];
+        unsigned size, nb, delta;
+        if (!r->have_start || !r->have_end) continue;
+        if (r->end <= r->start) { g_ld_data_delta[i] = 0; continue; }
+        size = r->end - r->start;
+        if (placed == 0) {
+            g_ld_data_delta[i] = 0;
+            cursor = r->end;
+            placed++;
+            continue;
+        }
+        nb = (cursor + 7u) & ~7u;
+        delta = nb - r->start;
+        g_ld_data_delta[i] = (int)delta;
+        r->start = nb;
+        r->end   = nb + size;
+        cursor   = r->end;
+        placed++;
+        if (delta != 0) {
+            int patched = 0;
+            for (k = 0; k < g_ld_reloc_count; k++) {
+                if (g_ld_relocs[k].type != 6) continue;
+                if (g_ld_relocs[k].obj != i) continue;
+                if (arm_patch_movw_movt(code, code_len, g_ld_relocs[k].offset,
+                                        (int)delta) != 0) {
+                    char b1[12], b2[12];
+                    diag_tool(DIAG_SEV_ERROR, g_ld_image,
+                              "data address at offset %s (object #%s) is not a "
+                              "MOVW/MOVT pair; that object was compiled without "
+                              "--reloc-data - recompile every object with it, or "
+                              "link without it",
+                              diag_num(b1, g_ld_relocs[k].offset),
+                              diag_num(b2, i), 0,0,0,0);
+                    return -1;
+                }
+                patched++;
+            }
+            if (patched == 0) {
+                char b1[12];
+                diag_tool(DIAG_SEV_ERROR, g_ld_image,
+                          "object #%s declares data but carries no relocatable "
+                          "address (compiled without --reloc-data); its globals "
+                          "would still point at the previous object's window",
+                          diag_num(b1, i), 0,0,0,0,0);
+                return -1;
+            }
+        }
+    }
+    g_ld_data_top = cursor;
+    return 0;
 }
 
 /* Patch a Thumb-2 branch or absolute reference in the merged code buffer. */
@@ -615,6 +702,66 @@ static int write_ark_obj(const ArkBackend *be, const ArkOptions *opts,
     return ARK_OK;
 
 }
+#if ARKCC_FEATURE_BUILD_TIME
+/* 把"自 1970-01-01 起的秒数"换算成 C99 要求的两个字符串。
+ *
+ * 为什么自己算而不是调 gmtime：板端没有 libc，也不想让可复现构建依赖时区数据库。
+ * 算法是 Howard Hinnant 的 days_from_civil 逆变换（公历、无闰年例外），
+ * 只用整数算术，任何平台结果一致 —— 这正是可复现构建要的性质。
+ * 注意 __DATE__ 的格式是 "Mmm dd yyyy"，日不足两位时用空格补（C99 6.10.8.1），
+ * 所以 "Nov  6 2026" 里有两个空格。 */
+static void format_epoch_utc(long long epoch, char *date_out, char *time_out) {
+    static const char *mon[12] = { "Jan","Feb","Mar","Apr","May","Jun",
+                                   "Jul","Aug","Sep","Oct","Nov","Dec" };
+    long long days = epoch / 86400;
+    long long secs = epoch % 86400;
+    long long z, era, doe, yoe, y, doy, mp, d, m;
+    int hh = (int)(secs / 3600);
+    int mm = (int)((secs % 3600) / 60);
+    int ss = (int)(secs % 60);
+
+    /* days_from_civil 的逆：把"自 1970-01-01 的天数"还原成年月日 */
+    z   = days + 719468;
+    era = (z >= 0 ? z : z - 146096) / 146097;
+    doe = z - era * 146097;
+    yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    y   = yoe + era * 400;
+    doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    mp  = (5 * doy + 2) / 153;
+    d   = doy - (153 * mp + 2) / 5 + 1;
+    m   = mp + (mp < 10 ? 3 : -9);
+    y  += (m <= 2);
+
+    /* date_out: "Mmm dd yyyy"（11 字符 + NUL） */
+    {
+        int i;
+        const char *mn = mon[(int)m - 1];
+        date_out[0] = mn[0]; date_out[1] = mn[1]; date_out[2] = mn[2];
+        date_out[3] = ' ';
+        date_out[4] = (char)('0' + (int)(d / 10));
+        date_out[5] = (char)('0' + (int)(d % 10));
+        date_out[6] = ' ';
+        date_out[7] = (char)('0' + (int)((y / 1000) % 10));
+        date_out[8] = (char)('0' + (int)((y / 100) % 10));
+        date_out[9] = (char)('0' + (int)((y / 10) % 10));
+        date_out[10] = (char)('0' + (int)(y % 10));
+        date_out[11] = 0;
+        /* C99：日若为个位，用空格代替前导 0 */
+        if (d < 10) date_out[4] = ' ';
+        (void)i;
+    }
+    time_out[0] = (char)('0' + hh / 10);
+    time_out[1] = (char)('0' + hh % 10);
+    time_out[2] = ':';
+    time_out[3] = (char)('0' + mm / 10);
+    time_out[4] = (char)('0' + mm % 10);
+    time_out[5] = ':';
+    time_out[6] = (char)('0' + ss / 10);
+    time_out[7] = (char)('0' + ss % 10);
+    time_out[8] = 0;
+}
+#endif
+
 int ark_compile(const ArkOptions *opts) {
     int src_len;
     Lexer lex;
@@ -715,7 +862,9 @@ int ark_compile(const ArkOptions *opts) {
             ld_rt_dup_count = 0;
             { int k; for (k = 0; k < LD_MAX_OBJS; k++) {
                   g_ld_ram[k].start = 0; g_ld_ram[k].end = 0;
-                  g_ld_ram[k].have_start = 0; g_ld_ram[k].have_end = 0; } }
+                  g_ld_ram[k].have_start = 0; g_ld_ram[k].have_end = 0;
+                  g_ld_data_delta[k] = 0; g_ld_init_body[k] = -1; } }
+            g_ld_data_top = 0;
             ld_table_overflow = 0;
             for (li = 0; li < opts->link_input_count; li++) {
                 int n = fs_read_file(opts->link_inputs[li], buf, sizeof(buf));
@@ -778,6 +927,14 @@ int ark_compile(const ArkOptions *opts) {
                         }
                         continue;
                     }
+                    if (ark_streq(sym_name, "__arkcc_init_globals") &&
+                        li < LD_MAX_OBJS && g_ld_init_body[li] < 0) {
+                        /* --reloc-data: remember where *this* object's init
+                         * body is.  ld_add_sym below keeps only the first
+                         * definition of the shared name, so the rest would
+                         * never run (see the chain emitted later). */
+                        g_ld_init_body[li] = base + sym_off;
+                    }
                     if (ark_streq(sym_name, OBJ_RAM_END_SYM)) {
                         if (li < LD_MAX_OBJS) {
                             g_ld_ram[li].end = (unsigned)sym_off;
@@ -800,7 +957,7 @@ int ark_compile(const ArkOptions *opts) {
                     pos += name_len;
                     reloc_off = rd_le32(up + pos); pos += 4;
                     reloc_type = up[pos]; pos += 1;
-                    ld_add_reloc(reloc_name, base + reloc_off, reloc_type);
+                    ld_add_reloc(reloc_name, base + reloc_off, reloc_type, li);
                 }
             }
             if (ld_rt_dup_count > 0) {
@@ -815,6 +972,14 @@ int ark_compile(const ArkOptions *opts) {
              * both declare RAM objects therefore produces an image where the
              * two sets of globals alias the same addresses. That used to be
              * silent; fail loudly instead of shipping a wrong image. */
+            if (g_config.enable_reloc_data) {
+                /* --reloc-data: instead of refusing the link, place each
+                 * object's data after the previous one and rewrite the marked
+                 * addresses.  The windows recorded in g_ld_ram are updated to
+                 * the new bases, so the overlap check below still runs and now
+                 * passes on genuine layout, not on a bypass. */
+                if (ld_relocate_data(out_buf, out_len) != 0) return ARK_ERR_LINK;
+            }
             {
                 int obj_a, obj_b;
                 for (obj_a = 0; obj_a < LD_MAX_OBJS; obj_a++) {
@@ -910,6 +1075,17 @@ int ark_compile(const ArkOptions *opts) {
                     }
                 }
 #endif
+                if (g_config.enable_reloc_data && g_ld_data_top != 0 &&
+                    g_ld_data_top > initial_sp) {
+                    char b1[12], b2[12];
+                    diag_tool(DIAG_SEV_ERROR, g_ld_image,
+                              "relocated .data/.bss ends at %s but the initial "
+                              "stack pointer is %s: the link set needs more SRAM "
+                              "than the scatter layout provides",
+                              ld_hex(b1, g_ld_data_top), ld_hex(b2, initial_sp),
+                              0,0,0,0);
+                    return ARK_ERR_LINK;
+                }
                 /* --vector-table: the first object reserved 0x400 for us, so
                  * write the table there.  0x400 is the size codegen reserves,
                  * and the hole must still be untouched: if anything but zero
@@ -1045,8 +1221,8 @@ int ark_compile(const ArkOptions *opts) {
                             out_buf[t0 + 2] = 0xD0; out_buf[t0 + 3] = 0x00;
                             out_buf[t0 + 4] = 0xF0; out_buf[t0 + 5] = 0x00;
                             out_buf[t0 + 6] = 0x90; out_buf[t0 + 7] = 0x00;
-                            ld_add_reloc("__arkcc_init_globals", t0, 1);
-                            ld_add_reloc("Reset_Handler", t0 + 4, 2);
+                            ld_add_reloc("__arkcc_init_globals", t0, 1, 0);
+                            ld_add_reloc("Reset_Handler", t0 + 4, 2, 0);
                             out_len += 8;
                             ld_write_word(out_buf, 4,
                                           (flash_base + (unsigned)t0) | 1u);
@@ -1108,11 +1284,78 @@ int ark_compile(const ArkOptions *opts) {
                     ld_add_sym("__arkcc_init_globals", out_len - 2, 0);
                 }
             }
+            /* --reloc-data: chain every object's __arkcc_init_globals.
+             *
+             * Each object that owns .data/.bss emits its own init body, but all
+             * of them carry the same symbol name, so ld_add_sym keeps the first
+             * and the others would never run - the second object's globals would
+             * stay uninitialised while the link still reported success.  Emit a
+             * chain at the end of the image that calls each body in object order
+             * and then falls through into the one the symbol names, and point
+             * the symbol at the chain.  Nothing already placed moves: the chain
+             * is appended after the last object.
+             */
+            if (g_config.enable_reloc_data) {
+                int nb = 0, b;
+                int idx = ld_find_global("__arkcc_init_globals");
+                for (b = 0; b < LD_MAX_OBJS; b++)
+                    if (g_ld_init_body[b] >= 0) nb++;
+                if (idx >= 0 && nb > 1) {
+                    int chain, t;
+                    if ((out_len & 3) != 0) {
+                        if (out_len + 2 > (int)sizeof(out_buf)) {
+                            diag_tool(DIAG_SEV_ERROR, g_ld_image,
+                                      "no room for the init chain; raise "
+                                      "ARK_LINK_BUF_SIZE", 0,0,0,0,0,0);
+                            return ARK_ERR_IO;
+                        }
+                        out_buf[out_len++] = 0xBF;   /* NOP (align to 4) */
+                        out_buf[out_len++] = 0x00;
+                    }
+                    if (out_len + 4 * (nb + 1) + 4 > (int)sizeof(out_buf)) {
+                        diag_tool(DIAG_SEV_ERROR, g_ld_image,
+                                  "no room for the init chain; raise "
+                                  "ARK_LINK_BUF_SIZE", 0,0,0,0,0,0);
+                        return ARK_ERR_IO;
+                    }
+                    chain = out_len;
+                    /* PUSH {lr} first: every body clobbers lr, so chaining by
+                     * tail-jumping from one body into the next makes the chain
+                     * return into itself (measured: an endless bss loop).  With
+                     * lr saved once here, each body returns to the next BL and
+                     * the final POP {pc} hands control back to Reset_Handler. */
+                    out_buf[out_len++] = 0x00;   /* PUSH {lr} = 0xB500 */
+                    out_buf[out_len++] = 0xB5;
+                    for (b = 0; b < LD_MAX_OBJS; b++) {
+                        if (g_ld_init_body[b] < 0) continue;
+                        t = out_len;
+                        /* BL T1 placeholder; ld_patch_ref fills both halves. */
+                        out_buf[t]     = 0xF0;
+                        out_buf[t + 1] = 0x00;
+                        out_buf[t + 2] = 0xD0;
+                        out_buf[t + 3] = 0x00;
+                        out_len += 4;
+                        ld_patch_ref(out_buf, out_len, t, g_ld_init_body[b], 1);
+                    }
+                    out_buf[out_len++] = 0x00;   /* POP {pc} = 0xBD00 */
+                    out_buf[out_len++] = 0xBD;
+                    g_ld_syms[idx].offset = chain;
+                    if (opts->verbose)
+                        ark_log("[link] note: %d objects own .data/.bss; "
+                                "__arkcc_init_globals now runs all %d bodies "
+                                "(chain at +0x%X)\n", nb, nb, chain);
+                }
+            }
             /* Resolve cross-object relocations via find_global (strong > weak) */
             {
                 int ri;
                 for (ri = 0; ri < g_ld_reloc_count; ri++) {
-                    int idx = ld_find_global(g_ld_relocs[ri].name);
+                    int idx;
+                    if (g_ld_relocs[ri].type == 6) continue;  /* .arkdata site:
+                        * already handled by ld_relocate_data; it names no
+                        * symbol, so treating it as an unresolved reference
+                        * would fail the link on a valid image. */
+                    idx = ld_find_global(g_ld_relocs[ri].name);
                     if (idx >= 0)
                         ld_patch_ref(out_buf, out_len, g_ld_relocs[ri].offset,
                                      g_ld_syms[idx].offset, g_ld_relocs[ri].type);
@@ -1277,6 +1520,28 @@ int ark_compile(const ArkOptions *opts) {
     preproc_reset();
     preproc_set_main_file(opts->input_path);
 
+#if ARKCC_FEATURE_BUILD_TIME
+    /* __DATE__/__TIME__ 的三个来源，优先级从高到低：
+     *   1. --source-date-epoch（可复现构建的标准做法）
+     *   2. --build-date / --build-time（手工钉死）
+     *   3. 平台层（宿主用 localtime，板端可能没有 RTC 于是固定）
+     * 前两种都要经过格式校验：长度不对会让后面的代码读越界。 */
+    if (opts->build_epoch > 0) {
+        char bd[12], bt[9];
+        format_epoch_utc(opts->build_epoch, bd, bt);
+        if (!preproc_set_build_time(bd, bt)) {
+            diag_tool(DIAG_SEV_ERROR, opts->input_path,
+                      "--source-date-epoch produced an unusable timestamp", 0,0,0,0,0,0);
+        }
+    } else if (opts->build_date || opts->build_time) {
+        if (!preproc_set_build_time(opts->build_date, opts->build_time)) {
+            diag_tool(DIAG_SEV_ERROR, opts->input_path,
+                      "--build-date expects \"Mmm dd yyyy\" and --build-time expects \"hh:mm:ss\"",
+                      0,0,0,0,0,0);
+        }
+    }
+#endif
+
     /* C99 6.10.2: #include "..." searches the directory of the source file
      * containing the #include directive. We add the main source file's
      * directory as the highest-priority search path so that paths like
@@ -1399,8 +1664,11 @@ int ark_compile(const ArkOptions *opts) {
      * Format: "<output>: <source> <header1> <header2> ...\n"
      * Output path is given by -MF, otherwise defaults to "<input>.d". */
     if (opts->gen_depend) {
-        const char *incs[64];
-        int ninc = preproc_get_included_files(incs, 64);
+        /* 依赖文件能收多少个头文件，由与预处理器共用的一条上限决定
+         * （ARKCC_MAX_INC_FILES）。之前这里写死 64，于是预处理器即使记录了
+         * 更多，写出来的 .d 文件也还是被截到 64 条——两处上限必须同源。 */
+        const char *incs[ARKCC_MAX_INC_FILES];
+        int ninc = preproc_get_included_files(incs, ARKCC_MAX_INC_FILES);
         char dep_path[512];
         const char *dep_target;
         /* Derive output target name: prefer -o (strip extension and add .o), otherwise <input>.o */

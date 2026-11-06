@@ -35,6 +35,12 @@ typedef struct {
     const char *scatter_file; /* --scatter <file>: scatter load description file */
     const char *linker_script;/* -T/--linker-script <file>: GNU ld script (converted to scatter internally) */
     const char *fpu_type;     /* --fpu <name>: FPU type name */
+    /* === 0.8.0: 由 --xxx 显式打开的实验性开关 === */
+    int enable_dce_cfg;       /* --dce-cfg: 基本块级可达性 DCE */
+    int enable_reloc_data;    /* --reloc-data: 多目标文件的数据段可搬迁 */
+    int enable_reg_top;       /* --reg-top: 栈顶值常驻 r0 */
+    int enable_rt_lazy;       /* --rt-lazy: 只发射被用到的 __aeabi_* 运行库 */
+    int enable_asm_extra;     /* --asm-extra: 汇编器扩展指令集 */
 } ArkccConfig;
 
 extern ArkccConfig g_config;

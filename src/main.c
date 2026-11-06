@@ -236,6 +236,12 @@ static void reset_opts(ArkOptions *o) {
     for (i = 0; i < 64; i++) o->pre_defines[i] = 0;
     o->pre_define_count = 0;
     o->uvprojx = 0;
+    /* 0.8.0：新增字段必须在这里清零。漏了它们时 build_date/build_time 是栈上
+     * 残留，`opts->build_date || opts->build_time` 恒真，于是 __DATE__ 被一段
+     * 随机的"看起来像日期"的内存覆盖——2026-11-06 那次实测输出过 "Oct 12 1495"。 */
+    o->build_date = 0;
+    o->build_time = 0;
+    o->build_epoch = 0;
 }
 
 /* armcc: the text before '=' must be an identifier; everything after '=' is
@@ -497,6 +503,24 @@ int main(int argc, char **argv) {
                 i++;
             }
         }
+        else if (strcmp(a, "--build-date") == 0 && i + 1 < argc) opts.build_date = argv[++i];
+        else if (strcmp(a, "--build-time") == 0 && i + 1 < argc) opts.build_time = argv[++i];
+        else if (strcmp(a, "--source-date-epoch") == 0 && i + 1 < argc) {
+            const char *p = argv[++i];
+            long long v = 0;
+            while (*p >= '0' && *p <= '9') { v = v * 10 + (*p - '0'); p++; }
+            opts.build_epoch = v;
+        }
+        else if (strcmp(a, "--dce-cfg") == 0)       g_config.enable_dce_cfg = 1;
+        else if (strcmp(a, "--no-dce-cfg") == 0)    g_config.enable_dce_cfg = 0;
+        else if (strcmp(a, "--reloc-data") == 0)    g_config.enable_reloc_data = 1;
+        else if (strcmp(a, "--no-reloc-data") == 0) g_config.enable_reloc_data = 0;
+        else if (strcmp(a, "--reg-top") == 0)       g_config.enable_reg_top = 1;
+        else if (strcmp(a, "--no-reg-top") == 0)    g_config.enable_reg_top = 0;
+        else if (strcmp(a, "--rt-lazy") == 0)       g_config.enable_rt_lazy = 1;
+        else if (strcmp(a, "--no-rt-lazy") == 0)    g_config.enable_rt_lazy = 0;
+        else if (strcmp(a, "--asm-extra") == 0)     g_config.enable_asm_extra = 1;
+        else if (strcmp(a, "--no-asm-extra") == 0)  g_config.enable_asm_extra = 0;
         else if (strcmp(a, "--list-backends") == 0) opts.list_backends = 1;
         else if (strcmp(a, "-h") == 0 || strcmp(a, "--help") == 0) {
             usage();

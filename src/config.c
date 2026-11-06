@@ -59,6 +59,14 @@ void config_init(void) {
     g_config.enable_opt_regalloc  = ARKCC_FEATURE_OPT_REGALLOC;
     g_config.enable_opt_inline    = ARKCC_FEATURE_OPT_INLINE;
     g_config.enable_opt_vectorize = ARKCC_FEATURE_OPT_VECTORIZE;
+    /* 0.8.0 的五个实验性开关：代码按 profile 编进来（见 arkcc_config.h），
+     * 但默认一律关闭——默认行为与 0.7.0 逐字节相同，打开才会变。
+     * 这样做是为了满足“开关关掉时零变化”，而不是因为新行为不值得默认开。 */
+    g_config.enable_dce_cfg       = 0;
+    g_config.enable_reloc_data    = 0;
+    g_config.enable_reg_top       = 0;
+    g_config.enable_rt_lazy       = 0;
+    g_config.enable_asm_extra     = 0;
     g_config.opt_level            = 0;
     g_config.debug_info           = 0;
     g_config.split_sections       = 0;
@@ -91,6 +99,11 @@ static void apply_kv(const char *section, const char *key, const char *val) {
         else if (ark_streq(key, "opt_regalloc")) g_config.enable_opt_regalloc = parse_bool(val);
         else if (ark_streq(key, "opt_inline"))    g_config.enable_opt_inline    = parse_bool(val);
         else if (ark_streq(key, "opt_vectorize")) g_config.enable_opt_vectorize = parse_bool(val);
+        else if (ark_streq(key, "dce_cfg"))       g_config.enable_dce_cfg = parse_bool(val);
+        else if (ark_streq(key, "reloc_data"))    g_config.enable_reloc_data = parse_bool(val);
+        else if (ark_streq(key, "reg_top"))       g_config.enable_reg_top = parse_bool(val);
+        else if (ark_streq(key, "rt_lazy"))       g_config.enable_rt_lazy = parse_bool(val);
+        else if (ark_streq(key, "asm_extra"))     g_config.enable_asm_extra = parse_bool(val);
     } else if (ark_streq(section, "general")) {
         if (ark_streq(key, "opt_level")) {
             int v = 0;
@@ -381,6 +394,10 @@ void config_print(void) {
             g_config.enable_opt_regalloc);
     ark_log("  opt_inline=%d opt_vectorize=%d\n",
             g_config.enable_opt_inline, g_config.enable_opt_vectorize);
+    ark_log("  dce_cfg=%d reloc_data=%d reg_top=%d rt_lazy=%d asm_extra=%d\n",
+            g_config.enable_dce_cfg, g_config.enable_reloc_data,
+            g_config.enable_reg_top, g_config.enable_rt_lazy,
+            g_config.enable_asm_extra);
     ark_log("  opt_level=%d debug_info=%d split_sections=%d\n",
             g_config.opt_level, g_config.debug_info, g_config.split_sections);
     ark_log("  config_file=%s\n",

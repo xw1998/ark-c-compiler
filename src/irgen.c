@@ -309,6 +309,31 @@ void irgen_set_64bit_slots(int enabled) {
     g_irgen_64bit_slots = enabled;
 }
 
+#if ARKCC_FEATURE_FCONST_FOLD
+/* 目标类型是 float/double 时，把常量表达式初值在编译期算出来写进 init_float。
+ *
+ * 为什么需要：初值处理原先只看 AST_NUM，其他形式统一掉进「序列化文本」的分支，
+ * 而 ARM 后端把那段文本按整型逐元素写出去。于是
+ *     double g = 1.0 / 3.0 * 3.0;
+ * 编译通过、无告警，g 的 8 个字节全是 0。
+ * 这里用 eval_const_fexpr（见 sema.c）求出数值，并按目标精度舍入。
+ * 返回 1 表示已处理（has_init/is_float/init_float 已写好）。 */
+static int irgen_try_float_init(IrGlobal *gv, AstNode *iv) {
+    double dv = 0.0;
+    Type *dt;
+    if (!gv || !iv) return 0;
+    dt = gv->type;
+    if (!dt) return 0;
+    if (dt->kind != TYPE_FLOAT && dt->kind != TYPE_DOUBLE) return 0;
+    if (!eval_const_fexpr(iv, &dv)) return 0;
+    gv->has_init  = 1;
+    gv->is_float  = 1;
+    gv->init_float = (dt->kind == TYPE_FLOAT) ? (double)(float)dv : dv;
+    gv->init_int   = 0;
+    return 1;
+}
+#endif
+
 static int alloc_label(IrGen *g) {
     return g->fn->label_count++;
 }
@@ -481,6 +506,11 @@ IrProgram *irgen_program(AstNode *prog) {
 #endif
                 if (d->u.var.init) {
                     AstNode *iv = d->u.var.init;
+#if ARKCC_FEATURE_FCONST_FOLD
+                    if (irgen_try_float_init(gv, iv)) {
+                        /* 浮点常量表达式初值已在编译期算出 */
+                    } else
+#endif
                     if (iv->kind == AST_NUM) {
                         gv->has_init = 1;
                         gv->init_int = iv->u.num_val;
@@ -536,6 +566,11 @@ IrProgram *irgen_program(AstNode *prog) {
                      * have init_int=0 (e.g. SystemCoreClock=16000000 became 0). */
                     if (d->u.var.init && !eg->has_init) {
                         AstNode *iv = d->u.var.init;
+#if ARKCC_FEATURE_FCONST_FOLD
+                        if (irgen_try_float_init(eg, iv)) {
+                            /* 同上：浮点常量表达式 */
+                        } else
+#endif
                         if (iv->kind == AST_NUM) {
                             eg->has_init = 1;
                             eg->init_int = iv->u.num_val;
@@ -597,6 +632,11 @@ IrProgram *irgen_program(AstNode *prog) {
 #endif
                         if (c->u.var.init) {
                             AstNode *iv = c->u.var.init;
+#if ARKCC_FEATURE_FCONST_FOLD
+                            if (irgen_try_float_init(gc, iv)) {
+                                /* 同上：浮点常量表达式 */
+                            } else
+#endif
                             if (iv->kind == AST_NUM) {
                                 gc->has_init = 1;
                                 gc->init_int = iv->u.num_val;
@@ -638,6 +678,11 @@ IrProgram *irgen_program(AstNode *prog) {
                             /* #3 FIX: Process initializer for block-level globals too */
                             if (c->u.var.init && !eg->has_init) {
                                 AstNode *iv = c->u.var.init;
+#if ARKCC_FEATURE_FCONST_FOLD
+                                if (irgen_try_float_init(eg, iv)) {
+                                    /* 同上：浮点常量表达式 */
+                                } else
+#endif
                                 if (iv->kind == AST_NUM) {
                                     eg->has_init = 1;
                                     eg->init_int = iv->u.num_val;
@@ -1124,6 +1169,11 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
                 }
                 if (node->u.var.init) {
                     AstNode *iv = node->u.var.init;
+#if ARKCC_FEATURE_FCONST_FOLD
+                    if (irgen_try_float_init(gv, iv)) {
+                        /* 同上：函数内 static 的浮点常量表达式 */
+                    } else
+#endif
                     if (iv->kind == AST_NUM) {
                         gv->has_init = 1;
                         gv->init_int = iv->u.num_val;

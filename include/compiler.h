@@ -38,6 +38,10 @@ typedef struct {
     int         pre_define_count;
     /* === 0.8.0 additions: MDK project auto-discovery === */
     const char *uvprojx;  /* --uvprojx <file>: MDK .uvprojx to auto-extract -I/-D */
+    /* === 0.8.0 === */
+    const char *build_date;       /* --build-date "Mmm dd yyyy" : 覆盖 __DATE__ */
+    const char *build_time;       /* --build-time "hh:mm:ss"   : 覆盖 __TIME__ */
+    long long   build_epoch;      /* --source-date-epoch <sec> : 由纪元秒推出上面两个 */
 } ArkOptions;
 
 int ark_compile(const ArkOptions *opts);

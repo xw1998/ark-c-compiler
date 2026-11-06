@@ -17,6 +17,8 @@
 #include "diag.h"
 #include "scatter.h"
 #include "arkcc_config.h"
+/* --rt-lazy 的文本压实用 memmove/memcmp（标准 C 库，宿主与板上都有实现）。 */
+#include <string.h>
 /* On host, <stdlib.h> provides getenv() for the ARKCC_DUMP_SYMS debug flag.
  * On STM32, getenv() is not available (semihosting); g_arm_dump_syms is used
  * instead, and mem_realloc (our own allocator) replaces realloc. */
@@ -300,6 +302,67 @@ static unsigned g_data_sram_end   = 0;  /* One past last .data SRAM address */
 static unsigned g_bss_sram_start  = 0;  /* First .bss SRAM address */
 static unsigned g_bss_sram_end    = 0;  /* One past last .bss SRAM address */
 
+#if ARKCC_FEATURE_ARM_RELOC_DATA
+/* --reloc-data: data-address patch sites.
+ *
+ * -link has always concatenated code but has never been able to move a data
+ * section: every object laid its globals out from the same SRAM base, so two
+ * objects that both declare RAM aliased each other and the link refused with
+ * "SRAM overlap".  Moving the data means rewriting every absolute address
+ * baked into the instruction stream, and only codegen knows which MOVW/MOVT
+ * pairs came from gvar_find() rather than from an unrelated 32-bit constant:
+ * the encoding of 0x20000004 does not say whether it is an array address or
+ * an integer literal.
+ *
+ * So codegen marks those pairs with the .arkdata pseudo-op and the assembler
+ * records the offsets as relocation type 6; the linker adds the object's data
+ * delta to each.  With the option off, not one byte changes: the marker is not
+ * emitted and emit_mov_addr32() falls straight through to emit_mov_imm().
+ */
+static int addr_in_own_data(unsigned addr) {
+    if (g_data_sram_start != g_data_sram_end &&
+        addr >= g_data_sram_start && addr < g_data_sram_end) return 1;
+    if (g_bss_sram_start != g_bss_sram_end &&
+        addr >= g_bss_sram_start && addr < g_bss_sram_end) return 1;
+    return 0;
+}
+#endif
+
+/* Materialise `addr` in rd, flagging it for the linker when `marked`.
+ *
+ * `marked` is passed by the caller rather than derived here, because two
+ * different facts are being expressed:
+ *   - a global from gvar_find(): relocatable iff it sits inside this unit's own
+ *     window (a __at variable or a variable in another scatter region must NOT
+ *     move, so the caller asks addr_in_own_data());
+ *   - the .data/.bss bounds used by __arkcc_init_globals: always relocatable,
+ *     including the one-past-the-end bound that addr_in_own_data() rejects.
+ *
+ * The MOVW/MOVT pair is forced in the marked case: a 16-bit MOV has no halfword
+ * for the linker to patch, so an armcc-style short form would silently keep a
+ * stale address. */
+static void emit_mov_addr32(AsmBuffer *b, int rd, unsigned addr, int marked) {
+#if ARKCC_FEATURE_ARM_RELOC_DATA
+    if (g_config.enable_reloc_data && marked) {
+        asmbuf_puts(b, "    .arkdata\n");
+        asmbuf_puts(b, "    MOVW r");
+        asmbuf_int(b, rd);
+        asmbuf_puts(b, ", #");
+        asmbuf_int(b, (int)(addr & 0xFFFFu));
+        asmbuf_putc(b, '\n');
+        asmbuf_puts(b, "    MOVT r");
+        asmbuf_int(b, rd);
+        asmbuf_puts(b, ", #");
+        asmbuf_int(b, (int)((addr >> 16) & 0xFFFFu));
+        asmbuf_putc(b, '\n');
+        return;
+    }
+#else
+    (void)marked;
+#endif
+    emit_mov_imm(b, rd, (int)addr);
+}
+
 /* Scatter (.sct) load description: when --scatter <file> is given, the parsed
  * regions drive address assignment instead of the hardcoded defaults below.
  * g_flash_base is the base for code labels (LR load address); g_data_base /
@@ -373,6 +436,13 @@ static void arm_scatter_load(void) {
         g_scatter_loaded = 1;
         arm_scatter_derive_bases();
     }
+#if ARKCC_FEATURE_SCATTER_CHECK
+    /* 布局能不能用，在“派生基址之后、生成任何代码之前”就要判定：一旦把错误
+     * 布局烘焙进地址，事后无法分辨是用户写错还是编译器读错。 */
+    if (g_scatter_loaded) {
+        scatter_validate(&g_scatter, g_flash_base, g_arm_vt_reserve);
+    }
+#endif
     if (g_scatter_loaded && g_arm_dump_syms) {
         ark_log("[scatter] flash=0x%08X data=0x%08X bss=0x%08X\n",
                 g_flash_base, g_data_base, g_bss_base);
@@ -562,6 +632,131 @@ static void gvar_assign(IrProgram *prog) {
     }
 #endif
 }
+
+#if ARKCC_FEATURE_RT_LAZY
+/* 运行库按需发射（--rt-lazy）。
+ *
+ * 问题：每个翻译单元都会把全部 __aeabi_* 辅助函数打进产物，于是一个 56 字节的
+ * 源文件也能编出 1578 字节代码，其中绝大多数是永远调用不到的 64 位与浮点辅助。
+ * 链接器虽然能去重，但单个对象本身的体积仍然虚高。
+ *
+ * 做法：在汇编文本层面把每个辅助函数整块切下来，从"用户代码 + 已被判定需要的
+ * 辅助函数"出发求一次可达闭包（辅助函数之间也会互相调用，例如
+ * __aeabi_ldivmod 调 __aeabi_uldivmod），只保留可达的块。
+ *
+ * 为什么在文本层做而不是在 IR 层做：辅助函数是后端直接写死的汇编文本，没有对应
+ * 的 IR 指令；在文本层按名字求闭包，判断依据只有一处（名字是否被引用），不会
+ * 出现"IR 认为不需要、后端却发了 BL"的分裂。
+ *
+ * 安全性：只删「整块、且从未被保留代码引用」的辅助函数；名字匹配带前后边界，
+ * 避免 __aeabi_ladd 误命中 __aeabi_laddx 这类前缀相同的情况。
+ */
+#define RT_MAX_BLOCKS 80
+
+typedef struct {
+    int         start;
+    int         end;
+    const char *name;
+    int         name_len;
+    int         used;
+} RtBlock;
+
+static int rt_is_ident_char(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+           (c >= '0' && c <= '9') || c == '_';
+}
+
+static int rt_refs_name(const char *s, int from, int to, const char *name, int nl) {
+    int i;
+    for (i = from; i + nl <= to; i++) {
+        if (s[i] != name[0]) continue;
+        if (memcmp(s + i, name, (unsigned)nl) != 0) continue;
+        if (i > from && rt_is_ident_char(s[i - 1])) continue;
+        if (i + nl < to && rt_is_ident_char(s[i + nl])) continue;
+        return 1;
+    }
+    return 0;
+}
+
+static int rt_prune_asm_text(char *text, int len) {
+    RtBlock blk[RT_MAX_BLOCKS];
+    int n = 0, i, changed = 1;
+    int user_end;
+
+    /* 1. 切块：块首是行首的 ".global __aeabi_"，块尾是下一个行首的 ".global "
+     *    或文件末尾。用 ".global " 而不是 ".global __aeabi_" 当结束标志，
+     *    是因为最后一个 __aeabi_ 块之后可能紧跟 __arkcc_* 辅助函数
+     *    （例如浮点比较用的 __arkcc_fcmp3），那些不属于可删范围。 */
+    for (i = 0; i + 16 < len; i++) {
+        if (i != 0 && text[i - 1] != '\n') continue;
+        if (memcmp(text + i, ".global __aeabi_", 16) != 0) continue;
+        {
+            int ns = i + 8;
+            int e = ns;
+            while (e < len && text[e] != '\n' && text[e] != '\r') e++;
+            blk[n].start = i;
+            blk[n].end = len;
+            blk[n].name = text + ns;
+            blk[n].name_len = e - ns;
+            blk[n].used = 0;
+            n++;
+            if (n >= RT_MAX_BLOCKS) break;
+        }
+    }
+    if (n == 0) return len;
+
+    for (i = 0; i + 1 < n; i++) blk[i].end = blk[i + 1].start;
+
+    /* 2. 用户区（第一个辅助块之前）里出现的名字就是种子 */
+    user_end = blk[0].start;
+    for (i = 0; i < n; i++) {
+        if (rt_refs_name(text, 0, user_end, blk[i].name, blk[i].name_len)) blk[i].used = 1;
+    }
+
+    /* 3. 可达闭包 */
+    while (changed) {
+        changed = 0;
+        for (i = 0; i < n; i++) {
+            int j;
+            if (!blk[i].used) continue;
+            for (j = 0; j < n; j++) {
+                if (blk[j].used) continue;
+                if (rt_refs_name(text, blk[i].start, blk[i].end, blk[j].name, blk[j].name_len)) {
+                    blk[j].used = 1;
+                    changed = 1;
+                }
+            }
+        }
+    }
+
+    /* 4. 原地压实 */
+    {
+        int w = 0;
+        int r = 0;
+        for (i = 0; i < n; i++) {
+            if (blk[i].start > r) {
+                int gap = blk[i].start - r;
+                if (w != r) memmove(text + w, text + r, (unsigned)gap);
+                w += gap;
+            }
+            if (blk[i].used) {
+                int sz = blk[i].end - blk[i].start;
+                if (w != blk[i].start) memmove(text + w, text + blk[i].start, (unsigned)sz);
+                w += sz;
+            }
+            r = blk[i].end;
+        }
+        if (len > r) {
+            int tail = len - r;
+            if (w != r) memmove(text + w, text + r, (unsigned)tail);
+            w += tail;
+        }
+        len = w;
+        text[len] = 0;
+    }
+    return len;
+}
+#endif /* ARKCC_FEATURE_RT_LAZY */
 
 static char *codegen_arm(IrProgram *prog) {
     AsmBuffer buf;
@@ -1085,13 +1280,13 @@ static char *codegen_arm(IrProgram *prog) {
                     int gsz = gvar_find_size(I->name);
                     if (gsz >= 8) {
                         /* #6 FIX: 64-bit global read - load low and high words */
-                        emit_mov_imm(&buf, 1, (int)addr);
+                        emit_mov_addr32(&buf, 1, addr, addr_in_own_data(addr));
                         asmbuf_puts(&buf, "    LDR r0, [r1, #0]\n");
                         asmbuf_puts(&buf, "    LDR r2, [r1, #4]\n");
                         emit_push_r0(&buf);  /* push low word */
                         asmbuf_puts(&buf, "    PUSH {r2}\n");  /* push high word */
                     } else {
-                        emit_mov_imm(&buf, 0, (int)addr);
+                        emit_mov_addr32(&buf, 0, addr, addr_in_own_data(addr));
                         emit_line(&buf, "LDR r0, [r0]");
                         emit_push_r0(&buf);
                     }
@@ -1128,7 +1323,7 @@ static char *codegen_arm(IrProgram *prog) {
                      * and compound literal scenarios. */
                     {
                         unsigned addr = gvar_find(I->name);
-                        emit_mov_imm(&buf, 0, (int)addr);
+                        emit_mov_addr32(&buf, 0, addr, addr_in_own_data(addr));
                         emit_push_r0(&buf);
                     }
                     break;
@@ -1139,12 +1334,12 @@ static char *codegen_arm(IrProgram *prog) {
                         /* #6 FIX: 64-bit global store - pop high then low, store both */
                         asmbuf_puts(&buf, "    POP {r1}\n");  /* high word */
                         emit_pop_r0(&buf);                     /* low word */
-                        emit_mov_imm(&buf, 2, (int)addr);
+                        emit_mov_addr32(&buf, 2, addr, addr_in_own_data(addr));
                         asmbuf_puts(&buf, "    STR r0, [r2, #0]\n");
                         asmbuf_puts(&buf, "    STR r1, [r2, #4]\n");
                     } else {
                         emit_pop_r0(&buf);
-                        emit_mov_imm(&buf, 1, (int)addr);
+                        emit_mov_addr32(&buf, 1, addr, addr_in_own_data(addr));
                         emit_line(&buf, "STR r0, [r1]");
                     }
                     break;
@@ -2386,14 +2581,14 @@ static char *codegen_arm(IrProgram *prog) {
                 if (is_double) {
                     du.d = g->init_float;
                     emit_mov_imm(&buf, 0, (int)du.u[0]);
-                    emit_mov_imm(&buf, 1, (int)addr);
+                    emit_mov_addr32(&buf, 1, addr, addr_in_own_data(addr));
                     asmbuf_puts(&buf, "    STR r0, [r1]\n");
                     emit_mov_imm(&buf, 0, (int)du.u[1]);
                     asmbuf_puts(&buf, "    STR r0, [r1, #4]\n");
                 } else {
                     fu.f = (float)g->init_float;
                     emit_mov_imm(&buf, 0, (int)fu.u);
-                    emit_mov_imm(&buf, 1, (int)addr);
+                    emit_mov_addr32(&buf, 1, addr, addr_in_own_data(addr));
                     asmbuf_puts(&buf, "    STR r0, [r1]\n");
                 }
             } else if (g->init_aggregate) {
@@ -2508,7 +2703,8 @@ static char *codegen_arm(IrProgram *prog) {
 
                     /* Emit store for this element */
                     emit_mov_imm(&buf, 0, val);
-                    emit_mov_imm(&buf, 1, (int)(addr + ei * elem_sz));
+                    emit_mov_addr32(&buf, 1, addr + (unsigned)(ei * elem_sz),
+                                    addr_in_own_data(addr));
                     if (elem_sz == 1) {
                         asmbuf_puts(&buf, "    STRB r0, [r1]\n");
                     } else if (elem_sz == 2) {
@@ -2522,13 +2718,13 @@ static char *codegen_arm(IrProgram *prog) {
                 int si;
                 for (si = 0; si < sz && g->init_str[si]; si++) {
                     emit_mov_imm(&buf, 0, (int)(unsigned char)g->init_str[si]);
-                    emit_mov_imm(&buf, 1, (int)(addr + si));
+                    emit_mov_addr32(&buf, 1, addr + (unsigned)si, addr_in_own_data(addr));
                     asmbuf_puts(&buf, "    STRB r0, [r1]\n");
                 }
             } else {
                 /* Integer scalar initialization */
                 emit_mov_imm(&buf, 0, (int)g->init_int);
-                emit_mov_imm(&buf, 1, (int)addr);
+                emit_mov_addr32(&buf, 1, addr, addr_in_own_data(addr));
                 if (sz == 1) {
                     asmbuf_puts(&buf, "    STRB r0, [r1]\n");
                 } else if (sz == 2) {
@@ -2546,8 +2742,8 @@ static char *codegen_arm(IrProgram *prog) {
 
         /* Zero .bss region */
         if (g_bss_sram_start != g_bss_sram_end) {
-            emit_mov_imm(&buf, 0, (int)g_bss_sram_start);
-            emit_mov_imm(&buf, 1, (int)g_bss_sram_end);
+            emit_mov_addr32(&buf, 0, g_bss_sram_start, 1);
+            emit_mov_addr32(&buf, 1, g_bss_sram_end, 1);
             asmbuf_puts(&buf, "    CMP r0, r1\n");
             asmbuf_puts(&buf, "    BEQ .L_bss_done\n");
             asmbuf_puts(&buf, "    MOV r2, #0\n");
@@ -3685,6 +3881,13 @@ static char *codegen_arm(IrProgram *prog) {
         asmbuf_puts(&buf, ".text\n");
     }
 #endif
+#if ARKCC_FEATURE_RT_LAZY
+    /* --rt-lazy：只保留被引用到的 __aeabi_* 辅助函数。默认关闭时这段完全不执行，
+     * 产物与旧版本逐字节相同。 */
+    if (g_config.enable_rt_lazy && buf.len > 0) {
+        buf.len = rt_prune_asm_text(buf.buf, buf.len);
+    }
+#endif
     return buf.buf;
 }
 
@@ -4596,6 +4799,14 @@ static void pass2_a(ArmAsm *a) {
                     skip_space_a(&p);
                     if (*p == ',') p++;
                 }
+            } else if (strieq_a(first, ".arkdata")) {
+                /* --reloc-data: the next instruction is a MOVW/MOVT pair whose
+                 * value is an address inside this unit's .data/.bss window.
+                 * Record its code offset as relocation type 6 so -link can add
+                 * the object's data delta when it has to move the window.
+                 * Pass-1 ignores this directive: it occupies no bytes, so the
+                 * offsets it records are the ones the image really has. */
+                add_ref_a(a, a->pc, ".arkdata", 6);
             } else if (strieq_a(first, ".byte")) {
                 while (*p && *p != '\n') {
                     int val = 0;
@@ -5907,7 +6118,9 @@ static void resolve_refs_a(ArmAsm *a) {
     int i;
     for (i = 0; i < a->ref_count; i++) {
         AsmRef *r = &a->refs[i];
-        int addr = find_label_a(a, r->name);
+        int addr;
+        if (r->type == 6) continue;   /* .arkdata: a data patch site, not a label */
+        addr = find_label_a(a, r->name);
         if (addr < 0) {
             /* Not a local label: this is a cross-object reference and has
              * already been kept as a relocation by arm_save_relocs(), so the
@@ -6134,7 +6347,19 @@ static void arm_save_relocs(ArmAsm *a) {
     g_arm_reloc_count = 0;
     for (i = 0; i < a->ref_count && g_arm_reloc_count < ARM_MAX_RELOCS; i++) {
         AsmRef *r = &a->refs[i];
-        int addr = find_label_a(a, r->name);
+        int addr;
+        if (r->type == 6) {
+            /* .arkdata: not a reference to a label, but the offset of a
+             * MOVW/MOVT pair the -link stage may have to shift.  It is saved
+             * whether or not the object ends up being relocated, so that the
+             * decision stays with the linker (which knows every object). */
+            g_arm_relocs[g_arm_reloc_count].name   = r->name;
+            g_arm_relocs[g_arm_reloc_count].offset = r->pc;
+            g_arm_relocs[g_arm_reloc_count].type   = 6;
+            g_arm_reloc_count++;
+            continue;
+        }
+        addr = find_label_a(a, r->name);
         if (addr < 0) {
             /* Unresolved: this is a cross-object reference.
              * Save it as a relocation for the linker. */
@@ -6144,6 +6369,66 @@ static void arm_save_relocs(ArmAsm *a) {
             g_arm_reloc_count++;
         }
     }
+}
+
+/* Encode imm16 into a MOVW (is_movt=0) or MOVT (is_movt=1) halfword pair.
+ * Same fields the pass-2 encoders above use; kept in one place so the linker's
+ * relocation cannot drift from the assembler's encoding. */
+static void mov_imm_encode_a(int is_movt, int rd, unsigned imm,
+                            unsigned *hi, unsigned *lo) {
+    unsigned ii   = (imm >> 11) & 1u;
+    unsigned imm4 = (imm >> 12) & 0xFu;
+    unsigned imm3 = (imm >> 8) & 7u;
+    unsigned imm8 = imm & 0xFFu;
+    *hi = (is_movt ? 0xF2C0u : 0xF240u) | (ii << 10) | imm4;
+    *lo = (imm3 << 12) | ((unsigned)(rd & 0xF) << 8) | imm8;
+}
+
+/* Decode a MOVW/MOVT halfword pair back to imm16 + Rd.
+ * Returns 0 on success, -1 if `hi` is not the MOVW/MOVT opcode the encoder
+ * emits or `lo` does not look like its second halfword. */
+static int mov_imm_decode_a(unsigned hi, unsigned lo,
+                           int *is_movt, int *rd, unsigned *imm) {
+    unsigned base = hi & 0xFBF0u;
+    if (base != 0xF240u && base != 0xF2C0u) return -1;
+    if ((lo & 0x8000u) != 0) return -1;          /* bit15 must be 0 */
+    *is_movt = (base == 0xF2C0u);
+    *rd = (int)((lo >> 8) & 0xFu);
+    *imm = ((hi & 0xFu) << 12) | (((hi >> 10) & 1u) << 11) |
+           (((lo >> 12) & 7u) << 8) | (lo & 0xFFu);
+    return 0;
+}
+
+/* --reloc-data: shift the MOVW/MOVT pair at `off` by `delta`.
+ *
+ * Returns 0 when both halfwords were rewritten, -1 when the bytes are not the
+ * pair the assembler marked (different register, wrong opcode, truncated
+ * image).  The caller must refuse to write the image in that case: the object
+ * was built without --reloc-data, and its baked address would stay stale. */
+int arm_patch_movw_movt(unsigned char *code, int code_len, int off, int delta) {
+    unsigned hi, lo, hi2, lo2, loimm = 0, hiimm = 0, imm;
+    int is_movt = 0, rd = 0, is_movt2 = 0, rd2 = 0;
+    if (off < 0 || off + 8 > code_len) return -1;
+    hi  = (unsigned)code[off]     | ((unsigned)code[off + 1] << 8);
+    lo  = (unsigned)code[off + 2] | ((unsigned)code[off + 3] << 8);
+    hi2 = (unsigned)code[off + 4] | ((unsigned)code[off + 5] << 8);
+    lo2 = (unsigned)code[off + 6] | ((unsigned)code[off + 7] << 8);
+    if (mov_imm_decode_a(hi, lo, &is_movt, &rd, &loimm) != 0) return -1;
+    if (is_movt) return -1;                       /* pair must start with MOVW */
+    if (mov_imm_decode_a(hi2, lo2, &is_movt2, &rd2, &hiimm) != 0) return -1;
+    if (!is_movt2 || rd2 != rd) return -1;        /* must be MOVT of the same Rd */
+    imm = (loimm | (hiimm << 16)) + (unsigned)delta;
+    mov_imm_encode_a(0, rd, imm & 0xFFFFu, &hi, &lo);
+    mov_imm_encode_a(1, rd, (imm >> 16) & 0xFFFFu, &hi2, &lo2);
+    code[off]     = (unsigned char)(hi & 0xFF);
+    code[off + 1] = (unsigned char)((hi >> 8) & 0xFF);
+    code[off + 2] = (unsigned char)(lo & 0xFF);
+    code[off + 3] = (unsigned char)((lo >> 8) & 0xFF);
+    code[off + 4] = (unsigned char)(hi2 & 0xFF);
+    code[off + 5] = (unsigned char)((hi2 >> 8) & 0xFF);
+    code[off + 6] = (unsigned char)(lo2 & 0xFF);
+    code[off + 7] = (unsigned char)((lo2 >> 8) & 0xFF);
+    return 0;
 }
 
 /* Export symbol info for the linker */

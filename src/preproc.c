@@ -85,6 +85,7 @@ typedef struct Macro {
     int           is_variadic;  /* C99 variadic macro (...): __VA_ARGS__ captures trailing args. */
     char        **params;
     int           param_count;
+    int           def_line;     /* 定义所在行；重定义告警要用它指出前一处定义 */
     struct Macro *next;
 } Macro;
 
@@ -99,9 +100,14 @@ static int    g_inc_dir_count;
 static char   g_main_file[256];
 /* Track included files for dependency emission (-MMD). When a header resolves
  * to a path already recorded, we skip re-include via the include guard path. */
-#define PP_MAX_INC_FILES 64
+/* 上限由板级/宿主的 ARKCC_MAX_INC_FILES 决定（见 arkcc_config.h）。
+ * 超出时不再静默丢弃：只告警一次，说明依赖文件会不完整。 */
+#ifndef PP_MAX_INC_FILES
+#   define PP_MAX_INC_FILES ARKCC_MAX_INC_FILES
+#endif
 static const char *g_inc_files[PP_MAX_INC_FILES];
 static int         g_inc_file_count;
+static int         g_inc_file_overflow;   /* 已告警过超限 */
 /* #pragma pack(push/pop) stack for struct alignment control. */
 static int    g_pack_stack[PP_PACK_STACK];
 static int    g_pack_top;
@@ -151,17 +157,97 @@ static void remove_macro(const char *name) {
     }
 }
 
-static void add_object_macro(const char *name, const char *body) {
+/* pp_diag_msg 定义在本文件的诊断节（约 400 行处），而重定义检查必须在
+ * 宏表函数附近才能用到 find_macro，所以这里先给一个原型。 */
+static void pp_diag_msg(int line, int col, DiagSeverity sev, const char *msg,
+                        const char *a0, const char *a1);
+
+#if ARKCC_FEATURE_MACRO_REDEF_CHECK
+/* C99 6.10.3p2：同名宏可以重定义，前提是「形式（对象宏/函数宏）、形参表、
+ * 替换列表」完全相同；任一不同都是约束违反，必须告警。arkc 之前直接覆盖，
+ * 于是 `#define N 1` 之后又来一句 `#define N 2`，只有后者生效且没有任何提示。
+ * 这里只报事实，不借 armcc 的错误号——没有实测到 armcc 的编号，就不能编一个。 */
+static void check_macro_redef(int line, int col, const char *name, int is_func,
+                              int is_variadic, char **params, int pc,
+                              const char *body) {
+    Macro *m = find_macro(name);
+    int same = 1;
+    int i;
+    if (!m) return;
+    if (m->is_func != is_func || m->is_variadic != is_variadic) {
+        same = 0;
+    } else if (is_func && m->param_count != pc) {
+        same = 0;
+    } else if (is_func) {
+        for (i = 0; i < pc; i++) {
+            if (!m->params[i] || !params[i] || !ark_streq(m->params[i], params[i])) {
+                same = 0;
+                break;
+            }
+        }
+    }
+    if (same && !ark_streq(m->body ? m->body : "", body ? body : "")) same = 0;
+    if (!same) {
+        char ln[12];
+        pp_diag_msg(line, col, DIAG_SEV_WARNING,
+                    "incompatible redefinition of macro \"%s\" (previous definition at line %s)",
+                    name, diag_num(ln, m->def_line));
+    }
+}
+#endif
+
+/* 把字符追加到宏替换文本缓冲。
+ *   body  初始指向调用方栈上的 small 缓冲；超出容量后本函数把它换成内存池
+ *         里的更大缓冲，并把旧内容拷过去。
+ *   heap  记录池缓冲的首地址（0 表示仍在用栈缓冲），供 mem_realloc 使用。
+ * 返回 0 表示已达到硬上限（ARKCC_MACRO_BODY_MAX 或编译期关闭了动态扩容），
+ * 调用方应当截断并告警。 */
+static int body_put(char **body, int *len, int *cap, char **heap, char ch) {
+    if (*len >= *cap - 1) {
+#if ARKCC_FEATURE_MACRO_BODY_DYN
+        int nc;
+        char *nb;
+        if (*cap >= ARKCC_MACRO_BODY_MAX) return 0;
+        nc = (*cap) * 2;
+        if (nc > ARKCC_MACRO_BODY_MAX) nc = ARKCC_MACRO_BODY_MAX;
+        if (*heap) {
+            nb = (char *)mem_realloc(*heap, *cap, nc);
+        } else {
+            int i;
+            nb = (char *)mem_pool_alloc(nc);
+            for (i = 0; i < *len; i++) nb[i] = (*body)[i];
+            *heap = nb;
+        }
+        *body = nb;
+        *cap  = nc;
+#else
+        (void)heap;
+        return 0;
+#endif
+    }
+    (*body)[(*len)++] = ch;
+    return 1;
+}
+
+static void add_object_macro_at(const char *name, const char *body, int def_line) {
     Macro *m = (Macro *)mem_pool_alloc(sizeof(Macro));
     m->name = mem_strdup(name);
     m->body = mem_strdup(body ? body : "");
     m->is_func = 0;
+    m->is_variadic = 0;
+    m->params = 0;
+    m->param_count = 0;
+    m->def_line = def_line;
     m->next = g_macros;
     g_macros = m;
 }
 
-static void add_func_macro(const char *name, char **params, int pc,
-                            int is_variadic, const char *body) {
+static void add_object_macro(const char *name, const char *body) {
+    add_object_macro_at(name, body, 0);
+}
+
+static void add_func_macro_at(const char *name, char **params, int pc,
+                               int is_variadic, const char *body, int def_line) {
     Macro *m = (Macro *)mem_pool_alloc(sizeof(Macro));
     m->name = mem_strdup(name);
     m->body = mem_strdup(body ? body : "");
@@ -169,8 +255,14 @@ static void add_func_macro(const char *name, char **params, int pc,
     m->is_variadic = is_variadic;
     m->params = params;
     m->param_count = pc;
+    m->def_line = def_line;
     m->next = g_macros;
     g_macros = m;
+}
+
+static void add_func_macro(const char *name, char **params, int pc,
+                           int is_variadic, const char *body) {
+    add_func_macro_at(name, params, pc, is_variadic, body, 0);
 }
 
 static void buf_putc(char *buf, int *plen, int cap, char c) {
@@ -577,6 +669,35 @@ static int g_macro_expand;
  * so that all references in the same translation unit return a stable value. */
 static char g_build_date[12];
 static char g_build_time[9];
+/* 用户指定的覆盖值（--build-date/--build-time/--source-date-epoch）。空串表示
+ * 没有覆盖，此时沿用平台层的 ark_get_date_time。 */
+static char g_build_date_override[12];
+static char g_build_time_override[9];
+
+#if ARKCC_FEATURE_BUILD_TIME
+/* 校验并保存覆盖值。日期形如 "Nov  6 2026"（11 字符），时间 "12:34:56"（8 字符）。
+ * 只做格式校验，不校验日期是否真实存在——把 2 月 30 日写进去是用户的事，
+ * 但长度或分隔符不对会让后面的代码误读，必须挡住。 */
+int preproc_set_build_time(const char *date, const char *time) {
+    int i;
+    if (date) {
+        int n = ark_strlen(date);
+        if (n != 11) return 0;
+        if (date[3] != ' ' || date[6] != ' ') return 0;
+        if (date[7] == 0 || date[8] == 0) return 0;
+        for (i = 0; i < 11; i++) g_build_date_override[i] = date[i];
+        g_build_date_override[11] = 0;
+    }
+    if (time) {
+        int n = ark_strlen(time);
+        if (n != 8) return 0;
+        if (time[2] != ':' || time[5] != ':') return 0;
+        for (i = 0; i < 8; i++) g_build_time_override[i] = time[i];
+        g_build_time_override[8] = 0;
+    }
+    return 1;
+}
+#endif
 
 static void process(const char *src, char *out, int *out_len, int out_cap,
                     int is_file);
@@ -898,8 +1019,13 @@ static void process(const char *src, char *out, int *out_len, int out_cap,
                 char **params = 0;
                 int pc = 0;
                 int pc_cap = 0;
-                char body[16384];
-                int bl = 0;
+                char  body_small[4096];
+                char *body = body_small;
+                char *body_heap = 0;
+                int   bcap = (int)sizeof(body_small);
+                int   bl = 0;
+                int   truncated = 0;
+                const char *name_start = q;   /* 重定义告警的插入记号要指向宏名 */
                 while (*q && is_alnum(*q) && nl < 63) name[nl++] = *q++;
                 name[nl] = 0;
                 if (nl == 0) {
@@ -938,13 +1064,13 @@ static void process(const char *src, char *out, int *out_len, int out_cap,
                     }
                 }
                 while (*q == ' ' || *q == '\t') q++;
-                while (*q && *q != '\n' && bl < 16383) {
+                while (*q && *q != '\n') {
                     /* Line continuation via trailing backslash-newline.
                      * Handle both Unix (\n) and Windows (\r\n) line endings. */
                     if (*q == '\\' && (q[1] == '\n' || (q[1] == '\r' && q[2] == '\n'))) {
                         q += (q[1] == '\r') ? 3 : 2;
                         line_no++;
-                        body[bl++] = ' ';
+                        if (!body_put(&body, &bl, &bcap, &body_heap, ' ')) { truncated = 1; break; }
                         continue;
                     }
                     /* Strip comments from macro body (C99 phase 3: comments -> space).
@@ -958,19 +1084,21 @@ static void process(const char *src, char *out, int *out_len, int out_cap,
                             q++;
                         }
                         if (*q == '*' && q[1] == '/') q += 2;
-                        body[bl++] = ' ';
+                        if (!body_put(&body, &bl, &bcap, &body_heap, ' ')) { truncated = 1; break; }
                         continue;
                     }
                     if (*q == '/' && q[1] == '/') {
                         /* Line comment: rest of line is comment */
                         break;
                     }
-                    body[bl++] = *q++;
+                    if (!body_put(&body, &bl, &bcap, &body_heap, *q++)) { truncated = 1; break; }
                 }
-                if (bl >= 16383 && *q && *q != '\n') {
+                if (truncated) {
+                    char cap_s[12];
+                    /* 这是 arkc 自己的容量上限，没有 armcc 编号可借。 */
                     pp_diag_msg(g_pp_line, 0, DIAG_SEV_WARNING,
-                                "macro '%s' body truncated at 16383 bytes",
-                                nl > 0 ? name : "?", 0);
+                                "macro '%s' body truncated at %s bytes (ARKCC_MACRO_BODY_MAX)",
+                                nl > 0 ? name : "?", diag_num(cap_s, ARKCC_MACRO_BODY_MAX));
                 }
                 /* If macro body was truncated (exceeded buffer), consume the rest of
                  * the macro definition (including line continuations) to avoid emitting
@@ -987,8 +1115,13 @@ static void process(const char *src, char *out, int *out_len, int out_cap,
                 while (bl > 0 && (body[bl-1] == ' ' || body[bl-1] == '\t' || body[bl-1] == '\r')) bl--;
                 body[bl] = 0;
                 if (nl > 0) {
-                    if (is_fn) add_func_macro(name, params, pc, is_variadic, body);
-                    else add_object_macro(name, body);
+#if ARKCC_FEATURE_MACRO_REDEF_CHECK
+                    /* 注意：要在 add_* 之前调用，否则比的是自己。 */
+                    check_macro_redef(g_pp_line, pp_col(name_start), name, is_fn,
+                                      is_variadic, params, pc, body);
+#endif
+                    if (is_fn) add_func_macro_at(name, params, pc, is_variadic, body, g_pp_line);
+                    else add_object_macro_at(name, body, g_pp_line);
                 }
             }
             else if (ark_streq(cmd, "undef") && ACTIVE()) {
@@ -1041,6 +1174,14 @@ static void process(const char *src, char *out, int *out_len, int out_cap,
                              * scope after this block exits. */
                             if (g_inc_file_count < PP_MAX_INC_FILES) {
                                 g_inc_files[g_inc_file_count++] = mem_strdup(path);
+                            } else if (!g_inc_file_overflow) {
+                                char cap_s[12];
+                                /* 静默丢弃会让 -MMD 生成的依赖文件缺项，构建
+                                 * 系统就不会在某个头文件改动后重编。 */
+                                g_inc_file_overflow = 1;
+                                pp_diag_msg(g_pp_line, pp_col(q), DIAG_SEV_WARNING,
+                                            "more than %s included files; the dependency file (-MMD) will be incomplete",
+                                            diag_num(cap_s, PP_MAX_INC_FILES), 0);
                             }
                             {
                                 /* Diagnostics inside the header name the header,
@@ -1675,7 +1816,22 @@ char *preproc_process(const char *src) {
     g_macro_expand = 1;
     /* Cache build date/time once per translation unit so all __DATE__/__TIME__
      * references return the same value (C99 6.10.8.1). */
+#if ARKCC_FEATURE_BUILD_TIME
+    if (g_build_date_override[0]) {
+        int i;
+        for (i = 0; i < 11; i++) g_build_date[i] = g_build_date_override[i];
+        g_build_date[11] = 0;
+    } else {
+        ark_get_date_time(g_build_date, g_build_time);
+    }
+    if (g_build_time_override[0]) {
+        int i;
+        for (i = 0; i < 8; i++) g_build_time[i] = g_build_time_override[i];
+        g_build_time[8] = 0;
+    }
+#else
     ark_get_date_time(g_build_date, g_build_time);
+#endif
     /* Predefined ARM Compiler 5 (armcc) macros so existing MDK/STM32 source
      * files compile unchanged. User code may #undef these to override.
      *

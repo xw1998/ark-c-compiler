@@ -176,6 +176,98 @@
  *
  * Default 1. The switch exists so the layer can be measured and removed; it is
  * not a runtime option (a runtime flag would have to keep all the code). */
+/* ---------------------------------------------------------------------------
+ * 0.8.0 预处理器的三处可配置点
+ *
+ * 三项都遵守同一条纪律：默认关闭时编译产物与旧行为逐字节相同；打开后必须
+ * 有真正走到该分支的用例（见 tests/features/）。
+ *
+ *  ARKCC_FEATURE_MACRO_REDEF_CHECK  C99 6.10.3p2：同名宏的重定义只有在「形式、
+ *                                   形参、替换列表全部相同」时才合法，否则要
+ *                                   告警。arkc 之前一律静默覆盖。
+ *  ARKCC_FEATURE_MACRO_BODY_DYN     替换文本超过栈缓冲时改为从内存池翻倍扩容，
+ *                                   不再截断。硬上限由 ARKCC_MACRO_BODY_MAX 定。
+ *  ARKCC_MAX_INC_FILES              -MMD 依赖文件能记录的 #include 个数。之前固定
+ *                                   64 且超出后静默丢弃。
+ *  ARKCC_FEATURE_CAST_F64F32        float<->double 之间插入 IR_F2F。关掉时恢复
+ *                                   旧行为（不插转换节点，两种精度被当成同一表示）。
+ *  ARKCC_FEATURE_FCONST_FOLD        浮点常量表达式折叠。关掉时全局浮点初值回到
+ *                                   "求不出值就写 0"的旧路径。
+ * ------------------------------------------------------------------------- */
+/* 0.8.0 的新开关（默认值就是“新行为是否默认生效”的答案）：
+ *   ARKCC_FEATURE_OPT_DCE_CFG    基本块级可达性 DCE。默认 0：线性 DCE 已足够，
+ *                                CFG 版要用户显式 --dce-cfg 打开。
+ *   ARKCC_FEATURE_ARM_RELOC_DATA 多目标文件的数据段可搬迁。默认 0：需要
+ *                                --reloc-data，老的单对象流程逐字节不变。
+ *   ARKCC_FEATURE_OPT_REG_TOP    栈顶值常驻 r0。默认 0：--reg-top 打开。
+ *   ARKCC_FEATURE_RT_LAZY        运行库按需发射。默认 0：--rt-lazy 打开。
+ *   ARKCC_FEATURE_ASM_EXTRA      汇编器扩展指令集。默认 0：--asm-extra 打开。 */
+/* 编译期：这几段代码是否进入产物。板上（STM32_MIN）默认裁掉以省 Flash；
+ * 宿主/交叉编译保留，于是运行时开关 --xxx 才有的可开。
+ * 运行时的默认值一律是 0（见 config.c），所以默认行为与旧版本逐字节相同。 */
+#ifndef ARKCC_FEATURE_OPT_DCE_CFG
+#   if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#       define ARKCC_FEATURE_OPT_DCE_CFG      0
+#   else
+#       define ARKCC_FEATURE_OPT_DCE_CFG      1
+#   endif
+#endif
+#ifndef ARKCC_FEATURE_ARM_RELOC_DATA
+#   if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#       define ARKCC_FEATURE_ARM_RELOC_DATA   0
+#   else
+#       define ARKCC_FEATURE_ARM_RELOC_DATA   1
+#   endif
+#endif
+#ifndef ARKCC_FEATURE_OPT_REG_TOP
+#   define ARKCC_FEATURE_OPT_REG_TOP          1
+#endif
+#ifndef ARKCC_FEATURE_RT_LAZY
+#   define ARKCC_FEATURE_RT_LAZY              1
+#endif
+#ifndef ARKCC_FEATURE_ASM_EXTRA
+#   define ARKCC_FEATURE_ASM_EXTRA            1
+#endif
+
+#ifndef ARKCC_FEATURE_SCATTER_CHECK
+#   define ARKCC_FEATURE_SCATTER_CHECK    1   /* 分散文件布局校验 */
+#endif
+#ifndef ARKCC_FEATURE_BUILD_TIME
+#   define ARKCC_FEATURE_BUILD_TIME       1   /* --build-date/--build-time/--source-date-epoch */
+#endif
+
+#ifndef ARKCC_FEATURE_CAST_F64F32
+#   define ARKCC_FEATURE_CAST_F64F32      1   /* float<->double 插 IR_F2F */
+#endif
+
+#ifndef ARKCC_FEATURE_FCONST_FOLD
+#   define ARKCC_FEATURE_FCONST_FOLD      1   /* 浮点常量表达式折叠 */
+#endif
+
+#ifndef ARKCC_FEATURE_MACRO_REDEF_CHECK
+#   define ARKCC_FEATURE_MACRO_REDEF_CHECK 1
+#endif
+
+#ifndef ARKCC_FEATURE_MACRO_BODY_DYN
+#   define ARKCC_FEATURE_MACRO_BODY_DYN    1
+#endif
+
+#ifndef ARKCC_MACRO_BODY_MAX
+#   if ARKCC_PROFILE == ARKCC_PROFILE_HOST_FULL || ARKCC_PROFILE == ARKCC_PROFILE_CROSS_COMPILE
+#       define ARKCC_MACRO_BODY_MAX (1024 * 1024)   /* 1 MiB：池是 64 MB，够大 */
+#   else
+#       define ARKCC_MACRO_BODY_MAX 16383           /* 板端池只有 80 KB，守住 16 KB */
+#   endif
+#endif
+
+#ifndef ARKCC_MAX_INC_FILES
+#   if ARKCC_PROFILE == ARKCC_PROFILE_HOST_FULL
+#       define ARKCC_MAX_INC_FILES 1024
+#   else
+#       define ARKCC_MAX_INC_FILES 64
+#   endif
+#endif
+
 #ifndef ARKCC_FEATURE_DIAG
 #   define ARKCC_FEATURE_DIAG 1
 #endif
