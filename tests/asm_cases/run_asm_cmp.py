@@ -4,11 +4,12 @@ instruction, plus the --asm-extra switch in both of its states.
 
 Why this exists
 ---------------
-The `--asm-extra` extension adds two dozen mnemonics the backend itself never
-emits (ADDS/SUBS with flags, LDM/STM, MLA/..., ADR, CBZ/CBNZ, MRS/MSR).  Those
-encoders are hand-written bit patterns, and "the bit pattern looks like what
-the ARM ARM says" is exactly the argument that shipped the VFP nibble bug.  The
-only acceptable evidence is an independent encoder agreeing on the same source.
+The `--asm-extra` extension adds the mnemonics the backend itself never emits
+(ADDS/SUBS with flags, LDM/STM in all four of their shapes, TBB/TBH, LDRD/STRD,
+MLA/..., ADR, CBZ/CBNZ, MRS/MSR).  Those encoders are hand-written bit patterns,
+and "the bit pattern looks like what the ARM ARM says" is exactly the argument
+that shipped the VFP nibble bug.  The only acceptable evidence is an independent
+encoder agreeing on the same source.
 
 So every case in this directory is assembled twice -- by arkc and by
 arm-none-eabi-as -- and the two images are compared as *decoded instructions*
@@ -55,6 +56,8 @@ CASES = [
     "03_mul_acc.s",
     "04_sysreg.s",
     "05_pcrel.s",
+    "06_table_ldrd.s",
+    "07_vfp_literal.s",
 ]
 
 # --asm-extra switch contract.  Each entry is (mnemonic, source line that must
@@ -79,6 +82,12 @@ SWITCH_CASES = [
     ("LDMIA",  "ldmia r0!, {r1}"),
     ("STM",    "stm r0!, {r1}"),
     ("STMIA",  "stmia r0!, {r1}"),
+    ("LDMDB",  "ldmdb r0!, {r9, r10}"),
+    ("STMDB",  "stmdb r0, {r9, r10}"),
+    ("TBB",    "tbb [r0, r1]"),
+    ("TBH",    "tbh [r0, r1, lsl #1]"),
+    ("LDRD",   "ldrd r0, r1, [r2, #8]"),
+    ("STRD",   "strd r0, r1, [r2, #-8]"),
     ("MLA",    "mla r0, r1, r2, r3"),
     ("MLS",    "mls r0, r1, r2, r3"),
     ("SMULL",  "smull r0, r1, r2, r3"),

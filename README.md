@@ -202,7 +202,7 @@
 | IR 栈顶驻留 r0 `--reg-top`（有界寄存器化，非分配器） | 是（默认关；80 样例指令数 −7.1%） |
 | `float` ↔ `double` 显式转换（`VCVT.F32.F64` / `VCVT.F64.F32`） | 是 |
 | 浮点常量表达式折叠（`eval_const_expr` 支持浮点） | 是 |
-| 汇编器扩展指令集 `--asm-extra`（ADDS/SUBS/…/MRS/MSR 共 24 个助记符 + `.W`/`.N` 后缀） | 是（默认关；关时报 unknown mnemonic） |
+| 汇编器扩展指令集 `--asm-extra`（ADDS/SUBS/…/MRS/MSR、`LDM`/`STM` 的 32 位与减前形式、`TBB`/`TBH`、`LDRD`/`STRD` 共 30 个助记符 + `.W`/`.N` 后缀） | 是（默认关；关时报 unknown mnemonic） |
 
 ### `.sct` / `.s` 文件支持矩阵
 
@@ -440,8 +440,11 @@ python tests/asm_cases/run_asm_cmp.py                             # 汇编器对
 `tests/asm_cases/run_asm_cmp.py` 把 `--asm-extra` 的每个助记符用两个独立汇编器
 各编一遍，比较的是 **`objdump` 解码出来的指令文本**而不是字节：同一条指令常有
 多种合法编码（GAS 偏爱 mod-imm 形式），字节不等不代表错；能执行的东西一致才是
-一致。第二张表验证开关的另一半——关掉时 24 个助记符必须逐个报 unknown
-mnemonic。没有 GNU ARM 工具链时 `exit 2`，不会假装通过。
+一致。第二张表验证开关的另一半——关掉时 30 个助记符必须逐个报 unknown
+mnemonic。七组样例分别覆盖带标志的算术、`LDM/STM`（16 位与 32 位、写回与不写回、
+增前与减前、高寄存器与 `lr`/`pc`）、乘加、系统寄存器、PC 相对、`TBB/TBH` 与
+`LDRD/STRD`、以及 VFP 的单/双精度与字面量池。没有 GNU ARM 工具链时 `exit 2`，
+不会假装通过。
 
 `run_asm_test.ps1` 校验汇编输入的扩展名路由：四种后缀产出逐字节相同的机器码、`-S` 对汇编输入是原样透传、缺失文件必须报错退出、`.c` 仍走正常前端（防止扩展名探测把 C 源当成汇编）。
 `run_arm_exec_test.ps1` 把 C 启动代码、汇编 semihosting 陷门和一个 C 工作负载编译链接成裸镜像，在 `qemu-system-arm -machine mps2-an385` 上执行，用 semihosting 退出码判定结果（两个不同负载必须分别返回 8 和 3）。QEMU 路径默认 `D:\qemu\mingw64\bin\qemu-system-arm.exe`，可用 `ARKCC_QEMU` 环境变量或 `-Qemu` 参数覆盖；装不上时脚本 `exit 2`，不会假装通过。这条门禁抓到并固化修复了三个真缺陷：向量表缺 Thumb 位（Cortex-M 会进 INVSTATE lockup）、`SVC`/`BKPT` 的无 `#` 立即数被静默编成 0、以及 `MUL r2, r2, r1` 被编成 `MUL r2, r2, r2`（导致所有整数取模算成 q\*q）。

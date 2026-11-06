@@ -7362,7 +7362,7 @@ imm32  = S:I1:I2:imm10:imm11:0（符号扩展）
 分三档登记：本版已修、仍然存在、本书未覆盖。最后再给一张开关总表，把本轮
 新增的每一个开关的宏名、命令行、默认值、以及"关掉以后会发生什么"写在一起。
 
-### D.1 本版本轮已修（十二项 + 十七处顺带修掉的缺陷）
+### D.1 本版本轮已修（十二项 + 二十一处顺带修掉的缺陷）
 
 先说明这张表的读法：**"开关"列写的是"宏 / 命令行"**。宏决定这段代码是否编进
 产物（板端可以裁掉省 Flash），命令行决定运行时是否走新路径。**运行期默认一律
@@ -7374,7 +7374,7 @@ imm32  = S:I1:I2:imm10:imm11:0（符号扩展）
 | `-link` 不搬迁数据段（两个对象都含全局变量时报 SRAM 重叠） | `ARKCC_FEATURE_ARM_RELOC_DATA` / `--reloc-data` | 三个对象各含 `.data`+`.bss`，链接执行的返回值 40；不加选项仍报 `SRAM overlap`（`tests/arm_exec` 的 `reloc_data` / `reloc_data_off` 两例） |
 | 运行时库内联进每个翻译单元（`add3.c` 1578 字节里有 1500 多字节是 `__aeabi_*`） | `ARKCC_FEATURE_RT_LAZY` / `--rt-lazy` | `add3.c` 单文件镜像 1578 → **60** 字节（只发可达的运行库块） |
 | 不做寄存器分配（每个 IR 操作机械地 pop 到 r0、算完 push 回栈） | `ARKCC_FEATURE_OPT_REG_TOP` / `--reg-top` | 80 个样例的用户代码指令数 110289 → **102484（−7.1%）**；`c99_test.c` 47043 → 42685。不是分配器，只把"IR 栈顶"驻留在 r0 |
-| 汇编器只支持本后端会发的指令 | `ARKCC_FEATURE_ASM_EXTRA` / `--asm-extra` | 新增 24 个助记符（ADDS/SUBS/ANDS/ORRS/EORS/BICS/MVNS/MULS、LSLS/LSRS/ASRS、ADR、CBZ/CBNZ、LDM/LDMIA/STM/STMIA、MLA/MLS/SMULL/SMLAL、MRS/MSR），与 `arm-none-eabi-as` 的产物**逐条反汇编一致**；关掉时逐个报 `unknown mnemonic`（`tests/asm_cases/run_asm_cmp.py`） |
+| 汇编器只支持本后端会发的指令 | `ARKCC_FEATURE_ASM_EXTRA` / `--asm-extra` | 新增 30 个助记符（ADDS/SUBS/ANDS/ORRS/EORS/BICS/MVNS/MULS、LSLS/LSRS/ASRS、ADR、CBZ/CBNZ、LDM/LDMIA/LDMDB/STM/STMIA/STMDB、TBB/TBH、LDRD/STRD、MLA/MLS/SMULL/SMLAL、MRS/MSR），与 `arm-none-eabi-as` 的产物**逐条反汇编一致**；关掉时逐个报 `unknown mnemonic`（`tests/asm_cases/run_asm_cmp.py`，七组样例） |
 | `float` ↔ `double` 转换未支持 | `ARKCC_FEATURE_CAST_F64F32` | `(double)f` / `(float)d` 生成 `VCVT.F32.F64` / `VCVT.F64.F32` |
 | 浮点常量不参与 `eval_const_expr` | `ARKCC_FEATURE_FCONST_FOLD` | `double g1 = 1.0/3.0*3.0;` 的初值由全 0 变为 `0x3FF0…`（1.0）；C 后端 + 宿主 gcc 的 7 项断言全过 |
 | 依赖文件最多记录 64 个被包含文件 | `ARKCC_MAX_INC_FILES`（宿主 1024 / 板端 64） | 70 个 `#include` 的工程，`-MMD` 出来 70 条；超过上限时**告警一次**（不再静默丢弃，静默丢会让构建系统漏重编） |
@@ -7419,12 +7419,37 @@ imm32  = S:I1:I2:imm10:imm11:0（符号扩展）
 | `f().m` 把值当地址用、`arr[i] = f()` 存了地址 | `add(a,b).x` 读到地址 4 上（读故障）；`arr[2] = mk(7,8)` 把栈地址写进数组元素 | 成员访问：小结构体返回值先落到临时槽再取地址；结构体赋值：≤ 8 字节改走值语义（`IR_STORE_IDX`），调用结果不再被当指针；函数调用也可以直接当结构体实参（`psum(mk(11,12))`） | 同上用例的 `arr[2] = mk(7, 8)`、`psum(arr[2])`、`mk(5,6).y`、`psum(mk(11,12))` |
 | 形参"槽号"按对象尺寸递增，与实际传输的字数不符 | `mixed(int, struct P, int, struct Q, int)` 的第 5 个实参从 `[r6, #63]` 读（`soff == -1`，即根本没有这个槽） | 槽号改成"实际传输字数"：结构体 > 8 传指针 1 字、5..8 传 2 字、数组退化成指针 1 字、标量按尺寸 | 同上用例的 `mixed(1, a, 2, q, 3)` |
 
+再下一批是"汇编器覆盖面"。`--asm-extra` 的第一版只补了后端自己不会发的一部分
+指令，剩下的遇到就报错——报错是安全的；但**报错的边界上还有四个地方其实没报错，
+而是悄悄编成了另一条指令**。这四条比"缺一条指令"严重：
+
+| 缺陷 | 症状 | 修法 | 证据 |
+|---|---|---|---|
+| `[Rn, Rm]` 寄存器偏移被静默当成 `[Rn]` | `ldr r0, [r1, r2]` 编成 `ldr r0, [r1, #0]`。同样的形状在 `LDRH/LDRSH/LDRSB` 与 `LDRD/STRD` 里各有一份：逗号后面不是 `#`，解析器就把偏移留在 0，寄存器被无声丢掉 | 三处解析都补"有逗号但不是 `#立即数`"的检查，报 `register-offset addressing ([Rn, Rm]) is not emitted` | 手工用例：`ldr` / `ldrh` / `ldrd` 三种形状都从"能汇编"变成"报错" |
+| `VLDR/VSTR d0, …` 被当成 `S0` | 寄存器名从没被读过，单/双精度只看 `.f64` 后缀。`vldr d0, [r1, #8]` 编成 `vldr s0, [r1, #8]`（`ED91 0A02` 而不是 `ED91 0B02`），读回来的是半个双精度 | 单/双精度改由**寄存器名的首字母**决定；后缀与寄存器名矛盾时报错 | `tests/asm_cases/07_vfp_literal.s`：`vldr s0` / `vldr d0` / `vldr.f64 d1` / `vstr.f64 d3` 与 GAS 逐字节相同 |
+| `VLDR s0, 标号`（字面量池）静默编成 `[pc, #0]` | 标签从没被解析过。只要标签不在 `Align(PC,4)`，读到的就是相邻的另一条数据——而这正是浮点常量最常出现的位置 | 两趟汇编结束时所有标签都已就位，直接算 `addr - Align(pc+4, 4)`；不在本文件、越界、不是 4 的倍数都报错 | `07_vfp_literal.s` 的 `vldr s0, k1`、`vldr d0, k2` 与 GAS 逐字节相同 |
+| `VSTR s1, 标号` / `VLDR d0, =标号` 不加提示 | 前者是 pc 相对的**存**，ARM ARM 写作 UNPREDICTABLE；后者的 `=` 在 `LDR` 里表示"取地址"，在 `VLDR` 里读的是那个地址上的值，两种读法差一次间接 | `VSTR` 的字面量形式与 `=label` 形式都改成报错并说明理由 | 手工用例：两条都拒绝，`vldr s0, k1` 仍可汇编 |
+
+同一个函数里还补上了三种此前**明确报错**（不算错答案，但让手写 `.s` 用不了）的
+指令形态：
+
+| 形态 | 编码 | 证据 |
+|---|---|---|
+| `LDM/STM` 的 32 位形式：无写回、含 `r8`–`r12`/`lr`/`pc`、以及减前（`LDMDB`/`STMDB`） | `hw1 = 0xE880`（增前）或 `0xE900`（减前），再或上 `W<<5`、`L<<4`、`Rn`；`hw2` 是寄存器表（`r0`–`r12` 各一位，`lr`=bit14，`pc`=bit15）。16 位形式只在"基址与整张表都在 `r0`–`r7`、有写回、增前"时使用 | `tests/asm_cases/02_ldm_stm.s`，19 条覆盖两种宽度与两种地址模式 |
+| `TBB` / `TBH` | `hw1 = 0xE8D0` 再或上 `Rn`；`hw2 = 0xF000`（TBB）或 `0xF010`（TBH）再或上 `Rm` | `06_table_ldrd.s` |
+| `LDRD` / `STRD` | `hw1 = 0xE940` 再或上 P(bit6)、U(bit7)、L(bit4)、`Rn`；`hw2 = Rt:Rt2:imm8`。偏移必须是 4 的倍数且在 ±1020 内，`Rt` 必须偶数且 `Rt2 == Rt+1`（否则 ARMv7-M 写作 UNPREDICTABLE，GAS 照样发，这里拒绝） | 同上 |
+
+写这段时踩到一个和 VFP 同型的坑：增前与减前只差 U 位（bit 7），而 `0xE880` 里
+**这一位本来就是 1**，所以 `hw1 | 0x80` 编出来的还是增前；`LDRD` 的正负偏移也是
+同一件事（`0xE9C0` 里 bit7 已是 1）。两处都必须**选基址**，不能用"或一个标志位"
+的写法。第一版就是这么错的，`tests/asm_cases` 一与 GAS 比对就暴露了。
+
 ### D.2 仍然存在（五项）
 
 | 限制 | 症状 | 现在的对策 |
 |---|---|---|
 | 没有真正的寄存器分配 | `--reg-top` 只把"IR 栈顶"驻留 r0，函数里其它值仍然走栈；产物仍比优化版大 2–3 倍 | 接受；这是有界改动的代价（一个 op 判断错只影响一个 op） |
-| 汇编器扩展的覆盖面 | 只补了 24 个助记符。32 位 `LDR/STR` 立即数偏移、`TBB/TBH`、`VLDR` 字面量池、`LDM/STM` 的无写回形式都不在其中 | 遇到即**报错**（带 `--asm-extra is off; turn it on` 提示），不静默降级 |
+| 汇编器扩展的覆盖面 | 已经补到 30 个助记符，覆盖后端会发的全部指令，外加手写 `.s` 常用的 `LDM/STM` 32 位形式、`TBB/TBH`、`LDRD/STRD` 与 `VLDR` 字面量池。仍然不支持的：`[Rn, Rm]` 寄存器偏移与前后变址写回（`[Rn, #imm]!` / `[Rn], #imm`）、`LDMIB/LDMDA/STMIB/STMDA`、`VLDM/VSTM`、`LDRD/STRD` 的寄存器偏移、armasm 风格的 `LDMFD`/`STMIA` 别名 | 遇到即**报错**（带 `--asm-extra is off; turn it on` 提示或具体原因），不静默降级 |
 | 运行库仍内联在每个翻译单元 | 多文件工程里 `__aeabi_*` 被重复一份 | 靠链接器去重；`--rt-lazy` 只削掉"不可达"，不去重 |
 | 板端默认构建时间仍是固定值 | 不开 `--source-date-epoch` 时，两次构建的 `__DATE__` 可能相同 | 需要可复现或需要真实时间时显式给 epoch |
 | 依赖文件仍有硬上限 | 超过 `ARKCC_MAX_INC_FILES` 的工程，`-MMD` 依赖不完整 | 只告警一次（明确说"依赖文件会不完整"），需要时改宏重编 |
@@ -7453,7 +7478,7 @@ imm32  = S:I1:I2:imm10:imm11:0（符号扩展）
 | `ARKCC_FEATURE_ARM_RELOC_DATA` | `--reloc-data` / `--no-reloc-data` | 关 | 数据段不再搬迁：多个对象各带全局变量时链接直接报 `SRAM overlap`，仍然是"映射成一个翻译单元"的老做法 |
 | `ARKCC_FEATURE_RT_LAZY` | `--rt-lazy` | 关 | 运行库整段发射：`add3.c` 回到 1578 字节（而不是 60），不可达的 `__aeabi_*` 也留在镜像里 |
 | `ARKCC_FEATURE_OPT_REG_TOP` | `--reg-top` | 关 | 每个操作都老老实实 pop/push，指令数回到 110289（开是 102484）；生成代码与开之前逐字节相同 |
-| `ARKCC_FEATURE_ASM_EXTRA` | `--asm-extra` / `--no-asm-extra` | 关 | 24 个扩展助记符一律按未知助记符报错（报错文本会提示"打开 --asm-extra 就能汇编"），不会静默按别的指令编码 |
+| `ARKCC_FEATURE_ASM_EXTRA` | `--asm-extra` / `--no-asm-extra` | 关 | 30 个扩展助记符一律按未知助记符报错（报错文本会提示"打开 --asm-extra 就能汇编"），不会静默按别的指令编码 |
 | `ARKCC_FEATURE_CAST_F64F32` | （无） | 开 | `float` 与 `double` 被当成同一种表示，混合精度表达式的中间结果精度不符合 C 标准 |
 | `ARKCC_FEATURE_FCONST_FOLD` | （无） | 开 | 浮点常量表达式不再折叠，全局浮点初值回到"求不出值就写 0"的老路径 |
 | `ARKCC_FEATURE_OPT_DCE_CFG` | `--dce-cfg` | 关 | 只做线性扫描的 DCE：基本块里"能到但不执行"的代码不会被删（`-O1` 下多 7 行汇编） |

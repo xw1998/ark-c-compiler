@@ -4789,8 +4789,9 @@ static int ark_asm_extra_name(const char *op) {
     static const char *names[] = {
         "ADDS", "SUBS", "ANDS", "ORRS", "EORS", "BICS", "MVNS", "MULS",
         "LSLS", "LSRS", "ASRS", "ADR", "CBZ", "CBNZ",
-        "LDM", "LDMIA", "STM", "STMIA", "MLA", "MLS", "SMULL", "SMLAL",
-        "MRS", "MSR"
+        "LDM", "LDMIA", "LDMDB", "STM", "STMIA", "STMDB",
+        "TBB", "TBH", "LDRD", "STRD",
+        "MLA", "MLS", "SMULL", "SMLAL", "MRS", "MSR"
     };
     int i;
     for (i = 0; i < (int)(sizeof(names) / sizeof(names[0])); i++)
@@ -4833,6 +4834,10 @@ static int op_size_a(const char *op) {
         strieq_a(op, "SMULL") || strieq_a(op, "SMLAL")) return 4;
     if (strieq_a(op, "MRS") || strieq_a(op, "MSR")) return 4;
     if (strieq_a(op, "ADR.W") || strieq_a(op, "CBZ.W") || strieq_a(op, "CBNZ.W")) return 4;
+    /* --asm-extra: table branches and the 64-bit load/store pair have no
+     * 16-bit encoding at all, so pass 1 must count 4 bytes for them. */
+    if (strieq_a(op, "TBB") || strieq_a(op, "TBH") ||
+        strieq_a(op, "LDRD") || strieq_a(op, "STRD")) return 4;
     /* CLZ, RBIT and SADD16 only exist as 32-bit Thumb-2 encodings. */
     if (strieq_a(op, "CLZ"))    return 4;
     if (strieq_a(op, "RBIT"))   return 4;
@@ -5151,6 +5156,26 @@ static void pass1_a(ArmAsm *a) {
                 }
             } else if (strieq_a(first, "SVC")) {
                 pc += 2;
+            } else if (strieq_a(first, "LDMIA") || strieq_a(first, "LDM") ||
+                       strieq_a(first, "STMIA") || strieq_a(first, "STM") ||
+                       strieq_a(first, "LDMDB") || strieq_a(first, "STMDB")) {
+                /* The 16-bit T1 form is available only for: base inside
+                 * r0-r7, register list inside r0-r7, writeback present and
+                 * increment-after addressing.  Everything else takes the
+                 * 32-bit T2 form.  Pass 1 has to make the same decision as
+                 * pass 2, or every later label in the file shifts by 2. */
+                int rn = parse_reg_a(&p);
+                int has_wb = 0, has_lr1 = 0, has_pc1 = 0, list1;
+                int is_db1 = (first[3] == 'D' || first[3] == 'd');
+                skip_space_a(&p);
+                if (*p == '!') { has_wb = 1; p++; }
+                eat_comma_a(&p);
+                list1 = parse_reglist_a(&p, &has_lr1, &has_pc1);
+                if (has_wb && !is_db1 && !has_lr1 && !has_pc1 &&
+                    rn >= 0 && rn <= 7 && list1 != 0 && (list1 & ~0xFF) == 0)
+                    pc += 2;
+                else
+                    pc += 4;
             } else {
                 pc += op_size_a(first);
             }
@@ -6043,18 +6068,44 @@ static void pass2_a(ArmAsm *a) {
             }
         }
         else if (strieq_a(first, "LDMIA") || strieq_a(first, "STMIA") ||
-                 strieq_a(first, "LDM") || strieq_a(first, "STM")) {
-            /* --asm-extra: T1 multiple load/store.  Base and every register in
-             * the list must be r0-r7; the 32-bit forms are not emitted, and a
-             * missing "!" is an error because T1 always writes the base back. */
+                 strieq_a(first, "LDM") || strieq_a(first, "STM") ||
+                 strieq_a(first, "LDMDB") || strieq_a(first, "STMDB")) {
+            /* --asm-extra: multiple load/store.
+             *   T1  (16-bit) needs all four of: base in r0-r7, every register
+             *       in the list in r0-r7, writeback on the base, increment-after.
+             *   T2  (32-bit) covers the rest: high registers, lr/pc in the list,
+             *       no writeback, and decrement-before.
+             *     hw1 = 0xE880 | (DB<<7) | (W<<5) | (is_load<<4) | Rn
+             *     hw2 = register list, bit n = rn, bit 14 = lr, bit 15 = pc
+             *   Both bit patterns were taken from arm-none-eabi-as output and
+             *   are checked instruction-for-instruction by tests/asm_cases. */
             int is_stm = (my_toupper_a(first[0]) == 'S');   /* source may be lowercase */
+            int is_db  = (first[3] == 'D' || first[3] == 'd');
             int rn = parse_reg_a(&p);
             int has_lr = 0, has_pc = 0, list, has_bang = 0;
             skip_space_a(&p);
             if (*p == '!') { has_bang = 1; p++; }
             eat_comma_a(&p);          /* "r0!, {..}" - the comma is optional */
             list = parse_reglist_a(&p, &has_lr, &has_pc);
-            if (rn >= 0 && (list & (1 << rn))) {
+            if (rn < 0 || rn > 14) {
+                diag_tool(DIAG_SEV_ERROR, "arkcc",
+                          "LDM/STM needs a base register of r0-r14", 0,0,0,0,0,0);
+                a->hard_errors++;
+                rn = 0;
+            }
+            if (list == 0) {
+                diag_tool(DIAG_SEV_ERROR, "arkcc",
+                          "LDM/STM needs a non-empty register list", 0,0,0,0,0,0);
+                a->hard_errors++;
+            }
+            if (list & (1 << 13)) {
+                /* Bit 13 is the one register a list cannot name: the ARM ARM
+                 * makes sp in the list UNPREDICTABLE for every LDM/STM form. */
+                diag_tool(DIAG_SEV_ERROR, "arkcc",
+                          "sp may not appear in a LDM/STM register list", 0,0,0,0,0,0);
+                a->hard_errors++;
+            }
+            if (rn >= 0 && rn <= 14 && (list & (1 << rn))) {
                 /* ARM ARM: base register in the list together with writeback is
                  * UNPREDICTABLE; the core may store the old or the new base.
                  * arm-none-eabi-as refuses it, so refuse it here too. */
@@ -6063,19 +6114,155 @@ static void pass2_a(ArmAsm *a) {
                           "instruction writes back (UNPREDICTABLE)", 0,0,0,0,0,0);
                 a->hard_errors++;
             }
-            if (rn < 0 || rn > 7 || has_lr || has_pc || (list & ~0xFF) || list == 0) {
+            if (is_stm && has_pc) {
+                /* ARM ARM: storing pc selects STM (user), which has no useful
+                 * meaning on the M-profile; refusing beats encoding it. */
                 diag_tool(DIAG_SEV_ERROR, "arkcc",
-                          "LDM/STM here must use a base and a register list inside "
-                          "r0-r7; the 32-bit forms are not emitted", 0,0,0,0,0,0);
+                          "STM may not store pc", 0,0,0,0,0,0);
                 a->hard_errors++;
             }
-            if (!has_bang) {
+            if (!is_db && has_bang && !has_lr && !has_pc && rn <= 7 &&
+                list != 0 && (list & ~0xFF) == 0) {
+                /* T1 */
+                out16(a, (is_stm ? 0xC000u : 0xC800u) | ((rn & 7) << 8) | (list & 0xFF));
+            } else {
+                /* T2 */
+                /* 0xE880 is the increment-after form; decrement-before clears
+                 * U (bit 7) and sets P (bit 8) -> 0xE900.  Writing it as a
+                 * base choice rather than an OR matters: bit 7 is already
+                 * set in 0xE880, so "| 0x80" would encode IA. */
+                unsigned hw1 = (unsigned)(is_db ? 0xE900 : 0xE880) |
+                               (unsigned)(has_bang ? 0x20 : 0) |
+                               (unsigned)(is_stm ? 0 : 0x10) |
+                               (unsigned)(rn & 0xF);
+                unsigned hw2 = (unsigned)(list & 0x1FFF) |
+                               (unsigned)(has_lr ? 0x4000 : 0) |
+                               (unsigned)(has_pc ? 0x8000 : 0);
+                out16(a, hw1);
+                out16(a, hw2);
+            }
+        }
+        else if (strieq_a(first, "TBB") || strieq_a(first, "TBH")) {
+            /* --asm-extra: table branch, 32-bit T1.
+             *   TBB [Rn, Rm]        hw1 = 0xE8D0 | Rn   hw2 = 0xF000 | Rm
+             *   TBH [Rn, Rm, LSL #1] hw1 = 0xE8D0 | Rn  hw2 = 0xF010 | Rm
+             * Neither Rn nor Rm may be pc (UNPREDICTABLE), and TBB takes no
+             * shift while TBH accepts exactly LSL #1 -- anything else would
+             * change which byte is loaded, so it is an error, not a silence. */
+            int is_tbh = strieq_a(first, "TBH");
+            int rn, rm, shift = 0, has_shift = 0;
+            skip_space_a(&p);
+            if (*p == '[') { p++; skip_space_a(&p); }
+            rn = parse_reg_a(&p);
+            eat_comma_a(&p);
+            rm = parse_reg_a(&p);
+            skip_space_a(&p);
+            if (*p == ',') {
+                char opn[8];
+                p++;
+                skip_space_a(&p);
+                has_shift = 1;
+                read_word_a(&p, opn, (int)sizeof(opn));
+                skip_space_a(&p);
+                if (*p == '#') shift = parse_imm_a(&p);
+                if (!strieq_a(opn, "LSL") || shift != 1) {
+                    diag_tool(DIAG_SEV_ERROR, "arkcc",
+                              "TBH accepts only 'LSL #1' as its shift", 0,0,0,0,0,0);
+                    a->hard_errors++;
+                }
+            }
+            skip_space_a(&p);
+            if (*p == ']') p++;
+            if (has_shift && !is_tbh) {
                 diag_tool(DIAG_SEV_ERROR, "arkcc",
-                          "LDM/STM without writeback needs the 32-bit form, which "
-                          "this assembler does not emit; write the base as Rd!", 0,0,0,0,0,0);
+                          "TBB takes no shift; use TBH [Rn, Rm, LSL #1]",
+                          0,0,0,0,0,0);
                 a->hard_errors++;
             }
-            out16(a, (is_stm ? 0xC000u : 0xC800u) | ((rn & 7) << 8) | (list & 0xFF));
+            if (rn < 0 || rn > 14 || rm < 0 || rm > 14) {
+                diag_tool(DIAG_SEV_ERROR, "arkcc",
+                          "TBB/TBH needs two registers of r0-r14 (pc is "
+                          "UNPREDICTABLE here)", 0,0,0,0,0,0);
+                a->hard_errors++;
+            }
+            out16(a, 0xE8D0u | (unsigned)(rn & 0xF));
+            out16(a, (unsigned)(is_tbh ? 0xF010 : 0xF000) | (unsigned)(rm & 0xF));
+        }
+        else if (strieq_a(first, "LDRD") || strieq_a(first, "STRD")) {
+            /* --asm-extra: LDRD/STRD Rt, Rt2, [Rn, #imm] -- 32-bit T1.
+             *   hw1 = 0xE9C0 | (U<<7) | (is_load<<4) | Rn
+             *   hw2 = (Rt<<12) | (Rt2<<8) | (|imm| >> 2)
+             *   U=1 for a positive offset, U=0 for a negative one; the stored
+             *   immediate is always the magnitude, hence the /4 round trip.
+             * ARMv7-M makes an odd Rt, or Rt2 != Rt+1, UNPREDICTABLE, and
+             * arm-none-eabi-as emits it anyway -- this assembler refuses, so a
+             * typo cannot turn into a load of the wrong pair. */
+            int is_load = (my_toupper_a(first[0]) == 'L');
+            int rt = parse_reg_a(&p);
+            int rt2, rn, imm = 0;
+            eat_comma_a(&p);
+            rt2 = parse_reg_a(&p);
+            eat_comma_a(&p);
+            skip_space_a(&p);
+            if (*p == '[') { p++; skip_space_a(&p); }
+            rn = parse_reg_a(&p);
+            skip_space_a(&p);
+            if (*p == ',') {
+                p++;
+                skip_space_a(&p);
+                if (*p == '#') imm = parse_imm_a(&p);
+                else {
+                    /* Register-offset addressing ([Rn, Rm]) has no encoder
+                     * here.  Ignoring Rm would silently address the base
+                     * register instead, so refuse and let the author write
+                     * the address arithmetic out. */
+                    diag_tool(DIAG_SEV_ERROR, "arkcc",
+                              "register-offset addressing ([Rn, Rm]) is not "
+                              "emitted; compute the address into a register "
+                              "with ADD first", 0,0,0,0,0,0);
+                    a->hard_errors++;
+                }
+            }
+            skip_space_a(&p);
+            if (*p == ']') p++;
+            if (rn < 0 || rn > 15) {
+                diag_tool(DIAG_SEV_ERROR, "arkcc",
+                          "LDRD/STRD needs a base register", 0,0,0,0,0,0);
+                a->hard_errors++;
+                rn = 0;
+            }
+            if (rt < 0 || rt2 < 0 || rt > 12 || rt2 > 14) {
+                diag_tool(DIAG_SEV_ERROR, "arkcc",
+                          "LDRD/STRD needs two registers of r0-r14", 0,0,0,0,0,0);
+                a->hard_errors++;
+                rt = 0; rt2 = 1;
+            } else if ((rt & 1) || rt2 != rt + 1) {
+                diag_tool(DIAG_SEV_ERROR, "arkcc",
+                          "LDRD/STRD needs an even Rt and Rt2 == Rt+1 "
+                          "(any other pair is UNPREDICTABLE on ARMv7-M)",
+                          0,0,0,0,0,0);
+                a->hard_errors++;
+            }
+            if ((imm & 3) != 0 || imm > 1020 || imm < -1020) {
+                diag_tool(DIAG_SEV_ERROR, "arkcc",
+                          "LDRD/STRD offset must be a multiple of 4 in -1020..1020",
+                          0,0,0,0,0,0);
+                a->hard_errors++;
+                imm = 0;
+            }
+            {
+                int mag = imm < 0 ? -imm : imm;
+                /* hw1 = 0xE940 | P(bit6) | U(bit7) | L(bit4) | Rn.
+                 * U is 1 for a positive offset and 0 for a negative one;
+                 * like LDM/STM above, the two bases differ in a bit that is
+                 * set in both, so pick the base, do not OR a flag into it. */
+                out16(a, (unsigned)(is_load ? (imm < 0 ? 0xE950 : 0xE9D0)
+                                             : (imm < 0 ? 0xE940 : 0xE9C0)) |
+                          (unsigned)(rn & 0xF));
+                out16(a, (unsigned)((rt & 0xF) << 12) |
+                          (unsigned)((rt2 & 0xF) << 8) |
+                          (unsigned)((mag >> 2) & 0xFF));
+            }
         }
         else if (strieq_a(first, "MLA") || strieq_a(first, "MLS")) {
             /* --asm-extra: MLA/MLS Rd, Rn, Rm, Ra -- 32-bit, hi=11111011000x Rn */
@@ -6255,6 +6442,17 @@ static void pass2_a(ArmAsm *a) {
             if (*p == ',') {
                 p++; skip_space_a(&p);
                 if (*p == '#') imm = parse_imm_a(&p);
+                else {
+                    /* Register-offset addressing ([Rn, Rm]) has no encoder
+                     * here.  Ignoring Rm would silently address the base
+                     * register instead, so refuse and let the author write
+                     * the address arithmetic out. */
+                    diag_tool(DIAG_SEV_ERROR, "arkcc",
+                              "register-offset addressing ([Rn, Rm]) is not "
+                              "emitted; compute the address into a register "
+                              "with ADD first", 0,0,0,0,0,0);
+                    a->hard_errors++;
+                }
             }
             skip_space_a(&p);
             if (*p == ']') p++;
@@ -6453,6 +6651,17 @@ static void pass2_a(ArmAsm *a) {
             if (*p == ',') {
                 p++; skip_space_a(&p);
                 if (*p == '#') imm = parse_imm_a(&p);
+                else {
+                    /* Register-offset addressing ([Rn, Rm]) has no encoder
+                     * here.  Ignoring Rm would silently address the base
+                     * register instead, so refuse and let the author write
+                     * the address arithmetic out. */
+                    diag_tool(DIAG_SEV_ERROR, "arkcc",
+                              "register-offset addressing ([Rn, Rm]) is not "
+                              "emitted; compute the address into a register "
+                              "with ADD first", 0,0,0,0,0,0);
+                    a->hard_errors++;
+                }
             }
             skip_space_a(&p);
             if (*p == ']') p++;
@@ -6786,30 +6995,134 @@ static void pass2_a(ArmAsm *a) {
             /* VLDR/VSTR Sd, [Rn, #imm]  — 32-bit T1 encoding.
              * Base: VLDR.F32 = 0xED900A00, VSTR.F32 = 0xED800A00.
              * imm8 = offset>>2 (word-aligned). F64 sets bit 8 (sz). */
+            /* The register name, not the optional suffix, says whether this is
+             * a single or a double transfer: reading only the suffix turned
+             * every `vldr d0, ...` into a transfer of S0.  A suffix that
+             * contradicts the register is a typo and is refused. */
             char suf[16];
+            char sym[64];
             int is_f64;
             unsigned base;
             int sd, rn, imm;
             unsigned d, vd;
             unsigned hi, lo;
             unsigned imm8;
+            int is_load = strieq_a(first, "VLDR");
             read_vfp_suffix_a(&p, suf, (int)sizeof(suf));
             /* armasm also accepts the ".32"/".64" spelling of the same suffix. */
-            is_f64 = strieq_a(suf, "F64") || strieq_a(suf, "64");
-            if (strieq_a(first, "VLDR")) base = is_f64 ? 0xED900B00u : 0xED900A00u;
-            else                         base = is_f64 ? 0xED800B00u : 0xED800A00u;
+            skip_space_a(&p);
+            is_f64 = (p[0] == 'd' || p[0] == 'D');
+            if ((strieq_a(suf, "F64") || strieq_a(suf, "64")) && !is_f64) {
+                diag_tool(DIAG_SEV_ERROR, "arkcc",
+                          "VLDR/VSTR.F64 needs a D register", 0,0,0,0,0,0);
+                a->hard_errors++;
+            }
+            if ((strieq_a(suf, "F32") || strieq_a(suf, "32")) && is_f64) {
+                diag_tool(DIAG_SEV_ERROR, "arkcc",
+                          "VLDR/VSTR.F32 needs an S register", 0,0,0,0,0,0);
+                a->hard_errors++;
+            }
             if (is_f64) sd = parse_vfp_dreg_a(&p);
             else        sd = parse_vfp_sreg_a(&p);
-            if (sd < 0) sd = 0;
+            if (sd < 0) {
+                diag_tool(DIAG_SEV_ERROR, "arkcc",
+                          "VLDR/VSTR needs an S or D register", 0,0,0,0,0,0);
+                a->hard_errors++;
+                sd = 0;
+            }
+            if (is_f64) base = is_load ? 0xED900B00u : 0xED800B00u;
+            else        base = is_load ? 0xED900A00u : 0xED800A00u;
             eat_comma_a(&p);
             skip_space_a(&p);
-            if (*p == '[') p++;
-            rn = parse_reg_a(&p);
-            skip_space_a(&p);
             imm = 0;
-            if (*p == ',') { p++; imm = parse_imm_a(&p); }
-            skip_space_a(&p);
-            if (*p == ']') p++;
+            if (*p == '[') {
+                p++;
+                skip_space_a(&p);
+                rn = parse_reg_a(&p);
+                if (rn < 0) {
+                    diag_tool(DIAG_SEV_ERROR, "arkcc",
+                              "VLDR/VSTR needs a base register inside []",
+                              0,0,0,0,0,0);
+                    a->hard_errors++;
+                    rn = 15;
+                }
+                skip_space_a(&p);
+                if (*p == ',') {
+                    p++;
+                    skip_space_a(&p);
+                    if (*p == '#') imm = parse_imm_a(&p);
+                    else {
+                        /* Register-offset addressing ([Rn, Rm]) has no encoder
+                         * here.  Ignoring Rm would silently address the base
+                         * register instead, so refuse and let the author write
+                         * the address arithmetic out. */
+                        diag_tool(DIAG_SEV_ERROR, "arkcc",
+                                  "register-offset addressing ([Rn, Rm]) is not "
+                                  "emitted; compute the address into a register "
+                                  "with ADD first", 0,0,0,0,0,0);
+                        a->hard_errors++;
+                    }
+                }
+                skip_space_a(&p);
+                if (*p == ']') p++;
+            } else {
+                /* Literal pool: `vldr s0, =label` / `vldr s0, label`.  Both
+                 * passes already know every label in the file, so this is
+                 * resolved here rather than left to a relocation.  A target
+                 * that is not in this file, or one too far away, is an error:
+                 * encoding offset 0 instead would read the wrong address. */
+                int addr;
+                if (*p == '=') {
+                    /* `=label` asks for the ADDRESS of the label, which is
+                     * what LDR does; VLDR reads the value stored there, so a
+                     * bare label is the right spelling and this one is a
+                     * misunderstanding worth reporting. */
+                    diag_tool(DIAG_SEV_ERROR, "arkcc",
+                              "VLDR takes a bare label, not '=label': it loads "
+                              "from that address", 0,0,0,0,0,0);
+                    a->hard_errors++;
+                    p++;
+                }
+                if (!is_load) {
+                    /* VSTR <Dd>, <label> selects the pc-relative form, which the
+                     * ARM ARM makes UNPREDICTABLE for stores. */
+                    diag_tool(DIAG_SEV_ERROR, "arkcc",
+                              "VSTR needs a base register ([Rn, #imm]); the "
+                              "pc-relative store form is UNPREDICTABLE",
+                              0,0,0,0,0,0);
+                    a->hard_errors++;
+                }
+                skip_space_a(&p);
+                read_word_a(&p, sym, (int)sizeof(sym));
+                addr = find_label_a(a, sym);
+                if (addr < 0) {
+                    diag_tool(DIAG_SEV_ERROR, "arkcc",
+                              "VLDR/VSTR literal-pool target %sq must be a label in "
+                              "this file", sym, 0,0,0,0,0);
+                    a->hard_errors++;
+                } else {
+                    int pbase = (a->pc + 4) & ~3;
+                    imm = addr - pbase;
+                    if (imm < 0 || imm > 1020 || (imm & 3) != 0) {
+                        char b1[12];
+                        diag_tool(DIAG_SEV_ERROR, "arkcc",
+                                  "VLDR/VSTR target %sq is %s bytes from the aligned "
+                                  "PC; the encoding covers 0..1020 in steps of 4",
+                                  sym, diag_num(b1, imm), 0,0,0,0);
+                        a->hard_errors++;
+                        imm = 0;
+                    }
+                }
+                rn = 15;
+            }
+            if (imm < 0 || imm > 1020 || (imm & 3) != 0) {
+                char b1[12];
+                diag_tool(DIAG_SEV_ERROR, "arkcc",
+                          "VLDR/VSTR offset %s is not encodable (0..1020, step 4)",
+                          diag_num(b1, imm), 0,0,0,0,0);
+                a->hard_errors++;
+                imm = 0;
+            }
             d  = ark_vfp_half(sd, is_f64);
             vd = ark_vfp_nib (sd, is_f64);
             imm8 = (unsigned)((imm >> 2) & 0xFF);
