@@ -447,6 +447,23 @@
 #   define ARK_MAX_PRE_DEFINES   512
 # endif
 #endif
+/* 一个声明里最多的数组维数（C 标准只要求支持实现定义的上限）。宿主 16 / 板端 8。 */
+#ifndef ARK_MAX_ARRAY_DIMS
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARK_MAX_ARRAY_DIMS    8
+# else
+#   define ARK_MAX_ARRAY_DIMS    16
+# endif
+#endif
+/* 一个文件里按值返回大结构体的函数个数上限（这些函数走 AAPCS 的隐藏指针）。
+ * 宿主 1024 / 板端 256。 */
+#ifndef ARK_MAX_SRET_FUNCS
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARK_MAX_SRET_FUNCS    256
+# else
+#   define ARK_MAX_SRET_FUNCS    1024
+# endif
+#endif
 /* --scatter 里能跟踪的命名段个数（#pragma arm section / __attribute__((section)) 的落点）。 */
 #ifndef ARK_MAX_CUSTOM_SECTIONS
 # if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN

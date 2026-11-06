@@ -7478,6 +7478,8 @@ imm32  = S:I1:I2:imm10:imm11:0（符号扩展）
 | `ARK_PP_MAX_INC_DIRS` | 128 | 16 | `-I` 搜索路径条数 |
 | `ARK_MAX_CUSTOM_SECTIONS` | 128 | 16 | 能跟踪的命名段个数 |
 | `ARK_MAX_PRE_DEFINES` | 512 | 64 | `-D` 预定义宏条数（`--uvprojx` 导入的也算） |
+| `ARK_MAX_ARRAY_DIMS` | 16 | 8 | 一个声明里最多的数组维数（第 17 维报 `too many array dimensions`） |
+| `ARK_MAX_SRET_FUNCS` | 1024 | 256 | 一个文件里按值返回大结构体的函数个数（走 AAPCS 隐藏指针的那些） |
 | `ARK_SYM_HASH_SIZE` | 4096 | 128 | 符号表哈希桶（只影响查找速度） |
 | `ARK_C_MAX_LABELS` | 16384 | 4096 | `-target c` 后端的标签表 |
 | `ARKCC_FEATURE_DEP_FILES_DYN` | 1（按需翻倍，无条数上限） | 0（定长表 + 告警一次） | `-MMD` 依赖文件名表 |

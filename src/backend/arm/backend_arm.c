@@ -1201,23 +1201,36 @@ static char *codegen_arm(IrProgram *prog) {
 
     /* Build sret function name/size set: struct/union returns > 8 bytes
      * use AAPCS sret convention (hidden pointer in r0). */
-    char *sret_names[256];
-    int   sret_sizes[256];
+    char *sret_names[ARK_MAX_SRET_FUNCS];
+    int   sret_sizes[ARK_MAX_SRET_FUNCS];
     int   sret_count = 0;
+    int   sret_dropped = 0;
     {
         int sfi;
-        for (sfi = 0; sfi < prog->func_count && sret_count < 256; sfi++) {
+        for (sfi = 0; sfi < prog->func_count; sfi++) {
             IrFunc *sf = prog->funcs[sfi];
             Type *srt = sf->ret_type;
             if (srt && (srt->kind == TYPE_STRUCT || srt->kind == TYPE_UNION)) {
                 int sz = type_size(srt);
                 if (sz > 8) {
+                    /* A function missing from this set is called with the
+                     * AAPCS default (no hidden pointer) while its body expects
+                     * one: r0 then carries the first argument instead. */
+                    if (sret_count >= ARK_MAX_SRET_FUNCS) { sret_dropped++; continue; }
                     sret_names[sret_count] = sf->name;
                     sret_sizes[sret_count] = (sz + 3) & ~3; /* 4-byte aligned */
                     sret_count++;
                 }
             }
         }
+    }
+    if (sret_dropped) {
+        char b1[12], b2[12];
+        diag_tool(DIAG_SEV_ERROR, "arkcc",
+                  "%s functions return a structure larger than 8 bytes but the "
+                  "sret table holds %s; raise ARK_MAX_SRET_FUNCS and rebuild arkcc",
+                  diag_num(b1, sret_dropped), diag_num(b2, ARK_MAX_SRET_FUNCS),
+                  0,0,0,0);
     }
 
     for (fi = 0; fi < prog->func_count; fi++) {

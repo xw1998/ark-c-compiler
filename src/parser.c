@@ -1258,7 +1258,7 @@ static Type *parse_declarator(Parser *p, Type *base, char **out_name) {
     /* Array dimensions (multi-dimensional supported) */
     {
         /* Collect dimensions, then construct array(array(...)) */
-        int dims[8];
+        int dims[ARK_MAX_ARRAY_DIMS];
         int dim_count = 0;
         int vla_dim = -1;  /* B3: non-constant dimension index; -1 means no VLA */
         while (lexer_peek(p->lex).kind == TOK_LBRACKET) {
@@ -1309,7 +1309,13 @@ static Type *parse_declarator(Parser *p, Type *base, char **out_name) {
             /* A missing "]" used to be skipped silently, so `int a[2;`
              * compiled with no diagnostic at all. Report it (armcc #17). */
             lexer_expect(p->lex, TOK_RBRACKET);
-            if (dim_count < 8) dims[dim_count++] = v;
+            if (dim_count < ARK_MAX_ARRAY_DIMS) {
+                dims[dim_count++] = v;
+            } else {
+                /* Dropping a dimension silently changes the array's rank, i.e.
+                 * its element type and every index computation after it. */
+                perror_at(p, "too many array dimensions");
+            }
         }
         if (dim_count > 0) {
             int i;
