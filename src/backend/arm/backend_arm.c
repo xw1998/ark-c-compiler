@@ -5213,6 +5213,28 @@ static int parse_reglist_a(const char **p, int *has_lr, int *has_pc) {
     return list;
 }
 
+/* Pre-indexed writeback (`[Rn, #imm]!`) and post-indexed addressing
+ * (`[Rn], #imm`) have no encoder here.  Both are easy to ignore by accident:
+ * the offset is consumed, the ']' ends the operand, and the instruction is
+ * emitted as a plain access -- which silently drops the writeback.  Refuse
+ * them instead, so the author writes the ADD out.
+ * Called right after the closing ']' has been consumed. */
+static void check_no_index_writeback_a(ArmAsm *a, const char **p) {
+    skip_space_a(p);
+    if (**p == '!') {
+        diag_tool(DIAG_SEV_ERROR, "arkcc",
+                  "pre-indexed writeback ([Rn, #imm]!) is not emitted; do the "
+                  "address update with a separate ADD", 0,0,0,0,0,0);
+        a->hard_errors++;
+        (*p)++;
+    } else if (**p == ',') {
+        diag_tool(DIAG_SEV_ERROR, "arkcc",
+                  "post-indexed addressing ([Rn], #imm) is not emitted; do the "
+                  "address update with a separate ADD", 0,0,0,0,0,0);
+        a->hard_errors++;
+    }
+}
+
 static void emit_bl_a(ArmAsm *a, int target) {
     int offset = target - a->pc - 4;
     int off2 = offset >> 1;
@@ -6173,6 +6195,7 @@ static void pass2_a(ArmAsm *a) {
             }
             skip_space_a(&p);
             if (*p == ']') p++;
+            check_no_index_writeback_a(a, &p);
             if (has_shift && !is_tbh) {
                 diag_tool(DIAG_SEV_ERROR, "arkcc",
                           "TBB takes no shift; use TBH [Rn, Rm, LSL #1]",
@@ -6225,6 +6248,7 @@ static void pass2_a(ArmAsm *a) {
             }
             skip_space_a(&p);
             if (*p == ']') p++;
+            check_no_index_writeback_a(a, &p);
             if (rn < 0 || rn > 15) {
                 diag_tool(DIAG_SEV_ERROR, "arkcc",
                           "LDRD/STRD needs a base register", 0,0,0,0,0,0);
@@ -6456,6 +6480,7 @@ static void pass2_a(ArmAsm *a) {
             }
             skip_space_a(&p);
             if (*p == ']') p++;
+            check_no_index_writeback_a(a, &p);
             {
                 if (ldr_str_size_a(imm, is_byte, 0) == 4) {
                     /* T3 32-bit encoding: LDR.W/STR.W/LDRB.W/STRB.W Rt, [Rn, #imm12] */
@@ -6665,6 +6690,7 @@ static void pass2_a(ArmAsm *a) {
             }
             skip_space_a(&p);
             if (*p == ']') p++;
+            check_no_index_writeback_a(a, &p);
             if (ldr_str_size_a(imm, 0, 1) == 4) {
                 /* T3 32-bit encoding */
                 unsigned hi, lo;
@@ -7065,6 +7091,7 @@ static void pass2_a(ArmAsm *a) {
                 }
                 skip_space_a(&p);
                 if (*p == ']') p++;
+                check_no_index_writeback_a(a, &p);
             } else {
                 /* Literal pool: `vldr s0, =label` / `vldr s0, label`.  Both
                  * passes already know every label in the file, so this is
