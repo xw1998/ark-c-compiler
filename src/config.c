@@ -56,7 +56,9 @@ void config_init(void) {
     g_config.enable_dwarf         = ARKCC_FEATURE_DWARF;
     g_config.enable_opt_constfold = ARKCC_FEATURE_OPT_CONSTFOLD;
     g_config.enable_opt_dce       = ARKCC_FEATURE_OPT_DCE;
-    g_config.enable_opt_regalloc  = ARKCC_FEATURE_OPT_REGALLOC;
+    /* 寄存器分配：代码按 profile 编进来（宿主 1 / 板端 0），但默认一律关——
+     * 默认产物必须与旧版本逐字节相同，只有 -fopt-regalloc/--regalloc 才开。 */
+    g_config.enable_opt_regalloc  = 0;
     g_config.enable_opt_inline    = ARKCC_FEATURE_OPT_INLINE;
     g_config.enable_opt_vectorize = ARKCC_FEATURE_OPT_VECTORIZE;
     /* 0.8.0 的五个实验性开关：代码按 profile 编进来（见 arkcc_config.h），

@@ -273,6 +273,9 @@ def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--arkcc", default=None)
     ap.add_argument("--keep", action="store_true")
+    ap.add_argument("--extra", action="append", default=[],
+                    help="extra arkcc flag for every case; repeat it, one flag per "
+                         "call, and use the = form: --extra=-fopt-regalloc")
     args = ap.parse_args(argv)
 
     here = os.path.dirname(os.path.abspath(__file__))
@@ -286,11 +289,13 @@ def main(argv=None):
               "(pip install unicorn)")
         return 0
 
+    if args.extra:
+        print("[arm-exec] extra flags: %s" % " ".join(args.extra))
     failures = 0
     for case in CASES:
         workdir = tempfile.mkdtemp(prefix="arkexec_")
         try:
-            err = build_case(arkcc, workdir, case)
+            err = build_case(arkcc, workdir, case, args.extra)
             if err:
                 print("[ FAIL ] %-18s %s" % (case["name"], err))
                 failures += 1

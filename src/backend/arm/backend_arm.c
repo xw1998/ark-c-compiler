@@ -227,6 +227,236 @@ static void emit_unary(AsmBuffer *b, int op) {
     }
 }
 
+#if ARKCC_FEATURE_OPT_REGALLOC
+/* --------------------------- register allocation -------------------------
+ * What this is, exactly: after a function has been emitted, its text is walked
+ * once and the hottest local slots are moved out of memory and into r8-r11.
+ * "In a register" here means the emitted instruction changes shape, not that a
+ * graph-colouring allocator has run:
+ *      LDR r0, [r6, #off]   ->   MOV r0, rN
+ *      STR r0, [r6, #off]   ->   MOV rN, r0
+ * and rN joins the same PUSH/POP list the prologue already uses, so the frame
+ * layout (and therefore every other offset) is untouched.
+ *
+ * Why a text pass instead of IR-level liveness: the IR stack machine has ~200
+ * opcodes, and each one would have to learn about a new register.  A text pass
+ * has exactly one rule to get right, and the rule is checked rather than
+ * assumed -- a slot is only ever selected when *every* mention of it in the
+ * whole function is one of the two lines above.  One mention in any other shape
+ * (LDRB, STRH, "ADD r0, r6, #off", a 64-bit half, a struct field, a volatile
+ * access) marks the slot as tainted and it stays in memory.  That is the whole
+ * safety argument, and tests/run_regalloc_tests.py fails if it is ever wrong.
+ *
+ * r8-r11 are the registers: the backend never names them, and AAPCS makes them
+ * callee-saved, so they survive calls to __aeabi_* helpers and to user code. */
+#define RA_MAX_SLOTS 96
+#define RA_MAX_REGS  4
+#define RA_MIN_USES  3      /* 2 bytes saved per use, 4 bytes of PUSH/POP to pay */
+
+typedef struct {
+    int off;
+    int uses;
+    int taint;
+    int reg;
+} RaSlot;
+
+static int ra_enabled(void) {
+    return g_config.enable_opt_regalloc ? 1 : 0;
+}
+
+static int ra_pre8(const char *s, const char *pat) {
+    int i;
+    for (i = 0; i < 8; i++)
+        if (s[i] != pat[i]) return 0;
+    return 1;
+}
+
+/* Classify one assembly line.
+ *   -1  no "[r6, #<n>]" at all
+ *    0  exactly "LDR r0, [r6, #n]"   (*off, *is_ldr = 1)
+ *    1  exactly "STR r0, [r6, #n]"   (*off, *is_ldr = 0)
+ *    2  names that slot in any other shape -- cannot be kept in a register */
+static int ra_classify(const char *ln, int *off, int *is_ldr) {
+    const char *p = ln;
+    const char *br;
+    int n = 0;
+    /* Any "r6, #n" at all -- not just "[r6, #n]".  "ADD r0, r6, #n" is the
+     * address of the slot, and a slot whose address escapes cannot live in a
+     * register: the pointer would keep writing to memory the variable no
+     * longer uses. */
+    while (p[0] && !(p[0] == 'r' && p[1] == '6' && p[2] == ',' && p[3] == ' '))
+        p++;
+    if (!p[0]) return -1;
+    if (p == ln || p[-1] != '[') return 2;
+    br = p - 1;
+    p = br + 5;
+    if (*p != '#') return 2;
+    p++;
+    if (*p < '0' || *p > '9') return 2;
+    while (*p >= '0' && *p <= '9') { n = n * 10 + (*p - '0'); p++; }
+    *off = n;
+    if (*p != ']') return 2;
+    p++;
+    while (*p == ' ' || *p == '\t' || *p == '\r') p++;
+    if (*p) return 2;                     /* trailing text: not the shape we model */
+    {
+        const char *s = ln;
+        while (*s == ' ' || *s == '\t') s++;
+        if (s + 8 == br && ra_pre8(s, "LDR r0, ")) { *is_ldr = 1; return 0; }
+        if (s + 8 == br && ra_pre8(s, "STR r0, ")) { *is_ldr = 0; return 0; }
+    }
+    return 2;
+}
+
+static int ra_slot(RaSlot *slots, int *n, int off) {
+    int i;
+    for (i = 0; i < *n; i++)
+        if (slots[i].off == off) return i;
+    if (*n >= RA_MAX_SLOTS) return -1;    /* table full: treat as tainted */
+    slots[*n].off = off;
+    slots[*n].uses = 0;
+    slots[*n].taint = 0;
+    slots[*n].reg = 0;
+    return (*n)++;
+}
+
+/* Rewrite b->buf[from..b->len) in place.  Called once per emitted function, at
+ * the moment its text is complete, so "the last slice of the buffer" really is
+ * that function and nothing else. */
+static void ark_regalloc_function(AsmBuffer *b, int from, IrFunc *f) {
+    static RaSlot slots[RA_MAX_SLOTS];
+    int nslots = 0;
+    int pos, i, k;
+    int made[RA_MAX_REGS];
+    int nregs = 0;
+    int have_prologue = 0;
+    AsmBuffer out;
+    char line[256];
+
+    if (!ra_enabled()) return;
+
+    /* Pass 1: every mention of every frame slot. */
+    for (pos = from; pos < b->len; ) {
+        int len = 0, off = 0, is_ldr = 0, kind;
+        while (pos + len < b->len && b->buf[pos + len] != '\n') len++;
+        if (len >= (int)sizeof(line)) { pos += len + 1; continue; }
+        for (i = 0; i < len; i++) line[i] = b->buf[pos + i];
+        line[len] = 0;
+        if (line[0] == ' ' && line[1] == ' ' && line[2] == ' ' && line[3] == ' ' &&
+            ra_pre8(line + 4, "PUSH {r5"))
+            have_prologue = 1;
+        kind = ra_classify(line, &off, &is_ldr);
+        if (kind >= 0) {
+            int s = ra_slot(slots, &nslots, off);
+            if (s < 0) { pos += len + 1; continue; }
+            if (kind == 2) slots[s].taint = 1;
+            else           slots[s].uses++;
+        }
+        pos += len + 1;
+    }
+    /* Volatile locals go through the same two instruction shapes as ordinary
+     * ones, so the text cannot tell them apart -- but keeping one in a register
+     * would swallow exactly the accesses the keyword exists to preserve.  The
+     * IR knows, so ask it rather than guessing from the listing. */
+    if (f) {
+        int k2;
+        for (k2 = 0; k2 < f->code_count; k2++) {
+            IrInst *I2 = &f->code[k2];
+            int s;
+            if (!(I2->aux & IR_AUX_VOLATILE)) continue;
+            if (I2->op != IR_PUSH_VAR && I2->op != IR_STORE && I2->op != IR_PUSH_ADDR)
+                continue;
+            s = ra_slot(slots, &nslots, (int)I2->val);
+            if (s >= 0) slots[s].taint = 1;
+        }
+    }
+
+    if (!have_prologue || nslots == 0) return;   /* __naked or nothing to do */
+
+    /* Pick the hottest clean slots.  A tie goes to the lower offset so the same
+     * source always produces the same register assignment. */
+    for (k = 0; k < RA_MAX_REGS; k++) {
+        int best = -1;
+        for (i = 0; i < nslots; i++) {
+            if (slots[i].reg || slots[i].taint || slots[i].uses < RA_MIN_USES) continue;
+            if (best < 0 || slots[i].uses > slots[best].uses ||
+                (slots[i].uses == slots[best].uses && slots[i].off < slots[best].off))
+                best = i;
+        }
+        if (best < 0) break;
+        slots[best].reg = 8 + k;
+        made[nregs++] = 8 + k;
+    }
+    if (nregs == 0) return;
+
+    /* Pass 2: rebuild the text of this function. */
+    asmbuf_init(&out);
+    for (pos = from; pos < b->len; ) {
+        int len = 0, off = 0, is_ldr = 0, kind;
+        while (pos + len < b->len && b->buf[pos + len] != '\n') len++;
+        if (len >= (int)sizeof(line)) {
+            for (i = 0; i < len; i++) asmbuf_putc(&out, b->buf[pos + i]);
+            asmbuf_putc(&out, '\n');
+            pos += len + 1;
+            continue;
+        }
+        for (i = 0; i < len; i++) line[i] = b->buf[pos + i];
+        line[len] = 0;
+
+        kind = -1;
+        if (line[0] == ' ' && line[1] == ' ' && line[2] == ' ' && line[3] == ' ')
+            kind = ra_classify(line, &off, &is_ldr);
+        if (kind == 0 || kind == 1) {
+            int s = ra_slot(slots, &nslots, off);
+            int r = (s >= 0) ? slots[s].reg : 0;
+            if (r) {
+                asmbuf_puts(&out, is_ldr ? "    MOV r0, r" : "    MOV r");
+                asmbuf_int(&out, r);
+                asmbuf_puts(&out, is_ldr ? "\n" : ", r0\n");
+                pos += len + 1;
+                continue;
+            }
+        }
+        if (line[0] == ' ' && line[1] == ' ' && line[2] == ' ' && line[3] == ' ' &&
+            ra_pre8(line + 4, "PUSH {r5")) {
+            /* Same list, plus the registers this function really holds. */
+            asmbuf_puts(&out, "    PUSH {r5, r6, r7");
+            for (k = 0; k < nregs; k++) {
+                asmbuf_puts(&out, ", r");
+                asmbuf_int(&out, made[k]);
+            }
+            asmbuf_puts(&out, ", lr}\n");
+            pos += len + 1;
+            continue;
+        }
+        if (line[0] == ' ' && line[1] == ' ' && line[2] == ' ' && line[3] == ' ' &&
+            ra_pre8(line + 4, "POP {r5,")) {
+            asmbuf_puts(&out, "    POP {r5, r6, r7");
+            for (k = 0; k < nregs; k++) {
+                asmbuf_puts(&out, ", r");
+                asmbuf_int(&out, made[k]);
+            }
+            asmbuf_puts(&out, ", pc}\n");
+            pos += len + 1;
+            continue;
+        }
+        for (i = 0; i < len; i++) asmbuf_putc(&out, b->buf[pos + i]);
+        asmbuf_putc(&out, '\n');
+        pos += len + 1;
+    }
+
+    /* Splice back.  Every rewritten line is 2 bytes shorter and the PUSH/POP
+     * header grows by 2 bytes per register, so with RA_MIN_USES == 3 the result
+     * is always shorter; the guard is here so a future change cannot silently
+     * overflow the buffer. */
+    if (from + out.len + 1 <= b->cap) {
+        for (i = 0; i < out.len; i++) b->buf[from + i] = out.buf[i];
+        b->buf[from + out.len] = 0;
+        b->len = from + out.len;
+    }
+}
+#endif /* ARKCC_FEATURE_OPT_REGALLOC */
+
 static void emit_prologue(AsmBuffer *b, const char *fn_name, int local_size,
                           int is_irq, int is_naked, int dbg) {
     asmbuf_puts(b, fn_name);
@@ -1238,6 +1468,7 @@ static char *codegen_arm(IrProgram *prog) {
         int local_size = f->local_size;
         int i;
         int is_sret = 0;
+        int fstart = 0;              /* where this function's text begins */
         int sret_off = 0;
         /* P1 FIX (sret caller side): pre-allocate sret buffers in this
          * function's frame so the sret space doesn't occupy SP+0 (where
@@ -1367,6 +1598,7 @@ static char *codegen_arm(IrProgram *prog) {
          * r6-relative offsets remain valid because the prologue SUB and the
          * stack-arg offset computation both use this padded value. */
         local_size = (local_size + 7) & ~7;
+        fstart = buf.len;
         emit_prologue(&buf, f->name, local_size, f->is_irq, f->is_naked, dbg);
         /* #2 FIX: Auto-call __arkcc_init_globals at the start of Reset_Handler
          * to initialize .data and zero .bss before main() runs. */
@@ -3007,6 +3239,11 @@ static char *codegen_arm(IrProgram *prog) {
 #endif
         }
         asmbuf_putc(&buf, '\n');
+#if ARKCC_FEATURE_OPT_REGALLOC
+        /* The text of this function is complete: it is the last slice of the
+         * buffer, so the rewrite sees exactly this function and nothing else. */
+        ark_regalloc_function(&buf, fstart, f);
+#endif
 
         /* __attribute__((constructor/destructor)): register the function address in .init_array/.fini_array;
          * the C runtime startup code iterates and calls them before/after main.

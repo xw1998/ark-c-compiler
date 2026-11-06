@@ -127,8 +127,14 @@
 # endif
 #endif
 #ifndef ARKCC_FEATURE_OPT_REGALLOC
-# define ARKCC_FEATURE_OPT_REGALLOC  0   /* Register allocation: experimental, default off */
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_OPT_REGALLOC   0   /* 板上裁掉：省 Flash，板端本来也跑不到这条路径 */
+# else
+#   define ARKCC_FEATURE_OPT_REGALLOC   1   /* 宿主/交叉编译：-fopt-regalloc 才有得开 */
+# endif
 #endif
+/* 运行期默认值仍然是 0（config.c: enable_opt_regalloc = ARKCC_FEATURE_...，
+ * 但 --regalloc/-fopt-regalloc 才置 1）——见 config.c 的默认值设定 */
 #ifndef ARKCC_FEATURE_OPT_INLINE
 # if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
 #   define ARKCC_FEATURE_OPT_INLINE    0   /* Trim auto-inline on STM32 (costs Flash) */
