@@ -184,12 +184,12 @@ int main(void) { g_z = (char)(g_c + 1); return (int)g_z + (int)(g_s / 100); }
 ]
 
 
-def build_case(arkcc, workdir, case):
+def build_case(arkcc, workdir, case, extra=()):
     for name, text in case["files"].items():
         with open(os.path.join(workdir, name), "w", newline="\n") as fh:
             fh.write(text)
     for argv, _ in case["build"]:
-        proc = subprocess.run([arkcc] + argv, cwd=workdir,
+        proc = subprocess.run([arkcc] + list(argv) + list(extra), cwd=workdir,
                               capture_output=True, text=True)
         if proc.returncode != 0:
             return "compile failed: %s %s" % (" ".join(argv), proc.stderr.strip() or proc.stdout.strip())
@@ -251,7 +251,21 @@ def main(argv=None):
                       % (case["name"], value, case["expect"]))
                 failures += 1
             else:
-                print("[ ok ] %-18s %s" % (case["name"], case["why"]))
+                # Same program with the stack-top register optimisation: the
+                # value must not depend on which code path produced it.
+                err = build_case(arkcc, workdir, case, ("--reg-top",))
+                if err:
+                    print("[ FAIL ] %-18s --reg-top build: %s" % (case["name"], err))
+                    failures += 1
+                else:
+                    with open(out, "rb") as fh:
+                        status, value, detail = run_image(fh.read())
+                    if status != "returned" or value != case["expect"]:
+                        print("[ FAIL ] %-18s --reg-top returned %s (%s), want %d"
+                              % (case["name"], value, status, case["expect"]))
+                        failures += 1
+                    else:
+                        print("[ ok ] %-18s %s" % (case["name"], case["why"]))
         finally:
             if not args.keep:
                 shutil.rmtree(workdir, ignore_errors=True)

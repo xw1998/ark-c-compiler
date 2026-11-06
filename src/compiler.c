@@ -1915,6 +1915,27 @@ int ark_compile(const ArkOptions *opts) {
         diag_tool(DIAG_SEV_ERROR, "arkcc", "assembly failed", 0,0,0,0,0,0);
         return ARK_ERR_ASM;
     }
+    /* A raw image has no linker behind it, so a reference the assembler could
+     * not resolve keeps its F000 D000 placeholder -- which decodes as a branch
+     * to +0x0C000000, i.e. an image that faults outside itself while the
+     * compile still exits 0.  Refuse instead.  (-c keeps the reference as a
+     * relocation and -link resolves it, so this check is only for .bin.) */
+    if (ark_streq(be->name, "arm")) {
+        extern int arm_get_unresolved_count(void);
+        extern const char *arm_get_unresolved_name(void);
+        int unresolved = arm_get_unresolved_count();
+        if (unresolved > 0) {
+            char b1[12];
+            const char *first = arm_get_unresolved_name();
+            diag_tool(DIAG_SEV_ERROR, "arkcc",
+                      "%s reference(s) cannot be resolved in a single-file image "
+                      "(first: %sq); compile with -c and link the objects, or "
+                      "define them in this translation unit",
+                      diag_num(b1, unresolved),
+                      first ? first : "?", 0,0,0,0);
+            return ARK_ERR_ASM;
+        }
+    }
     if (be->link) {
         int rc = be->link(g_code, code_size, 0);
         if (rc < 0) return ARK_ERR_LINK;

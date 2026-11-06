@@ -254,13 +254,16 @@ static void emit_prologue(AsmBuffer *b, const char *fn_name, int local_size,
 }
 
 static void emit_epilogue_return(AsmBuffer *b, int local_size,
-                                 int is_irq, int is_naked) {
+                                 int is_irq, int is_naked, int value_in_r0) {
     if (is_naked) {
         /* __naked: just return, do not restore stack/registers */
         emit_line(b, "BX lr");
         return;
     }
-    emit_pop_r0(b);
+    /* --reg-top: the return value is already in r0 (the IR stack top lives in
+     * r0), so popping it back into r0 would be a no-op pair.  Off, or when the
+     * caller did not model it, this is the original emit_pop_r0(). */
+    if (!value_in_r0) emit_pop_r0(b);
     emit_line(b, "MOV sp, r6");
     if (local_size > 0) {
         asmbuf_puts(b, "    ADD sp, sp, #");
@@ -464,6 +467,189 @@ static int gvar_find_size(const char *name) {
     for (i = 0; i < g_gvar_count; i++)
         if (ark_streq(g_gvar_names[i], name)) return g_gvar_sizes[i];
     return 4;  /* default 4 bytes */
+}
+
+/* --- --reg-top: keep the top of the IR stack in r0 ------------------------
+ *
+ * Every IR op is translated mechanically: operands are popped off the machine
+ * stack into r0/r1 and the result is pushed back.  For `t = a + b` that is four
+ * instructions of stack traffic around one ADD, and a return emits `PUSH {r0}`
+ * immediately followed by `POP {r0}`.
+ *
+ * The bounded fix is not a register allocator but one invariant: the value on
+ * top of the IR stack may live in r0 instead of on the machine stack.  Only the
+ * ops listed in ark_top_try() are modelled; any other op first spills r0 back
+ * (ark_top_drain) and then runs its existing sequence unchanged, so the blast
+ * radius of a mistake is one op, not the whole backend.
+ *
+ * Control-flow joins drain too: a label can be reached from two paths, and both
+ * must agree on where the IR stack's top is.  That is why IR_LABEL and the
+ * function entry/exit drain even though they emit nothing themselves.
+ *
+ * Invariant: when *top is 1, the IR stack top is in r0 and everything below it
+ * is on the machine stack in the usual order.
+ */
+static int ark_top_enabled(void) {
+    return g_config.enable_reg_top ? 1 : 0;
+}
+
+static void ark_top_drain(AsmBuffer *b, int *top) {
+    if (*top) {
+        emit_push_r0(b);
+        *top = 0;
+    }
+}
+
+/* Returns 1 when the instruction was fully emitted and the switch must be
+ * skipped, 0 when the caller falls through to the generic path (with *top
+ * already drained unless the op is a join point).
+ * *ret_in_r0 is set for IR_RETURN so its epilogue can skip the redundant pop. */
+static int ark_top_try(AsmBuffer *b, IrInst *I, int *top, int *ret_in_r0) {
+    switch (I->op) {
+    case IR_FUNC_BEGIN:
+        *top = 0;                       /* prologue owns the machine stack */
+        return 1;
+    case IR_FUNC_END:
+        ark_top_drain(b, top);
+        return 1;
+    case IR_LABEL:
+    case IR_LABEL_NAMED:
+        ark_top_drain(b, top);          /* join point: let the switch emit it */
+        return 0;
+    case IR_RETURN:
+        *ret_in_r0 = *top;              /* epilogue skips its pop when set */
+        *top = 0;
+        return 0;                       /* epilogue lives in the switch */
+    case IR_PUSH_INT:
+        ark_top_drain(b, top);
+        emit_mov_imm(b, 0, I->val);
+        *top = 1;
+        return 1;
+    case IR_PUSH_VAR: {
+        int width = I->aux & 0xFF;
+        /* 64-bit pushes two words; volatile reads need their DMB pair. Both
+         * fall back so those paths stay exactly as they were. */
+        if (width == 8) return 0;
+        if (I->aux & IR_AUX_VOLATILE) return 0;
+        ark_top_drain(b, top);
+        if (width == 1)
+            asmbuf_puts(b, (I->aux & 0x100) ? "    LDRB r0, [r6, #"
+                                            : "    LDRSB r0, [r6, #");
+        else if (width == 2)
+            asmbuf_puts(b, (I->aux & 0x100) ? "    LDRH r0, [r6, #"
+                                            : "    LDRSH r0, [r6, #");
+        else
+            asmbuf_puts(b, "    LDR r0, [r6, #");
+        asmbuf_int(b, I->val);
+        asmbuf_puts(b, "]\n");
+        *top = 1;
+        return 1;
+    }
+    case IR_PUSH_ADDR:
+        ark_top_drain(b, top);
+        asmbuf_puts(b, "    ADD r0, r6, #");
+        asmbuf_int(b, I->val);
+        asmbuf_putc(b, '\n');
+        *top = 1;
+        return 1;
+    case IR_PUSH_GLOBAL: {
+        unsigned addr = gvar_find(I->name);
+        if (gvar_find_size(I->name) >= 8) return 0;   /* two words: fall back */
+        ark_top_drain(b, top);
+        emit_mov_addr32(b, 0, addr, addr_in_own_data(addr));
+        emit_line(b, "LDR r0, [r0]");
+        *top = 1;
+        return 1;
+    }
+    case IR_PUSH_GLOBAL_ADDR: {
+        unsigned addr = gvar_find(I->name);
+        ark_top_drain(b, top);
+        emit_mov_addr32(b, 0, addr, addr_in_own_data(addr));
+        *top = 1;
+        return 1;
+    }
+    case IR_BINARY:
+        if (*top) {
+            /* right operand is in r0, left one is on the stack under it */
+            asmbuf_puts(b, "    MOV r1, r0\n");
+            emit_pop_r0(b);
+        } else {
+            emit_pop_r1(b);
+            emit_pop_r0(b);
+        }
+        emit_binary(b, I->aux);
+        *top = 1;
+        return 1;
+    case IR_UNARY:
+        if (!*top) emit_pop_r0(b);
+        emit_unary(b, I->aux);
+        *top = 1;
+        return 1;
+    case IR_TRUNC:
+        if (I->val == 8 || I->val == 16) {
+            char op8[8];
+            op8[0] = I->aux ? 'U' : 'S';
+            op8[1] = 'X';
+            op8[2] = 'T';
+            op8[3] = (I->val == 8) ? 'B' : 'H';
+            op8[4] = 0;
+            if (!*top) emit_pop_r0(b);
+            asmbuf_puts(b, "    ");
+            asmbuf_puts(b, op8);
+            asmbuf_puts(b, " r0, r0\n");
+            *top = 1;
+        }
+        /* 32-bit widths need no work either way. */
+        return 1;
+    case IR_STORE_GLOBAL: {
+        unsigned addr = gvar_find(I->name);
+        if (gvar_find_size(I->name) >= 8) return 0;
+        if (!*top) emit_pop_r0(b);
+        emit_mov_addr32(b, 1, addr, addr_in_own_data(addr));
+        emit_line(b, "STR r0, [r1]");
+        *top = 0;                        /* the store consumes the value */
+        return 1;
+    }
+    case IR_STORE: {
+        /* Local store: the generic path pops the value into r0 and writes it.
+         * With the value already in r0 that is one whole push/pop pair saved
+         * per assignment, which is the single most common IR pair in C code.
+         * Only the plain 1/2/4-byte non-volatile forms are modelled. */
+        int sw = I->aux & ~IR_AUX_VOLATILE;
+        int is_volatile = (I->aux & IR_AUX_VOLATILE) != 0;
+        if (sw == 0) sw = 4;
+        if (is_volatile || sw >= 8) return 0;
+        if (!*top) emit_pop_r0(b);
+        if (sw == 1) {
+            asmbuf_puts(b, "    STRB r0, [r6, #");
+            asmbuf_int(b, I->val);
+            asmbuf_puts(b, "]\n");
+        } else if (sw == 2) {
+            asmbuf_puts(b, "    STRH r0, [r6, #");
+            asmbuf_int(b, I->val);
+            asmbuf_puts(b, "]\n");
+        } else {
+            asmbuf_puts(b, "    STR r0, [r6, #");
+            asmbuf_int(b, I->val);
+            asmbuf_puts(b, "]\n");
+        }
+        *top = 0;                        /* the store consumes the value */
+        return 1;
+    }
+    case IR_POP:
+        if (*top) *top = 0;              /* dropping a value in a register costs nothing */
+        else emit_pop_r0(b);
+        return 1;
+    case IR_DUP:
+        if (*top) {
+            asmbuf_puts(b, "    PUSH {r0}\n");   /* one copy on the stack, one in r0 */
+            return 1;
+        }
+        return 0;
+    default:
+        ark_top_drain(b, top);
+        return 0;
+    }
 }
 
 static int gvar_known(const char *name) {
@@ -1090,6 +1276,11 @@ static char *codegen_arm(IrProgram *prog) {
                 }
             }
         }
+        /* --reg-top state: whether the IR stack top is in r0, and whether the
+         * IR_RETURN being emitted can skip its pop.  Both stay 0 when the
+         * option is off, so the generated code is byte-identical. */
+        int rtop = 0;
+        int rtop_ret = 0;
         for (i = 0; i < f->code_count; i++) {
             IrInst *I = &f->code[i];
 #if ARKCC_FEATURE_DWARF
@@ -1101,6 +1292,9 @@ static char *codegen_arm(IrProgram *prog) {
                 asmbuf_putc(&buf, '\n');
             }
 #endif
+            rtop_ret = 0;
+            if (ark_top_enabled() && ark_top_try(&buf, I, &rtop, &rtop_ret))
+                continue;
             switch (I->op) {
                 case IR_FUNC_BEGIN:
                 case IR_FUNC_END:
@@ -2424,6 +2618,13 @@ static char *codegen_arm(IrProgram *prog) {
                     break;
                 }
                 case IR_RETURN:
+                    if (is_sret && rtop_ret) {
+                        /* The sret path pops the source address itself, so the
+                         * register copy has to go back on the stack first, and
+                         * the epilogue must pop it like it always did. */
+                        emit_push_r0(&buf);
+                        rtop_ret = 0;
+                    }
                     if (is_sret) {
                         /* Struct return > 8 bytes: pop source address (r1),
                          * load sret pointer from frame, copy struct word-by-word,
@@ -2458,7 +2659,8 @@ static char *codegen_arm(IrProgram *prog) {
                             emit_line(&buf, "POP {r5, r6, r7, pc}");
                         }
                     } else {
-                        emit_epilogue_return(&buf, local_size, f->is_irq, f->is_naked);
+                        emit_epilogue_return(&buf, local_size, f->is_irq, f->is_naked,
+                                             rtop_ret);
                     }
                     break;
                 case IR_ALLOCA: {
@@ -6114,8 +6316,18 @@ static void pass2_a(ArmAsm *a) {
     }
 }
 
+/* Number of references this object could not resolve to a label.  In -c mode
+ * they become linker relocations; in a single-file .bin build nobody will ever
+ * resolve them, and the placeholder BL (F000 D000) decodes as a branch to
+ * +0x0C000000 -- an image that faults far outside itself.  compiler.c therefore
+ * refuses to write a .bin while this is non-zero. */
+static int          g_arm_unresolved = 0;
+static const char  *g_arm_unresolved_first = 0;
+
 static void resolve_refs_a(ArmAsm *a) {
     int i;
+    g_arm_unresolved = 0;
+    g_arm_unresolved_first = 0;
     for (i = 0; i < a->ref_count; i++) {
         AsmRef *r = &a->refs[i];
         int addr;
@@ -6132,6 +6344,9 @@ static void resolve_refs_a(ArmAsm *a) {
                       "unresolved label %sq", r->name, 0,0,0,0,0);
 #endif
             a->error_count++;
+            g_arm_unresolved++;
+            if (!g_arm_unresolved_first && r->name[0] != '.')
+                g_arm_unresolved_first = r->name;
             continue;
         }
         if (r->type == 1) {
@@ -6430,6 +6645,10 @@ int arm_patch_movw_movt(unsigned char *code, int code_len, int off, int delta) {
     code[off + 7] = (unsigned char)((lo2 >> 8) & 0xFF);
     return 0;
 }
+
+/* Unresolved references of the last assembly (see resolve_refs_a). */
+int arm_get_unresolved_count(void) { return g_arm_unresolved; }
+const char *arm_get_unresolved_name(void) { return g_arm_unresolved_first; }
 
 /* Export symbol info for the linker */
 int arm_get_symbol_count(void) { return g_arm_sym_count; }
