@@ -7574,6 +7574,27 @@ make CFLAGS+="-DARK_LINK_MAX_OBJS=32 -DARK_PP_MAX_INC_DIRS=8"
    （`0xF200`/`0xF2A0`，普通 12 位），`MOV` 超出 `imm8` 或目标在高寄存器时走
    `MOVW`，`0x800000` 走 `MOVW+MOVT`。
 
+**（一·补）板端真的裁得掉**
+
+上面这批形态里，后端自己**从来不发射**的是 `VLDM/VSTM/VPUSH/VPOP`——它们只对
+手写 `.s` 有意义。所以这一块按 profile 裁剪（`ARKCC_FEATURE_ASM_VFP_LDSTM`：宿
+主/交叉 1、板端 0），裁剪后报的是"没编进这个构建"，不是 unknown mnemonic：
+
+```
+$ gcc -O2 -std=c99 -Iinclude -DARKCC_PROFILE=ARKCC_PROFILE_STM32_MIN \
+      -c src/backend/arm/backend_arm.c -o /tmp/b.o && size /tmp/b.o
+   text    data     bss
+ 106220   28684    8960        # 不裁是 108508，裁掉省 2288 字节；.bss 一个字节没动
+$ gcc ... -DARKCC_FEATURE_ASM_VFP_LDSTM=0 ... -o arkcc_trim.exe
+$ arkcc_trim.exe v.s -target arm --asm-extra
+arkcc: Error: VFP multi-register load/store is not compiled into this build
+              (ARKCC_FEATURE_ASM_VFP_LDSTM=0)
+```
+
+剩下那 +3684 字节（相对本轮之前的板端）是 LDR/STR 地址模式、`ADDW/SUBW`、`MOVW`
+与三个别名的编码——**这些是正确性问题，不能裁**：裁掉它们就等于回到"`SUB sp,
+sp, #2016` 编成 480"。
+
 **（二）寄存器分配：`-fopt-regalloc`**
 
 不是图着色，是一个**有边界的文本遍**：函数文本发射完之后整段扫一遍，把最热的
@@ -7647,6 +7668,7 @@ make CFLAGS+="-DARK_LINK_MAX_OBJS=32 -DARK_PP_MAX_INC_DIRS=8"
 | `ARKCC_FEATURE_ARM_RELOC_DATA` | `--reloc-data` / `--no-reloc-data` | 关 | 数据段不再搬迁：多个对象各带全局变量时链接直接报 `SRAM overlap`，仍然是"映射成一个翻译单元"的老做法 |
 | `ARKCC_FEATURE_RT_LAZY` | `--rt-lazy` | 关 | 运行库整段发射：`add3.c` 回到 1578 字节（而不是 60），不可达的 `__aeabi_*` 也留在镜像里 |
 | `ARKCC_FEATURE_OPT_REGALLOC` | `-fopt-regalloc` / `--regalloc` | 关 | 局部变量留在内存里，每个读/写各一条 `LDR/STR`（热点用例 29 处 `[r6, #]` 回到 29 处；开是 9 处），产物与上一版逐字节相同 |
+| `ARKCC_FEATURE_ASM_VFP_LDSTM` | （无） | 宿主/交叉 1、板端 0 | `VLDM/VSTM/VPUSH/VPOP` 编译不进来，遇到时报"not compiled into this build"；板端省 2288 字节 text，`.bss` 不变 |
 | `ARKCC_FEATURE_OPT_REG_TOP` | `--reg-top` | 关 | 每个操作都老老实实 pop/push，指令数回到 110289（开是 102484）；生成代码与开之前逐字节相同 |
 | `ARKCC_FEATURE_ASM_EXTRA` | `--asm-extra` / `--no-asm-extra` | 关 | 30 个扩展助记符一律按未知助记符报错（报错文本会提示"打开 --asm-extra 就能汇编"），不会静默按别的指令编码 |
 | `ARKCC_FEATURE_CAST_F64F32` | （无） | 开 | `float` 与 `double` 被当成同一种表示，混合精度表达式的中间结果精度不符合 C 标准 |

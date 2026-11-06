@@ -5103,10 +5103,12 @@ static int op_size_a(const char *op) {
     if (strieq_a(op, "MOVW")) return 4;
     if (strieq_a(op, "MOVT")) return 4;
     if (strieq_a(op, "ADDW") || strieq_a(op, "SUBW")) return 4;
+#if ARKCC_FEATURE_ASM_VFP_LDSTM
     /* VFP multi-register load/store: one encoding, always 32 bits. */
     if (strieq_a(op, "VLDMIA") || strieq_a(op, "VLDM") || strieq_a(op, "VLDMDB") ||
         strieq_a(op, "VSTMIA") || strieq_a(op, "VSTM") || strieq_a(op, "VSTMDB") ||
         strieq_a(op, "VPUSH") || strieq_a(op, "VPOP")) return 4;
+#endif
     if (strieq_a(op, "SDIV")) return 4;
     if (strieq_a(op, "UDIV")) return 4;
     if (strieq_a(op, "UMULL")) return 4;
@@ -5942,6 +5944,7 @@ static void emit_movw_a(ArmAsm *a, int rd, int imm) {
     out16(a, (imm3 << 12) | ((unsigned)(rd & 0xF) << 8) | imm8);
 }
 
+#if ARKCC_FEATURE_ASM_VFP_LDSTM
 /* --------------------- VFP multi-register load/store ---------------------
  * VLDMIA/VLDMDB/VSTMIA/VSTMDB/VPUSH/VPOP.  The encoding carries only "first
  * register + how many", so a register list must be a contiguous run -- {s0-s3}
@@ -6087,6 +6090,8 @@ static void emit_vfp_ldstm_a(ArmAsm *a, int is_load, int is_db, int wb, int rn,
     out16(a, hw1);
     out16(a, hw2);
 }
+
+#endif /* ARKCC_FEATURE_ASM_VFP_LDSTM */
 
 static void pass2_a(ArmAsm *a) {
     const char *p = a->src;
@@ -6410,6 +6415,16 @@ static void pass2_a(ArmAsm *a) {
                  strieq_a(first, "VLDMDB") || strieq_a(first, "VSTMIA") ||
                  strieq_a(first, "VSTM") || strieq_a(first, "VSTMDB") ||
                  strieq_a(first, "VPUSH") || strieq_a(first, "VPOP")) {
+#if !ARKCC_FEATURE_ASM_VFP_LDSTM
+            /* Trimmed on the board: the backend never emits these, so the only
+             * loss is assembling hand-written .s.  Say so instead of letting the
+             * mnemonic fall through as "unknown". */
+            diag_tool(DIAG_SEV_ERROR, "arkcc",
+                      "VFP multi-register load/store is not compiled into this "
+                      "build (ARKCC_FEATURE_ASM_VFP_LDSTM=0)", 0,0,0,0,0,0);
+            a->hard_errors++;
+            out16(a, 0xBF00); out16(a, 0xBF00);
+#else
             int is_load, is_db = 0, wb = 0, rn;
             ArmVfpList vl;
             if (strieq_a(first, "VPUSH") || strieq_a(first, "VPOP")) {
@@ -6428,6 +6443,7 @@ static void pass2_a(ArmAsm *a) {
             }
             vl = parse_vfplist_a(a, &p, 0);
             emit_vfp_ldstm_a(a, is_load, is_db, wb, rn, &vl);
+#endif
         }
         else if (strieq_a(first, "ADDW") || strieq_a(first, "SUBW")) {
             /* Always the 32-bit form with a plain 12-bit immediate: never the

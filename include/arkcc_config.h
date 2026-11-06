@@ -231,6 +231,18 @@
 #ifndef ARKCC_FEATURE_RT_LAZY
 #   define ARKCC_FEATURE_RT_LAZY              1
 #endif
+/* 手写汇编才用得到的形态（VLDM/VSTM/VPUSH/VPOP 多寄存器存取）。后端自己
+ * 从来不发射它们，所以板端裁掉只损失"能汇编手写的 .s"，不损失"能编译 .c"；
+ * 裁掉时这几条助记符会明确报"not compiled into this build"，而不是变成
+ * unknown mnemonic 让人以为拼错了。 */
+#ifndef ARKCC_FEATURE_ASM_VFP_LDSTM
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_ASM_VFP_LDSTM   0
+# else
+#   define ARKCC_FEATURE_ASM_VFP_LDSTM   1
+# endif
+#endif
+
 #ifndef ARKCC_FEATURE_ASM_EXTRA
 #   define ARKCC_FEATURE_ASM_EXTRA            1
 #endif
