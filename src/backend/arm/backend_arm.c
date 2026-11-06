@@ -1327,14 +1327,19 @@ static char *codegen_arm(IrProgram *prog) {
          * Maps slot index (cumulative 4-byte slot count) to AAPCS register
          * number (r0-r3), accounting for 64-bit even-pair alignment.
          * -1 = slot not used (gap in struct-by-value slot space). */
-        int aapcs_map[64];
-        int aapcs_soff[64];
+        /* static: this compiler also runs on the target board, where the
+         * code generator's stack is a tight budget.  codegen_arm() is not
+         * recursive and is re-entered only once per function, and both tables
+         * are re-initialised at the top of the loop, so a file-scope lifetime
+         * changes nothing except the stack cost. */
+        static int aapcs_map[64];
+        static int aapcs_soff[64];
         {
             /* Slot -> register (aapcs_map) and slot -> byte offset in the
              * caller's stack argument block (aapcs_soff), from the one shared
              * rule in aapcs_assign() so the callee reads exactly what the
              * caller wrote. */
-            int psz[64];
+            static int psz[64];
             int pj;
             for (pj = 0; pj < 64; pj++) { aapcs_map[pj] = -1; aapcs_soff[pj] = -1; }
             for (pj = 0; pj < f->param_count && pj < 64; pj++) {
@@ -2465,11 +2470,16 @@ static char *codegen_arm(IrProgram *prog) {
                      * garbage) and an argument that landed at an odd word offset
                      * was misaligned with respect to AAPCS. */
                     {
-                        int asz[64];
-                        int aslot_reg[128];
-                        int aslot_soff[128];
-                        int areg[64];
-                        int asoff[64];
+                        /* static for the same reason as aapcs_map above: 1.8 KiB
+                         * of stack per call site would be a real cost on the
+                         * board.  The tables are fully rewritten for every call
+                         * (aapcs_assign fills the slots it uses and the loops
+                         * below only read those). */
+                        static int asz[64];
+                        static int aslot_reg[128];
+                        static int aslot_soff[128];
+                        static int areg[64];
+                        static int asoff[64];
                         int sl = 0;
                         int nsaa;
                         int i;
