@@ -888,8 +888,28 @@ IrProgram *irgen_program(AstNode *prog) {
                      * backend can handle 64-bit (long long/double) params by
                      * reading both [ebp+8+slot*4] and [ebp+8+slot*4+4]. */
                     ir_emit(g.fn, IR_GETARG, off, pp->u.var.name, (sz << 8) | slot);
-                    /* Advance slot by ceil(sz/4): 64-bit params occupy 2 slots */
-                    slot += (sz + 3) / 4;
+                    /* Slots count the words actually transmitted, not the size of
+                     * the object: a struct larger than 8 bytes travels as a
+                     * pointer (one word), a struct of 5..8 bytes as two words,
+                     * an array parameter is a pointer too. This is the same
+                     * picture as aapcs_assign() on the callee side, and it has
+                     * to match: ceil(size/4) used to give a 12-byte struct three
+                     * slots, so every later parameter asked for a slot that
+                     * aapcs_soff[] had never filled (measured: the 5th argument
+                     * of mixed(int, struct P, int, struct Q, int) was loaded
+                     * from [r6, #63], i.e. soff == -1). */
+                    {
+                        int pwords;
+                        if (is_struct_val) pwords = 1;                 /* passed by pointer */
+                        else if (ptype && (ptype->kind == TYPE_STRUCT ||
+                                           ptype->kind == TYPE_UNION))
+                            pwords = (sz > 4) ? 2 : 1;                 /* by value in words */
+                        else if (ptype && ptype->kind == TYPE_ARRAY)
+                            pwords = 1;                                /* decays to a pointer */
+                        else
+                            pwords = (sz >= 8) ? 2 : 1;   /* long long / double */
+                        slot += pwords;
+                    }
                 }
                 /* For variadic functions, also store all 8 args (a0..a7) at a
                  * fixed frame region (ARK_VA_ARG_BASE..+64) so va_start/va_arg
@@ -1407,6 +1427,22 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
                     } else {
                         irgen_lvalue_addr(g, node->u.unary.operand);
                     }
+                } else if (rt && (rt->kind == TYPE_STRUCT || rt->kind == TYPE_UNION) &&
+                           type_size(rt) > 4) {
+                    /* 5..8-byte composite return: it travels in r0:r1, i.e. two
+                     * words on the IR stack.  Evaluating the struct as a plain
+                     * expression pushed only its first word, so the callee's
+                     * IR_RETURN popped the second half from nowhere and the
+                     * caller stored garbage (`struct P add(...)` returned 2
+                     * instead of 10). */
+                    if (node->u.unary.operand->kind == AST_FUNC_CALL) {
+                        /* The call itself already left both words on the stack. */
+                        irgen_expr(g, node->u.unary.operand);
+                    } else {
+                        irgen_lvalue_addr(g, node->u.unary.operand);
+                        ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
+                        ir_emit(g->fn, IR_LOAD_IDX, 8, 0, 0);
+                    }
                 } else {
                     irgen_expr(g, node->u.unary.operand);
                 }
@@ -1703,11 +1739,24 @@ static void irgen_lvalue_addr(IrGen *g, AstNode *node) {
         AstNode *obj = node->u.member.obj;
         if (node->u.member.is_arrow) {
             irgen_expr(g, obj);
+        } else if (obj->kind == AST_FUNC_CALL &&
+                   obj->type &&
+                   (obj->type->kind == TYPE_STRUCT || obj->type->kind == TYPE_UNION) &&
+                   type_size(obj->type) <= 8) {
+            /* Small composite returned by value, used as an lvalue base
+             * (`f().x`).  The call leaves the value, not an address, so it is
+             * materialised in a temporary and the member offset is applied to
+             * that.  Without this the first word of the value was used as a
+             * pointer (measured: `add(a, b).x` read through address 4). */
+            int sz = type_size(obj->type);
+            int off = alloc_local(g, sz);
+            irgen_expr(g, obj);
+            ir_emit(g->fn, IR_STORE, off, 0, (sz > 4) ? 8 : 4);
+            ir_emit(g->fn, IR_PUSH_ADDR, off, 0, 0);
         } else if (obj->kind == AST_FUNC_CALL) {
-            /* Function call returning a struct: irgen_expr pushes the
-             * result pointer (address of the struct at frame+8176 in
-             * the callee). Treat like arrow ? add member offset to
-             * this pointer to get the member address. */
+            /* Function call returning a composite larger than 8 bytes: it hands
+             * back the address of its own result buffer, so the pointer can be
+             * used directly. */
             irgen_expr(g, obj);
         } else {
             irgen_lvalue_addr(g, obj);
@@ -2574,16 +2623,27 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                     int sz = type_size(L->type);
                     if (sz <= 0) sz = 4;
                     if (sz <= 8) {
-                        /* Small struct (<=8B): irgen_expr pushes the 8-byte
-                         * value (covers AST_FUNC_CALL returning small struct
-                         * and AST_VAR struct-to-struct copy). Store the value
-                         * to L's address via IR_STORE_IDX (pops value, then
-                         * addr; stores; pushes value back as expression result).
-                         * Using IR_MEMCPY here would treat the value as a
-                         * pointer and crash with STATUS_ACCESS_VIOLATION. */
+                        /* Small struct (<=8B) -- value semantics, no memcpy:
+                         * push the destination address, then the value, then
+                         * IR_STORE_IDX with the value's width. The value has to
+                         * be read out of the source object for 5..8 bytes; a
+                         * plain irgen_expr() on a struct variable pushes only
+                         * the first word (measured: `arr[1] = a` stored the
+                         * array-element address as the second word and then
+                         * crashed in the next store). */
+                        int es = (sz > 4) ? 8 : 4;
+                        AstNode *r = node->u.binary.right;
                         irgen_lvalue_addr(g, L);                  /* [dst_addr] */
-                        irgen_expr(g, node->u.binary.right);      /* [dst_addr, value] */
-                        ir_emit(g->fn, IR_STORE_IDX, 8, 0, 0);    /* [value] */
+                        if (r && r->kind == AST_FUNC_CALL) {
+                            irgen_expr(g, r);                     /* already value words */
+                        } else if (es == 8) {
+                            irgen_lvalue_addr(g, r);              /* [dst, addr] */
+                            ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
+                            ir_emit(g->fn, IR_LOAD_IDX, 8, 0, 0); /* two words */
+                        } else {
+                            irgen_expr(g, r);
+                        }
+                        ir_emit(g->fn, IR_STORE_IDX, es, 0, 0);   /* [value] */
                         break;
                     }
                     /* Large struct: use IR_MEMCPY with addresses.
@@ -3059,13 +3119,33 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                 Type *pt = (s && s->kind == SYM_FUNC &&
                             s->param_types && i < s->param_count)
                            ? s->param_types[i] : 0;
-                /* struct-by-value: pass the address of the source struct
-                 * instead of the (truncated to 8-byte) value. The callee's
-                 * IR_GETARG (with size-in-aux) will memcpy the payload into
-                 * its own frame slot. */
+                /* struct-by-value comes in three shapes, and the callee --
+                 * IR_GETARG, which keys off the size in aux -- decides by size:
+                 *   > 8 bytes : the caller passes the *address* and the callee
+                 *               memcpy's the payload into its own frame slot;
+                 *   5..8 bytes: the two words travel by value (AAPCS puts a
+                 *               composite of that size in a register pair);
+                 *   <= 4 bytes: one word by value.
+                 * The 5..8 byte case used to fall into the plain expression
+                 * evaluation below, which pushed only the struct's first word
+                 * (`IR_PUSH_VAR` with no width) while the callee read two --
+                 * measured: examples/test_struct_byval.c answered 2 instead of
+                 * 10 on ARM while the C backend answered 10. */
                 if (at && (at->kind == TYPE_STRUCT || at->kind == TYPE_UNION) &&
                     type_size(at) > 8) {
-                    irgen_lvalue_addr(g, arg);
+                    if (arg->kind == AST_FUNC_CALL)
+                        irgen_expr(g, arg);          /* already the result buffer address */
+                    else
+                        irgen_lvalue_addr(g, arg);
+                } else if (at && (at->kind == TYPE_STRUCT || at->kind == TYPE_UNION) &&
+                           type_size(at) > 4) {
+                    if (arg->kind == AST_FUNC_CALL) {
+                        irgen_expr(g, arg);          /* already two words */
+                    } else {
+                        irgen_lvalue_addr(g, arg);          /* [addr] */
+                        ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
+                        ir_emit(g->fn, IR_LOAD_IDX, 8, 0, 0);  /* two words, low first */
+                    }
                 } else {
                     irgen_expr(g, arg);
                     /* 64-bit argument passing fix for 32-bit x86 cdecl ABI:
@@ -3159,6 +3239,17 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         }
                         if (k == TYPE_LLONG || k == TYPE_DOUBLE) {
                             argmask |= (1 << (2 * i + 1));
+                        }
+                        /* A struct/union of 5..8 bytes travels as an 8-byte
+                         * value (two words), so it needs the same even-register
+                         * pair / 8-byte stack slot treatment as long long.
+                         * Without the bit the ARM backend spread a register
+                         * argument across two non-paired registers while the
+                         * callee read r0:r1. */
+                        if ((k == TYPE_STRUCT || k == TYPE_UNION) &&
+                            use_t->kind != TYPE_PTR) {
+                            int ssz = type_size(use_t);
+                            if (ssz > 4 && ssz <= 8) argmask |= (1 << (2 * i + 1));
                         }
                     }
                 }

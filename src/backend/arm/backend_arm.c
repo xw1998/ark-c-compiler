@@ -961,6 +961,26 @@ static int rt_prune_asm_text(char *text, int len) {
 }
 #endif /* ARKCC_FEATURE_RT_LAZY */
 
+/* Does a value of this type come back in two core registers (r0:r1)?
+ *
+ * long long / double always do.  A composite of 5..8 bytes does too: AAPCS
+ * puts a composite that fits in two words into r0:r1, and the caller reads it
+ * back with IR_STORE_IDX/8.  A smaller composite comes back in r0 alone.
+ * Before this the ARM backend only ever pushed r0 back for a struct return, so
+ * the caller stored the struct's first word and the second word came from
+ * whatever was left on the stack (measured: `struct P add(...)` assigned from
+ * `c = add(a, b)` answered 2 instead of 10, and with a struct destination
+ * address on the stack it wrote to an unmapped address instead). */
+static int ret_is_two_words(Type *t) {
+    if (!t) return 0;
+    if (t->kind == TYPE_LLONG || t->kind == TYPE_DOUBLE) return 1;
+    if (t->kind == TYPE_STRUCT || t->kind == TYPE_UNION) {
+        int sz = type_size(t);
+        return sz > 4 && sz <= 8;
+    }
+    return 0;
+}
+
 /* AAPCS32 parameter assignment (base standard: core registers then stack).
  *
  * sizes[i] is how many bytes argument i occupies on the wire: 8 for a
@@ -2578,8 +2598,21 @@ static char *codegen_arm(IrProgram *prog) {
                     }
                     if (stack_args > 0) {
                         /* r5 still holds the sp from before the argument block
-                         * (r4-r11 are callee-saved). */
+                         * (r4-r11 are callee-saved).  The words that stayed on
+                         * the stack are still there, above sp, so they have to
+                         * be dropped as well -- forgetting that left `extra`
+                         * under the result and the next IR_STORE_IDX read it as
+                         * a destination address (measured: a store to 0x63). */
+                        int drop = stack_args * 4;
                         asmbuf_puts(&buf, "    MOV sp, r5\n");
+                        if (drop <= 252) {
+                            asmbuf_puts(&buf, "    ADD sp, sp, #");
+                            asmbuf_int(&buf, drop);
+                            asmbuf_puts(&buf, "\n");
+                        } else {
+                            emit_mov_imm(&buf, 7, drop);
+                            asmbuf_puts(&buf, "    ADD sp, sp, r7\n");
+                        }
                     }
                     /* #9 FIX: Check if called function returns 64-bit (long long/double).
                      * If so, push both r0 (low) and r1 (high).
@@ -2597,7 +2630,7 @@ static char *codegen_arm(IrProgram *prog) {
                             for (fi2 = 0; fi2 < prog->func_count; fi2++) {
                                 if (ark_streq(prog->funcs[fi2]->name, I->name)) {
                                     Type *rt = prog->funcs[fi2]->ret_type;
-                                    if (rt && (rt->kind == TYPE_LLONG || rt->kind == TYPE_DOUBLE)) {
+                                    if (ret_is_two_words(rt)) {
                                         ret64 = 1;
                                     } else if (rt && rt->kind == TYPE_VOID) {
                                         is_void_ret = 1;
@@ -2856,8 +2889,7 @@ static char *codegen_arm(IrProgram *prog) {
                          * caller reads r0 = high half and r1 = stale garbage
                          * (measured: `long long f(long long a){return a;}`
                          * returned 0 for f(7) instead of 7). */
-                        if (f->ret_type && f->ret_type->kind == TYPE_LLONG &&
-                            !f->is_naked) {
+                        if (ret_is_two_words(f->ret_type) && !f->is_naked) {
                             if (rtop_ret) {          /* not modeled for 64-bit */
                                 emit_push_r0(&buf);
                                 rtop_ret = 0;
