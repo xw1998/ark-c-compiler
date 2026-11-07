@@ -723,6 +723,11 @@ Type 'help' for commands.
 | 对象 | 尾部追加一个 `__arkcc_text_base` 符号，值 = 编译期基址（与 `__arkcc_ram_start/end` 同一模式，占的仍是"符号 offset 字段当绝对地址用"） |
 | 链接器 | 装载时记下每个对象在合并缓冲区里的起点 `g_ld_code_base[i]` 与描述符；scatter 解析出镜像基址后，对每个对象算 `delta = (image_base + code_base) - text_base`，用 `arm_patch_movw_movt()` 加进那对 MOVW/MOVT |
 
+> 名字里的 `.arktext` 只是重定位条目的 name 字段占位（和 `.arkdata` 同一个套路），
+> 它**不是**写进 `.s` 的伪指令：站点是在汇编器解析 `LDR rd, =label` 时判定的，
+> 所以 `-S` 出来的汇编里看不到它，重新汇编时按当时的开关重新判定。这样
+> "codegen 出文本 → 汇编器解析" 这条唯一通路只有一个判定点。
+
 `delta` **必须按对象算**：先算出一个全局差、再套给所有对象，对象 0 对、对象 1 就错
 ——这正是 §14.3 第 3 项门禁专门盯的形态。
 
