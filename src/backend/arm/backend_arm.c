@@ -616,12 +616,18 @@ static void ark_regalloc_function(AsmBuffer *b, int from, IrFunc *f) {
         }
         if (line[0] == ' ' && line[1] == ' ' && line[2] == ' ' && line[3] == ' ' &&
             ra_pre8(line + 4, "POP {r5,")) {
+            /* A variadic function returns through POP {r5,r6,r7,lr} and then
+             * ADD sp,#16 / BX lr (it has to drop the r0-r3 mirror first), so
+             * rewriting that line to POP {..,pc} would jump out 16 bytes early
+             * with the pad still on the stack.  Keep lr; the rest of the list
+             * is widened exactly like the non-variadic case. */
+            int keeps_lr = (strstr(line, ", lr}") != 0);
             asmbuf_puts(&out, "    POP {r5, r6, r7");
             for (k = 0; k < nregs; k++) {
                 asmbuf_puts(&out, ", r");
                 asmbuf_int(&out, made[k]);
             }
-            asmbuf_puts(&out, ", pc}\n");
+            asmbuf_puts(&out, keeps_lr ? ", lr}\n" : ", pc}\n");
             pos += len + 1;
             continue;
         }
@@ -3336,9 +3342,11 @@ static char *codegen_arm(IrProgram *prog) {
                         int is_void_ret = 0;
                         if (!is_indirect) {
                             int fi2;
+                            int found = 0;
                             for (fi2 = 0; fi2 < prog->func_count; fi2++) {
                                 if (ark_streq(prog->funcs[fi2]->name, I->name)) {
                                     Type *rt = prog->funcs[fi2]->ret_type;
+                                    found = 1;
                                     if (ret_is_two_words(rt)) {
                                         ret64 = 1;
                                     } else if (rt && rt->kind == TYPE_VOID) {
@@ -3346,6 +3354,15 @@ static char *codegen_arm(IrProgram *prog) {
                                     }
                                     break;
                                 }
+                            }
+                            /* Not defined in this translation unit: the return
+                             * shape is whatever irgen saw in the prototype.  Use
+                             * it instead of assuming one word -- that assumption
+                             * unbalanced the stack for every void callee and
+                             * dropped the high word of every long long callee. */
+                            if (!found) {
+                                ret64 = (int)((I->val >> 32) & 1);
+                                is_void_ret = (int)((I->val >> 33) & 1);
                             }
                         } else {
                             ret64 = (int)((I->val >> 32) & 1);
@@ -6222,9 +6239,18 @@ static void pass1_a(ArmAsm *a) {
                  * (includes r8-r12); size determined by the register list to keep pass1 offsets correct. */
                 int has_lr = 0, has_pc = 0;
                 int list = parse_reglist_a(&p, &has_lr, &has_pc);
-                (void)has_lr; (void)has_pc;
-                if (list & 0x1F00) pc += 4;  /* T2: includes r8-r12 */
-                else               pc += 2;  /* T1 */
+                /* The 16-bit form has one bit that is LR in PUSH and PC in POP,
+                 * so PUSH{..,pc} and POP{..,lr} only exist as T2 and are twice
+                 * as wide.  Pass 2 makes the same decision; if the two ever
+                 * disagree every label after this line moves. */
+                if (strieq_a(first, "PUSH")) {
+                    if (has_pc)                    pc += 0;   /* not encodable */
+                    else if (list & 0x1F00)        pc += 4;   /* T2 */
+                    else                           pc += 2;   /* T1 */
+                } else {
+                    if ((list & 0x1F00) || has_lr) pc += 4;   /* T2 */
+                    else                           pc += 2;   /* T1 */
+                }
             } else if (strieq_a(first, "ADD") || strieq_a(first, "SUB") ||
                        strieq_a(first, "ADDS") || strieq_a(first, "SUBS")) {
                 /* ADD/SUB rd, rn, #imm: T1 (2 bytes) if imm<=7 and low regs,
@@ -6952,8 +6978,14 @@ static void pass2_a(ArmAsm *a) {
         if (strieq_a(first, "PUSH")) {
             int has_lr=0, has_pc=0;
             int list = parse_reglist_a(&p, &has_lr, &has_pc);
-            (void)has_pc;
-            if (list & 0x1F00) {
+            if (has_pc) {
+                /* STM never stores pc, and the 16-bit PUSH bit at 8 means LR.
+                 * Dropping it would leave the reader believing pc was saved. */
+                diag_tool(DIAG_SEV_ERROR, "arkcc",
+                          "PUSH cannot store pc (only lr has a bit in this form)",
+                          0,0,0,0,0,0);
+                a->hard_errors++;
+            } else if (list & 0x1F00) {
                 /* A single high register cannot use the block form: QEMU (and
                  * whatever rules its Thumb-2 decoder follows) rejects
                  * "stmdb sp!, {r8}" = e92d 0100 outright, and GNU as itself
@@ -6977,20 +7009,33 @@ static void pass2_a(ArmAsm *a) {
         else if (strieq_a(first, "POP")) {
             int has_lr=0, has_pc=0;
             int list = parse_reglist_a(&p, &has_lr, &has_pc);
-            (void)has_lr;
-            if (list & 0x1F00) {
+            /* The 16-bit POP has one bit at 8 and it means PC, not LR: the two
+             * cannot be expressed in T1 at all.  This used to drop the register
+             * on the floor (POP {r5,r6,r7,lr} assembled to bce0, i.e.
+             * POP {r5,r6,r7}), which is a silently wrong return sequence -- the
+             * variadic epilogue is exactly that shape and lost 4 bytes of stack
+             * plus the restored lr on every return.  Refuse the impossible
+             * combination instead of picking one. */
+            if (has_lr && has_pc) {
+                diag_tool(DIAG_SEV_ERROR, "arkcc",
+                          "POP cannot load both lr and pc", 0,0,0,0,0,0);
+                a->hard_errors++;
+            }
+            if ((list & 0x1F00) || has_lr) {
                 /* Single high register: see the note on PUSH above.  "POP {ip}"
                  * is emitted by the indirect-call path, and e8bd 1000 does not
                  * execute (measured: UC_ERR_INSN_INVALID), so use
                  * "ldr.w Rt, [sp], #4" = f85d t004. */
-                if ((list & (list - 1)) == 0 && !has_pc) {
+                if ((list & (list - 1)) == 0 && !has_pc && !has_lr) {
                     int rt = 0;
                     while (rt < 16 && !(list & (1 << rt))) rt++;
                     out16(a, 0xF85D);
                     out16(a, ((unsigned)(rt & 0xF) << 12) | 0x0B00u | 4u);
                 } else {
-                    /* T2 LDMIA SP!: can encode r0-r12 + pc */
-                    unsigned w2 = (unsigned)(has_pc ? 0x8000 : 0) | (unsigned)(list & 0x1FFF);
+                    /* T2 LDMIA SP!: can encode r0-r12 + lr or pc */
+                    unsigned w2 = (unsigned)(has_pc ? 0x8000 : 0) |
+                                  (unsigned)(has_lr ? 0x4000 : 0) |
+                                  (unsigned)(list & 0x1FFF);
                     out16(a, 0xE8BD); out16(a, w2);
                 }
             } else {

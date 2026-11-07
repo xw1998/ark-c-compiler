@@ -1946,13 +1946,19 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
                          * are dispatched above and conservatively push. */
                         if (!is_void_ret) {
                             int fi2;
+                            int found = 0;
                             for (fi2 = 0; fi2 < prog->func_count; fi2++) {
                                 if (ark_streq(prog->funcs[fi2]->name, I->name)) {
                                     Type *rt = prog->funcs[fi2]->ret_type;
+                                    found = 1;
                                     if (rt && rt->kind == TYPE_VOID) is_void_ret = 1;
                                     break;
                                 }
                             }
+                            /* Declared-only callee: irgen knows the prototype,
+                             * so take the result shape from the call site. */
+                            if (!found && !is_void_ret)
+                                is_void_ret = (int)((I->val >> 33) & 1);
                         }
                         int k;
                         /* libc: pass only n args; wrapped: wrappers have fixed 8-arg

@@ -445,14 +445,20 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                      * the return-value push (caller no longer emits IR_POP). */
                     if (!is_indirect) {
                         int fi2;
+                        int found = 0;
                         for (fi2 = 0; fi2 < prog->func_count; fi2++) {
                             if (ark_streq(prog->funcs[fi2]->name, I->name)) {
                                 Type *rt = prog->funcs[fi2]->ret_type;
+                                found = 1;
                                 if (rt && rt->kind == TYPE_VOID)
                                     is_void_ret = 1;
                                 break;
                             }
                         }
+                        /* Declared-only callee: irgen knows the prototype, so
+                         * take the result shape from the call site. */
+                        if (!found)
+                            is_void_ret = (int)((I->val >> 33) & 1);
                     }
                     /* n counts arguments, not words: a 64-bit argument is
                      * two words on the IR stack with the HIGH word on top, so

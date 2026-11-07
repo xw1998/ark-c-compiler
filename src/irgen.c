@@ -3321,9 +3321,26 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                  * to push r1 (high word) alongside r0 after an indirect call. */
                 {
                     long long call_val = n;
-                    if (is_indirect && node->type &&
+                    /* Result shape, taken from the *call expression's* type --
+                     * which is the same thing irgen_discard_result uses to decide
+                     * how many words to pop, so the two sides cannot disagree:
+                     *   bit 32: the result is two words (long long / double)
+                     *   bit 33: the result is void (caller pushes nothing)
+                     * The backends previously looked this up in prog->funcs, i.e.
+                     * only in functions *defined by this translation unit*.  A
+                     * declared-only callee therefore got "returns one word":
+                     * `extern void h(void); h();` pushed r0 that nobody popped
+                     * (4 bytes of stack leaked per call -- on the board this left
+                     * the MiniApp frame 4 bytes off and broke va_arg's 8-byte
+                     * alignment), and `extern long long e(void); return e();`
+                     * silently dropped the high word.
+                     * Both bits are above the argument count, which every backend
+                     * truncates to int. */
+                    if (node->type &&
                         (node->type->kind == TYPE_LLONG || node->type->kind == TYPE_DOUBLE))
                         call_val |= 0x100000000LL;
+                    if (node->type && node->type->kind == TYPE_VOID)
+                        call_val |= 0x200000000LL;
                     ir_emit(g->fn, IR_CALL, call_val, node->u.call.name, argmask);
                 }
             }

@@ -394,6 +394,122 @@ def tool_finder(prefix, path):
     return find
 
 
+# Instructions whose encoding this gate must pin down byte for byte.
+#
+# The ARM cases below go through GNU as; the board goes through arkc's own
+# assembler.  Two encoders for one text means "GNU as accepted it" says nothing
+# about the target, and the va epilogue is the one instruction pair where that
+# difference bit: `POP {r5, r6, r7, lr}` has no 16-bit form at all (bit 8 is PC
+# in POP, LR only in PUSH), the internal encoder silently dropped `lr`, and the
+# variadic return then popped three registers instead of four -- 4 bytes of
+# stack lost and a stale lr on every return, invisible on the host.
+ENCODING = [
+    ('pop_lr',
+     '.thumb\n.text\n.global f\nf:\n'
+     '    PUSH {r5, r6, r7, lr}\n    POP {r5, r6, r7, lr}\n    BX lr\n',
+     b'\xe0\xb5\xbd\xe8\xe0\x40\x70\x47'),
+    ('pop_pc',
+     '.thumb\n.text\n.global g\ng:\n    POP {r5, r6, r7, pc}\n',
+     b'\xe0\xbd'),
+]
+
+
+# How many words a call leaves on the IR stack, when the callee is only
+# declared in this translation unit.
+#
+# irgen decides the pop count from the *call expression's* type; the backends
+# used to decide the push count by looking the callee up in prog->funcs, i.e.
+# only among functions this file defines.  A declared-only callee therefore got
+# "returns one word" no matter what its prototype said:
+#   extern void h(void); h();            -> pushed r0 that nobody popped,
+#                                           4 bytes of stack leaked per call
+#   extern long long e(void); return e();-> high word never pushed, silently
+#                                           wrong 64-bit result
+# The leaked word is what broke va_arg on the board: MINISTART's
+# __arkcc_init_globals() call left the MiniApp frame 4 bytes off, so the
+# argument region was no longer 8-byte aligned and every 64-bit va_arg read
+# one word early.  Both shapes are asserted here.
+SHAPE_SRC = (
+    'extern void h(void);\n'
+    'extern long long e(void);\n'
+    'int main(void) { h(); return (int)(e() >> 40) & 0xFF; }\n'
+)
+
+
+def shape_checks(r):
+    src = os.path.join(TMP, 'shape_voidcall.c')
+    asm = os.path.join(TMP, 'shape_voidcall.s')
+    write(src, SHAPE_SRC)
+    rc = r.run([ARKC, '-target', 'arm', '-S', '-O1', '-I', INC, src, '-o', asm])
+    if rc.returncode != 0:
+        print('FAIL asm/void_call  arkcc failed: %s'
+              % (rc.stdout + rc.stderr).strip()[:160])
+        r.failed += 1
+        return
+    lines = [ln.strip() for ln in open(asm, encoding='utf-8', errors='replace')]
+    lines = [ln for ln in lines if ln and not ln.startswith(';')]
+
+    def after(mnemonic):
+        for i, ln in enumerate(lines):
+            if ln.replace('  ', ' ') == mnemonic:
+                return lines[i + 1:i + 4]
+        return None
+
+    tail = after('BL h')
+    want = 'PUSH {r0}'
+    if tail is None:
+        print('FAIL asm/void_call  no "BL h" in the emitted assembly')
+        r.failed += 1
+    elif tail[0] == want:
+        print('FAIL asm/void_call  a declared-only void call pushed a result: %r'
+              % (tail,))
+        r.failed += 1
+    else:
+        print('PASS asm/void_call  h() pushes nothing')
+        r.passed += 1
+
+    tail = after('BL e')
+    if tail is None:
+        print('FAIL asm/void_call  no "BL e" in the emitted assembly')
+        r.failed += 1
+    elif tail[0] != 'PUSH {r0}' or tail[1] != 'PUSH {r1}':
+        print('FAIL asm/void_call  a declared-only long long call must push both '
+              'words, got %r' % (tail,))
+        r.failed += 1
+    else:
+        print('PASS asm/void_call  e() pushes both words')
+        r.passed += 1
+
+
+def encoding_checks(r):
+    """arkcc's own assembler, checked byte for byte (no external toolchain)."""
+    for name, text, want in ENCODING:
+        src = os.path.join(TMP, 'enc_' + name + '.s')
+        out = os.path.join(TMP, 'enc_' + name + '.bin')
+        write(src, text)
+        if os.path.exists(out):
+            os.remove(out)
+        rc = r.run([ARKC, '-target', 'arm', src, '-o', out])
+        if rc.returncode != 0:
+            print('FAIL asm/%-9s assembler failed: %s'
+                  % (name, (rc.stdout + rc.stderr).strip()[:160]))
+            r.failed += 1
+            continue
+        try:
+            got = open(out, 'rb').read()
+        except OSError as e:
+            print('FAIL asm/%-9s no output: %s' % (name, e))
+            r.failed += 1
+            continue
+        if got != want:
+            print('FAIL asm/%-9s got %s want %s'
+                  % (name, got.hex(), want.hex()))
+            r.failed += 1
+        else:
+            print('PASS asm/%-9s %s' % (name, want.hex()))
+            r.passed += 1
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--arm-as', default=os.environ.get('ARKCC_ARM_AS', ''))
@@ -414,6 +530,9 @@ def main():
 
     r = Runner(args.gcc if shutil.which(args.gcc) else None)
     ran = 0
+
+    encoding_checks(r)
+    shape_checks(r)
 
     arm_tool = tool_finder('arm-none-eabi-', args.arm_as)
     if arm_tool:
