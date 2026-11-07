@@ -2404,7 +2404,20 @@ static AstNode *parse_unary_expr(Parser *p) {
             {
                 AstNode *e = parse_unary_expr(p);
                 int s = 4;
-                if (e && e->type) {
+                if (e && e->kind == AST_STR) {
+                    /* C11 6.5.3.4: a string literal has type char[n+1], so
+                     * sizeof "abc" is 4 and sizeof("long...") is its
+                     * length + 1 -- not the pointer size.  ast_str() gives
+                     * the node a char* type, so this has to be checked
+                     * BEFORE the generic type path below; otherwise the
+                     * literal folds to 4 and
+                     *     sizeof("written by arkcc ...") - 1
+                     * becomes 3 (three bytes of garbage on the wire).
+                     * u.name holds the escapes-resolved content. */
+                    int sl = 0;
+                    while (e->u.name && e->u.name[sl]) sl++;
+                    s = sl + 1;
+                } else if (e && e->type) {
                     s = type_size(e->type);
                 } else if (e && e->kind == AST_VAR) {
                     Symbol *sym = sym_find(e->u.name);

@@ -134,7 +134,7 @@
             <DriverSelection>4099</DriverSelection>
           </Flash1>
           <bUseTDR>1</bUseTDR>
-          <Flash2>BIN\STLink.dll</Flash2>
+          <Flash2>BIN\CMSIS_AGDI.dll</Flash2>
           <Flash3>"" ()</Flash3>
           <Flash4 />
           <pFcarmOut />
@@ -334,7 +334,7 @@
             <v6WtE>0</v6WtE>
             <v6Rtti>0</v6Rtti>
             <VariousControls>
-              <MiscControls>-fno-common -ffunction-sections -fdata-sections</MiscControls>
+              <MiscControls />
               <Define>USE_HAL_DRIVER,STM32H743xx,ARK_TARGET_STM32H7,ARKCC_PROFILE=ARKCC_PROFILE_STM32_MIN</Define>
               <Undefine />
               <IncludePath>..\..\include;..\..\stdlib\include;.\User\Inc;.\Drivers\CMSIS\Device\ST\STM32H7xx\Include;.\Drivers\CMSIS\Include;.\Drivers\STM32H7xx_HAL_Driver\Inc;.\RTE\_ArkCC</IncludePath>
@@ -425,6 +425,16 @@
               <FileName>compiler.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\..\src\compiler.c</FilePath>
+            </File>
+            <File>
+              <FileName>diag.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\src\diag.c</FilePath>
+            </File>
+            <File>
+              <FileName>diag_msg_table.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\src\diag_msg_table.c</FilePath>
             </File>
             <File>
               <FileName>lexer.c</FileName>

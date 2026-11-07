@@ -726,6 +726,24 @@ static unsigned g_data_sram_end   = 0;  /* One past last .data SRAM address */
 static unsigned g_bss_sram_start  = 0;  /* First .bss SRAM address */
 static unsigned g_bss_sram_end    = 0;  /* One past last .bss SRAM address */
 
+/* Does `addr` point into this translation unit's own .data/.bss window?
+ *
+ * This has to exist in every build, including the ones where --reloc-data is
+ * compiled out (ARKCC_PROFILE_STM32_MIN sets ARKCC_FEATURE_ARM_RELOC_DATA to
+ * 0): the ten call sites in the store/load paths are shared, and leaving them
+ * pointing at a function that the preprocessor removed produced
+ * "addr_in_own_data declared implicitly" warnings and a link error, not a
+ * working build.  With the feature off the four boundaries stay 0, so the
+ * answer is always "no" -- which is exactly "nothing gets marked".
+ */
+static int addr_in_own_data(unsigned addr) {
+    if (g_data_sram_start != g_data_sram_end &&
+        addr >= g_data_sram_start && addr < g_data_sram_end) return 1;
+    if (g_bss_sram_start != g_bss_sram_end &&
+        addr >= g_bss_sram_start && addr < g_bss_sram_end) return 1;
+    return 0;
+}
+
 #if ARKCC_FEATURE_ARM_RELOC_DATA
 /* --reloc-data: data-address patch sites.
  *
@@ -743,13 +761,6 @@ static unsigned g_bss_sram_end    = 0;  /* One past last .bss SRAM address */
  * delta to each.  With the option off, not one byte changes: the marker is not
  * emitted and emit_mov_addr32() falls straight through to emit_mov_imm().
  */
-static int addr_in_own_data(unsigned addr) {
-    if (g_data_sram_start != g_data_sram_end &&
-        addr >= g_data_sram_start && addr < g_data_sram_end) return 1;
-    if (g_bss_sram_start != g_bss_sram_end &&
-        addr >= g_bss_sram_start && addr < g_bss_sram_end) return 1;
-    return 0;
-}
 #endif
 
 /* Materialise `addr` in rd, flagging it for the linker when `marked`.

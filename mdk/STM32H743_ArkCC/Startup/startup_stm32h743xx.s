@@ -12,7 +12,12 @@
                 EXPORT  __Vectors_End
                 EXPORT  __Vectors_Size
 
-__Vectors       DCD     0x20020000             ; Top of DTCM (Õ»¶¥)
+; microlib's entry2.o imports this symbol; the vector table uses the same
+; value, so there is one definition point instead of two.
+                EXPORT  __initial_sp
+__initial_sp    EQU     0x20020000
+
+__Vectors       DCD     __initial_sp             ; Top of DTCM (Õ»¶¥)
                 DCD     Reset_Handler          ; Reset Handler
                 DCD     NMI_Handler
                 DCD     HardFault_Handler

@@ -433,7 +433,7 @@ AXI = ARK_POOL_SIZE + ARK_ASM_BUF_SIZE + ARK_CODE_BUF_SIZE + ARK_OBJ_BUF_SIZE
 | --- | --- | :---: |
 | 阶段 1 | arkCC 自身用 armcc5 编译为 STM32 固件 | ✅ 已完成 |
 | 阶段 2 | STM32 板载 arkCC 能编译 `.c` 源码生成 `.bin` | ✅ 已完成 |
-| 阶段 3 | 板载编译产物能烧写回 Flash 并跳转执行 | 🚧 进行中 |
+| 阶段 3 | 板载编译产物能烧写回 Flash 并跳转执行 | 🚧 进行中（RAM 内装载+执行+返回已通，见 §12） |
 | 阶段 4 | 无需改动的 MDK 工程可被 arkCC 直接编译 | ✅ 已完成（`--uvprojx` 自动提取 include 路径和宏定义；预处理除零保护） |
 | 阶段 5 | `__user_initial_stackheap`、HAL 重定向、scatter 链接完整支持 | ✅ 已完成（`__user_initial_stackheap` + `putchar`/`fputc` UART 重定向 + malloc/free + scatter 感知向量表生成） |
 
@@ -449,3 +449,81 @@ AXI = ARK_POOL_SIZE + ARK_ASM_BUF_SIZE + ARK_CODE_BUF_SIZE + ARK_OBJ_BUF_SIZE
 - [build_stm32_armcc.ps1](../build_stm32_armcc.ps1)：armcc5 构建脚本
 - [mdk/STM32H743_ArkCC/](../mdk/STM32H743_ArkCC/)：Keil MDK 工程
 - ARM Compiler 5 Documentation: [developer.arm.com/tools-and-software/software-development-tools/legacy-compiler-tools](https://developer.arm.com/tools-and-software/software-development-tools/legacy-compiler-tools)
+
+## 12 板上自编译并执行 POSIX hello world（阶段 3 进展）
+
+目标：编译器在 STM32H743 上把自己编译出的程序**装进 RAM 并跑起来**，串口为证。
+链路：`demo`（把 `unistd.h` / `hello.c` / `crt.c` / `app.sct` 写进 RAM 文件槽）→
+`build`（板上 `-c hello.c`、`-c crt.c`、`-link ... --scatter app.sct`，镜像直接落到
+`0x24070000`）→ 取向量表 `[1]` 当函数指针调用（返回即回 shell）。
+
+### 12.1 已跑通的实测输出
+
+```
+arkcc> demo
+[arkcc] installing sources into RAM file slots...
+  unistd.h 198 bytes (ram) / hello.c 382 bytes (ram)
+  crt.c 710 bytes (ram)     / app.sct 361 bytes (ram)
+arkcc> build
+[arkcc] cc -c hello.c -o hello.o
+[arkcc] wrote object 'hello.o' (3028 bytes code, 43 syms, 2 relocs)
+[arkcc] cc -c crt.c -o crt.o
+[arkcc] wrote object 'crt.o' (2810 bytes code, 43 syms, 2 relocs)
+[arkcc] cc -link hello.o crt.o -o app.bin --scatter app.sct
+[link] vector table written into the 1024-byte hole the first object reserved
+       (SP=0x2407F000, entry=0x2407102B)
+[arkcc] linked 2 objects -> app.bin (5838 bytes, 45 syms, 4 relocs)
+[arkcc] image loaded at 24070000, 5838 bytes
+--- program output -------------------------------------------
+hello, world
+[arkcc] program returned 0
+```
+
+即：**板上编译 → 板上链接 → 装载 → 执行 → 返回 0 → 回到 shell** 全通，
+第一个 `write(1, msg, ...)` 打出的 `hello, world` 是 `crt.c` 里
+`write()` → `0x2407F001`（`ark_board_putn` trampoline）→ USART1。
+
+### 12.2 这一轮修掉的五个真缺陷
+
+| # | 现象 | 根因 | 修法 |
+|---|------|------|------|
+| 1 | `build` 一进编译就 `*** CPU FAULT ***`，CFSR=0x00080000 | **NOCP**：`lexer_read_token` 序言是 `VPUSH {d8-d13}`，而 CPACR 的 CP10/CP11 没使能 | `SystemInit()` 里 `*(volatile unsigned*)0xE000ED88 |= 0xF<<20`，再 DSB/ISB（工程没有 core_cm7.h，用 `__asm void` 内嵌汇编写屏障） |
+| 2 | `cannot store hello.o (4162 bytes)` | `RAMFS_SLOTS` 只有 4 个槽，`demo` 已占满 `unistd.h/hello.c/crt.c/app.sct` | 槽数 4 → 8，单槽 4096 → 8192 |
+| 3 | `object file is 4162 bytes but only 4095 could be read` | `ARK_LINK_BUF_SIZE` 在 STM32 profile 下是 4 KB | 16 KB（`out_buf` 同尺寸，用于累积镜像） |
+| 4 | 4 KB 的 `ARK_OBJ_BUF_SIZE` 塞 4162 字节对象 | **静默越界写 66 字节**（符号表循环无边界检查） | STM32 profile 下 4 KB → 16 KB |
+| 5 | 装载后一执行就 INVSTATE（CFSR=0x00020000） | `cmd_build` 调用入口前把 bit0 清掉（`entry & ~1u`），BLX 偶地址切 ARM 态 | 保留 Thumb 位：`fn = (int(*)(void))entry` |
+
+另外修掉一个**语义错**（编译器本体）：`sizeof("字面量")` 被折叠成指针大小 4。C11 6.5.3.4
+规定字符串字面量类型是 `char[n+1]`，所以 `sizeof("abc")==4`。原来
+`sizeof("written by arkcc ...")-1` 求值成 **3**，`write()` 只发 3 字节。
+`ast_str()` 先把节点类型设成 `char*`，因此判断 **必须排在通用 `e->type` 分支之前**
+（排在后面就永远走不到，第一次改法就是这样失效的）。修后宿主编译输出 `MOV r0, #51`。
+
+### 12.3 仍未收口：.rodata 的绝对地址在编译期就被写死
+
+修完 `sizeof` 后第二行长度的确变成 50，但内容仍是垃圾。反汇编定位：
+
+```
+24070474  movw r0, #0x400
+24070478  movt r0, #0x800      ; -> 0x08000400，而不是 0x24070400
+```
+
+`.L_str_0` 在对象里被解析成 `g_flash_base(0x08000000) + 0x400`，而这条绝对地址
+**不是重定位项**（hello.o 只有 2 条 reloc，都是 `BL write`），链接器无从修正；镜像真正
+装在 `0x24070000`，于是读到的是固件自己 Flash 里 `0x08000400` 的内容。
+
+RAM 侧同理：`static const char msg[]` 的地址被写成 `0x20000000`（`g_data_base` 默认值），
+只是 `__arkcc_init_globals()` 也在向 `0x20000000` 写初值，两边正好自洽，所以在 DTCM 上
+「碰巧对」。这也解释了为什么第一行正确、第二行错。
+
+两条可选收敛路径（都还没做，未经验证）：
+
+1. **两步都带上布局**：`build_object()` 也给 `-c` 传 `scatter_file`，让编译期的
+   `g_flash_base / g_data_base` 与最终布局一致。改动最小，但要求编译期就知道布局
+   （与 MDK 的「重定位」哲学不同）。
+2. **让绝对引用成为重定位项**：后端为 `.L_str_N` 等 section 内绝对地址发 reloc，
+   由链接器按 `LR` 加载地址修正。结构上更正确，但要动 ARKOBJ2 的 reloc 种类与
+   链接器补丁逻辑。
+
+在收口之前，**板载 `build` 的结论只能说到「编译/链接/装载/执行/返回 0 全通，第一行
+输出正确」**，不能声称 POSIX hello world 完整正确。

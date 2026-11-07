@@ -29,7 +29,14 @@ static void W25Q_CS_High(void) { GPIOA->BSRR = (uint32_t)(1U << 4); }
 
 static int spi_xfer(uint8_t *tx, uint8_t *rx, uint16_t n) {
     HAL_StatusTypeDef st;
-    st = HAL_SPI_TransmitReceive(&hspi1, tx, rx, n, 1000);
+    /* 5 ms, not 1000: this board may have no SPI flash at all (the probe
+     * reads JEDEC 0x000000), and a 1 s timeout per transfer made 'ls'
+     * take five seconds.  While the CPU spins in that timeout it is not
+     * polling the UART, whose receive register is one byte deep -- so
+     * the next command typed was swallowed.  5 ms is longer than any
+     * 4 MHz transfer here needs (1 KB = 2 ms) and short enough that the
+     * shell stays responsive. */
+    st = HAL_SPI_TransmitReceive(&hspi1, tx, rx, n, 5);
     return (st == HAL_OK) ? 0 : -1;
 }
 

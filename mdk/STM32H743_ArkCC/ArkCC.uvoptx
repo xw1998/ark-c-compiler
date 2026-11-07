@@ -100,7 +100,7 @@
         <bEvRecOn>1</bEvRecOn>
         <bSchkAxf>0</bSchkAxf>
         <bTchkAxf>0</bTchkAxf>
-        <nTsel>5</nTsel>
+        <nTsel>6</nTsel>
         <sDll />
         <sDllPa />
         <sDlgDll />
@@ -111,7 +111,7 @@
         <tDlgDll />
         <tDlgPa />
         <tIfile />
-        <pMon>BIN\STLink.dll</pMon>
+        <pMon>BIN\CMSIS_AGDI.dll</pMon>
       </DebugOpt>
       <TargetDriverDllRegistry>
         <SetRegEntry>

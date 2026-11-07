@@ -23,6 +23,73 @@ typedef struct {
 static FileEntry s_table[MAX_FILES];
 static int       s_table_loaded = 0;
 
+/* --- RAM-resident file slots ------------------------------------------
+ * The on-board compiler is a closed loop: -c writes an object, -link reads
+ * it back through fs_read_file().  A bare board has no flash filesystem, so
+ * the objects (and the .c / .sct inputs they came from) live in these
+ * slots.  Flat names only, RAM first, flash second. */
+#define RAMFS_SLOTS     8
+#define RAMFS_SLOT_SIZE 8192
+typedef struct {
+    char name[24];
+    int  len;
+    char data[RAMFS_SLOT_SIZE];
+} RamFile;
+static RamFile s_ram[RAMFS_SLOTS];
+static int my_streq(const char *a, const char *b);   /* defined below */
+
+void fs_ram_clear(void) {
+    int i;
+    for (i = 0; i < RAMFS_SLOTS; i++) { s_ram[i].name[0] = 0; s_ram[i].len = 0; }
+}
+
+int fs_ram_count(void) {
+    int i, n = 0;
+    for (i = 0; i < RAMFS_SLOTS; i++) if (s_ram[i].name[0]) n++;
+    return n;
+}
+
+const char *fs_ram_name_at(int i) {
+    if (i < 0 || i >= RAMFS_SLOTS || !s_ram[i].name[0]) return 0;
+    return s_ram[i].name;
+}
+
+int fs_ram_size_at(int i) {
+    if (i < 0 || i >= RAMFS_SLOTS || !s_ram[i].name[0]) return -1;
+    return s_ram[i].len;
+}
+
+static RamFile *ram_find(const char *name) {
+    int i;
+    if (!name) return 0;
+    for (i = 0; i < RAMFS_SLOTS; i++) {
+        if (!s_ram[i].name[0]) continue;
+        if (my_streq(s_ram[i].name, name)) return &s_ram[i];
+    }
+    return 0;
+}
+
+/* Stores a file in RAM.  len < 0 means "data is a NUL-terminated string".
+ * Returns bytes stored, or -1 when the name is too long / the slot set is
+ * full / the payload does not fit -- never a silent truncation. */
+int fs_ram_put(const char *name, const char *data, int len) {
+    RamFile *f;
+    int i, n;
+    if (!name || !data) return -1;
+    n = 0; while (name[n]) { if (n >= 22) return -1; n++; }
+    if (len < 0) { len = 0; while (data[len]) len++; }
+    if (len > RAMFS_SLOT_SIZE) return -1;
+    f = ram_find(name);
+    if (!f) {
+        for (i = 0; i < RAMFS_SLOTS; i++) if (!s_ram[i].name[0]) { f = &s_ram[i]; break; }
+        if (!f) return -1;
+        for (i = 0; i <= n; i++) f->name[i] = name[i];
+    }
+    for (i = 0; i < len; i++) f->data[i] = data[i];
+    f->len = len;
+    return len;
+}
+
 static int my_streq(const char *a, const char *b) {
     while (*a && *b) {
         if (*a != *b) return 0;
@@ -45,7 +112,16 @@ const char *fs_last_error(void) {
 
 int fs_read_file(const char *path, char *buf, int max_len) {
     int i;
+    RamFile *rf;
     if (!path || !buf || max_len <= 0) return -1;
+    rf = ram_find(path);
+    if (rf) {
+        int len = rf->len;
+        if (len > max_len - 1) len = max_len - 1;
+        for (i = 0; i < len; i++) buf[i] = rf->data[i];
+        buf[len] = 0;
+        return len;
+    }
     ensure_table();
     for (i = 0; i < MAX_FILES; i++) {
         if (s_table[i].name[0] == 0) continue;
@@ -63,7 +139,10 @@ int fs_read_file(const char *path, char *buf, int max_len) {
 /* Size of a file in the flash directory, or -1 if it is not there. */
 int fs_file_size(const char *path) {
     int i;
+    RamFile *rf;
     if (!path) return -1;
+    rf = ram_find(path);
+    if (rf) return rf->len;
     ensure_table();
     for (i = 0; i < MAX_FILES; i++) {
         if (s_table[i].name[0] == 0) continue;
@@ -78,10 +157,15 @@ int fs_file_size(const char *path) {
 int fs_list_files(void) {
     int i;
     int count = 0;
+    for (i = 0; i < RAMFS_SLOTS; i++) {
+        if (!s_ram[i].name[0]) continue;
+        ark_log("  %s %d bytes (ram)\r\n", s_ram[i].name, s_ram[i].len);
+        count++;
+    }
     ensure_table();
     for (i = 0; i < MAX_FILES; i++) {
         if (s_table[i].name[0] == 0) continue;
-        ark_log("  %s %d bytes\r\n", s_table[i].name, (int)s_table[i].size);
+        ark_log("  %s %d bytes (flash)\r\n", s_table[i].name, (int)s_table[i].size);
         count++;
     }
     if (count == 0) {

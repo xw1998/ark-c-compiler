@@ -339,7 +339,8 @@
 #endif
 #ifndef ARK_LINK_BUF_SIZE
 # if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
-#   define ARK_LINK_BUF_SIZE     (4 * 1024)       /* 4 KB (link mode unused on STM32) */
+#   define ARK_LINK_BUF_SIZE     (16 * 1024)      /* 16 KB: holds the largest object read
+                                                   * and the linked image on the board */
 # else
 #   define ARK_LINK_BUF_SIZE     (8 * 1024 * 1024) /* 8 MB: a real STM32H743
 #                                        * image is 1-2 MB, and this buffer
@@ -349,7 +350,9 @@
 #endif
 #ifndef ARK_OBJ_BUF_SIZE
 # if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
-#   define ARK_OBJ_BUF_SIZE      (4 * 1024)       /* 4 KB (object mode unused on STM32) */
+#   define ARK_OBJ_BUF_SIZE      (16 * 1024)      /* 16 KB: a hello-world object is 4.2 KB;
+                                                   * at 4 KB the symbol table silently wrote
+                                                   * 66 bytes past the end of obj_buf */
 # else
 #   define ARK_OBJ_BUF_SIZE      (ARK_ASM_BUF_SIZE + 16)
 # endif

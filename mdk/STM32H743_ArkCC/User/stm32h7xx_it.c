@@ -5,10 +5,47 @@
 
 /* Declared weak by the startup file; can be overridden here. */
 void NMI_Handler(void)        { while (1) { } }
-void HardFault_Handler(void)  { while (1) { } }
-void MemManage_Handler(void)  { while (1) { } }
-void BusFault_Handler(void)   { while (1) { } }
-void UsageFault_Handler(void) { while (1) { } }
+
+/* Fault handlers print the stacked frame before halting (ark_report_fault
+ * lives in main.c).  `B .` alone made a board-side crash indistinguishable
+ * from a board-side hang: nothing on the wire, nothing to go on. */
+void ark_report_fault(unsigned *sp);
+
+/* `__asm void` cannot come out of a macro (armcc rejects the attribute), so
+ * the four handlers are written out.  Each one hands the stacked frame to
+ * ark_report_fault() and then stops. */
+__asm void HardFault_Handler(void)
+{
+    IMPORT  ark_report_fault
+    MOV     r0, sp
+    BL      ark_report_fault
+    B       .
+}
+
+__asm void MemManage_Handler(void)
+{
+    IMPORT  ark_report_fault
+    MOV     r0, sp
+    BL      ark_report_fault
+    B       .
+}
+
+__asm void BusFault_Handler(void)
+{
+    IMPORT  ark_report_fault
+    MOV     r0, sp
+    BL      ark_report_fault
+    B       .
+}
+
+__asm void UsageFault_Handler(void)
+{
+    IMPORT  ark_report_fault
+    MOV     r0, sp
+    BL      ark_report_fault
+    B       .
+}
+
 void SVC_Handler(void)        { /* no RTOS used, left empty */ }
 void DebugMon_Handler(void)   { }
 void PendSV_Handler(void)     { }

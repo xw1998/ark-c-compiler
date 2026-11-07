@@ -1,12 +1,14 @@
-; Ark C Compiler - MDK STM32H743 - scatter �ļ�
-; STM32H743VI: 2 MB Flash @ 0x08000000, 1 MB SRAM ����
-;   DTCM 128KB @ 0x20000000
-;   AXI  512KB @ 0x24000000
-;   SRAM1+2+3+4 ��Լ 384KB (������δʹ��)
+; Ark C Compiler - MDK STM32H743 - scatter file
+; STM32H743: 2 MB Flash @ 0x08000000
+;   DTCM 128KB @ 0x20000000   -> stack only (initial SP is the top of DTCM)
+;   AXI  512KB @ 0x24000000   -> compiler buffers: composed of ~370KB of
+;                                .ark_buf plus the 32KB code/heap windows
+;   SRAM1+2+3 288KB @ 0x30000000 -> everything else (.data/.bss/heap)
 ;
-; ER_IROM1 : Flash ����
-; RW_IRAM1 : DTCM �� .data/.bss/stack/heap
-; RW_AXI   : AXI SRAM �� ArkCC �Ķ�����뻺�� (.ark_heap / .ark_code)
+; The buffers are RW (initialised) data, so they cost both flash and RAM:
+; .ark_buf alone is 0x25000 + 0x10000 + 0x20000 + 0x7000.  Putting those plus
+; .data/.bss into one 512KB region does not fit, which is why they get their
+; own region here.
 
 LR_IROM1 0x08000000 0x00200000  {
   ER_IROM1 0x08000000 0x00200000  {
@@ -16,15 +18,25 @@ LR_IROM1 0x08000000 0x00200000  {
     .ANY (+XO)
   }
 
-  ; DTCM ���� RW/ZI��ջ����
-  RW_IRAM1 0x20000000 0x00020000  {
-    .ANY (+RW +ZI)
+  ; ArkCC work buffers
+  RW_AXI 0x24000000 0x00080000  {
+    *(.ark_buf)
+    *(.ark_code)
+    *(.ark_heap)
   }
 
-  ; AXI SRAM ���� ArkCC ר�ö�
-  RW_AXI 0x24000000 0x00080000  {
-    *(.ark_heap)
-    *(.ark_code)
-    *(.ark_buf)
+  ; Console trampoline for programs the board compiles itself.  crt.c calls
+  ; this as a constant address (the on-board compiler has no --defsym), so
+  ; the address must never move.  main() checks it at boot and refuses to
+  ; run if it is not 0x2407F000.
+  ; The 60KB below it (0x24070000..0x2407F000) is where a linked app image
+  ; is loaded and called.
+  ARK_TRAMP 0x2407F000 0x00000100  {
+    *(.ark_tramp)
+  }
+
+  ; ordinary read-write / zero-init data
+  RW_SRAM 0x30000000 0x00048000  {
+    .ANY (+RW +ZI)
   }
 }
