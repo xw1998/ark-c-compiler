@@ -18,6 +18,50 @@ static const char *arg_reg_r(int i) {
     return r[i];
 }
 
+/* ---- va region ---------------------------------------------------------
+ * One 4-byte word per argument register, at s0 - RV_VA_OFF + 4*k:
+ *   word k = a<k>, k = 0..7
+ * The frame pointer is s0 and the region is written once per variadic call,
+ * in the prologue, before anything can clobber a0-a7.  <stdarg.h> walks it as
+ * words (__ARK_VA_WORD_SLOTS, and __ARK_VA_PACKED_WORDS because this backend
+ * numbers argument words without alignment holes). */
+#define RV_VA_OFF   8192
+#define RV_VA_WORDS 8
+
+/* GNU as encodes a 12-bit signed displacement only, and both a variadic frame
+ * (8 KB) and the va region are far past that, so the s0-relative slot address
+ * is materialised in t2 with li/sub instead of being folded into the load or
+ * store.  That is one extra instruction per access, and it is what makes the
+ * output assemble at all for frames bigger than 2 KB. */
+static void rv_s0_slot(AsmBuffer *b, int off) {
+    asmbuf_puts(b, "    li t2, ");
+    asmbuf_int(b, off < 0 ? -off : off);
+    asmbuf_puts(b, off < 0 ? "\n    sub t2, s0, t2\n" : "\n    add t2, s0, t2\n");
+}
+
+/* sp += delta, for deltas past the 12-bit immediate range. */
+static void rv_sp_adj(AsmBuffer *b, int delta, int upward) {
+    asmbuf_puts(b, "    li t0, ");
+    asmbuf_int(b, delta);
+    asmbuf_puts(b, upward ? "\n    add sp, sp, t0\n" : "\n    sub sp, sp, t0\n");
+}
+
+/* Restore ra/s0 and pop the frame.  Both the saved-register offsets and the
+ * frame size are past the 12-bit immediate range for an 8 KB frame, so the
+ * addresses are formed in t0 first. */
+static void rv_pilogue(AsmBuffer *b, int sp_size) {
+    asmbuf_puts(b, "    li t0, ");
+    asmbuf_int(b, sp_size - 8);
+    asmbuf_puts(b, "\n    add t0, sp, t0\n    lw s0, 0(t0)\n    li t0, ");
+    asmbuf_int(b, sp_size - 4);
+    asmbuf_puts(b, "\n    add t0, sp, t0\n    lw ra, 0(t0)\n");
+    rv_sp_adj(b, sp_size, 1);
+    asmbuf_puts(b, "    ret\n");
+}
+
+/* 1 while the function being emitted is variadic, cleared for every function. */
+static int g_rv_va_active;
+
 static int rv_emit(IrProgram *prog, char *out, int cap) {
     AsmBuffer buf;
     int fi;
@@ -70,51 +114,89 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
     for (fi = 0; fi < prog->func_count; fi++) {
         IrFunc *f = prog->funcs[fi];
 
-        /* Same gap as the ARM backend: the va region (frame+8000, requested
-         * by irgen for every variadic definition) is not implemented here, and
-         * _ark_va_ptr is never defined, so va_start would read the pointer from
-         * address 0 and va_arg would walk garbage. Refuse the definition rather
-         * than emit code that gives a wrong answer silently. Calls to variadic
-         * functions are fine; so are __asm bodies (no C body, no _ark_va_ptr). */
-        if (f->is_variadic && !f->is_asm_func) {
-            diag_tool(DIAG_SEV_ERROR, "arkcc",
-                      "variadic function '%s' is not supported by the "
-                      "riscv32 backend: va_start/va_arg would read the va "
-                      "pointer from address 0 (the va region is implemented "
-                      "only by the C and x86_64 backends)",
-                      f->name, 0,0,0,0,0);
-        }
         int i;
         int local_size = ((f->local_size + 16) + 15) & ~15;
         int sp_size = local_size + 256;
+        int va_named_words = 0;
+        /* Words the named parameters occupy, counted exactly the way irgen
+         * stamps the IR_GETARG slot numbers: a struct > 8 bytes travels as a
+         * pointer word, a 5..8-byte struct as two, an array as a pointer, a
+         * scalar of 8 bytes as two words, anything else as one. */
+        if (f->is_variadic) {
+            int pj;
+            for (pj = 0; pj < f->param_count && pj < 64; pj++) {
+                Type *pt = (f->param_types) ? f->param_types[pj] : 0;
+                int sz = pt ? type_size(pt) : 4;
+                if (sz <= 0) sz = 4;
+                if (pt && (pt->kind == TYPE_STRUCT || pt->kind == TYPE_UNION))
+                    va_named_words += (sz > 8) ? 1 : ((sz > 4) ? 2 : 1);
+                else if (pt && pt->kind == TYPE_ARRAY)
+                    va_named_words += 1;
+                else
+                    va_named_words += (sz >= 8) ? 2 : 1;
+            }
+            if (sp_size < RV_VA_OFF + 4 * RV_VA_WORDS + 16)
+                sp_size = RV_VA_OFF + 4 * RV_VA_WORDS + 16;
+            sp_size = (sp_size + 15) & ~15;
+        }
 
         asmbuf_puts(&buf, "    .globl ");
         asmbuf_puts(&buf, f->name);
         asmbuf_putc(&buf, '\n');
         asmbuf_puts(&buf, f->name);
         asmbuf_puts(&buf, ":\n");
-        asmbuf_puts(&buf, "    addi sp, sp, -");
-        asmbuf_int(&buf, sp_size);
-        asmbuf_puts(&buf, "\n    sw ra, ");
+        rv_sp_adj(&buf, sp_size, 0);
+        asmbuf_puts(&buf, "    li t0, ");
         asmbuf_int(&buf, sp_size - 4);
-        asmbuf_puts(&buf, "(sp)\n    sw s0, ");
+        asmbuf_puts(&buf, "\n    add t0, sp, t0\n    sw ra, 0(t0)\n    li t0, ");
         asmbuf_int(&buf, sp_size - 8);
-        asmbuf_puts(&buf, "(sp)\n    addi s0, sp, ");
+        asmbuf_puts(&buf, "\n    add t0, sp, t0\n    sw s0, 0(t0)\n    li t0, ");
         asmbuf_int(&buf, sp_size);
-        asmbuf_putc(&buf, '\n');
+        asmbuf_puts(&buf, "\n    add s0, sp, t0\n");
+        /* va region: one word per argument register, written before the body
+         * can touch a0-a7.  Words for named parameters are written too: they
+         * are never read by va_arg (it starts at the first variadic word), but
+         * keeping the whole register file in one array is what makes the walk
+         * a plain word pointer. */
+        g_rv_va_active = f->is_variadic ? 1 : 0;
+        if (g_rv_va_active) {
+            int k;
+            asmbuf_puts(&buf, "    li t2, ");
+            asmbuf_int(&buf, RV_VA_OFF);
+            asmbuf_puts(&buf, "\n    sub t2, s0, t2\n");
+            for (k = 0; k < RV_VA_WORDS; k++) {
+                asmbuf_puts(&buf, "    sw ");
+                asmbuf_puts(&buf, arg_reg_r(k));
+                asmbuf_puts(&buf, ", ");
+                asmbuf_int(&buf, 4 * k);
+                asmbuf_puts(&buf, "(t2)\n");
+            }
+        }
 
         for (i = 0; i < f->code_count; i++) {
             IrInst *I = &f->code[i];
             switch (I->op) {
                 case IR_FUNC_BEGIN:
                 case IR_FUNC_END: break;
-                case IR_GETARG:
+                case IR_GETARG: {
+                    /* aux: low 8 bits = slot index, high bits = the size the
+                     * parameter travels with (see irgen).  A 64-bit scalar
+                     * occupies two slots, low word in the lower-numbered
+                     * register; the old code passed the whole aux to
+                     * arg_reg_r() and so read a0 for every 8-byte parameter. */
+                    int slot = I->aux & 0xFF;
+                    int psz  = (I->aux >> 8) & 0xFFFFFF;
+                    rv_s0_slot(&buf, -(16 + I->val));
                     asmbuf_puts(&buf, "    sw ");
-                    asmbuf_puts(&buf, arg_reg_r(I->aux));
-                    asmbuf_puts(&buf, ", -");
-                    asmbuf_int(&buf, 16 + I->val);
-                    asmbuf_puts(&buf, "(s0)\n");
+                    asmbuf_puts(&buf, arg_reg_r(slot));
+                    asmbuf_puts(&buf, ", 0(t2)\n");
+                    if (psz == 8) {
+                        asmbuf_puts(&buf, "    sw ");
+                        asmbuf_puts(&buf, arg_reg_r(slot + 1));
+                        asmbuf_puts(&buf, ", 4(t2)\n");
+                    }
                     break;
+                }
                 case IR_PUSH_INT:
                     asmbuf_puts(&buf, "    li t0, ");
                     asmbuf_int(&buf, I->val);
@@ -135,14 +217,12 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                     asmbuf_puts(&buf, "\n    addi sp, sp, -4\n    sw t0, 0(sp)\n");
                     break;
                 case IR_PUSH_VAR:
-                    asmbuf_puts(&buf, "    lw t0, -");
-                    asmbuf_int(&buf, 16 + I->val);
-                    asmbuf_puts(&buf, "(s0)\n    addi sp, sp, -4\n    sw t0, 0(sp)\n");
+                    rv_s0_slot(&buf, -(16 + I->val));
+                    asmbuf_puts(&buf, "    lw t0, 0(t2)\n    addi sp, sp, -4\n    sw t0, 0(sp)\n");
                     break;
                 case IR_PUSH_ADDR:
-                    asmbuf_puts(&buf, "    addi t0, s0, -");
-                    asmbuf_int(&buf, 16 + I->val);
-                    asmbuf_puts(&buf, "\n    addi sp, sp, -4\n    sw t0, 0(sp)\n");
+                    rv_s0_slot(&buf, -(16 + I->val));
+                    asmbuf_puts(&buf, "    addi sp, sp, -4\n    sw t2, 0(sp)\n");
                     break;
                 case IR_TRUNC:
                     /* val = target width, aux = 1 zero-extend (unsigned). */
@@ -164,6 +244,29 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                     asmbuf_puts(&buf, "\n    addi sp, sp, -4\n    sw t0, 0(sp)\n");
                     break;
                 case IR_PUSH_GLOBAL:
+                    /* _ark_va_ptr is <stdarg.h>'s handle on the argument
+                     * image: it is not a real variable, the address of the
+                     * first variadic word is computed from s0. */
+                    if (I->name && ark_streq(I->name, "_ark_va_ptr")) {
+                        if (!g_rv_va_active) {
+                            diag_tool(DIAG_SEV_ERROR, "arkcc",
+                                      "'_ark_va_ptr' is read in '%s', which is "
+                                      "not variadic: va_start/va_arg only mean "
+                                      "something inside a function that is "
+                                      "declared with '...'",
+                                      f->name, 0,0,0,0,0);
+                        }
+                        /* The region grows *up* from s0-RV_VA_OFF (word k at
+                         * +4k), so the first variadic word is 4*named_words
+                         * above the base -- the same direction the spill
+                         * writes in. */
+                        asmbuf_puts(&buf, "    li t2, ");
+                        asmbuf_int(&buf, RV_VA_OFF);
+                        asmbuf_puts(&buf, "\n    sub t2, s0, t2\n    addi t2, t2, ");
+                        asmbuf_int(&buf, 4 * va_named_words);
+                        asmbuf_puts(&buf, "\n    addi sp, sp, -4\n    sw t2, 0(sp)\n");
+                        break;
+                    }
                     asmbuf_puts(&buf, "    la t1, ");
                     asmbuf_puts(&buf, I->name);
                     asmbuf_puts(&buf, "\n    lw t0, 0(t1)\n    addi sp, sp, -4\n    sw t0, 0(sp)\n");
@@ -190,11 +293,31 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                      * no conversion needed. Treat as no-op. */
                     break;
                 case IR_STORE:
-                    asmbuf_puts(&buf, "    lw t0, 0(sp)\n    addi sp, sp, 4\n    sw t0, -");
-                    asmbuf_int(&buf, 16 + I->val);
-                    asmbuf_puts(&buf, "(s0)\n");
+                    /* aux carries the store width; anything past 4 bytes needs
+                     * a 64-bit value model this backend does not have.  It
+                     * used to emit a plain `sw`, which wrote half of the value
+                     * and left the other word on the IR stack (measured: the
+                     * stack imbalance turned the next `ret` into a jump to 0). */
+                    if ((I->aux & ~IR_AUX_VOLATILE) > 4) {
+                        char b1[12];
+                        diag_tool(DIAG_SEV_ERROR, "arkcc",
+                                  "%s-byte stores are not implemented by the "
+                                  "riscv32 backend (function '%s')",
+                                  diag_num(b1, I->aux & ~IR_AUX_VOLATILE),
+                                  f->name, 0,0,0,0);
+                    }
+                    asmbuf_puts(&buf, "    lw t0, 0(sp)\n    addi sp, sp, 4\n");
+                    rv_s0_slot(&buf, -(16 + I->val));
+                    asmbuf_puts(&buf, "    sw t0, 0(t2)\n");
                     break;
                 case IR_LOAD_IDX:
+                    if (I->val > 4) {
+                        char b1[12];
+                        diag_tool(DIAG_SEV_ERROR, "arkcc",
+                                  "%s-byte loads are not implemented by the "
+                                  "riscv32 backend (function '%s')",
+                                  diag_num(b1, (int)I->val), f->name, 0,0,0,0);
+                    }
                     asmbuf_puts(&buf, "    lw t1, 0(sp)\n    lw t0, 4(sp)\n    addi sp, sp, 8\n");
                     if (I->val == 1) {
                         asmbuf_puts(&buf, "    add t0, t0, t1\n    lb t0, 0(t0)\n");
@@ -232,6 +355,21 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                         case (int)TOK_GE:    asmbuf_puts(&buf, "    slt  t0, t0, t1\n    xori t0, t0, 1\n"); break;
                         default: break;
                     }
+                    asmbuf_puts(&buf, "    sw t0, 0(sp)\n");
+                    break;
+                case IR_DIV:
+                    /* Division and modulo are separate IR ops (irgen emits them
+                     * for '/' and '%'), and this backend had neither: they fell
+                     * into the "unknown" hole below, which left both operands
+                     * on the stack and handed the next consumer the divisor.
+                     * aux: 0 signed, 1 unsigned. */
+                    asmbuf_puts(&buf, "    lw t1, 0(sp)\n    lw t0, 4(sp)\n    addi sp, sp, 4\n");
+                    asmbuf_puts(&buf, I->aux ? "    divu t0, t0, t1\n" : "    div t0, t0, t1\n");
+                    asmbuf_puts(&buf, "    sw t0, 0(sp)\n");
+                    break;
+                case IR_MOD:
+                    asmbuf_puts(&buf, "    lw t1, 0(sp)\n    lw t0, 4(sp)\n    addi sp, sp, 4\n");
+                    asmbuf_puts(&buf, I->aux ? "    remu t0, t0, t1\n" : "    rem t0, t0, t1\n");
                     asmbuf_puts(&buf, "    sw t0, 0(sp)\n");
                     break;
                 case IR_UNARY:
@@ -310,10 +448,56 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                             }
                         }
                     }
-                    for (k = 0; k < n && k < 8; k++) {
-                        asmbuf_puts(&buf, "    lw ");
-                        asmbuf_puts(&buf, arg_reg_r(k));
-                        asmbuf_puts(&buf, ", 0(sp)\n    addi sp, sp, 4\n");
+                    /* n counts arguments, not words: a 64-bit argument is
+                     * two words on the IR stack with the HIGH word on top, so
+                     * it is popped into a<slot+1> first and a<slot> second.
+                     * That keeps the image "low word in the lower-numbered
+                     * register", which is what IR_GETARG and the va region
+                     * both assume. */
+                    {
+                        int kk, slot = 0;
+                        for (kk = 0; kk < n && kk < 16; kk++) {
+                            int is64 = (I->aux >> (2 * kk + 1)) & 1;
+                            if (is64) {
+                                if (slot + 1 >= 8) {
+                                    /* No stack-argument passing in this
+                                     * backend: silently dropping the words
+                                     * left the IR stack unbalanced and the
+                                     * next `ret` jumped to whatever the
+                                     * leftovers pointed at (measured: PC 0). */
+                                    diag_tool(DIAG_SEV_ERROR, "arkcc",
+                                              "call to '%s' needs more than the "
+                                              "8 argument words this backend "
+                                              "passes in a0-a7: stack arguments "
+                                              "are not implemented by the "
+                                              "riscv32 backend",
+                                              I->name ? I->name : "?", 0,0,0,0,0);
+                                    break;
+                                }
+                                asmbuf_puts(&buf, "    lw ");
+                                asmbuf_puts(&buf, arg_reg_r(slot + 1));
+                                asmbuf_puts(&buf, ", 0(sp)\n    addi sp, sp, 4\n    lw ");
+                                asmbuf_puts(&buf, arg_reg_r(slot));
+                                asmbuf_puts(&buf, ", 0(sp)\n    addi sp, sp, 4\n");
+                                slot += 2;
+                            } else {
+                                if (slot >= 8) {
+                                    diag_tool(DIAG_SEV_ERROR, "arkcc",
+                                              "call to '%s' needs more than the "
+                                              "8 argument words this backend "
+                                              "passes in a0-a7: stack arguments "
+                                              "are not implemented by the "
+                                              "riscv32 backend",
+                                              I->name ? I->name : "?", 0,0,0,0,0);
+                                    break;
+                                }
+                                asmbuf_puts(&buf, "    lw ");
+                                asmbuf_puts(&buf, arg_reg_r(slot));
+                                asmbuf_puts(&buf, ", 0(sp)\n    addi sp, sp, 4\n");
+                                slot += 1;
+                            }
+                        }
+                        (void)k;
                     }
                     asmbuf_puts(&buf, "    call ");
                     asmbuf_puts(&buf, I->name);
@@ -324,26 +508,29 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                 }
                 case IR_RETURN:
                     asmbuf_puts(&buf, "    lw a0, 0(sp)\n    addi sp, sp, 4\n");
-                    asmbuf_puts(&buf, "    lw s0, ");
-                    asmbuf_int(&buf, sp_size - 8);
-                    asmbuf_puts(&buf, "(sp)\n    lw ra, ");
-                    asmbuf_int(&buf, sp_size - 4);
-                    asmbuf_puts(&buf, "(sp)\n    addi sp, sp, ");
-                    asmbuf_int(&buf, sp_size);
-                    asmbuf_puts(&buf, "\n    ret\n");
+                    rv_pilogue(&buf, sp_size);
                     break;
                 default:
-                    asmbuf_puts(&buf, "    # unknown\n");
+                    /* Every op this backend does not implement used to be
+                     * commented out, which left the IR stack unbalanced and
+                     * turned into a wrong answer further down (measured: a
+                     * '/ 4' inside <stdarg.h> poisoned the next va_arg).  An
+                     * unimplemented op is now a build error. */
+                    {
+                        char b1[12];
+                        diag_tool(DIAG_SEV_ERROR, "arkcc",
+                                  "the riscv32 backend does not implement IR op "
+                                  "%s (function '%s'); the emitted code would be "
+                                  "wrong, so nothing is written",
+                                  diag_num(b1, (int)I->op), f->name, 0,0,0,0);
+                    }
+                    asmbuf_puts(&buf, "    # unsupported IR op\n");
                     break;
             }
         }
-        asmbuf_puts(&buf, "    li a0, 0\n    lw s0, ");
-        asmbuf_int(&buf, sp_size - 8);
-        asmbuf_puts(&buf, "(sp)\n    lw ra, ");
-        asmbuf_int(&buf, sp_size - 4);
-        asmbuf_puts(&buf, "(sp)\n    addi sp, sp, ");
-        asmbuf_int(&buf, sp_size);
-        asmbuf_puts(&buf, "\n    ret\n\n");
+        asmbuf_puts(&buf, "    li a0, 0\n");
+        rv_pilogue(&buf, sp_size);
+        asmbuf_putc(&buf, '\n');
     }
     {
         int n = buf.len;

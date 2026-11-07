@@ -3204,6 +3204,17 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                          * internal word order to cdecl order. */
                         ir_emit(g->fn, IR_CDECL64, 0, 0, 0);
                     }
+                    /* C99 6.5.2.2p6: default argument promotion turns a float
+                     * variadic argument into a double.  Without it the caller
+                     * handed over a 4-byte float while va_arg(ap, double) read
+                     * 8 bytes, so `printf("%f", 1.5f)`-shaped calls read the
+                     * next argument word as the high half (measured on ARM
+                     * against gcc: the promoted value must be 8 bytes wide).
+                     * The matching 8-byte-width flag is set on argmask below. */
+                    if (s && s->kind == SYM_FUNC && s->is_variadic &&
+                        i >= s->param_count && at && at->kind == TYPE_FLOAT) {
+                        ir_emit(g->fn, IR_F2F, 0, 0, 0x100);
+                    }
                 }
             }
             /* Indirect call: push the function pointer (callee) last so it
@@ -3259,6 +3270,13 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                     Type *use_t = pt ? pt : (arg ? arg->type : 0);
                     if (use_t) {
                         int k = use_t->kind;
+                        /* A float variadic argument has been promoted to double
+                         * (see the IR_F2F above), so it occupies 8 bytes on the
+                         * wire as well; the width bit is what the ARM/RV32I
+                         * backends place the argument by. */
+                        if (s && s->kind == SYM_FUNC && s->is_variadic &&
+                            i >= s->param_count && k == TYPE_FLOAT)
+                            argmask |= (1 << (2 * i + 1));
                         /* bit(2*i)   = 1 => float/double (promoted to double)
                          * bit(2*i+1) = 1 => 8-byte type (long long OR double)
                          * Double sets BOTH bits: bit(2*i) for float/double cast

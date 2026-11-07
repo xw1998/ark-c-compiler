@@ -1,30 +1,80 @@
 /* Ark C Compiler stdlib - stdarg.h
- * Varargs support for arkcc's stack-machine C backend.
+ * Varargs support.  Two walking conventions exist because the backends build
+ * two different argument images, and they are not interchangeable:
  *
- * arkcc passes all arguments as `long long a0..a7`. For variadic functions
- * the C backend stores all 8 args at a fixed frame region (frame+8000..+64)
- * and declares a local `_ark_va_ptr` pointing to the first variadic arg.
- * va_start initializes ap from _ark_va_ptr; va_arg reads and advances by
- * 8 bytes (sizeof(long long)).
+ *   __ARK_VA_WORD_SLOTS   (ARM Thumb-2, RV32I)
+ *      One 4-byte word per AAPCS argument word, contiguous: word 0..3 are
+ *      r0..r3, word 4+k is word k of the caller's stack argument block.  That
+ *      is the caller's real layout, so a 64-bit argument is just two adjacent
+ *      words and `va_arg(ap, long long)` is a plain 8-byte read.  The driver
+ *      defines this macro for those two targets (src/compiler.c).
  *
- * The extern declaration below lets the semantic analyzer accept the
- * _ark_va_ptr reference in va_start; the C backend emits a real local
- * definition that shadows this extern inside variadic functions.
+ *   default               (C and x86_64 backends)
+ *      One 8-byte slot per argument, ordinal-indexed: the backend stores all
+ *      eight arguments at frame+8000..+64 and _ark_va_ptr walks them by
+ *      sizeof(long long).
  *
  * va_arg is expressed as a reinterpret-cast of the *slot address* rather than
- * a cast of the slot value:
- *     #define va_arg(ap, type)  (*(type *)(ap++))
- * Every argument occupies one 8-byte slot that holds the value verbatim (the
- * backend copies the 8-byte payload of each argument into frame+8000..8064).
- * Reading the slot as `type *` therefore works for integers, pointers AND
+ * a cast of the slot value:  (*(type *)(...)).  Every slot holds the value
+ * verbatim, so reading it as `type *` works for integers, pointers AND
  * double/float bit patterns without a per-type helper -- a plain
  * `(type)(*ap++)` cast would instead numerically convert the raw bit pattern,
  * which is why `va_arg(ap, double)` used to return ~4.6e18.
- * Requires a little-endian target (sub-word reads take the low bytes); ARM
- * Thumb-2 and every host this backend runs on qualify.
+ * Both conventions require a little-endian target (sub-word reads take the low
+ * bytes); ARM Thumb-2, RV32I and every host these backends run on qualify.
  */
 #ifndef ARK_STDARG_H
 #define ARK_STDARG_H
+
+#if defined(__ARK_VA_WORD_SLOTS)
+
+/* ---- 4-byte word slots: ARM Thumb-2 and RV32I -------------------------- */
+
+typedef unsigned int *va_list;
+
+/* The region lives in the callee's own frame, one word per argument word, so
+ * _ark_va_ptr is not a real variable: both backends answer a reference to it
+ * with the frame address of the first variadic word. */
+extern unsigned int *_ark_va_ptr;
+
+#define va_start(ap, last) ((void)((ap) = _ark_va_ptr))
+#define va_end(ap)         ((void)0)
+#define va_copy(d, s)      ((d) = (s))
+
+/* Words a value of `type` occupies in the argument image. */
+#define ark_va__words(type) ((unsigned)((sizeof(type) + 3) / 4))
+
+#if defined(__ARK_VA_PACKED_WORDS)
+
+/* RV32I: this backend numbers argument words 0,1,2,... with no alignment
+ * holes, so the walk is a plain advance. */
+#define ark_va__take(ap, type) \
+    (((ap) += ark_va__words(type)) - ark_va__words(type))
+
+#else
+
+/* ARM Thumb-2: AAPCS32 puts a 64-bit argument on an even register or an
+ * 8-byte-aligned stack slot, so the caller leaves one word empty where that
+ * alignment had to be fixed up.  Round the pointer up to 8 first; the region
+ * base is 8-byte aligned, so "even word index" and "8-byte aligned address"
+ * are the same thing. */
+#define ark_va__take(ap, type)                                             \
+    (((sizeof(type) == 8)                                                  \
+        ? ((ap) = (unsigned int *)(((unsigned int)(ap) + 7u) & ~7u))       \
+        : (ap)),                                                           \
+     ((ap) += ark_va__words(type)) - ark_va__words(type))
+
+#endif
+
+#define va_arg(ap, type)   (*(type *)ark_va__take(ap, type))
+
+/* double is read from memory, so no long-long bit-pattern reinterpretation is
+ * needed; the helper stays for source compatibility with the other mode. */
+#define ark_va_arg_d(ap)   va_arg(ap, double)
+
+#else
+
+/* ---- 8-byte slots: C and x86_64 backends ------------------------------- */
 
 typedef long long *va_list;
 
@@ -40,5 +90,7 @@ extern long long *_ark_va_ptr;
 /* Helper for double varargs: reads the long long bit pattern and reinterprets
  * it as double via _ark_ll2d (declared in the generated preamble). */
 #define ark_va_arg_d(ap)   (_ark_ll2d(*ap++))
+
+#endif
 
 #endif

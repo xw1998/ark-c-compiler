@@ -1,9 +1,10 @@
 # Ark C Compiler regression runner.
 #
 # For every examples/*.c:
-#   1. [arm]  -target arm -S must emit assembly without error (syntax/IR smoke test),
-#             except files listed in $expectArmFail: their ARM emit MUST be
-#             refused with the backend diagnostic (that table is the gate).
+#   1. [arm]  -target arm -S must emit assembly without error (syntax/IR smoke
+#             test).  $expectArmFail lists files whose ARM emit MUST be refused
+#             instead; it is empty now that the ARM backend has a va region, and
+#             the table stays as the place to pin a future refusal.
 #   2. [c]    -target c -> host gcc -> run, and the process exit code must equal the
 #             "Expected exit code: N" value declared in the test's comment header.
 #
@@ -82,21 +83,13 @@ $skipC = @{
 # somebody implements the feature the ARM emit starts succeeding and this
 # table turns red -- the signal is to move the file back to the normal [arm]
 # check and delete the entry, not to "fix" the test.
-$expectArmFail = @{
-    # stdarg.h resolves va_start to the extern _ark_va_ptr; the ARM backend
-    # never defines it (irgen requests the va region at frame+8000, this
-    # backend skips it), so va_start used to compile into LDR r0,[r0] at
-    # address 0 -- silent garbage. The backend now refuses the definition.
-    "va_test"                       = "variadic definition: refused by the ARM backend"
-    "feat_va_arg_double"            = "variadic definition: refused by the ARM backend"
-    # The two files below are broad conformance suites that happen to contain a
-    # variadic helper. The backend refuses the definition but keeps emitting the
-    # rest of the file (the guard reports and continues), so these entries still
-    # catch a codegen crash anywhere else in the file -- they just cannot assert
-    # "emitted cleanly", because the exit code is the expected error.
-    "c99_test"                      = "contains a variadic helper: refused by the ARM backend"
-    "c99_armcc5_compat_test"        = "contains a variadic helper: refused by the ARM backend"
-}
+# No file is exempt from the ARM emit check: the ARM backend implements the
+# va region now (4-byte word slots -- see src/backend/arm/backend_arm.c
+# and stdlib/include/stdarg.h), so the four variadic files that used to be
+# listed here emit like everything else.  Execution of that region is gated
+# separately by examples/run_va_gate.py, which runs the produced code in
+# unicorn and compares the result against gcc.
+$expectArmFail = @{}
 
 function Get-ExpectedExitCode {
     param([string]$Path)

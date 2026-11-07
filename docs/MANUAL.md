@@ -328,7 +328,7 @@ CPU 选择的实现位于 `include/cpu.h` + `src/cpu.c`，会根据 CPU 名字�
 | 定义、声明、调用、递归 | 是 |
 | 参数超过 4 个 | 是（多余的进栈，严格 AAPCS） |
 | 函数原型与参数个数检查 | 是 |
-| 变参 `...` | 是（**仅 C / x86_64 后端**；ARM 与 RV32I 后端未实现 va 区，C 变参函数定义会被明确拒绝，见 README「后端」） |
+| 变参 `...` | 是（四个后端都支持：ARM / RV32I 用 4 字节字槽，C / x86_64 用 8 字节槽位，见 §后端与「变参」条目） |
 | 函数指针调用 | 是 |
 | `inline` | 是（作为提示） |
 | K&R 风格旧式参数 | 是 |
@@ -982,7 +982,7 @@ v0.8.0 覆盖了 armcc 5 常用扩展的 98% 以上。下表列出全部支持�
 | `stdint.h` | `int8_t..int64_t / uint8_t..uint64_t / intptr_t / uintptr_t` |
 | `stdbool.h` | `bool true false` |
 | `stddef.h` | `size_t NULL ptrdiff_t offsetof` |
-| `stdarg.h` | `va_list va_start va_arg va_end`（实现依赖 C 后端的 8 字节槽位约定：`va_start` 读 `_ark_va_ptr`，该符号只有 C 与 x86_64 后端定义） |
+| `stdarg.h` | `va_list va_start va_arg va_end va_copy ark_va_arg_d`。两套走法由驱动注入的宏选择：C / x86_64 是 8 字节槽位（`long long *`，按实参序号）；ARM / RV32I 是 4 字节字槽（`unsigned int *`，按 AAPCS 参数字），其中 ARM 在 64 位实参前把指针取整到 8 字节吃掉对齐空洞，RV32I（`__ARK_VA_PACKED_WORDS`）没有空洞所以不取整。`_ark_va_ptr` 这两个后端都不定义成变量，而是在引用处直接算帧地址 |
 | `string.h` | `strlen strcmp strcpy strncpy memset memcpy memmove` |
 | `stdio.h` | `printf puts putchar` |
 | `stdlib.h` | `abort exit malloc free`（声明） |
@@ -1055,7 +1055,20 @@ v0.8.0 已实现完整的 C99 集合 + 98% 以上的 armcc 常用扩展，仅剩
 - **位域宽度上限 32 位**：`IR_LOAD_FLD`/`IR_STORE_FLD` 按 32 位容器读写，`long long x:40` 会读回错值。因此语法分析阶段直接报错（`bit-field width 40 exceeds 32`）、不生成代码，不做静默截断。
 - **`ret (*fn(params))(params)`（返回函数指针的函数）不可解析**：`(*name)` 形式目前要求名字后立刻是 `)`，不支持括号内再带一层参数表，因此 `int (*pick(int))(int,int){...}` 这类声明符会报语法错误。**当前行为是显式报错**（`[parser] ... syntax error(s); no code generated`），不会产出错误二进制。修法需要把 `parse_declarator` 改写成递归下降 + 占位类型替换，属结构性改动。
 - **`va_arg` 依赖小端目标**：`stdlib/include/stdarg.h` 的 `va_arg` 按"8 字节槽位地址重解释"取值（`*(type *)(ap++)`），整数/指针/`double` 通吃，但要求目标为小端。ARM Thumb-2 与全部宿主均满足；大端目标需改为按类型分派。
-- **变参只在 C / x86_64 后端可用**：`irgen` 会为每个变参函数请求把 a0..a7 镜像到 `frame+8000..8063`，`stdarg.h` 的 `va_start` 展开成读 extern `_ark_va_ptr`；只有 C 与 x86_64 后端定义这个符号。ARM / RV32I 后端没有实现，过去会把它翻成从地址 0 取指针（错答案、无诊断），现在直接拒绝 C 变参函数定义。补这块要按 AAPCS 的寄存器/栈混合布局重新设计 ARM 的 `va_list`，不能照搬现在的 8 字节槽位写法。
+- **变参的两种镜像形状不能混用**：`irgen` 为每个变参函数请求把 a0..a7 镜像到
+  `frame+8000` 起，但请求的**步长是 8**（C 后端的槽位编号）。ARM / RV32I 把
+  `dst_off >= 8000` 的这些请求当"序言已经落好、不用管"，自己按 4 字节字铺：
+  ARM 是 `frame+8000 + 4*k`（word 0..3 = r0..r3，word 4+k = 调用方栈块第 k 字），
+  RV32I 是 `s0-8192 + 4*k`。`stdarg.h` 靠 `__ARK_VA_WORD_SLOTS` 选走法，靠
+  `__ARK_VA_PACKED_WORDS` 区分"有对齐空洞（ARM）"与"平铺（RV32I）"。
+  改这里必须先跑 `examples/run_va_gate.py`：它把同一份源码分别交给 gcc 和
+  arkcc→as→unicorn，比的是**运行结果**而不是"有没有报错"。
+- **`_ark_va_ptr` 只在变参函数里有意义**：两个后端在非变参函数里引用它时直接报错
+  （过去会从地址 0 取指针，静默给出错答案）。
+- **float 实参会被提升成 double**（C99 6.5.2.2p6，`irgen` 发 `IR_F2F`），所以变参调用的
+  形参宽度按 8 字节算；`argmask` 的 8 字节位由 `irgen` 一并置上。
+- **RV32I 自己的边界**：只从 a0-a7 传参、没有两字值模型，所以超过 8 个参数字的调用与
+  64 位实参都被明确拒绝，而不是留下错值。
 
 ### 兼容性说明
 

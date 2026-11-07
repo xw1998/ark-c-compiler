@@ -823,6 +823,15 @@ int g_arm_dump_syms = 0;
  * by the assembler do not.  0 = old behaviour, byte for byte. */
 int g_arm_vt_reserve = 0;
 
+/* 1 when the selected CPU has a *double-precision* FPU (Cortex-M7 DP).
+ * Double <-> float conversion is the one place where single-precision
+ * hardware cannot stand in: VCVT.F64.F32 does not exist on the M4F's
+ * fpv4-sp-d16, so emitting it there produces an instruction the assembler
+ * rejects (and the core would fault on).  The software helper __aeabi_f2d /
+ * __aeabi_d2f is used unless this is set.  Default 0: no -cpu means the
+ * conservative path. */
+int g_arm_fpu_dp = 0;
+
 /* Cortex-M vector table: 256 entries, 1 KB.  Declared here (not next to
  * arm_link) because both the assembler -- which reserves this many bytes at the
  * front of the image -- and the linker need it. */
@@ -925,6 +934,36 @@ static int ark_top_enabled(void) {
     return g_config.enable_reg_top ? 1 : 0;
 }
 
+/* va region helpers (defined further down, next to aapcs_assign because they
+ * explain the same word indexing). ark_top_try() runs before them, so their
+ * prototypes live here. */
+#define ARK_VA_BASE 8000
+static void emit_va_ptr(AsmBuffer *b, int reg);
+static int  is_va_ptr_sym(const char *name);
+
+/* 1 while the function being emitted is variadic (set by codegen_arm before
+ * the spill, cleared for every function, so it never leaks across). */
+static int g_va_active;
+
+/* Name of the function whose code is being emitted right now.  Only the
+ * diagnostics that fire inside the instruction switch need it, but they fire
+ * from two different places (the --reg-top peephole and the main switch), so
+ * it is set once per function instead of threaded through both. */
+static const char *g_cur_fn_name;
+
+/* _ark_va_ptr outside a variadic function: <stdarg.h> was used where there is
+ * no argument block to point at (va_start in a function that is not declared
+ * with "...").  The honest answer is an error -- the behaviour this replaces
+ * emitted `MOV r0,#0 / LDR r0,[r0]`, i.e. it read word 0 of the vector table
+ * (the initial SP) and handed it back as an argument pointer. */
+static void va_ptr_needs_variadic(void) {
+    diag_tool(DIAG_SEV_ERROR, "arkcc",
+              "'_ark_va_ptr' is read in '%s', which is not variadic: "
+              "va_start/va_arg only mean something inside a function declared "
+              "with '...'",
+              g_cur_fn_name ? g_cur_fn_name : "?", 0, 0, 0, 0, 0);
+}
+
 static void ark_top_drain(AsmBuffer *b, int *top) {
     if (*top) {
         emit_push_r0(b);
@@ -990,7 +1029,15 @@ static int ark_top_try(AsmBuffer *b, IrInst *I, int *top, int *ret_in_r0) {
         *top = 1;
         return 1;
     case IR_PUSH_GLOBAL: {
-        unsigned addr = gvar_find(I->name);
+        unsigned addr;
+        if (is_va_ptr_sym(I->name)) {
+            if (!g_va_active) va_ptr_needs_variadic();
+            ark_top_drain(b, top);
+            emit_va_ptr(b, 0);
+            *top = 1;
+            return 1;
+        }
+        addr = gvar_find(I->name);
         if (gvar_find_size(I->name) >= 8) {           /* two words: fall back */
             ark_top_drain(b, top);
             return 0;
@@ -1440,6 +1487,81 @@ static int ret_is_two_words(Type *t) {
     return 0;
 }
 
+/* ---- va region ----------------------------------------------------------
+ * One word per argument slot at frame + ARK_VA_BASE + 4*k, contiguous.
+ *
+ * irgen asks for the same region with a *stride of 8* (frame+8000+8k), which
+ * is the C backend's convention: there one slot holds a whole `long long`
+ * per argument (ordinal-indexed), so 8 bytes per slot is what stdarg.h walks.
+ * This backend instead uses word-indexed contiguous slots, because AAPCS
+ * already numbers arguments in 4-byte words (a 64-bit argument takes two
+ * adjacent words) -- so a plain 32-bit walk reproduces the caller's layout
+ * exactly, and a 64-bit read is just `*(long long*)ap` over two adjacent
+ * words.  <stdarg.h> picks the matching convention through
+ * __ARK_VA_WORD_SLOTS, which the driver defines for this target.
+ *
+ * The IR keeps the C-backend stride; the mapping to 4-byte stride happens in
+ * codegen_arm(), in one place (the IR_GETARG case ignores these requests
+ * entirely: see the "variadic region" branch there). */
+#define ARK_VA_WORDS 32     /* 4 register words + 28 stack words      */
+
+/* Set once per function (the spill runs in the prologue). */
+static int g_va_named_words; /* words used by the named parameters     */
+static int g_va_nsaa;        /* size of the named stack block, bytes   */
+static int g_va_ncrn;        /* next core register after the named args */
+static int g_va_ptr_off;     /* r6 + this = first variadic word        */
+static int g_va_label;       /* spill-loop label counter               */
+
+/* Materialise `frame + g_va_ptr_off` in `reg`. The offset is past 4095, so it
+ * cannot be an ADD immediate; MOVW+ADD is two instructions and needs no
+ * literal pool. Used for _ark_va_ptr, which stdarg.h reads as a variable. */
+static void emit_va_ptr(AsmBuffer *b, int reg) {
+    asmbuf_puts(b, "    MOVW r");
+    asmbuf_int(b, reg);
+    asmbuf_puts(b, ", #");
+    asmbuf_int(b, g_va_ptr_off);
+    asmbuf_puts(b, "\n    ADD r");
+    asmbuf_int(b, reg);
+    asmbuf_puts(b, ", r6, r");
+    asmbuf_int(b, reg);
+    asmbuf_putc(b, '\n');
+}
+
+/* _ark_va_ptr is how stdarg.h reaches the va region: it is declared extern
+ * there and this backend answers it with a frame address instead of a real
+ * global (the region lives in the caller's frame, one per invocation).
+ * Same shape as the x86 backend's special case; must be handled in BOTH
+ * codegen paths (--reg-top peephole and the main switch), otherwise the
+ * output would differ depending on the optimisation level. */
+static int is_va_ptr_sym(const char *name) {
+    return (name && ark_streq(name, "_ark_va_ptr"));
+}
+
+/* The stack half of the va region: ARK_VA_WORDS-4 words copied verbatim from
+ * the caller's stack argument block (which starts at frame + local_size + 16)
+ * into region words 4.. .  Emitted after the argument setup because it needs
+ * r0-r2 as scratch; IR_GETARG has finished with them by then.
+ * `SUB r2,r2,#1` is the 16-bit encoding and `SUBS` is a separate mnemonic the
+ * assembler gates behind --asm-extra, so the loop condition is an explicit CMP
+ * instead of relying on the flags SUB happens to set. */
+static void emit_va_stack_copy(AsmBuffer *b, int local_size) {
+    int lbl = g_va_label++;
+    asmbuf_puts(b, "    MOVW r0, #");
+    asmbuf_int(b, local_size + 16);
+    asmbuf_puts(b, "\n    ADD r0, r6, r0\n    MOVW r1, #");
+    asmbuf_int(b, ARK_VA_BASE + 16);
+    asmbuf_puts(b, "\n    ADD r1, r6, r1\n    MOVW r2, #");
+    asmbuf_int(b, ARK_VA_WORDS - 4);
+    asmbuf_puts(b, "\n.L_va_spill_");
+    asmbuf_int(b, lbl);
+    asmbuf_puts(b, ":\n    LDR r3, [r0]\n    STR r3, [r1]\n"
+                  "    ADD r0, #4\n    ADD r1, #4\n"
+                  "    SUB r2, r2, #1\n    CMP r2, #0\n"
+                  "    BNE .L_va_spill_");
+    asmbuf_int(b, lbl);
+    asmbuf_putc(b, '\n');
+}
+
 /* AAPCS32 parameter assignment (base standard: core registers then stack).
  *
  * sizes[i] is how many bytes argument i occupies on the wire: 8 for a
@@ -1665,39 +1787,31 @@ static char *codegen_arm(IrProgram *prog) {
 
     for (fi = 0; fi < prog->func_count; fi++) {
         IrFunc *f = prog->funcs[fi];
+        /* Names the function whose code is being emitted, for the diagnostics
+         * that are raised deep inside the instruction switch (a reference to
+         * _ark_va_ptr outside a variadic function, for instance). */
+        g_cur_fn_name = f->name;
 
-        /* Variadic functions are NOT implemented by the ARM backend.
-         *
-         * irgen asks for a0..a7 to be mirrored into frame+8000..8063
-         * (IR_GETARG with dst_off >= 8000) for every variadic definition, and
-         * stdlib/include/stdarg.h resolves va_start() to the extern
-         * `_ark_va_ptr`. The C backend and the x86_64 backend both implement
-         * that (they define _ark_va_ptr as a local pointing at the va area);
-         * this backend has always done `if (dst_off >= 8000) break;` and never
-         * defines _ark_va_ptr, so a C variadic function used to compile into
-         *     MOV r0, #0
-         *     LDR r0, [r0]        ; read the va pointer from address 0
-         * (measured on examples/va_test.c) -- no diagnostic, and va_arg then
-         * walks whatever happens to sit at address 0: the vector table, i.e.
-         * a stack address. Wrong answer, no error, the worst shape.
-         *
-         * Until the region is implemented here, refuse the definition. Calls to
-         * a variadic function are unaffected (they only need the caller side):
-         * __asm bodies such as the mini SDK's printf shim declare `...` with
-         * no C body and never touch _ark_va_ptr, so is_asm_func skips this. */
-        if (f->is_variadic && !f->is_asm_func) {
-            diag_tool(DIAG_SEV_ERROR, "arkcc",
-                      "variadic function '%s' is not supported by the ARM "
-                      "backend: va_start/va_arg would read the va pointer from "
-                      "address 0 (the va region is implemented only by the C "
-                      "and x86_64 backends)",
-                      f->name, 0,0,0,0,0);
-        }
+        /* Variadic functions: the va region is spilled below, once per
+         * function, right after the prologue (see "va region" further down).
+         * Nothing to do here. */
         int local_size = f->local_size;
         int i;
+        /* Variadic functions: the va region (see the spill below) lives in
+         * this frame at ARK_VA_BASE and needs ARK_VA_WORDS words.  irgen only
+         * reserves 8064 bytes, which is the C backend's 8 x 8-byte slot area;
+         * the ARM region is 4 + (ARK_VA_WORDS-4) words and has to be reserved
+         * BEFORE the sret slots/buffers below, or they would be placed inside
+         * it.  Non-variadic frames are untouched, byte for byte. */
+        if (f->is_variadic) {
+            int va_need = ARK_VA_BASE + 4 * ARK_VA_WORDS;
+            if (local_size < va_need) local_size = va_need;
+        }
         int is_sret = 0;
         int fstart = 0;              /* where this function's text begins */
         int sret_off = 0;
+        int va_start_slot = 0;       /* first variadic word, in region words */
+        int va_stack_pending = 0;    /* stack half of the va region still to copy */
         /* P1 FIX (sret caller side): pre-allocate sret buffers in this
          * function's frame so the sret space doesn't occupy SP+0 (where
          * the callee expects to read stack args). Each sret call site gets
@@ -1874,9 +1988,98 @@ static char *codegen_arm(IrProgram *prog) {
                     sz = 4;
                 psz[pj] = sz;
             }
-            aapcs_assign(psz, (f->param_count < 64) ? f->param_count : 64,
-                         is_sret ? 1 : 0, aapcs_map, aapcs_soff);
+            g_va_nsaa = aapcs_assign(psz, (f->param_count < 64) ? f->param_count : 64,
+                                    is_sret ? 1 : 0, aapcs_map, aapcs_soff);
+            /* Words used by the named parameters, and where the variadic
+             * words start.
+             *
+             * The start is NOT "the number of named words": AAPCS continues
+             * the argument numbering in the next core register, and any named
+             * argument on the stack forces NCRN to 4 (everything after it is
+             * stacked too). f(int a, long long b, ...) is the case that
+             * separates the two: b needs an even register pair, r1 stays
+             * unused, NCRN is 4, and a "named words" pointer would hand the
+             * first va_arg r3 -- a named argument. Both numbers come out of
+             * aapcs_assign(): register -1 marks a stacked named word, and the
+             * highest register used plus one is NCRN.
+             *
+             * The variadic stack words begin at 4 + nsaa/4 in the flattened
+             * region (see the spill below). */
+            {
+                int nw = 0, pj2, any_stack = 0, maxreg = -1;
+                for (pj2 = 0; pj2 < f->param_count && pj2 < 64; pj2++)
+                    nw += (psz[pj2] == 8) ? 2 : 1;
+                for (pj2 = 0; pj2 < nw && pj2 < 64; pj2++) {
+                    if (aapcs_map[pj2] < 0) any_stack = 1;
+                    else if (aapcs_map[pj2] > maxreg) maxreg = aapcs_map[pj2];
+                }
+                g_va_named_words = nw;
+                g_va_ncrn = any_stack ? 4 : maxreg + 1;
+                if (is_sret && g_va_ncrn < 1) g_va_ncrn = 1;  /* r0 = sret */
+                va_start_slot = (g_va_ncrn < 4) ? g_va_ncrn : 4 + g_va_nsaa / 4;
+            }
         }
+
+        /* ---- va region spill (variadic functions only) ------------------
+         * The region is one 4-byte word per argument word, at
+         * frame + ARK_VA_BASE + 4*k:
+         *   word 0..3  = r0..r3, exactly what the caller left there
+         *   word 4+k   = word k of the caller's stack argument block
+         * That is the caller's own layout flattened: the four register words
+         * followed by the stack block. <stdarg.h> walks it as words and
+         * aligns a 64-bit type by rounding the word index up to even -- the
+         * same rule AAPCS applies to an even register pair and to an
+         * 8-byte-aligned stack slot -- so a 64-bit variadic argument is just
+         * two adjacent words and no type knowledge is needed here.
+         * The region base is 8-byte aligned (r6 is, and 8000 is a multiple
+         * of 8), so "word index even" and "address 8-byte aligned" agree.
+         *
+         * The two halves are emitted at different points, because the region
+         * has to be complete before the first user statement and r0-r3 are
+         * still live as arguments until the last IR_GETARG:
+         *   * the four register words are stored right here in the prologue:
+         *     r0-r3 still hold exactly what the caller passed, and IR_GETARG
+         *     (which runs next) clobbers r3 through its scratch path;
+         *   * the stack words are copied by emit_va_stack_copy() at the first
+         *     instruction that is not argument setup (va_stack_pending), when
+         *     r0-r2 are free to use as the loop's pointers and counter.
+         *
+         * `ip` (r12) is not free to keep across the copy: the out-of-range
+         * LDR fixup emitted for the caller's stack block rewrites
+         * `LDR r3,[r6,#>4095]` into a sequence that uses ip itself, so the
+         * loop keeps its two pointers in r0/r1.
+         *
+         * Bounds: the region holds ARK_VA_WORDS words = 4 register words plus
+         * ARK_VA_WORDS-4 stack words. A call that passes more than that on the
+         * stack cannot be mirrored, and the call site refuses it (see IR_CALL:
+         * the variadic flag comes from irgen, because only the call site knows
+         * how many arguments it is passing). */
+        g_va_active = 0;
+        g_va_ptr_off = 0;
+        if (f->is_variadic && !f->is_naked) {
+            g_va_active = 1;
+            g_va_ptr_off = ARK_VA_BASE + 4 * va_start_slot;
+            asmbuf_puts(&buf, "    MOVW r12, #");
+            asmbuf_int(&buf, ARK_VA_BASE);
+            asmbuf_puts(&buf, "\n    ADD r12, r6, r12\n");
+            {
+                int k;
+                for (k = 0; k < 4; k++) {
+                    asmbuf_puts(&buf, "    STR r");
+                    asmbuf_int(&buf, k);
+                    asmbuf_puts(&buf, ", [r12, #");
+                    asmbuf_int(&buf, 4 * k);
+                    asmbuf_puts(&buf, "]\n");
+                }
+            }
+            /* The stack half is copied later, once the named arguments have
+             * been read out of r0-r3 (see va_stack_pending below): the copy
+             * needs three scratch registers, and using r0-r2 here destroyed
+             * arguments that IR_GETARG had not stored yet (measured: the
+             * named `count` parameter arrived as the copy's source pointer). */
+            va_stack_pending = (ARK_VA_WORDS > 4);
+        }
+
         /* --reg-top state: whether the IR stack top is in r0, and whether the
          * IR_RETURN being emitted can skip its pop.  Both stay 0 when the
          * option is off, so the generated code is byte-identical. */
@@ -1893,6 +2096,23 @@ static char *codegen_arm(IrProgram *prog) {
                 asmbuf_putc(&buf, '\n');
             }
 #endif
+            /* Flush the stack half of the va region at the first instruction
+             * that is not argument setup: IR_GETARG is still handing the named
+             * arguments to their frame slots (from r0-r3) until then, and the
+             * copy loop needs r0-r2 as scratch. */
+            if (va_stack_pending) {
+                switch (I->op) {
+                case IR_GETARG:
+                case IR_FUNC_BEGIN:
+                case IR_FUNC_END:
+                case IR_LOCAL_ALLOC:
+                    break;
+                default:
+                    emit_va_stack_copy(&buf, local_size);
+                    va_stack_pending = 0;
+                    break;
+                }
+            }
             rtop_ret = 0;
             if (ark_top_enabled() && ark_top_try(&buf, I, &rtop, &rtop_ret))
                 continue;
@@ -1922,7 +2142,14 @@ static char *codegen_arm(IrProgram *prog) {
                     int st_sz   = (I->aux >> 8) & 0xFFFFFF;
                     int dst_off = I->val;
                     int reg     = (arg_idx < 64) ? aapcs_map[arg_idx] : -1;
-                    if (dst_off >= 8000) break;  /* variadic region: C-backend only */
+                    /* The variadic region is spilled once in the prologue
+                     * (contiguous words, see "va region spill" above), so
+                     * these IR requests -- one per argument word, stamped
+                     * with the C backend's 8-byte stride -- need nothing
+                     * here. Cheap on purpose: a variadic function gets eight
+                     * of them, and none of them must reach the r3 scratch
+                     * path below (r0-r3 are gone by this point). */
+                    if (dst_off >= ARK_VA_BASE) break;
                     if (st_sz > 8) {
                         /* Struct-by-value (> 8 bytes): register/stack holds a
                          * *pointer* to the source struct. memcpy into frame[dst_off]. */
@@ -2071,8 +2298,16 @@ static char *codegen_arm(IrProgram *prog) {
                     emit_push_r0(&buf);
                     break;
                 case IR_PUSH_GLOBAL: {
-                    unsigned addr = gvar_find(I->name);
-                    int gsz = gvar_find_size(I->name);
+                    unsigned addr;
+                    int gsz;
+                    if (is_va_ptr_sym(I->name)) {
+                        if (!g_va_active) va_ptr_needs_variadic();
+                        emit_va_ptr(&buf, 0);
+                        emit_push_r0(&buf);
+                        break;
+                    }
+                    addr = gvar_find(I->name);
+                    gsz = gvar_find_size(I->name);
                     if (gsz >= 8) {
                         /* #6 FIX: 64-bit global read - load low and high words */
                         emit_mov_addr32(&buf, 1, addr, addr_in_own_data(addr));
@@ -2656,12 +2891,20 @@ static char *codegen_arm(IrProgram *prog) {
                      *   float  = [r0]              (1 slot)
                      *   aux 0x200 = double->float (narrow): -1 slot
                      *   aux 0x100 = float->double (widen):  +1 slot
-                     * AAPCS helpers: __aeabi_d2f (r0/r1 -> r0),
-                     *                __aeabi_f2d (r0 -> r0/r1). */
+                     * The helpers are this compiler's own (the same ones the
+                     * double<->single paths of the arithmetic helpers use),
+                     * because __aeabi_f2d / __aeabi_d2f are only defined when
+                     * the image is linked against libgcc: __arkcc_f2d_ext
+                     * (r0 -> r0/r1) and __arkcc_d2f_trunc (r0/r1 -> r0) are
+                     * emitted into every image that needs them. */
                     int src_dbl = (I->aux & 0x200) != 0;
                     int dst_dbl = (I->aux & 0x100) != 0;
 #if ARKCC_FEATURE_FPU_HW
-                    if (g_config.enable_fpu_hw) {
+                    /* A single-precision FPU cannot convert to or from double
+                     * (VCVT.F64.* is ARMv8-M / M7 DP only), so those two
+                     * directions stay on the software helpers even when
+                     * hardware FP is enabled. */
+                    if (g_config.enable_fpu_hw && g_arm_fpu_dp) {
                         if (src_dbl && !dst_dbl) {
                             /* double -> float */
                             emit_pop_r1(&buf);
@@ -2688,12 +2931,12 @@ static char *codegen_arm(IrProgram *prog) {
                         /* double -> float */
                         emit_pop_r1(&buf);
                         emit_pop_r0(&buf);
-                        emit_line(&buf, "BL __aeabi_d2f");
+                        emit_line(&buf, "BL __arkcc_d2f_trunc");
                         emit_push_r0(&buf);
                     } else if (!src_dbl && dst_dbl) {
                         /* float -> double */
                         emit_pop_r0(&buf);
-                        emit_line(&buf, "BL __aeabi_f2d");
+                        emit_line(&buf, "BL __arkcc_f2d_ext");
                         emit_push_r0(&buf);
                         asmbuf_puts(&buf, "    PUSH {r1}\n");
                     }
