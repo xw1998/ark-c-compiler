@@ -7867,8 +7867,8 @@ HAL 哨兵值。补 `#define HAL_MAX_DELAY 0xFFFFFFFFU`。它不是编译器缺�
 
 ```
 files=25 failed=0
-objects: 1131943 -> 1129545 bytes (-2398, -0.21%)
-frame refs [r6, #n]: 27371 -> 25853 (-1518)
+objects: 1131995 -> 1129597 bytes (-2398, -0.21%)
+frame refs [r6, #n]: 27372 -> 25854 (-1518)
 moved registers: 1518 across 12 files
 ```
 
