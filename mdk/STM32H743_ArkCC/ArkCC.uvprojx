@@ -406,6 +406,11 @@
               <FileType>1</FileType>
               <FilePath>.\User\bsp_w25q.c</FilePath>
             </File>
+            <File>
+              <FileName>bsp_sdram.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\User\bsp_sdram.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>

@@ -14,6 +14,14 @@
  */
 #include "stm32h7xx.h"
 #include "bsp_w25q.h"
+#include "bsp_sdram.h"
+
+extern uint32_t g_sdram_busy_seen;
+extern uint32_t g_sdram_sdsr_after_load;
+extern uint32_t g_fmc_bcr1_before;
+extern uint32_t g_fmc_bcr1_after;
+extern uint32_t g_rcc_d1ccipr;
+extern uint32_t g_rcc_ahb3enr;
 #include "platform.h"
 #include "flash_fs.h"
 #include "compiler.h"
@@ -139,6 +147,7 @@ static void cmd_help(void) {
         "  run <file>        - compile and execute .c source\r\n"
         "  demo              - install the POSIX hello-world sources into RAM\r\n"
         "  build             - compile+link+run the POSIX hello world on this chip\r\n"
+        "  sdram             - init the 32MB FMC SDRAM and run a full read/write check\r\n"
         "  echo <text>      - echo text back\r\n"
         "  version           - show compiler version\r\n"
         "=============================\r\n"
@@ -563,6 +572,76 @@ static void cmd_build(void) {
     shell_puts("\r\n");
 }
 
+/* FMC SDRAM bring-up: init, then prove the whole 32 MB reads back what was
+ * written.  A wrong timing, a swapped address line or a dead NBL shows up as
+ * a concrete offset in the report -- never as "OK" with garbage behind it. */
+static void cmd_sdram(void) {
+    uint32_t sdcr, sdtr, sdrtr, sdsr, sdclk;
+    uint32_t t0, ms, bad_off, got, exp, rate;
+    int rc;
+
+    shell_puts("\r\n[sdram] FMC SDRAM bank1 @ 0xC0000000 (W9825G6, 32 MB, 16-bit)\r\n");
+    rc = bsp_sdram_init();
+    if (rc != 0) {
+        ark_log("[sdram] init FAILED at step %d: a command never completed "
+                "(FMC_SDSR.BUSY stuck)\r\n", -rc);
+        return;
+    }
+    bsp_sdram_info(&sdcr, &sdtr, &sdrtr, &sdsr, &sdclk);
+    ark_log("[sdram] SDCR1=0x%08X SDTR1=0x%08X SDRTR=0x%08X SDSR=0x%08X\r\n",
+            sdcr, sdtr, sdrtr, sdsr);
+    /* Did the FMC actually execute the commands?  BUSY must be observable
+     * right after a command write; if it never was, the kernel clock or the
+     * controller itself is the problem, not the DRAM chip. */
+    ark_log("[sdram] command ran: busy_seen=%d, SDSR after LOAD_MODE=0x%08X\r\n",
+            (int)g_sdram_busy_seen, g_sdram_sdsr_after_load);
+    ark_log("[sdram] SDCLK = %d kHz (HCLK/2), refresh count = %d\r\n",
+            sdclk, (sdrtr >> 1));
+    /* Clock/controller gate evidence: FMCEN (BCR1 bit31) and the FMC
+     * kernel clock source, so a later failure cannot be blamed on the
+     * DRAM part without these two numbers being on the record. */
+    ark_log("[sdram] BCR1 before=0x%08X after=0x%08X, D1CCIPR=0x%08X AHB3ENR=0x%08X\r\n",
+            g_fmc_bcr1_before, g_fmc_bcr1_after, g_rcc_d1ccipr,
+            g_rcc_ahb3enr);
+    if ((sdsr & (3UL << 1)) != 0) {
+        ark_log("[sdram] bank1 is not in normal mode (SDSR.MODES1=%d)\r\n",
+                (int)((sdsr >> 1) & 3));
+        return;
+    }
+
+    shell_puts("[sdram] writing 32 MB with 16-bit stores...\r\n");
+    t0 = HAL_GetTick();
+    bsp_sdram_write16(SDRAM_SIZE_BYTES / 2);
+    ms = HAL_GetTick() - t0;
+    if (ms == 0) ms = 1;
+    rate = (32UL * 100UL * 1000UL) / ms;   /* MB/s x100 */
+    ark_log("[sdram] written in %d ms (%d.%02d MB/s)\r\n", ms, rate / 100, rate % 100);
+
+    shell_puts("[sdram] verifying...\r\n");
+    t0 = HAL_GetTick();
+    rc = bsp_sdram_check16(SDRAM_SIZE_BYTES / 2, &bad_off, &got, &exp);
+    ms = HAL_GetTick() - t0;
+    if (ms == 0) ms = 1;
+    rate = (32UL * 100UL * 1000UL) / ms;
+    if (rc != 0) {
+        ark_log("[sdram] 16-bit MISMATCH at 0x%08X: wrote 0x%04X, read 0x%04X\r\n",
+                (uint32_t)(SDRAM_BANK_ADDR + bad_off), exp, got);
+        shell_puts("[sdram] FAILED\r\n");
+        return;
+    }
+    ark_log("[sdram] 16-bit verify OK in %d ms (%d.%02d MB/s)\r\n", ms, rate / 100, rate % 100);
+
+    rc = bsp_sdram_check8(255, &bad_off, &got, &exp);
+    if (rc != 0) {
+        ark_log("[sdram] 8-bit probe FAILED at +%d: wrote 0x%02X, read 0x%02X "
+                "(check NBL0/NBL1)\r\n", bad_off, exp, got);
+        shell_puts("[sdram] FAILED\r\n");
+        return;
+    }
+    shell_puts("[sdram] 8-bit probe OK (NBL0/NBL1 are wired correctly)\r\n");
+    shell_puts("[sdram] SDRAM OK: 32 MB usable at 0xC0000000\r\n");
+}
+
 /* ---------------- Shell main loop ---------------- */
 static void shell_loop(void) {
     static char linebuf[256];
@@ -609,6 +688,9 @@ static void shell_loop(void) {
         }
         else if (strcmp(argv[0], "build") == 0) {
             cmd_build();
+        }
+        else if (strcmp(argv[0], "sdram") == 0) {
+            cmd_sdram();
         }
         else if (strcmp(argv[0], "exit") == 0 || strcmp(argv[0], "quit") == 0) {
             shell_puts("Use reset button to exit.\r\n");
