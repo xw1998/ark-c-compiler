@@ -64,6 +64,7 @@ void ir_emit(IrFunc *f, IrOp op, long long val, const char *name, int aux) {
         I->name = name;
         I->aux = aux;
         I->line = g_ir_cur_line;
+        I->aux2 = 0;   /* IR_CALL's side-table index; see include/ir.h */
     }
 }
 

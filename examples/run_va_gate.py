@@ -75,6 +75,23 @@ static int s6flat(int n, ...)
     va_end(ap);
     return a + 2 * b + 3 * c + 4 * d + 5 * e + 6 * f;
 }
+/* va_copy: two walkers over one argument image.  va_list is a plain pointer on
+ * these two targets, so the copy is an assignment -- but that is a decision the
+ * header makes, and it has to be a *value* copy: if the two names shared one
+ * object, the second walker would resume where the first stopped and read the
+ * word after 2 instead of 2.  Both must answer 122. */
+static int va_copy_case(int n, ...)
+{
+    va_list ap, aq; int a, b, c;
+    va_start(ap, n);
+    a = va_arg(ap, int);
+    va_copy(aq, ap);
+    b = va_arg(ap, int);
+    c = va_arg(aq, int);
+    va_end(ap); va_end(aq);
+    (void)n;
+    return a * 100 + b * 10 + c;
+}
 static int four_named(int a, int b, int c, int d, ...)
 {
     va_list ap; int x, y;
@@ -145,6 +162,67 @@ static int two_named_ll(int a, long long b, ...)
     va_end(ap);
     return a + u.w[0] + u.w[1];
 }
+/* A struct passed by value through `...`: AAPCS copies anything larger than
+ * two words onto the stack, so the walk sees three plain words.  This case only
+ * proves the common path -- a composite whose size is not a multiple of 4, or
+ * whose members need 8-byte alignment, is not covered here. */
+struct s3 { int a, b, c; };
+static struct s3 mk_s3(void)
+{
+    struct s3 t; t.a = 1; t.b = 2; t.c = 3;
+    return t;
+}
+static int struct_va(int n, ...)
+{
+    va_list ap; struct s3 s;
+    va_start(ap, n);
+    s = va_arg(ap, struct s3);
+    va_end(ap);
+    (void)n;
+    return (s.a + s.b + s.c) & 0xFF;
+}
+/* Region shapes: the prologue saves r_k..r3 with k = NCRN rounded down to an
+ * even number, so these four signatures have to walk regions of 16, 8, 8 and 0
+ * bytes.  The 64-bit ones are the ones that can tell whether the region base is
+ * still 8-byte aligned after the shrink. */
+static int s2_ll(int a, int b, ...)
+{
+    union llw u; va_list ap;
+    va_start(ap, b);
+    u.v = va_arg(ap, long long);
+    va_end(ap);
+    return a + b + u.w[0] + u.w[1];
+}
+static int s3_ll(int a, int b, int c, ...)
+{
+    union llw u; va_list ap;
+    va_start(ap, c);
+    u.v = va_arg(ap, long long);
+    va_end(ap);
+    return a + b + c + u.w[0] + u.w[1];
+}
+static int s4_int(int a, int b, int c, int d, ...)
+{
+    va_list ap; int x;
+    va_start(ap, d);
+    x = va_arg(ap, int);
+    va_end(ap);
+    return a + b + c + d + x;
+}
+/* Three named words leave r3 free -- but r3 is an odd register, so AAPCS puts
+ * the first variadic long long on the stack and leaves r3 as a hole.  The
+ * region walk therefore has to round up from region word 3 to word 4, which
+ * only works if the region base is 8-byte aligned: this case is the one that
+ * fails the moment a caller returns with a misaligned sp (measured on the board
+ * as 85 instead of 17 before the extern-void stack leak was fixed). */
+static int cross_ll(int a, int b, int c, ...)
+{
+    union llw u; va_list ap;
+    va_start(ap, c);
+    u.v = va_arg(ap, long long);
+    va_end(ap);
+    return a + b + c + u.w[0] + u.w[1];
+}
 static int after_ll_pair(int a, long long b, long long c, ...)
 {
     va_list ap; int x;
@@ -162,11 +240,24 @@ CASES = [
     ('loop3',    'return sN(3, 1, 0, 1) & 0xFF;', 'arm rv'),
     ('loop4',    'return sN(4, 1, 2, 3, 4) & 0xFF;', 'arm rv'),
     ('four',     'return four_named(1, 2, 3, 4, 5, 6) & 0xFF;', 'arm rv'),
+    ('va_copy',  'return va_copy_case(0, 1, 2) & 0xFF;', 'arm rv'),
     ('ll_reg',   'return llw_sum(1, 0x1122334455667788LL) & 0xFF;', 'arm'),
     ('ll_mix',   'return llw_sum(2, 0x1122334455667788LL, 0x99aabbccddeeff00LL) & 0xFF;', 'arm'),
     ('named_ll', 'return named_ll(1, 0x1122334455667788LL, 7, 8) & 0xFF;', 'arm'),
     ('odd_ll',   'return odd_named(1, 0x1122334455667788LL) & 0xFF;', 'arm'),
     ('two_ll',   'return two_named_ll(1, 0x1122334455667788LL, 0x99aabbccddeeff00LL) & 0xFF;', 'arm'),
+    ('cross_ll', 'return cross_ll(1, 2, 3, 0x1122334455667788LL) & 0xFF;', 'arm'),
+    ('struct_va', 'return struct_va(1, mk_s3()) & 0xFF;', 'arm'),
+    ('struct2',  'return struct2_va(1, mk_s2x()) & 0xFF;', 'arm'),
+    ('struct4',  'return struct4_va(1, mk_s4b()) & 0xFF;', 'arm'),
+    ('struct8a', 'return struct8a_va(1, mk_s16a()) & 0xFF;', 'arm'),
+    ('struct5p', 'return struct5p_va(1, mk_s5p()) & 0xFF;', 'arm'),
+    ('struct_tail', 'return struct_tail(1, mk_s3(), 7, 9) & 0xFF;', 'arm'),
+    ('struct_split', 'return struct_split(1, 2, 3, mk_s3()) & 0xFF;', 'arm'),
+    ('struct_stack', 'return struct_stack(1, 2, 3, 4, mk_s3()) & 0xFF;', 'arm'),
+    ('s2_ll',    'return s2_ll(1, 2, 0x1122334455667788LL) & 0xFF;', 'arm'),
+    ('s3_ll',    'return s3_ll(1, 2, 3, 0x1122334455667788LL) & 0xFF;', 'arm'),
+    ('s4_int',   'return s4_int(1, 2, 3, 4, 5) & 0xFF;', 'arm'),
     ('pair',     'return after_ll_pair(1, 0x1122334455667788LL, 0x99aabbccddeeff00LL, 9) & 0xFF;', 'arm'),
     ('d_one',    'return dsum(1, 1.5) & 0xFF;', 'arm'),
     ('d_three',  'return dsum(3, 1.5, 2.5, 3.5) & 0xFF;', 'arm'),
@@ -187,7 +278,24 @@ REFUSE = [
     # ...and it has no two-word value model, so a 64-bit va_arg cannot be built.
     ('ll_refused', 'return llw_sum(1, 0x1122334455667788LL) & 0xFF;',
      '8-byte loads are not implemented', 'll'),
+    # A composite wider than two words through `...` is implemented for ARM
+    # only: every other target builds a different argument image, where the
+    # inline words would be read as something else.  Refused, not miscompiled.
+    ('struct_refused', 'return xs3v(1, xmk()) & 0xFF;',
+     "passing a 12-byte structure through", 'struct'),
 ]
+
+# A composite wider than two words for the refusal case above.
+STRUCT_SNIPPET = r'''
+struct xs3 { int a, b, c; };
+static struct xs3 xmk(void) { struct xs3 t; t.a = 1; t.b = 2; t.c = 3; return t; }
+static int xs3v(int n, ...)
+{
+    va_list ap; struct xs3 s;
+    va_start(ap, n); s = va_arg(ap, struct xs3); va_end(ap); (void)n;
+    return s.a;
+}
+'''
 
 # A 64-bit reader for the refusal case above (the RV32I prelude has none).
 LL_SNIPPET = r'''
@@ -201,6 +309,85 @@ static int llw_sum(int n, ...)
     return s;
 }
 '''
+
+# Composites through `...`, sizes two words and up.  A *named* parameter of more
+# than two words travels as one address word (this compiler's own convention,
+# the callee memcpys it); an *unnamed* one cannot, because the callee has no
+# type for it and <stdarg.h> walks consecutive words.  AAPCS passes the payload
+# inline, and so does gcc (measured: `f(1, s12)` arrives in r1,r2,r3), so the
+# caller writes one word per four bytes.
+PRELUDE_STRUCT = r'''
+struct s2x { int a, b; };                    /* 8 bytes, 4-byte alignment */
+struct s4b { int a, b, c, d; };              /* 16 bytes, 4-byte alignment */
+struct s16a { long long a, b; };             /* 16 bytes, 8-byte alignment */
+struct s5p { int a; char b; } __attribute__((packed));   /* 5 bytes -> 2 words */
+static struct s2x mk_s2x(void) { struct s2x t; t.a = 11; t.b = 22; return t; }
+static struct s4b mk_s4b(void)
+{
+    struct s4b t; t.a = 1; t.b = 2; t.c = 3; t.d = 4; return t;
+}
+static struct s16a mk_s16a(void) { struct s16a t; t.a = 5; t.b = 6; return t; }
+static struct s5p mk_s5p(void)
+{
+    struct s5p t; t.a = 0x01020304; t.b = 7; return t;
+}
+static int struct2_va(int n, ...)
+{
+    va_list ap; struct s2x s;
+    va_start(ap, n); s = va_arg(ap, struct s2x); va_end(ap); (void)n;
+    return (s.a + s.b) & 0xFF;
+}
+static int struct4_va(int n, ...)
+{
+    va_list ap; struct s4b s;
+    va_start(ap, n); s = va_arg(ap, struct s4b); va_end(ap); (void)n;
+    return (s.a + s.b + s.c + s.d) & 0xFF;
+}
+static int struct8a_va(int n, ...)
+{
+    va_list ap; struct s16a s;
+    va_start(ap, n); s = va_arg(ap, struct s16a); va_end(ap); (void)n;
+    return (int)(s.a + s.b) & 0xFF;
+}
+static int struct5p_va(int n, ...)
+{
+    va_list ap; struct s5p s;
+    va_start(ap, n); s = va_arg(ap, struct s5p); va_end(ap); (void)n;
+    return (s.a + s.b) & 0xFF;
+}
+/* The composite is followed by two more arguments: the walk has to resume at
+ * the right word after a multi-word argument. */
+static int struct_tail(int n, ...)
+{
+    va_list ap; struct s3 t; int x, y;
+    va_start(ap, n);
+    t = va_arg(ap, struct s3);
+    x = va_arg(ap, int);
+    y = va_arg(ap, int);
+    va_end(ap); (void)n;
+    return (t.a + t.b + t.c) * 4 + x + y;
+}
+/* Three named words leave r3 free, so a 12-byte composite splits: word 0 in
+ * r3, words 1,2 on the stack (gcc does the same). */
+static int struct_split(int a, int b, int c, ...)
+{
+    va_list ap; struct s3 t;
+    va_start(ap, c);
+    t = va_arg(ap, struct s3);
+    va_end(ap);
+    return (a + b + c + t.a + t.b + t.c) & 0xFF;
+}
+/* Four named words: the composite is entirely on the stack. */
+static int struct_stack(int a, int b, int c, int d, ...)
+{
+    va_list ap; struct s3 t;
+    va_start(ap, d);
+    t = va_arg(ap, struct s3);
+    va_end(ap);
+    return (a + b + c + d + t.a + t.b + t.c) & 0xFF;
+}
+'''
+
 
 ARM_START = '''    .syntax unified
     .thumb
@@ -233,6 +420,7 @@ class Runner:
         self.gcc = gcc
         self.passed = 0
         self.failed = 0
+        self.opt = []
 
     def run(self, cmd):
         return subprocess.run(cmd, capture_output=True, text=True, errors='replace')
@@ -246,7 +434,8 @@ class Runner:
         return self.run([exe]).returncode & 0xFF, ''
 
     def compile(self, target, src, asm):
-        r = self.run([ARKC, '-target', target, '-S', '-I', INC, src, '-o', asm])
+        r = self.run([ARKC, '-target', target, '-S', '-I', INC]
+                     + getattr(self, 'opt', []) + [src, '-o', asm])
         if r.returncode != 0:
             return 'arkcc: ' + (r.stdout + r.stderr).strip()
         return ''
@@ -348,7 +537,7 @@ class Runner:
 FRAME_CAP = 1024   # bytes; nothing in this gate needs a bigger frame
 
 def frame_peak(asm_path, target):
-    """Largest stack adjustment in one function of the emitted assembly.
+    """Largest frame one function reserves, and which function it was.
 
     The point of this check: an earlier version of the ARM and RV32I variadic
     support mirrored the whole argument register file into the frame at a fixed
@@ -356,21 +545,205 @@ def frame_peak(asm_path, target):
     mini-app task on the board only gets 4 KB (APP_TASK_STACK_SIZE).  It passed
     every execution test here and could never have run on the target, so the
     frame size is asserted, not assumed.
+
+    Summing *consecutive* adjustments is the whole point.  emit_sp_adjust()
+    splits a frame larger than one encoding into several `SUB sp, sp, #N`, so
+    the first version of this function -- which took the largest single
+    instruction -- reported 4095 for a 9000-byte frame and FRAME_CAP happily
+    passed it.  Measured: `char buf[9000]` -> three SUBs of 4095/4095/810,
+    reported 4095.  A frame is the sum of the run, not its largest term.
     """
     try:
         text = open(asm_path, encoding='utf-8', errors='replace').read()
     except OSError:
-        return None
-    peak = 0
-    if target == 'arm':
-        for m in re.finditer(r'^\s*SUB\s+sp,\s*sp,\s*#(\d+)', text, re.M):
-            peak = max(peak, int(m.group(1)))
+        return None, None
+    best, where = 0, None
+    cur, run, fn = 0, 0, None
+    for line in text.splitlines():
+        m = re.match(r'^([A-Za-z_.$][\w.$]*):\s*$', line)
+        if m:
+            fn = m.group(1)
+        if target == 'arm':
+            m = re.match(r'^\s*SUB\s+sp,\s*sp,\s*#(\d+)\s*$', line)
+            if m:
+                run += int(m.group(1))
+                if run > best:
+                    best, where = run, fn
+                continue
+        else:
+            m = re.match(r'^\s*sub\s+sp,\s*sp,\s*t0\s*$', line)
+            if m:
+                run += cur
+                if run > best:
+                    best, where = run, fn
+                cur = 0
+                continue
+            m = re.match(r'^\s*li\s+t0,\s*(\d+)\s*$', line)
+            if m:
+                cur = int(m.group(1))
+                continue
+        run = 0
+    return best, where
+
+FRAME_SELFTEST = """
+f_small:
+    PUSH {r5, r6, r7, lr}
+    SUB sp, sp, #64
+    POP {r5, r6, r7, pc}
+f_big:
+    PUSH {r5, r6, r7, lr}
+    SUB sp, sp, #4095
+    SUB sp, sp, #4095
+    SUB sp, sp, #810
+    POP {r5, r6, r7, pc}
+"""
+
+
+def frame_check_selftest(r):
+    """The frame assertion has to be able to fail, so test the instrument.
+
+    frame_peak() reported 4095 for a 9000-byte frame before it summed the run
+    of split `SUB sp, sp, #N`, i.e. FRAME_CAP passed a frame 8.8x over the cap.
+    A gate that cannot fail is not a gate; this pins the accumulator itself.
+    """
+    path = os.path.join(TMP, 'frame_selftest.s')
+    write(path, FRAME_SELFTEST)
+    big, fn = frame_peak(path, 'arm')
+    if big != 9000 or fn != 'f_big':
+        print('FAIL frame/selftest split run -> %r in %r, want 9000 in f_big'
+              % (big, fn))
+        r.failed += 1
     else:
-        # RV32I forms the size in a register: "li t0, N" then "sub sp, sp, t0".
-        for m in re.finditer(r'^\s*li\s+t0,\s*(\d+)\s*\n\s*sub\s+sp,\s*sp,\s*t0',
-                             text, re.M):
-            peak = max(peak, int(m.group(1)))
-    return peak
+        print('PASS frame/selftest split run 4095+4095+810 counted as 9000')
+        r.passed += 1
+    # f_small is smaller than f_big, so the maximum legitimately stays on f_big;
+    # check the single-instruction case on its own file.
+    write(path, 'g:\n    SUB sp, sp, #64\n')
+    one, fn = frame_peak(path, 'arm')
+    if one != 64:
+        print('FAIL frame/selftest single adjustment -> %r, want 64' % (one,))
+        r.failed += 1
+    else:
+        print('PASS frame/selftest single adjustment 64')
+        r.passed += 1
+    # ...and the alignment invariant must be able to fail too: three pushed
+    # argument words leave sp at 4 mod 8.
+    write(path, 'bad:\n    PUSH {r1, r2, r3}\n    PUSH {r5, r6, r7, lr}\n'
+                '    SUB sp, sp, #8\n    MOV r6, sp\n')
+    bad = frame_align_problems(path)
+    write(path, 'good:\n    PUSH {r0, r1, r2, r3}\n    PUSH {r5, r6, r7, lr}\n'
+                '    SUB sp, sp, #8\n    MOV r6, sp\n')
+    good = frame_align_problems(path)
+    if not bad or good:
+        print('FAIL frame/selftest alignment invariant bad=%r good=%r'
+              % (bad, good))
+        r.failed += 1
+    else:
+        print('PASS frame/selftest alignment invariant flags an odd push')
+        r.passed += 1
+
+
+REGION_SRC = (
+    '#include <stdarg.h>\n'
+    'int r1(int a, ...) { va_list ap; int x; va_start(ap, a); x = va_arg(ap, int); va_end(ap); return a + x; }\n'
+    'int r2(int a, int b, ...) { va_list ap; int x; va_start(ap, b); x = va_arg(ap, int); va_end(ap); return a + b + x; }\n'
+    'int r3(int a, int b, int c, ...) { va_list ap; int x; va_start(ap, c); x = va_arg(ap, int); va_end(ap); return a + b + c + x; }\n'
+    'int r4(int a, int b, int c, int d, ...) { va_list ap; int x; va_start(ap, d); x = va_arg(ap, int); va_end(ap); return a + b + c + d + x; }\n'
+)
+
+
+def region_checks(r):
+    """The prologue must save exactly the register words that can be variadic.
+
+    Cost per signature is the whole point of the shrink: 16 bytes for one named
+    word, 8 for two or three, 0 for four.  A signature silently falling back to
+    "always push four" would still be correct, just 8 bytes more expensive per
+    call, so the shape is asserted rather than left to the frame-size check.
+    """
+    src = os.path.join(TMP, 'region_shapes.c')
+    asm = os.path.join(TMP, 'region_shapes.s')
+    write(src, REGION_SRC)
+    rc = r.run([ARKC, '-target', 'arm', '-S', '-O1', '-I', INC,
+                '-I', INC, src, '-o', asm])
+    if rc.returncode != 0:
+        print('FAIL asm/region   arkcc failed: %s'
+              % (rc.stdout + rc.stderr).strip()[:160])
+        r.failed += 1
+        return
+    text = open(asm, encoding='utf-8', errors='replace').read().splitlines()
+    want = {'r1': 'PUSH {r0, r1, r2, r3}', 'r2': 'PUSH {r2, r3}',
+            'r3': 'PUSH {r2, r3}', 'r4': None}
+    for fn, expect in want.items():
+        i = text.index(fn + ':') if (fn + ':') in text else -1
+        if i < 0:
+            print('FAIL asm/region%-3s function missing from the output' % fn)
+            r.failed += 1
+            continue
+        got = text[i + 1].strip()
+        while got.startswith('.'):        # .cfi_startproc
+            i += 1
+            got = text[i + 1].strip()
+        # the first real instruction is the region push (or the saved registers)
+        if expect is None:
+            ok = got == 'PUSH {r5, r6, r7, lr}'
+        else:
+            ok = got == expect
+        if not ok:
+            print('FAIL asm/region%-3s prologue starts with %r, want %r'
+                  % (fn, got, expect or 'PUSH {r5, r6, r7, lr} (no region)'))
+            r.failed += 1
+        else:
+            print('PASS asm/region%-3s %s' % (fn, got))
+            r.passed += 1
+
+
+def frame_align_problems(asm_path):
+    """Functions whose *prologue* leaves sp at 4 mod 8.
+
+    Every prologue move is a multiple of 4, and AAPCS32 wants sp 8-byte aligned
+    wherever another function can observe it -- which is exactly the property
+    va_arg's "round up to 8" leans on.  Summing the prologue catches the case
+    where saving 4 bytes looks free: pushing three register words instead of
+    four keeps the *region* walk correct (address parity still matches AAPCS
+    word parity) but drops the frame to 4 mod 8, and a `double` local or a
+    GCC-compiled callee can then fault on an 8-byte access.
+
+    Only the prologue counts: the bodies of these functions use PUSH/POP as a
+    stack machine, so summing every PUSH in a function says nothing about sp at
+    the first call.  The prologue ends at `MOV r6, sp` (or at the first
+    instruction that is neither PUSH nor SUB).
+    """
+    out = []
+    fn, total, in_pro = None, 0, False
+    for line in open(asm_path, encoding='utf-8', errors='replace'):
+        line = line.rstrip()
+        m = re.match(r'^([A-Za-z_$][\w.$]*):$', line)
+        if m:
+            if fn is not None and in_pro and total % 8:
+                out.append((fn, total))
+            fn, total, in_pro = m.group(1), 0, True
+            continue
+        if not in_pro:
+            continue
+        t = line.strip()
+        if not t or t.startswith(('.cfi', '.loc', ';', '.file', '.size', '.type')):
+            continue
+        m = re.match(r'^PUSH\s+\{(.*)\}$', t)
+        if m:
+            total += 4 * len([r for r in m.group(1).split(',') if r.strip()])
+            continue
+        m = re.match(r'^SUB\s+sp,\s*sp,\s*#(\d+)$', t)
+        if m:
+            total += int(m.group(1))
+            continue
+        if t == 'MOV r6, sp':
+            if total % 8:
+                out.append((fn, total))
+            in_pro = False
+            continue
+        in_pro = False
+    return out
+
 
 def tool_finder(prefix, path):
     """Return a function 'as'/'ld'/... -> absolute tool path, or None."""
@@ -515,6 +888,10 @@ def main():
     ap.add_argument('--arm-as', default=os.environ.get('ARKCC_ARM_AS', ''))
     ap.add_argument('--rv-as', default=os.environ.get('ARKCC_RV_AS', ''))
     ap.add_argument('--gcc', default=os.environ.get('ARKCC_GCC', 'gcc'))
+    # Extra arkcc options for the *case* compiles (e.g. "-O2 -freg-top"), so the
+    # same 49 cases can be re-run through the optimiser and the reg-top
+    # peephole.  Empty by default: the plain run is the reference.
+    ap.add_argument('--opt', default=os.environ.get('ARKCC_VA_OPT', ''))
     args = ap.parse_args()
 
     try:
@@ -529,9 +906,12 @@ def main():
     write(os.path.join(TMP, 'start_rv.s'), RV_START)
 
     r = Runner(args.gcc if shutil.which(args.gcc) else None)
+    r.opt = args.opt.split() if args.opt else []
     ran = 0
 
     encoding_checks(r)
+    region_checks(r)
+    frame_check_selftest(r)
     shape_checks(r)
 
     arm_tool = tool_finder('arm-none-eabi-', args.arm_as)
@@ -547,7 +927,8 @@ def main():
             if 'arm' not in targets.split():
                 continue
             src = os.path.join(TMP, 'arm_' + name + '.c')
-            write(src, PRELUDE + PRELUDE_64 + '\nint main(void)\n{\n    ' + body + '\n}\n')
+            write(src, PRELUDE + PRELUDE_64 + PRELUDE_STRUCT
+                  + '\nint main(void)\n{\n    ' + body + '\n}\n')
             exp, err = r.oracle(src, os.path.join(TMP, 'arm_' + name + '_gcc.exe'))
             if exp is None:
                 print('SKIP arm/%-9s no gcc oracle: %s' % (name, err.strip()[:80]))
@@ -561,10 +942,15 @@ def main():
                 print('FAIL arm/%-9s arm=%d expected=%d' % (name, got, exp))
                 r.failed += 1
             else:
-                pk = frame_peak(os.path.join(TMP, 'arm_' + name + '.s'), 'arm')
+                pk, pkfn = frame_peak(os.path.join(TMP, 'arm_' + name + '.s'), 'arm')
+                bad = frame_align_problems(os.path.join(TMP, 'arm_' + name + '.s'))
                 if pk is not None and pk > FRAME_CAP:
-                    print('FAIL arm/%-9s frame %d B > %d (a variadic frame must '
-                          'stay small)' % (name, pk, FRAME_CAP))
+                    print('FAIL arm/%-9s frame %d B in %s > %d (a variadic frame '
+                          'must stay small)' % (name, pk, pkfn, FRAME_CAP))
+                    r.failed += 1
+                elif bad:
+                    print('FAIL arm/%-9s prologue leaves sp 4 mod 8 in %s'
+                          % (name, ', '.join('%s(%d)' % b for b in bad[:3])))
                     r.failed += 1
                 else:
                     print('PASS arm/%-9s %d' % (name, got))
@@ -599,10 +985,10 @@ def main():
                 print('FAIL rv/%-9s rv=%d expected=%d' % (name, got, exp))
                 r.failed += 1
             else:
-                pk = frame_peak(os.path.join(TMP, 'rv_' + name + '.s'), 'rv')
+                pk, pkfn = frame_peak(os.path.join(TMP, 'rv_' + name + '.s'), 'rv')
                 if pk is not None and pk > FRAME_CAP:
-                    print('FAIL rv/%-9s frame %d B > %d (a variadic frame must '
-                          'stay small)' % (name, pk, FRAME_CAP))
+                    print('FAIL rv/%-9s frame %d B in %s > %d (a variadic frame '
+                          'must stay small)' % (name, pk, pkfn, FRAME_CAP))
                     r.failed += 1
                 else:
                     print('PASS rv/%-9s %d' % (name, got))
@@ -610,6 +996,8 @@ def main():
         for name, body, want, extra in REFUSE:
             src = os.path.join(TMP, 'rv_' + name + '.c')
             head = PRELUDE + (LL_SNIPPET if extra == 'll' else '')
+            if extra == 'struct':
+                head = PRELUDE + STRUCT_SNIPPET
             write(src, head + '\nint main(void)\n{\n    ' + body + '\n}\n')
             rc = r.run([ARKC, '-target', 'riscv32', '-S', '-I', INC, src,
                         '-o', os.path.join(TMP, 'rv_' + name + '.s')])
