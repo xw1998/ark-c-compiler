@@ -3070,6 +3070,10 @@ static char *codegen_arm(IrProgram *prog) {
                     int is_indirect = (I->name && I->name[0] == '?');
                     int real_args = is_indirect ? n - 1 : n;
                     int is_sret_call = (!is_indirect && sret_lookup(sret_names, sret_sizes, sret_count, I->name));
+                    /* bit 33 of val: irgen marks a call whose callee is
+                     * variadic.  `n` above truncates val to int, so the flag
+                     * has to be read from the 64-bit field itself. */
+                    int is_var_call = (int)((I->val >> 33) & 1);
 
                     /* armcc intrinsic functions: emit inline instruction instead of BL.
                      * Arguments (if any) are already on the stack; pop and discard them. */
@@ -3255,6 +3259,22 @@ static char *codegen_arm(IrProgram *prog) {
                         }
                         nsaa = aapcs_assign(asz, (real_args < 64) ? real_args : 64,
                                             0, aslot_reg, aslot_soff);
+                        if (is_var_call && nsaa > 4 * (ARK_VA_WORDS - 4)) {
+                            /* The callee mirrors only its own stack argument
+                             * block, ARK_VA_WORDS-4 words wide.  A call that
+                             * puts more than that on the stack would make
+                             * va_arg walk into frame bytes that were never
+                             * written -- refuse it instead of handing back
+                             * garbage. */
+                            char v1[12], v2[12];
+                            diag_tool(DIAG_SEV_ERROR, "arkcc",
+                                      "variadic call passes %s stack words; "
+                                      "the va area mirrors only %s "
+                                      "(raise ARK_VA_WORDS in backend_arm.c)",
+                                      diag_num(v1, nsaa / 4),
+                                      diag_num(v2, ARK_VA_WORDS - 4),
+                                      0, 0, 0, 0);
+                        }
                         for (kk = 0; kk < real_args && kk < 64; kk++) {
                             areg[kk] = (sl < 128) ? aslot_reg[sl] : -1;
                             asoff[kk] = (sl < 128) ? aslot_soff[sl] : -1;

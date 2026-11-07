@@ -3311,6 +3311,12 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                     if (is_indirect && node->type &&
                         (node->type->kind == TYPE_LLONG || node->type->kind == TYPE_DOUBLE))
                         call_val |= 0x100000000LL;
+                    /* bit 33: the callee is variadic.  Only the call site
+                     * knows how many argument words it is passing, and the ARM
+                     * backend has to refuse a call whose stack words exceed the
+                     * va area the callee mirrors (IR_CALL in backend_arm.c). */
+                    if (s && s->kind == SYM_FUNC && s->is_variadic)
+                        call_val |= 0x200000000LL;
                     ir_emit(g->fn, IR_CALL, call_val, node->u.call.name, argmask);
                 }
             }

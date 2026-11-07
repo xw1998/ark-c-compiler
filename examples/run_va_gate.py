@@ -183,6 +183,16 @@ REFUSE = [
      '8-byte loads are not implemented', 'll'),
 ]
 
+# ARM: the callee mirrors only its own stack block, ARK_VA_WORDS-4 = 28 words.
+# A call that puts more than that on the stack has to be a build error, not a
+# va_arg walking past the end of the mirrored area.  34 argument words put 30
+# on the stack.
+REFUSE_ARM = [
+    ('toomany_stack',
+     'return sN(33, ' + ', '.join(str(i) for i in range(1, 34)) + ') & 0xFF;',
+     'the va area mirrors only'),
+]
+
 # A 64-bit reader for the refusal case above (the RV32I prelude has none).
 LL_SNIPPET = r'''
 union llw { long long v; int w[2]; };
@@ -411,6 +421,19 @@ def main():
             else:
                 print('PASS arm/%-9s %d' % (name, got))
                 r.passed += 1
+        for name, body, want in REFUSE_ARM:
+            src = os.path.join(TMP, 'arm_' + name + '.c')
+            write(src, PRELUDE + PRELUDE_64 + '\nint main(void)\n{\n    ' + body + '\n}\n')
+            rc = r.run([ARKC, '-target', 'arm', '-S', '-I', INC, src,
+                        '-o', os.path.join(TMP, 'arm_' + name + '.s')])
+            msg = rc.stdout + rc.stderr
+            if rc.returncode != 0 and want in msg:
+                print('PASS arm/%-9s refused' % name)
+                r.passed += 1
+            else:
+                print('FAIL arm/%-9s expected a refusal (%r), rc=%d'
+                      % (name, want, rc.returncode))
+                r.failed += 1
     else:
         print('SKIP arm: no arm-none-eabi toolchain (set --arm-as / ARKCC_ARM_AS)')
 
