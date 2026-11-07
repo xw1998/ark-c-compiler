@@ -29,6 +29,12 @@ typedef enum {
     HAL_TIMEOUT  = 0x03U
 } HAL_StatusTypeDef;
 
+/* HAL timeout sentinel: the real CMSIS HAL defines this in
+ * stm32h7xx_hal_def.h, which the placeholder does not carry.  It is a
+ * plain constant, not a HAL object, so it belongs here next to
+ * HAL_StatusTypeDef. */
+#define HAL_MAX_DELAY      0xFFFFFFFFU
+
 /* ============ Cortex-M7 ռλ�Ĵ���/����ṹ ============ */
 typedef struct {
     volatile uint32_t MODER;

@@ -302,6 +302,61 @@ int main(void) { return far(); }
         "build": [(["f.c", "-target", "arm", "--vector-table", "-o", "out.bin"], "out.bin")],
         "expect": 49,
     },
+    {
+        "name": "func_ptr",
+        "why": "calling through a function pointer: the address of a function must carry the Thumb bit, or BLX branches into ARM state and the core faults on the first instruction. 'LDR rd, =f' used to load flash_base + offset with bit 0 clear, and 'ORR ip, ip, #1' -- the fixup in front of BLX -- used to be encoded as 'orrs r4, r4': the high register was masked with &7 and the immediate dropped. Both are checked here, through a pointer, a struct field and a global.",
+        "files": {
+            "f.c": STARTUP + """\
+int fp_pad;
+int (*g_fp)(int);
+struct ops { int (*call)(int); } g_ops;
+int twice(int v) { return v * 2; }
+int plus1(int v) { return v + 1; }
+int zero(void) { return 0; }
+int main(void)
+{
+    int (*p)(int) = twice;
+    int r = p(3);
+    g_fp = plus1;
+    r += g_fp(4);
+    g_ops.call = zero;
+    if (g_ops.call() != 0) r += 100;
+    return r;
+}
+"""
+        },
+        "build": [(["f.c", "-target", "arm", "--vector-table", "-o", "out.bin"], "out.bin")],
+        "expect": 11,
+    },
+    {
+        "name": "block_scope_decl",
+        "why": "C99 6.2.2p5: a prototype written inside a block ('extern int f(void);') must register the function and lower calls to it as BL. The node it builds used to keep the zero-filled smc_num, and irgen accepts any smc_num >= 0 as a real __smc(n) function, so every call became 'SMC #0' -- which the assembler rejects outright, and which on a core without the security extension would trap even if it assembled. Checked here with a direct call, a call through a pointer taken from that block-scope name, and a second call after the block closed.",
+        "files": {
+            "bh.c": "int helper(int v) { return v * 3; }\n"
+                    "int base(void) { return 5; }\n",
+            "bm.c": STARTUP + """\
+int main(void)
+{
+    int r = 0;
+    {
+        extern int helper(int);
+        extern int base(void);
+        int (*p)(int) = helper;
+        r  = helper(4);
+        r += base();
+        r += p(2);
+    }
+    return r;
+}
+""",
+        },
+        "build": [
+            (["bh.c", "-target", "arm", "-c", "-o", "bh.obj"], None),
+            (["bm.c", "-target", "arm", "-c", "--vector-table", "-o", "bm.obj"], None),
+            (["-link", "bm.obj", "bh.obj", "--vector-table", "-o", "out.bin"], "out.bin"),
+        ],
+        "expect": 23,
+    },
 ]
 
 

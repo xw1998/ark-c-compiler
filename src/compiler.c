@@ -333,6 +333,21 @@ static void ld_patch_ref(unsigned char *code, int code_size, int pc, int target,
         code[pc + 3] = (unsigned char)((target >> 24) & 0xFF);
         return;
     }
+    if (type == 10 || type == 11) {
+        /* LDR rd, =sym: the object baked MOVW/MOVT of its own flash base
+         * with the symbol still unknown, so the patch is a delta of the
+         * symbol's offset in the final image (+1 for a function label:
+         * a Thumb function pointer must carry bit 0). */
+        int delta = target + ((type == 11) ? 1 : 0);
+        if (arm_patch_movw_movt(code, code_size, pc, delta) != 0) {
+            diag_tool(DIAG_SEV_ERROR, g_ld_image,
+                      "a cross-object address does not point at a "
+                      "MOVW/MOVT pair; that object was not produced by "
+                      "this compiler",
+                      0, 0, 0, 0, 0, 0);
+        }
+        return;
+    }
     if (type == 5) {
         /* R_386_PC32: x86 PC-relative disp32 (relative to next instr = pc+4) */
         int disp = target - (pc + 4);

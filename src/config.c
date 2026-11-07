@@ -372,8 +372,16 @@ void config_apply_args(int argc, char **argv) {
                 g_config.enable_opt_dce                 = enable;
             else if (ark_streq(name, "opt-regalloc") || ark_streq(name, "regalloc"))
                 g_config.enable_opt_regalloc            = enable;
-            else if (ark_streq(name, "opt-regalloc-near") || ark_streq(name, "regalloc-near"))
+            else if (ark_streq(name, "opt-regalloc-near") || ark_streq(name, "regalloc-near")) {
                 g_config.enable_opt_regalloc_near       = enable;
+                /* The near tier only changes how the pass above selects slots;
+                 * on its own it did nothing at all, so "-fopt-regalloc-near"
+                 * was a silent no-op that still looked like it had taken
+                 * effect.  Asking for it now implies the pass.  Only on the
+                 * enabling side, so "-fopt-regalloc -fno-opt-regalloc-near"
+                 * keeps the pass on in the default tier. */
+                if (enable) g_config.enable_opt_regalloc = 1;
+            }
             else if (ark_streq(name, "opt-inline") || ark_streq(name, "autoinline"))
                 g_config.enable_opt_inline              = enable;
             else if (ark_streq(name, "opt-vectorize") || ark_streq(name, "vectorize"))

@@ -2,7 +2,7 @@
 
 ## ——以 arkc 为例，逐段代码讲解一个能自己编译自己的编译器
 
-> 适用版本：arkc 0.7.0
+> 适用版本：arkc 0.8.0
 > 文档性质：教材（可顺序阅读，也可作为实现手册查阅）
 > 全部数据的来源：本书中出现的每一段汇编、每一条十六进制、每一个尺寸，都是在写作时用仓库里现成的 `arkcc.exe` 现场运行得到的输出，不是"大致上应该是这样"。核对方法见本书《后记》。
 
@@ -372,7 +372,7 @@ cd ark-c-compiler
 ./arkcc.exe -h
 ```
 
-`-h` 应当打印出命令用法。如果能看到 `Ark C Compiler v0.7.0` 这一行，说明可执行文件可用。
+`-h` 应当打印出命令用法。如果能看到 `Ark C Compiler v0.8.0` 这一行，说明可执行文件可用。
 
 方式二：从源码自行编译。仓库使用 Makefile，在 Git Bash 中：
 
@@ -2292,7 +2292,7 @@ arkc 在 0.7.0 之前的实际行为是：两段都进入 `else`，也就是 `a 
 | `#ifdef __ARK_CC__` | 假 | 真 |
 | `#if __ARK_CC__ == 1` | 假 | 真 |
 | `#if defined(__ARK_VERSION__)` | 假 | 真 |
-| `const char *v = __ARK_VERSION__;` | `__ARK_VERSION__`（未展开） | `"0.7.0"` |
+| `const char *v = __ARK_VERSION__;` | `__ARK_VERSION__`（未展开） | `"0.8.0"` |
 
 > **要点（可以推广到所有编译器）**
 > 当同一个名字在两条代码路径上都可能被处理时（这里是"展开器"与"条件求值"），必须保证两条路径的看法一致。工程的防错方法有两种：一是让两条路径共用同一个查询函数；二是为每个名字写一个"双向验证"用例（既在 `#if` 里测，也在普通表达式里测）。只测一条路径，就会得到本节这种"一半正确"的缺陷。
@@ -7653,18 +7653,25 @@ python tools/measure_regalloc.py --project mdk/STM32H743_ArkCC/ArkCC.uvprojx \
 | 默认 `-fopt-regalloc` | 只选 `wide` 槽（省 2 字节），且**累计 ≥ 4 字节**才动（抵掉 PUSH/POP） | 函数永不增大 | 有收益的 9 个文件，**没有一个文件变大** |
 | `-fopt-regalloc-near` | 近槽只要 `uses >= 3` 就选，用同一笔 4 字节预算覆盖 PUSH/POP | 每函数约 +4 字节 | 20 个文件参与，13 个变大 |
 
-在 H743 自举工程上（`mdk/STM32H743_ArkCC/ArkCC.uvprojx`，22 个 `.c` 能编，26 个
-`<FilePath>` 里还有 3 个是本轮之前就编不过的）：
+在 H743 自举工程上（`mdk/STM32H743_ArkCC/ArkCC.uvprojx`，25 个 `.c` 全部能编；
+`failed=0` 是 D.1c 那一轮才达成的，所以这里的总数不能与 D.1b 第一版的 22 文件
+总账直接相减）：
 
 | 档 | 对象总计 | `[r6,#]` 引用 | 搬进寄存器 | 变大的文件 |
 |---|---|---|---|---|
-| 关 | 969 523 B | 23 335 | 0 | — |
-| `-fopt-regalloc` | 967 557 B（**−1 966，−0.20%**） | 22 190（−1 145） | 1 145 / 9 文件 | **0** |
-| `+ -fopt-regalloc-near` | 968 095 B（−1 428，−0.15%） | 12 574（**−10 761**） | 10 761 / 20 文件 | 13（最多 `sema.c` +296） |
+| 关 | 1 131 995 B | 27 372 | 0 | — |
+| `-fopt-regalloc` | 1 129 597 B（**−2 398，−0.21%**） | 25 854（−1 518） | 1 518 / 12 文件 | **0** |
+| `-fopt-regalloc-near` | 1 129 747 B（−2 248，−0.20%） | 15 108（**−12 264**） | 12 264 / 23 文件 | 14（合计 +150 B） |
 
-也就是说：默认档在真实工程上**既能省字节又肯省**（-0.20%），near 档把栈访问砍
-掉近一半但要付 0.05% 的字节。两档都是 opt-in，默认关，默认产物与上一版逐字节
-相同。
+也就是说：默认档在真实工程上**既能省字节又肯省**（−0.21%，没有一个文件变大），
+near 档把栈访问砍掉 45% 但要付 150 字节、14 个文件变大。两档都是 opt-in，默认
+关，默认产物与上一版逐字节相同。
+
+`-fopt-regalloc-near` 单独给曾经**什么都不做**：它只改选择规则，pass 本身由
+`-fopt-regalloc` 打开，于是"打开了 near 档"看上去生效、实际一个槽都没搬。现在
+它在**打开的那一侧**隐含 `-fopt-regalloc`（`-fno-opt-regalloc-near` 不反向关掉
+基础档，否则 `-fopt-regalloc -fno-opt-regalloc-near` 会因为命令行顺序变成全关）。
+这条属于"开关必须真的走到功能"，与体积无关：先量到 `moved=0` 才发现。
 
 同一轮里真实工程还逼出三个"编得过、跑不了"的缺陷——都是**自造用例覆盖不到、真
 实工程一压就露**的那一类：
@@ -7711,6 +7718,187 @@ python tools/measure_regalloc.py --project mdk/STM32H743_ArkCC/ArkCC.uvprojx \
   顺带记下一条**已知分歧**：arkcc 的 16 位 `ADD/SUB/MOV` 会设标志，GAS 偏爱非
   设标志的宽形式，所以逐字节对比时这几条会不一样，解码后的语义一致。
 
+### D.1c 本轮第三轮：让真实工程 25 个源文件全部编过
+
+上一轮结尾留了一张 `[FAIL]` 名单：`compiler.c` 与 `lexer.c` 在 `-c` 阶段报
+`#65: expected a ";"`，`main.c` 报占位 HAL 头里 `HAL_MAX_DELAY` 未定义。用户
+的判据很干脆——"把问题全部解决了咱升个版本号"。这一轮把那三个失败清零，过程
+里又抓到五处"编过了、但编出来的东西是错的"。
+
+**（一）`#65` 的真因是块内函数声明，不是分号**
+
+报错位置（`compiler.c` 第 4891 行）看一眼就知道与分号无关：
+
+```c
+if (ark_streq(be->name, "arm")) {
+    extern int arm_get_symbol_count(void);      /* C99 6.2.2p5：块内声明 */
+    ...
+    p_sym_count = arm_get_symbol_count;
+    ram_start = arm_get_ram_start();
+}
+```
+
+`parse_declarator` 只认函数指针形态 `(*name)(...)`，名字后面直接跟 `(` 的普通
+函数声明在**层内**没有分支，于是 `(` 被当成初始化表达式的开头，一路读到下一行
+才崩在"缺分号"。修法不是绕过，而是把文件层那段参数表解析抽成
+`parse_param_list()`，层内复用：
+
+* 抽函数而不是"跳过参数表"——跳过会让 `param_count` 未知，调用点的 64 位实参
+  提升（int → long long）就失去依据，等于换一个地方静默错。
+* 层内声明**要发真正的 AST 节点**（`AST_FUNC_DECL`），不能只往符号表塞一条。
+  `sema_check()` 与 `irgen_program()` 都会先 `sym_init()` 从 AST 重建符号表，
+  只注册不发节点会被下一次重建冲掉，症状是取地址处报
+  `#20: identifier "helper" is undefined`。
+* 声明登记在**当前块作用域**、作为语句节点按顺序处理，天然满足"声明之后的语句
+  可见"；不用把它硬塞进文件作用域。
+* 这个分支要自己吃掉结尾的 `;` 并 `return`——回落到循环底部会让调用方再 expect
+  一次，报错就从"缺分号"变成"多分号"，位置还指到下一行。
+
+**（二）同一个改动带出一个更危险的问题：`SMC #0`**
+
+清零后 `compiler.c` 换了个错法继续失败：
+
+```
+arkcc: Error: unknown mnemonic "SMC" at code offset 20732
+```
+
+源码里根本没有 `__smc`。真正的链条是：`.loc` 指到 `ram_start =
+arm_get_ram_start();` 那一行，而普通函数调用被降级成了 `SMC #0`。
+
+根因是**两个文件对同一个"没设置"的取值约定相反**：
+
+| 文件 | 约定 | 依据 |
+|---|---|---|
+| `include/ast.h` | `smc_num == -1` 表示不是 `__smc` 函数 | 构造时显式赋 -1 |
+| `include/symtab.h` | 注释写"0 means non-SMC" | 与 `ast.h` 矛盾 |
+| `src/symtab.c` | `sym_add()` 把 `smc_num` 清成 0 | 内存池是零填充 |
+| `src/irgen.c` | `s->smc_num >= 0` 就发 `IR_SMC` | 按 -1 约定写 |
+
+0 恰好是一个**合法的 SMC 编号**（`__smc(0)` 是真实用法）。于是任何一条"没被显式
+赋 -1"的函数符号都会把调用点变成 `SMC #0`。文件层预扫描会老老实实拷
+`smc_num`，所以只有本轮新加的层内声明路径中招——1 个 bug 精确落在 1 个新入口上。
+
+三处一起改，缺一处都还会复发（每一处单独都能被另一条路径绕开）：
+
+1. `sym_add()` 的默认值改 `-1`，让"忘了赋值"等于"不是 SMC"；
+2. `ast_func_def()` 显式写 `smc_num = -1` / `global_reg = -1`（`global_reg` 同
+   理：0 是合法的 r0）；
+3. 层内声明路径按文件层预扫描的字段清单逐项拷贝（`svc_num`/`smc_num`/
+   `is_asm_func`/`alias_target`），不只拷 `param_count`。
+
+顺带记一条体系结构事实：`arm-none-eabi-as -mcpu=cortex-m7` **拒收** `smc #0`
+（`selected processor does not support 'smc #0' in Thumb mode`）——SMC 属于安全
+扩展，不在 ARMv7-M 基础指令集里。所以这条 bug 在 H743 上的表现是"汇编器报错"，
+而在一颗支持安全扩展的核上会是"运行时陷进异常、或者真去敲了监视器"。两种都不是
+我们要的答案。
+
+**（三）`AND/ORR/EOR/BIC/MVN`：高寄存器与立即数全丢**
+
+函数地址带 Thumb 位之后，间接调用序列是 `POP {ip}` → `ORR ip, ip, #1` →
+`BLX ip`。这条 `ORR` 原来编成 `orrs r4, r4`（16 位编码把 `Rd` 用 `&7` 截断、
+立即数整个丢掉），等于"Thumb 位没设、还顺手改写了 r4"。现在统一走
+`logic_dp_a()`，四种形态都覆盖，编码用 `arm-none-eabi-as` 实测：
+
+```
+寄存器形态 T2：0xEA00 AND / 0xEA20 BIC / 0xEA40 ORR / 0xEA60 ORN / 0xEA80 EOR
+               hw1 = base | Rn, hw2 = (Rd << 8) | Rm
+立即数形态 T1：0xF000 AND / 0xF020 BIC / 0xF040 ORR / 0xF060 ORN / 0xF080 EOR
+               hw1 = base | i << 10 | Rn, hw2 = imm3 << 12 | Rd << 8 | imm8
+MVN 一律 Rn = 1111：寄存器 0xEA6F，立即数 0xF06F | i << 10
+实测：orr r12, r12, #1 = f04c 0c01；mvn r0, #1 = f06f 0001；and r0, r1, #255 = f001 00ff
+```
+
+第一版 `logic_dp_a()` 只处理"第二操作数是立即数"，把 `ORR ip, ip, #1` 整条
+吞掉（一个字节都没发）；第二版才按"第三操作数是 `#`"分支。教训是**编码器要按
+指令形态枚举，不能按"通常是哪种写法"假设**。
+
+**（四）pass1 不认识 `PUSH/POP`，跨标签分支整体漂 4 字节**
+
+修好 Thumb 位之后 `bss` 清零循环还是不收敛，反汇编显示 `BNE` 跳到了自己的
+`CMP` 而不是循环体。原因是两遍结构里 pass1 逐行累计 `pc` 定标签地址、pass2 才
+真正发字节，而 `resolve_refs_a()` 拿 pass1 的标签地址减 pass2 的实际 `pc`——
+只要有一条指令两遍的尺寸判断不一致，后面所有标签一起漂。
+
+`PUSH/POP` 在 pass1 的尺寸链里没有分支，落到兜底 `op_size_a()`（默认 2）；而
+pass2 对 `POP {ip}` 发的是 4 字节 `e8bd 1000`。补上"列表全在 r0-r7 → 2 字节，
+否则 4 字节"之后分支落点恢复。
+
+**（五）单高寄存器 `PUSH/POP` 的编码本身不可执行**
+
+`e8bd 1000`（`pop {ip}`）在 unicorn 上直接 `UC_ERR_INSN_INVALID`，`e92d 0100`
+同样被拒。查证发现 `arm-none-eabi-as` 自己都不发这个形式——它把 `pop {ip}` 规
+范化成 `ldr.w ip, [sp], #4`：
+
+```
+f85d cb04 = ldr.w ip, [sp], #4      hw2 = (Rt << 12) | 0x0B00 | 4
+f84d 8d04 = str.w r8, [sp, #-4]!    hw2 = (Rt << 12) | 0x0D00 | 4
+```
+
+所以单高寄存器走 LDR/STR 的写回形式，其余仍走 `E92D`/`E8BD`。两种都是 4 字节，
+pass1 不需要知道选了哪一个——这条性质是"改编码不动尺寸"的前提，否则又会撞上
+第（四）条。
+
+**（六）`LDR rd, =sym` 遇到未定义符号：记重定位，不硬报错**
+
+跨对象引用天然要求"这一个翻译单元里符号还没定义"。原来 `LDR rd, =sym` 直接报
+`unresolved symbol`，于是 `compiler.c` 里 `p_sym_count = arm_get_symbol_count;`
+这类"取函数地址"过不去。现在打两条重定位：type 10（数据地址）/ type 11（函数
+地址，链接时 `+1` 补 Thumb 位）。单对象 `.bin` 构建仍然拒绝写入——`resolve_refs_a`
+照样计入 `g_arm_unresolved`，不会烧出一个跳进向量表的镜像。这一条是"能编过"
+与"能给对答案"的分界线：跨对象时交给链接器，单对象时继续报错。
+
+**（七）结构体返回的手工尾声漏了分片调整**
+
+`lexer.c` 的栈帧 4256 字节，结构体返回路径手工写死的收尾是单条
+`ADD sp, sp, #local_size`，而 12 位立即数上限 4095，于是报
+`ADD immediate is out of range (0..4095)`。改用与普通返回同一个
+`emit_sp_adjust()` 分片调整。**同一个语义有两个出口，就会有一个出口被漏掉**——
+这是本轮唯一一处纯疏漏，也是最容易在别处重演的一类。
+
+**（八）`main.c` 的 `HAL_MAX_DELAY`**
+
+占位 CMSIS 头（`mdk/STM32H743_ArkCC/Drivers/CMSIS/.../stm32h743xx.h`）里缺这个
+HAL 哨兵值。补 `#define HAL_MAX_DELAY 0xFFFFFFFFU`。它不是编译器缺陷，是"用
+自己编 HAL 风格的代码"必须先有的最小头文件内容——真实工程里由 HAL 提供。
+
+**（九）口径与实测**
+
+`tools/measure_regalloc.py --project mdk/STM32H743_ArkCC/ArkCC.uvprojx`：
+
+```
+files=25 failed=0
+objects: 1131943 -> 1129545 bytes (-2398, -0.21%)
+frame refs [r6, #n]: 27371 -> 25853 (-1518)
+moved registers: 1518 across 12 files
+```
+
+`files=25` 而不是 23，是因为 `compiler.c` / `lexer.c` 现在真的进账了——上一轮它
+们只出现在 `[FAIL]` 行里。**"失败项不混进体积总账"这条口径要留住**：这一次与上
+一次的总账不可直接相减，只能说"25 个文件全编过时，开寄存器分配比不开少 2398 字
+节"。
+
+配套门禁（全部本轮新跑）：
+
+| 门禁 | 结果 |
+|---|---|
+| `run_full_test.ps1` | PASS=73 FAIL=0，另有两条自检：`irgen-gate` OK、`smc-sentinel` OK |
+| `examples/run_tests.ps1` | 断言 71 通过 / 0 失败 / 4 个 ARM 专属跳过 |
+| `tests/arm_exec/run_arm_exec.py` | 13 个用例在 unicorn 上真跑，含新增 `block_scope_decl` |
+| `tests/asm_cases/run_asm_cmp.py` | 12 个用例与 GAS 逐字节一致、30 条开关、15 条拒收 |
+| `tests/run_regalloc_tests.py` | 4 组 × 3 臂，断言全成立 |
+| `tests/run_capacity_tests.py` | 4 项通过 |
+
+`smc-sentinel` 这条自检是**双向**的，缺一半就会变成假绿：
+
+* 普通块内声明（`extern int h(int);`）编译后，汇编文本里**不得**出现
+  `SMC #`；
+* 真 `__smc(3)` 声明必须仍然出现 `SMC #3`——只测前一半的话，"把 `__smc` 整个
+  关掉"也算通过。
+
+写这条自检时踩了个小坑：判据一开始用 `SMC`，结果 `.file` 指令里重复了源文件
+路径，而临时文件名恰好含 `smc`，**检查被自己的文件名判成失败**。判据改成
+`SMC #`（指令 + 操作数前缀）后才只认指令。
+
 ### D.2 仍然存在（五项）
 
 | 限制 | 症状 | 现在的对策 |
@@ -7718,7 +7906,7 @@ python tools/measure_regalloc.py --project mdk/STM32H743_ArkCC/ArkCC.uvprojx \
 | 运行库仍内联在每个翻译单元 | 两个都用 64 位算术的对象各带一整套 `__aeabi_*` | 已经有两道闸，都不改行为：`-link` 按符号名合并重复定义（实测两个对象合并 42 个），`--rt-lazy` 先把每个对象里不可达的块削掉（`a.o` 2865 → 254 字节、`b.o` 3097 → 529，链接后镜像 3680 → **400** 字节）。两道都不开只是体积大 |
 | 板端编译时间仍是固定值 | 板端没有读 RTC，`__DATE__` 恒为 `Jan  1 1970` | 这是**有意的**：板端构建要可复现，固定值比"每次不同"更好。需要真实时间时给 `--source-date-epoch <秒>`，或等板端接上 RTC 再改 `port/stm32/platform_stm32.c` |
 | `ADD/SUB/MOV` 的 16 位形式一律设标志 | 与 GAS 逐字节不同：GAS 会挑不设标志的宽形式 | 解码后的语义一致，门禁按**解码文本**比对而不是字节；要逐字节一致就得让每条算术都多花 2 字节，不值得 |
-| 自举工程里有两个文件仍解析不过 | `compiler.c` 第 4891 行、`lexer.c` 第 2935 行都报 `#65: expected a ";"`；`main.c` 报占位 HAL 头里的 `HAL_MAX_DELAY` 未定义 | 都是真实工程测出来的既有缺口（与本轮的寻址/寄存器分配改动无关，改前改后同一条报错），尚未定位。测量工具把它们单独列成 `[FAIL]` 行、不混进体积总账——**不能因为"大多数文件能编"就把它们算成通过** |
+| 返回函数指针的函数仍不可解析 | `int (*pick(int))(int,int){...}` 报语法错误 | `(*name)` 形式要求名字后紧跟 `)`，不支持括号里再带参数表。**显式报错、不产出**；修法要把 `parse_declarator` 改成递归下降 + 占位类型替换，属结构性改动。自举工程与 HAL/CMSIS 都不用这个形态，所以本轮没有为了它改解析器骨架 |
 | 汇编器不认的形态里有一部分是**体系结构不存在** | `LDMIB/LDMDA/STMIB/STMDA`、寄存器索引写回（`[Rn, Rm]!` / `[Rn], Rm`）、`LDRD/STRD` 的寄存器偏移、`VLDR/VSTR` 的寄存器偏移 | 不是"没实现"，是 Thumb 里没有这几种编码（`arm-none-eabi-as` 对同样的行也报 `selected processor does not support` / `Thumb does not support register indexing with writeback`）。遇到即**报错并说明原因**，不静默降级 |
 
 关于 `__DATE__`/`__TIME__` 的口径，一次讲清楚，因为"板端是固定值"很容易被误读成缺陷：
@@ -7756,7 +7944,7 @@ python tools/measure_regalloc.py --project mdk/STM32H743_ArkCC/ArkCC.uvprojx \
 |---|---|---|---|
 | `ARKCC_FEATURE_ARM_RELOC_DATA` | `--reloc-data` / `--no-reloc-data` | 关 | 数据段不再搬迁：多个对象各带全局变量时链接直接报 `SRAM overlap`，仍然是"映射成一个翻译单元"的老做法 |
 | `ARKCC_FEATURE_RT_LAZY` | `--rt-lazy` | 关 | 运行库整段发射：`add3.c` 回到 1578 字节（而不是 60），不可达的 `__aeabi_*` 也留在镜像里 |
-| `ARKCC_FEATURE_OPT_REGALLOC` | `-fopt-regalloc` / `--regalloc`（体积安全档）、`-fopt-regalloc-near` / `--fregalloc-near`（热路径档） | 关 | 局部变量留在内存里，每个读/写各一条 `LDR/STR`（热点用例 22 处 `[r6, #]` 回到 22 处；默认档是 13 处、near 档 6 处），产物与上一版逐字节相同。真实工程（H743 自举，22 个 `.c`）：默认档 −0.20% 且**无文件变大**，near 档栈访问 −10 761 处、+0.05% 字节 |
+| `ARKCC_FEATURE_OPT_REGALLOC` | `-fopt-regalloc` / `--regalloc`（体积安全档）、`-fopt-regalloc-near` / `--fregalloc-near`（热路径档，隐含打开基础档） | 关 | 局部变量留在内存里，每个读/写各一条 `LDR/STR`（热点用例 22 处 `[r6, #]` 回到 22 处；默认档是 13 处、near 档 6 处），产物与上一版逐字节相同。真实工程（H743 自举，25 个 `.c`）：默认档 −0.21% 且**无文件变大**，near 档栈访问 −12 264 处、比默认档多 150 字节 |
 | `ARKCC_FEATURE_ASM_VFP_LDSTM` | （无） | 宿主/交叉 1、板端 0 | `VLDM/VSTM/VPUSH/VPOP` 编译不进来，遇到时报"not compiled into this build"；板端省 2288 字节 text，`.bss` 不变 |
 | `ARKCC_FEATURE_OPT_REG_TOP` | `--reg-top` | 关 | 每个操作都老老实实 pop/push，指令数回到 110289（开是 102484）；生成代码与开之前逐字节相同 |
 | `ARKCC_FEATURE_ASM_EXTRA` | `--asm-extra` / `--no-asm-extra` | 关 | 30 个扩展助记符一律按未知助记符报错（报错文本会提示"打开 --asm-extra 就能汇编"），不会静默按别的指令编码 |

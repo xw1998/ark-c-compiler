@@ -3334,11 +3334,11 @@ static char *codegen_arm(IrProgram *prog) {
                         }
                         /* Manual epilogue: skip POP {r0} (r0 already holds sret ptr) */
                         emit_line(&buf, "MOV sp, r6");
-                        if (local_size > 0) {
-                            asmbuf_puts(&buf, "    ADD sp, sp, #");
-                            asmbuf_int(&buf, local_size);
-                            asmbuf_putc(&buf, '\n');
-                        }
+                        /* Same split as the shared epilogue: this manual one
+                         * was missed when emit_sp_adjust() was introduced, and
+                         * src/lexer.c (frame 4256) then failed to assemble with
+                         * "ADD immediate is out of range". */
+                        if (local_size > 0) emit_sp_adjust(&buf, local_size, 0);
                         if (f->is_irq) {
                             emit_line(&buf, "POP {r5, r6, r7, pc}");
                         } else {
@@ -4901,7 +4901,14 @@ static char *codegen_arm(IrProgram *prog) {
 }
 
 /* === Minimal Thumb-2 text assembler === */
-typedef struct AsmLabel { char *name; int addr; int is_weak; } AsmLabel;
+typedef struct AsmLabel {
+    char *name;
+    int   addr;
+    int   is_weak;
+    int   is_func;   /* defined in .text with a non-local name: its address
+                      * is a Thumb function pointer, so LDR rd,=name must set
+                      * bit 0.  Data and .L labels keep it clear. */
+} AsmLabel;
 typedef struct AsmRef   { int pc; char *name; int type; } AsmRef;
 /* Literal pool entry: LDR rd,=label at ldr_pc needs a 4-byte literal at pool_offset */
 typedef struct AsmLiteral { int ldr_pc; char *name; int pool_offset; } AsmLiteral;
@@ -5166,6 +5173,8 @@ static void add_label_a(ArmAsm *a, const char *name, int addr) {
     a->labels[a->label_count].name = mem_strdup(name);
     a->labels[a->label_count].addr = addr;
     a->labels[a->label_count].is_weak = a->pending_weak;
+    a->labels[a->label_count].is_func =
+        (a->cur_section == 0 && !(name[0] == '.' && name[1] == 'L')) ? 1 : 0;
     a->pending_weak = 0;
     a->label_count++;
 }
@@ -5174,6 +5183,14 @@ static int find_label_a(ArmAsm *a, const char *name) {
     for (i = 0; i < a->label_count; i++)
         if (ark_streq(a->labels[i].name, name)) return a->labels[i].addr;
     return -1;
+}
+
+/* 1 if `name` is a function label (see AsmLabel.is_func). */
+static int label_is_func_a(ArmAsm *a, const char *name) {
+    int i;
+    for (i = 0; i < a->label_count; i++)
+        if (ark_streq(a->labels[i].name, name)) return a->labels[i].is_func;
+    return 0;
 }
 static void add_ref_a(ArmAsm *a, int pc, const char *name, int type) {
     if (a->ref_count >= a->ref_cap) {
@@ -5288,6 +5305,132 @@ static void canon_alias_a(char *m) {
         while (to[i]) { m[i] = to[i]; i++; }
         m[i] = '\0';
     }
+}
+
+/* AND / ORR / EOR / BIC / MVN, every shape the backend and hand-written
+ * assembly use:
+ *   OP Rd, Rm          (Rd = Rd OP Rm)
+ *   OP Rd, #imm        (Rd = Rd OP imm)
+ *   OP Rd, Rn, Rm
+ *   OP Rd, Rn, #imm
+ * Only the first shape has a 16-bit encoding, and only for low registers;
+ * everything else is Thumb-2.  Before this existed the encoder assumed the
+ * 16-bit form unconditionally and never looked past the second operand, so
+ * "ORR ip, ip, #1" -- the Thumb-bit fixup in front of an indirect call --
+ * was silently emitted as NOTHING (and an earlier attempt as "orrs r4,r4",
+ * masking ip to r4 and dropping the immediate).  The program then branched
+ * into the middle of an instruction.
+ *
+ * Pass 1 asks with emit=0 and pass 2 with emit=1; both get the size from the
+ * same decision, so the two passes cannot disagree.
+ *
+ * ANDS/ORRS/EORS/BICS/MVNS stay in the --asm-extra branch further down: they
+ * are opt-in mnemonics and must keep being rejected when the switch is off. */
+/* Defined further down; the logical-op encoder above needs it. */
+static int thumb_imm12_a(unsigned val, unsigned *out_i, unsigned *out_imm3,
+                         unsigned *out_imm8);
+
+static int logic_dp_a(ArmAsm *a, const char *op, const char **pp, int emit) {
+    const char *p = *pp;
+    int is_bic = strieq_a(op, "BIC");
+    int is_orr = strieq_a(op, "ORR");
+    int is_eor = strieq_a(op, "EOR");
+    int is_mvn = strieq_a(op, "MVN");
+    unsigned base_reg, base_imm;
+    int rd, rn;
+
+    /* Encode "Rd = Rn OP imm", the Thumb-2 immediate form. */
+    /* (written as a macro-free block below because C89-era style here) */
+    if (is_bic)      { base_reg = 0xEA20u; base_imm = 0xF020u; }
+    else if (is_orr) { base_reg = 0xEA40u; base_imm = 0xF040u; }
+    else if (is_eor) { base_reg = 0xEA80u; base_imm = 0xF080u; }
+    /* MVN Rd, #imm exists as ORN with Rn = 1111 (measured with GAS:
+     * "mvn r0, #1" assembles to f06f 0001), so that form keeps Rn fixed
+     * in the opcode word instead of taking it from the text. */
+    else if (is_mvn) { base_reg = 0xEA6Fu; base_imm = 0xF06Fu; }
+    else             { base_reg = 0xEA00u; base_imm = 0xF000u; }  /* AND */
+
+    rd = parse_reg_a(&p);
+    eat_comma_a(&p);
+    if (*p == '#') {
+        int imm = parse_imm_a(&p);
+        unsigned i = 0, imm3 = 0, imm8 = 0;
+        if (!thumb_imm12_a((unsigned)imm, &i, &imm3, &imm8)) {
+            if (emit) {
+                char b1[12];
+                diag_tool(DIAG_SEV_ERROR, "arkcc",
+                          "%sq immediate %s cannot be encoded as a modified "
+                          "immediate", op, diag_num(b1, imm), 0,0,0,0);
+                a->hard_errors++;
+                out16(a, 0xBF00);
+                out16(a, 0xBF00);
+            }
+            *pp = p;
+            return 4;
+        }
+        if (emit) {
+            unsigned rnw = is_mvn ? 0xFu : (unsigned)(rd & 0xF);
+            out16(a, base_imm | ((i & 1) << 10) | rnw);
+            out16(a, ((imm3 & 7) << 12) | ((unsigned)(rd & 0xF) << 8) | imm8);
+        }
+        *pp = p;
+        return 4;
+    }
+    rn = parse_reg_a(&p);
+    skip_space_a(&p);
+    if (*p == ',') {
+        int rm;
+        p++; skip_space_a(&p);
+        if (*p == '#') {
+            int imm = parse_imm_a(&p);
+            unsigned i = 0, imm3 = 0, imm8 = 0;
+            if (!thumb_imm12_a((unsigned)imm, &i, &imm3, &imm8)) {
+                if (emit) {
+                    char b1[12];
+                    diag_tool(DIAG_SEV_ERROR, "arkcc",
+                              "%sq immediate %s cannot be encoded as a "
+                              "modified immediate", op, diag_num(b1, imm),
+                              0,0,0,0);
+                    a->hard_errors++;
+                    out16(a, 0xBF00);
+                    out16(a, 0xBF00);
+                }
+                *pp = p;
+                return 4;
+            }
+            if (emit) {
+                unsigned rnw = is_mvn ? 0xFu : (unsigned)(rn & 0xF);
+                out16(a, base_imm | ((i & 1) << 10) | rnw);
+                out16(a, ((imm3 & 7) << 12) | ((unsigned)(rd & 0xF) << 8) | imm8);
+            }
+            *pp = p;
+            return 4;
+        }
+        rm = parse_reg_a(&p);
+        if (emit && rd >= 0 && rn >= 0 && rm >= 0) {
+            out16(a, is_mvn ? 0xEA6Fu : (base_reg | (unsigned)(rn & 0xF)));
+            out16(a, ((unsigned)(rd & 0xF) << 8) | (unsigned)(rm & 0xF));
+        }
+        *pp = p;
+        return 4;
+    }
+    /* Two operands: the 16-bit form only knows low registers. */
+    if (rd >= 0 && rd <= 7 && rn >= 0 && rn <= 7) {
+        if (emit) {
+            unsigned short16 = is_bic ? 0x4380u : is_orr ? 0x4300u :
+                               is_eor ? 0x4040u : is_mvn ? 0x43C0u : 0x4000u;
+            out16(a, short16 | ((unsigned)(rn & 7) << 3) | (unsigned)(rd & 7));
+        }
+        *pp = p;
+        return 2;
+    }
+    /* Two operands with a high register: Thumb-2, Rn = Rd. */
+    if (emit && rd >= 0 && rn >= 0) {
+        out16(a, is_mvn ? 0xEA6Fu : (base_reg | (unsigned)(rd & 0xF)));
+        out16(a, ((unsigned)(rd & 0xF) << 8) | (unsigned)(rn & 0xF));
+    }
+    *pp = p;
+    return 4;
 }
 
 static int op_size_a(const char *op) {
@@ -5904,6 +6047,13 @@ static void pass1_a(ArmAsm *a) {
                     (void)parse_reg_a(&p);
                     pc += 2;  /* 16-bit MOV */
                 }
+            } else if (strieq_a(first, "AND") || strieq_a(first, "ORR") ||
+                       strieq_a(first, "EOR") || strieq_a(first, "BIC") ||
+                       strieq_a(first, "MVN")) {
+                /* Same decision function as pass 2: the 16-bit form only
+                 * covers two low registers, so a high register or an
+                 * immediate operand makes the instruction 4 bytes. */
+                pc += logic_dp_a(a, first, &p, 0);
             } else if (strieq_a(first, "TST") ||
                        strieq_a(first, "SXTB") || strieq_a(first, "SXTH") ||
                        strieq_a(first, "UXTB") || strieq_a(first, "UXTH")) {
@@ -5933,6 +6083,22 @@ static void pass1_a(ArmAsm *a) {
                 }
             } else if (strieq_a(first, "SVC")) {
                 pc += 2;
+            } else if (strieq_a(first, "PUSH") || strieq_a(first, "POP")) {
+                /* PUSH/POP are STMDB/LDMIA on sp.  They were not in this
+                 * chain at all, so pass 1 took the op_size_a() default of 2
+                 * bytes even when pass 2 emitted the 32-bit form -- and the
+                 * 32-bit form is exactly what a high register forces:
+                 * "POP {ip}" is e8bd 1000.  Every such push/pop shifted every
+                 * later label by 2, and because cross-object/label branches
+                 * are resolved from pass-1 label addresses against pass-2
+                 * code offsets, the branches landed past their target
+                 * (measured: a bss-clear loop whose "BNE" jumped to its own
+                 * CMP instead of the store, once a call through a function
+                 * pointer added a "POP {ip}"). */
+                int has_lr1 = 0, has_pc1 = 0, list1;
+                list1 = parse_reglist_a(&p, &has_lr1, &has_pc1);
+                if ((list1 & ~0xFF) == 0) pc += 2;
+                else                      pc += 4;
             } else if (strieq_a(first, "LDMIA") || strieq_a(first, "LDM") ||
                        strieq_a(first, "STMIA") || strieq_a(first, "STM") ||
                        strieq_a(first, "LDMDB") || strieq_a(first, "STMDB")) {
@@ -6525,9 +6691,22 @@ static void pass2_a(ArmAsm *a) {
             int list = parse_reglist_a(&p, &has_lr, &has_pc);
             (void)has_pc;
             if (list & 0x1F00) {
-                /* T2 STMDB SP!: can encode r0-r12 + lr */
-                unsigned w2 = (unsigned)(has_lr ? 0x4000 : 0) | (unsigned)(list & 0x1FFF);
-                out16(a, 0xE92D); out16(a, w2);
+                /* A single high register cannot use the block form: QEMU (and
+                 * whatever rules its Thumb-2 decoder follows) rejects
+                 * "stmdb sp!, {r8}" = e92d 0100 outright, and GNU as itself
+                 * canonicalises "pop {ip}" to the single-register form below
+                 * rather than to e8bd 1000.  Both encodings are 4 bytes, so
+                 * pass 1 does not have to know which one is chosen. */
+                if ((list & (list - 1)) == 0 && !has_lr) {
+                    int rt = 0;
+                    while (rt < 16 && !(list & (1 << rt))) rt++;
+                    out16(a, 0xF84D);
+                    out16(a, ((unsigned)(rt & 0xF) << 12) | 0x0D00u | 4u);
+                } else {
+                    /* T2 STMDB SP!: can encode r0-r12 + lr */
+                    unsigned w2 = (unsigned)(has_lr ? 0x4000 : 0) | (unsigned)(list & 0x1FFF);
+                    out16(a, 0xE92D); out16(a, w2);
+                }
             } else {
                 out16(a, 0xB400 | (has_lr ? 0x0100 : 0) | (list & 0xFF));
             }
@@ -6537,9 +6716,20 @@ static void pass2_a(ArmAsm *a) {
             int list = parse_reglist_a(&p, &has_lr, &has_pc);
             (void)has_lr;
             if (list & 0x1F00) {
-                /* T2 LDMIA SP!: can encode r0-r12 + pc */
-                unsigned w2 = (unsigned)(has_pc ? 0x8000 : 0) | (unsigned)(list & 0x1FFF);
-                out16(a, 0xE8BD); out16(a, w2);
+                /* Single high register: see the note on PUSH above.  "POP {ip}"
+                 * is emitted by the indirect-call path, and e8bd 1000 does not
+                 * execute (measured: UC_ERR_INSN_INVALID), so use
+                 * "ldr.w Rt, [sp], #4" = f85d t004. */
+                if ((list & (list - 1)) == 0 && !has_pc) {
+                    int rt = 0;
+                    while (rt < 16 && !(list & (1 << rt))) rt++;
+                    out16(a, 0xF85D);
+                    out16(a, ((unsigned)(rt & 0xF) << 12) | 0x0B00u | 4u);
+                } else {
+                    /* T2 LDMIA SP!: can encode r0-r12 + pc */
+                    unsigned w2 = (unsigned)(has_pc ? 0x8000 : 0) | (unsigned)(list & 0x1FFF);
+                    out16(a, 0xE8BD); out16(a, w2);
+                }
             } else {
                 out16(a, 0xBC00 | (has_pc ? 0x0100 : 0) | (list & 0xFF));
             }
@@ -6857,20 +7047,10 @@ static void pass2_a(ArmAsm *a) {
                 out16(a, 0xF0F0u | ((rd & 0xF) << 8) | (rm & 0xF));
             }
         }
-        else if (strieq_a(first, "AND")) {
-            int rd = parse_reg_a(&p); int rm;
-            eat_comma_a(&p); rm = parse_reg_a(&p);
-            out16(a, 0x4000 | ((rm & 7) << 3) | (rd & 7));
-        }
-        else if (strieq_a(first, "ORR")) {
-            int rd = parse_reg_a(&p); int rm;
-            eat_comma_a(&p); rm = parse_reg_a(&p);
-            out16(a, 0x4300 | ((rm & 7) << 3) | (rd & 7));
-        }
-        else if (strieq_a(first, "EOR")) {
-            int rd = parse_reg_a(&p); int rm;
-            eat_comma_a(&p); rm = parse_reg_a(&p);
-            out16(a, 0x4040 | ((rm & 7) << 3) | (rd & 7));
+        else if (strieq_a(first, "AND") || strieq_a(first, "ORR") ||
+                 strieq_a(first, "EOR") || strieq_a(first, "BIC") ||
+                 strieq_a(first, "MVN")) {
+            (void)logic_dp_a(a, first, &p, 1);
         }
         else if (strieq_a(first, "LSL")) {
             int rd = parse_reg_a(&p); int rm;
@@ -6931,19 +7111,6 @@ static void pass2_a(ArmAsm *a) {
                 /* ASR rd, rm (T1 register shift) */
                 out16(a, 0x4100 | ((rm & 7) << 3) | (rd & 7));
             }
-        }
-        else if (strieq_a(first, "BIC")) {
-            /* BIC rd, rm or BIC rd, rn, rm (T1: rd = rd AND NOT rm) */
-            int rd = parse_reg_a(&p); int rm;
-            eat_comma_a(&p); rm = parse_reg_a(&p);
-            skip_space_a(&p);
-            if (*p == ',') { p++; skip_space_a(&p); rm = parse_reg_a(&p); }
-            out16(a, 0x4380 | ((rm & 7) << 3) | (rd & 7));
-        }
-        else if (strieq_a(first, "MVN")) {
-            int rd = parse_reg_a(&p); int rm;
-            eat_comma_a(&p); rm = parse_reg_a(&p);
-            out16(a, 0x43C0 | ((rm & 7) << 3) | (rd & 7));
         }
 #if ARKCC_FEATURE_ASM_EXTRA
         else if (!ark_asm_extra_on() && ark_asm_extra_name(first)) {
@@ -7469,16 +7636,27 @@ static void pass2_a(ArmAsm *a) {
                 if (addr >= 0) {
                     /* .set symbol - absolute address already (e.g. 0x40020800, 0x20000000) */
                 } else {
-                    addr = find_label_a(a, sym);
-                    if (addr < 0) {
-                        diag_tool(DIAG_SEV_ERROR, "arkcc",
-                                  "unresolved symbol %sq in LDR =label", sym,
-                                  0,0,0,0,0);
-                        a->error_count++;
-                        addr = 0;
+                    int is_func = label_is_func_a(a, sym);
+                    int label_addr = find_label_a(a, sym);
+                    if (label_addr < 0) {
+                        /* Not in this object: a cross-object address.  Baking 0
+                         * here used to be a hard error, which made a single
+                         * object that merely *names* another object's function
+                         * impossible to assemble -- src/compiler.c does exactly
+                         * that when it fills its backend vtable.  Record a
+                         * relocation instead and let the linker write the real
+                         * address; resolve_refs_a() still counts it, so a
+                         * single-file .bin build keeps refusing (a baked 0 in a
+                         * .bin is an image that jumps to the vector table). */
+                        add_ref_a(a, a->pc, sym, is_func ? 11 : 10);
+                        addr = (int)g_flash_base;   /* placeholder base */
                     } else {
-                        /* code/data label - add Flash base address (scatter-aware) */
-                        addr = (int)g_flash_base + addr;
+                        /* code/data label - add Flash base address (scatter-aware),
+                         * and set bit 0 for a function: a Thumb function pointer
+                         * must carry it, or BLX branches into ARM state and the
+                         * core faults on the first instruction. */
+                        addr = (int)g_flash_base + label_addr;
+                        if (is_func) addr |= 1;
                     }
                 }
                 /* Emit MOVW rd, #low16 */
@@ -8353,6 +8531,11 @@ static void pass2_a(ArmAsm *a) {
 static int          g_arm_unresolved = 0;
 static const char  *g_arm_unresolved_first = 0;
 
+/* Defined below (near arm_patch_movw_movt); resolve_refs_a needs it to
+ * rewrite a MOVW/MOVT pair once a cross-object symbol becomes known. */
+static void mov_imm_encode_a(int is_movt, int rd, unsigned imm,
+                            unsigned *hi, unsigned *lo);
+
 static void resolve_refs_a(ArmAsm *a) {
     int i;
     g_arm_unresolved = 0;
@@ -8393,6 +8576,24 @@ static void resolve_refs_a(ArmAsm *a) {
                 a->out[r->pc]     = (unsigned char)(hi & 0xFF);
                 a->out[r->pc + 1] = (unsigned char)((hi >> 8) & 0xFF);
             }
+        } else if (r->type == 10 || r->type == 11) {
+            /* LDR rd, =sym for a symbol defined in another object: the
+             * placeholder was MOVW/MOVT of g_flash_base, so rewrite the pair
+             * with the resolved address (plus the Thumb bit for a function). */
+            unsigned imm = (unsigned)g_flash_base + (unsigned)addr;
+            unsigned hi, lo, hi2, lo2;
+            int rd = (int)((a->out[r->pc + 3] >> 0) & 0x0F);
+            if (r->type == 11) imm |= 1u;
+            mov_imm_encode_a(0, rd, imm & 0xFFFFu, &hi, &lo);
+            mov_imm_encode_a(1, rd, (imm >> 16) & 0xFFFFu, &hi2, &lo2);
+            a->out[r->pc]     = (unsigned char)(hi & 0xFF);
+            a->out[r->pc + 1] = (unsigned char)((hi >> 8) & 0xFF);
+            a->out[r->pc + 2] = (unsigned char)(lo & 0xFF);
+            a->out[r->pc + 3] = (unsigned char)((lo >> 8) & 0xFF);
+            a->out[r->pc + 4] = (unsigned char)(hi2 & 0xFF);
+            a->out[r->pc + 5] = (unsigned char)((hi2 >> 8) & 0xFF);
+            a->out[r->pc + 6] = (unsigned char)(lo2 & 0xFF);
+            a->out[r->pc + 7] = (unsigned char)((lo2 >> 8) & 0xFF);
         } else if (r->type == 8 || r->type == 9) {
             /* --asm-extra CBZ (8) / CBNZ (9): forward only, 0..62, even. */
             int off = addr - (r->pc + 4);

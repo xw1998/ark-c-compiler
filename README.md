@@ -60,7 +60,7 @@
 迟早分家。
 
 
-## 功能特性 (v0.7.0)
+## 功能特性 (v0.8.0)
 
 ### C99 标准语言特性
 
@@ -86,7 +86,7 @@
 | 初始化 | 是 | 标量、聚合 `{1,2,3}`、嵌套 `{{1,2},{3,4}}`、指定初始化 `.x=1/[2]=5`、字符串 `char s[]="hi"`、全局非字面量初始化（常量表达式折叠） |
 | 复合字面量 | 是 | `(int[]){1,2,3}` / `(struct P){.x=1,.y=2}` |
 | 结构体按值传递 | 是 | 通过隐藏指针参数实现 |
-| 寄存器分配 | 可选 | `-fopt-regalloc`（`ARKCC_FEATURE_OPT_REGALLOC`，宿主/交叉 1、板端 0，默认关）：发射后的文本遍把最热的帧槽搬进 `r8-r11`，只搬"每一处提及都是 `LDR r0,[r6,#n]` / `STR r0,[r6,#n]`"的槽；取地址、`volatile`、8 位/16 位/64 位访问一律留在内存。热点用例（`char pad[200]` 把后面的局部压过 offset 124）`[r6,#]` 引用 22→13，两个负例逐字节不变。两档成本模型：默认档只搬远槽且**函数永不增大**（H743 自举工程 22 个 `.c`：−1 966 B、−0.20%，无文件变大）；`-fopt-regalloc-near` / `--fregalloc-near` 连近槽一起搬，栈访问从 23 335 降到 12 574，代价 +0.05% 字节、13 个文件变大 |
+| 寄存器分配 | 可选 | `-fopt-regalloc`（`ARKCC_FEATURE_OPT_REGALLOC`，宿主/交叉 1、板端 0，默认关）：发射后的文本遍把最热的帧槽搬进 `r8-r11`，只搬"每一处提及都是 `LDR r0,[r6,#n]` / `STR r0,[r6,#n]`"的槽；取地址、`volatile`、8 位/16 位/64 位访问一律留在内存。热点用例（`char pad[200]` 把后面的局部压过 offset 124）`[r6,#]` 引用 22→13，两个负例逐字节不变。两档成本模型：默认档只搬远槽且**函数永不增大**（H743 自举工程 25 个 `.c`：−2 398 B、−0.21%，无文件变大）；`-fopt-regalloc-near` / `--fregalloc-near`（隐含打开基础档）连近槽一起搬，栈访问从 27 372 降到 15 108，比默认档多 150 字节、14 个文件变大 |
 | 汇编器覆盖面 | 是 | LDR/STR 全地址模式（`[Rn]`/`[Rn,#imm]`/`[Rn,Rm]`/`[Rn,Rm,LSL #0..3]`/`[Rn,#imm]!`/`[Rn],#imm`、`[sp,#imm]`、`[pc,#imm]`）、`VLDM/VSTM/VPUSH/VPOP`、`LDMFD/STMFD/LDMEA/STMEA` 别名、`ADDW/SUBW`；体系结构不存在的形态（`LDMIB/LDMDA/STMIB/STMDA`、寄存器索引写回）明确报错 |
 | 预处理 | 是 | 对象/函数宏（`#/##`）、`#if/#elif/#else/#endif/#ifdef/#ifndef/#undef/#error/#warning/#pragma`、嵌套 `#include`（<=8 层）、`__VA_ARGS__`、`-I` 路径、三字符组替换 |
 | 注释 | 是 | `//` 和 `/* */` |
@@ -503,6 +503,8 @@ CJK 按显示单元计列、tab 原样重放。它不需要 armcc，断言的是
 详见 [docs/MANUAL.md](docs/MANUAL.md)。
 
 ## 版本历史
+
+- v0.8.0：ARM 后端对真实工程可用（自举工程 25 个源文件 `failed=0`）。新增：64 位数据通路（`long long` 的 AAPCS 传参与返回、32 位 x86 cdecl 64 位实参）、参数分配表改静态（板端 codegen 栈预算）、结构体按值与结构体返回走 AAPCS、汇编器补齐 LDM/STM 32 位形式、`TBB/TBH`、`LDRD/STRD`、`[Rn, Rm]`/写回寻址、`VLDM/VSTM/VPUSH/VPOP`、`AND/ORR/EOR/BIC/MVN` 的全部四形态（含高寄存器与立即数）、两档寄存器分配（`-fopt-regalloc` 只搬远槽且函数不变大，`-fopt-regalloc-near` 才搬近槽；默认关，默认产物逐字节不变）、块内函数声明（C99 6.2.2p5）、跨对象地址重定位（`LDR rd, =sym` 符号未定义时记 type 10/11，由链接器回填并给函数地址补 Thumb 位）、电脑端容量上限全部解除（镜像缓冲 8 MB、`-D` 表 512、数组维数、sret 表；板端按 profile 裁剪），六处"超限即静默丢弃"改为报错。实测寄存器分配让 12 个文件的栈槽引用减少 1518 处、总体积 −2398 字节（−0.21%）。修掉的静默错答案：结构体返回尾声 `ADD sp, sp, #4256` 被截断、函数地址缺 Thumb 位、"`ORR ip, ip, #1`" 编成 `orrs r4, r4`、pass1 不认识 `PUSH/POP` 导致跨标签分支漂移 4 字节、单高寄存器 `POP {ip}` 编出不可执行编码、普通块内声明被当成 `__smc(0)` 而发 `SMC #0`。门禁：`run_full_test.ps1` PASS=73、`examples/run_tests.ps1` 断言 71 通过、`run_arm_exec.py` 13 个用例在 unicorn 真跑、`run_asm_cmp.py` 12 用例与 GAS 逐字节一致 + 30 条开关 + 15 条拒收、`run_regalloc_tests.py` 4 组三臂、`run_capacity_tests.py` 4 项。
 
 - v0.7.0：armcc 兼容覆盖 98%+，STM32 自托管稳定。新增：armcc 关键字（`__value_in_regs`/`__pure`/`__interwork`/`__thread`/`__global_reg`/`__smc`/`__int64`..`__int8`/`__typedef`/`__args`/`__return`/`__tp_soft`/`__nothrow`/`__deprecated`/`__may_alias`/`__softfp`）、`__attribute__` 属性扩展（`may_alias/nothrow/pure/const/visibility/nonnull/warn_unused_result/sentinel/malloc/fastcall/stdcall/cdecl`）、预定义宏（`__arm`/`__thumb`/`__STDC_VERSION__`/`__STDC_HOSTED__`/`__SIZE_TYPE__`/`__PTRDIFF_TYPE__`/`__WCHAR_TYPE__`/`__EDG__`/`__APCS_INTERWORK`）、完整 DWARF（`.debug_info`/`.debug_abbrev`/`.debug_line`）、TLS（`.tbss`/`.tdata`）、`__packed` 指针非对齐访问、`--split_sections` 每函数一段、scatter 加载描述文件（`include/scatter.h`+`src/scatter.c`）、CPU 选择（`-mcpu`/`--cpu`+`include/cpu.h`+`src/cpu.c`）、命令行扩展（`-MMD`/`--depend`/`-MF`/`--dollar`/`--enum_is_int`/`--fpu`/`--thumb`/`--arm`/`--dwarf2`/`--dwarf3`/`--signed_chars`/`--unsigned_chars`/`--wchar16`/`--wchar32`）、配置项扩展（`enum_is_int`/`dollar_in_identifiers`/`split_sections`/`signed_chars`/`wchar16`/`wchar32`/`dwarf_version`）。全部 62 测试通过。
 - v0.6.0：配置系统 + 优化Pass + 调试信息 + 前端/后端加强。新增：三层配置系统（`arkcc_config.h` 编译时宏 + `arkcc.cfg` INI 运行时配置 + `-O/-g/-f/-fno-/-config` 命令行）、VLA（`IR_ALLOCA`）、宽字符 `wchar_t`/`L"..."`/`L'...'`、三字符组（全部 9 个 C99 三字符组）、`_Complex` 复数类型、硬件 FPU 指令（VFP `VADD/VMUL/VCVT/VCMP` 替代软浮桩）、DWARF 调试信息（`.file/.loc/.cfi_startproc/.size`）、IR 级常量折叠+死代码消除（`src/opt.c`）、逗号分隔局部声明作用域 bug 修复。全部 56 测试通过。

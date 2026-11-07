@@ -62,6 +62,37 @@ Add-Content $log "SELFCHECK irgen-gate: $selfCk (exit=$negRc, image=$([bool](Tes
 Write-Host "SELFCHECK irgen-gate: $selfCk (exit=$negRc)"
 Remove-Item -LiteralPath $negSrc -ErrorAction SilentlyContinue
 
+# ---- sentinel self-check: an ordinary block-scope prototype is not __smc ---
+# Two files defined the "this is not an __smc function" value differently: ast.h
+# says -1, symtab.c zero-filled 0, and irgen accepts any smc_num >= 0 as a real
+# __smc(n) function.  A prototype written inside a block (C99 6.2.2p5) therefore
+# lowered every call to it as "SMC #0" -- the assembler rejects that, and a core
+# without the security extension would trap on it.  Both directions are asserted
+# here: a plain block-scope prototype must not emit SMC, and a real __smc(3)
+# must still emit "SMC #3" (a sentinel that silences the feature is also wrong).
+# The match is "SMC #" and not "SMC": the .file directive repeats the source
+# path, and a temp name containing "smc" made the first version of this check
+# fail on its own file name.
+$smcPlain  = Join-Path $env:TEMP "arkcc_smc_plain.c"
+$smcReal   = Join-Path $env:TEMP "arkcc_smc_real.c"
+$smcPlainS = Join-Path $env:TEMP "arkcc_smc_plain.s"
+$smcRealS  = Join-Path $env:TEMP "arkcc_smc_real.s"
+Remove-Item -LiteralPath $smcPlainS, $smcRealS -ErrorAction SilentlyContinue
+Set-Content -Path $smcPlain -Encoding ASCII -Value 'int h(int v){return v;} int main(void){int r;{extern int h(int);r=h(2);}return r;}'
+Set-Content -Path $smcReal  -Encoding ASCII -Value 'extern void __smc(3) monitor(void); int main(void){monitor();return 0;}'
+& .\arkcc.exe $smcPlain -target arm -S -o $smcPlainS 2>&1 | Out-Null
+$smcRcPlain = $LASTEXITCODE
+& .\arkcc.exe $smcReal -target arm -S -o $smcRealS 2>&1 | Out-Null
+$smcRcReal = $LASTEXITCODE
+$smcPlainHit = (Test-Path $smcPlainS) -and [bool](Select-String -Path $smcPlainS -Pattern 'SMC #' -Quiet)
+$smcRealHit  = (Test-Path $smcRealS)  -and [bool](Select-String -Path $smcRealS  -Pattern 'SMC #3' -Quiet)
+$smcOk = ($smcRcPlain -eq 0) -and ($smcRcReal -eq 0) -and (-not $smcPlainHit) -and $smcRealHit
+if (-not $smcOk) { $f++ }
+$smcText = if ($smcOk) { "OK" } else { "FAIL" }
+Add-Content $log "SELFCHECK smc-sentinel: $smcText (plain rc=$smcRcPlain smc=$smcPlainHit / smc3 rc=$smcRcReal smc3=$smcRealHit)"
+Write-Host "SELFCHECK smc-sentinel: $smcText (plain rc=$smcRcPlain smc=$smcPlainHit / smc3 rc=$smcRcReal smc3=$smcRealHit)"
+Remove-Item -LiteralPath $smcPlain, $smcReal, $smcPlainS, $smcRealS -ErrorAction SilentlyContinue
+
 Add-Content $log "==== PASS=$p FAIL=$f CRASH=$c ===="
 Write-Host "==== PASS=$p FAIL=$f CRASH=$c ===="
 Get-ChildItem *.gen.exe -ErrorAction SilentlyContinue | Remove-Item -Force

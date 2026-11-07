@@ -1,6 +1,6 @@
 # Ark C Compiler 使用手册
 
-> 版本：v0.7.0
+> 版本：v0.8.0
 > 读者：嵌入式开发者、编译原理学习者，以及任何希望在 STM32 上运行"自举 C 编译器"的人
 > 作者：Ark C Compiler 项目组
 
@@ -29,7 +29,7 @@
 
 ## 1 项目概述
 
-**Ark C Compiler**（简称 `arkcc`）是一款用 C99 编写的极简 C 语言编译器。当前版本 v0.7.0 覆盖了 ARM Compiler 5（armcc）常用扩展中的 98% 以上（仅缺 C++ 模式与高级优化）。设计目标：
+**Ark C Compiler**（简称 `arkcc`）是一款用 C99 编写的极简 C 语言编译器。当前版本 v0.8.0 覆盖了 ARM Compiler 5（armcc）常用扩展中的 98% 以上（仅缺 C++ 模式与高级优化）。设计目标：
 
 - **嵌入式自举**：编译器本身能在 STM32H743 等 Cortex-M7 微控制器上 **原生** 运行，从外部 SPI Flash 读取 `.c` 源码，就地生成机器码，然后直接跳转执行。`port/stm32/main_stm32.c` 提供了独立入口，构成"编译-链接-执行"的完整闭环，无需任何 PC 侧工具链。
 - **多后端**：核心前端只产生与目标无关的栈式虚拟机中间代码（IR），后端可以在 `arm` / `x86`（i386 cdecl，别名 `x86_64`）/ `riscv32` / `c` 之间自由切换。
@@ -254,7 +254,7 @@ CPU 选择的实现位于 `include/cpu.h` + `src/cpu.c`，会根据 CPU 名字�
 
 ## 4 支持的 C 语言特性
 
-本节以 ISO/IEC 9899:1999（C99）为参照，列出 v0.7.0 编译器实际支持的内容。编译器实现了完整的 C99 集合，并覆盖了 98% 以上的常用 armcc 扩展。
+本节以 ISO/IEC 9899:1999（C99）为参照，列出 v0.8.0 编译器实际支持的内容。编译器实现了完整的 C99 集合，并覆盖了 98% 以上的常用 armcc 扩展。
 
 ### 4.1 类型系统
 
@@ -873,9 +873,9 @@ PC 侧：[port/host/platform_host.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/a
 
 完成后：`arkcc foo.c -target mips -S`。
 
-### 9.5 armcc 兼容扩展（v0.7.0 完整清单）
+### 9.5 armcc 兼容扩展（v0.8.0 完整清单）
 
-v0.7.0 覆盖了 armcc 5 常用扩展的 98% 以上。下表列出全部支持项。
+v0.8.0 覆盖了 armcc 5 常用扩展的 98% 以上。下表列出全部支持项。
 
 #### 9.5.1 armcc 关键字
 
@@ -1002,7 +1002,7 @@ A：c 后端是从 IR 翻译，而不是从 AST；它追求的是"语义等价"�
 A：构建 arkcc 本身需要 gcc / MinGW / MSVC。若使用 MSVC，需修改 Makefile 使用 `cl.exe`。VS Code + clangd 也是常见选择。
 
 **Q3：能编译用 Keil/MDK 写的 STM32 工程吗？**
-A：v0.7.0 已覆盖 armcc 常用扩展的 98% 以上。HAL/CMSIS 中常见的 `__attribute__`、`__packed`、`__align`、内联汇编、`#pragma pack/anon_unions/location/...`、`__irq`/`__weak`/`__naked` 等均已支持。**armcc5 路径已打通**：`build_stm32_armcc.ps1` 可用 armcc 5.06 直接编译 arkCC 源码生成 `arkcc_stm32.hex/.bin` 烧录到 STM32H743（见 [附录 D](#附录-darmcc5-工具链与-mdk-构建详解)）。少数极端的宏戏法或 C++ 模式仍不支持；建议先用官方编译器编译 HAL/CMSIS，再用 arkcc 编译应用层代码。
+A：v0.8.0 已覆盖 armcc 常用扩展的 98% 以上。HAL/CMSIS 中常见的 `__attribute__`、`__packed`、`__align`、内联汇编、`#pragma pack/anon_unions/location/...`、`__irq`/`__weak`/`__naked` 等均已支持。**armcc5 路径已打通**：`build_stm32_armcc.ps1` 可用 armcc 5.06 直接编译 arkCC 源码生成 `arkcc_stm32.hex/.bin` 烧录到 STM32H743（见 [附录 D](#附录-darmcc5-工具链与-mdk-构建详解)）。少数极端的宏戏法或 C++ 模式仍不支持；建议先用官方编译器编译 HAL/CMSIS，再用 arkcc 编译应用层代码。
 
 **Q3.1：arkCC 能解析 MDK 的 .sct 文件吗？**
 A：能解析、互转（`.sct` ↔ `.ld`）并**参与实际段放置/链接**。在 armcc5 路径下，段放置由 armlink 根据 `.sct` 完成（见 [5.5](#55-scatter-描述文件) 与 [附录 D.5](#d5-sct-文件与-armlink)）。在自托管路径下（STM32 上跑 arkCC，`-link` 模式或单文件 `-c`/`-o .bin`），`arm_link()` 解析 scatter 文件，提取 flash_base/initial_sp，生成 Cortex-M 向量表并调整符号/重定位偏移（见 [5.5](#55-scatter-描述文件)）。
@@ -1023,19 +1023,19 @@ A：Bump 分配器默认 256 KB。可增大 [include/memory.h](file:///d:/%E5%B7
 A：目前仍是"单翻译单元"模型——多个 `.c` 文件通过 `#include` 合并。`-link a.o b.o` 只在 ARM 后端做 `BL` 偏移回填，并不解析 ELF `.o` 文件。完整跨翻译单元链接（多 `.o` 链接）在路线图中，详见 [12 已知限制](#12-已知限制)。
 
 **Q8：DWARF 调试信息能被 GDB/LLDB 识别吗？**
-A：v0.7.0 已输出完整的 DWARF 段（`.debug_info`/`.debug_abbrev`/`.debug_line` + `.file/.loc/.cfi_startproc/.size`），可通过 `--dwarf2` 或 `--dwarf3` 选择版本。基本的行级调试可被 GDB 识别；变量值查看（`-print var`）暂未完全支持。
+A：v0.8.0 已输出完整的 DWARF 段（`.debug_info`/`.debug_abbrev`/`.debug_line` + `.file/.loc/.cfi_startproc/.size`），可通过 `--dwarf2` 或 `--dwarf3` 选择版本。基本的行级调试可被 GDB 识别；变量值查看（`-print var`）暂未完全支持。
 
 **Q9：`__packed` 指针真的做非对齐访问吗？**
-A：是的。在 v0.7.0 中，`__packed` 指针（如 `__packed int *p`）会生成逐字节 load-and-stitch 代码，正确处理非对齐地址；违反对齐的普通指针属未定义行为。
+A：是的。在 v0.8.0 中，`__packed` 指针（如 `__packed int *p`）会生成逐字节 load-and-stitch 代码，正确处理非对齐地址；违反对齐的普通指针属未定义行为。
 
 **Q10：如何自举验证编译器？**
-A：项目提供 `bootstrap_build.ps1` 自举脚本：用 arkcc 编译自身 24 个源文件为 `.gen.c`，再用 gcc 编译为 `.o` 并链接得到 `arkcc_bootstrap.exe`；随后可继续用 `arkcc_bootstrap.exe` 编译一次自身，形成 bootstrap13/14/15 三代稳定自举。v0.7.0 已通过完整三代自举验证。
+A：项目提供 `bootstrap_build.ps1` 自举脚本：用 arkcc 编译自身 24 个源文件为 `.gen.c`，再用 gcc 编译为 `.o` 并链接得到 `arkcc_bootstrap.exe`；随后可继续用 `arkcc_bootstrap.exe` 编译一次自身，形成 bootstrap13/14/15 三代稳定自举。v0.8.0 已通过完整三代自举验证。
 
 ---
 
 ## 12 已知限制
 
-v0.7.0 已实现完整的 C99 集合 + 98% 以上的 armcc 常用扩展，仅剩以下限制：
+v0.8.0 已实现完整的 C99 集合 + 98% 以上的 armcc 常用扩展，仅剩以下限制：
 
 ### 完全不支持
 
@@ -1162,7 +1162,7 @@ source .c
 
 ### C.3 为什么这样规定
 
-- 编译器本身作为 v0.7.0 的自举目标，需要在 STM32 等嵌入式环境中运行，那里的编辑器/终端往往不支持 UTF-8；纯 ASCII 源码保证了跨平台可读性与可编辑性。
+- 编译器本身作为 v0.8.0 的自举目标，需要在 STM32 等嵌入式环境中运行，那里的编辑器/终端往往不支持 UTF-8；纯 ASCII 源码保证了跨平台可读性与可编辑性。
 - 中文文档采用 UTF-8 是 Markdown 生态与 Web 渲染的通行做法，便于在 GitHub、VS Code、Obsidian 等工具中正常显示。
 - 源码注释坚持英文，避免因编辑器编码识别错误导致注释乱码进而污染合并、diff、grep 等工作流。
 

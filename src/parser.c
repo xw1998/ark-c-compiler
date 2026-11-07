@@ -1391,6 +1391,65 @@ static int parse_smc(Parser *p) {
 #endif
 
 /* Top-level declaration */
+/* Parameter list of a function declarator; the caller has already consumed
+ * the '('.  Both the file-scope path and block-scope declarations
+ * (C99 6.2.2p5, e.g. "extern int f(void);" inside a body) need exactly this,
+ * and a prototype that is parsed in one place but not the other would make
+ * call sites promote arguments differently depending on where the function
+ * happened to be declared. */
+static void parse_param_list(Parser *p, AstNode ***out_params, int *out_count,
+                             int *out_variadic, int line) {
+    AstNode **params = 0;
+    int param_count = 0;
+    int param_capacity = 0;
+    int is_variadic = 0;
+            if (lexer_peek(p->lex).kind == TOK_VOID && lexer_peek2(p->lex).kind == TOK_RPAREN) {
+                lexer_advance(p->lex);
+            } else if (lexer_peek(p->lex).kind != TOK_RPAREN) {
+                for (;;) {
+                    int psto = 0, ptd = 0;
+                    Type *pbase;
+                    Type *pt;
+                    char *pname = 0;
+                    if (lexer_peek(p->lex).kind == TOK_ELLIPSIS) {
+                        lexer_advance(p->lex);
+                        is_variadic = 1;
+                        break;
+                    }
+                    pbase = parse_declspec(p, &psto, &ptd);
+                    if (!pbase) { perror_at(p, "expected param type"); break; }
+                    pt = parse_declarator(p, pbase, &pname);
+                    /* C99 6.7.5.3p7: array parameters decay; "array of T" becomes "pointer to T".
+                     * First dimension decays: int arr[5] -> int *arr;
+                     * int m[3][4] -> int (*m)[4]; only outermost decays to pointer.
+                     * For [static expr] parameter form, size is known but still decays to pointer.
+                     * After decay, arr[i] access uses pointer arithmetic semantics.
+                     * This matches C standard parameter decay rules. */
+                    if (pt && pt->kind == TYPE_ARRAY) {
+                        pt = type_pointer(pt->base);
+                    }
+                    if (!pname) pname = mem_strdup("_anon");
+                    {
+                        AstNode *param = ast_var_decl(pname, pt, 0, line);
+                        param->col = p->name_col;   /* for the caret on #100 */
+                        if (param_count >= param_capacity) {
+                            int nc = param_capacity ? param_capacity * 2 : 4;
+                            params = (AstNode **)mem_realloc(params,
+                                param_capacity * (int)sizeof(AstNode *),
+                                nc * (int)sizeof(AstNode *));
+                            param_capacity = nc;
+                        }
+                        params[param_count++] = param;
+                    }
+                    if (lexer_peek(p->lex).kind == TOK_COMMA) { lexer_advance(p->lex); continue; }
+                    break;
+                }
+            }
+    *out_params = params;
+    *out_count = param_count;
+    *out_variadic = is_variadic;
+}
+
 static AstNode *parse_top_decl(Parser *p) {
     int storage = 0;
     int is_td = 0;
@@ -1533,48 +1592,7 @@ static AstNode *parse_top_decl(Parser *p) {
             AstNode *body = 0;
 
             lexer_advance(p->lex);
-            if (lexer_peek(p->lex).kind == TOK_VOID && lexer_peek2(p->lex).kind == TOK_RPAREN) {
-                lexer_advance(p->lex);
-            } else if (lexer_peek(p->lex).kind != TOK_RPAREN) {
-                for (;;) {
-                    int psto = 0, ptd = 0;
-                    Type *pbase;
-                    Type *pt;
-                    char *pname = 0;
-                    if (lexer_peek(p->lex).kind == TOK_ELLIPSIS) {
-                        lexer_advance(p->lex);
-                        is_variadic = 1;
-                        break;
-                    }
-                    pbase = parse_declspec(p, &psto, &ptd);
-                    if (!pbase) { perror_at(p, "expected param type"); break; }
-                    pt = parse_declarator(p, pbase, &pname);
-                    /* C99 6.7.5.3p7: array parameters decay; "array of T" becomes "pointer to T".
-                     * First dimension decays: int arr[5] -> int *arr;
-                     * int m[3][4] -> int (*m)[4]; only outermost decays to pointer.
-                     * For [static expr] parameter form, size is known but still decays to pointer.
-                     * After decay, arr[i] access uses pointer arithmetic semantics.
-                     * This matches C standard parameter decay rules. */
-                    if (pt && pt->kind == TYPE_ARRAY) {
-                        pt = type_pointer(pt->base);
-                    }
-                    if (!pname) pname = mem_strdup("_anon");
-                    {
-                        AstNode *param = ast_var_decl(pname, pt, 0, line);
-                        param->col = p->name_col;   /* for the caret on #100 */
-                        if (param_count >= param_capacity) {
-                            int nc = param_capacity ? param_capacity * 2 : 4;
-                            params = (AstNode **)mem_realloc(params,
-                                param_capacity * (int)sizeof(AstNode *),
-                                nc * (int)sizeof(AstNode *));
-                            param_capacity = nc;
-                        }
-                        params[param_count++] = param;
-                    }
-                    if (lexer_peek(p->lex).kind == TOK_COMMA) { lexer_advance(p->lex); continue; }
-                    break;
-                }
-            }
+            parse_param_list(p, &params, &param_count, &is_variadic, line);
             lexer_expect(p->lex, TOK_RPAREN);
             /* Function declaration/definition may have trailing __attribute__ */
             while (lexer_peek(p->lex).kind == TOK_ATTRIBUTE) parse_attribute(p, ret_type);
@@ -1882,6 +1900,62 @@ static AstNode *parse_local_var_decl(Parser *p, Type *base, int storage, int is_
         if (!name) {
             perror_at(p, "expected identifier in declaration");
             break;
+        }
+        /* Block-scope function declaration: "extern int f(void);", and the
+         * same without "extern" (C99 6.2.2p5 gives it external linkage
+         * either way).  parse_declarator only knows the (*name)(...)
+         * function-pointer form, so it stops before the parameter list;
+         * without this branch the '(' was read as the start of an
+         * initialiser and the statement failed with "#65: expected a ';'".
+         * src/compiler.c and src/lexer.c hit exactly that.
+         *
+         * The node is an AST_FUNC_DECL -- the same node the file-scope path
+         * builds -- so sema and irgen treat it as an ordinary prototype: no
+         * code is emitted, and the parameter types are recorded so call
+         * sites promote arguments exactly as they would from a file-scope
+         * declaration.  Using the real AST also keeps the symbol alive for
+         * the statements that follow inside the same block, which is what
+         * lets `p = arm_get_symbol_count;` resolve. */
+        if (name && lexer_peek(p->lex).kind == TOK_LPAREN) {
+            AstNode **params = 0;
+            int param_count = 0;
+            int is_variadic = 0;
+            AstNode *fn;
+            lexer_advance(p->lex);           /* '(' */
+            parse_param_list(p, &params, &param_count, &is_variadic, line);
+            lexer_expect(p->lex, TOK_RPAREN);
+            while (lexer_peek(p->lex).kind == TOK_ATTRIBUTE) parse_attribute(p, t);
+            fn = ast_func_def(name, t, params, param_count, 0, line);
+            if (fn) {
+                fn->kind = AST_FUNC_DECL;
+                fn->col  = decl_name_col;
+                fn->u.func.is_variadic = is_variadic;
+                fn->u.func.is_static = (storage & STO_STATIC) ? 1 : 0;
+                /* __svc(n)/__smc(n) are not parsed in this position (armcc
+                 * writes them before the declarator, which the local-decl
+                 * path does not accept -- it reports an error instead of
+                 * guessing).  Say "no SVC/SMC" explicitly: irgen accepts any
+                 * smc_num >= 0 as a real __smc function, and the pool hands
+                 * out zero-filled nodes. */
+                fn->u.func.svc_num = 0;
+                fn->u.func.smc_num = -1;
+            }
+            if (lexer_peek(p->lex).kind == TOK_COMMA) { lexer_advance(p->lex); continue; }
+            lexer_expect(p->lex, TOK_SEMICOLON);
+            /* The ';' is consumed here; falling out of the loop would make
+             * the caller expect a second one, and the next statement then
+             * failed with "#65: expected a ';'".  A mixed declarator list
+             * ("int a, f(void);") keeps whatever came before it. */
+            if (!blk) {
+                blk = fn ? fn : ast_new(AST_BLOCK, line);
+            } else if (fn) {
+                AstNode *b = ast_block(line);
+                b->u.block.is_decl_list = 1;
+                block_add_stmt(b, blk);
+                block_add_stmt(b, fn);
+                blk = b;
+            }
+            return blk;
         }
         if (is_typedef) {
             sym_add(SYM_TYPEDEF, name, t, 0);

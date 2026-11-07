@@ -536,6 +536,13 @@ static void sema_decl(AstNode *node) {
 static void sema_stmt(AstNode *node) {
     if (!node) return;
     switch (node->kind) {
+        case AST_FUNC_DECL:
+            /* Block-scope prototype (C99 6.2.2p5).  It registers the return
+             * type and the parameter types and emits nothing, so the
+             * statements after it type-check exactly as if the prototype had
+             * been written at file scope. */
+            sema_func(node);
+            break;
         case AST_BLOCK: {
             int i;
             /* Declarations inside the block live in their own scope. */

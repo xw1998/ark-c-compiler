@@ -1151,6 +1151,37 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
     if (!node) return;
     g_ir_cur_line = node->line;
     switch (node->kind) {
+        case AST_FUNC_DECL: {
+            /* A prototype inside a block registers a symbol and emits no
+             * code.  irgen rebuilds the symbol table itself (sym_init in
+             * irgen_program), so the pre-pass over the program decl list
+             * never sees this node; without registering it here a later
+             * "p = f;" would emit PUSH_GLOBAL instead of PUSH_FUNC.
+             * Parameter types are copied for the same reason as in the
+             * pre-pass: 64-bit argument promotion is driven by them. */
+            if (node->u.func.name && !sym_find(node->u.func.name)) {
+                Symbol *s = sym_add(SYM_FUNC, node->u.func.name, node->u.func.ret_type, 0);
+                int pi;
+                s->param_count = node->u.func.param_count;
+                s->is_variadic = node->u.func.is_variadic;
+                /* Same attribute set the file-scope pre-pass copies (see
+                 * irgen_program).  Leaving smc_num at the sym_add default
+                 * turned an ordinary block-scope prototype such as
+                 * "extern int f(void);" into an SMC #0 call site. */
+                s->svc_num = node->u.func.svc_num;
+                s->smc_num = node->u.func.smc_num;
+                s->is_asm_func = node->u.func.is_asm_func;
+                s->alias_target = node->u.func.alias_target;
+                if (node->u.func.param_count > 0 && node->u.func.params) {
+                    s->param_types = (Type **)mem_pool_alloc(sizeof(Type *) * node->u.func.param_count);
+                    for (pi = 0; pi < node->u.func.param_count; pi++) {
+                        AstNode *pp = node->u.func.params[pi];
+                        s->param_types[pi] = (pp && pp->u.var.var_type) ? pp->u.var.var_type : 0;
+                    }
+                }
+            }
+            break;
+        }
         case AST_BLOCK: {
             int i;
             int saved_bp = g->bp;
