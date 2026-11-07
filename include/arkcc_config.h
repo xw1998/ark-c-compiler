@@ -225,6 +225,24 @@
 #       define ARKCC_FEATURE_ARM_RELOC_DATA   1
 #   endif
 #endif
+/* 0.8.0: 段内绝对地址也能交给链接器修正（--reloc-text）。
+ *
+ * 后端把 g_flash_base + offset 直接编进 MOVW/MOVT，于是"这个对象会被链接到
+ * 哪里"在编译期就被写死在指令里。单对象、且基址恰好等于 LR 基址时没问题；
+ * 多对象拼接、或镜像被装到别处时那些地址全部偏掉——字符串字面量（.rodata）
+ * 最明显，因为它既不是全局变量、也没有跨对象符号可用来解析。
+ *
+ * 打开后：本地 label 的 LDR rd, =label 记一条 type 12 重定位，对象尾部附一个
+ * __arkcc_text_base 符号告诉链接器"我是按哪个基址编的"，链接器再用
+ * (它给这个对象的基址 - 那个基址) 去 patch 那对 MOVW/MOVT。
+ *
+ * 与 ARKCC_FEATURE_ARM_RELOC_DATA 不同，这一项要编进板端产物：板上 build
+ * 命令正是靠它把两个对象里的字面量地址纠正过来。代码量很小（一个分支 +
+ * 一次 patch 循环），所以 STM32_MIN 也保留；真正的开关是运行时的
+ * --reloc-text，默认 0，关掉时一个字节都不变。 */
+#ifndef ARKCC_FEATURE_ARM_RELOC_TEXT
+#   define ARKCC_FEATURE_ARM_RELOC_TEXT       1
+#endif
 #ifndef ARKCC_FEATURE_OPT_REG_TOP
 #   define ARKCC_FEATURE_OPT_REG_TOP          1
 #endif

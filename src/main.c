@@ -29,6 +29,10 @@ static void usage(void) {
         "  --vector-table     reserve ARM_VT_SIZE (0x400) at the front of the image and\n"
         "                     emit a Cortex-M vector table there.  Link addresses stay\n"
         "                     valid: nothing is shifted, unlike the implicit table.\n"
+        "  --reloc-text       correct absolute addresses baked into MOVW/MOVT pairs at\n"
+        "                     link time (string literals and other in-section labels).\n"
+        "                     Off by default; required for multi-object images whose\n"
+        "                     objects were compiled against a different base.\n"
         "  -v                 verbose\n"
         "  -target <name>     select backend (arm|x86|riscv32|c)\n"
         "  -I <dir>           additional include path\n"
@@ -545,6 +549,8 @@ int main(int argc, char **argv) {
         else if (strcmp(a, "--no-dce-cfg") == 0)    g_config.enable_dce_cfg = 0;
         else if (strcmp(a, "--reloc-data") == 0)    g_config.enable_reloc_data = 1;
         else if (strcmp(a, "--no-reloc-data") == 0) g_config.enable_reloc_data = 0;
+        else if (strcmp(a, "--reloc-text") == 0)    g_config.enable_reloc_text = 1;
+        else if (strcmp(a, "--no-reloc-text") == 0) g_config.enable_reloc_text = 0;
         else if (strcmp(a, "--reg-top") == 0)       g_config.enable_reg_top = 1;
         else if (strcmp(a, "--no-reg-top") == 0)    g_config.enable_reg_top = 0;
         else if (strcmp(a, "--rt-lazy") == 0)       g_config.enable_rt_lazy = 1;

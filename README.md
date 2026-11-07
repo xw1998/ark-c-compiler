@@ -200,6 +200,7 @@
 | Scatter 加载描述文件解析（`include/scatter.h` + `src/scatter.c`） | 是（解析 + scatter 感知链接 + 向量表生成；见下表） |
 | CPU 选择（`-mcpu`/`--cpu`，`include/cpu.h` + `src/cpu.c`） | 是 |
 | 多对象数据段搬迁 `--reloc-data`（`.arkdata` 标记 + 链接期 MOVW/MOVT 改写） | 是（默认关；关时按旧行为报 SRAM 重叠） |
+| 段内绝对地址链接期修正 `--reloc-text`（`.arktext` 标记 + 对象自带 `__arkcc_text_base`，链接器按对象算位移） | 是（默认关；关时产物与旧版逐字节相同。修的是字符串字面量这类 `MOVW/MOVT` 里写死的代码地址） |
 | 运行库按需发射 `--rt-lazy`（只发可达的 `__aeabi_*` 块） | 是（默认关；`add3.c` 1578 → 60 字节） |
 | IR 栈顶驻留 r0 `--reg-top`（有界寄存器化，非分配器） | 是（默认关；80 样例指令数 −7.1%） |
 | `float` ↔ `double` 显式转换（`VCVT.F32.F64` / `VCVT.F64.F32`） | 是 |
@@ -345,6 +346,8 @@ arkcc <file.c|file.s> [选项]
 
   本轮新增（运行期默认全关，不加选项时产物与旧版逐字节相同）
   --reloc-data       多对象数据段搬迁（不加则多对象共用全局时仍报 SRAM overlap）
+  --reloc-text       段内绝对地址链接期修正（字符串字面量等 MOVW/MOVT 里的
+                     代码地址；多对象或镜像装到别处时必须开，否则读到旧基址）
   --rt-lazy          运行库按需发射（只发可达块）
   --reg-top          IR 栈顶值驻留 r0
   --asm-extra        汇编器扩展指令集；--no-asm-extra 显式关掉

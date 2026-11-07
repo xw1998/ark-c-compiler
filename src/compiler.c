@@ -162,6 +162,13 @@ static int      g_ld_ram_obj_count = 0;
  * filled while loading, then used once the whole link set is known. */
 static int      g_ld_data_delta[LD_MAX_OBJS];
 static int      g_ld_init_body[LD_MAX_OBJS];
+/* --reloc-text: where each object started in the merged code buffer, and the
+ * base it was compiled against.  The delta the linker has to apply is
+ * (image base + code base) - compiled base, which is exactly the difference
+ * between where the address will be and where the object thought it would be. */
+static int      g_ld_code_base[LD_MAX_OBJS];
+static unsigned g_ld_text_base[LD_MAX_OBJS];
+static int      g_ld_have_text_base[LD_MAX_OBJS];
 /* Highest SRAM address the relocated data reaches; checked against the stack
  * pointer once the scatter file (if any) has been read. */
 static unsigned g_ld_data_top = 0;
@@ -321,6 +328,71 @@ static int ld_relocate_data(unsigned char *code, int code_len) {
         }
     }
     g_ld_data_top = cursor;
+    return 0;
+}
+
+/* --reloc-text: rewrite every MOVW/MOVT pair that carries an address inside an
+ * object's own code/rodata window.
+ *
+ * Why this cannot be done earlier: the object was assembled with
+ * `g_flash_base + offset` baked straight into the instruction stream, and the
+ * linker is the first thing that knows where the object really ends up.  A
+ * single-object image whose base equals the compile-time base produces
+ * delta 0 and this loop changes nothing, which is why the switch is off by
+ * default.
+ *
+ * The delta is per object, not global: object #1 starts after object #0, so its
+ * baked addresses are short by exactly that much.  That is also why the obj
+ * file records the compile-time base rather than the linker being asked to
+ * assume one -- assuming is how the wrong answer got here in the first place.
+ *
+ * Returns -1 when the image must not be written: a site whose bytes are not a
+ * MOVW+same-register-MOVT pair means something other than codegen wrote it, and
+ * a site with no base to compare against means the object lost its descriptor. */
+static int ld_relocate_text(unsigned char *code, int code_len,
+                            unsigned image_base) {
+    int i, k;
+
+    /* Every declared site needs a base.  Check first: patching half the image
+     * and then discovering the other half is unattributable would leave a
+     * wrong binary on disk. */
+    for (k = 0; k < g_ld_reloc_count; k++) {
+        int o = g_ld_relocs[k].obj;
+        if (g_ld_relocs[k].type != 12) continue;
+        if (o < 0 || o >= LD_MAX_OBJS || !g_ld_have_text_base[o]) {
+            char b1[12], b2[12];
+            diag_tool(DIAG_SEV_ERROR, g_ld_image,
+                      "object #%s carries a --reloc-text site at offset %s but no "
+                      "__arkcc_text_base descriptor, so its absolute addresses "
+                      "cannot be corrected; recompile that object with arkcc "
+                      "0.8.0 or drop --reloc-text",
+                      diag_num(b1, o), diag_num(b2, g_ld_relocs[k].offset),
+                      0,0,0,0);
+            return -1;
+        }
+    }
+
+    for (i = 0; i < LD_MAX_OBJS; i++) {
+        unsigned delta;
+        if (!g_ld_have_text_base[i]) continue;
+        delta = (image_base + (unsigned)g_ld_code_base[i]) - g_ld_text_base[i];
+        if (delta == 0) continue;      /* compiled for exactly where it landed */
+        for (k = 0; k < g_ld_reloc_count; k++) {
+            if (g_ld_relocs[k].type != 12) continue;
+            if (g_ld_relocs[k].obj != i) continue;
+            if (arm_patch_movw_movt(code, code_len, g_ld_relocs[k].offset,
+                                    (int)delta) != 0) {
+                char b1[12], b2[12], b3[12];
+                diag_tool(DIAG_SEV_ERROR, g_ld_image,
+                          "absolute address at offset %s (object #%s) is not a "
+                          "MOVW/MOVT pair, so a %s-byte shift cannot be applied; "
+                          "the image would call the old address",
+                          diag_num(b1, g_ld_relocs[k].offset), diag_num(b2, i),
+                          ld_hex(b3, delta), 0, 0, 0);
+                return -1;
+            }
+        }
+    }
     return 0;
 }
 
@@ -517,6 +589,11 @@ static int obj_put_sym(unsigned char *buf, int ol, const char *nm,
 #define OBJ_RAM_START_SYM "__arkcc_ram_start"
 #define OBJ_RAM_END_SYM   "__arkcc_ram_end"
 #define OBJ_SYM_TYPE_RAM  2
+/* --reloc-text: the base this object's absolute addresses were computed
+ * against.  Stored in the offset field like the two RAM descriptors above, so
+ * an object built without the feature is byte-identical to a 0.7.x object. */
+#define OBJ_TEXT_BASE_SYM "__arkcc_text_base"
+#define OBJ_SYM_TYPE_TEXT 3
 
 /* Write an ARKOBJ2 object file: "ARKOBJ2\n" + u32 code size + code body +
  * u32 symbol count + symbols + u32 reloc count + relocs (readers live in the
@@ -584,7 +661,11 @@ static int write_ark_obj(const ArkBackend *be, const ArkOptions *opts,
     const char *(*p_reloc_name)(int) = 0;
     int   (*p_reloc_offset)(int)     = 0;
     int   (*p_reloc_type)(int)       = 0;
+    unsigned (*p_text_base)(void)    = 0;
+    int   text_extra                 = 0;
+    unsigned text_base               = 0;
     if (ark_streq(be->name, "arm")) {
+        extern unsigned arm_get_text_base(void);
         extern int   arm_get_symbol_count(void);
         extern const char *arm_get_symbol_name(int idx);
         extern int   arm_get_symbol_offset(int idx);
@@ -610,6 +691,7 @@ static int write_ark_obj(const ArkBackend *be, const ArkOptions *opts,
         p_reloc_name  = arm_get_reloc_name;
         p_reloc_offset= arm_get_reloc_offset;
         p_reloc_type  = arm_get_reloc_type;
+        p_text_base   = arm_get_text_base;
     } else if (ark_streq(be->name, "x86")) {
 #if ARKCC_BACKEND_X86_64
         extern int   x86_get_symbol_count(void);
@@ -633,13 +715,25 @@ static int write_ark_obj(const ArkBackend *be, const ArkOptions *opts,
 #endif
     }
 
+    /* --reloc-text: one extra descriptor telling the linker which base every
+     * absolute address in this object was computed against.  It has to be
+     * decided here, after the backend vtable above is filled in -- asking for
+     * p_text_base before it was assigned silently produced objects without the
+     * descriptor, which the linker then refused (correctly, but far too late).
+     * Emitted only when the feature is on, so an object built without it stays
+     * byte-identical to 0.7.x. */
+    if (g_config.enable_reloc_text && p_text_base) {
+        text_base  = p_text_base();
+        text_extra = 1;
+    }
+
     /* Write symbol table for object backends (ARM/x86) */
     if (p_sym_count) {
         int sc = p_sym_count();
         int si;
         /* The RAM-footprint descriptor is appended after the real symbols so
          * that older readers that ignore trailing symbols still work. */
-        int sc_total = sc + ram_extra;
+        int sc_total = sc + ram_extra + text_extra;
         /* symbol count (4 bytes LE) */
         obj_buf[ol++] = (unsigned char)(sc_total & 0xFF);
         obj_buf[ol++] = (unsigned char)((sc_total >> 8) & 0xFF);
@@ -676,6 +770,10 @@ static int write_ark_obj(const ArkBackend *be, const ArkOptions *opts,
                              OBJ_SYM_TYPE_RAM, 0);
             ol = obj_put_sym(obj_buf, ol, OBJ_RAM_END_SYM, ram_end,
                              OBJ_SYM_TYPE_RAM, 0);
+        }
+        if (text_extra) {
+            ol = obj_put_sym(obj_buf, ol, OBJ_TEXT_BASE_SYM, (int)text_base,
+                             OBJ_SYM_TYPE_TEXT, 0);
         }
     } else {
         /* Non-object backend: write 0 symbol count */
@@ -918,7 +1016,9 @@ int ark_compile(const ArkOptions *opts) {
             { int k; for (k = 0; k < LD_MAX_OBJS; k++) {
                   g_ld_ram[k].start = 0; g_ld_ram[k].end = 0;
                   g_ld_ram[k].have_start = 0; g_ld_ram[k].have_end = 0;
-                  g_ld_data_delta[k] = 0; g_ld_init_body[k] = -1; } }
+                  g_ld_data_delta[k] = 0; g_ld_init_body[k] = -1;
+                  g_ld_code_base[k] = 0; g_ld_text_base[k] = 0;
+                  g_ld_have_text_base[k] = 0; } }
             g_ld_data_top = 0;
             ld_table_overflow = 0;
             for (li = 0; li < opts->link_input_count; li++) {
@@ -926,6 +1026,7 @@ int ark_compile(const ArkOptions *opts) {
                 const unsigned char *up = (const unsigned char *)buf;
                 int pos = 8;  /* skip "ARKOBJ2\n" header */
                 int base = out_len;
+                if (li < LD_MAX_OBJS) g_ld_code_base[li] = base;
                 int code_sz, sym_cnt, reloc_cnt, si, ri;
                 if (n < 0) {
                     diag_tool(DIAG_SEV_ERROR, opts->link_inputs[li],
@@ -975,6 +1076,15 @@ int ark_compile(const ArkOptions *opts) {
                     /* RAM footprint descriptors: the offset field is an
                      * absolute address, so it must NOT get the object code
                      * base added, and it is not a resolvable label. */
+                    /* --reloc-text descriptor: an absolute base, not a label
+                     * and not an offset to which the code base applies. */
+                    if (ark_streq(sym_name, OBJ_TEXT_BASE_SYM)) {
+                        if (li < LD_MAX_OBJS) {
+                            g_ld_text_base[li] = (unsigned)sym_off;
+                            g_ld_have_text_base[li] = 1;
+                        }
+                        continue;
+                    }
                     if (ark_streq(sym_name, OBJ_RAM_START_SYM)) {
                         if (li < LD_MAX_OBJS) {
                             g_ld_ram[li].start = (unsigned)sym_off;
@@ -1296,6 +1406,17 @@ int ark_compile(const ArkOptions *opts) {
                                     flash_base + (unsigned)g_ld_syms[ri].offset);
                     }
                 }
+                /* --reloc-text: the scatter file has now told us where the
+                 * image lands, so the absolute addresses each object baked in
+                 * can be corrected.  This has to happen after the vector table
+                 * is laid into its hole (it is written at flash_base, which is
+                 * exactly the base the correction is measured from) and before
+                 * anything else is written. */
+                if (g_config.enable_reloc_text) {
+                    if (ld_relocate_text(out_buf, out_len, flash_base) != 0) {
+                        return ARK_ERR_LINK;
+                    }
+                }
             }
             /* Startup convention: a hand-written or generated Reset_Handler
              * calls __arkcc_init_globals unconditionally. The body, however,
@@ -1406,7 +1527,8 @@ int ark_compile(const ArkOptions *opts) {
                 int ri;
                 for (ri = 0; ri < g_ld_reloc_count; ri++) {
                     int idx;
-                    if (g_ld_relocs[ri].type == 6) continue;  /* .arkdata site:
+                    if (g_ld_relocs[ri].type == 6 || g_ld_relocs[ri].type == 12)
+                        continue;  /* .arkdata / .arktext site: already patched
                         * already handled by ld_relocate_data; it names no
                         * symbol, so treating it as an unresolved reference
                         * would fail the link on a valid image. */

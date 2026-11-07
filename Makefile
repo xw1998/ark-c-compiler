@@ -1,4 +1,7 @@
 CC      ?= gcc
+# Python is only used by the gate scripts under tests/.  Override with
+# `make PYTHON=/path/to/python test` if the interpreter is not on PATH.
+PYTHON  ?= python
 CFLAGS  ?= -Wall -Wextra -O2 -std=c99 -Wno-unused-parameter -Wno-unused-but-set-variable -Wno-unused-variable -Wno-unused-function -Iinclude
 LDFLAGS ?=
 
@@ -15,7 +18,7 @@ ARKCC := arkcc
 RM    := rm -f
 endif
 
-.PHONY: all clean test test-arm test-c test-x86 test-riscv stm32
+.PHONY: all clean test test-arm test-c test-x86 test-riscv test-reloc-text stm32
 
 all: $(ARKCC)
 
@@ -25,7 +28,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # "Nothing to be done" while the source tree said otherwise.
 	$(CC) $(CFLAGS) $(SRC) -o $(ARKCC) $(LDFLAGS)
 
-test: test-arm test-c
+test: test-arm test-c test-reloc-text
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o nul
@@ -36,6 +39,13 @@ test-c: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target c -o hello.gen.c
 	./$(ARKCC) examples/arith.c -target c -o arith.gen.c
 	./$(ARKCC) examples/func.c  -target c -o func.gen.c
+
+# Gate for --reloc-text: two objects, linked 0x1C070000 away from the base they
+# were compiled against, must end up with their string literals pointing at
+# themselves -- and with the flag off, at the old (wrong) address.  The second
+# object is the point: a global delta passes object #0 and fails object #1.
+test-reloc-text: $(ARKCC)
+	$(PYTHON) tests/run_reloc_text_tests.py ./$(ARKCC)
 
 test-x86: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target x86 -S -o nul

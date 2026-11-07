@@ -491,10 +491,10 @@ hello, world
 第一个 `write(1, msg, ...)` 打出的 `hello, world` 是 `crt.c` 里
 `write()` → `0x2407F001`（`ark_board_putn` trampoline）→ USART1。
 
-**注意**：`hello, world` 之后那几行是乱码，不是随机的——它来自 `hello.c` 的第二个
-`write()`，那个参数是**字符串字面量**而不是 `msg[]` 数组，命中 §12.3 记下的
-`.rodata` 绝对地址缺陷（编译期按 `0x08000000` 写死，镜像实际在 `0x24070000`）。
-改内存布局不影响它，见 §12.3 与 §13.6。
+**注意**：这一段是 §14 修完 `--reloc-text` 之后的输出。0.8.0 预览版之前，
+`hello, world` 之后是几行乱码：第二个 `write()` 的参数是**字符串字面量**而不是
+`msg[]` 数组，命中 §12.3 记下的 `.rodata` 绝对地址缺陷（编译期按 `0x08000000`
+写死，镜像实际在 `0x24070000`）。修法与证据见 §12.3 与 §14。
 
 ### 12.2 这一轮修掉的五个真缺陷
 
@@ -512,7 +512,12 @@ hello, world
 `ast_str()` 先把节点类型设成 `char*`，因此判断 **必须排在通用 `e->type` 分支之前**
 （排在后面就永远走不到，第一次改法就是这样失效的）。修后宿主编译输出 `MOV r0, #51`。
 
-### 12.3 仍未收口：.rodata 的绝对地址在编译期就被写死
+### 12.3 已收口：.rodata 的绝对地址在编译期就被写死
+
+> **状态（0.8.0 预览版）**：走下面的**第 2 条路**做完了，开关是
+> `--reloc-text`（默认关）。板上实测第二行已经正确打印
+> `written by arkcc running on the STM32H743 itself`，见 §14。
+> 原来写的"两条可选收敛路径"保留在这里，因为它记录了当时的判断依据。
 
 修完 `sizeof` 后第二行长度的确变成 50，但内容仍是垃圾。反汇编定位：
 
@@ -529,17 +534,19 @@ RAM 侧同理：`static const char msg[]` 的地址被写成 `0x20000000`（`g_d
 只是 `__arkcc_init_globals()` 也在向 `0x20000000` 写初值，两边正好自洽，所以在 DTCM 上
 「碰巧对」。这也解释了为什么第一行正确、第二行错。
 
-两条可选收敛路径（都还没做，未经验证）：
+两条可选收敛路径（第 2 条已实现，第 1 条已否决）：
 
 1. **两步都带上布局**：`build_object()` 也给 `-c` 传 `scatter_file`，让编译期的
    `g_flash_base / g_data_base` 与最终布局一致。改动最小，但要求编译期就知道布局
    （与 MDK 的「重定位」哲学不同）。
 2. **让绝对引用成为重定位项**：后端为 `.L_str_N` 等 section 内绝对地址发 reloc，
    由链接器按 `LR` 加载地址修正。结构上更正确，但要动 ARKOBJ2 的 reloc 种类与
-   链接器补丁逻辑。
+   链接器补丁逻辑。 ← **采用这一条**
 
-在收口之前，**板载 `build` 的结论只能说到「编译/链接/装载/执行/返回 0 全通，第一行
-输出正确」**，不能声称 POSIX hello world 完整正确。
+第 1 条被否决的理由是它只对**第一个**目标文件成立：给 `-c` 传同一个 `--scatter`
+以后，`hello.o` 的基址恰好等于 LR 基址，而 `crt.o` 是从 `hello.o` 之后开始拼的，
+它内部所有偏移整体差一个 `hello.o` 的大小——看起来修好了，实际上是换了一种错法。
+**判据**：修完之后必须能同时说清"第 N 个对象"的地址，见 §14.3 的第 3 项门禁。
 
 ---
 
@@ -686,12 +693,111 @@ Type 'help' for commands.
 搬完之后 `demo` + `build` 仍然跑通（板上编译、链接、装载、执行、返回 0），
 说明"编译器整个工作集放在外部 SDRAM 上"是可用的，不再是纸面结论。
 
-### 13.7 仍未收口
+### 13.7 当时的遗留项（已在 §14 收口）
 
 `hello.c` 第二个 `write()` 的**字符串字面量**参数依旧是坏地址（§12.3）：
 编译期按 `g_flash_base + offset` 把 `.rodata` 地址写死成 `0x08000400` 一类，
 而镜像实际在 `0x24070000`。搬内存布局不影响它——它是**代码地址**没有重定位项，
-不是数据地址。两条候选修法（给 `-c` 传 `--scatter` 让基址一致 / 后端为
-section 内绝对地址发 reloc 由链接器修正）在 §12.3 里，都还没实施：
-第一种只对**第一个**目标文件成立（第二个目标的内部偏移会整体偏一个对象的大小），
-所以真要做应该走第二种。
+不是数据地址。两条候选修法在 §12.3 里；**已按第二种做完**（后端为 section 内绝对地址发 reloc，
+链接器按实际基址修正），开关 `--reloc-text`，机制与门禁见 §14。
+
+---
+
+## 14 阶段 5：段内绝对地址交给链接器修正（`--reloc-text`）
+
+### 14.1 问题重述
+
+后端为"取某个 label 的地址"发射 `MOVW rd,#lo16` + `MOVT rd,#hi16`，值是
+`g_flash_base + offset`。其中 `g_flash_base` 是**编译期**假设的基址（默认
+`0x08000000`，或 `--scatter` 给的 LR 基址）。这个值不是重定位项，链接器看不见它：
+
+* 单对象、且对象基址正好等于 LR 基址 → 数字是对的；
+* 多对象（第二个对象从第一个之后开始）→ 第二个对象整体偏一个对象的大小；
+* 镜像被装到别处（板上 `0x24070000`）→ 全部偏，字符串字面量最明显。
+
+### 14.2 机制：对象带基址，链接器自己算差值
+
+| 环节 | 做什么 |
+| --- | --- |
+| 后端 | `LDR rd, =label` 解析到**本对象内**的 label 时，发射 MOVW/MOVT 的同时记一条 `type 12` 重定位（`.arktext`），偏移 = MOVW 指令位置 |
+| 对象 | 尾部追加一个 `__arkcc_text_base` 符号，值 = 编译期基址（与 `__arkcc_ram_start/end` 同一模式，占的仍是"符号 offset 字段当绝对地址用"） |
+| 链接器 | 装载时记下每个对象在合并缓冲区里的起点 `g_ld_code_base[i]` 与描述符；scatter 解析出镜像基址后，对每个对象算 `delta = (image_base + code_base) - text_base`，用 `arm_patch_movw_movt()` 加进那对 MOVW/MOVT |
+
+`delta` **必须按对象算**：先算出一个全局差、再套给所有对象，对象 0 对、对象 1 就错
+——这正是 §14.3 第 3 项门禁专门盯的形态。
+
+判据放在链接器而不是在编译期对齐，是因为只有链接器知道对象最后落在哪；让编译期
+去猜（第 1 条候选路）等于把"两边规则必须一致"变成一条没人检查的隐式约定。
+
+### 14.3 门禁（`make test` 里的一条）
+
+`tests/run_reloc_text_tests.py`，两个对象、镜像基址离编译基址 `0x1C070000`：
+
+```
+PASS  object carries __arkcc_text_base with --reloc-text
+PASS  object carries no descriptor without --reloc-text
+PASS  object #0 literal address corrected  [24070400]
+PASS  object #1 literal address corrected  [24070BD4]
+PASS  without the flag the old base is still baked in  [08000400]
+PASS  image size unchanged by the pass  [4940 vs 4940]
+PASS  object #1 really is linked after object #0  [+0xBD4 vs +0x400]
+```
+
+五项各自防一种假通过：
+
+1. 没有描述符 → 链接器无从修正，必须能被看见；
+2. 关闭时**不能**有描述符 → 默认产物逐字节不变；
+3. 对象 0 与对象 1 **都要**正确 → 全局 delta 只能过前一项；
+4. 关掉开关必须复现**旧错**（`0x08000400`）→ 证明测的是功能本身，不是巧合；
+5. 镜像大小不变 → 这一步只改立即数，不挪布局；
+6. 对象 1 确实排在对象 0 之后 → 否则第 3 项是在重复检查同一个东西。
+
+### 14.4 默认关闭 = 逐字节不变（实测）
+
+用 `git worktree` 把上一个提交编成基准 `arkcc`，同一组源、同参数（不开开关）：
+
+```
+IDENTICAL  hello.o  (4162 bytes)
+IDENTICAL  crt.o    (2874 bytes)
+IDENTICAL  app.bin  (4814 bytes)
+```
+
+开启与关闭的镜像大小也相同（`4940` vs `4940`），差别只在 `+0x474` / `+0xC9C`
+那两个立即数：
+
+| | 对象 0 字面量 | 对象 1 字面量 |
+| --- | --- | --- |
+| 关 | `0x08000400`（错） | `0x08000000`（错） |
+| 开 | `0x24070400` ✓ | `0x24070BD4` ✓ |
+
+### 14.5 板上实测
+
+`cmd_build()` 显式打开 `g_config.enable_reloc_text = 1`（板上这个链接必然是
+"多对象 + 位移"，而且开在这里不会影响 `cc -S` / 单对象这些老用法）：
+
+```
+[arkcc] wrote object 'hello.o' (3028 bytes code, 43 syms, 3 relocs)   <- 2 -> 3，多的是 type 12
+[arkcc] wrote object 'crt.o'   (2810 bytes code, 43 syms, 2 relocs)
+[link] vector table written into the 1024-byte hole the first object reserved (SP=0x2407F000, entry=0x2407102A)
+[arkcc] linked 2 objects -> app.bin (5838 bytes, 45 syms, 5 relocs)   <- 4 -> 5
+[arkcc] image loaded at 24070000, 5838 bytes
+--- program output -------------------------------------------
+hello, world
+written by arkcc running on the STM32H743 itself
+--------------------------------------------------------------
+[arkcc] program returned 0
+```
+
+镜像大小与修之前一样（5838），只是指令里的立即数变了。
+
+### 14.6 顺带修掉的一个真缺陷（`opts_reset`）
+
+板上 `opts_reset()` 漏了 `vector_table`、`build_date`、`build_time`、`build_epoch`
+四个字段。`vector_table` 决定链接器要不要把向量表写进第一个对象预留的 0x400 洞里：
+它此前**从未被赋过值**，板上一直能跑是因为那块栈恰好非 0——加一个局部变量就可能
+让它变成 0，链接器随即改走"镜像必须自带向量表"的分支，行为在没有任何代码改动的
+情况下变了。现在 `vector_table = 1`（板上链接永远要写这张表），另外三个显式置 0。
+
+同一类问题的第二次出现：本次 `--reloc-text` 的"对象描述符"一开始也算在
+`p_text_base` 赋值之前，结果对象里没有描述符、链接器拒绝链接（拒绝是对的，
+但错误来得太晚）。这类"顺序依赖 + 无报错"的组合只能靠门禁兜住。

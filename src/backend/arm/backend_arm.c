@@ -4920,6 +4920,16 @@ typedef struct AsmLabel {
                       * is a Thumb function pointer, so LDR rd,=name must set
                       * bit 0.  Data and .L labels keep it clear. */
 } AsmLabel;
+/* --reloc-text: relocation type for a MOVW/MOVT pair that carries an address
+ * inside this object's own code/rodata window (a string literal, usually).
+ * Unlike types 1..4 this entry names no symbol: the linker adds
+ * (the base it links this object at - the base this object was compiled
+ * against), and it learns the latter from the __arkcc_text_base symbol the
+ * object carries.  12 is the next free number after .arkdata (6), ADR (7),
+ * CBZ/CBNZ (8, 9) and the cross-object LDR= sites (10 data / 11 function). */
+#define ARM_RELOC_TEXT       12
+#define ARM_RELOC_TEXT_NAME  ".arktext"
+
 typedef struct AsmRef   { int pc; char *name; int type; } AsmRef;
 /* Literal pool entry: LDR rd,=label at ldr_pc needs a 4-byte literal at pool_offset */
 typedef struct AsmLiteral { int ldr_pc; char *name; int pool_offset; } AsmLiteral;
@@ -7668,6 +7678,17 @@ static void pass2_a(ArmAsm *a) {
                          * core faults on the first instruction. */
                         addr = (int)g_flash_base + label_addr;
                         if (is_func) addr |= 1;
+                        /* --reloc-text: the number above assumes this object
+                         * sits at g_flash_base.  In a multi-object link the
+                         * linker places it somewhere else, and this is the only
+                         * moment anybody knows which instruction holds the
+                         * value -- flag it so the linker can add the
+                         * difference.  Both instructions emitted below are
+                         * always MOVW+MOVT (never the short MOV form), so the
+                         * site is always patchable. */
+                        if (g_config.enable_reloc_text)
+                            add_ref_a(a, a->pc, ARM_RELOC_TEXT_NAME,
+                                      ARM_RELOC_TEXT);
                     }
                 }
                 /* Emit MOVW rd, #low16 */
@@ -8554,7 +8575,8 @@ static void resolve_refs_a(ArmAsm *a) {
     for (i = 0; i < a->ref_count; i++) {
         AsmRef *r = &a->refs[i];
         int addr;
-        if (r->type == 6) continue;   /* .arkdata: a data patch site, not a label */
+        if (r->type == 6 || r->type == ARM_RELOC_TEXT)
+            continue;   /* .arkdata / .arktext: patch sites, not labels */
         addr = find_label_a(a, r->name);
         if (addr < 0) {
             /* Not a local label: this is a cross-object reference and has
@@ -8846,8 +8868,8 @@ static void arm_save_relocs(ArmAsm *a) {
     for (i = 0; i < a->ref_count; i++) {
         AsmRef *r = &a->refs[i];
         int addr;
-        if (r->type == 6) {
-            /* .arkdata: not a reference to a label, but the offset of a
+        if (r->type == 6 || r->type == ARM_RELOC_TEXT) {
+            /* .arkdata / .arktext: not a reference to a label, but the offset of a
              * MOVW/MOVT pair the -link stage may have to shift.  It is saved
              * whether or not the object ends up being relocated, so that the
              * decision stays with the linker (which knows every object). */
@@ -8858,7 +8880,7 @@ static void arm_save_relocs(ArmAsm *a) {
             if (g_arm_reloc_count >= ARM_MAX_RELOCS) { dropped = 1; continue; }
             g_arm_relocs[g_arm_reloc_count].name   = r->name;
             g_arm_relocs[g_arm_reloc_count].offset = r->pc;
-            g_arm_relocs[g_arm_reloc_count].type   = 6;
+            g_arm_relocs[g_arm_reloc_count].type   = r->type;
             g_arm_reloc_count++;
             continue;
         }
@@ -8960,6 +8982,10 @@ int arm_get_symbol_weak(int idx) { return g_arm_syms[idx].is_weak; }
  * from the same SRAM base: -link concatenates code but does not relocate
  * data, so such a pair would silently alias its globals. */
 unsigned arm_get_ram_start(void) { return g_data_sram_start; }
+/* --reloc-text: the base every absolute address in this object was computed
+ * against.  Written into the object as __arkcc_text_base so the linker can
+ * work out how far it had to move this object. */
+unsigned arm_get_text_base(void) { return (unsigned)g_flash_base; }
 unsigned arm_get_ram_end(void)   { return g_bss_sram_end; }
 
 /* Bug-A2: Export relocation info for the linker */

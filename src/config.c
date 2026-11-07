@@ -67,6 +67,7 @@ void config_init(void) {
      * 这样做是为了满足“开关关掉时零变化”，而不是因为新行为不值得默认开。 */
     g_config.enable_dce_cfg       = 0;
     g_config.enable_reloc_data    = 0;
+    g_config.enable_reloc_text    = 0;
     g_config.enable_reg_top       = 0;
     g_config.enable_rt_lazy       = 0;
     g_config.enable_asm_extra     = 0;
@@ -104,6 +105,7 @@ static void apply_kv(const char *section, const char *key, const char *val) {
         else if (ark_streq(key, "opt_vectorize")) g_config.enable_opt_vectorize = parse_bool(val);
         else if (ark_streq(key, "dce_cfg"))       g_config.enable_dce_cfg = parse_bool(val);
         else if (ark_streq(key, "reloc_data"))    g_config.enable_reloc_data = parse_bool(val);
+        else if (ark_streq(key, "reloc_text"))    g_config.enable_reloc_text = parse_bool(val);
         else if (ark_streq(key, "reg_top"))       g_config.enable_reg_top = parse_bool(val);
         else if (ark_streq(key, "rt_lazy"))       g_config.enable_rt_lazy = parse_bool(val);
         else if (ark_streq(key, "asm_extra"))     g_config.enable_asm_extra = parse_bool(val);
@@ -411,6 +413,7 @@ void config_print(void) {
             g_config.enable_dce_cfg, g_config.enable_reloc_data,
             g_config.enable_reg_top, g_config.enable_rt_lazy,
             g_config.enable_asm_extra);
+    ark_log("  reloc_text=%d\n", g_config.enable_reloc_text);
     ark_log("  opt_level=%d debug_info=%d split_sections=%d\n",
             g_config.opt_level, g_config.debug_info, g_config.split_sections);
     ark_log("  config_file=%s\n",

@@ -15,6 +15,7 @@
 #include "stm32h7xx.h"
 #include "bsp_w25q.h"
 #include "bsp_sdram.h"
+#include "config.h"          /* g_config: 0.8.0 的运行时开关（--reloc-text 等） */
 
 extern uint32_t g_sdram_busy_seen;
 extern uint32_t g_sdram_sdsr_after_load;
@@ -389,6 +390,15 @@ static void opts_reset(ArkOptions *o) {
     o->split_sections = 0;
     o->scatter_file = 0;
     o->linker_script = 0;
+    /* 这三个字段同样是"漏了就让栈垃圾决定行为"的那一类：vector_table 在
+     * 上一版没被赋过值，板上之所以一直把向量表写进洞里，是因为那块栈恰好
+     * 非 0；换一个栈布局（比如加了局部变量）它就会变 0，链接器改走"镜像
+     * 必须自带向量表"的分支，行为在没有任何代码改动的情况下变了。
+     * 板上链接永远要写这张表，所以这里明确置 1。 */
+    o->vector_table = 1;
+    o->build_date  = 0;
+    o->build_time  = 0;
+    o->build_epoch = 0;
 }
 
 /* -c <src> -o <obj>, captured into the RAM file slot called <obj>. */
@@ -532,6 +542,13 @@ static void cmd_build(void) {
         shell_puts("Error: no sources in RAM; type 'demo' first\r\n");
         return;
     }
+
+    /* 0.8.0 --reloc-text：板上这个链接一定是"多对象 + 位移"（镜像装在
+     * 0x24070000，而两个对象都是按默认基址 0x08000000 编出来的），所以
+     * 字符串字面量那种段内绝对地址必须由链接器纠正，否则第二个 write()
+     * 会去读 0x08000400 那块 Flash。开关开在这里而不是启动时全局设，
+     * 是为了让 cc -S / 单对象这类老用法不受影响。 */
+    g_config.enable_reloc_text = 1;
 
     shell_puts("\r\n[arkcc] cc -c hello.c -o hello.o\r\n");
     rc = build_object("hello.c", "hello.o");
