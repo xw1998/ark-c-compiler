@@ -10,6 +10,7 @@
 #include "codegen.h"
 #include "memory.h"
 #include "common.h"
+#include "diag.h"
 
 static const char *arg_reg_r(int i) {
     static const char *r[] = { "a0","a1","a2","a3","a4","a5","a6","a7" };
@@ -68,6 +69,21 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
 
     for (fi = 0; fi < prog->func_count; fi++) {
         IrFunc *f = prog->funcs[fi];
+
+        /* Same gap as the ARM backend: the va region (frame+8000, requested
+         * by irgen for every variadic definition) is not implemented here, and
+         * _ark_va_ptr is never defined, so va_start would read the pointer from
+         * address 0 and va_arg would walk garbage. Refuse the definition rather
+         * than emit code that gives a wrong answer silently. Calls to variadic
+         * functions are fine; so are __asm bodies (no C body, no _ark_va_ptr). */
+        if (f->is_variadic && !f->is_asm_func) {
+            diag_tool(DIAG_SEV_ERROR, "arkcc",
+                      "variadic function '%s' is not supported by the "
+                      "riscv32 backend: va_start/va_arg would read the va "
+                      "pointer from address 0 (the va region is implemented "
+                      "only by the C and x86_64 backends)",
+                      f->name, 0,0,0,0,0);
+        }
         int i;
         int local_size = ((f->local_size + 16) + 15) & ~15;
         int sp_size = local_size + 256;

@@ -1,7 +1,9 @@
 # Ark C Compiler regression runner.
 #
 # For every examples/*.c:
-#   1. [arm]  -target arm -S must emit assembly without error (syntax/IR smoke test)
+#   1. [arm]  -target arm -S must emit assembly without error (syntax/IR smoke test),
+#             except files listed in $expectArmFail: their ARM emit MUST be
+#             refused with the backend diagnostic (that table is the gate).
 #   2. [c]    -target c -> host gcc -> run, and the process exit code must equal the
 #             "Expected exit code: N" value declared in the test's comment header.
 #
@@ -73,6 +75,27 @@ $skipC = @{
     # below excludes feat_multifile_* / test_multi_*, because their extra .c
     # files are not on the gcc command line and the helpers are not standalone
     # tests. Dead entries in this table would only mask that.
+}
+
+# Files whose ARM emit MUST fail. These use a feature the ARM backend does
+# not implement, and the point of the entry is to keep that honest: if
+# somebody implements the feature the ARM emit starts succeeding and this
+# table turns red -- the signal is to move the file back to the normal [arm]
+# check and delete the entry, not to "fix" the test.
+$expectArmFail = @{
+    # stdarg.h resolves va_start to the extern _ark_va_ptr; the ARM backend
+    # never defines it (irgen requests the va region at frame+8000, this
+    # backend skips it), so va_start used to compile into LDR r0,[r0] at
+    # address 0 -- silent garbage. The backend now refuses the definition.
+    "va_test"                       = "variadic definition: refused by the ARM backend"
+    "feat_va_arg_double"            = "variadic definition: refused by the ARM backend"
+    # The two files below are broad conformance suites that happen to contain a
+    # variadic helper. The backend refuses the definition but keeps emitting the
+    # rest of the file (the guard reports and continues), so these entries still
+    # catch a codegen crash anywhere else in the file -- they just cannot assert
+    # "emitted cleanly", because the exit code is the expected error.
+    "c99_test"                      = "contains a variadic helper: refused by the ARM backend"
+    "c99_armcc5_compat_test"        = "contains a variadic helper: refused by the ARM backend"
 }
 
 function Get-ExpectedExitCode {
@@ -149,7 +172,22 @@ foreach ($f in $examples) {
     Remove-Item -LiteralPath $armOut -ErrorAction SilentlyContinue
     $arm = Invoke-Cmd -Exe $Arkcc -Argv @($f.FullName, "-target", "arm", "-S", "-o", $armOut)
     Remove-Item -LiteralPath $armOut -ErrorAction SilentlyContinue
-    if ($arm.Code -ne 0) {
+    if ($expectArmFail.ContainsKey($base)) {
+        # Expected refusal: the emit must fail AND say why. A bare nonzero
+        # exit would also come out of a crash, so the text is checked too.
+        if ($arm.Code -eq 0) {
+            Write-Host "  [arm] EMIT SUCCEEDED but this file must be refused"
+            $fileFailures += "arm emit should have been refused"
+            $detail = "the ARM backend accepted a feature it does not implement"
+        } elseif ($arm.Text -notmatch "not supported by the ARM backend") {
+            Write-Host "  [arm] REFUSED with the wrong diagnostic (exit $($arm.Code))"
+            if ($arm.First -ne "") { Write-Host "        $($arm.First)" }
+            $fileFailures += "arm refusal diagnostic mismatch"
+            $detail = $arm.First
+        } else {
+            Write-Host "  [arm] REFUSED as expected ($($expectArmFail[$base]))"
+        }
+    } elseif ($arm.Code -ne 0) {
         Write-Host "  [arm] EMIT FAILED (exit $($arm.Code))"
         if ($arm.First -ne "") { Write-Host "        $($arm.First)" }
         $fileFailures += "arm emit failed"

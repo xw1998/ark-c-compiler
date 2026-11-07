@@ -77,7 +77,7 @@
 | 存储类 | 是 | `static/extern/auto/register`；`static` 在函数内持久化；`__thread` 线程局部存储 |
 | 控制流 | 是 | `if/else/while/for/do-while/switch/case/default/break/continue/goto/label/return` |
 | 运算符 | 是 | 全部 C99 运算符（算术/比较/逻辑短路/位运算/移位/复合赋值/三目/逗号/sizeof/强制转换） |
-| 函数 | 是 | 多参数（>4 个走栈；标量、64 位与结构体参数按 AAPCS32 分配：偶数寄存器对、栈上 8 字节对齐、按实际传输字数编号）、原型检查、变参 `...`、递归、多文件独立编译+链接 |
+| 函数 | 是 | 多参数（>4 个走栈；标量、64 位与结构体参数按 AAPCS32 分配：偶数寄存器对、栈上 8 字节对齐、按实际传输字数编号）、原型检查、变参 `...`（**仅 C / x86_64 后端**：ARM 与 riscv32 后端没实现 va 区，C 变参函数定义会被明确拒绝而不是编译成读地址 0 的代码，见 §后端支持）、递归、多文件独立编译+链接 |
 | 字面量 | 是 | 整数（十/八/十六进制+后缀）、字符+转义、字符串拼接、浮点 |
 | 浮点 | 是 | `float/double` 算术/比较/转换；ARM 后端支持硬件 FPU（VFP `VADD/VMUL/VCVT/VCMP`）或 `__aeabi_f*`/`__aeabi_d*` 软浮桩，`double` 为真 64 位精度 |
 | 64 位整数 | 是 | `long long` 全套：算术/比较/位运算/一元负号/`++`/`--`/复合赋值/移位（`__aeabi_l*` + `__aeabi_llsl/llsr/lasr` 桩）；移位与位运算按 C99 6.5.7 取**左**操作数宽度；`printf` 参数不截断；栈上 64 位参数按 AAPCS 低字在前、8 字节对齐 |
@@ -245,6 +245,30 @@
 | **C 源码** | 宿主测试主路径（IR -> 可读 C，完整支持内联汇编操作数透传） |
 | **x86** | i386 cdecl，输出 GAS 汇编（`-target` 亦接受别名 `x86_64`/`x86-64`/`i386`/`i686`） |
 | **RV32I** | 输出 RV32I 汇编 |
+
+**各后端的能力不是同一张表：`stdarg.h` 只在 C 与 x86_64 后端可用。**
+
+`irgen` 对每个变参函数都会请求把 a0..a7 镜像到 `frame+8000..8063`，而 `stdarg.h` 把
+`va_start` 展开成对 extern `_ark_va_ptr` 的读取。C 后端与 x86_64 后端都把这个符号定义
+成指向 va 区的局部变量；**ARM Thumb-2 与 RV32I 后端没有实现这块**，也从不定义
+`_ark_va_ptr`。在补上之前，一个 C 变参函数在 ARM 上会被翻成
+
+```
+    MOV r0, #0
+    LDR r0, [r0]        ; 从地址 0 读 va 指针
+```
+
+——不报错，然后 `va_arg` 顺着地址 0 上的向量表（也就是一个栈地址）往下走：错答案，
+无诊断（`examples/va_test.c` 实测）。所以 ARM / RV32I 后端现在**明确拒绝** C 变参函数
+定义（`variadic function 'x' is not supported by the ARM backend: ...`），
+`examples/run_tests.ps1` 的 `$expectArmFail` 表把这个拒绝本身当成闸门：哪天有人实现了
+va 区，那些用例会转红，提示把条目搬回正常的 `[arm]` 检查。
+
+**变参的调用（不是定义）在任何后端都可用**：调用方只是按 AAPCS 传参，SDK 里
+`__asm int printf(const char*, ...)` 那种"声明有 `...`、函数体是整段汇编"的写法也不受
+影响（`is_asm_func`）。补这块的工作不是"再补个后端分支"——ARM 的 `va_list` 必须按
+AAPCS 的寄存器/栈混合布局重新设计，现有 `stdarg.h`（8 字节槽位 + `long long *`）是 C
+后端的约定，照搬会在 64 位实参上给出错值。
 
 ## 目录结构
 

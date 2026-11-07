@@ -328,7 +328,7 @@ CPU 选择的实现位于 `include/cpu.h` + `src/cpu.c`，会根据 CPU 名字�
 | 定义、声明、调用、递归 | 是 |
 | 参数超过 4 个 | 是（多余的进栈，严格 AAPCS） |
 | 函数原型与参数个数检查 | 是 |
-| 变参 `...` | 是 |
+| 变参 `...` | 是（**仅 C / x86_64 后端**；ARM 与 RV32I 后端未实现 va 区，C 变参函数定义会被明确拒绝，见 README「后端」） |
 | 函数指针调用 | 是 |
 | `inline` | 是（作为提示） |
 | K&R 风格旧式参数 | 是 |
@@ -982,7 +982,7 @@ v0.8.0 覆盖了 armcc 5 常用扩展的 98% 以上。下表列出全部支持�
 | `stdint.h` | `int8_t..int64_t / uint8_t..uint64_t / intptr_t / uintptr_t` |
 | `stdbool.h` | `bool true false` |
 | `stddef.h` | `size_t NULL ptrdiff_t offsetof` |
-| `stdarg.h` | `va_list va_start va_arg va_end` |
+| `stdarg.h` | `va_list va_start va_arg va_end`（实现依赖 C 后端的 8 字节槽位约定：`va_start` 读 `_ark_va_ptr`，该符号只有 C 与 x86_64 后端定义） |
 | `string.h` | `strlen strcmp strcpy strncpy memset memcpy memmove` |
 | `stdio.h` | `printf puts putchar` |
 | `stdlib.h` | `abort exit malloc free`（声明） |
@@ -1055,6 +1055,7 @@ v0.8.0 已实现完整的 C99 集合 + 98% 以上的 armcc 常用扩展，仅剩
 - **位域宽度上限 32 位**：`IR_LOAD_FLD`/`IR_STORE_FLD` 按 32 位容器读写，`long long x:40` 会读回错值。因此语法分析阶段直接报错（`bit-field width 40 exceeds 32`）、不生成代码，不做静默截断。
 - **`ret (*fn(params))(params)`（返回函数指针的函数）不可解析**：`(*name)` 形式目前要求名字后立刻是 `)`，不支持括号内再带一层参数表，因此 `int (*pick(int))(int,int){...}` 这类声明符会报语法错误。**当前行为是显式报错**（`[parser] ... syntax error(s); no code generated`），不会产出错误二进制。修法需要把 `parse_declarator` 改写成递归下降 + 占位类型替换，属结构性改动。
 - **`va_arg` 依赖小端目标**：`stdlib/include/stdarg.h` 的 `va_arg` 按"8 字节槽位地址重解释"取值（`*(type *)(ap++)`），整数/指针/`double` 通吃，但要求目标为小端。ARM Thumb-2 与全部宿主均满足；大端目标需改为按类型分派。
+- **变参只在 C / x86_64 后端可用**：`irgen` 会为每个变参函数请求把 a0..a7 镜像到 `frame+8000..8063`，`stdarg.h` 的 `va_start` 展开成读 extern `_ark_va_ptr`；只有 C 与 x86_64 后端定义这个符号。ARM / RV32I 后端没有实现，过去会把它翻成从地址 0 取指针（错答案、无诊断），现在直接拒绝 C 变参函数定义。补这块要按 AAPCS 的寄存器/栈混合布局重新设计 ARM 的 `va_list`，不能照搬现在的 8 字节槽位写法。
 
 ### 兼容性说明
 
