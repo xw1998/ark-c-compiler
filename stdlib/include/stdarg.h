@@ -32,9 +32,11 @@
 
 typedef unsigned int *va_list;
 
-/* The region lives in the callee's own frame, one word per argument word, so
- * _ark_va_ptr is not a real variable: both backends answer a reference to it
- * with the frame address of the first variadic word. */
+/* The argument image is not a variable: on RV32I it is the 32 bytes at the
+ * bottom of the callee's frame, on ARM Thumb-2 it is the four pushed register
+ * words followed by the caller's own stack argument block.  Either way both
+ * backends answer a reference to _ark_va_ptr with the address of the first
+ * variadic word, one 4-byte word per AAPCS argument word. */
 extern unsigned int *_ark_va_ptr;
 
 #define va_start(ap, last) ((void)((ap) = _ark_va_ptr))

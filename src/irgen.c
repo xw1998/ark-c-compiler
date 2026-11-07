@@ -20,6 +20,12 @@
 /* Note: <stdio.h> intentionally NOT included to avoid pulling in semihosting-
  * dependent snprintf on STM32. sb_putf below uses a custom dtoa instead. */
 
+/* 1 (default): a variadic function reserves the C backend's 8 x 8-byte
+ * argument slot region at frame+8000.  The driver clears this for ARM Thumb-2
+ * and RV32I, whose regions are built from the caller's own argument words
+ * (see include/ir.h and <stdarg.h>). */
+int g_ir_va_slot_region = 1;
+
 /* Internal buffer used to serialize an AST initializer list into a C source
  * snippet. 64 KB is enough for ordinary examples. */
 typedef struct StrBuf {
@@ -914,7 +920,7 @@ IrProgram *irgen_program(AstNode *prog) {
                 /* For variadic functions, also store all 8 args (a0..a7) at a
                  * fixed frame region (ARK_VA_ARG_BASE..+64) so va_start/va_arg
                  * can access the variadic tail. */
-                if (d->u.func.is_variadic) {
+                if (d->u.func.is_variadic && g_ir_va_slot_region) {
                     int k;
                     for (k = 0; k < 8; k++) {
                         ir_emit(g.fn, IR_GETARG, 8000 + k * 8, 0, k);
@@ -928,8 +934,15 @@ IrProgram *irgen_program(AstNode *prog) {
             /* Bug-X4: For variadic functions, the 8000 frame region (used by
              * va_start/va_arg to access the variadic tail) must be included
              * in local_size so the backend prologue allocates enough stack.
-             * The region spans offsets 8000..8063 (8 args * 8 bytes). */
-            if (d->u.func.is_variadic) {
+             * The region spans offsets 8000..8063 (8 args * 8 bytes).
+             *
+             * Only for the 8-byte-slot backends (C, x86_64).  ARM and RV32I
+             * build their argument image out of the caller's own registers and
+             * stack words, so 8 KB of frame would be pure waste -- and on the
+             * board it is fatal: a mini-app task gets APP_TASK_STACK_SIZE
+             * = 4 KB, so a variadic function could never be called at all.
+             * The driver clears the switch for those two targets. */
+            if (d->u.func.is_variadic && g_ir_va_slot_region) {
                 if (g.max_size < 8064)
                     g.max_size = 8064;
             }
@@ -3311,12 +3324,6 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                     if (is_indirect && node->type &&
                         (node->type->kind == TYPE_LLONG || node->type->kind == TYPE_DOUBLE))
                         call_val |= 0x100000000LL;
-                    /* bit 33: the callee is variadic.  Only the call site
-                     * knows how many argument words it is passing, and the ARM
-                     * backend has to refuse a call whose stack words exceed the
-                     * va area the callee mirrors (IR_CALL in backend_arm.c). */
-                    if (s && s->kind == SYM_FUNC && s->is_variadic)
-                        call_val |= 0x200000000LL;
                     ir_emit(g->fn, IR_CALL, call_val, node->u.call.name, argmask);
                 }
             }

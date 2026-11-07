@@ -1054,22 +1054,26 @@ v0.8.0 已实现完整的 C99 集合 + 98% 以上的 armcc 常用扩展，仅剩
 - **`sizeof(long double)` 为 8**：本编译器采用 LLP64 数据模型（与 armcc 默认一致），`long double` 与 `double` 同为 8 字节，而 32 位 x86 宿主 GCC 上是 12。依赖 `sizeof(long double)` 区分精度的代码不可移植，跨平台比对 `sizeof` 结果时须按目标模型而非宿主模型来判断。
 - **位域宽度上限 32 位**：`IR_LOAD_FLD`/`IR_STORE_FLD` 按 32 位容器读写，`long long x:40` 会读回错值。因此语法分析阶段直接报错（`bit-field width 40 exceeds 32`）、不生成代码，不做静默截断。
 - **`ret (*fn(params))(params)`（返回函数指针的函数）不可解析**：`(*name)` 形式目前要求名字后立刻是 `)`，不支持括号内再带一层参数表，因此 `int (*pick(int))(int,int){...}` 这类声明符会报语法错误。**当前行为是显式报错**（`[parser] ... syntax error(s); no code generated`），不会产出错误二进制。修法需要把 `parse_declarator` 改写成递归下降 + 占位类型替换，属结构性改动。
-- **`va_arg` 依赖小端目标**：`stdlib/include/stdarg.h` 的 `va_arg` 按"8 字节槽位地址重解释"取值（`*(type *)(ap++)`），整数/指针/`double` 通吃，但要求目标为小端。ARM Thumb-2 与全部宿主均满足；大端目标需改为按类型分派。
-- **变参的两种镜像形状不能混用**：`irgen` 为每个变参函数请求把 a0..a7 镜像到
-  `frame+8000` 起，但请求的**步长是 8**（C 后端的槽位编号）。ARM / RV32I 把
-  `dst_off >= 8000` 的这些请求当"序言已经落好、不用管"，自己按 4 字节字铺：
-  ARM 是 `frame+8000 + 4*k`（word 0..3 = r0..r3，word 4+k = 调用方栈块第 k 字），
-  RV32I 是 `s0-8192 + 4*k`。`stdarg.h` 靠 `__ARK_VA_WORD_SLOTS` 选走法，靠
+- **`va_arg` 依赖小端目标**：`stdlib/include/stdarg.h` 的 `va_arg` 按"槽位地址重解释"取值（`*(type *)(...)`），整数/指针/`double` 通吃，但要求目标为小端。ARM Thumb-2 与全部宿主均满足；大端目标需改为按类型分派。
+- **变参的两种镜像形状不能混用**：C/x86_64 每个实参一个 8 字节槽位（`frame+8000` 起，
+  序言里把 a0..a7 镜像进去，`irgen` 的 `g_ir_va_slot_region` 负责预留 8064 字节）；
+  ARM / RV32I 用 4 字节字槽，而且**不镜像**：ARM 在序言里 `PUSH {r0-r3}`，让这四个字
+  正好落在调用方栈参数块下方（word 4+k = 栈块第 k 字，天然连续），帧只多 16 字节；
+  RV32I 把 a0..a7 落到帧底那 32 字节里（用 `sp_size` 本来就留的余量），地址是
+  `s0 - sp_size + 4*k`。`stdarg.h` 靠 `__ARK_VA_WORD_SLOTS` 选走法，靠
   `__ARK_VA_PACKED_WORDS` 区分"有对齐空洞（ARM）"与"平铺（RV32I）"。
-  改这里必须先跑 `examples/run_va_gate.py`：它把同一份源码分别交给 gcc 和
-  arkcc→as→unicorn，比的是**运行结果**而不是"有没有报错"。
+  **这两个后端的变参帧必须保持小**：`irgen` 的 8064 字节预留由驱动按后端关掉
+  （`g_ir_va_slot_region`），因为板上的小程序任务栈只有 4 KB——曾经 8 KB 的镜像区
+  在宿主上全绿、到板上必然溢出。`examples/run_va_gate.py` 现在为每个用例断言帧大小
+  （`FRAME_CAP = 1024`），并把同一份源码分别交给 gcc 和 arkcc→as→unicorn，比的是
+  **运行结果**而不是"有没有报错"。
 - **`_ark_va_ptr` 只在变参函数里有意义**：两个后端在非变参函数里引用它时直接报错
   （过去会从地址 0 取指针，静默给出错答案）。
-- **ARM 变参调用的上界**：被调方只镜像自己那一块栈实参，区域宽 `ARK_VA_WORDS-4 = 28`
-  字。因此一次变参调用若把超过 28 个字压上栈（即实参超过 32 字），`irgen` 置的
-  `IR_CALL` bit 33 会让 ARM 后端直接报错（`variadic call passes N stack words`），
-  而不是让 `va_arg` 走过镜像区去读没写过的帧内容。32 字（28 栈字）是允许的边界，
-  `run_va_gate.py` 里 `arm/toomany_stack` 钉住的就是这条。
+- **ARM 的栈参数没有条数上限**：va 区就是调用方自己的参数镜像，`va_arg` 顺着栈参数往
+  上走即可，不需要"够不够 28 个字"这类检查。代价是每次变参调用 16 字节栈和返回前多
+  一条 `ADD sp, sp, #16`（`POP {r5,r6,r7,lr}` 之后 `BX lr`，因为 `POP {.., pc}` 后面
+  没法再调栈）。`run_va_gate.py` 里 `arm/many_stack` 用 34 个参数字（30 个在栈上）钉住
+  这条。
 - **float 实参会被提升成 double**（C99 6.5.2.2p6，`irgen` 发 `IR_F2F`），所以变参调用的
   形参宽度按 8 字节算；`argmask` 的 8 字节位由 `irgen` 一并置上。
 - **RV32I 自己的边界**：只从 a0-a7 传参、没有两字值模型，所以超过 8 个参数字的调用与

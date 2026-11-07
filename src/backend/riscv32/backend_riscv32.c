@@ -19,13 +19,21 @@ static const char *arg_reg_r(int i) {
 }
 
 /* ---- va region ---------------------------------------------------------
- * One 4-byte word per argument register, at s0 - RV_VA_OFF + 4*k:
+ * One 4-byte word per argument register, at s0 - sp_size + 4*k:
  *   word k = a<k>, k = 0..7
  * The frame pointer is s0 and the region is written once per variadic call,
  * in the prologue, before anything can clobber a0-a7.  <stdarg.h> walks it as
  * words (__ARK_VA_WORD_SLOTS, and __ARK_VA_PACKED_WORDS because this backend
- * numbers argument words without alignment holes). */
-#define RV_VA_OFF   8192
+ * numbers argument words without alignment holes).
+ *
+ * The region sits at the *bottom* of the frame, inside the 256 bytes of slack
+ * sp_size already carries, so it costs no extra stack.  It used to live at a
+ * fixed s0-8192, which forced an 8 KB frame for every variadic function --
+ * more than a whole mini-app task stack on the board (APP_TASK_STACK_SIZE
+ * = 4 KB), i.e. a variadic function could never be called there.  The
+ * padding is below every local slot: locals are addressed as s0-(16+off) and
+ * off < f->local_size, so the lowest local byte is at least 240 bytes above
+ * the region. */
 #define RV_VA_WORDS 8
 
 /* GNU as encodes a 12-bit signed displacement only, and both a variadic frame
@@ -135,8 +143,6 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                 else
                     va_named_words += (sz >= 8) ? 2 : 1;
             }
-            if (sp_size < RV_VA_OFF + 4 * RV_VA_WORDS + 16)
-                sp_size = RV_VA_OFF + 4 * RV_VA_WORDS + 16;
             sp_size = (sp_size + 15) & ~15;
         }
 
@@ -162,7 +168,7 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
         if (g_rv_va_active) {
             int k;
             asmbuf_puts(&buf, "    li t2, ");
-            asmbuf_int(&buf, RV_VA_OFF);
+            asmbuf_int(&buf, sp_size);
             asmbuf_puts(&buf, "\n    sub t2, s0, t2\n");
             for (k = 0; k < RV_VA_WORDS; k++) {
                 asmbuf_puts(&buf, "    sw ");
@@ -256,12 +262,12 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                                       "declared with '...'",
                                       f->name, 0,0,0,0,0);
                         }
-                        /* The region grows *up* from s0-RV_VA_OFF (word k at
-                         * +4k), so the first variadic word is 4*named_words
-                         * above the base -- the same direction the spill
-                         * writes in. */
+                        /* The region grows *up* from the bottom of the frame
+                         * (word k at +4k), so the first variadic word is
+                         * 4*named_words above that base -- the same direction
+                         * the spill writes in. */
                         asmbuf_puts(&buf, "    li t2, ");
-                        asmbuf_int(&buf, RV_VA_OFF);
+                        asmbuf_int(&buf, sp_size);
                         asmbuf_puts(&buf, "\n    sub t2, s0, t2\n    addi t2, t2, ");
                         asmbuf_int(&buf, 4 * va_named_words);
                         asmbuf_puts(&buf, "\n    addi sp, sp, -4\n    sw t2, 0(sp)\n");

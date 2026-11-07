@@ -1833,8 +1833,14 @@ int ark_compile(const ArkOptions *opts) {
         const ArkBackend *vbe = opts->target ? ark_backend_find(opts->target)
                                              : ark_backend_default();
         if (vbe && vbe->name &&
-            (ark_streq(vbe->name, "arm") || ark_streq(vbe->name, "riscv32")))
+            (ark_streq(vbe->name, "arm") || ark_streq(vbe->name, "riscv32"))) {
             preproc_define("__ARK_VA_WORD_SLOTS", "1");
+            /* ...and irgen must not reserve the C backend's 8 KB slot area:
+             * these two backends build the region out of the caller's own
+             * words, so reserving it would only cost stack (8 KB against a
+             * 4 KB mini-app task stack on the board). */
+            g_ir_va_slot_region = 0;
+        }
         /* ...and whether those word slots carry the AAPCS32 alignment holes
          * (ARM: a 64-bit argument starts on an even register / an 8-byte
          * aligned stack slot) or are packed (RV32I: this backend numbers

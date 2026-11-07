@@ -29,6 +29,7 @@ target could be run at all (nothing was verified), 1 means a real failure.
 """
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -171,6 +172,11 @@ CASES = [
     ('d_three',  'return dsum(3, 1.5, 2.5, 3.5) & 0xFF;', 'arm'),
     ('d_neg',    'return dsum(2, 1024.5, mkneg(2.5)) & 0xFF;', 'arm'),
     ('d_prom',   'return dsum(1, 1.5f) & 0xFF;', 'arm'),
+    # 34 argument words: 4 in r0-r3 and 30 on the stack.  The ARM region is the
+    # caller's own image, so the only limit is the caller's stack -- there is
+    # no mirrored window to overflow any more.
+    ('many_stack', 'return sN(33, ' + ', '.join(str(i) for i in range(1, 34)) + ') & 0xFF;',
+     'arm'),
 ]
 
 # Arguments a target cannot pass must be a build error, and that is asserted.
@@ -181,16 +187,6 @@ REFUSE = [
     # ...and it has no two-word value model, so a 64-bit va_arg cannot be built.
     ('ll_refused', 'return llw_sum(1, 0x1122334455667788LL) & 0xFF;',
      '8-byte loads are not implemented', 'll'),
-]
-
-# ARM: the callee mirrors only its own stack block, ARK_VA_WORDS-4 = 28 words.
-# A call that puts more than that on the stack has to be a build error, not a
-# va_arg walking past the end of the mirrored area.  34 argument words put 30
-# on the stack.
-REFUSE_ARM = [
-    ('toomany_stack',
-     'return sN(33, ' + ', '.join(str(i) for i in range(1, 34)) + ') & 0xFF;',
-     'the va area mirrors only'),
 ]
 
 # A 64-bit reader for the refusal case above (the RV32I prelude has none).
@@ -349,6 +345,33 @@ class Runner:
         return uc.reg_read(UC_RISCV_REG_A0) & 0xFF, ''
 
 
+FRAME_CAP = 1024   # bytes; nothing in this gate needs a bigger frame
+
+def frame_peak(asm_path, target):
+    """Largest stack adjustment in one function of the emitted assembly.
+
+    The point of this check: an earlier version of the ARM and RV32I variadic
+    support mirrored the whole argument register file into the frame at a fixed
+    offset, which forced an 8 KB frame on every variadic function while a
+    mini-app task on the board only gets 4 KB (APP_TASK_STACK_SIZE).  It passed
+    every execution test here and could never have run on the target, so the
+    frame size is asserted, not assumed.
+    """
+    try:
+        text = open(asm_path, encoding='utf-8', errors='replace').read()
+    except OSError:
+        return None
+    peak = 0
+    if target == 'arm':
+        for m in re.finditer(r'^\s*SUB\s+sp,\s*sp,\s*#(\d+)', text, re.M):
+            peak = max(peak, int(m.group(1)))
+    else:
+        # RV32I forms the size in a register: "li t0, N" then "sub sp, sp, t0".
+        for m in re.finditer(r'^\s*li\s+t0,\s*(\d+)\s*\n\s*sub\s+sp,\s*sp,\s*t0',
+                             text, re.M):
+            peak = max(peak, int(m.group(1)))
+    return peak
+
 def tool_finder(prefix, path):
     """Return a function 'as'/'ld'/... -> absolute tool path, or None."""
     if not path:
@@ -419,21 +442,14 @@ def main():
                 print('FAIL arm/%-9s arm=%d expected=%d' % (name, got, exp))
                 r.failed += 1
             else:
-                print('PASS arm/%-9s %d' % (name, got))
-                r.passed += 1
-        for name, body, want in REFUSE_ARM:
-            src = os.path.join(TMP, 'arm_' + name + '.c')
-            write(src, PRELUDE + PRELUDE_64 + '\nint main(void)\n{\n    ' + body + '\n}\n')
-            rc = r.run([ARKC, '-target', 'arm', '-S', '-I', INC, src,
-                        '-o', os.path.join(TMP, 'arm_' + name + '.s')])
-            msg = rc.stdout + rc.stderr
-            if rc.returncode != 0 and want in msg:
-                print('PASS arm/%-9s refused' % name)
-                r.passed += 1
-            else:
-                print('FAIL arm/%-9s expected a refusal (%r), rc=%d'
-                      % (name, want, rc.returncode))
-                r.failed += 1
+                pk = frame_peak(os.path.join(TMP, 'arm_' + name + '.s'), 'arm')
+                if pk is not None and pk > FRAME_CAP:
+                    print('FAIL arm/%-9s frame %d B > %d (a variadic frame must '
+                          'stay small)' % (name, pk, FRAME_CAP))
+                    r.failed += 1
+                else:
+                    print('PASS arm/%-9s %d' % (name, got))
+                    r.passed += 1
     else:
         print('SKIP arm: no arm-none-eabi toolchain (set --arm-as / ARKCC_ARM_AS)')
 
@@ -464,8 +480,14 @@ def main():
                 print('FAIL rv/%-9s rv=%d expected=%d' % (name, got, exp))
                 r.failed += 1
             else:
-                print('PASS rv/%-9s %d' % (name, got))
-                r.passed += 1
+                pk = frame_peak(os.path.join(TMP, 'rv_' + name + '.s'), 'rv')
+                if pk is not None and pk > FRAME_CAP:
+                    print('FAIL rv/%-9s frame %d B > %d (a variadic frame must '
+                          'stay small)' % (name, pk, FRAME_CAP))
+                    r.failed += 1
+                else:
+                    print('PASS rv/%-9s %d' % (name, got))
+                    r.passed += 1
         for name, body, want, extra in REFUSE:
             src = os.path.join(TMP, 'rv_' + name + '.c')
             head = PRELUDE + (LL_SNIPPET if extra == 'll' else '')
