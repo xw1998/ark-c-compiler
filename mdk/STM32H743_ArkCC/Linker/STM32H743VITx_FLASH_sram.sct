@@ -1,0 +1,41 @@
+; Ark C Compiler - MDK STM32H743 - scatter file, FALLBACK layout
+;
+; This is the layout that was in use before the external SDRAM was brought up:
+; *(.ark_buf) sits in AXI SRAM next to .ark_code/.ark_heap.  It exists as the
+; switch's "off" position -- point ArkCC.uvprojx <ScatterFile> here and set
+; ARK_SDRAM_BUFS to 0 in system_stm32h7xx.c, and the firmware behaves exactly
+; as it did before the SDRAM work (nothing touches the FMC).
+;
+; The default layout (buffers in the 32 MB SDRAM) is
+; Linker/STM32H743VITx_FLASH.sct.
+
+LR_IROM1 0x08000000 0x00200000  {
+  ER_IROM1 0x08000000 0x00200000  {
+    *.o (RESET, +First)
+    *(InRoot$$Sections)
+    .ANY (+RO)
+    .ANY (+XO)
+  }
+
+  ; ArkCC work buffers
+  RW_AXI 0x24000000 0x00080000  {
+    *(.ark_buf)
+    *(.ark_code)
+    *(.ark_heap)
+  }
+
+  ; Console trampoline for programs the board compiles itself.  crt.c calls
+  ; this as a constant address (the on-board compiler has no --defsym), so
+  ; the address must never move.  main() checks it at boot and refuses to
+  ; run if it is not 0x2407F000.
+  ; The 60KB below it (0x24070000..0x2407F000) is where a linked app image
+  ; is loaded and called.
+  ARK_TRAMP 0x2407F000 0x00000100  {
+    *(.ark_tramp)
+  }
+
+  ; ordinary read-write / zero-init data
+  RW_SRAM 0x30000000 0x00048000  {
+    .ANY (+RW +ZI)
+  }
+}

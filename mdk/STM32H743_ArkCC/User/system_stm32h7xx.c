@@ -7,6 +7,7 @@
  * communicate over USART1 (shell) and SPI1 (W25Q flash).
  */
 #include "stm32h7xx.h"
+#include "bsp_sdram.h"
 
 #warning "system_stm32h7xx.c is a placeholder; replace with the official version"
 
@@ -35,6 +36,29 @@ void SystemInit(void) {
      * (HFSR.FORCED).  SCB base 0xE000ED00, CPACR 0xE000ED88. */
     *(volatile unsigned *)0xE000ED88U |= (0xFU << 20);
     ark_fpu_barrier();
+
+    /* --- the compiler's work buffers live in the external SDRAM -----------
+     * ARK_SDRAM_BUFS 1: Linker/STM32H743VITx_FLASH.sct puts *(.ark_buf) at
+     *   0xC0000000, so the FMC SDRAM has to be alive before __main copies and
+     *   zeroes that section.  SystemInit() is the last code that runs before
+     *   the scatter load, hence it happens here and not in main().
+     * ARK_SDRAM_BUFS 0: Linker/STM32H743VITx_FLASH_sram.sct, the previous
+     *   layout with every buffer in AXI SRAM; nothing here runs.
+     * The two must be flipped together -- a define of 1 with the SRAM script
+     * still boots (the SDRAM is initialised and left unused), but a define of
+     * 0 with the SDRAM script faults on the first scatter-load write. */
+#define ARK_SDRAM_BUFS 1
+#if ARK_SDRAM_BUFS
+    if (bsp_sdram_init() != 0 || bsp_sdram_selftest() != 0) {
+        /* Nothing useful can run: .ark_buf is about to be zeroed in a window
+         * that does not answer.  Stop here, deterministically, instead of
+         * taking an imprecise bus fault inside the scatter loader.  To see the
+         * actual init failure, build with ARK_SDRAM_BUFS 0 + the *_sram.sct and
+         * run the `sdram` shell command, which reports every register. */
+        for (;;) { }
+    }
+    bsp_sdram_mpu_config();
+#endif
 }
 
 /* AC5 embedded assembler: this project does not pull in core_cm7.h, so the

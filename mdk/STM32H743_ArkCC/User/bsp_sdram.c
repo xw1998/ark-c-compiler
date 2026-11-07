@@ -32,6 +32,16 @@
 #define RCC_AHB3ENR        REG32(RCC_BASE + 0xD4U)
 #define RCC_AHB4ENR        REG32(RCC_BASE + 0xE0U)
 
+/* MPU (ARMv7-M): type 0xE000ED90, ctrl 0xE000ED94, rnr 0xE000ED98,
+ * rbar 0xE000ED9C, rasr 0xE000EDA0. */
+#define MPU_CTRL           REG32(0xE000ED94UL)
+#define MPU_RNR            REG32(0xE000ED98UL)
+#define MPU_RBAR           REG32(0xE000ED9CUL)
+#define MPU_RASR           REG32(0xE000EDA0UL)
+
+/* 32 MB = 2^25 -> RASR SIZE field is 24 (size = 2^(SIZE+1)). */
+#define SDRAM_MPU_SIZE     24UL
+
 /* FMC (RM0433 22.7): SDRAM registers start at 0x140 */
 #define FMC_BASE           0x52004000UL
 #define FMC_BCR1           REG32(FMC_BASE + 0x000U)
@@ -343,4 +353,52 @@ int bsp_sdram_check8(uint32_t n, uint32_t *bad_off, uint32_t *got, uint32_t *exp
         }
     }
     return 0;
+}
+
+
+/* Is the part actually answering?  One word at each end of the window.  Uses
+ * plain 32-bit accesses (aligned, so legal even while the window still carries
+ * the default Device attribute). */
+int bsp_sdram_selftest(void)
+{
+    volatile uint32_t *lo = (volatile uint32_t *)SDRAM_BANK_ADDR;
+    volatile uint32_t *hi =
+        (volatile uint32_t *)(SDRAM_BANK_ADDR + SDRAM_SIZE_BYTES - 4UL);
+
+    *lo = 0xA5A5C3C3UL;
+    *hi = 0x5A5A3C3CUL;
+    if (*lo != 0xA5A5C3C3UL) return -1;
+    if (*hi != 0x5A5A3C3CUL) return -2;
+    return 0;
+}
+
+/* The ARMv7-M default memory map puts 0xC0000000 in "Device" territory, and
+ * Device memory raises a UsageFault on every unaligned access.  The compiler's
+ * work buffers are read and written in mixed byte/half/word patterns, so the
+ * window has to become Normal memory before anything uses it as data.
+ * Non-cacheable (TEX=001, C=0, B=0) keeps coherency trivial with D-Cache off
+ * and is the conservative choice for external SDRAM; it still lets the AXI
+ * interconnect merge accesses.
+ *
+ * RASR = XN 0 | AP 011 (full access) | TEX 001 | S 0 | C 0 | B 0 |
+ *        SIZE 24 | ENABLE   = 0x03080031
+ * RBAR = base | VALID | region number  = 0xC0000010
+ * CTRL = ENABLE | PRIVDEFENA (regions not covered keep the default map)
+ */
+void bsp_sdram_mpu_config(void)
+{
+    extern void ark_fpu_barrier(void);   /* DSB + ISB, in system_stm32h7xx.c */
+
+    MPU_RNR  = 0UL;
+    MPU_RBAR = SDRAM_BANK_ADDR | (1UL << 4) | 0UL;
+    MPU_RASR = (0UL << 28)                             /* XN = 0           */
+             | (3UL << 24)                             /* AP = full access */
+             | (1UL << 19)                             /* TEX = 001 Normal */
+             | (0UL << 18)                             /* S = 0            */
+             | (0UL << 17)                             /* C = 0            */
+             | (0UL << 16)                             /* B = 0            */
+             | ((SDRAM_MPU_SIZE & 0x1FUL) << 1)
+             | 1UL;                                    /* ENABLE           */
+    MPU_CTRL = (1UL << 0) | (1UL << 2);
+    ark_fpu_barrier();
 }

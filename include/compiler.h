@@ -51,6 +51,10 @@ typedef struct {
 } ArkOptions;
 
 int ark_compile(const ArkOptions *opts);
+
+/* Address of the compiler's own work buffers (.ark_buf), for boot-time
+ * reporting of where the linker actually placed them. */
+unsigned long arkcc_buf_addr(void);
 int ark_compile_and_run(const char *path);
 
 #endif /* ARK_COMPILER_H */

@@ -1,14 +1,25 @@
-; Ark C Compiler - MDK STM32H743 - scatter file
-; STM32H743: 2 MB Flash @ 0x08000000
-;   DTCM 128KB @ 0x20000000   -> stack only (initial SP is the top of DTCM)
-;   AXI  512KB @ 0x24000000   -> compiler buffers: composed of ~370KB of
-;                                .ark_buf plus the 32KB code/heap windows
-;   SRAM1+2+3 288KB @ 0x30000000 -> everything else (.data/.bss/heap)
+; Ark C Compiler - MDK STM32H743XIH6 (FK743M5-XIH6 core board) - scatter file
 ;
-; The buffers are RW (initialised) data, so they cost both flash and RAM:
-; .ark_buf alone is 0x25000 + 0x10000 + 0x20000 + 0x7000.  Putting those plus
-; .data/.bss into one 512KB region does not fit, which is why they get their
-; own region here.
+; Memory this layout uses:
+;   Flash   2 MB    @ 0x08000000
+;   DTCM    128 KB  @ 0x20000000  -> stack only (initial SP is the top of DTCM)
+;   AXI     512 KB  @ 0x24000000  -> .ark_code (32 KB) + .ark_heap (32 KB), and
+;                                    the 60 KB image window at 0x24070000 that
+;                                    an on-board compiled program is loaded into
+;   SDRAM   32 MB   @ 0xC0000000  -> *(.ark_buf): the compiler's source, asm,
+;                                    code, object and link buffers.
+;   SRAM1-3 288 KB  @ 0x30000000  -> everything else (.data/.bss/heap)
+;
+; The SDRAM is brought up in SystemInit() (bsp_sdram_init + MPU region), because
+; __main scatters *(.ark_buf) before main() ever runs.
+;
+; Switch: this is the "work buffers in SDRAM" layout.  ArkCC.uvprojx <ScatterFile>
+; points here and system_stm32h7xx.c has ARK_SDRAM_BUFS 1.  The previous layout
+; (all buffers in AXI SRAM) is Linker/STM32H743VITx_FLASH_sram.sct + ARK_SDRAM_BUFS 0;
+; flip both or neither.
+;
+; .ark_buf is ~311 KB (0x25000 + 0x10000 + 0x20000 + 0x7000) of mostly
+; zero-initialised data, so it costs almost nothing in flash.
 
 LR_IROM1 0x08000000 0x00200000  {
   ER_IROM1 0x08000000 0x00200000  {
@@ -18,9 +29,12 @@ LR_IROM1 0x08000000 0x00200000  {
     .ANY (+XO)
   }
 
-  ; ArkCC work buffers
-  RW_AXI 0x24000000 0x00080000  {
-    *(.ark_buf)
+  ; Code / heap windows.  They stay in the fast on-chip AXI SRAM because the
+  ; image next door is executed from here.
+  ; The 0x70000 limit is deliberate: 0x24070000 is where an image built on the
+  ; board gets loaded, and the previous layout let this region grow to
+  ; 0x24080000, i.e. straight over that window.
+  RW_AXI 0x24000000 0x00070000  {
     *(.ark_code)
     *(.ark_heap)
   }
@@ -29,10 +43,13 @@ LR_IROM1 0x08000000 0x00200000  {
   ; this as a constant address (the on-board compiler has no --defsym), so
   ; the address must never move.  main() checks it at boot and refuses to
   ; run if it is not 0x2407F000.
-  ; The 60KB below it (0x24070000..0x2407F000) is where a linked app image
-  ; is loaded and called.
   ARK_TRAMP 0x2407F000 0x00000100  {
     *(.ark_tramp)
+  }
+
+  ; The compiler's working set, in the external 32 MB SDRAM.
+  RW_SDRAM 0xC0000000 0x02000000  {
+    *(.ark_buf)
   }
 
   ; ordinary read-write / zero-init data

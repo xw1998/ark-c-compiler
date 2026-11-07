@@ -32,6 +32,16 @@ static char          g_src[ARK_SRC_BUF_SIZE]   __attribute__((section(".ark_buf"
 static char          g_asm[ARK_ASM_BUF_SIZE]   __attribute__((section(".ark_buf")));
 static unsigned char g_code[ARK_CODE_BUF_SIZE] __attribute__((section(".ark_buf")));
 
+/* Where those buffers ended up.  The STM32H743 target links .ark_buf into
+ * the external SDRAM (0xC0000000); the host build and the *_sram.sct
+ * fallback keep them on chip.  main() prints this so the layout is a
+ * measurement instead of a belief.
+ */
+unsigned long arkcc_buf_addr(void)
+{
+    return (unsigned long)(void *)g_src;
+}
+
 static int derive_output(const char *input, char *out, int cap, const char *ext) {
     int n = ark_strlen(input);
     int el = ark_strlen(ext);

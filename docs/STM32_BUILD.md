@@ -222,7 +222,12 @@ arkCC 源码中用 `__attribute__((section(".ark_buf")))` 把大型静态数组�
 | --- | --- | --- | --- |
 | Flash | 148.59 KB | 2 MB | 7.3% |
 | DTCM | 19.3 KB | 128 KB | 15% |
-| AXI SRAM | 440 KB | 512 KB | 86%（余 72 KB） |
+| AXI SRAM | 64 KB | 512 KB | 12%（余 448 KB，其中 60 KB 是留给板上编译产物装载的窗口） |
+| SDRAM | 404 KB | 32 MB | 1.2% |
+
+> 这一版把 `.ark_buf`（编译器工作缓冲，约 311 KB 初始化 + 其余清零）整块搬到了
+> 外挂 SDRAM 0xC0000000，AXI SRAM 只剩 `.ark_code`/`.ark_heap` 两个 32 KB 窗口。
+> 细节、开关与回退见 §13。
 
 **AXI SRAM 明细**：
 
@@ -476,12 +481,20 @@ arkcc> build
 [arkcc] image loaded at 24070000, 5838 bytes
 --- program output -------------------------------------------
 hello, world
+\x00D!..A..O..\x0b#..CP..\x04^..R..\x04[...
+...
+--------------------------------------------------------------
 [arkcc] program returned 0
 ```
 
 即：**板上编译 → 板上链接 → 装载 → 执行 → 返回 0 → 回到 shell** 全通，
 第一个 `write(1, msg, ...)` 打出的 `hello, world` 是 `crt.c` 里
 `write()` → `0x2407F001`（`ark_board_putn` trampoline）→ USART1。
+
+**注意**：`hello, world` 之后那几行是乱码，不是随机的——它来自 `hello.c` 的第二个
+`write()`，那个参数是**字符串字面量**而不是 `msg[]` 数组，命中 §12.3 记下的
+`.rodata` 绝对地址缺陷（编译期按 `0x08000000` 写死，镜像实际在 `0x24070000`）。
+改内存布局不影响它，见 §12.3 与 §13.6。
 
 ### 12.2 这一轮修掉的五个真缺陷
 
@@ -527,3 +540,158 @@ RAM 侧同理：`static const char msg[]` 的地址被写成 `0x20000000`（`g_d
 
 在收口之前，**板载 `build` 的结论只能说到「编译/链接/装载/执行/返回 0 全通，第一行
 输出正确」**，不能声称 POSIX hello world 完整正确。
+
+---
+
+## 13 阶段 4：外挂 SDRAM 调通，编译器工作缓冲搬进 SDRAM
+
+板子：反客 FK743M5-XIH6（STM32H743XIH6 TFBGA240 + W9825G6 32 MB 16 位 SDRAM，
+FMC SDRAM bank1 @ `0xC0000000`，HSE 25 MHz）。本固件仍跑 HSI 64 MHz，
+所以 `fmc_ker_ck = HCLK = 64 MHz`、`SDCLK = HCLK/2 = 32 MHz`。
+
+### 13.1 现象：SDRAM 一碰就 IMPRECISERR
+
+第一版驱动（纯寄存器，`User/bsp_sdram.c`）`SDCMR` 的命令序列写完，
+`FMC_SDSR` 恒为 0，`FMC_SDRTR` 写进去读回 0，第一次 `0xC0000006` 写入即
+
+```
+*** CPU FAULT ***   CFSR=0x00000400 (IMPRECISERR)  HFSR=0x40000000 (FORCED)
+```
+
+同一块板上把厂家例程烧进去却全过（32 MB 写 145 ms / 读 251 ms，8 位 NBL 也过）
+⇒ 硬件没问题，是配置错。
+
+### 13.2 定位手段：读"能工作"的那份固件的寄存器
+
+不看文档、不猜，直接把厂家固件烧上去、跑到测试通过的位置停住读寄存器：
+
+| 寄存器 | 厂家（能通过） | 第一版（失败） |
+| --- | --- | --- |
+| `FMC_SDCR1` | `0x000039D9` | `0x00003158` |
+| `FMC_SDTR1` | `0x00126361` | `0x02237472` |
+| `FMC_SDRTR` | `0x0000072C`（918<<1） | `0x00000000`（写不进去） |
+| `RCC_D1CCIPR` | `0x00000000`（FMCSEL=00=HCLK） | 同 |
+| `FMC_BCR1` | `0x800030DB`（FMCEN=1） | 复位值 `0x000030DB`（FMCEN=0） |
+
+再用调试器逐级复现"什么时候 `SDRTR` 变成可写"：复位后不可写 → 开
+`RCC_AHB3ENR.FMCEN` 仍不可写 → 置 `FMC_BCR1.FMCEN` 仍不可写。
+而厂家状态下可写。差别只剩 `SDCR1`/`SDTR1` 的内容。
+
+### 13.3 根因：`SDCR1.SDCLK = 00` 是"关时钟"，不是 HCLK/2
+
+`stm32h7xx_ll_fmc.h` 的常量才是权威：
+
+```
+FMC_SDRAM_CLOCK_DISABLE  0x00000000   <-- 第一版用的就是这个
+FMC_SDRAM_CLOCK_PERIOD_2 0x00000800   (= HCLK/2，厂家用的)
+FMC_SDRAM_CLOCK_PERIOD_3 0x00000C00
+```
+
+SDRAM 时钟被关掉，命令发生器整块不干活：`SDCMR` 写了不算、`SDRTR` 收不下，
+`0xC0000000` 照默认从设备返回 AXI error ⇒ 不精确总线错误。
+顺带另外两个字段也是同一个错（按 `FMC_SDRAM_*` 常量核）：
+
+| 字段 | 第一版 | 真值 | 后果 |
+| --- | --- | --- | --- |
+| `NC` | 00（= **8** 列） | 01（9 列） | 第 9 根列地址不参与译码，半行取不到 |
+| `CAS` | 10（= **2**） | 11（3） | 延迟对不上 |
+| `SDCLK` | 00（= **关**） | 10（HCLK/2） | 整块不工作 |
+
+### 13.4 最终寄存器值（逐字段可核）
+
+```
+FMC_SDCR1 = 0x000039D9
+  NC=01 NR=10 MWID=01 NB=1 CAS=11 WP=0 SDCLK=10 RBURST=1 RPIPE=01
+FMC_SDTR1 = 0x00126361        // 字段是"周期数-1"（厂家 HAL 每项都减 1）
+  TMRD=1 TXSR=6 TRAS=3 TRC=6 TWR=2 TRP=1 TRCD=0
+FMC_SDRTR = 230 << 1 = 0x1CC  // 按真实 SDCLK 32 MHz 重算，不是照抄厂家的 918
+```
+
+刷新计数用 `(SDCLK_kHz × 64) / 8192 - 20`，32 MHz 得 230；厂家的 918 只对应
+120 MHz，直接抄会算出 4.7 倍的刷新频率。
+
+`SDTR1` 的字段**照抄工作板上的读数**而不是重新推导：在 32 MHz 下这些周期数
+换算成 ns 只会更长（最短的 TRCD 1 周期 = 31 ns，W9825G6 要求 ≥18 ns），
+所以一定合法；这样第一次点亮就不至于变成第二个实验。
+
+### 13.5 实测（`sdram` 命令）
+
+```
+[sdram] SDCR1=0x000039D9 SDTR1=0x00126361 SDRTR=0x000001CC SDSR=0x00000000
+[sdram] command ran: busy_seen=0, SDSR after LOAD_MODE=0x00000000
+[sdram] SDCLK = 32000 kHz (HCLK/2), refresh count = 230
+[sdram] BCR1 before=0x000030DB after=0x800030DB, D1CCIPR=0x00000000 AHB3ENR=0x00001000
+[sdram] written in 1312 ms (24.39 MB/s)
+[sdram] 16-bit verify OK in 7130 ms (4.48 MB/s)
+[sdram] 8-bit probe OK (NBL0/NBL1 are wired correctly)
+[sdram] SDRAM OK: 32 MB usable at 0xC0000000
+```
+
+`busy_seen=0` 是预期的：32 MHz 下一条 PALL 只有几个周期，CPU 读到 `SDSR` 时
+`BUSY` 早就清了，所以这个探针证明不了"命令执行了"。真正证明执行的是**数据**：
+32 MB 全片写回读一致 + 8 位字节道探针通过。
+
+读比写慢 5 倍不是缺陷：这个窗口此时还是 ARMv7-M 默认的 **Device** 属性
+（不缓存、不合并、不能非对齐），每次读都是一次独立 AXI 事务；§13.6 换成
+Normal 之后仍是逐次读（D-Cache 没开），只是允许合并。
+
+### 13.6 内存布局：`.ark_buf` 搬进 SDRAM
+
+`Linker/STM32H743VITx_FLASH.sct`：
+
+```
+RW_AXI   0x24000000 0x00070000   { *(.ark_code)  *(.ark_heap) }   // 64 KB
+ARK_TRAMP 0x2407F000 0x00000100  { *(.ark_tramp) }               // 固定地址
+RW_SDRAM 0xC0000000 0x02000000   { *(.ark_buf) }                 // 404 KB
+RW_SRAM  0x30000000 0x00048000   { .ANY (+RW +ZI) }
+```
+
+三处配套改动，缺一不可：
+
+1. **`SystemInit()` 里初始化 SDRAM**（`bsp_sdram_init()` + `bsp_sdram_selftest()`
+   + `bsp_sdram_mpu_config()`）。`__main` 在 `main()` 之前就要按 scatter
+   搬/清零 `.ark_buf`，所以这件事只能发生在 `SystemInit()`。
+   自检失败就停在这里（`for(;;)`），而不是让 scatter loader 吃一个不精确总线错误。
+2. **MPU 区域**：`0xC0000000` 起 32 MB 设成 Normal, non-cacheable, full access
+   （`RASR = 0x03080031`，region 0，`MPU_CTRL = 0x5`）。
+   ARMv7-M 默认把这块当 Device，而 **Device 内存不允许非对齐访问**——
+   编译器对自己的缓冲做字节/半字/字混合读写，一旦非对齐就是 UsageFault。
+   这条不是性能优化，是正确性。
+3. **`RW_AXI` 上限从 0x80000 收到 0x70000**：`0x24070000` 是板上编译产物装载
+   的窗口，旧上限允许静态数据长到 `0x24080000`，正好压在它上面。
+
+**开关**（两处必须一起翻）：
+
+| 位置 | 值 | 说明 |
+| --- | --- | --- |
+| `system_stm32h7xx.c` | `#define ARK_SDRAM_BUFS 1` | 1=启动时初始化 SDRAM 并开 MPU；0=一句也不执行 |
+| `ArkCC.uvprojx` `<ScatterFile>` | `STM32H743VITx_FLASH.sct` | 换成 `..._sram.sct` 即回到"全部缓冲在 AXI SRAM"的旧布局 |
+
+`ARK_SDRAM_BUFS 1` + 旧的 `_sram.sct` 仍能启动（SDRAM 初始化后闲置，行为不变）；
+反过来 0 + 新 sct 会在 scatter 阶段就 fault —— 所以两个必须成对翻。
+
+**防假绿**：布局不是靠"我相信链接器"，启动横幅直接把它读出来：
+
+```
+=== Ark C Compiler on STM32H743 ===
+Heap @ 24008000, Code @ 24000000
+Bufs @ c0012000 (compiler work buffers in SDRAM)
+Type 'help' for commands.
+```
+
+`Bufs @` 打印的是 `arkcc_buf_addr()`（`src/compiler.c` 里 `g_src` 的地址），
+并按 `0xC0000000..0xC2000000` 判定落在哪个区；换回 `_sram.sct` 会自己打出
+`in on-chip RAM`。
+
+搬完之后 `demo` + `build` 仍然跑通（板上编译、链接、装载、执行、返回 0），
+说明"编译器整个工作集放在外部 SDRAM 上"是可用的，不再是纸面结论。
+
+### 13.7 仍未收口
+
+`hello.c` 第二个 `write()` 的**字符串字面量**参数依旧是坏地址（§12.3）：
+编译期按 `g_flash_base + offset` 把 `.rodata` 地址写死成 `0x08000400` 一类，
+而镜像实际在 `0x24070000`。搬内存布局不影响它——它是**代码地址**没有重定位项，
+不是数据地址。两条候选修法（给 `-c` 传 `--scatter` 让基址一致 / 后端为
+section 内绝对地址发 reloc 由链接器修正）在 §12.3 里，都还没实施：
+第一种只对**第一个**目标文件成立（第二个目标的内部偏移会整体偏一个对象的大小），
+所以真要做应该走第二种。

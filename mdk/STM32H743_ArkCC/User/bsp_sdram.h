@@ -20,6 +20,18 @@
  * a mismatch here and not as a silent garbage read later. */
 int bsp_sdram_init(void);
 
+/* Cheap "is the part really there" check: writes and reads back one word at
+ * the bottom and one at the top of the 32 MB window.  Used by SystemInit()
+ * before __main scatters .ark_buf into that window -- if this fails, nothing
+ * later can work, so the boot code stops instead of faulting on a stale map. */
+int bsp_sdram_selftest(void);
+
+/* MPU region for the 32 MB window: Normal, non-cacheable, full access.
+ * Must be applied before the window is used as ordinary data; the ARMv7-M
+ * default attribute for 0xC0000000 is Device, and Device memory raises a
+ * UsageFault on any unaligned access, which the compiler does produce. */
+void bsp_sdram_mpu_config(void);
+
 /* Register snapshot for the shell (SDCR1/SDTR1/SDRTR/SDSR + the SDCLK the
  * refresh counter was derived from, in kHz). */
 void bsp_sdram_info(uint32_t *sdcr, uint32_t *sdtr, uint32_t *sdrtr,

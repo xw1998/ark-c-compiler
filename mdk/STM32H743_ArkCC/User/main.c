@@ -61,6 +61,10 @@ extern uint32_t g_rcc_ahb3enr;
 /* SystemCoreClock is defined in system_stm32h7xx.c; updated by SystemClock_Config */
 extern uint32_t SystemCoreClock;
 
+/* Address of the compiler's own work buffers (src/compiler.c, .ark_buf).  Printed
+ * at boot so the memory layout in use is a reading, not an assumption. */
+extern unsigned long arkcc_buf_addr(void);
+
 /* HAL handles (defined global per STM32 convention) */
 UART_HandleTypeDef huart1;
 SPI_HandleTypeDef  hspi1;
@@ -853,6 +857,11 @@ int main(void) {
     ark_log("Heap @ %x, Code @ %x\r\n",
             (int)(unsigned long)ark_heap_buffer,
             (int)(unsigned long)ark_code_buffer);
+    ark_log("Bufs @ %x (%s)\r\n", (int)arkcc_buf_addr(),
+            ((unsigned long)arkcc_buf_addr() >= SDRAM_BANK_ADDR &&
+             (unsigned long)arkcc_buf_addr() < SDRAM_BANK_ADDR + SDRAM_SIZE_BYTES)
+                ? "compiler work buffers in SDRAM"
+                : "compiler work buffers in on-chip RAM");
     ark_log("Type 'help' for commands.\r\n");
 
     /* Enter interactive shell (reads commands from USART1) */
