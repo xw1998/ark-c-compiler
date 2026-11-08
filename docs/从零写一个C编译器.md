@@ -3279,7 +3279,13 @@ arkc 的 `parse_declarator` 分三段处理：
 
 补法是把跳过换成 `parse_param_list()`，把参数类型挂在**指针类型自己**身上（`Type::params` / `param_count` / `is_variadic`）。挂在指针上而不是改造 `TYPE_FUNC`，是因为 `*fp` 的解引用与调用 lowering 都按"指针的 base 就是返回类型"在写，改成函数类型要多改很多处，而收益为零。
 
-补完之后仍有三处缺口，都登记在文档里而不是留给人猜：`typedef Ret F(args);`（**函数类型** typedef）整体不被接受；全局函数指针的初值不支持；`_Generic` 的关联类型只比 `is_func_ptr` 标志、不比参数列表。这类取舍必须写进注释与文档（第 17 章讲"已知限制"的登记方法），否则下一个维护者会以为这是遗漏。
+补完之后仍有两处缺口，都登记在文档里而不是留给人猜：全局函数指针的初值不支持；`_Generic` 的关联类型只比 `is_func_ptr` 标志、不比参数列表。这类取舍必须写进注释与文档（第 17 章讲"已知限制"的登记方法），否则下一个维护者会以为这是遗漏。
+
+原来还有第三处缺口：`typedef Ret F(args);`（**函数类型** typedef）整体不被接受。它的根因和上面这条正好相反——`parse_declarator` 对这种拼写停在形参表之前，于是 `(` 被"函数定义/声明"分支抢走，typedef 被丢弃、名字被登记成函数（`sizeof(binop *)` 报 `expected an expression`，`binop *p;` 报 `expected declaration at top level`，`sizeof(binop)` 静默返回默认的 4）。
+
+修法是给这一种拼写补上类型本身：`parse_func_type_tail()` 吃掉 `( params )`，用 `type_func()` 建出真正的 `TYPE_FUNC`，`sym_add(SYM_TYPEDEF)` 存它。这里之所以**不能**沿用"参数表挂在指针类型身上"的表示，是因为 `F *p` 里的 `F` 本身就必须是一个类型——`sizeof(F *)`、`(F *)x` 强制转换、`F **pp` 都要靠它。两种表示分工明确：`(*fp)(params)` 声明符把参数表留在指针上（`*fp` 与调用 lowering 只看"指针的 base 是返回类型"），函数类型 typedef 则把参数表留在 `TYPE_FUNC` 节点上，`irgen` 的间接调用取值逻辑两条都认（先沿指针找 `is_func_ptr && params`，再找 `TYPE_FUNC && params`）。
+
+顺带修掉两个静默错值：`binop add;` 以前会把 `add` 变成一个 4 字节的数据对象（调用它的地方永远解析不到），现在按 6.2.2p5 生成和写全原型相同的 `AST_FUNC_DECL`；`sizeof(binop)` 与 `_Alignof(binop)` 以前返回默认的 4，现在按 6.5.3.4p1 报错。门禁是 `tests/run_func_typedef_tests.py`，两个机器后端各跑 11 个运行时用例外加 2 个"必须报错"用例，并要求门禁自己能判错（防假绿自检）。
 
 ---
 

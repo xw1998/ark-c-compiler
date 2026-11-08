@@ -460,10 +460,23 @@ v0.8.0 之后补上四个 C11 关键字，其余 C11 特性（`_Atomic`、`<thre
   不产镜像；C 后端把初值原样输出成 C 源码，交给宿主 gcc。
 - 穿过 `...` 传复数：`va_arg` 只能按连续参数**字**走、被调方没有类型信息，所以调用点直接报
   `passing a _Complex value without a _Complex parameter type ...`，而不是只物化一半。
-- `typedef Ret F(args);`（**函数类型** typedef，不带 `*`）整体不被接受（`expected declaration at top level`）；
-  `typedef Ret (*FP)(args);` 形式不受影响。
 - 全局函数指针的初值仍不支持（`cannot turn the initialiser of the global ... into data`），函数指针只能
   局部初始化或运行期赋值。
+
+**函数类型 typedef（`typedef Ret F(args);`）**
+
+typedef 名记录的是真正的 `TYPE_FUNC` 类型（C99 6.7.1 + 6.7.5：声明出来的类型是"返回 Ret 的函数"），
+不是一个函数。于是：
+
+- `F *p` 是指向该函数类型的普通指针，`sizeof(F *)` 是目标指针大小；
+- `F name;` 是函数**声明**——返回类型、形参表、`...` 标记、块作用域链接（C99 6.2.2p5）与调用点的
+  实参转换，全都和把原型写全一样；
+- `F name { ... }` 不是合法 C（6.9.1 要求定义里出现标识符声明符），报错而不是猜；
+- `sizeof(F)` / `_Alignof(F)` 报错（6.5.3.4p1 禁止对函数类型取 sizeof / 对齐），不再返回默认的 4。
+
+旧版本把 `typedef Ret F(args);` 名字后面的 `(` 交给"函数定义/声明"分支，typedef 被丢弃、名字被
+登记成函数，症状是 `sizeof(F *)` 报 `expected an expression`、`F *p;` 报 `expected declaration at
+top level`、`sizeof(F)` 静默返回 4。回归门禁：`tests/run_func_typedef_tests.py`（每个机器后端 10 例运行时 + 2 例"必须报错"）。
 
 **struct/union（> 8 字节）返回值：两个机器后端都走 sret（隐藏缓冲指针）**
 
