@@ -507,6 +507,24 @@ _start:
     bl main
 _hang:
     b _hang
+
+/* A byte loop for memcpy.  A block-scope initialiser that copies a string
+ * literal into a local char array (`char s[6] = "abc";`, `char m[2][6] =
+ * {"ab","cd"};`) expands to a memcpy call, so without a definition here every
+ * such case on this target died at link time and could not be tested at all. */
+    .global memcpy
+    .thumb_func
+memcpy:
+    mov r3, r0
+2:
+    cmp r2, #0
+    beq 3f
+    ldrb r12, [r1], #1
+    strb r12, [r3], #1
+    subs r2, r2, #1
+    bne 2b
+3:
+    bx lr
 '''
 
 RV_START = '''    .text
@@ -516,6 +534,22 @@ _start:
     call main
 hang:
     j hang
+
+/* Byte-loop memcpy: a block-scope string initialiser (`char s[6] = "abc";`)
+ * expands to a memcpy call, and without it such a case could not link here. */
+    .global memcpy
+memcpy:
+    mv a3, a0
+4:
+    beqz a2, 5f
+    lbu a4, 0(a1)
+    sb a4, 0(a3)
+    addi a1, a1, 1
+    addi a3, a3, 1
+    addi a2, a2, -1
+    j 4b
+5:
+    ret
 '''
 
 

@@ -3362,12 +3362,18 @@ initialiser into data"；**不会**出现"地址位置被写成 0 却没人报�
   看到游标还停在 `&gv` 上，以为"初值比元素多"，整条 walk 失败——症状是 `#1` 里的 `{&gv,&gv}`
   报"too many initialisers"式的后端错，而 `init_refs` 明明已经记了 2 条。修法是命中后前进到
   本层的下一个 `,` 或 `}`，并计 `()`/`[]`/`{}` 的嵌套深度（这样 `(int*)&gv`、`&a[i]` 都能跳过）。
-- **只接受花括号写全的初始化器。** 省略花括号时元素落点取决于展平后的布局，走查器不重推布局，
-  于是 bail；bail 单独报一条"its braces are not spelled out level by level ... write the braces out"。
-  为了分辨"bail 因为地址不能放"和"bail 但和地址无关（纯数字的省略花括号，本来就不支持）"，
-  另写了个只读扫描 `irgen_init_has_addr()`：初始化器里究竟有没有地址元素。
-  **注意这条边界不是地址元素特有的**：`int a[2][2] = {1,2,3,4}` 这种纯数字的省略花括号同样报这一句，
-  因为 `ark_agg_fill()` 从头到尾都要求逐层写花括号。地址元素只是**多**一条会让走查 bail 的路。
+- **花括号省略（brace elision）：游标要"填满即交还"，不是报错也不是继续吃。** 这条最初是被拒的：
+  省略花括号时元素落点取决于展平后的布局，走查器不重推布局，于是 bail 并报
+  "its braces are not spelled out level by level"。后来发现它不是地址元素特有的边界，而是三条走查
+  共同的缺陷——`ark_agg_fill()` 的文本游标、全局 AST 走查、块作用域走查各有一套游标，谁都没
+  实现"子对象填满就把剩余值交还调用方"，于是 `int a[2][2] = {1,2,3,4}`、
+  `struct T t[1] = {1,2}` 一律拒收。正确形态是**每层一个游标 + 满了就 `return`**，由拥有右花括号
+  的那一层检查"没吃完的值"——"短初值补零"和"长初值报错"就都自然成立。三处具体形态见 8.5.5。
+  走查仍可能 bail（指派器 + 省略花括号、字符串与裸标量混在同一 struct 元素且维度未给），
+  此时用只读扫描 `irgen_init_has_addr()` / `irgen_init_has_str_addr()` 分辨"bail 是因为地址不能放"
+  还是"bail 与地址无关"，好让报错说得更准。**`irgen_init_has_str_addr()` 不能把 `AST_STR`
+  一律当地址**：只有**期望类型是指针**的槽位上的字符串才是地址常量，
+  `char m[2][6] = {"ab","cd"}` 的字符串落在 `char[6]` 槽位、归 `ark_agg_fill` 管。
 - **字符串字面量元素：一个元素一个标签，且必须按偏移命名。** `char *cs[2] = { "xy", "cd" };`
   的元素存的是字面量的**地址**（C11 6.7.9p14），而这个字面量既不在表达式池里（池是发表达式时
   填的），也不是字符数组元素，于是两条老路都不管它：`ark_agg_fill` 把它当数字读失败，后端也就
@@ -3383,7 +3389,7 @@ initialiser into data"；**不会**出现"地址位置被写成 0 却没人报�
 
 - **指派器与 `union`：两个游标必须同语义。** `int *pa[2] = { [1] = &gv };`、
   `struct S s = { .a = 3, .p = &gv };`、`union U u = { .p = &gv };` 一开始是被拒的
-  （旧版措辞是"braces are not spelled out ... or it uses a designator"），因为走查只按顺序推进，不跟随
+  （当时的措辞是"braces are not spelled out ... or it uses a designator"），因为走查只按顺序推进，不跟随
   `[k] =` / `.f =` 的落点。但填字节那一侧（`ark_agg_fill()`）本来就支持指派器，所以这是**真缺口**
   而不是设计选择。补法是把走查改成**两个游标**：数组一个 `cur`（`[k]=` 直接 `cur = k`，每放一个
   值 `cur++`），结构一个 `f`（按声明顺序走，`.name` 时 `type_find_field()` 重定位），`union` 按
@@ -3399,11 +3405,46 @@ initialiser into data"；**不会**出现"地址位置被写成 0 却没人报�
   `a designator index must be an integer constant expression`，`[-1]` 报
   `a designator index must not be negative`。
 
-门禁是 `tests/run_agg_addr_tests.py`：22 个运行时用例 × 2 后端（宿主 gcc 双校验）、6 个"必须
-报错"、3 个 RV 汇编编码断言（`.word add`/`.word sub`；字符串例必须同时出现两个 `.asciz` 和两条
+门禁是 `tests/run_agg_addr_tests.py`：32 个运行时用例 × 2 后端（宿主 gcc 双校验，其中 9 个是
+花括号省略）、8 个"必须报错"、3 个 RV 汇编编码断言（`.word add`/`.word sub`；字符串例必须同时出现两个 `.asciz` 和两条
 不同的 `.word .Lgstr_cs_<off>`——同时防"把地址折成数字"与"两个元素共用一个标签"；指派器例必须是
 `.word .Lgstr_cs_4`，防"下标读了却没落到偏移上"），外加四条"错答案必须能被判出"的自检
 （`fp_array` 46、`str_ptr_array` 240、`ptr_designator` 0、`ptr_designator_gap` 17）。
+
+#### 8.5.5 花括号省略（brace elision）：三条路各一个游标
+
+C99 6.7.9p20 允许省略内层花括号，值按展平后的布局依次填。落到 arkc 上，这是**三条独立的代码
+路径**，每条都有自己的游标，必须同时改对：
+
+| 路径 | 输入 | 入口 | 游标 |
+| --- | --- | --- | --- |
+| 全局数据 | 序列化后的文本 | `ark_agg_flat()` / `ark_agg_object()`（`src/agginit.c`） | `cur`（数组）/ `f`（结构成员指针） |
+| 全局地址元素 | AST | `aw_fill()` / `aw_object()`（`src/irgen.c`，`AaggWalk`） | `w->i` + `braced` 标志 |
+| 块作用域 | AST | `lw_fill()` / `lw_object()`（`src/irgen.c`，`LocalAggWalk`） | `w->i` + `braced` 标志 |
+
+规则只有一句：**子对象填满就把剩余值交还调用方，由拥有右花括号的那一层负责检查**。
+踩过的四个具体坑：
+
+- 数组分支判满写成 `return -1`（报错）而不是 `return off`（交还），
+  `int a[2][2] = {1,2,3,4}` 就在第二行处误报 "cannot turn the initialiser into data"。
+  同时逗号跳过必须挪到判满**之后**，否则最后一个值后面那个逗号会把游标推出边界。
+- 结构分支 `if (!f) return;`（非花括号的 run 交还调用方）与块作用域 `if (!braced) return;`
+  是同一条规则的两种写法。局部侧若在此处改成 `w->i++; continue;`（继续吃），调用方的值就被
+  吃掉，`struct T t[2] = {1,2,3,4}` 的 `t[0].b` 得 0。
+- `ark_agg_object()` 里字符串只在**元素类型是数组**时才当作"自带一层花括号"；无条件短路会让
+  `struct S { char n[4]; } s[] = {"ab"}` 以"缺花括号"失败。
+- 块作用域的位域成员必须走 `IR_STORE_FLD`（`lw_field`）。按 `sizeof(int)` 覆盖写会让
+  `struct B { int a:3, b:5; } x = {1,2};` 得到 20 而不是 12。
+
+维度推导是这条规则的另一半：`int a[][2] = {1,2,3,4};` 要按**每个元素消耗几个值**推（`cap`），
+不是按 item 个数推。按 item 数会得到 4 个元素，而 `a[1][1]` 碰巧还是 4——假绿；真判据是
+`sizeof(a)/sizeof(a[0])`，所以门禁拿 `sizeof` 那一侧验。字符串与裸标量混在同一 struct 元素、
+维度又没给时（`struct S { char n[4]; int *p; } s[] = {"ab", &gv};`）**拒绝推导**：一个元素消耗
+几个值取决于字符串落在哪个成员，猜错就是 `sizeof` 错，宁可报错。
+
+块作用域的字符串初始化会展开成 `memcpy` 调用（`char s[6] = "abc";`、`char m[2][6] = {"ab","cd"};`），
+所以门禁启动（`examples/run_va_gate.py` 的 `ARM_START` / `RV_START`）必须提供 `memcpy`——缺它
+这类用例在链接期失败，等于从来没被测过。补上之后才发现这条缺口一直存在。
 
 ---
 

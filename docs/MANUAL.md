@@ -555,10 +555,6 @@ expression` / 同上 / `a designator index must not be negative`。此处曾经�
 
 **必须拒绝的形态（已实现，均报错不产镜像）：**
 
-- **花括号省略**（brace elision）：`struct T{int *p,*q;}; struct T t[1] = { &gv, &gv };` ——
-  元素落点取决于展平后的布局，本走查不重推布局，报 `its braces are not spelled out level by level`
-  （注意这是 `ark_agg_fill()` 的**既有全局边界**：同一形态即便全是纯数字
-  `int a[2][2] = {1,2,3,4}` 也报同一句，不是地址元素特有的限制）；
 - **自动变量的地址**：`static int *pa[2] = { &local, &gv };` —— 报 `is an address that is not a
   constant expression (C11 6.6p9)`（该信息里的对象名是内部符号名，例如 `ark_sl_main_pa`）；
 - **函数 + 偏移**：`int (*t[2])(int,int) = { add + 1, sub };` —— 同上。
@@ -589,11 +585,53 @@ string literals can be pooled as address constants here`——宽字面量要逐
 （只接受整型常量维，否则报 `the dimension of an array of function pointers must be an integer
 constant expression`），再把外层形参表挂到指针类型上。
 
-回归门禁：`tests/run_agg_addr_tests.py`（22 例运行时 × 2 后端，与宿主 gcc 双校验；6 例"必须报错"；
+回归门禁：`tests/run_agg_addr_tests.py`（32 例运行时 × 2 后端，与宿主 gcc 双校验，其中 9 例是花括号省略；
+8 例"必须报错"；
 3 例 RV 汇编断言：`.word add`/`.word sub`、字符串例必须同时出现两个 `.asciz` 与两条不同的
 `.word .Lgstr_cs_<off>`、指派器例必须是 `.word .Lgstr_cs_4`——防"把地址折成数字"、"两个元素共用
 一个标签"、"下标读了却没落到偏移上"这三种能跑但错的假绿。末尾 SELFCHECK 对 `fp_array`（46）、
 `str_ptr_array`（240）、`ptr_designator`（0）、`ptr_designator_gap`（17）各验一次"错答案会被判据逮住"）。
+
+**花括号省略（brace elision，C99 6.7.9p20）已支持**
+
+内层的花括号可以省，值按展平后的布局依次填：
+
+| 形态 | 结果 |
+| --- | --- |
+| `int a[2][2] = {1, 2, 3, 4};` | `a[1][1] == 4`（放满一行后游标要回卷到下一行） |
+| `struct T { int a, b; } t[1] = { 1, 2 };` | `t[0].b == 2` |
+| `struct T { int *p, *q; } t[1] = { &gv, &gv };` | 两个成员各得一个地址 |
+| `char m[2][6] = { "ab", "cd" };` | 一行一个字符串（字符串本身就是一个元素） |
+| `int x = { 5 };` | 标量的冗余花括号（C99 6.7.9p11） |
+| `int a[][2] = { 1, 2, 3, 4 };` | 推出 2 行（按"每个元素几个值"推，不是按 item 个数） |
+| `struct B { int a:3, b:5; } x = { 1, 2 };`（块作用域） | `a==1`、`b==2`（位域走 `IR_STORE_FLD`） |
+
+三处走查必须同时改，缺一处就变成"某些形态能过、某些报错"：
+
+- `src/agginit.c`（全局数据，文本驱动）、`src/irgen.c` 的两条 AST 走查（全局地址元素 `AaggWalk`、
+  块作用域 `LocalAggWalk`）都是**每层一个游标 + 子对象填满就把剩余值交还调用方**：满了 `return`
+  （不是报错），由拥有右花括号的那一层检查"没吃完的值"。写成 `return -1` 会让
+  `int a[2][2] = {1,2,3,4}` 在第二行处误报；写成"继续吃下一层的值"则会把 3、4 写进 `a[0]`。
+- 结构分支 `if (!f) return;`（非花括号的 run 交还调用方）与块作用域
+  `if (!braced) return;` 是同一条规则的两种写法；局部侧此处若改成 `w->i++` 继续，就会把调用方的
+  值吃掉，`t[0].b` 得 0。
+- `ark_agg_object()` 里字符串只在**元素类型是数组**时才当作"自带一层花括号"；无条件短路会让
+  `struct S { char n[4]; } s[] = {"ab"}` 以"缺花括号"失败。
+- `walk` 里遇到字符串元素要**跳过但不 bail**（字节归 `ark_agg_fill`），否则"同一聚合里既有字符串
+  又有地址"的用例就记录不到地址。
+- 块作用域的字符串初始化展开成 `memcpy` 调用，所以门禁启动（`examples/run_va_gate.py` 的
+  `ARM_START` / `RV_START`）必须提供 `memcpy`——缺它这类用例在链接期就失败，等于从来没被测过。
+
+仍拒绝的边界（报错不产镜像）：
+
+- **指派器 + 省略花括号**：数组顶层 `int a[2] = { [0] = 1, 2 };`（gcc 也拒）；
+- **字符串与裸标量混在同一 struct 元素、且数组维度未给**：`struct S { char n[4]; int *p; } s[] =
+  {"ab", &gv};` —— 一个元素消耗几个值取决于字符串落在哪个成员，猜错就是 `sizeof` 错，宁可报错；
+- **标量给了多个值**：`int x = { 5, 6 };` 报 `has too many values: a scalar takes exactly one`
+  （块作用域同）；`double _Complex z = {3.0, 4.0};` 报 `is a scalar; '{re, im}' is not a
+  brace-elided form` —— 标量初值只能是一个表达式，GCC 只警告并丢掉虚部，这个错答案不照抄；
+- **数组／结构给了多余的值**：`int a[2] = {1,2,3}` 仍报 `cannot turn the initialiser ... into data`
+  （诊断正确但不是最贴切的文案，属已知项）。
 
 **struct/union（> 8 字节）返回值：两个机器后端都走 sret（隐藏缓冲指针）**
 

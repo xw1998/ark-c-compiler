@@ -26,6 +26,12 @@ filler writes zeros where the walk said "address", and the backend then stores
 the symbol reference there.  If the two ever disagree about an offset the hook
 misses, agginit refuses and the element is not silently written as zero.
 
+Brace elision (C99 6.7.9p20) is part of the same family: an element may be a
+brace-less run of values, so every walk needs a cursor per level and must hand
+the remainder back to its caller once a sub-object is full.  A wrong cursor
+still produces an image that assembles and runs, so those cases are checked by
+value, not by "it compiled".
+
 This gate covers the value half (execute the bytes, on both machine backends),
 the refusal half (forms whose element offsets cannot be placed must be
 rejected with a message that says what to fix), and the encoding half (a
@@ -212,20 +218,96 @@ union U { int *p; long long v; };
 union U u = { .p = &gv };
 int main(void) { return *u.p; }
 """, 1),
+
+    # --- brace elision (C99 6.7.9p20): inner braces may be left out ---------
+    # The three walks (text filler, global AST walk, block-scope walk) each
+    # carry a cursor and hand the remainder back to their caller when a
+    # sub-object is full.  A walk that keeps its own cursor instead of
+    # returning produces the wrong offset -- which still assembles and still
+    # runs, so only a value check catches it.
+    ("elide_struct_addr", """\
+int gv = 1;
+struct T { int *p; int *q; };
+struct T t[1] = { &gv, &gv };
+int main(void) { return *t[0].p + *t[0].q * 10; }
+""", 11),                                   # both members name gv
+
+    # Past the first element the cursor has to wrap to the next row: a walk
+    # that never resets would place 3 and 4 at a[1] instead of a[0][1], a[1][0].
+    ("elide_2d_numbers", """\
+int a[2][2] = { 1, 2, 3, 4 };
+int main(void) { return a[0][1] * 100 + a[1][0] * 10 + a[1][1]; }
+""", 234),                                  # 2,3,4 in the right cells
+
+    # Rows of a char array given as strings: a string is exactly one element
+    # here, so no elision of its bytes may be attempted.
+    ("elide_char_rows", """\
+char m[2][6] = { "ab", "cd" };
+int main(void) { return m[0][0] + m[1][0] + (int)sizeof(m); }
+""", 208),                                  # 'a' + 'c' + 12
+
+    # Mixed: one element written with braces, the next without.
+    ("elide_mixed_braced", """\
+int gv = 5;
+struct T { int n; int *p; };
+struct T t[2] = { 1, &gv, { 2, &gv } };
+int main(void) { return t[0].n * 100 + *t[0].p * 10 + t[1].n + *t[1].p; }
+""", 157),                                  # 100 + 50 + 2 + 5
+
+    # A scalar with redundant braces is not an aggregate (C99 6.7.8p11).
+    ("elide_scalar_braces", """\
+int x = { 5 };
+int main(void) { return x; }
+""", 5),
+
+    # A struct array whose element stride is wider than the values given.
+    ("elide_struct_stride", """\
+struct P { int a; int b; int c; };
+struct P p[2] = { 1, 2, 3, 4, 5, 6 };
+int main(void) { return (int)sizeof(p) + p[1].a * 10 + p[1].b; }
+""", 69),                                   # 24 bytes + 40 + 5
+
+    # The same shapes inside a function: a different walk builds those bytes.
+    ("elide_local_2d", """\
+int main(void) {
+    int a[2][2] = { 1, 2, 3, 4 };
+    return a[1][1] * 10 + a[1][0] + a[0][1];
+}
+""", 45),                                   # 40 + 3 + 2
+
+    ("elide_local_char_rows", """\
+int main(void) {
+    char m[2][6] = { "ab", "cd" };
+    return m[0][1] + m[1][0] + (int)sizeof(m);
+}
+""", 209),                                  # 'b' + 'c' + 12
+
+    # A scalar initialiser may be a single expression in braces (C99
+    # 6.7.9p11).  `_Complex` is a scalar, so `{3.0}` is 3.0 + 0i -- but
+    # `{3.0, 4.0}` is *not* a brace-elided form (GCC only warns and drops the
+    # imaginary part), so the two-value shape is refused, not half-filled.
+    ("elide_complex_one", """\
+int main(void) {
+    double _Complex z = { 3.0 };
+    unsigned int *u = (unsigned int *)&z;
+    if (u[1] != 0x40080000u) return 1;          /* real part = 3.0 */
+    if (u[2] != 0u || u[3] != 0u) return 2;     /* imaginary part = +0.0 */
+    return 42;
+}
+""", 42),
+
+    # Dropping the outer dimension must count *values per element*, not items:
+    # counting items gives 4 elements here, which sizeof exposes even though
+    # a[1][1] happens to still read 4.
+    ("elide_infer_dim", """\
+int a[][2] = { 1, 2, 3, 4 };
+int main(void) { return (int)(sizeof(a) / sizeof(a[0])) * 10 + a[1][1]; }
+""", 24),                                   # 2 rows, last element 4
 ]
 
 # Sources that must be *rejected*.  `keyword` must appear in the message: a
 # gate that only checks the exit code would pass on an unrelated failure.
 MUST_FAIL = [
-    # Brace elision: the element offsets follow the flattened layout, which the
-    # AST walk does not re-derive.  Refusing beats guessing an offset.
-    ("brace_elision_struct", """\
-int gv = 1;
-struct T { int *p; int *q; };
-struct T t[1] = { &gv, &gv };
-int main(void) { return *t[0].p; }
-""", "braces are not spelled out"),
-
     # An automatic object has no address at load time.
     ("local_element", """\
 int gv = 1;
@@ -253,6 +335,23 @@ union U { int a; int *p; };
 union U u = { .a = 1, .p = &gv };
 int main(void) { return 0; }
 """, "a union with more than one"),
+
+    # A scalar takes exactly one value; the brace-wrapped forms that carry
+    # more are diagnosed instead of silently keeping the first (GCC only warns
+    # and drops the rest, so copying it would be a wrong answer).
+    ("scalar_too_many", """\
+int x = { 5, 6 };
+int main(void) { return x; }
+""", "too many values"),
+
+    ("local_scalar_too_many", """\
+int main(void) { int y = { 5, 6 }; return y; }
+""", "too many values"),
+
+    ("complex_brace_list", """\
+double _Complex z = { 3.0, 4.0 };
+int main(void) { return 0; }
+""", "not a brace-elided form"),
 
     # A designator index must be an integer constant expression (C99 6.6p6).
     # This used to end in an error storm and "memory pool exhausted".
