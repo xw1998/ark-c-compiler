@@ -56,7 +56,14 @@ SENTINEL = 0x10000000           # unmapped -> "Reset_Handler returned"
 
 
 def run_image(blob, max_insn=5000000):
-    """Execute one raw arkc image.  Returns (status, value, detail)."""
+    """Execute one raw arkc image.  Returns (status, value, detail).
+
+    max_insn is a hang guard, not a performance gate: a case whose
+    reference value is computed by repeated 64-bit division spends about
+    12.8k instructions per division (the backend keeps every intermediate
+    on the stack, and the AEABI divider is a 64-iteration restoring loop),
+    so those cases declare a larger budget instead of being called fast.
+    """
     if len(blob) < 8:
         return "fault", 0, "image shorter than a vector table"
     sp = struct.unpack_from("<I", blob, 0)[0]
@@ -111,6 +118,24 @@ int Reset_Handler(void)
     return rc;
 }
 """
+
+# The AEABI runtime is built once per case: aeabi.c is ordinary C (only 32-bit
+# operators, so it never calls itself) and aeabi_divmod.s carries the two
+# helpers that return four registers, which C cannot express.
+AEABI_BUILD = [
+    (["aeabi.c", "-target", "arm", "-c", "-o", "aeabi.obj"], None),
+    (["aeabi_divmod.s", "-target", "arm", "-c", "-o", "aeabi_div.obj"], None),
+]
+
+
+def link_with_runtime(main_src, main_obj):
+    """Build steps for one 64-bit case: runtime, program, link."""
+    return AEABI_BUILD + [
+        ([main_src, "-target", "arm", "-c", "--vector-table", "-o", main_obj], None),
+        (["-link", main_obj, "aeabi.obj", "aeabi_div.obj",
+          "--vector-table", "-o", "out.bin"], "out.bin"),
+    ]
+
 
 CASES = [
     {
@@ -199,7 +224,8 @@ int main(void)
 }
 """,
         },
-        "build": [(["ll.c", "-target", "arm", "--vector-table", "-o", "out.bin"], "out.bin")],
+        "runtime": True,
+        "build": link_with_runtime("ll.c", "ll.obj"),
         "expect": 50,
     },
     {
@@ -212,7 +238,9 @@ int main(void)
 int sh_pad;\nlong long sh_l(long long v, int n) { return v << n; }\nunsigned long long sh_r(unsigned long long v, int n) { return v >> n; }\nlong long sh_a(long long v, int n) { return v >> n; }\nstatic int check_n(unsigned long long uv, long long sv, int n)\n{\n    unsigned long long rr = uv, rl = uv, gr = uv >> n, gl = uv << n;\n    long long ra = sv, ga = sv >> n;\n    int k;\n    for (k = 0; k < n; k++) { rr = rr / 2; rl = rl * 2; ra = (ra - (ra & 1)) / 2; }\n    if (gr != rr) return 1;\n    if (gl != rl) return 2;\n    if (ga != ra) return 3;\n    return 0;\n}\nint main(void)\n{\n    unsigned long long uv = 0x123456789ABCDEF0ULL;\n    long long sv = -0x123456789ABCDEF0LL;\n    int ns[10];\n    int i, rc;\n    ns[0] = 0;  ns[1] = 1;  ns[2] = 8;  ns[3] = 16; ns[4] = 31;\n    ns[5] = 32; ns[6] = 33; ns[7] = 40; ns[8] = 47; ns[9] = 63;\n    for (i = 0; i < 10; i++) {\n        rc = check_n(uv, sv, ns[i]);\n        if (rc != 0) return rc * 10 + i;\n    }\n    if ((300LL >> 8) != 1) return 60;\n    if (((unsigned long long)1 << 32) != 0x100000000ULL) return 61;\n    if (sh_l(1, 40) != 0x10000000000LL) return 62;\n    if (sh_r(0x8000000000000000ULL, 63) != 1) return 63;\n    if (sh_a(-256, 8) != -1) return 64;\n    return 50;\n}
 """,
         },
-        "build": [(["s.c", "-target", "arm", "--vector-table", "-o", "out.bin"], "out.bin")],
+        "runtime": True,
+        "max_insn": 40000000,
+        "build": link_with_runtime("s.c", "s.obj"),
         "expect": 50,
     },
     {
@@ -225,7 +253,8 @@ int sh_pad;\nlong long sh_l(long long v, int n) { return v << n; }\nunsigned lon
 int abi_pad;\nint five(int a, int b, int c, int d, int e) { return a + b + c + d + e; }\nint nine(int a, int b, int c, int d, int e, int f, int g, int h, int i)\n{ return a + b + c + d + e + f + g + h + i; }\nlong long ll3(long long a, long long b, long long c) { return a + b + c; }\nlong long llmix(int a, int b, int c, int d, long long e, long long f)\n{ return (long long)a + b + c + d + e + f; }\nlong long ints_then_ll(int a, int b, int c, int d, int e, long long f)\n{ return (long long)a + b + c + d + e + f; }\nint main(void)\n{\n    if (five(1, 2, 3, 4, 9) != 19) return 1;\n    if (nine(1, 2, 3, 4, 5, 6, 7, 8, 9) != 45) return 2;\n    if (ll3(1LL, 2LL, 3LL) != 6LL) return 3;\n    if (llmix(1, 2, 3, 4, 5LL, 6LL) != 21LL) return 4;\n    if (ints_then_ll(1, 2, 3, 4, 5, 6LL) != 21LL) return 5;\n    if (ll3(0x100000000LL, 0x200000000LL, 0x300000000LL) != 0x600000000LL) return 6;\n    return 50;\n}
 """,
         },
-        "build": [(["a.c", "-target", "arm", "--vector-table", "-o", "out.bin"], "out.bin")],
+        "runtime": True,
+        "build": link_with_runtime("a.c", "a.obj"),
         "expect": 50,
     },
     {
@@ -238,7 +267,8 @@ int abi_pad;\nint five(int a, int b, int c, int d, int e) { return a + b + c + d
 int ll_pad;\nstruct LS { int tag; long long v; };\nstatic long long arr[4];\nstatic struct LS gs;\nlong long g64 = 0x00000000FFFFFFFFLL;\nint main(void)\n{\n    struct LS s;\n    long long *p;\n    long long a = -100LL, b = 3LL;\n    unsigned long long ua = 0xF00000000000000BULL, ub = 3ULL;\n    if (a + b != -97LL) return 1;\n    if (a - b != -103LL) return 2;\n    if (a * b != -300LL) return 3;\n    if (a / b != -33LL) return 4;\n    if (a % b != -1LL) return 5;\n    if (ua / ub != 0x5000000000000003ULL) return 6;\n    if (!(a < b) || !(b > a) || !(a == -100LL) || !(a != b) || !(ua > ub)) return 7;\n    if ((0xF0F0F0F0F0F0F0F0ULL & 0xFFFF0000FFFF0000ULL) != 0xF0F00000F0F00000ULL) return 8;\n    if ((0xFF00FF00FF00FF00ULL ^ 0x0FF00FF00FF00FF0ULL) != 0xF0F0F0F0F0F0F0F0ULL) return 9;\n    if (~0ULL != 0xFFFFFFFFFFFFFFFFULL) return 10;\n    if (-1LL != 0xFFFFFFFFFFFFFFFFULL) return 11;\n    if (-a != 100LL) return 12;\n    s.tag = 1; s.v = -5LL;\n    if (s.v != -5LL) return 13;\n    arr[2] = 0x1122334455667788LL;\n    p = &arr[2];\n    *p = *p + 1;\n    if (arr[2] != 0x1122334455667789LL) return 14;\n    gs.v = 77LL;\n    if (gs.v != 77LL) return 15;\n    {\n        unsigned long long c = 0xFFFFFFFFULL;\n        c++;\n        unsigned *q = (unsigned *)&c;\n        if (q[0] != 0 || q[1] != 1) return 16;\n    }\n    g64++;\n    {\n        unsigned *q = (unsigned *)&g64;\n        if (q[0] != 0 || q[1] != 1) return 17;\n    }\n    {\n        long long v = 0x100000000LL;\n        v += 5LL;  if (v != 0x100000005LL) return 18;\n        v >>= 3;   if (v != 0x20000000LL) return 19;\n        v <<= 4;   if (v != 0x200000000LL) return 20;\n        v *= 3LL;  if (v != 0x600000000LL) return 21;\n    }\n    return 50;\n}
 """,
         },
-        "build": [(["l.c", "-target", "arm", "--vector-table", "-o", "out.bin"], "out.bin")],
+        "runtime": True,
+        "build": link_with_runtime("l.c", "l.obj"),
         "expect": 50,
     },
     {
@@ -357,6 +387,22 @@ int main(void)
         ],
         "expect": 23,
     },
+    {
+        "name": "aeabi_runtime",
+        "why": "every 64-bit helper the backend calls, called directly: "
+               "lmul/ldiv/udiv, the divmod remainder paths (ldivmod "
+               "r2:r3, which only C % can reach), the three shifts at "
+               "0/1/31/32/33/63 against a shift-free reference, and the "
+               "two compares",
+        "runtime": True,
+        "files": {
+            "r.c": STARTUP + """\
+int ar_pad;\nextern long long __aeabi_lmul(long long, long long);\nextern long long __ark_ldiv64(long long, long long);\nextern unsigned long long __ark_udiv64(unsigned long long, unsigned long long);\nextern long long __aeabi_llsl(long long, int);\nextern unsigned long long __aeabi_llsr(unsigned long long, int);\nextern long long __aeabi_lasr(long long, int);\nextern int __aeabi_lcmp(long long, long long);\nextern int __aeabi_ulcmp(unsigned long long, unsigned long long);\nstatic unsigned long long ref_shr(unsigned long long v, int n)\n{ int k; for (k = 0; k < n; k++) v = v / 2; return v; }\nstatic unsigned long long ref_shl(unsigned long long v, int n)\n{ int k; for (k = 0; k < n; k++) v = v * 2; return v; }\nstatic long long ref_sar(long long v, int n)\n{ int k; for (k = 0; k < n; k++) v = (v < 0) ? (v - 1) / 2 : v / 2; return v; }\nint main(void)\n{\n    long long a = -100LL, b = 3LL;\n    unsigned long long ua = 0xF00000000000000BULL, ub = 3ULL;\n    unsigned long long uv = 0x9ABCDEF012345678ULL;\n    long long sv = -0x123456789ABCDEF0LL;\n    int ns[6];\n    int i;\n    if (__aeabi_lmul(3LL, 7LL) != 21LL) return 1;\n    if (__aeabi_lmul(-3LL, 7LL) != -21LL) return 2;\n    if (__aeabi_lmul(0x10000LL, 0x10000LL) != 0x100000000LL) return 3;\n    if (__ark_ldiv64(100LL, 3LL) != 33LL) return 4;\n    if (__ark_ldiv64(-100LL, 3LL) != -33LL) return 5;\n    if (__ark_ldiv64(100LL, -3LL) != -33LL) return 6;\n    if (__ark_ldiv64(-100LL, -3LL) != 33LL) return 7;\n    if (__ark_udiv64(0xF000000000000000ULL, 3ULL) != 0x5000000000000000ULL) return 8;\n    if (__ark_udiv64(7ULL, 8ULL) != 0ULL) return 9;\n    if (a % b != -1LL) return 10;            /* __aeabi_ldivmod r2:r3 */\n    if (100LL % 3LL != 1LL) return 11;\n    if (ua % ub != 2ULL) return 12;          /* __aeabi_uldivmod r2:r3 */\n    ns[0] = 0; ns[1] = 1; ns[2] = 31; ns[3] = 32; ns[4] = 33; ns[5] = 63;\n    for (i = 0; i < 6; i++) {\n        if (__aeabi_llsr(uv, ns[i]) != ref_shr(uv, ns[i])) return 20 + i;\n        if ((uv >> ns[i]) != ref_shr(uv, ns[i])) return 30 + i;\n        if (__aeabi_llsl((long long)uv, ns[i]) != (long long)ref_shl(uv, ns[i])) return 40 + i;\n        if (__aeabi_lasr(sv, ns[i]) != ref_sar(sv, ns[i])) return 50 + i;\n        if ((sv >> ns[i]) != ref_sar(sv, ns[i])) return 60 + i;\n    }\n    if (__aeabi_lcmp(-5LL, 3LL) != -1) return 70;\n    if (__aeabi_lcmp(0x100000000LL, 0x100000001LL) != -1) return 71;\n    if (__aeabi_ulcmp(0x100000000ULL, 3ULL) != 1) return 72;\n    if (__aeabi_ulcmp(0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL) != 0) return 73;\n    if (!(0xFFFFFFFFFFFFFFFFULL > 1ULL)) return 74;\n    return 50;\n}\n""",
+        },
+        "max_insn": 60000000,
+        "build": link_with_runtime("r.c", "r.obj"),
+        "expect": 50,
+    },
 ]
 
 
@@ -364,6 +410,20 @@ def build_case(arkcc, workdir, case, extra=()):
     for name, text in case["files"].items():
         with open(os.path.join(workdir, name), "w", newline="\n") as fh:
             fh.write(text)
+    if case.get("runtime"):
+        # A flat image (-o out.bin, no linker at run time) has to carry
+        # its own AEABI helpers: the compiler emits calls to
+        # __aeabi_ldivmod & friends but never links them in.  The
+        # sources under test are the repository ones, copied here so the
+        # gate exercises exactly what ships.
+        root = os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))))
+        srcdir = os.path.join(root, "stdlib", "src", "arm")
+        for fn in ("aeabi.c", "aeabi_divmod.s"):
+            src_path = os.path.join(srcdir, fn)
+            if not os.path.exists(src_path):
+                return "AEABI runtime source missing: %s" % src_path
+            shutil.copyfile(src_path, os.path.join(workdir, fn))
     for argv, _ in case["build"]:
         proc = subprocess.run([arkcc] + list(argv) + list(extra), cwd=workdir,
                               capture_output=True, text=True)
@@ -423,7 +483,8 @@ def main(argv=None):
                 failures += 1
                 continue
             with open(out, "rb") as fh:
-                status, value, detail = run_image(fh.read())
+                status, value, detail = run_image(fh.read(),
+                                                    case.get("max_insn", 5000000))
             if status != "returned":
                 print("[ FAIL ] %-18s %s (%s)" % (case["name"], status, detail))
                 failures += 1
@@ -440,7 +501,8 @@ def main(argv=None):
                     failures += 1
                 else:
                     with open(out, "rb") as fh:
-                        status, value, detail = run_image(fh.read())
+                        status, value, detail = run_image(fh.read(),
+                                                         case.get("max_insn", 5000000))
                     if status != "returned" or value != case["expect"]:
                         print("[ FAIL ] %-18s --reg-top returned %s (%s), want %d"
                               % (case["name"], value, status, case["expect"]))

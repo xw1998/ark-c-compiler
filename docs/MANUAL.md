@@ -254,7 +254,8 @@ CPU 选择的实现位于 `include/cpu.h` + `src/cpu.c`，会根据 CPU 名字�
 
 ## 4 支持的 C 语言特性
 
-本节以 ISO/IEC 9899:1999（C99）为参照，列出 v0.8.0 编译器实际支持的内容。编译器实现了完整的 C99 集合，并覆盖了 98% 以上的常用 armcc 扩展。
+本节以 ISO/IEC 9899:1999（C99）为参照，列出 v0.8.0 编译器实际支持的内容。编译器实现了完整的 C99 集合，并覆盖了 98% 以上的常用 armcc 扩展；另有四个 C11 关键字
+（`_Static_assert` / `_Alignof` / `_Alignas` / `_Generic`）见 4.9。
 
 ### 4.1 类型系统
 
@@ -381,6 +382,36 @@ C 后端完整透传内联汇编（含操作数替换）；ARM 后端做文本�
 
 ---
 
+### 4.9 C11 关键字（子集）
+
+v0.8.0 之后补上四个 C11 关键字，其余 C11 特性（`_Atomic`、`<threads.h>`、匿名结构体之外的写法等）
+不在范围内。四个关键字的入口分别在 lexer（关键字表）、parser（折叠与建节点）、sema
+（`_Generic` 选支）三处，下游 irgen / 全局初始化 / 各后端完全看不到它们。
+
+| 关键字 | 支持 | 实现要点 |
+| --- | :---: | --- |
+| `_Static_assert(expr[, "msg"])` | 是 | 文件作用域 / 块作用域 / 结构体成员三处入口；`expr` 在解析期用 `eval_const_expr` 折叠，折不出整数常量表达式直接报错，条件为 0 时把 `msg` 打进诊断。没有 AST 节点——成功时什么也不产 |
+| `_Alignof(type-name)` | 是 | 从**类型**折叠（`type_align()`），不是从表达式的默认 int；只接受类型名，`_Alignof(expr)` 报错（C11 本来也不允许） |
+| `_Alignas(type-name)` / `_Alignas(const-expr)` | 是 | 非 2 的幂、非常量报错；**不弱化**自然对齐（C11 6.7.5p6）；全局走 `g_attr_align_bytes` 通路（ARM 平铺 SRAM 布局按 `align_bytes` 落位），成员改 `Type::align_override`，块作用域上限 8 字节（见下） |
+| `_Generic(ctrl, T: e, ..., default: e)` | 是 | 控制表达式按 C11 6.5.1.1p2 做左值转换 + 数组退化 + 函数指示符退化；不做整型提升；无匹配无 `default` → 报错；重复 `default` → 报错；选中后 sema 里 `*node = *sel` squash 成普通表达式，irgen 另有防御分支（万一 sema 被跳过会报错而不是吐 0） |
+
+三条**明写的限制**：
+
+1. **块作用域 `_Alignas(> 8)` 报错**，不静默降级：帧是 `sp -= N; base = sp` 建的，AAPCS 只保证
+   `sp` 8 字节对齐；要真支持 16/32/64 得改 prologue/epilogue 并处理变参序列占用 `r5` 存旧 `sp`
+   的冲突。诊断文本：`block-scope _Alignas above 8 bytes is not supported (the frame is 8-byte aligned)`。
+2. **`_Generic` 的关联类型不比较函数签名**：`parse_declarator` 把 `int (*)(int)` 记成"指向返回类型的指针 +
+   `is_func_ptr` 标志"，参数表被跳过。因此 `int (*)(int)` 与 `int (*)(double)` 在关联表里无法区分。
+   `_Generic` 的匹配为此额外要求 `is_func_ptr` 标志一致（否则普通 `int *` 会匹配到函数指示符——
+   这是本仓真踩过的错支）。
+3. **控制表达式只对"标识符 / 一元 `*` / 一元 `&`"做函数指示符退化**：sema 是浅层解析，
+   符号表里函数只存返回类型，所以退化逻辑在 `_Generic` 分支里按符号种类补做；更复杂的
+   函数指示符表达式（如条件表达式两支都是函数）不在覆盖范围，会落到普通表达式类型上。
+
+门禁：`python tests/run_c11_keywords_tests.py --arm-as <bin> [--rv-as <bin>]`，ARM + RV32I 双目标
+共 30 项（11 个运行时用例 × 2 目标 + 8 个诊断用例），另含三条自检（静态断言真/假对照、
+`_Alignof` 不得等于默认 4、期望值错配必须判红）。
+
 ## 5 多后端架构
 
 ### 5.1 后端接口
@@ -497,6 +528,21 @@ arkCC 可直接编译 `.s`/`.S`/`.asm` 汇编文件为机器码，ARM 后端有�
 1. **每个翻译单元各自放置自己的 `.data`/`.bss`**，对象尾部用保留符号 `__arkcc_ram_start`/`__arkcc_ram_end`（`type=2`，值是绝对地址）声明本单元占用的 SRAM 窗口。旧读者忽略符号表尾部这两条即可，头部格式不变。
 2. **两个对象都带 RAM 窗口时直接报错**：数据区不参与重定位，`[start,end)` 一旦重叠就打印 `[link] error: SRAM overlap between objects #i and #j` 并 `exit -8`，不产出镜像——因为静默出图会得到一个"两套全局变量压在同一个地址"的错误二进制。只有一个对象带 RAM（或都不带）时可以正常链接。
 3. **编译器私有运行时符号（名字以 `__` 开头，如 `__aeabi_*`）的重复定义静默合并**，链接结束打印一行 `[link] note: N duplicate compiler-runtime symbols merged`；用户符号的同名强定义仍逐条告警。
+
+### 5.x 平铺镜像的 64 位/AEABI 运行时要自己链
+
+后端把 64 位加/减内联成 `ADDS`/`ADC`、`SUBS`/`SBC`（不依赖运行库），其余 64 位运算（`*`、`/`、`%`、`<<`、`>>`、比较）发射标准 AEABI 符号（`__aeabi_lmul`、`__aeabi_ldivmod`、`__aeabi_uldivmod`、`__aeabi_llsl`、`__aeabi_llsr`、`__aeabi_lasr`、`__aeabi_lcmp`、`__aeabi_ulcmp`）。**编译器不会隐式把这些实现塞进镜像**，平铺镜像要自己链：
+
+```sh
+./arkcc -target arm -c stdlib/src/arm/aeabi.c          -o aeabi.obj
+./arkcc -target arm -c stdlib/src/arm/aeabi_divmod.s   -o aeabi_div.obj
+./arkcc app.c -target arm -c --vector-table -o app.obj
+./arkcc -link app.obj aeabi.obj aeabi_div.obj --vector-table -o app.bin
+```
+
+`aeabi_divmod.s` 必须是汇编：`__aeabi_ldivmod`/`__aeabi_uldivmod` 要返回四个寄存器（商 `r0:r1`、余 `r2:r3`），而 `__value_in_regs` 在本编译器里只做解析、不参与 codegen。除零返回 0；移位计数 ≥ 64 返回 0（算术右移按符号填充）——都是显式约定，不会给出随机值。
+
+代价口径：`udivmod64` 是 64 次 restoring 除法，实测**一次 64 位除法约 12.8k 条指令**（`shift64` 整例 9.26M 条）。这是"正确优先"的选择，不是缺陷；需要性能时应避免在内层循环里做 64 位除。
 
 ---
 
@@ -1056,6 +1102,10 @@ v0.8.0 已实现完整的 C99 集合 + 98% 以上的 armcc 常用扩展，仅剩
 - **位域宽度上限 32 位**：`IR_LOAD_FLD`/`IR_STORE_FLD` 按 32 位容器读写，`long long x:40` 会读回错值。因此语法分析阶段直接报错（`bit-field width 40 exceeds 32`）、不生成代码，不做静默截断。
 - **`ret (*fn(params))(params)`（返回函数指针的函数）不可解析**：`(*name)` 形式目前要求名字后立刻是 `)`，不支持括号内再带一层参数表，因此 `int (*pick(int))(int,int){...}` 这类声明符会报语法错误。**当前行为是显式报错**（`[parser] ... syntax error(s); no code generated`），不会产出错误二进制。修法需要把 `parse_declarator` 改写成递归下降 + 占位类型替换，属结构性改动。
 - **聚合初始化器只认能变成字节的东西（两个机器后端共用一份实现）**：全局聚合初始化走 [include/agginit.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/agginit.h) 的 `ark_agg_fill()`，类型驱动地按声明偏移写字节，所以支持整数/字符常量、字符串填充 `char` 数组（含 `char m[2][6] = {"ab","cd"}` 这种按行的）、嵌套 `{}`、`.field=` 与 `[idx]=` 指派器。**浮点字面量、`union`（叠放存储无从猜）、位域（存储不是字节）、以及不能用字面量表示的初值一律显式报错**，绝不写零充数。两个后端调同一份实现，所以 ARM 与 RV32I 在这里给出的是同一组字节——曾经 ARM 自己那份"按逗号走"的解析器把字符串元素跳过存 0，`struct Q gq = {3, "abcd", 9}` 的成员全成了 NUL。
+- **块作用域 `_Alignas` 上限 8 字节**：16/32/64 一律报错（`block-scope _Alignas above 8 bytes is not supported`），
+  因为帧只保证 `sp` 8 字节对齐；文件作用域与结构体成员没有这个限制。
+- **`_Generic` 的关联类型不比函数签名**：`int (*)(int)` 与 `int (*)(double)` 视为同一类型（`is_func_ptr` 标志一致即匹配），
+  因为声明符解析跳过参数表。
 - **`va_arg` 依赖小端目标**：`stdlib/include/stdarg.h` 的 `va_arg` 按"槽位地址重解释"取值（`*(type *)(...)`），整数/指针/`double` 通吃，但要求目标为小端。ARM Thumb-2 与全部宿主均满足；大端目标需改为按类型分派。
 - **变参的两种镜像形状不能混用**：C/x86_64 每个实参一个 8 字节槽位（`frame+8000` 起，
   序言里把 a0..a7 镜像进去，`irgen` 的 `g_ir_va_slot_region` 负责预留 8064 字节）；
@@ -1095,7 +1145,8 @@ v0.8.0 已实现完整的 C99 集合 + 98% 以上的 armcc 常用扩展，仅剩
   5..8 字节的结构体仍是原来的两字规则。**只有 ARM 实现**，另外三个后端由 `irgen`
   报错拒绝（`passing a N-byte structure through '...' is implemented for the arm
   target only`）。已知偏离：8 字节对齐且超过 8 字节的结构体，gcc 会把 NCRN 取到偶数、
-  我们不取整，因为 `stdarg.h` 只能按 `sizeof` 判对齐（`_Alignof` 未实现），取整留下的
+  我们不取整，因为 `stdarg.h` 只能按 `sizeof == 8` 判对齐（`_Alignof` 已实现，但 stdarg.h
+  尚未改用它，调用侧的 NCRN 取偶也没做），取整留下的
   空洞它会当成数据读；两侧都是 arkc 时自洽，与 gcc 被调方混用会错位。
 - **一次调用的实参上限 64 个**：各后端的实参表停在 64，第 65 个起过去是静默丢弃，
   现在 `irgen` 直接报错；ARM 的总参数字上限 192（超过由后端报错，不截断）。

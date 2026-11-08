@@ -1,6 +1,6 @@
 # Ark C 编译器
 
-一个多目标 C99 编译器，可在 Windows / Linux / macOS 上用 gcc 构建运行，
+一个多目标 C99 编译器（另有 C11 的 `_Static_assert` / `_Alignof` / `_Alignas` / `_Generic`，见[下文](#c11-关键字子集)），可在 Windows / Linux / macOS 上用 gcc 构建运行，
 也可**原生自托管**于 STM32（Cortex-M7）：从外部 SPI Flash 读取 `.c` 文件就地编译，
 **并在同一颗芯片上把它跑起来**（2026-11-05 首次端到端跑通，见[里程碑](#里程碑在-stm32-上编译在-stm32-上跑)与
 [`examples/stm32_selfhost_build/`](examples/stm32_selfhost_build/)）。
@@ -90,6 +90,20 @@
 | 汇编器覆盖面 | 是 | LDR/STR 全地址模式（`[Rn]`/`[Rn,#imm]`/`[Rn,Rm]`/`[Rn,Rm,LSL #0..3]`/`[Rn,#imm]!`/`[Rn],#imm`、`[sp,#imm]`、`[pc,#imm]`）、`VLDM/VSTM/VPUSH/VPOP`、`LDMFD/STMFD/LDMEA/STMEA` 别名、`ADDW/SUBW`；体系结构不存在的形态（`LDMIB/LDMDA/STMIB/STMDA`、寄存器索引写回）明确报错 |
 | 预处理 | 是 | 对象/函数宏（`#/##`）、`#if/#elif/#else/#endif/#ifdef/#ifndef/#undef/#error/#warning/#pragma`、嵌套 `#include`（<=8 层）、`__VA_ARGS__`、`-I` 路径、三字符组替换 |
 | 注释 | 是 | `//` 和 `/* */` |
+
+### C11 关键字（子集）
+
+只实现这四个关键字；C11 的其余部分（`_Atomic`、线程库、匿名结构体成员之外的写法等）不在范围内，
+遇到就是普通语法错误的报错，不会当作"大概能用"放过。
+
+| 关键字 | 支持 | 说明 |
+| --- | :---: | --- |
+| `_Static_assert(expr[, "msg"])` | 是 | 文件作用域 / 块作用域 / 结构体成员三处都能用；`expr` 在**解析期**用 `eval_const_expr` 折叠，折不出整数常量表达式就报错（`static assertion whose truth we cannot decide` 不能放行），条件为 0 时把 `msg` 原样打进诊断 |
+| `_Alignof(type-name)` | 是 | 从**类型**折叠（不是从表达式的"默认 int"，`sizeof` 曾经在这条路上答错）；只接受类型名形式，`_Alignof(expr)` 明确报错而不是猜 |
+| `_Alignas(type-name)` / `_Alignas(const-expr)` | 是 | 文件作用域任意 2 的幂（实测 64 生效，ARM 平铺 SRAM 布局也按 `align_bytes` 落位，不再一律 4 字节对齐）、结构体成员（改 `align_override`，实测 `sizeof` 32 / `align` 16）、块作用域 ≤ 8 字节（实测 8）；**永远不会弱化**自然对齐（C11 6.7.5p6，`_Alignas(2) double` 仍是 8 对齐）；非 2 的幂、非常量报错 |
+| `_Generic(ctrl, type: expr, ..., default: expr)` | 是 | 控制表达式按 C11 6.5.1.1p2 做左值转换 + 数组退化 + **函数指示符退化**（`f`、`&f`、`*f` 三种写法都落到函数指针类型）；**不做整型提升**（`char` 还是 `char`）；无匹配且无 `default` → 报错（给 0 就是伪造答案），重复 `default` → 报错；选中后在 sema 里 squash 成普通表达式，下游（irgen / 全局初始化 / 各后端）完全看不到它 |
+
+块作用域 `_Alignas(16/32/64)` 是**报错**而不是静默降级：栈帧按 `sp -= N; base = sp` 建，AAPCS 只保证 `sp` 8 字节对齐，要真支持 16/32/64 得改 prologue/epilogue 并处理变参序列占用 `r5` 存旧 `sp` 的冲突。这里选择"宁可报错，不给错答案"。
 
 ### ARM Compiler 5 (armcc) 兼容扩展
 
@@ -234,8 +248,23 @@
 | `stdlib/src/math.c` | `sin/cos/sqrt/pow/fabs/floor/ceil/fmod` |
 | `stdlib/src/setjmp.c` | `setjmp/longjmp`（可移植简化宿主实现） |
 | `stdlib/src/putchar_default.c` | `putchar` 弱默认实现 |
+| `stdlib/src/arm/aeabi.c` | 平铺 ARM 镜像用的 64 位 AEABI 运行时：`lmul` / `ldiv` / `udiv` / `llsl` / `llsr` / `lasr` / `lcmp` / `ulcmp`，全部只用 32 位算子（不会递归到自己），C 源，可被 arkc 自己编译 |
+| `stdlib/src/arm/aeabi_divmod.s` | `__aeabi_ldivmod` / `__aeabi_uldivmod` 的四寄存器返回包装（商 `r0:r1`、余 `r2:r3`）——C 语言写不出四寄存器返回（`__value_in_regs` 只解析不 codegen），所以这一段必须是汇编，算术复用上面的 `aeabi.c` |
 
 `stdlib/include/` 头文件：`stdint.h`/`stdbool.h`/`stddef.h`/`stdarg.h`/`string.h`/`stdio.h`/`stdlib.h`/`math.h`（含 `M_PI` 等常量）/`setjmp.h`。
+
+**平铺镜像（`-o image.bin` / `--vector-table`）与上面两份 ARM 运行时**：编译 `.c` 到 `.obj` 时，64 位乘/除/取模/移位/比较会发射 `__aeabi_lmul` 等外部符号（64 位加减已内联成 `ADDS`/`ADC`、`SUBS`/`SBC`，不需要运行库）。**编译器绝不隐式链接这两份源**——镜像里到底要不要软浮/64 位运行时，由链接方决定。所以一条能跑通的平铺镜像命令是三步：
+
+```sh
+./arkcc -target arm -c stdlib/src/arm/aeabi.c -o aeabi.obj
+./arkcc -target arm -c stdlib/src/arm/aeabi_divmod.s -o aeabi_div.obj
+./arkcc x.c -target arm -c --vector-table -o x.obj
+./arkcc -link x.obj aeabi.obj aeabi_div.obj --vector-table -o out.bin
+```
+
+链接这两份源时会出现一行 `[link] note: 1 duplicate compiler-runtime symbols merged`：`aeabi.c` 里也带了 64 位加/减的函数，用来顶住"别人拿这个目标文件直接调用"的场景，与镜像自带的运行时同名同义，合并是预期行为。
+
+**已知代价（不是缺陷，是设计选择）**：`udivmod64` 是 64 次 restoring 除法，在 arkc "每个中间量都压栈" 的代码形状下**一次 64 位除法约 12.8k 条指令**（实测 `shift64` 整例 9.26M 条）。软除法在 M7 上按主频折算仍在毫秒级可接受，但实时性敏感的内层循环应当避免 64 位除。
 
 ### 后端
 
@@ -302,7 +331,8 @@ s0 - sp_size + 4*命名参数字数`。
 
 一处**已知的有意偏离**：16 字节且 8 字节对齐的结构体（`struct {long long a,b;}`），
 gcc 会把 NCRN 向上取到偶数再放，我们不做这个取整——因为 `<stdarg.h>` 只能按 `sizeof`
-判断是否对齐（`_Alignof` 尚未实现），取整留下的空洞它看不见，会当成第一个字读走。
+判断是否对齐（`_Alignof` 现已实现，但 `<stdarg.h>` 仍按 `sizeof == 8` 判对齐，调用侧也没做 NCRN 取偶，
+所以这一格仍然没有对齐信息可用），取整留下的空洞它看不见，会当成第一个字读走。
 两侧都是 arkc 时自洽（`struct8a` 用例钉住这一格）；与 gcc 编译的被调方混用时这一格会错位。
 
 **一次调用的实参不超过 64 个**（各后端实参表的上限）。第 65 个起以前是静默丢弃，
@@ -530,6 +560,9 @@ powershell -ExecutionPolicy Bypass -File run_asm_test.ps1         # 汇编输入
 powershell -ExecutionPolicy Bypass -File run_arm_exec_test.ps1    # ARM 执行级：编译→链接→QEMU 真跑（需 qemu-system-arm）
 python tests/arm_exec/run_arm_exec.py                             # ARM 执行级（unicorn，无 qemu 也能跑；每例同时跑 --reg-top 臂）
 python tests/asm_cases/run_asm_cmp.py                             # 汇编器对拍：arkc vs arm-none-eabi-as，含 --asm-extra 开关契约
+python tests/run_c11_keywords_tests.py --arm-as <bin> [--rv-as <bin>]  # C11 关键字门禁（ARM + RV32I 双目标，30 项）：每个运行时用例都由程序自己算地址/值（汇编里出现 `.balign` 不算证据），另含静态断言真/假对照与三条自检
+python tests/run_arm_int64_tests.py --arm-as <bin>                # 64 位数据通路门禁（ARM，12 项）：加减内联 / 移位 / 比较 / 除模走运行库，含"运行库仍然必需"自证
+python tests/run_rv_float_tests.py --arm-as <bin> --arm-libgcc <libgcc.a> --rv-as <bin>  # RV32I 软浮点门禁（22 项）：浮点算术/比较/转换与 gcc 对拍
 python tests/run_capacity_tests.py                                  # 容量门禁：120 对象 / 1200 头文件 / 520 条 -D / 129 条 -I（宿主不许有人为上限）
 python tests/run_rv_alloca_tests.py --rv-as <bin>                   # RV32I VLA 门禁：5 个用例与 gcc 对拍且各自断言硬编码期望值（两臂同时错也算错），覆盖早返回（尾声重建 sp）、两个 VLA、10 个栈参数（对齐）、`long long` VLA
 python tests/run_rv_packed_tests.py --rv-as <bin> [--arm-as <bin>]   # 非对齐访问门禁（RV32I + ARM，给 `--arm-as` 才跑 ARM 臂）：7 个用例 × 每臂，逐字节校验落点（不靠同一条通路回读自证）、2 字节符号扩展、奇数偏移不串扰、8 字节（`long long`，含负数）全 8 字节与高低字顺序
