@@ -738,7 +738,9 @@ static int write_ark_obj(const ArkBackend *be, const ArkOptions *opts,
         p_reloc_offset= x86_get_reloc_offset;
         p_reloc_type  = x86_get_reloc_type;
 #endif
-    } else if (ark_streq(be->name, "riscv32")) {
+    }
+#if ARKCC_BACKEND_RISCV32
+    else if (ark_streq(be->name, "riscv32")) {
         /* This backend implements the getters in backend_riscv32.c rather than
          * declaring prototypes in backend.h -- they exist only for this one
          * caller, and only the object path asks for them. */
@@ -761,6 +763,7 @@ static int write_ark_obj(const ArkBackend *be, const ArkOptions *opts,
         p_reloc_offset= rv_get_reloc_offset;
         p_reloc_type  = rv_get_reloc_type;
     }
+#endif /* ARKCC_BACKEND_RISCV32 */
 
     /* --reloc-text: one extra descriptor telling the linker which base every
      * absolute address in this object was computed against.  It has to be
@@ -1643,6 +1646,7 @@ int ark_compile(const ArkOptions *opts) {
                     idx = ld_find_global(g_ld_relocs[ri].name);
                     if (idx >= 0 && (g_ld_relocs[ri].type == RV_RELOC_AUIPC ||
                                      g_ld_relocs[ri].type == RV_RELOC_ABS32)) {
+#if ARKCC_BACKEND_RISCV32
                         /* riscv32: the site carries an instruction pair (or an
                          * address word), and the patch is computed from where
                          * it actually landed.  A site that does not hold that
@@ -1662,6 +1666,20 @@ int ark_compile(const ArkOptions *opts) {
                                       g_ld_relocs[ri].name, 0,0,0,0);
                             unresolved++;
                         }
+#else
+                        /* This build has no riscv32 backend (the STM32 profiles
+                         * trim it), so there is no patcher for these types.
+                         * Feeding them to the ARM one would write Thumb
+                         * encodings into a RISC-V object and exit 0. */
+                        char b1[12];
+                        diag_tool(DIAG_SEV_ERROR, g_ld_image,
+                                  "this build has no riscv32 backend, so the "
+                                  "riscv32 relocation at offset %s for '%s' "
+                                  "cannot be applied; no image was written",
+                                  diag_num(b1, g_ld_relocs[ri].offset),
+                                  g_ld_relocs[ri].name, 0,0,0,0);
+                        unresolved++;
+#endif /* ARKCC_BACKEND_RISCV32 */
                     } else if (idx >= 0)
                         ld_patch_ref(out_buf, out_len, g_ld_relocs[ri].offset,
                                      g_ld_syms[idx].offset, g_ld_relocs[ri].type);
@@ -1793,7 +1811,9 @@ int ark_compile(const ArkOptions *opts) {
         /* -c wants an object, where an undefined symbol becomes a relocation;
          * a flat .bin must refuse one, because nothing will ever fill it in.
          * Only the riscv32 backend reads this flag. */
+#if ARKCC_BACKEND_RISCV32
         g_rv_obj_mode = opts->compile_only ? 1 : 0;
+#endif
         code_size = be2->assemble(asm_text, g_code, ARK_CODE_BUF_SIZE);
         if (code_size < 0) {
             diag_tool(DIAG_SEV_ERROR, opts->input_path, "assembly failed", 0,0,0,0,0,0);
@@ -2250,7 +2270,9 @@ int ark_compile(const ArkOptions *opts) {
              * object body was the assembly text -- an "object" nothing could
              * link. It has a real assembler now, so the object carries the
              * machine code at the layout its -link path lays out. */
+#if ARKCC_BACKEND_RISCV32
             g_rv_obj_mode = 1;
+#endif
             code_len = be->assemble(g_asm, g_code, ARK_CODE_BUF_SIZE);
             if (code_len < 0) {
                 diag_tool(DIAG_SEV_ERROR, g_ld_image, "assembly failed", 0,0,0,0,0,0);
@@ -2316,7 +2338,9 @@ int ark_compile(const ArkOptions *opts) {
         return ARK_OK;
     }
 
+#if ARKCC_BACKEND_RISCV32
     g_rv_obj_mode = 0;    /* a raw image has no linker: unresolved is fatal */
+#endif
     code_size = be->assemble(g_asm, g_code, ARK_CODE_BUF_SIZE);
     if (code_size < 0) {
         diag_tool(DIAG_SEV_ERROR, "arkcc", "assembly failed", 0,0,0,0,0,0);

@@ -1620,6 +1620,130 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                                       "    addi t1, sp, 4\n    sw t1, 0(sp)\n");
                     break;
                 }
+                case IR_ASM:
+                    /* Inline assembly, written out as-is: the text belongs to
+                     * the user, and with -target riscv32 the user writes
+                     * riscv32 assembly.  The extended form ('@'-prefixed) is
+                     * handled the way the ARM backend handles it -- copy the
+                     * template, substitute %0..%3 with the argument registers
+                     * (AAPCS r0-r3 there, a0-a3 here), and drop outputs /
+                     * inputs / clobbers because this backend has no operand
+                     * allocator to bind them to.  Leaving a raw %0 in the
+                     * output would assemble as garbage or die as an unknown
+                     * mnemonic, so the substitution is not optional. */
+                    if (I->name && I->name[0] == '@') {
+                        const char *s = I->name + 1;
+                        while (*s == ' ' || *s == '\t') s++;
+                        if (*s == '"') {
+                            s++;
+                            asmbuf_puts(&buf, "    ");
+                            while (*s && *s != '"') {
+                                if (*s == '\\' && s[1]) {
+                                    if (s[1] == 'n') { asmbuf_putc(&buf, '\n'); asmbuf_puts(&buf, "    "); }
+                                    else if (s[1] == 't') asmbuf_putc(&buf, '\t');
+                                    else if (s[1] == '\\') asmbuf_putc(&buf, '\\');
+                                    else if (s[1] == '"') asmbuf_putc(&buf, '"');
+                                    else asmbuf_putc(&buf, s[1]);
+                                    s += 2;
+                                } else if (*s == '%' && s[1] >= '0' && s[1] <= '3') {
+                                    asmbuf_putc(&buf, 'a');
+                                    asmbuf_putc(&buf, s[1]);
+                                    s += 2;
+                                } else {
+                                    asmbuf_putc(&buf, *s);
+                                    s++;
+                                }
+                            }
+                            asmbuf_putc(&buf, '\n');
+                        }
+                    } else if (I->name) {
+                        asmbuf_puts(&buf, "    ");
+                        asmbuf_puts(&buf, I->name);
+                        asmbuf_putc(&buf, '\n');
+                    }
+                    break;
+                case IR_SVC:
+                case IR_SMC: {
+                    /* __svc(n) / __smc(n): hand service number n to the
+                     * privileged side, first argument in a0, result read back
+                     * from a0 -- the same shape the ARM path has (pop r0 /
+                     * SVC #n / push r0).
+                     *
+                     * ARM has two instructions here (SVC is the supervisor
+                     * call, SMC the TrustZone monitor call).  RV32I has
+                     * exactly one trap instruction, `ecall`, so both map to it
+                     * and an OS cannot tell them apart.  That is a property of
+                     * the ISA, not a shortcut taken here.  The number goes in
+                     * a7, which is where the RISC-V syscall ABI (Linux) and
+                     * SBI both put it. */
+                    asmbuf_puts(&buf, "    lw a0, 0(sp)\n    addi sp, sp, 4\n    li a7, ");
+                    asmbuf_int(&buf, (int)I->val);
+                    asmbuf_puts(&buf, "\n    ecall\n"
+                                      "    addi sp, sp, -4\n    sw a0, 0(sp)\n");
+                    break;
+                }
+                case IR_SIMD_ADD16:
+                case IR_SIMD_SUB16:
+                case IR_SIMD_ADD8:
+                case IR_SIMD_SUB8: {
+                    /* Packed lane arithmetic (ARM's SADD16/SSUB16/SADD8/SSUB8).
+                     * RV32I base has no packed-arithmetic instruction, so the
+                     * ARM semantics are emulated with base instructions: each
+                     * lane is added independently and wraps at its own width
+                     * (these are signed-but-wrapping, not saturating).  Same
+                     * values as ARM, only slower -- never a different answer.
+                     *
+                     * 16-bit lanes cannot use the byte-mask trick: masking
+                     * each byte after the add would drop the carry a 16-bit add
+                     * must keep (0x00FF + 1 has to become 0x0100).  So mask
+                     * whole halfwords and let the shift discard the carry that
+                     * left the lane.
+                     * 8-bit lanes can: the 0x00FF00FF mask splits even and odd
+                     * bytes, and masking after each add drops the carry between
+                     * bytes, which is exactly what an 8-bit lane add does. */
+                    int is8 = (I->op == IR_SIMD_ADD8 || I->op == IR_SIMD_SUB8);
+                    int is_sub = (I->op == IR_SIMD_SUB16 || I->op == IR_SIMD_SUB8);
+                    const char *op = is_sub ? "sub" : "add";
+                    asmbuf_puts(&buf, "    lw t1, 0(sp)\n    lw t0, 4(sp)\n    addi sp, sp, 4\n");
+                    if (is8) {
+                        /* 0x00FF00FF splits even and odd bytes into two
+                         * groups, and masking after each add drops the carry
+                         * between them -- that part is enough for addition.
+                         * Subtraction is not: a borrow travels *down* from the
+                         * next lane.  {5,4,3,2} - {5,6,7,8} in the odd group
+                         * gave 0xFFF9 for the high pair instead of 0xFFFA,
+                         * because the borrow out of the low byte crossed the
+                         * 8-bit gap and stole one from the lane above it
+                         * (measured: c[7] came back -7).  Setting a guard bit
+                         * at the bottom of each gap keeps the borrow inside its
+                         * own lane, and after the >>8 both groups carry that
+                         * guard at bit 0 and bit 16 -- the same constant
+                         * 0x01000100.  Addition needs no guard. */
+                        asmbuf_puts(&buf, "    li t4, 0x00FF00FF\n");
+                        if (is_sub) asmbuf_puts(&buf, "    li t5, 0x01000100\n");
+                        asmbuf_puts(&buf, "    and t2, t0, t4\n");
+                        if (is_sub) asmbuf_puts(&buf, "    or t2, t2, t5\n");
+                        asmbuf_puts(&buf, "    and t3, t1, t4\n    ");
+                        asmbuf_puts(&buf, op);
+                        asmbuf_puts(&buf, " t2, t2, t3\n    and t2, t2, t4\n"
+                                          "    srli t3, t0, 8\n    and t3, t3, t4\n");
+                        if (is_sub) asmbuf_puts(&buf, "    or t3, t3, t5\n");
+                        asmbuf_puts(&buf, "    srli t6, t1, 8\n    and t6, t6, t4\n    ");
+                        asmbuf_puts(&buf, op);
+                        asmbuf_puts(&buf, " t3, t3, t6\n    and t3, t3, t4\n"
+                                          "    slli t3, t3, 8\n    or t0, t2, t3\n");
+                    } else {
+                        asmbuf_puts(&buf, "    li t4, 0xFFFF\n"
+                                          "    srli t2, t0, 16\n    srli t3, t1, 16\n"
+                                          "    and t0, t0, t4\n    and t1, t1, t4\n    ");
+                        asmbuf_puts(&buf, op);
+                        asmbuf_puts(&buf, " t2, t2, t3\n    and t2, t2, t4\n    slli t2, t2, 16\n    ");
+                        asmbuf_puts(&buf, op);
+                        asmbuf_puts(&buf, " t0, t0, t1\n    and t0, t0, t4\n    or t0, t0, t2\n");
+                    }
+                    asmbuf_puts(&buf, "    sw t0, 0(sp)\n");
+                    break;
+                }
                 default:
                     /* Every op this backend does not implement used to be
                      * commented out, which left the IR stack unbalanced and
@@ -2217,6 +2341,15 @@ static void rv_insn(RvAsm *a, const char **pp) {
     }
     if (rv_streq_(mn, "nop")) {
         rv_ins(a, rv_enc_i(0, 0, 0, 0, RV_OP_IMM));
+        *pp = p;
+        return;
+    }
+    if (rv_streq_(mn, "ecall") || rv_streq_(mn, "ebreak")) {
+        /* System instructions: the encoding is a fixed 32-bit word, `ecall`
+         * 0x00000073 and `ebreak` 0x00100073.  The riscv32 code generator
+         * emits ecall on the __svc/__smc path, so the assembler has to accept
+         * both without operands. */
+        rv_ins(a, rv_streq_(mn, "ecall") ? 0x00000073u : 0x00100073u);
         *pp = p;
         return;
     }

@@ -313,6 +313,32 @@ ARKOBJ2 对象，但对象体里装的是**已汇编好的机器码**（不是�
 `li` 立即数接受整个无符号 32 位范围（`li t0, 4294967295` 就是 -1，与 GNU as 一致），
 超出 32 位才报错。
 
+**RV32I 剩下的四类 IR（内联汇编 / `__svc` / `__smc` / 自动向量化）**：后端的 `default`
+分支改成报错之后，凡是走这四条的源在 RV 上直接编译失败——诚实，但仍是"完整 C 编译器"
+的缺口。现在都实现了：
+
+- `IR_ASM`：`asm("...")` 原样落到汇编输出；扩展形式（`asm("t" : outs : ins :
+  clobbers)`，`irgen` 用 `@` 前缀标出来）把 `%0..%3` 换成 `a0..a3`（ARM 侧是
+  `r0..r3`）。这个后端**没有操作数分配器**，所以 outs/ins/clobbers 被丢弃——已知边界，
+  写在门禁的注释里。
+- `IR_SVC` / `IR_SMC`：编号进 `a7`，指令是 `ecall`。RV32I **只有一条 trap 指令**，所以
+  `__svc(n)` 与 `__smc(n)` 在 RV 上不可区分；这是 ISA 的属性，不是取巧。编号放 `a7`
+  遵循 RISC-V syscall ABI / SBI 的约定，内核侧从这里取号。
+- `IR_SIMD_ADD16/SUB16/ADD8/SUB8`：自动向量化产出的打包车道运算。RV32I 基础指令集没有
+  打包指令，所以用 SWAR **精确模拟**（逐车道有符号回绕，绝不饱和——与 ARM 的
+  `SADD16/SSUB16/SADD8/SSUB8` 语义一致）。两处容易写错：16 位族不能用字节掩码
+  （`0x00FF + 1` 的进位会丢，必须整半字掩码再把进位用移位丢掉）；8 位族可以按
+  `0x00FF00FF` 分组，但**减法必须给每条车道的 gap 起点置 guard 位**，否则低位字节的
+  借位会穿过 gap 偷走上方车道的一个 1（`0 - 1` 得到 `0xFFFFFFFF` 而不是 `0x000000FF`）。
+
+这条路顺带挖出并修掉了一个**两个后端都有的静默错答案**：`opt_vectorize` 只把
+`LOAD_IDX`/`STORE_IDX` 的宽度改成 `es*W`、把 `BINARY` 换成 SIMD，却没撤掉元素窄化留下
+的 `IR_TRUNC`，于是打包进一个字的 4 个车道过完窄化只剩 lane 0——`char a[8] + b[8]` 在
+`-O2` 下把 `{1,2,3,4,5,6,7,8}` 算成 `{2,0,0,0,10,0,0,0}`。修法是把相邻的 `IR_TRUNC`
+目标位宽提到 32（32 在两个后端都是 no-op，不必重编号），同时拒绝 `volatile` 与
+`__packed` 的循环（`aux & 0x200 / 0x400`——前者不该被合并，后者的逐字节通路正是非对齐
+访问的实现）。门禁：`tests/run_rv_misc_ir_tests.py`。
+
 这条路还暴露并修掉了一个后端缺陷：`irgen` 把"操作数无符号"记在 `aux` 的第 8 位
 （`0x100`），ARM 后端会先掩掉这一位，RV32I 后端直接拿 `aux` 做 `switch`，于是**无符号
 右移和四种无符号比较全部落进 `default` 分支、不发射任何指令**——两个操作数弹掉、左
@@ -620,6 +646,7 @@ python tests/run_capacity_tests.py                                  # 容量门�
 python tests/run_rv_alloca_tests.py --rv-as <bin>                   # RV32I VLA 门禁：5 个用例与 gcc 对拍且各自断言硬编码期望值（两臂同时错也算错），覆盖早返回（尾声重建 sp）、两个 VLA、10 个栈参数（对齐）、`long long` VLA
 python tests/run_rv_image_tests.py [--rv-as <bin>]                   # RV32I 扁平镜像门禁（8 例）：编译成镜像 → 在 RISCV32 unicorn 上跑 `main` 比对硬编码期望值；校验镜像尾部就是最后一节的内容（不许有多余对齐填充）；三条拒绝用例（未知助记符 / 分支越界 / 未定义外部符号）必须失败且**不产镜像**；给 `--rv-as` 时再用对齐布局的链接脚本让 GNU as/ld 产一份参考镜像，要求逐字节相同
 python tests/run_rv_link_tests.py                                 # RV32I 对象模式门禁（6 例 + 3 拒绝 + 自检）：`-c` 出机器码对象、`-link` 串成一张镜像；跨 TU 调用 / extern 全局 / 跨对象读数组 / 两个 TU 各自的 `static helper` 不许撞名 / `.word sym` 绝对地址 / 三对象。未解析符号、跨对象分支、RV 对象缺 `-target riscv32` 必须失败且**不产镜像**；每个用例都在 riscv32 unicorn 上跑 `main` 比对硬编码值，另含"改了运算符必须看见不同答案"的自检
+python tests/run_rv_misc_ir_tests.py --rv-as <bin> [--arm-as <bin> --arm-libgcc <libgcc.a>]  # RV32I 其余 IR 门禁（23 项）：内联汇编、`__svc`/`__smc`（RV 侧用 unicorn 的 `UC_HOOK_INTR` 当内核，校验 a7/参数/回值整条约定）、四种打包车道运算（含跨车道进位/借位）。每个向量化用例除了比值还要求在汇编里真的出现 SWAR 掩码 / `SADD*` 助记符——值对不能证明走了 SIMD，标量算出来一样对；另含两条自检：错的期望值必须被拒、关掉向量化后掩码必须消失
 python tests/run_rv_packed_tests.py --rv-as <bin> [--arm-as <bin>]   # 非对齐访问门禁（RV32I + ARM，给 `--arm-as` 才跑 ARM 臂）：7 个用例 × 每臂，逐字节校验落点（不靠同一条通路回读自证）、2 字节符号扩展、奇数偏移不串扰、8 字节（`long long`，含负数）全 8 字节与高低字顺序
 python tests/run_regalloc_tests.py                                  # 寄存器分配门禁：关就是关 / 开确实改了 / unicorn 上答案不变，外加 volatile 与取地址两个负例要求文本逐字节不变
 python tests/arm_exec/run_arm_exec.py --extra=-fopt-regalloc        # 同一套执行级用例，打开寄存器分配再跑一遍

@@ -1095,6 +1095,8 @@ v0.8.0 已实现完整的 C99 集合 + 98% 以上的 armcc 常用扩展，仅剩
 
 ### 部分支持
 
+- **RV32I 的内联汇编、`__svc`/`__smc` 与打包车道运算**：`asm("...")` 原样输出，扩展形式（`asm("t" : outs : ins : clobbers)`）的 `%0..%3` 换成 `a0..a3`（ARM 是 `r0..r3`）——两个后端都**没有操作数分配器**，outs/ins/clobbers 被丢弃，操作数需要自己在模板里点名。`__svc(n)`/`__smc(n)` 在 RV32I 上都编成 `li a7, n` + `ecall`：RV 基础指令集只有一条 trap 指令，编号按 RISC-V syscall ABI / SBI 的约定进 `a7`，所以二者在 RV 上不可区分（ARM 侧仍是 `SVC #n` / `SMC #n`）。自动向量化产生的 `IR_SIMD_ADD16/SUB16/ADD8/SUB8` 在 RV 上用 SWAR 精确模拟（逐车道有符号回绕，不饱和），代价是每条车道运算要 10 条左右基础指令。门禁：`python tests/run_rv_misc_ir_tests.py --rv-as <bin> [--arm-as <bin> --arm-libgcc <libgcc.a>]`。
+- **自动向量化的两条边界**：只处理"恰好两次 `LOAD_IDX` + 一次 `+`/`-` + 一次 `STORE_IDX`、元素 1 或 2 字节、循环次数是车道数整数倍"的循环；`volatile` 与 `__packed` 的循环**不进**向量化。宿主默认 `-O0` 也开（`ARKCC_FEATURE_OPT_VECTORIZE=1`），板端 profile 置 0，`--vectorize` / `--no_vectorize` 可显式开关。这一段曾经有静默错答案：宽度提升后元素窄化的 `IR_TRUNC` 没撤掉，四个车道只剩 lane 0，`char a[8]+b[8]` 算出 `{2,0,0,0,10,0,0,0}`（exit 0、无警告）。已修——相邻 `IR_TRUNC` 的目标位宽提到 32（即 no-op）。若日后改向量化，务必用 `examples/test_vectorize.c` 之外的形状再验一遍。
 - **跨翻译单元链接（ARKOBJ2，不是 ELF）**：`-c` 产出 arkCC 自有对象容器 ARKOBJ2，`-link` 只认这个格式（`ELF .o` 不支持）。`-link` 做的是符号合并 + 重定位回填 + 多对象 SRAM 重叠检查，**不做数据段重定位**——因此每个对象的 `.data/.bss` 必须落在自己的窗口里，两个对象都带全局变量时直接报 SRAM 重叠并不产出，而不是悄悄叠在一起。详见 5.7。RV32I 侧同样有 `-c`/`-link`（对象体装的是已汇编好的机器码，不是汇编文本）：对象内部全走 PC 相对量，因此可落在镜像任意偏移，链接器只按 16 字节对齐串联并回填 `RV_RELOC_AUIPC`(13) / `RV_RELOC_ABS32`(14)；导出边界由 `.globl`/`.weak` 决定，跨对象分支与跨 TU 的函数指针全局初始化器仍直接报错（详见 README 的「RV32I 的对象模式」）。
 - **x86 内联汇编的 `%N` 操作数被拒绝**：ARM 后端把 `%0..%3` 粗映射到 `r0..r3`，x86 cdecl 没有对应的操作数→寄存器约定，粗映射会静默给出错值，所以 x86 后端在汇编文本里发现 `%0..%9` 时直接报错、不产出（`test_asm_operand.c` 就是这条的预期失败项）。
 - **IR 生成不完整即失败**：`irgen` 遇到无法降级的赋值目标时会累计 `g_irgen_errors`，驱动看到非 0 就 `return ARK_ERR_IRGEN` 并不产出镜像（原先只打一行日志再 push 一个 0，会得到静默算错的二进制）。
