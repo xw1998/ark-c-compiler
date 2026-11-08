@@ -86,7 +86,7 @@
 | 初始化 | 是 | 标量、聚合 `{1,2,3}`、嵌套 `{{1,2},{3,4}}`、指定初始化 `.x=1/[2]=5`、字符串 `char s[]="hi"`、全局非字面量初始化（常量表达式折叠） |
 | 复合字面量 | 是 | `(int[]){1,2,3}` / `(struct P){.x=1,.y=2}` |
 | 结构体按值传递 | 是 | 通过隐藏指针参数实现 |
-| 寄存器分配 | 可选 | `-fopt-regalloc`（`ARKCC_FEATURE_OPT_REGALLOC`，宿主/交叉 1、板端 0，默认关）：发射后的文本遍把最热的帧槽搬进 `r8-r11`，只搬"每一处提及都是 `LDR r0,[r6,#n]` / `STR r0,[r6,#n]`"的槽；取地址、`volatile`、8 位/16 位/64 位访问一律留在内存。热点用例（`char pad[200]` 把后面的局部压过 offset 124）`[r6,#]` 引用 22→13，两个负例逐字节不变。两档成本模型：默认档只搬远槽且**函数永不增大**（H743 自举工程 25 个 `.c`：−2 398 B、−0.21%，无文件变大）；`-fopt-regalloc-near` / `--fregalloc-near`（隐含打开基础档）连近槽一起搬，栈访问从 27 372 降到 15 108，比默认档多 150 字节、14 个文件变大 |
+| 寄存器分配 | 可选 | `-fopt-regalloc`（`ARKCC_FEATURE_OPT_REGALLOC`，宿主/交叉 1、板端 0，默认关）：发射后的文本遍把最热的帧槽搬进 `r8-r11`，只搬"每一处提及都是 `LDR r0,[r6,#n]` / `STR r0,[r6,#n]`"的槽；取地址、`volatile`、8 位/16 位/64 位访问一律留在内存。热点用例（`char pad[200]` 把后面的局部压过 offset 124）`[r6,#]` 引用 22→13，两个负例逐字节不变。两档成本模型：默认档只搬远槽且**函数永不增大**（H743 自举工程 25 个 `.c`：−2 398 B、−0.21%，无文件变大）；`-fopt-regalloc-near` / `--fregalloc-near`（隐含打开基础档）连近槽一起搬，栈访问从 27 372 降到 15 108，比默认档多 150 字节、14 个文件变大；**帧几何**：保存块是锚点——保存块变宽时 `[r6, #N]`（N ≥ 局部区上界）与 `MOVW/ADD r6` 的立即数要同步平移，且保存块必须保持 8 的倍数（奇数个自动补一个空闲 `r8-r11`，零字节代价），否则变参函数的 `r0-r3` 镜像与调用者栈参数会整体错位；五档开关（默认 / `-O2` / regalloc / `-O2+regalloc` / `-O2+regtop+inline+regalloc`）由 `examples/run_va_gate.py --opt-suite` 一次跑完 |
 | 汇编器覆盖面 | 是 | LDR/STR 全地址模式（`[Rn]`/`[Rn,#imm]`/`[Rn,Rm]`/`[Rn,Rm,LSL #0..3]`/`[Rn,#imm]!`/`[Rn],#imm`、`[sp,#imm]`、`[pc,#imm]`）、`VLDM/VSTM/VPUSH/VPOP`、`LDMFD/STMFD/LDMEA/STMEA` 别名、`ADDW/SUBW`；体系结构不存在的形态（`LDMIB/LDMDA/STMIB/STMDA`、寄存器索引写回）明确报错 |
 | 预处理 | 是 | 对象/函数宏（`#/##`）、`#if/#elif/#else/#endif/#ifdef/#ifndef/#undef/#error/#warning/#pragma`、嵌套 `#include`（<=8 层）、`__VA_ARGS__`、`-I` 路径、三字符组替换 |
 | 注释 | 是 | `//` 和 `/* */` |
@@ -320,6 +320,12 @@ gcc 会把 NCRN 向上取到偶数再放，我们不做这个取整——因为 
 逼上栈、double、以及 float 实参按默认实参提升变成 double。另有一条 34 个参数字
 （30 个在栈上）的用例，钉住"栈参数没有上限"。
 
+五档开关一次跑完：`--opt-suite` 会自己把默认、`-O2`、`-fopt-regalloc`、
+`-O2 + -fopt-regalloc`、`-O2 + -freg-top + -finline + -fopt-regalloc` 五组各跑一遍
+再汇总判词。这档不是补充，是必需：`-fopt-regalloc` 会把保存块从 16 字节加宽，
+`r0-r3` 镜像与调用者栈参数随之整体上移，`va_start` 的两个常量（`local+16+…`）
+里的那个 16 就不再成立——不加平移时 near 档是 `20 passed / 29 failed`，全是数值错。
+
 每个用例还要过三道静态断言，它们都不依赖外部工具链，所以板上那条路也有人看着：
 
 - **帧大小**（`FRAME_CAP = 1024`）：按函数把连续的 `SUB sp, sp, #N` **累加**再比。
@@ -526,6 +532,7 @@ python tests/asm_cases/run_asm_cmp.py                             # 汇编器对
 python tests/run_capacity_tests.py                                  # 容量门禁：120 对象 / 1200 头文件 / 520 条 -D / 129 条 -I（宿主不许有人为上限）
 python tests/run_regalloc_tests.py                                  # 寄存器分配门禁：关就是关 / 开确实改了 / unicorn 上答案不变，外加 volatile 与取地址两个负例要求文本逐字节不变
 python tests/arm_exec/run_arm_exec.py --extra=-fopt-regalloc        # 同一套执行级用例，打开寄存器分配再跑一遍
+python examples/run_va_gate.py --opt-suite --arm-as <bin> --rv-as <bin>  # 变参门禁五档开关全跑（默认/O2/regalloc/O2+regalloc/O2+regtop+inline+regalloc），任一组红即失败
 ```
 
 `tests/arm_exec/run_arm_exec.py` 是本仓库唯一"真的执行机器码"的宿主门禁：把 arkc

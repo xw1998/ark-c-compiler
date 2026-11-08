@@ -883,6 +883,46 @@ def encoding_checks(r):
             r.passed += 1
 
 
+# The optimiser sets the gate must survive.  -fopt-regalloc moves the saved
+# register block, which shifts every caller-frame offset a variadic function
+# reads through r6 -- so it has to be exercised by default, not just when
+# somebody remembers to pass --opt.
+OPT_SUITE = [
+    [],
+    ['-O2'],
+    ['-fopt-regalloc', '-fopt-regalloc-near'],
+    ['-O2', '-fopt-regalloc', '-fopt-regalloc-near'],
+    ['-O2', '-freg-top', '-finline',
+     '-fopt-regalloc', '-fopt-regalloc-near'],
+]
+
+def opt_suite(args):
+    """Run the whole gate once per optimiser set, then aggregate."""
+    import subprocess
+    here = os.path.abspath(__file__)
+    bad = []
+    for opts in OPT_SUITE:
+        label = ' '.join(opts) if opts else '(default)'
+        cmd = [sys.executable, here,
+               '--arm-as', args.arm_as, '--rv-as', args.rv_as,
+               '--gcc', args.gcc]
+        if opts:
+            cmd.append('--opt=' + ' '.join(opts))
+        print('\n=== %s ===' % label)
+        sys.stdout.flush()
+        rc = subprocess.call(cmd)
+        if rc != 0:
+            bad.append(label)
+            print('=== %s: FAILED (rc=%d) ===' % (label, rc))
+    total = len(OPT_SUITE)
+    print('\n=== opt suite: %d/%d set(s) green ==='
+          % (total - len(bad), total))
+    if bad:
+        for label in bad:
+            print('    red: %s' % label)
+        return 1
+    return 0
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--arm-as', default=os.environ.get('ARKCC_ARM_AS', ''))
@@ -892,7 +932,14 @@ def main():
     # same 49 cases can be re-run through the optimiser and the reg-top
     # peephole.  Empty by default: the plain run is the reference.
     ap.add_argument('--opt', default=os.environ.get('ARKCC_VA_OPT', ''))
+    # Sweep every optimiser set that touches frame geometry (see OPT_SUITE).
+    ap.add_argument('--opt-suite', action='store_true',
+                    help='run the whole gate once per optimiser set and '
+                         'aggregate the verdicts')
     args = ap.parse_args()
+
+    if args.opt_suite:
+        return opt_suite(args)
 
     try:
         import unicorn  # noqa: F401
