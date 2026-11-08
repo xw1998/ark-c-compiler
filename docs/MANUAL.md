@@ -460,8 +460,8 @@ v0.8.0 之后补上四个 C11 关键字，其余 C11 特性（`_Atomic`、`<thre
   不产镜像；C 后端把初值原样输出成 C 源码，交给宿主 gcc。
 - 穿过 `...` 传复数：`va_arg` 只能按连续参数**字**走、被调方没有类型信息，所以调用点直接报
   `passing a _Complex value without a _Complex parameter type ...`，而不是只物化一半。
-- 全局函数指针的初值仍不支持（`cannot turn the initialiser of the global ... into data`），函数指针只能
-  局部初始化或运行期赋值。
+- 全局地址常量初值（函数指针、对象指针、数组/成员地址）已支持，见下面「全局地址常量初值（C11 6.6p9）」
+  一节；不具该形式的初值一律报错，不写零充数。
 
 **函数类型 typedef（`typedef Ret F(args);`）**
 
@@ -477,6 +477,45 @@ typedef 名记录的是真正的 `TYPE_FUNC` 类型（C99 6.7.1 + 6.7.5：声明
 旧版本把 `typedef Ret F(args);` 名字后面的 `(` 交给"函数定义/声明"分支，typedef 被丢弃、名字被
 登记成函数，症状是 `sizeof(F *)` 报 `expected an expression`、`F *p;` 报 `expected declaration at
 top level`、`sizeof(F)` 静默返回 4。回归门禁：`tests/run_func_typedef_tests.py`（每个机器后端 10 例运行时 + 2 例"必须报错"）。
+
+
+**全局地址常量初值（C11 6.6p9）**
+
+文件作用域的指针对象可以用「静态存储期对象的地址 ± 整型常量」或函数地址初始化。实现上不把地址
+烘成字节（函数地址在链接前根本不存在），而是记成 `(symbol, 字节偏移)` 三元组
+（`IrGlobal.init_sym / init_sym_off / init_sym_is_func`），由后端各自发符号引用：
+
+| 初值形态 | ARM (Thumb-2) | RV32I | 说明 |
+| --- | --- | --- | --- |
+| `int (*p)(int,int) = add;` | `LDR r0,=add` | `.word add` | 函数设计符 |
+| `int (*p)(int,int) = &add;` | 同上 | 同上 | `&` 不改变函数地址语义 |
+| `typedef int binop(int,int); binop *p = sub;` | 同上 | 同上 | typedef 的 `TYPE_FUNC` 与 `is_func_ptr` 两种表示都认 |
+| `int gv; int *p = &gv;` | `MOVW/MOVT addr` | `.word gv` | 本 TU 对象 |
+| `int a[4]; int *p = &a[2];` | `addr + 8` | `.word a + 8` | 按元素步长 |
+| `int *p = &a[1] + 2;` | `addr + 12` | `.word a + 12` | 地址 ± 整型常量 |
+| `int *p = a;` | `addr` | `.word a` | 数组退化到首元素 |
+| `char c[8]; char *p = &c[1];` | `addr + 1` | `.word c + 1` | 步长按元素类型（char 为 1） |
+| `struct S{int k,j;} s; int *p = &s.j;` | `addr + 4` | `.word s + 4` | 成员地址 |
+| `int *p = (int*)&a[3];` | `addr + 12` | `.word a + 12` | cast 不改变地址值 |
+| `int *p=&gv; int **pp=&p;` | `addr` | `.word p` | 指针对象自身的地址 |
+| `static int sv; int *p=&sv;` | `addr` | `.word sv` | 静态对象 |
+| `static int h(void); int (*q)(void)=h;` | `LDR r0,=h` | `.word h` | 静态函数 |
+
+**必须拒绝的形态（已实现，均报错不产镜像）：**
+
+- `int (*p)(int,int) = add + 1;` —— 函数类型没有步长（C11 6.5.6p2 要求指针指向完整对象类型），报
+  `is an address that is not a constant expression (C11 6.6p9)`；
+- `int x = f();` —— 函数调用不是常量表达式，报 `the initialiser of the global '...' is not a constant
+  expression this build can place in data`（旧版会静默写 0）；
+- **ARM 跨翻译单元的对象地址**（`extern int other; int *p = &other;`）——ARM 全局对象不在 ELF 符号表里，
+  数据段按固定基址 `0x20000000` 顺序分配，另一个单元的对象在链接前无法命名，报 `another unit's object
+  cannot be named here`。跨 TU 的**函数**地址不受此限（走 `R_ARM_ABS32` 重定位）。
+- **RV32I 对象模式的「重定位 + 非零偏移」**——ARKOBJ2 的重定位表没有 addend 字段，`-c` 下
+  `.word ext + 4` 报 `ARKOBJ2 relocation carries no addend; define the symbol in this translation unit`；
+  汇编/flat 模式（`.s`/`-S`/直出 `.bin`）不受限，跨 TU 的 `.word ext` 本身可用。
+
+回归门禁：`tests/run_func_ptr_global_tests.py`（16 例运行时 × 2 后端，与宿主 gcc 双校验 + 3 例"必须
+报错" + 2 组跨 TU `-c`/`-link`）。
 
 **struct/union（> 8 字节）返回值：两个机器后端都走 sret（隐藏缓冲指针）**
 

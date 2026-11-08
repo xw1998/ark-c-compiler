@@ -652,6 +652,23 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                 asmbuf_puts(&buf, "    .word .Lgstr_");
                 asmbuf_puts(&buf, g->name);
                 asmbuf_putc(&buf, '\n');
+            } else if (g->has_init && g->init_sym) {
+                /* Address constant (C11 6.6p9): `int (*gp)(int,int) = add;`,
+                 * `int *pg = &gv;`, `int *pe = &arr[2];`.  The data word holds
+                 * the address itself, so the assembler is handed a symbol
+                 * reference plus a byte offset and emits a relocation where it
+                 * can.  Before this branch existed the initialiser fell through
+                 * to the "not a plain constant" error below. */
+                asmbuf_puts(&buf, "    .word ");
+                asmbuf_puts(&buf, g->init_sym);
+                if (g->init_sym_off > 0) {
+                    asmbuf_puts(&buf, " + ");
+                    asmbuf_int(&buf, (int)g->init_sym_off);
+                } else if (g->init_sym_off < 0) {
+                    asmbuf_puts(&buf, " - ");
+                    asmbuf_int(&buf, (int)(-g->init_sym_off));
+                }
+                asmbuf_putc(&buf, '\n');
             } else if (g->has_init && g->init_aggregate) {
                 diag_tool(DIAG_SEV_ERROR, "arkcc",
                           "the riscv32 backend cannot turn the initialiser of "
@@ -3501,6 +3518,7 @@ static void rv_directive(RvAsm *a, const char **pp) {
                  : (rv_streq_(d, "short") || rv_streq_(d, "half")) ? 2 : 4;
         for (;;) {
             const char *save;
+            long long add = 0;
             rv_skip_ws(&p);
             save = p;
             if (rv_a_digit((unsigned char)*p) || *p == '-' || *p == '+') {
@@ -3528,22 +3546,45 @@ static void rv_directive(RvAsm *a, const char **pp) {
                     rv_error(a, "line %s: the symbol '%s' needs a .word", sym, "");
                     return;
                 }
+                /* An address constant is emitted as `sym + N` / `sym - N`
+                 * (a pointer global initialised from `&arr[2]`).  The offset
+                 * is a byte count, resolved here when the symbol lives in this
+                 * unit; an ARKOBJ2 relocation carries no addend, so a nonzero
+                 * offset that would need one is refused rather than written
+                 * without it. */
+                rv_skip_ws(&p);
+                if (*p == '+' || *p == '-') {
+                    char sg = *p;
+                    long long qv;
+                    p++;
+                    if (!rv_read_ll(&p, &qv)) {
+                        rv_error(a, "line %s: the offset after '%s' is not a "
+                                    "constant", sym, "");
+                        return;
+                    }
+                    add = (sg == '+') ? qv : -qv;
+                }
                 if (!a->emit) {
                     rv_advance(a, 4);
                 } else {
                     addr = rv_sym_addr(a, sym, dir);
-                    if (addr < 0 && a->obj && dir == 0) {
-                        /* .word sym in an object is an absolute address the
+                    if (addr >= 0 && add != 0) addr = (int)((long long)addr + add);
+                    if (addr < 0 && a->obj && dir == 0 && add == 0) {                        /* .word sym in an object is an absolute address the
                          * linker writes once the symbol has one. */
                         rv_add_reloc(a, sym, rv_here_off(a), RV_RELOC_ABS32);
                         rv_put32(a, a->cur_sec, a->sec_pc[a->cur_sec], 0u);
                         rv_advance(a, 4);
+                    } else if (addr < 0 && a->obj && dir == 0 && add != 0) {
+                        rv_error(a, "line %s: the address of '%s' needs both a "
+                                    "relocation and a byte offset, and an ARKOBJ2 "
+                                    "relocation carries no addend; define the "
+                                    "symbol in this translation unit", sym, "");
+                        return;
                     } else if (addr < 0) {
                         rv_error(a, "line %s: '%s' is not a symbol this translation "
                                     "unit defines; a flat image has no linker to "
                                     "fill it in", sym, "");
-                        return;
-                    } else {
+                        return;                    } else {
                         rv_put32(a, a->cur_sec, a->sec_pc[a->cur_sec],
                                  (unsigned int)addr);
                         rv_advance(a, 4);

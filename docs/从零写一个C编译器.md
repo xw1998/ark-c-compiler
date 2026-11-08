@@ -3279,13 +3279,50 @@ arkc 的 `parse_declarator` 分三段处理：
 
 补法是把跳过换成 `parse_param_list()`，把参数类型挂在**指针类型自己**身上（`Type::params` / `param_count` / `is_variadic`）。挂在指针上而不是改造 `TYPE_FUNC`，是因为 `*fp` 的解引用与调用 lowering 都按"指针的 base 就是返回类型"在写，改成函数类型要多改很多处，而收益为零。
 
-补完之后仍有两处缺口，都登记在文档里而不是留给人猜：全局函数指针的初值不支持；`_Generic` 的关联类型只比 `is_func_ptr` 标志、不比参数列表。这类取舍必须写进注释与文档（第 17 章讲"已知限制"的登记方法），否则下一个维护者会以为这是遗漏。
+补完之后还剩一处缺口，登记在文档里而不是留给人猜：`_Generic` 的关联类型只比 `is_func_ptr` 标志、不比参数列表。（原先还有一处——全局函数指针的初值不支持——已在第 8.5.3 节补完。）这类取舍必须写进注释与文档（第 17 章讲"已知限制"的登记方法），否则下一个维护者会以为这是遗漏。
 
 原来还有第三处缺口：`typedef Ret F(args);`（**函数类型** typedef）整体不被接受。它的根因和上面这条正好相反——`parse_declarator` 对这种拼写停在形参表之前，于是 `(` 被"函数定义/声明"分支抢走，typedef 被丢弃、名字被登记成函数（`sizeof(binop *)` 报 `expected an expression`，`binop *p;` 报 `expected declaration at top level`，`sizeof(binop)` 静默返回默认的 4）。
 
 修法是给这一种拼写补上类型本身：`parse_func_type_tail()` 吃掉 `( params )`，用 `type_func()` 建出真正的 `TYPE_FUNC`，`sym_add(SYM_TYPEDEF)` 存它。这里之所以**不能**沿用"参数表挂在指针类型身上"的表示，是因为 `F *p` 里的 `F` 本身就必须是一个类型——`sizeof(F *)`、`(F *)x` 强制转换、`F **pp` 都要靠它。两种表示分工明确：`(*fp)(params)` 声明符把参数表留在指针上（`*fp` 与调用 lowering 只看"指针的 base 是返回类型"），函数类型 typedef 则把参数表留在 `TYPE_FUNC` 节点上，`irgen` 的间接调用取值逻辑两条都认（先沿指针找 `is_func_ptr && params`，再找 `TYPE_FUNC && params`）。
 
 顺带修掉两个静默错值：`binop add;` 以前会把 `add` 变成一个 4 字节的数据对象（调用它的地方永远解析不到），现在按 6.2.2p5 生成和写全原型相同的 `AST_FUNC_DECL`；`sizeof(binop)` 与 `_Alignof(binop)` 以前返回默认的 4，现在按 6.5.3.4p1 报错。门禁是 `tests/run_func_typedef_tests.py`，两个机器后端各跑 11 个运行时用例外加 2 个"必须报错"用例，并要求门禁自己能判错（防假绿自检）。
+
+#### 8.5.3 全局地址常量初值：为什么不能把地址烘成字节
+
+承上：参数表补回来以后，间接调用的**类型**信息齐了，但"用函数地址初始化一个全局指针"仍然报 `cannot turn the initialiser of the global ... into data`。这条报错的措辞本身就是线索——初值的落点是"data"，而两个机器后端处理全局标量初值的方式，是让前端算出一个常量、再写进 `.data` 的字节图案（`init_aggregate`）。
+
+对整数没问题，对地址不行，原因分三层：
+
+1. **函数地址在链接前不存在。** 全局对象在 ARM 后端根本不在 ELF 符号表里：`gvar_assign()` 按固定基址 `0x20000000` 顺序分配绝对地址，内容由一个生成的 `__arkcc_init_globals` 用 `STR` 写进去。运行期它当然有地址，但"写进 `.data` 的那 4 个字节"必须在前端就定下来。
+2. **烘成字节就把跨翻译单元的路堵死了。** 真要写死一个绝对数值，`-c` 出来的对象在别的单元里也会带着那个数字，链接再挪一下就全错。唯一正确的载体是**符号引用**，交给链接器回填。
+3. **"这个初值到底是什么"这件事，前端能判、宿主常量求值器判不了。** `eval_const_expr` 只认整数，`&gv` 它看不懂；而不加判断地退化成"写 0"就是静默错值。
+
+所以做法是给 `IrGlobal` 加一个三元组：`init_sym`（符号名）、`init_sym_off`（字节偏移）、`init_sym_is_func`（是不是函数）。前端只做一件事——把一个"像地址的表达式"走查成 `(符号, 偏移, 是否函数)`；后端按自己的方式发符号引用。走查器 `irgen_try_addr_init` 承接的形态：
+
+| C 源码 | 走查结果 |
+| --- | --- |
+| `add` / `&add` / `binop *p = sub`（typedef） | `("add", 0, 是函数)` |
+| `&gv` / `(int*)&gv` | `("gv", 0, 否)` |
+| `a`（数组退化） / `&a[0]` | `("a", 0, 否)` |
+| `&a[2]` / `&a[1] + 2` | `("a", 8 / 12, 否)` |
+| `&c[1]`（`char` 数组） | `("c", 1, 否)` |
+| `&s.j`（结构体成员） | `("s", 偏移, 否)` |
+| `&gp`（指针对象自身） | `("gp", 0, 否)` |
+| `static int sv; &sv` / `static int h(void); q = h` | 同上（链接属性不影响） |
+
+两个坑值得单列，都是"看起来该能拼、其实语义不同"：
+
+- **`add + 1` 必须拒绝。** 直觉上"函数地址加一"就是下一个字节，但 C11 6.5.6p2 要求指针指向完整对象类型，函数类型没有大小，这个加法根本无定义。第一版走查器给函数设计符的返回 `addr_elem_size()` 拿到 4（因为它的类型是一个 `is_func_ptr` 的 `TYPE_PTR` 节点），于是 RV 后端老老实实发出了 `.word add + 4`。修法是让走查器显式往上传一个 `isf` 出参，`AST_BINARY` 里 `if (bif) return 0`——用"这个操作数是不是函数"判，而不是靠类型形态猜。同一个错误还暴露了 `addr_elem_size` 的语义错位：对 `TYPE_PTR` 它返回 `type_size(t->base)`，而传入的本来就是"所指对象的类型"，导致 `&gv + 1` 只加 1 字节。改成「ARRAY→元素大小、FUNC→0、其他→`type_size(t)`」。
+- **报错文本必须精确。** 第一版让 `add + 1` 落到聚合初始化器的分支，报出"only integer constants in arrays and structures"，把用户指向错误的方向。补 `looks_like_address()` 之后，这类形态在进分支前就被认出，直接给 C11 6.6p9 的诊断。
+
+后端的分工也不一样，因为两边数据模型不同：
+
+- **ARM**：函数地址走 `LDR r0,=name`（与 `IR_PUSH_FUNC` 同一条路，内部汇编器翻成 MOVW/MOVT；`-c` 下是 type-4 `R_ARM_ABS32` 重定位，跨 TU 可用）。本 TU 对象走 `emit_mov_addr32(基址 + 偏移)`。**跨 TU 的对象地址直接报错**——数据段固定基址、符号表里没有对象，这个名字在这个单元里确实不存在，猜一个绝对数就是错值。
+- **RV32I**：统一发 `.word sym` / `.word sym + N`，是真正的重定位。代价是 `-c` 对象模式撞上 ARKOBJ2 重定位表没有 addend 字段：`.word ext + 4` 只能报错（`ARKOBJ2 relocation carries no addend; define the symbol in this translation unit`），不改对象格式——改格式会破坏与 ARM 共用重定位表带来的逐字节一致保证。
+
+最后一处顺手补的缺口在 `serialize_const_expr`：它的 `default:` 分支以前写 0 并把 `init_aggregate` 填成字节图案，于是 `int x = f();` 这种非法初值静默变成 0。现在置 `g_ser_unknown`，5 个调用点各自收尾时检查并报错。
+
+门禁是 `tests/run_func_ptr_global_tests.py`：16 个运行时用例（每个用例 arm 与 rv 各跑一次，同时用宿主 gcc 编译同一份源码做双校验）、3 个"必须报错"用例、2 组跨 TU `-c`+`-link`，并要求门禁自己能判错。
 
 ---
 
