@@ -266,6 +266,29 @@
 
 **已知代价（不是缺陷，是设计选择）**：`udivmod64` 是 64 次 restoring 除法，在 arkc "每个中间量都压栈" 的代码形状下**一次 64 位除法约 12.8k 条指令**（实测 `shift64` 整例 9.26M 条）。软除法在 M7 上按主频折算仍在毫秒级可接受，但实时性敏感的内层循环应当避免 64 位除。
 
+**RV32I 的扁平镜像（`-target riscv32 x.c -o x.bin`）**：这个后端早先只到
+"输出 GAS 语法汇编"，要执行必须自己接 `as -march=rv32im` + `ld -Ttext=0x08000000`。
+现在它自己就是一个 RV32I 汇编器，直接把镜像写到 `0x08000000`：`.text` →
+`.rodata` → `.data` 三段连续排列（先 `-S` 再看文本，能对上每一条指令），段基址 16
+字节对齐，镜像**在最后一个有字节的段末尾结束**（纯代码程序就是代码长度，不额外补
+对齐）。`ARKCC_DUMP_SYMS=1` 会把 `RV_SYM <名字> 0x<地址>` 打到 stderr，宿主机测试
+靠它定位 `main`。
+
+这个汇编器**没有链接器**，所以对"半成品"比 GNU as 更严格，三类问题一律报错且不产
+镜像：未知助记符；分支超出 `beq/bne/blt/bge/bltu/bgeu` 的 ±4 KB（`jal/j` ±1 MB）；
+**引用本翻译单元没有定义的符号**（`a flat image has no linker to fill it in`）——
+留着一条半写的 `auipc` 让程序跳到镜像外、编译还 exit 0，正是这个项目不允许的静默
+错答案。`-c`（ARKOBJ2 对象）与 `-link` 仍然只有 ARM 支持，RV 的跨对象链接还没做。
+
+`li` 立即数接受整个无符号 32 位范围（`li t0, 4294967295` 就是 -1，与 GNU as 一致），
+超出 32 位才报错。
+
+这条路还暴露并修掉了一个后端缺陷：`irgen` 把"操作数无符号"记在 `aux` 的第 8 位
+（`0x100`），ARM 后端会先掩掉这一位，RV32I 后端直接拿 `aux` 做 `switch`，于是**无符号
+右移和四种无符号比较全部落进 `default` 分支、不发射任何指令**——两个操作数弹掉、左
+操作数再压回去，`u >> 4` 静默返回 `u`，`a < b` 静默返回 `a`。现在按位掩码后选
+`srl` / `sltu` 系列，并且 `default` 分支改成报错（未知运算符不许静默返回左操作数）。
+
 ### 后端
 
 | 后端 | 用途 |
@@ -273,7 +296,7 @@
 | **ARM Thumb-2** | STM32 Cortex-M（默认，含软浮/硬件 FPU + 段分离 + 双精度桩 + AAPCS + 完整 DWARF + TLS + split_sections + scatter） |
 | **C 源码** | 宿主测试主路径（IR -> 可读 C，完整支持内联汇编操作数透传） |
 | **x86** | i386 cdecl，输出 GAS 汇编（`-target` 亦接受别名 `x86_64`/`x86-64`/`i386`/`i686`） |
-| **RV32I** | 输出 RV32I 汇编 |
+| **RV32I** | 输出 RV32I 汇编，并自带扁平镜像汇编器（`arkcc -target riscv32 x.c -o x.bin` 到 0x08000000，不需要外部 `as`/`ld`） |
 
 **各后端的能力不是同一张表：`stdarg.h` 有两条互不兼容的走法。**
 
@@ -565,6 +588,7 @@ python tests/run_arm_int64_tests.py --arm-as <bin>                # 64 位数据
 python tests/run_rv_float_tests.py --arm-as <bin> --arm-libgcc <libgcc.a> --rv-as <bin>  # RV32I 软浮点门禁（22 项）：浮点算术/比较/转换与 gcc 对拍
 python tests/run_capacity_tests.py                                  # 容量门禁：120 对象 / 1200 头文件 / 520 条 -D / 129 条 -I（宿主不许有人为上限）
 python tests/run_rv_alloca_tests.py --rv-as <bin>                   # RV32I VLA 门禁：5 个用例与 gcc 对拍且各自断言硬编码期望值（两臂同时错也算错），覆盖早返回（尾声重建 sp）、两个 VLA、10 个栈参数（对齐）、`long long` VLA
+python tests/run_rv_image_tests.py [--rv-as <bin>]                   # RV32I 扁平镜像门禁（8 例）：编译成镜像 → 在 RISCV32 unicorn 上跑 `main` 比对硬编码期望值；校验镜像尾部就是最后一节的内容（不许有多余对齐填充）；三条拒绝用例（未知助记符 / 分支越界 / 未定义外部符号）必须失败且**不产镜像**；给 `--rv-as` 时再用对齐布局的链接脚本让 GNU as/ld 产一份参考镜像，要求逐字节相同
 python tests/run_rv_packed_tests.py --rv-as <bin> [--arm-as <bin>]   # 非对齐访问门禁（RV32I + ARM，给 `--arm-as` 才跑 ARM 臂）：7 个用例 × 每臂，逐字节校验落点（不靠同一条通路回读自证）、2 字节符号扩展、奇数偏移不串扰、8 字节（`long long`，含负数）全 8 字节与高低字顺序
 python tests/run_regalloc_tests.py                                  # 寄存器分配门禁：关就是关 / 开确实改了 / unicorn 上答案不变，外加 volatile 与取地址两个负例要求文本逐字节不变
 python tests/arm_exec/run_arm_exec.py --extra=-fopt-regalloc        # 同一套执行级用例，打开寄存器分配再跑一遍

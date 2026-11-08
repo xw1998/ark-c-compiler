@@ -1,7 +1,10 @@
 /* Ark C Compiler - RISC-V (RV32I) backend
  *
- * Emits GAS-syntax RV32I assembly. The assemble stage is a stub; the user
- * subsequently runs `as -march=rv32i`.
+ * Emits GAS-syntax RV32I assembly and assembles it to a flat image at
+ * 0x08000000 (.text, then .rodata, then .data), so `arkcc -target
+ * riscv32 x.c -o x.bin` needs no external GNU as/ld.  -c/-link still
+ * hand the text to the user's toolchain: cross-object relocation is
+ * not implemented for this target.
  *
  * Calling convention: arguments a0..a7; stack frame fp = s0; this backend
  * treats all local values as 4-byte slots.
@@ -9,9 +12,15 @@
 #include "backend.h"
 #include "codegen.h"
 #include "memory.h"
+#include "platform.h"
 #include "common.h"
 #include "diag.h"
 #include "agginit.h"
+/* On host, <stdlib.h> provides getenv() for the ARKCC_DUMP_SYMS symbol map
+ * (see rv_assemble); on STM32 getenv() does not exist. */
+#if ARKCC_PROFILE != ARKCC_PROFILE_STM32_MIN
+#  include <stdlib.h>
+#endif
 
 static const char *arg_reg_r(int i) {
     static const char *r[] = { "a0","a1","a2","a3","a4","a5","a6","a7" };
@@ -864,9 +873,19 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                     break;
                 }
 
-                case IR_BINARY:
+                case IR_BINARY: {
+                    /* aux holds the operator, and bit 8 (0x100) means "the
+                     * operands are unsigned" -- irgen sets it for unsigned
+                     * comparisons and for >>.  Switching on aux directly made
+                     * every unsigned compare and every unsigned right shift
+                     * miss all the cases, land in the default arm and
+                     * disappear: both operands were popped and the left one
+                     * pushed back, so `u >> 4` silently returned `u` and
+                     * `a < b` on unsigned silently returned `a` (nonzero =
+                     * "true").  Mask the flag and pick the u-variants. */
+                    int is_uns = (I->aux & 0x100) != 0;
                     asmbuf_puts(&buf, "    lw t1, 0(sp)\n    lw t0, 4(sp)\n    addi sp, sp, 4\n");
-                    switch (I->aux) {
+                    switch (I->aux & ~0x100) {
                         case (int)TOK_PLUS:  asmbuf_puts(&buf, "    add t0, t0, t1\n"); break;
                         case (int)TOK_MINUS: asmbuf_puts(&buf, "    sub t0, t0, t1\n"); break;
                         case (int)TOK_MUL:   asmbuf_puts(&buf, "    mul t0, t0, t1\n"); break;
@@ -876,15 +895,35 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                         case (int)TOK_BOR:   asmbuf_puts(&buf, "    or t0, t0, t1\n");  break;
                         case (int)TOK_BXOR:  asmbuf_puts(&buf, "    xor t0, t0, t1\n"); break;
                         case (int)TOK_SHL:   asmbuf_puts(&buf, "    sll t0, t0, t1\n"); break;
-                        case (int)TOK_SHR:   asmbuf_puts(&buf, "    sra t0, t0, t1\n"); break;
+                        case (int)TOK_SHR:
+                            asmbuf_puts(&buf, is_uns ? "    srl t0, t0, t1\n"
+                                                     : "    sra t0, t0, t1\n");
+                            break;
                         case (int)TOK_EQ:    asmbuf_puts(&buf, "    sub t0, t0, t1\n    seqz t0, t0\n"); break;
                         case (int)TOK_NE:    asmbuf_puts(&buf, "    sub t0, t0, t1\n    snez t0, t0\n"); break;
-                        case (int)TOK_LT:    asmbuf_puts(&buf, "    slt  t0, t0, t1\n"); break;
-                        case (int)TOK_GT:    asmbuf_puts(&buf, "    slt  t0, t1, t0\n"); break;
-                        case (int)TOK_LE:    asmbuf_puts(&buf, "    slt  t0, t1, t0\n    xori t0, t0, 1\n"); break;
-                        case (int)TOK_GE:    asmbuf_puts(&buf, "    slt  t0, t0, t1\n    xori t0, t0, 1\n"); break;
-                        default: break;
+                        case (int)TOK_LT:    asmbuf_puts(&buf, is_uns ? "    sltu t0, t0, t1\n"
+                                                                     : "    slt  t0, t0, t1\n"); break;
+                        case (int)TOK_GT:    asmbuf_puts(&buf, is_uns ? "    sltu t0, t1, t0\n"
+                                                                     : "    slt  t0, t1, t0\n"); break;
+                        case (int)TOK_LE:    asmbuf_puts(&buf, is_uns ? "    sltu t0, t1, t0\n    xori t0, t0, 1\n"
+                                                                     : "    slt  t0, t1, t0\n    xori t0, t0, 1\n"); break;
+                        case (int)TOK_GE:    asmbuf_puts(&buf, is_uns ? "    sltu t0, t0, t1\n    xori t0, t0, 1\n"
+                                                                     : "    slt  t0, t0, t1\n    xori t0, t0, 1\n"); break;
+                        default: {
+                            /* Never fall through silently: an operator this
+                             * backend does not know must fail the build, not
+                             * quietly return the left operand. */
+                            char opbuf[12];
+                            diag_tool(DIAG_SEV_ERROR, "arkcc",
+                                      "the riscv32 backend does not implement binary "
+                                      "operator %s (function '%s')",
+                                      diag_num(opbuf, I->aux & ~0x100), f->name, 0, 0, 0, 0);
+                            break;
+                        }
                     }
+                    asmbuf_puts(&buf, "    sw t0, 0(sp)\n");
+                    break;
+                }
                     asmbuf_puts(&buf, "    sw t0, 0(sp)\n");
                     break;
                 case IR_DIV:
@@ -1605,12 +1644,1016 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
     }
 }
 
-static int rv_assemble(const char *asm_text, unsigned char *out, int cap) {
-    int n = ark_strlen(asm_text);
+/* ---- RV32I assembler --------------------------------------------------
+ *
+ * Turns the GAS text this backend emits into a flat RV32I image, so that
+ * `arkcc -target riscv32 hello.c -o hello.bin` produces machine code instead
+ * of a copy of the assembly text.  The layout is the one a bare
+ * `ld -Ttext=0x08000000` gives a single object: .text at the image base, then
+ * .rodata, then .data, each aligned.
+ *
+ * There is no linker behind this stage, so a reference to a symbol this
+ * translation unit does not define is an error, not a placeholder.  A flat
+ * image that kept a half-written auipc would jump nowhere while arkcc still
+ * exited 0, which is exactly the class of silent wrong answer this compiler
+ * must not produce.
+ *
+ * Every RV32I instruction is 4 bytes.  Only the pseudo-instructions are
+ * longer, and their length is decided from the immediate alone (`li`) or is
+ * fixed (`la` and `call` are 8 bytes), so pass 1 can measure the image
+ * without knowing a single address and pass 2 can encode directly.  Numeric
+ * local labels (`41:` / `41f` / `43b`) are supported; they are resolved in
+ * pass 2 by definition order.
+ */
+#define RV_IMAGE_BASE   0x08000000
+#define RV_SEC_TEXT     0
+#define RV_SEC_RODATA   1
+#define RV_SEC_DATA     2
+#define RV_SEC_COUNT    3
+
+typedef struct RvLabel {
+    char *name;      /* named label, or the digits of a numeric local label */
+    int   sec;
+    int   off;       /* byte offset inside its section */
+    int   num;       /* -1 for a named label, else the numeric label's value */
+} RvLabel;
+
+typedef struct RvAsm {
+    const char    *src;
+    unsigned char *out;
+    int            out_cap;
+    int            sec_pc[RV_SEC_COUNT];    /* bytes measured in each section */
+    int            sec_base[RV_SEC_COUNT];  /* image offset of each section */
+    int            cur_sec;
+    RvLabel       *labels;
+    int            label_count, label_cap;
+    int            hard_errors;
+    int            overflow_reported;
+    int            line;
+    int            emit;   /* 0 = pass 1 (measure), 1 = pass 2 (encode) */
+    int            seen;   /* label definitions met so far in pass 2 */
+} RvAsm;
+
+static int rv_a_alpha(int c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c == '.';
+}
+static int rv_a_digit(int c) { return c >= '0' && c <= '9'; }
+static int rv_a_hex(int c) {
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+static int rv_a_ident(int c) {
+    return rv_a_alpha(c) || rv_a_digit(c) || c == '$';
+}
+static void rv_skip_ws(const char **p) {
+    while (**p == ' ' || **p == '\t') (*p)++;
+}
+static int rv_streq_(const char *a, const char *b) {
+    while (*a && *b) {
+        if (*a != *b) return 0;
+        a++; b++;
+    }
+    return *a == 0 && *b == 0;
+}
+static int rv_align16(int v) { return (v + 15) & ~15; }
+
+/* Every diagnostic carries the assembly line number as its first argument;
+ * a0/a1 are the two optional values of the message's other placeholders. */
+static void rv_error(RvAsm *a, const char *msg, const char *a0, const char *a1) {
+    char b1[12];
+    a->hard_errors++;
+    diag_tool(DIAG_SEV_ERROR, "arkcc", msg, diag_num(b1, a->line), a0, a1, 0, 0, 0);
+}
+
+static void rv_add_label(RvAsm *a, const char *name, int num) {
+    if (a->label_count >= a->label_cap) {
+        int nc = a->label_cap == 0 ? 64 : a->label_cap * 2;
+        a->labels = (RvLabel *)mem_realloc(a->labels,
+            a->label_cap * (int)sizeof(RvLabel),
+            nc * (int)sizeof(RvLabel));
+        a->label_cap = nc;
+    }
+    a->labels[a->label_count].name = mem_strdup(name);
+    a->labels[a->label_count].sec = a->cur_sec;
+    a->labels[a->label_count].off = a->sec_pc[a->cur_sec];
+    a->labels[a->label_count].num = num;
+    a->label_count++;
+}
+
+/* Absolute address of a named label, or -1 when this unit does not define it. */
+static int rv_named_addr(RvAsm *a, const char *name) {
     int i;
-    if (n > cap) n = cap;
-    for (i = 0; i < n; i++) out[i] = (unsigned char)asm_text[i];
+    for (i = 0; i < a->label_count; i++) {
+        if (a->labels[i].num >= 0) continue;
+        if (rv_streq_(a->labels[i].name, name))
+            return RV_IMAGE_BASE + a->sec_base[a->labels[i].sec] + a->labels[i].off;
+    }
+    return -1;
+}
+
+/* Absolute address of the nearest numeric label `num` in direction `dir`
+ * (1 = forward, -1 = backward), or -1.  Definition order is the array order,
+ * and `a->seen` counts the definitions pass 2 has already walked past. */
+static int rv_numeric_addr(RvAsm *a, int num, int dir) {
+    int i;
+    if (dir > 0) {
+        for (i = a->seen; i < a->label_count; i++)
+            if (a->labels[i].num == num)
+                return RV_IMAGE_BASE + a->sec_base[a->labels[i].sec] + a->labels[i].off;
+    } else {
+        for (i = a->seen - 1; i >= 0; i--)
+            if (a->labels[i].num == num)
+                return RV_IMAGE_BASE + a->sec_base[a->labels[i].sec] + a->labels[i].off;
+    }
+    return -1;
+}
+
+static int rv_read_ident(const char **p, char *buf, int cap) {
+    int n = 0;
+    rv_skip_ws(p);
+    while (rv_a_ident((unsigned char)**p)) {
+        if (n < cap - 1) buf[n] = **p;
+        n++;
+        (*p)++;
+    }
+    buf[n < cap ? n : cap - 1] = 0;
     return n;
+}
+
+static int rv_read_ll(const char **p, long long *out) {
+    const char *s = *p;
+    unsigned long long v = 0ULL;
+    int neg = 0, any = 0, base = 10, d;
+    rv_skip_ws(&s);
+    if (*s == '-') { neg = 1; s++; }
+    else if (*s == '+') s++;
+    if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) { base = 16; s += 2; }
+    while (*s) {
+        if (rv_a_digit((unsigned char)*s)) d = *s - '0';
+        else if (base == 16 && rv_a_hex((unsigned char)*s))
+            d = (*s >= 'a') ? (*s - 'a' + 10) : (*s >= 'A') ? (*s - 'A' + 10) : (*s - '0');
+        else break;
+        v = v * (unsigned)base + (unsigned)d;
+        s++;
+        any++;
+    }
+    if (!any) return 0;
+    *out = neg ? -(long long)v : (long long)v;
+    *p = s;
+    return 1;
+}
+
+static int rv_read_reg(const char **p) {
+    static const struct { const char *n; int r; } tab[] = {
+        {"zero",0},{"ra",1},{"sp",2},{"gp",3},{"tp",4},
+        {"t0",5},{"t1",6},{"t2",7},{"s0",8},{"fp",8},{"s1",9},
+        {"a0",10},{"a1",11},{"a2",12},{"a3",13},{"a4",14},{"a5",15},
+        {"a6",16},{"a7",17},{"s2",18},{"s3",19},{"s4",20},{"s5",21},
+        {"s6",22},{"s7",23},{"s8",24},{"s9",25},{"s10",26},{"s11",27},
+        {"t3",28},{"t4",29},{"t5",30},{"t6",31}
+    };
+    const char *s = *p;
+    char name[8];
+    int n, i;
+    n = rv_read_ident(&s, name, (int)sizeof(name));
+    if (n == 0) return -1;
+    if (name[0] == 'x' && name[1]) {
+        long long v = 0;
+        const char *q = name + 1;
+        if (!rv_read_ll(&q, &v) || *q) return -1;
+        if (v < 0 || v > 31) return -1;
+        *p = s;
+        return (int)v;
+    }
+    for (i = 0; i < (int)(sizeof(tab) / sizeof(tab[0])); i++)
+        if (rv_streq_(tab[i].n, name)) { *p = s; return tab[i].r; }
+    return -1;
+}
+
+/* off(base) */
+static int rv_read_mem(const char **p, int *off, int *base_reg) {
+    long long v = 0;
+    int r;
+    const char *s = *p;
+    rv_skip_ws(&s);
+    if (!rv_read_ll(&s, &v)) return 0;
+    rv_skip_ws(&s);
+    if (*s != '(') return 0;
+    s++;
+    r = rv_read_reg(&s);
+    if (r < 0) return 0;
+    rv_skip_ws(&s);
+    if (*s != ')') return 0;
+    s++;
+    *off = (int)v;
+    *base_reg = r;
+    *p = s;
+    return 1;
+}
+
+/* A symbol operand: a named label, or a numeric local label spelled `41f` /
+ * `43b`.  `dir_out` is 0 for a named label, +1 for f, -1 for b. */
+static int rv_read_symbol(const char **p, char *buf, int cap, int *dir_out) {
+    const char *s = *p;
+    int n = 0;
+    rv_skip_ws(&s);
+    *dir_out = 0;
+    if (rv_a_digit((unsigned char)*s)) {
+        while (rv_a_digit((unsigned char)*s)) {
+            if (n < cap - 1) buf[n] = *s;
+            n++;
+            s++;
+        }
+        buf[n < cap ? n : cap - 1] = 0;
+        if (*s == 'f' || *s == 'b') {
+            *dir_out = (*s == 'f') ? 1 : -1;
+            *p = s + 1;
+            return 1;
+        }
+        return 0;
+    }
+    if (!rv_a_alpha((unsigned char)*s)) return 0;
+    rv_read_ident(&s, buf, cap);
+    *p = s;
+    return 1;
+}
+
+static void rv_put32(RvAsm *a, int sec, int off, unsigned int w) {
+    int idx = a->sec_base[sec] + off;
+    if (!a->emit) return;
+    if (idx < 0 || idx + 4 > a->out_cap) {
+        if (!a->overflow_reported) {
+            a->overflow_reported = 1;
+            rv_error(a, "line %s: the riscv32 image does not fit the output buffer",
+                     "", "");
+        }
+        a->hard_errors++;
+        return;
+    }
+    a->out[idx]     = (unsigned char)(w & 0xFF);
+    a->out[idx + 1] = (unsigned char)((w >> 8) & 0xFF);
+    a->out[idx + 2] = (unsigned char)((w >> 16) & 0xFF);
+    a->out[idx + 3] = (unsigned char)((w >> 24) & 0xFF);
+}
+static void rv_put8(RvAsm *a, int sec, int off, unsigned char b) {
+    int idx = a->sec_base[sec] + off;
+    if (!a->emit) return;
+    if (idx < 0 || idx + 1 > a->out_cap) {
+        if (!a->overflow_reported) {
+            a->overflow_reported = 1;
+            rv_error(a, "line %s: the riscv32 image does not fit the output buffer",
+                     "", "");
+        }
+        a->hard_errors++;
+        return;
+    }
+    a->out[idx] = b;
+}
+static void rv_advance(RvAsm *a, int bytes) { a->sec_pc[a->cur_sec] += bytes; }
+static int rv_here(RvAsm *a) {
+    return RV_IMAGE_BASE + a->sec_base[a->cur_sec] + a->sec_pc[a->cur_sec];
+}
+
+/* ---- instruction encoders -------------------------------------------- */
+static unsigned int rv_enc_r(int f7, int rs2, int rs1, int f3, int rd, int op) {
+    return ((unsigned)(f7 & 0x7F) << 25) | ((unsigned)(rs2 & 0x1F) << 20) |
+           ((unsigned)(rs1 & 0x1F) << 15) | ((unsigned)(f3 & 0x7) << 12) |
+           ((unsigned)(rd & 0x1F) << 7) | (unsigned)(op & 0x7F);
+}
+static unsigned int rv_enc_i(int imm, int rs1, int f3, int rd, int op) {
+    return ((unsigned)(imm & 0xFFF) << 20) | ((unsigned)(rs1 & 0x1F) << 15) |
+           ((unsigned)(f3 & 0x7) << 12) | ((unsigned)(rd & 0x1F) << 7) |
+           (unsigned)(op & 0x7F);
+}
+static unsigned int rv_enc_s(int imm, int rs2, int rs1, int f3, int op) {
+    unsigned u = (unsigned)imm;
+    return (((u >> 5) & 0x7F) << 25) | ((unsigned)(rs2 & 0x1F) << 20) |
+           ((unsigned)(rs1 & 0x1F) << 15) | ((unsigned)(f3 & 0x7) << 12) |
+           ((u & 0x1F) << 7) | (unsigned)(op & 0x7F);
+}
+static unsigned int rv_enc_b(int imm, int rs2, int rs1, int f3, int op) {
+    unsigned u = (unsigned)imm;
+    return (((u >> 12) & 0x1) << 31) | (((u >> 5) & 0x3F) << 25) |
+           ((unsigned)(rs2 & 0x1F) << 20) | ((unsigned)(rs1 & 0x1F) << 15) |
+           ((unsigned)(f3 & 0x7) << 12) | (((u >> 1) & 0xF) << 8) |
+           (((u >> 11) & 0x1) << 7) | (unsigned)(op & 0x7F);
+}
+static unsigned int rv_enc_u(int imm, int rd, int op) {
+    return ((unsigned)(imm & 0xFFFFF) << 12) | ((unsigned)(rd & 0x1F) << 7) |
+           (unsigned)(op & 0x7F);
+}
+static unsigned int rv_enc_j(int imm, int rd, int op) {
+    unsigned u = (unsigned)imm;
+    return (((u >> 20) & 0x1) << 31) | (((u >> 1) & 0x3FF) << 21) |
+           (((u >> 11) & 0x1) << 20) | (((u >> 12) & 0xFF) << 12) |
+           ((unsigned)(rd & 0x1F) << 7) | (unsigned)(op & 0x7F);
+}
+
+#define RV_OP_RTYPE   0x33
+#define RV_OP_IMM     0x13
+#define RV_OP_LOAD    0x03
+#define RV_OP_STORE   0x23
+#define RV_OP_BRANCH  0x63
+#define RV_OP_JAL     0x6F
+#define RV_OP_JALR    0x67
+#define RV_OP_LUI     0x37
+#define RV_OP_AUIPC   0x17
+
+/* Write one 4-byte instruction and advance the section cursor. */
+static void rv_ins(RvAsm *a, unsigned int w) {
+    rv_put32(a, a->cur_sec, a->sec_pc[a->cur_sec], w);
+    rv_advance(a, 4);
+}
+
+/* lui + addi pair that materialises a 32-bit constant in `rd` (8 bytes). */
+static void rv_li32(RvAsm *a, int rd, unsigned int u) {
+    unsigned int hi = (unsigned int)((((unsigned long long)u + 0x800ULL) >> 12) & 0xFFFFF);
+    int lo = (int)(u & 0xFFF);
+    if (lo & 0x800) lo -= 0x1000;
+    rv_ins(a, rv_enc_u((int)hi, rd, RV_OP_LUI));
+    rv_ins(a, rv_enc_i(lo, rd, 0, rd, RV_OP_IMM));
+}
+static int rv_li_needs_pair(int v) { return !(v >= -2048 && v <= 2047); }
+
+/* auipc + addi / auipc + jalr pair reaching `addr` from `pc` (8 bytes). */
+static void rv_pcrel_pair(RvAsm *a, int rd, int addr, int pc, int use_jalr) {
+    long long d = (long long)addr - (long long)pc;
+    long long hi = (d + 0x800) >> 12;
+    int lo = (int)(d - (hi << 12));
+    rv_ins(a, rv_enc_u((int)(hi & 0xFFFFF), rd, RV_OP_AUIPC));
+    if (use_jalr) rv_ins(a, rv_enc_i(lo, rd, 0, rd, RV_OP_JALR));
+    else          rv_ins(a, rv_enc_i(lo, rd, 0, rd, RV_OP_IMM));
+}
+
+/* Resolve a symbol operand to an absolute address, or -1. */
+static int rv_sym_addr(RvAsm *a, const char *name, int dir) {
+    int num = 0, k = 0;
+    if (dir) {
+        while (name[k]) { num = num * 10 + (name[k] - '0'); k++; }
+        return rv_numeric_addr(a, num, dir);
+    }
+    return rv_named_addr(a, name);
+}
+
+/* ---- one instruction -------------------------------------------------- */
+static void rv_insn(RvAsm *a, const char **pp) {
+    static const struct { const char *n; int f3; int f7; } rtab[] = {
+        {"add",0x0,0x00},{"sub",0x0,0x20},{"sll",0x1,0x00},{"slt",0x2,0x00},
+        {"sltu",0x3,0x00},{"xor",0x4,0x00},{"srl",0x5,0x00},{"sra",0x5,0x20},
+        {"or",0x6,0x00},{"and",0x7,0x00},
+        {"mul",0x0,0x01},{"div",0x4,0x01},{"divu",0x5,0x01},
+        {"rem",0x6,0x01},{"remu",0x7,0x01}
+    };
+    static const struct { const char *n; int f3; } itab[] = {
+        {"addi",0x0},{"slti",0x2},{"sltiu",0x3},{"xori",0x4},
+        {"ori",0x6},{"andi",0x7}
+    };
+    static const struct { const char *n; int f3; int sh; } stab[] = {
+        {"slli",0x1,0x00},{"srli",0x5,0x00},{"srai",0x5,0x20}
+    };
+    static const struct { const char *n; int f3; } ltab[] = {
+        {"lb",0x0},{"lh",0x1},{"lw",0x2},{"lbu",0x4},{"lhu",0x5}
+    };
+    static const struct { const char *n; int f3; } sstab[] = {
+        {"sb",0x0},{"sh",0x1},{"sw",0x2}
+    };
+    static const struct { const char *n; int f3; } btab[] = {
+        {"beq",0x0},{"bne",0x1},{"blt",0x4},{"bge",0x5},{"bltu",0x6},{"bgeu",0x7}
+    };
+    const char *p = *pp;
+    char mn[16];
+    int i, n;
+    long long imm = 0;
+    char sym[96];
+    int dir = 0, addr;
+
+    rv_skip_ws(&p);
+    n = rv_read_ident(&p, mn, (int)sizeof(mn));
+    if (n == 0) {
+        rv_error(a, "line %s: expected an instruction", "", "");
+        return;
+    }
+
+    /* ---- pseudo-instructions ------------------------------------------ */
+    if (rv_streq_(mn, "li")) {
+        int rd = rv_read_reg(&p);
+        int v;
+        if (rd < 0) { rv_error(a, "line %s: 'li' needs a register", "", ""); return; }
+        rv_skip_ws(&p);
+        if (*p++ != ',') { rv_error(a, "line %s: 'li' needs a comma", "", ""); return; }
+        if (!rv_read_ll(&p, &imm)) {
+            rv_error(a, "line %s: 'li' needs an immediate", "", "");
+            return;
+        }
+        /* The emitter prints a word constant as the unsigned 32-bit value
+         * it is (`li t0, 4294967295` for -1), and GNU as accepts that by
+         * taking the low 32 bits.  Do the same, but nothing wider: a value
+         * that cannot be a 32-bit pattern is a real error. */
+        if (imm < -2147483647LL - 1 || imm > 4294967295LL) {
+            rv_error(a, "line %s: the 'li' immediate does not fit 32 bits", "", "");
+            return;
+        }
+        v = (int)(unsigned int)(unsigned long long)imm;
+        if (!rv_li_needs_pair(v)) rv_ins(a, rv_enc_i(v, 0, 0, rd, RV_OP_IMM));
+        else rv_li32(a, rd, (unsigned int)v);
+        *pp = p;
+        return;
+    }
+    if (rv_streq_(mn, "la") || rv_streq_(mn, "call")) {
+        int is_call = rv_streq_(mn, "call");
+        int rd = 1;
+        if (!is_call) {
+            rd = rv_read_reg(&p);
+            if (rd < 0) { rv_error(a, "line %s: 'la' needs a register", "", ""); return; }
+            rv_skip_ws(&p);
+            if (*p++ != ',') { rv_error(a, "line %s: 'la' needs a comma", "", ""); return; }
+        }
+        if (!rv_read_symbol(&p, sym, (int)sizeof(sym), &dir)) {
+            rv_error(a, "line %s: the operand must be a symbol", "", "");
+            return;
+        }
+        if (!a->emit) { rv_advance(a, 8); *pp = p; return; }
+        addr = rv_sym_addr(a, sym, dir);
+        if (addr < 0) {
+            rv_error(a, "line %s: '%s' is not a symbol this translation unit "
+                        "defines; a flat image has no linker to fill it in", sym, "");
+            return;
+        }
+        rv_pcrel_pair(a, rd, addr, rv_here(a), is_call);
+        *pp = p;
+        return;
+    }
+    if (rv_streq_(mn, "mv")) {
+        int rd = rv_read_reg(&p), rs;
+        rv_skip_ws(&p);
+        if (*p++ != ',') { rv_error(a, "line %s: 'mv' needs a comma", "", ""); return; }
+        rs = rv_read_reg(&p);
+        if (rd < 0 || rs < 0) { rv_error(a, "line %s: 'mv' needs two registers", "", ""); return; }
+        rv_ins(a, rv_enc_i(0, rs, 0, rd, RV_OP_IMM));
+        *pp = p;
+        return;
+    }
+    if (rv_streq_(mn, "ret")) {
+        rv_ins(a, rv_enc_i(0, 1, 0, 0, RV_OP_JALR));
+        *pp = p;
+        return;
+    }
+    if (rv_streq_(mn, "nop")) {
+        rv_ins(a, rv_enc_i(0, 0, 0, 0, RV_OP_IMM));
+        *pp = p;
+        return;
+    }
+    if (rv_streq_(mn, "jr")) {
+        int rs = rv_read_reg(&p);
+        if (rs < 0) { rv_error(a, "line %s: 'jr' needs a register", "", ""); return; }
+        rv_ins(a, rv_enc_i(0, rs, 0, 0, RV_OP_JALR));
+        *pp = p;
+        return;
+    }
+    if (rv_streq_(mn, "j") || rv_streq_(mn, "beqz") || rv_streq_(mn, "bnez") ||
+        rv_streq_(mn, "beq") || rv_streq_(mn, "bne") || rv_streq_(mn, "blt") ||
+        rv_streq_(mn, "bge") || rv_streq_(mn, "bltu") || rv_streq_(mn, "bgeu") ||
+        rv_streq_(mn, "jal")) {
+        int rs1 = -1, rs2 = -1, f3 = 0, is_j = 0, is_jal = 0;
+        int rel;
+        if (rv_streq_(mn, "j") || rv_streq_(mn, "jal")) {
+            is_j = rv_streq_(mn, "j");
+            is_jal = !is_j;
+            if (is_jal) {
+                rs2 = rv_read_reg(&p);   /* rd, actually */
+                if (rs2 < 0) { rv_error(a, "line %s: 'jal' needs a register", "", ""); return; }
+                rv_skip_ws(&p);
+                if (*p++ != ',') { rv_error(a, "line %s: 'jal' needs a comma", "", ""); return; }
+            }
+        } else if (rv_streq_(mn, "beqz") || rv_streq_(mn, "bnez")) {
+            rs1 = rv_read_reg(&p);
+            f3 = (mn[2] == 'q') ? 0x0 : 0x1;
+            if (rs1 < 0) { rv_error(a, "line %s: the branch needs a register", "", ""); return; }
+            rv_skip_ws(&p);
+            if (*p++ != ',') { rv_error(a, "line %s: the branch needs a label", "", ""); return; }
+        } else {
+            rs1 = rv_read_reg(&p);
+            rv_skip_ws(&p);
+            if (*p++ != ',') { rv_error(a, "line %s: the branch needs a comma", "", ""); return; }
+            rs2 = rv_read_reg(&p);
+            rv_skip_ws(&p);
+            if (*p++ != ',') { rv_error(a, "line %s: the branch needs a label", "", ""); return; }
+            if (rs1 < 0 || rs2 < 0) {
+                rv_error(a, "line %s: the branch needs two registers", "", "");
+                return;
+            }
+            for (i = 0; i < (int)(sizeof(btab) / sizeof(btab[0])); i++)
+                if (rv_streq_(btab[i].n, mn)) f3 = btab[i].f3;
+        }
+        if (!rv_read_symbol(&p, sym, (int)sizeof(sym), &dir)) {
+            rv_error(a, "line %s: the operand must be a label", "", "");
+            return;
+        }
+        if (!a->emit) { rv_advance(a, 4); *pp = p; return; }
+        addr = rv_sym_addr(a, sym, dir);
+        if (addr < 0) {
+            rv_error(a, "line %s: '%s' is not a label this translation unit defines",
+                     sym, "");
+            return;
+        }
+        rel = addr - rv_here(a);
+        if (is_j || is_jal) {
+            if (rel < -(1 << 20) || rel >= (1 << 20) || (rel & 1)) {
+                rv_error(a, "line %s: the jump to '%s' is outside the 21-bit "
+                            "RV32I jal displacement", sym, "");
+                return;
+            }
+            rv_ins(a, rv_enc_j(rel, is_j ? 0 : rs2, RV_OP_JAL));
+        } else {
+            if (rel < -4096 || rel > 4094 || (rel & 1)) {
+                rv_error(a, "line %s: the branch to '%s' is outside the 13-bit "
+                            "RV32I displacement", sym, "");
+                return;
+            }
+            rv_ins(a, rv_enc_b(rel, rs2 < 0 ? 0 : rs2, rs1, f3, RV_OP_BRANCH));
+        }
+        *pp = p;
+        return;
+    }
+    if (rv_streq_(mn, "seqz") || rv_streq_(mn, "snez") || rv_streq_(mn, "not") ||
+        rv_streq_(mn, "neg")) {
+        int rd = rv_read_reg(&p), rs;
+        rv_skip_ws(&p);
+        if (*p++ != ',') { rv_error(a, "line %s: the operand list needs a comma", "", ""); return; }
+        rs = rv_read_reg(&p);
+        if (rd < 0 || rs < 0) {
+            rv_error(a, "line %s: the pseudo-instruction needs two registers", "", "");
+            return;
+        }
+        if (rv_streq_(mn, "seqz"))      rv_ins(a, rv_enc_i(1, rs, 0x3, rd, RV_OP_IMM));
+        else if (rv_streq_(mn, "snez")) rv_ins(a, rv_enc_r(0x00, rs, 0, 0x3, rd, RV_OP_RTYPE));
+        else if (rv_streq_(mn, "not"))  rv_ins(a, rv_enc_i(-1, rs, 0x4, rd, RV_OP_IMM));
+        else                            rv_ins(a, rv_enc_r(0x20, rs, 0, 0x0, rd, RV_OP_RTYPE));
+        *pp = p;
+        return;
+    }
+    if (rv_streq_(mn, "lui") || rv_streq_(mn, "auipc")) {
+        int rd = rv_read_reg(&p);
+        rv_skip_ws(&p);
+        if (*p++ != ',') { rv_error(a, "line %s: the operand list needs a comma", "", ""); return; }
+        if (rd < 0 || !rv_read_ll(&p, &imm)) {
+            rv_error(a, "line %s: needs a register and an immediate", "", "");
+            return;
+        }
+        if (imm < -2147483648LL || imm > 4294967295LL) {
+            rv_error(a, "line %s: the immediate does not fit 32 bits", "", "");
+            return;
+        }
+        rv_ins(a, rv_enc_u((int)((unsigned long long)imm & 0xFFFFF),
+                           rd, rv_streq_(mn, "lui") ? RV_OP_LUI : RV_OP_AUIPC));
+        *pp = p;
+        return;
+    }
+    if (rv_streq_(mn, "jalr")) {
+        int rd = rv_read_reg(&p), rs = -1, off = 0;
+        const char *save;
+        if (rd < 0) { rv_error(a, "line %s: 'jalr' needs a register", "", ""); return; }
+        rv_skip_ws(&p);
+        if (*p++ != ',') { rv_error(a, "line %s: 'jalr' needs a comma", "", ""); return; }
+        save = p;
+        if (!rv_read_mem(&p, &off, &rs)) {
+            p = save;
+            rs = rv_read_reg(&p);
+            if (rs < 0) { rv_error(a, "line %s: 'jalr' needs a register", "", ""); return; }
+            rv_skip_ws(&p);
+            if (*p == ',') {
+                p++;
+                if (!rv_read_ll(&p, &imm) || imm < -2048 || imm > 2047) {
+                    rv_error(a, "line %s: the 'jalr' offset is outside the 12-bit "
+                                "immediate", "", "");
+                    return;
+                }
+                off = (int)imm;
+            }
+        }
+        rv_ins(a, rv_enc_i(off, rs, 0, rd, RV_OP_JALR));
+        *pp = p;
+        return;
+    }
+
+    /* ---- base instruction forms --------------------------------------- */
+    for (i = 0; i < (int)(sizeof(rtab) / sizeof(rtab[0])); i++) {
+        if (rv_streq_(rtab[i].n, mn)) {
+            int rd = rv_read_reg(&p), rs1, rs2;
+            rv_skip_ws(&p);
+            if (*p++ != ',') { rv_error(a, "line %s: the operand list needs a comma", "", ""); return; }
+            rs1 = rv_read_reg(&p);
+            rv_skip_ws(&p);
+            if (*p++ != ',') { rv_error(a, "line %s: this instruction needs three registers", "", ""); return; }
+            rs2 = rv_read_reg(&p);
+            if (rd < 0 || rs1 < 0 || rs2 < 0) {
+                rv_error(a, "line %s: this instruction needs three registers", "", "");
+                return;
+            }
+            rv_ins(a, rv_enc_r(rtab[i].f7, rs2, rs1, rtab[i].f3, rd, RV_OP_RTYPE));
+            *pp = p;
+            return;
+        }
+    }
+    for (i = 0; i < (int)(sizeof(itab) / sizeof(itab[0])); i++) {
+        if (rv_streq_(itab[i].n, mn)) {
+            int rd = rv_read_reg(&p), rs1;
+            rv_skip_ws(&p);
+            if (*p++ != ',') { rv_error(a, "line %s: the operand list needs a comma", "", ""); return; }
+            rs1 = rv_read_reg(&p);
+            rv_skip_ws(&p);
+            if (*p++ != ',') { rv_error(a, "line %s: this instruction needs an immediate", "", ""); return; }
+            if (rd < 0 || rs1 < 0 || !rv_read_ll(&p, &imm)) {
+                rv_error(a, "line %s: this instruction needs two registers and an "
+                            "immediate", "", "");
+                return;
+            }
+            if (imm < -2048 || imm > 2047) {
+                rv_error(a, "line %s: the immediate is outside the 12-bit signed "
+                            "range of this instruction", "", "");
+                return;
+            }
+            rv_ins(a, rv_enc_i((int)imm, rs1, itab[i].f3, rd, RV_OP_IMM));
+            *pp = p;
+            return;
+        }
+    }
+    for (i = 0; i < (int)(sizeof(stab) / sizeof(stab[0])); i++) {
+        if (rv_streq_(stab[i].n, mn)) {
+            int rd = rv_read_reg(&p), rs1;
+            rv_skip_ws(&p);
+            if (*p++ != ',') { rv_error(a, "line %s: the operand list needs a comma", "", ""); return; }
+            rs1 = rv_read_reg(&p);
+            rv_skip_ws(&p);
+            if (*p++ != ',') { rv_error(a, "line %s: this instruction needs a shift amount", "", ""); return; }
+            if (rd < 0 || rs1 < 0 || !rv_read_ll(&p, &imm)) {
+                rv_error(a, "line %s: this instruction needs two registers and a "
+                            "shift amount", "", "");
+                return;
+            }
+            if (imm < 0 || imm > 31) {
+                rv_error(a, "line %s: the shift amount must be 0..31", "", "");
+                return;
+            }
+            rv_ins(a, rv_enc_i((stab[i].sh << 5) | (int)(imm & 0x1F), rs1,
+                               stab[i].f3, rd, RV_OP_IMM));
+            *pp = p;
+            return;
+        }
+    }
+    for (i = 0; i < (int)(sizeof(ltab) / sizeof(ltab[0])); i++) {
+        if (rv_streq_(ltab[i].n, mn)) {
+            int rd = rv_read_reg(&p), rb = -1, off = 0;
+            if (rd < 0) { rv_error(a, "line %s: the load needs a register", "", ""); return; }
+            rv_skip_ws(&p);
+            if (*p++ != ',') { rv_error(a, "line %s: the operand list needs a comma", "", ""); return; }
+            if (!rv_read_mem(&p, &off, &rb)) {
+                rv_error(a, "line %s: the load needs an offset(base) operand", "", "");
+                return;
+            }
+            if (off < -2048 || off > 2047) {
+                rv_error(a, "line %s: the load offset is outside the 12-bit signed "
+                            "range", "", "");
+                return;
+            }
+            rv_ins(a, rv_enc_i(off, rb, ltab[i].f3, rd, RV_OP_LOAD));
+            *pp = p;
+            return;
+        }
+    }
+    for (i = 0; i < (int)(sizeof(sstab) / sizeof(sstab[0])); i++) {
+        if (rv_streq_(sstab[i].n, mn)) {
+            int rs2 = rv_read_reg(&p), rb = -1, off = 0;
+            if (rs2 < 0) { rv_error(a, "line %s: the store needs a register", "", ""); return; }
+            rv_skip_ws(&p);
+            if (*p++ != ',') { rv_error(a, "line %s: the operand list needs a comma", "", ""); return; }
+            if (!rv_read_mem(&p, &off, &rb)) {
+                rv_error(a, "line %s: the store needs an offset(base) operand", "", "");
+                return;
+            }
+            if (off < -2048 || off > 2047) {
+                rv_error(a, "line %s: the store offset is outside the 12-bit signed "
+                            "range", "", "");
+                return;
+            }
+            rv_ins(a, rv_enc_s(off, rs2, rb, sstab[i].f3, RV_OP_STORE));
+            *pp = p;
+            return;
+        }
+    }
+    rv_error(a, "line %s: unknown riscv32 mnemonic '%s'", mn, "");
+    *pp = p;
+}
+
+/* ---- string literal --------------------------------------------------- */
+static void rv_string(RvAsm *a, const char **pp, int zero_terminated) {
+    const char *p = *pp;
+    rv_skip_ws(&p);
+    if (*p != '"') {
+        rv_error(a, "line %s: expected a quoted string", "", "");
+        return;
+    }
+    p++;
+    while (*p && *p != '"') {
+        int c = (unsigned char)*p++;
+        if (c == '\\') {
+            int e = (unsigned char)*p;
+            if (e == 0) break;
+            p++;
+            if (e == 'n') c = 10;
+            else if (e == 't') c = 9;
+            else if (e == 'r') c = 13;
+            else if (e == '0') c = 0;
+            else if (e == 'a') c = 7;
+            else if (e == 'b') c = 8;
+            else if (e == 'f') c = 12;
+            else if (e == 'v') c = 11;
+            else if (e == '\\') c = 92;
+            else if (e == '"') c = 34;
+            else if (e >= '0' && e <= '7') {
+                int v = e - '0', k = 1;
+                while (k < 3 && *p >= '0' && *p <= '7') { v = v * 8 + (*p - '0'); p++; k++; }
+                c = v & 0xFF;
+            } else if (e == 'x') {
+                int v = 0, k = 0;
+                while (k < 2 && rv_a_hex((unsigned char)*p)) {
+                    v = v * 16 + ((*p >= 'a') ? (*p - 'a' + 10)
+                                 : (*p >= 'A') ? (*p - 'A' + 10) : (*p - '0'));
+                    p++;
+                    k++;
+                }
+                c = v & 0xFF;
+            } else c = e;
+        }
+        rv_put8(a, a->cur_sec, a->sec_pc[a->cur_sec], (unsigned char)c);
+        rv_advance(a, 1);
+    }
+    if (*p == '"') p++;
+    else rv_error(a, "line %s: unterminated string literal", "", "");
+    if (zero_terminated) {
+        rv_put8(a, a->cur_sec, a->sec_pc[a->cur_sec], 0);
+        rv_advance(a, 1);
+    }
+    *pp = p;
+}
+
+/* ---- one directive ---------------------------------------------------- */
+static void rv_directive(RvAsm *a, const char **pp) {
+    const char *p = *pp;
+    char d[24];
+    long long v = 0;
+    int n;
+    char sym[96];
+    int dir = 0, addr;
+
+    p++;    /* the '.' */
+    n = rv_read_ident(&p, d, (int)sizeof(d));
+    if (n == 0) { rv_error(a, "line %s: malformed directive", "", ""); return; }
+
+    if (rv_streq_(d, "text")) { a->cur_sec = RV_SEC_TEXT; *pp = p; return; }
+    if (rv_streq_(d, "data")) { a->cur_sec = RV_SEC_DATA; *pp = p; return; }
+    if (rv_streq_(d, "section")) {
+        char sec[24];
+        rv_skip_ws(&p);
+        if (!rv_read_ident(&p, sec, (int)sizeof(sec))) {
+            rv_error(a, "line %s: '.section' needs a name", "", "");
+            return;
+        }
+        if (rv_streq_(sec, ".rodata")) a->cur_sec = RV_SEC_RODATA;
+        else if (rv_streq_(sec, ".text")) a->cur_sec = RV_SEC_TEXT;
+        else if (rv_streq_(sec, ".data")) a->cur_sec = RV_SEC_DATA;
+        else {
+            rv_error(a, "line %s: the riscv32 assembler has no section '%s' "
+                        "(only .text, .rodata and .data)", sec, "");
+            return;
+        }
+        *pp = p;
+        return;
+    }
+    if (rv_streq_(d, "globl") || rv_streq_(d, "global") || rv_streq_(d, "weak") ||
+        rv_streq_(d, "type") || rv_streq_(d, "size") || rv_streq_(d, "option") ||
+        rv_streq_(d, "file") || rv_streq_(d, "ident")) {
+        /* nothing to do in a flat image */
+        *pp = p;
+        return;
+    }
+    if (rv_streq_(d, "balign") || rv_streq_(d, "p2align")) {
+        int al;
+        if (!rv_read_ll(&p, &v) || v < 1 || v > 16) {
+            rv_error(a, "line %s: the alignment must be a power of two, 1..16", "", "");
+            return;
+        }
+        if (rv_streq_(d, "p2align")) v = 1LL << v;
+        al = (int)v;
+        while (a->sec_pc[a->cur_sec] % al) {
+            rv_put8(a, a->cur_sec, a->sec_pc[a->cur_sec], 0);
+            rv_advance(a, 1);
+        }
+        *pp = p;
+        return;
+    }
+    if (rv_streq_(d, "space") || rv_streq_(d, "zero")) {
+        long long i;
+        if (!rv_read_ll(&p, &v) || v < 0) {
+            rv_error(a, "line %s: the size must be a non-negative count", "", "");
+            return;
+        }
+        for (i = 0; i < v; i++) {
+            rv_put8(a, a->cur_sec, a->sec_pc[a->cur_sec], 0);
+            rv_advance(a, 1);
+        }
+        *pp = p;
+        return;
+    }
+    if (rv_streq_(d, "byte") || rv_streq_(d, "short") || rv_streq_(d, "half") ||
+        rv_streq_(d, "word") || rv_streq_(d, "long")) {
+        int size = (rv_streq_(d, "byte")) ? 1
+                 : (rv_streq_(d, "short") || rv_streq_(d, "half")) ? 2 : 4;
+        for (;;) {
+            const char *save;
+            rv_skip_ws(&p);
+            save = p;
+            if (rv_a_digit((unsigned char)*p) || *p == '-' || *p == '+') {
+                if (!rv_read_ll(&p, &v)) {
+                    rv_error(a, "line %s: the data directive needs a constant", "", "");
+                    return;
+                }
+                {
+                    unsigned long long u = (unsigned long long)v;
+                    int k;
+                    for (k = 0; k < size; k++) {
+                        rv_put8(a, a->cur_sec, a->sec_pc[a->cur_sec],
+                                (unsigned char)((u >> (8 * k)) & 0xFF));
+                        rv_advance(a, 1);
+                    }
+                }
+            } else {
+                p = save;
+                if (!rv_read_symbol(&p, sym, (int)sizeof(sym), &dir)) {
+                    rv_error(a, "line %s: the data directive needs a constant or a "
+                                "symbol", "", "");
+                    return;
+                }
+                if (size != 4) {
+                    rv_error(a, "line %s: the symbol '%s' needs a .word", sym, "");
+                    return;
+                }
+                if (!a->emit) {
+                    rv_advance(a, 4);
+                } else {
+                    addr = rv_sym_addr(a, sym, dir);
+                    if (addr < 0) {
+                        rv_error(a, "line %s: '%s' is not a symbol this translation "
+                                    "unit defines; a flat image has no linker to "
+                                    "fill it in", sym, "");
+                        return;
+                    }
+                    rv_put32(a, a->cur_sec, a->sec_pc[a->cur_sec],
+                             (unsigned int)addr);
+                    rv_advance(a, 4);
+                }
+            }
+            rv_skip_ws(&p);
+            if (*p != ',') break;
+            p++;
+        }
+        *pp = p;
+        return;
+    }
+    if (rv_streq_(d, "asciz") || rv_streq_(d, "string") || rv_streq_(d, "ascii")) {
+        int zt = !rv_streq_(d, "ascii");
+        for (;;) {
+            rv_string(a, &p, zt);
+            rv_skip_ws(&p);
+            if (*p != ',') break;
+            p++;
+        }
+        *pp = p;
+        return;
+    }
+    rv_error(a, "line %s: unsupported riscv32 directive '.%s'", d, "");
+    *pp = p;
+}
+
+/* ---- one pass over the text ------------------------------------------- */
+static void rv_pass(RvAsm *a) {
+    const char *p = a->src;
+    int i;
+    for (i = 0; i < RV_SEC_COUNT; i++) a->sec_pc[i] = 0;
+    a->seen = 0;
+    a->cur_sec = RV_SEC_TEXT;
+    while (*p) {
+        a->line++;
+        rv_skip_ws(&p);
+        if (*p == '#' || *p == '\r' || *p == '\n' || *p == 0) {
+            /* blank line or comment */
+        } else if (rv_a_digit((unsigned char)*p)) {
+            char name[16];
+            int k = 0;
+            while (rv_a_digit((unsigned char)*p)) {
+                if (k < (int)sizeof(name) - 1) name[k] = *p;
+                k++;
+                p++;
+            }
+            name[k < (int)sizeof(name) ? k : (int)sizeof(name) - 1] = 0;
+            if (*p == ':') {
+                p++;
+                if (a->emit) a->seen++;
+                else {
+                    int q = 0, val = 0;
+                    while (name[q]) { val = val * 10 + (name[q] - '0'); q++; }
+                    rv_add_label(a, name, val);
+                }
+            } else {
+                rv_error(a, "line %s: '%s' is not a label definition", name, "");
+            }
+        } else if (rv_a_alpha((unsigned char)*p)) {
+            const char *mark = p;
+            char name[96];
+            rv_read_ident(&p, name, (int)sizeof(name));
+            rv_skip_ws(&p);
+            if (*p == ':') {
+                p++;
+                if (a->emit) a->seen++;
+                else rv_add_label(a, name, -1);
+            } else {
+                p = mark;
+                if (name[0] == '.') rv_directive(a, &p);
+                else rv_insn(a, &p);
+            }
+        } else if (*p == '.') {
+            rv_directive(a, &p);
+        } else {
+            char one[2];
+            one[0] = *p;
+            one[1] = 0;
+            rv_error(a, "line %s: unexpected '%s' at the start of a line", one, "");
+            p++;
+        }
+        while (*p && *p != '\n') p++;
+        if (*p == '\n') p++;
+    }
+}
+
+static int rv_assemble(const char *asm_text, unsigned char *out, int cap) {
+    RvAsm a;
+    int i, total;
+
+    a.src = asm_text;
+    a.out = out;
+    a.out_cap = cap;
+    a.labels = 0;
+    a.label_count = 0;
+    a.label_cap = 0;
+    a.hard_errors = 0;
+    a.overflow_reported = 0;
+    a.line = 0;
+    a.emit = 0;
+    a.seen = 0;
+    a.cur_sec = RV_SEC_TEXT;
+
+    rv_pass(&a);
+    if (a.hard_errors) return -1;
+
+    a.sec_base[RV_SEC_TEXT] = 0;
+    a.sec_base[RV_SEC_RODATA] = rv_align16(a.sec_pc[RV_SEC_TEXT]);
+    a.sec_base[RV_SEC_DATA] =
+        rv_align16(a.sec_base[RV_SEC_RODATA] + a.sec_pc[RV_SEC_RODATA]);
+    /* The image ends at the last section that actually has bytes. An empty
+     * trailing section must not drag its 16-byte alignment pad into the file:
+     * a .text-only program then stays exactly as long as its code. */
+    total = a.sec_pc[RV_SEC_TEXT];
+    if (a.sec_pc[RV_SEC_RODATA] > 0)
+        total = a.sec_base[RV_SEC_RODATA] + a.sec_pc[RV_SEC_RODATA];
+    if (a.sec_pc[RV_SEC_DATA] > 0)
+        total = a.sec_base[RV_SEC_DATA] + a.sec_pc[RV_SEC_DATA];
+    if (total > cap) {
+        char b1[12], b2[12];
+        diag_tool(DIAG_SEV_ERROR, "arkcc",
+                  "the riscv32 image needs %s bytes, the output buffer holds %s",
+                  diag_num(b1, total), diag_num(b2, cap), 0, 0, 0, 0);
+        return -1;
+    }
+    for (i = 0; i < total; i++) out[i] = 0;
+
+    a.line = 0;
+    a.emit = 1;
+    a.seen = 0;
+    rv_pass(&a);
+    if (a.hard_errors) return -1;
+
+#if ARKCC_PROFILE != ARKCC_PROFILE_STM32_MIN
+    /* ARKCC_DUMP_SYMS=1 prints the label map: the only way a host-side test
+     * can find `main` in a flat image that carries no symbol table. */
+    if (getenv("ARKCC_DUMP_SYMS")) {
+        for (i = 0; i < a.label_count; i++) {
+            if (a.labels[i].num >= 0) continue;
+            if (a.labels[i].name[0] == '.' && a.labels[i].name[1] == 'L') continue;
+            ark_log("RV_SYM %s 0x%X\n", a.labels[i].name,
+                    RV_IMAGE_BASE + a.sec_base[a.labels[i].sec] + a.labels[i].off);
+        }
+    }
+#endif
+    return total;
 }
 
 static int rv_link(unsigned char *c, int s, struct LinkContext *lc) {
