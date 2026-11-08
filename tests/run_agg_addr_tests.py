@@ -78,10 +78,7 @@ int *pe[2] = { &arr[1], &arr[2] + 1 };
 int main(void) { return *pe[0] + *pe[1]; }
 """, 6),                                    # 2 + 4 (element stride, not bytes)
 
-    # Note: a *string literal* inside an array of pointers (`char *cs[2] =
-    # {"xy", "ab"}`) is a separate gap -- it needs one pooled literal per
-    # element and is still refused, see docs/MANUAL.md.  This case pins the
-    # part that does work: an address element with a char stride.
+    # An address element with a char stride (no literal involved).
     ("char_ptr_array", """\
 char ca[8] = "abc";
 char *cs[2] = { &ca[1], &ca[2] };
@@ -140,6 +137,36 @@ int (*tab[2])(int, int) = { add, sub };
 int nums[2] = { 10, 20 };
 int main(void) { return tab[0](nums[0], nums[1]) + *&gv; }
 """, 34),                                   # 30 + 4
+
+    # A string literal element is an address too: the element holds the
+    # address of a pooled literal, not its characters.  Each element needs its
+    # own label, keyed by the element offset -- one label for the whole array
+    # would make both entries point at the first string.
+    ("str_ptr_array", """\
+char *cs[2] = { "xy", "cd" };
+int main(void) { return cs[0][0] + cs[1][0]; }
+""", 219),                                  # 'x' + 'c'; one label gives 240
+
+    ("str_struct_fn", ADD_SUB + """\
+struct S { const char *n; int (*f)(int, int); };
+struct S s = { "hi", add };
+int main(void) { return s.n[0] + s.f(3, 4); }
+""", 111),                                  # 'h' = 104, + 7
+
+    ("str_ptr_2d", """\
+char *t[2][2] = { {"a", "b"}, {"c", "d"} };
+int main(void) { return t[0][0][0] + t[1][1][0]; }
+""", 197),                                  # 'a' + 'd'
+
+    # Literal elements and object elements in the same initialiser: the two
+    # kinds of reference share one table, so this pins that they do not
+    # overwrite each other's offsets.
+    ("str_mixed_addr", """\
+int g0 = 7;
+const char *cs[3] = { "a", "b", "c" };
+int *pa[2] = { &g0, &g0 };
+int main(void) { return cs[1][0] + *pa[0] + (int)sizeof(cs); }
+""", 117),                                  # 'b' = 98, + 7, + 12
 ]
 
 # Sources that must be *rejected*.  `keyword` must appear in the message: a
@@ -172,6 +199,19 @@ int main(void) { int local = 2; static int *pa[2] = { &local, &gv }; return *pa[
 int (*tab[2])(int, int) = { add + 1, sub };
 int main(void) { return 0; }
 """, "not a constant expression"),
+
+    # A wide literal would have to be widened byte by byte; the initialiser
+    # text does not carry that, so it is refused rather than stored narrow.
+    ("wide_string_element", """\
+char *cs[2] = { L"xy", "cd" };
+int main(void) { return 0; }
+""", "wide string literal"),
+
+    # Designator + literal element: same offset problem as the object case.
+    ("str_designator", """\
+char *cs[2] = { [1] = "x" };
+int main(void) { return 0; }
+""", "braces are not spelled out"),
 ]
 
 # riscv32 keeps the symbol in the data section; a number there would be a
@@ -181,6 +221,14 @@ RV_ASM_EXPECT = [
 int (*tab[2])(int, int) = { add, sub };
 int main(void) { return tab[0](20, 3) + tab[1](20, 3); }
 """, [".word add", ".word sub"]),
+    # Both the pooled literals and the two distinct labels they are reached
+    # through must be in the image: a folded number would run here and be
+    # wrong on the board, and one shared label would silently alias them.
+    ("str_ptr_array", """\
+char *cs[2] = { "xy", "cd" };
+int main(void) { return cs[0][0] + cs[1][0]; }
+""", ['.asciz "xy"', '.asciz "cd"',
+       ".word .Lgstr_cs_0", ".word .Lgstr_cs_4"]),
 ]
 
 
@@ -291,17 +339,28 @@ def main():
                 print('PASS %-22s [rv asm] %s' % (name + '_refs', ' + '.join(needles)))
                 ok += 1
 
-    # Anti-false-green: a gate that cannot fail is not a gate.  Take a case
-    # whose value changes if the two entries collapse to the same symbol, and
-    # confirm the expectation would be violated by that wrong answer.
-    if CASES:
-        name, src, want = CASES[0]
-        wrong = 46                                  # both entries = add
+    # Anti-false-green: a gate that cannot fail is not a gate.  For each case
+    # below, take the answer a specific wrong implementation would produce and
+    # confirm the expectation rejects it.  (The first entry is the original
+    # collapse-to-one-symbol check; the second is the string case, where a
+    # single shared literal label would make both entries point at "xy".)
+    SELFCHECK = [
+        ('fp_array', 46),        # both entries = add
+        ('str_ptr_array', 240),  # both entries = the first literal ("xy")
+    ]
+    by_name = {c[0]: c for c in CASES}
+    for sname, wrong in SELFCHECK:
+        if sname not in by_name:
+            print('FAIL selfcheck: case %r is gone, the check is stale' % sname)
+            bad += 1
+            continue
+        want = by_name[sname][2]
         if wrong == want:
-            print('FAIL selfcheck: the wrong answer equals the expectation')
+            print('FAIL selfcheck %s: the wrong answer equals the expectation' % sname)
             bad += 1
         else:
-            print('SELFCHECK wrong-answer-detectable: OK (%r != %r)' % (wrong, want))
+            print('SELFCHECK %s: wrong answer detectable (%r != %r)'
+                  % (sname, wrong, want))
 
     print('=== %d passed, %d failed ===' % (ok, bad))
     return 0 if bad == 0 else 1

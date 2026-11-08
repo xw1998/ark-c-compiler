@@ -547,16 +547,34 @@ top level`、`sizeof(F)` 静默返回 4。回归门禁：`tests/run_func_typedef
   constant expression (C11 6.6p9)`（该信息里的对象名是内部符号名，例如 `ark_sl_main_pa`）；
 - **函数 + 偏移**：`int (*t[2])(int,int) = { add + 1, sub };` —— 同上。
 
-**仍然不支持（安全报错）**：聚合里的**字符串字面量**元素（`char *cs[2] = { "xy", "cd" };`）——
-每个元素需要一个池化字面量并各自重定位，尚未实现，报 `cannot turn the initialiser ... into data`。
+**字符串字面量元素也支持**（`char *cs[2] = { "xy", "cd" };`）：元素存的是字面量的**地址**，
+不是它的字符。每个元素需要一个**独立**的池化字面量标签，按元素字节偏移命名——否则两个元素会
+指向同一个字符串（`cs[1][0]` 读出 `'x'` 而不是 `'c'`），这种错能编译能跑、只在数值上错。
+
+| 目标 | 标签名 | 数据侧 |
+| --- | --- | --- |
+| ARM (Thumb-2) | `.L_gstr_<全局号>_<偏移>` | `LDR r0,=.L_gstr_<gi>_<off>` 再 `STR` |
+| RV32I | `.Lgstr_<对象名>_<偏移>` | `.word .Lgstr_<name>_<off>` |
+
+注意标签命名沿用各后端**既有**的两套前缀（ARM 是 `.L_gstr_` 带下划线，RV 是 `.Lgstr_` 不带），
+不要统一——它们分别与 `char *p = "hi";` 的标量池化字面量共用前缀，改名会撞标号。
+
+**只收窄字符串**：`char *cs[2] = { L"xy", "cd" };` 报 `is a wide string literal; only narrow
+string literals can be pooled as address constants here`——宽字面量要逐字节展宽，初值文本不携带该信息。
+指派器形态（`{ [1] = "x" }`）与对象元素同样走 `braces are not spelled out` 那条拒绝。
+
+实现上字符串元素与符号元素**共用同一张 `init_refs` 表**：每一项要么有 `sym`，要么有 `str`
+（`IrSymRef.str`），后端按偏移查表时分派。这样不必新增并行表，偏移对账机制原样复用。
 
 **函数指针数组声明符**也一并支持：`int (*tab[2])(int,int);` 的 `[2]` 写在括号内层（`(*tab[2])`），
 旧版解析器在名字后直接 `expect ")"`，报 `#18: expected a ")"`；现在先解析括号内的数组维度
 （只接受整型常量维，否则报 `the dimension of an array of function pointers must be an integer
 constant expression`），再把外层形参表挂到指针类型上。
 
-回归门禁：`tests/run_agg_addr_tests.py`（12 例运行时 × 2 后端，与宿主 gcc 双校验；4 例"必须报错"；
-1 例 RV 汇编必须出现 `.word add`——防"把地址折成数字"那种能跑但错的假绿）。
+回归门禁：`tests/run_agg_addr_tests.py`（16 例运行时 × 2 后端，与宿主 gcc 双校验；6 例"必须报错"；
+2 例 RV 汇编断言：`.word add`/`.word sub`，以及字符串例必须同时出现两个 `.asciz` 与两条不同的
+`.word .Lgstr_cs_<off>`——防"把地址折成数字"和"两个元素共用一个标签"这两种能跑但错的假绿。
+末尾 SELFCHECK 对 `fp_array`（46）与 `str_ptr_array`（240）各验一次"错答案会被判据逮住"）。
 
 **struct/union（> 8 字节）返回值：两个机器后端都走 sret（隐藏缓冲指针）**
 
@@ -1295,7 +1313,7 @@ v0.8.0 已实现完整的 C99 集合 + 98% 以上的 armcc 常用扩展，仅剩
 - **`sizeof(long double)` 为 8**：本编译器采用 LLP64 数据模型（与 armcc 默认一致），`long double` 与 `double` 同为 8 字节，而 32 位 x86 宿主 GCC 上是 12。依赖 `sizeof(long double)` 区分精度的代码不可移植，跨平台比对 `sizeof` 结果时须按目标模型而非宿主模型来判断。
 - **位域宽度上限 32 位**：`IR_LOAD_FLD`/`IR_STORE_FLD` 按 32 位容器读写，`long long x:40` 会读回错值。因此语法分析阶段直接报错（`bit-field width 40 exceeds 32`）、不生成代码，不做静默截断。
 - **`ret (*fn(params))(params)`（返回函数指针的函数）不可解析**：`(*name)` 形式目前要求名字后立刻是 `)`，不支持括号内再带一层参数表，因此 `int (*pick(int))(int,int){...}` 这类声明符会报语法错误。**当前行为是显式报错**（`[parser] ... syntax error(s); no code generated`），不会产出错误二进制。修法需要把 `parse_declarator` 改写成递归下降 + 占位类型替换，属结构性改动。
-- **聚合初始化器只认能变成字节的东西（两个机器后端共用一份实现）**：全局聚合初始化走 [include/agginit.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/agginit.h) 的 `ark_agg_fill()`，类型驱动地按声明偏移写字节，所以支持整数/字符常量、字符串填充 `char` 数组（含 `char m[2][6] = {"ab","cd"}` 这种按行的）、嵌套 `{}`、`.field=` 与 `[idx]=` 指派器，以及**地址常量元素**（`int (*tab[2])(int,int) = {add,sub};`——文本里读不出数字、类型是指针/函数的元素交给后端 hook，按 `IrGlobal.init_refs` 的偏移对账，见「聚合初始化器里的地址元素」一节）。**浮点字面量、`union`（叠放存储无从猜）、位域（存储不是字节）、以及不能用字面量表示的初值一律显式报错**，绝不写零充数。两个后端调同一份实现，所以 ARM 与 RV32I 在这里给出的是同一组字节——曾经 ARM 自己那份"按逗号走"的解析器把字符串元素跳过存 0，`struct Q gq = {3, "abcd", 9}` 的成员全成了 NUL。
+- **聚合初始化器只认能变成字节的东西（两个机器后端共用一份实现）**：全局聚合初始化走 [include/agginit.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/agginit.h) 的 `ark_agg_fill()`，类型驱动地按声明偏移写字节，所以支持整数/字符常量、字符串填充 `char` 数组（含 `char m[2][6] = {"ab","cd"}` 这种按行的）、嵌套 `{}`、`.field=` 与 `[idx]=` 指派器，以及**地址常量元素**（`int (*tab[2])(int,int) = {add,sub};`、`char *cs[2] = {"xy","cd"};`——文本里读不出数字、类型是指针/函数的元素交给后端 hook，按 `IrGlobal.init_refs` 的偏移对账，字符串元素额外在 `.rodata` 里按元素偏移各开一个标签，见「聚合初始化器里的地址元素」一节）。**浮点字面量、`union`（叠放存储无从猜）、位域（存储不是字节）、以及不能用字面量表示的初值一律显式报错**，绝不写零充数。两个后端调同一份实现，所以 ARM 与 RV32I 在这里给出的是同一组字节——曾经 ARM 自己那份"按逗号走"的解析器把字符串元素跳过存 0，`struct Q gq = {3, "abcd", 9}` 的成员全成了 NUL。
 - **块作用域 `_Alignas` 上限 8 字节**：16/32/64 一律报错（`block-scope _Alignas above 8 bytes is not supported`），
   因为帧只保证 `sp` 8 字节对齐；文件作用域与结构体成员没有这个限制。
 - **`_Generic` 的关联类型不比函数签名**：`int (*)(int)` 与 `int (*)(double)` 视为同一类型（`is_func_ptr` 标志一致即匹配），

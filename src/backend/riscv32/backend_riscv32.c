@@ -186,6 +186,17 @@ static void rv_emit_bytes_refs(AsmBuffer *b, const unsigned char *p, int n,
             if (g->init_refs[i].offset == k) { r = &g->init_refs[i]; break; }
         if (r) {
             asmbuf_puts(b, "    .word ");
+            if (r->str) {
+                /* A string literal element: the bytes live in .rodata
+                 * (label emitted below), the word holds their address. */
+                asmbuf_puts(b, ".Lgstr_");
+                asmbuf_puts(b, g->name);
+                asmbuf_putc(b, '_');
+                asmbuf_int(b, r->offset);
+                asmbuf_putc(b, '\n');
+                k += 4;
+                continue;
+            }
             asmbuf_puts(b, r->sym);
             if (r->add > 0) {
                 asmbuf_puts(b, " + ");
@@ -643,6 +654,25 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
             asmbuf_puts(&buf, ":\n    .asciz \"");
             rv_put_cstr(&buf, g->init_str);
             asmbuf_puts(&buf, "\"\n    .text\n");
+        }
+        /* Aggregate initialisers may also carry string literal elements
+         * (`char *cs[2] = {"a","b"};`); each gets its own label keyed by
+         * the element byte offset in the object. */
+        for (i = 0; i < prog->global_count; i++) {
+            IrGlobal *g = prog->globals[i];
+            int ri;
+            if (g->init_ref_count <= 0 || !g->init_refs) continue;
+            for (ri = 0; ri < g->init_ref_count; ri++) {
+                IrSymRef *r = &g->init_refs[ri];
+                if (!r->str) continue;
+                asmbuf_puts(&buf, "    .section .rodata\n.Lgstr_");
+                asmbuf_puts(&buf, g->name);
+                asmbuf_putc(&buf, '_');
+                asmbuf_int(&buf, r->offset);
+                asmbuf_puts(&buf, ":\n    .asciz \"");
+                rv_put_cstr(&buf, r->str);
+                asmbuf_puts(&buf, "\"\n    .text\n");
+            }
         }
         asmbuf_puts(&buf, "    .data\n");
         for (i = 0; i < prog->global_count; i++) {
