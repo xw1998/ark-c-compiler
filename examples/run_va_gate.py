@@ -233,6 +233,10 @@ static int after_ll_pair(int a, long long b, long long c, ...)
 }
 '''
 
+# Cases whose RV32I source needs PRELUDE_64I on top of PRELUDE.
+RV64_CASES = set(('ll_reg', 'll_mix', 'named_ll', 'odd_ll', 'two_ll',
+                  'cross_ll', 's2_ll', 's3_ll', 'pair'))
+
 # (name, main body, targets the case applies to)
 CASES = [
     ('s4',       'return s4(4, 1, 2, 3, 4) & 0xFF;', 'arm rv'),
@@ -241,12 +245,12 @@ CASES = [
     ('loop4',    'return sN(4, 1, 2, 3, 4) & 0xFF;', 'arm rv'),
     ('four',     'return four_named(1, 2, 3, 4, 5, 6) & 0xFF;', 'arm rv'),
     ('va_copy',  'return va_copy_case(0, 1, 2) & 0xFF;', 'arm rv'),
-    ('ll_reg',   'return llw_sum(1, 0x1122334455667788LL) & 0xFF;', 'arm'),
-    ('ll_mix',   'return llw_sum(2, 0x1122334455667788LL, 0x99aabbccddeeff00LL) & 0xFF;', 'arm'),
-    ('named_ll', 'return named_ll(1, 0x1122334455667788LL, 7, 8) & 0xFF;', 'arm'),
-    ('odd_ll',   'return odd_named(1, 0x1122334455667788LL) & 0xFF;', 'arm'),
-    ('two_ll',   'return two_named_ll(1, 0x1122334455667788LL, 0x99aabbccddeeff00LL) & 0xFF;', 'arm'),
-    ('cross_ll', 'return cross_ll(1, 2, 3, 0x1122334455667788LL) & 0xFF;', 'arm'),
+    ('ll_reg',   'return llw_sum(1, 0x1122334455667788LL) & 0xFF;', 'arm rv'),
+    ('ll_mix',   'return llw_sum(2, 0x1122334455667788LL, 0x99aabbccddeeff00LL) & 0xFF;', 'arm rv'),
+    ('named_ll', 'return named_ll(1, 0x1122334455667788LL, 7, 8) & 0xFF;', 'arm rv'),
+    ('odd_ll',   'return odd_named(1, 0x1122334455667788LL) & 0xFF;', 'arm rv'),
+    ('two_ll',   'return two_named_ll(1, 0x1122334455667788LL, 0x99aabbccddeeff00LL) & 0xFF;', 'arm rv'),
+    ('cross_ll', 'return cross_ll(1, 2, 3, 0x1122334455667788LL) & 0xFF;', 'arm rv'),
     ('struct_va', 'return struct_va(1, mk_s3()) & 0xFF;', 'arm'),
     ('struct2',  'return struct2_va(1, mk_s2x()) & 0xFF;', 'arm'),
     ('struct4',  'return struct4_va(1, mk_s4b()) & 0xFF;', 'arm'),
@@ -255,14 +259,18 @@ CASES = [
     ('struct_tail', 'return struct_tail(1, mk_s3(), 7, 9) & 0xFF;', 'arm'),
     ('struct_split', 'return struct_split(1, 2, 3, mk_s3()) & 0xFF;', 'arm'),
     ('struct_stack', 'return struct_stack(1, 2, 3, 4, mk_s3()) & 0xFF;', 'arm'),
-    ('s2_ll',    'return s2_ll(1, 2, 0x1122334455667788LL) & 0xFF;', 'arm'),
-    ('s3_ll',    'return s3_ll(1, 2, 3, 0x1122334455667788LL) & 0xFF;', 'arm'),
+    ('s2_ll',    'return s2_ll(1, 2, 0x1122334455667788LL) & 0xFF;', 'arm rv'),
+    ('s3_ll',    'return s3_ll(1, 2, 3, 0x1122334455667788LL) & 0xFF;', 'arm rv'),
     ('s4_int',   'return s4_int(1, 2, 3, 4, 5) & 0xFF;', 'arm'),
-    ('pair',     'return after_ll_pair(1, 0x1122334455667788LL, 0x99aabbccddeeff00LL, 9) & 0xFF;', 'arm'),
+    ('pair',     'return after_ll_pair(1, 0x1122334455667788LL, 0x99aabbccddeeff00LL, 9) & 0xFF;', 'arm rv'),
     ('d_one',    'return dsum(1, 1.5) & 0xFF;', 'arm'),
     ('d_three',  'return dsum(3, 1.5, 2.5, 3.5) & 0xFF;', 'arm'),
     ('d_neg',    'return dsum(2, 1024.5, mkneg(2.5)) & 0xFF;', 'arm'),
     ('d_prom',   'return dsum(1, 1.5f) & 0xFF;', 'arm'),
+    # Nine argument words: eight in a0-a7 and one on the stack.  This used to
+    # be a *refusal* on RV32I (the backend had no stack-argument path); it is
+    # a result case now, so the number, not the error text, is the assertion.
+    ('toomany', 'return sN(8, 1, 0, 1, 1, 0, 0, 1, 0) & 0xFF;', 'arm rv'),
     # 34 argument words: 4 in r0-r3 and 30 on the stack.  The ARM region is the
     # caller's own image, so the only limit is the caller's stack -- there is
     # no mirrored window to overflow any more.
@@ -272,12 +280,6 @@ CASES = [
 
 # Arguments a target cannot pass must be a build error, and that is asserted.
 REFUSE = [
-    # The RV32I backend passes arguments only in a0-a7 (no stack arguments).
-    ('toomany', 'return sN(8, 1, 0, 1, 1, 0, 0, 1, 0) & 0xFF;',
-     'stack arguments are not implemented', ''),
-    # ...and it has no two-word value model, so a 64-bit va_arg cannot be built.
-    ('ll_refused', 'return llw_sum(1, 0x1122334455667788LL) & 0xFF;',
-     '8-byte loads are not implemented', 'll'),
     # A composite wider than two words through `...` is implemented for ARM
     # only: every other target builds a different argument image, where the
     # inline words would be read as something else.  Refused, not miscompiled.
@@ -307,6 +309,82 @@ static int llw_sum(int n, ...)
     for (i = 0; i < n; i++) { u.v = va_arg(ap, long long); s += u.w[0] + u.w[1]; }
     va_end(ap);
     return s;
+}
+'''
+
+# Integer-only 64-bit varargs for RV32I: everything PRELUDE_64 has except the
+# double and composite cases, which that backend cannot pass yet.  Kept as a
+# separate string rather than filtered out of PRELUDE_64 so a case can never be
+# compiled against a declaration it needs and silently lose it.
+PRELUDE_64I = r'''
+union llw { long long v; int w[2]; };
+
+static int llw_sum(int n, ...)
+{
+    union llw u; va_list ap; int s = 0, i;
+    va_start(ap, n);
+    for (i = 0; i < n; i++) { u.v = va_arg(ap, long long); s += u.w[0] + u.w[1]; }
+    va_end(ap);
+    return s;
+}
+static int named_ll(int a, long long b, ...)
+{
+    union llw u; va_list ap; int x, y;
+    u.v = b;
+    va_start(ap, b);
+    x = va_arg(ap, int);
+    y = va_arg(ap, int);
+    va_end(ap);
+    return a + u.w[0] + u.w[1] + x * 10 + y * 100;
+}
+static int odd_named(int a, ...)
+{
+    union llw u; va_list ap;
+    va_start(ap, a);
+    u.v = va_arg(ap, long long);
+    va_end(ap);
+    return a + u.w[0] + u.w[1];
+}
+static int two_named_ll(int a, long long b, ...)
+{
+    union llw u; va_list ap;
+    va_start(ap, b);
+    u.v = va_arg(ap, long long);
+    va_end(ap);
+    return a + u.w[0] + u.w[1];
+}
+static int s2_ll(int a, int b, ...)
+{
+    union llw u; va_list ap;
+    va_start(ap, b);
+    u.v = va_arg(ap, long long);
+    va_end(ap);
+    return a + b + u.w[0] + u.w[1];
+}
+static int s3_ll(int a, int b, int c, ...)
+{
+    union llw u; va_list ap;
+    va_start(ap, c);
+    u.v = va_arg(ap, long long);
+    va_end(ap);
+    return a + b + c + u.w[0] + u.w[1];
+}
+static int cross_ll(int a, int b, int c, ...)
+{
+    union llw u; va_list ap;
+    va_start(ap, c);
+    u.v = va_arg(ap, long long);
+    va_end(ap);
+    return a + b + c + u.w[0] + u.w[1];
+}
+
+static int after_ll_pair(int a, long long b, long long c, ...)
+{
+    va_list ap; int x;
+    va_start(ap, c);
+    x = va_arg(ap, int);
+    va_end(ap);
+    return a + x;
 }
 '''
 
@@ -389,12 +467,24 @@ static int struct_stack(int a, int b, int c, int d, ...)
 '''
 
 
+# The arm backend writes global initialisers as code in __arkcc_init_globals
+# (it stores them into SRAM at g_data_base, 0x20000000) and leaves the call to
+# the runtime startup.  A test stub that skipped it saw every global as zero --
+# which is exactly the sort of silence this gate exists to prevent, so do it
+# here, with a null check because a program without initialised globals does
+# not define the symbol at all.
 ARM_START = '''    .syntax unified
     .thumb
     .global _start
+    .weak __arkcc_init_globals
     .text
 _start:
     ldr sp, =0x20080000
+    ldr r0, =__arkcc_init_globals
+    cmp r0, #0
+    beq 1f
+    blx r0
+1:
     bl main
 _hang:
     b _hang
@@ -511,6 +601,18 @@ class Runner:
         uc.mem_map(0x08000000, 0x100000)
         uc.mem_write(0x08000000, open(binf, 'rb').read())
         uc.mem_map(0x20000000, 0x100000)
+        # The arm backend places initialised globals in SRAM (g_data_base,
+        # 0x20000000 by default) and leaves an image in flash for the startup
+        # code to copy.  Without that copy every global reads as zero, which is
+        # how "the arm backend never loads a global correctly" could hide: the
+        # linker script here is a bare -Ttext.  Do what real startup does.
+        dbin = os.path.join(TMP, '_initdata.bin')
+        r = self.run([tool('objcopy'), '-O', 'binary', '--only-section=.data',
+                      elf, dbin])
+        if r.returncode == 0 and os.path.exists(dbin):
+            blob = open(dbin, 'rb').read()
+            if blob:
+                uc.mem_write(0x20000000, blob)
         uc.reg_write(UC_ARM_REG_SP, 0x20080000)
         uc.reg_write(UC_ARM_REG_LR, 0xFFFFFFFF)
         try:
@@ -1018,7 +1120,8 @@ def main():
             if 'rv' not in targets.split():
                 continue
             src = os.path.join(TMP, 'rv_' + name + '.c')
-            write(src, PRELUDE + '\nint main(void)\n{\n    ' + body + '\n}\n')
+            head = PRELUDE + (PRELUDE_64I if name in RV64_CASES else '')
+            write(src, head + '\nint main(void)\n{\n    ' + body + '\n}\n')
             exp, err = r.oracle(src, os.path.join(TMP, 'rv_' + name + '_gcc.exe'))
             if exp is None:
                 print('SKIP rv/%-9s no gcc oracle: %s' % (name, err.strip()[:80]))

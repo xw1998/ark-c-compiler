@@ -1054,6 +1054,7 @@ v0.8.0 已实现完整的 C99 集合 + 98% 以上的 armcc 常用扩展，仅剩
 - **`sizeof(long double)` 为 8**：本编译器采用 LLP64 数据模型（与 armcc 默认一致），`long double` 与 `double` 同为 8 字节，而 32 位 x86 宿主 GCC 上是 12。依赖 `sizeof(long double)` 区分精度的代码不可移植，跨平台比对 `sizeof` 结果时须按目标模型而非宿主模型来判断。
 - **位域宽度上限 32 位**：`IR_LOAD_FLD`/`IR_STORE_FLD` 按 32 位容器读写，`long long x:40` 会读回错值。因此语法分析阶段直接报错（`bit-field width 40 exceeds 32`）、不生成代码，不做静默截断。
 - **`ret (*fn(params))(params)`（返回函数指针的函数）不可解析**：`(*name)` 形式目前要求名字后立刻是 `)`，不支持括号内再带一层参数表，因此 `int (*pick(int))(int,int){...}` 这类声明符会报语法错误。**当前行为是显式报错**（`[parser] ... syntax error(s); no code generated`），不会产出错误二进制。修法需要把 `parse_declarator` 改写成递归下降 + 占位类型替换，属结构性改动。
+- **聚合初始化器只认能变成字节的东西（两个机器后端共用一份实现）**：全局聚合初始化走 [include/agginit.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/agginit.h) 的 `ark_agg_fill()`，类型驱动地按声明偏移写字节，所以支持整数/字符常量、字符串填充 `char` 数组（含 `char m[2][6] = {"ab","cd"}` 这种按行的）、嵌套 `{}`、`.field=` 与 `[idx]=` 指派器。**浮点字面量、`union`（叠放存储无从猜）、位域（存储不是字节）、以及不能用字面量表示的初值一律显式报错**，绝不写零充数。两个后端调同一份实现，所以 ARM 与 RV32I 在这里给出的是同一组字节——曾经 ARM 自己那份"按逗号走"的解析器把字符串元素跳过存 0，`struct Q gq = {3, "abcd", 9}` 的成员全成了 NUL。
 - **`va_arg` 依赖小端目标**：`stdlib/include/stdarg.h` 的 `va_arg` 按"槽位地址重解释"取值（`*(type *)(...)`），整数/指针/`double` 通吃，但要求目标为小端。ARM Thumb-2 与全部宿主均满足；大端目标需改为按类型分派。
 - **变参的两种镜像形状不能混用**：C/x86_64 每个实参一个 8 字节槽位（`frame+8000` 起，
   序言里把 a0..a7 镜像进去，`irgen` 的 `g_ir_va_slot_region` 负责预留 8064 字节）；

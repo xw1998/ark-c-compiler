@@ -51,6 +51,7 @@ function Compile-C($srcRel, $objName) {
 # === 1. Compile arkCC core source files ===
 $coreFiles = @(
     @{src="src\ast.c";              obj="ast.o"},
+    @{src="src\agginit.c";         obj="agginit.o"},
     @{src="src\codegen_common.c";   obj="codegen_common.o"},
     @{src="src\compiler.c";         obj="compiler.o"},
     @{src="src\config.c";           obj="config.o"},
