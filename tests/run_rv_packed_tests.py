@@ -176,7 +176,7 @@ int main(void) {
 def run_target(r, tag, name, srcf):
     if tag == 'rv':
         return r.rv(name, srcf, r._rv_tool)
-    return r.arm(name, srcf, r._arm_tool)
+    return r.arm(name, srcf, r._arm_tool, r._arm_libgcc)
 
 
 def main():
@@ -184,6 +184,10 @@ def main():
     ap.add_argument('--rv-as', default='', help='directory holding riscv64-unknown-elf binutils')
     ap.add_argument('--arm-as', default=os.environ.get('ARKCC_ARM_AS', ''),
                     help='directory holding arm-none-eabi binutils')
+    ap.add_argument('--arm-libgcc', default=None,
+                    help='no-FPU libgcc.a for arm-none-eabi; the backend no '
+                         'longer carries its own AEABI helpers, so the 64-bit '
+                         'compare cases need the runtime to link')
     ap.add_argument('--arkcc', default=os.path.join(ROOT, 'arkcc.exe'))
     args = ap.parse_args()
 
@@ -218,6 +222,14 @@ def main():
             return 2
     r._rv_tool = rv_tool
     r._arm_tool = arm_tool
+    r._arm_libgcc = ''
+    if arm_tool:
+        r._arm_libgcc = args.arm_libgcc or G.find_arm_libgcc(args.arm_as)
+        if not r._arm_libgcc or not os.path.exists(r._arm_libgcc):
+            print('cannot find a no-FPU libgcc.a for arm-none-eabi '
+                  '(pass --arm-libgcc); the ARM arm cannot link')
+            return 2
+        print('arm libgcc: %s' % r._arm_libgcc)
 
     ok = 0
     bad = 0

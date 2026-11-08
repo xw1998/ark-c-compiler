@@ -787,7 +787,14 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                 }
                 case IR_UNARY:
                     asmbuf_puts(&buf, "    pop eax\n");
-                    if (I->aux == (int)TOK_MINUS) asmbuf_puts(&buf, "    neg eax\n");
+                    /* val==1 is a float/double `-x`.  Both are held as a double
+                     * on this stack with the HIGH dword on top, and that dword
+                     * carries the sign bit, so the integer `neg` (which returns
+                     * +0.0 for -0.0 and wrecks the exponent) is replaced by a
+                     * sign-bit flip. */
+                    if (I->val == 1 && I->aux == (int)TOK_MINUS)
+                        asmbuf_puts(&buf, "    xor eax, 0x80000000\n");
+                    else if (I->aux == (int)TOK_MINUS) asmbuf_puts(&buf, "    neg eax\n");
                     else if (I->aux == (int)TOK_BNOT) asmbuf_puts(&buf, "    not eax\n");
                     else if (I->aux == (int)TOK_NOT) asmbuf_puts(&buf, "    test eax, eax\n    sete al\n    movzx eax, al\n");
                     asmbuf_puts(&buf, "    push eax\n");

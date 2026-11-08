@@ -85,15 +85,31 @@ New-Item -ItemType Directory -Path $work -Force | Out-Null
 $sct = Join-Path $fixture 'qemu_mps2.sct'
 
 function Build-Image($workload, $tag) {
+    # --vector-table is needed in BOTH places: compiling the object that
+    # defines Reset_Handler reserves the 0x400-byte hole (and bases its
+    # addresses on base+0x400), and the link fills that hole with the table.
+    # Passing it to only one of the two is a hard error now -- without it on
+    # the compile the linker finds a zero-filled hole and refuses to write a
+    # table over somebody's code, and without it on the link the image keeps
+    # an all-zero vector table.  This recipe predates that check.
     $objs = @()
     foreach ($unit in @(@('startup.c', 'startup'), @('sh_call.s', 'sh_call'), @($workload, $tag))) {
         $src = Join-Path $fixture $unit[0]
         $obj = Join-Path $work ($unit[1] + '.ark_obj')
-        & $arkcc -target arm -c $src -o $obj 2>&1 | Out-Null
+        if ($unit[1] -eq 'startup') {
+            & $arkcc -target arm -c $src --vector-table -o $obj 2>&1 | Out-Null
+        } else {
+            & $arkcc -target arm -c $src -o $obj 2>&1 | Out-Null
+        }
         $objs += $obj
     }
     $image = Join-Path $work ($tag + '.bin')
-    & $arkcc -link $objs[0] $objs[1] $objs[2] --scatter $sct -o $image 2>&1 | Out-Null
+    $linkOut = & $arkcc -link $objs[0] $objs[1] $objs[2] --scatter $sct --vector-table -o $image 2>&1
+    if (-not (Test-Path $image)) {
+        # Do not let a silent link failure turn into "the workload returned 1":
+        # qemu would run nothing and the exit code would look like a codegen bug.
+        Write-Host ("     link failed for {0}: {1}" -f $tag, ($linkOut -join ' ')) -ForegroundColor Yellow
+    }
     return @{ Objs = $objs; Image = $image }
 }
 

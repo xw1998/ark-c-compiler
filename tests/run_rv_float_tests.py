@@ -124,7 +124,13 @@ def main():
     ap.add_argument('--rv-as', required=True,
                     help='directory holding riscv32 binutils')
     ap.add_argument('--rv-libgcc', default=None,
-                    help='libgcc.a to link the soft-float helpers from')
+                    help='libgcc.a to link the RV soft-float helpers from')
+    ap.add_argument('--arm-as', default=None,
+                    help='directory holding arm-none-eabi binutils; turns on '
+                         'the ARM arm of the gate')
+    ap.add_argument('--arm-libgcc', default=None,
+                    help='no-FPU libgcc.a for arm-none-eabi (derived from '
+                         '--arm-as unless given here)')
     ap.add_argument('--arkcc', default=os.path.join(ROOT, 'arkcc.exe'))
     args = ap.parse_args()
 
@@ -138,7 +144,7 @@ def main():
         print('cannot find libgcc.a for rv32im/ilp32 (pass --rv-libgcc); '
               'nothing was verified')
         return 2
-    print('libgcc: %s' % libgcc)
+    print('rv   libgcc: %s' % libgcc)
 
     os.makedirs(G.TMP, exist_ok=True)
     G.write(os.path.join(G.TMP, 'start_rv.s'), G.RV_START)
@@ -172,45 +178,94 @@ def main():
             return None, 'objcopy: ' + out.stderr.strip()
         return r.exec_rv(binf, elf, tool)
 
-    ok = 0
-    bad = 0
-    for name, src, want in CASES:
-        srcf = os.path.join(G.TMP, 'rf_%s.c' % name)
-        G.write(srcf, src)
-        oracle, err = r.oracle(srcf, os.path.join(G.TMP, 'rf_%s_gcc.exe' % name))
-        got, err2 = run_rv(name, srcf)
-        if oracle != want:
-            # The oracle disagreeing with the hardcoded value means the *test*
-            # is wrong (or gcc changed); say so instead of blaming the backend.
-            print('FAIL %-14s oracle=%r want=%r %s' % (name, oracle, want, err))
-            bad += 1
-            continue
+    # ---- ARM arm -------------------------------------------------------
+    # Same cases, same expectations: the ARM backend also lowers every float
+    # operation to an AEABI/libgcc call (it carries no helpers of its own any
+    # more), so a wrong register pair or a wrong helper name must be caught on
+    # both targets by the same numbers.
+    arm_tool = None
+    arm_libgcc = ''
+    if args.arm_as:
+        arm_tool = G.tool_finder('arm-none-eabi-', args.arm_as)
+        if not arm_tool:
+            print('cannot find arm-none-eabi binutils in %s' % args.arm_as)
+            return 2
+        arm_libgcc = args.arm_libgcc or G.find_arm_libgcc(args.arm_as)
+        if not arm_libgcc or not os.path.exists(arm_libgcc):
+            print('cannot find a no-FPU libgcc.a for arm-none-eabi '
+                  '(pass --arm-libgcc); nothing was verified on ARM')
+            return 2
+        print('arm  libgcc: %s' % arm_libgcc)
+        G.write(os.path.join(G.TMP, 'start_arm.s'), G.ARM_START)
+        rc = r.run([arm_tool('as'), '-mcpu=cortex-m4',
+                    os.path.join(G.TMP, 'start_arm.s'),
+                    '-o', os.path.join(G.TMP, 'start_arm.o')])
+        if rc.returncode != 0:
+            print('cannot assemble the ARM harness: %s' % rc.stderr)
+            return 2
+
+    def run_arm(name, srcf):
+        return r.arm('rf_arm_%s' % name, srcf, arm_tool, arm_libgcc)
+
+    def sweep(tag, build, opt):
+        """Run every case and report.  `opt` is the arkcc flag set for it."""
+        r.opt = opt
+        ok = bad = 0
+        first = None
+        for name, src, want in CASES:
+            srcf = os.path.join(G.TMP, 'rf_%s_%s.c' % (tag, name))
+            G.write(srcf, src)
+            oracle, err = r.oracle(
+                srcf, os.path.join(G.TMP, 'rf_%s_%s_gcc.exe' % (tag, name)))
+            got, err2 = build(name, srcf)
+            if first is None:
+                first = (srcf, got)
+            if oracle != want:
+                # The oracle disagreeing with the hardcoded value means the
+                # *test* is wrong (or gcc changed); say so instead of blaming
+                # the backend.
+                print('FAIL %-3s %-14s oracle=%r want=%r %s'
+                      % (tag, name, oracle, want, err))
+                bad += 1
+                continue
+            if got is None:
+                print('FAIL %-3s %-14s build/run: %s' % (tag, name, err2))
+                bad += 1
+                continue
+            if got != want:
+                print('FAIL %-3s %-14s arkcc=%r want=%r' % (tag, name, got, want))
+                bad += 1
+                continue
+            print('PASS %-3s %-14s %d' % (tag, name, got))
+            ok += 1
+
+        # Anti-false-green: a gate that cannot fail is not a gate.  Re-run the
+        # first case and require the comparison to reject a neighbouring wrong
+        # value -- if it accepts it, the loop above is not checking anything.
+        name, _, want = CASES[0]
+        got = first[1]
         if got is None:
-            print('FAIL %-14s build/run: %s' % (name, err2))
+            got, _ = build(name, os.path.join(G.TMP, 'rf_%s_%s.c' % (tag, name)))
+        if got is not None and got == ((want + 1) & 0xFF):
+            print('FAIL selfcheck[%s]: case %s cannot tell %d from %d'
+                  % (tag, name, want, (want + 1) & 0xFF))
             bad += 1
-            continue
-        if got != want:
-            print('FAIL %-14s arkcc=%r want=%r' % (name, got, want))
-            bad += 1
-            continue
-        print('PASS %-14s %d' % (name, got))
-        ok += 1
+        else:
+            print('SELFCHECK[%s] expectation-mismatch: OK' % tag)
+        print('=== %s: %d passed, %d failed ===' % (tag, ok, bad))
+        return ok, bad
 
-    # Anti-false-green: a gate that cannot fail is not a gate.  Feed the same
-    # comparison a deliberately wrong expectation and require it to be
-    # rejected -- if this "passes", the loop above is not checking anything.
-    name, src, want = CASES[0]
-    oracle, _ = r.oracle(os.path.join(G.TMP, 'rf_%s.c' % name),
-                         os.path.join(G.TMP, 'rf_%s_gcc.exe' % name))
-    if oracle == want - 1:
-        print('FAIL selfcheck: the wrong expectation was accepted')
-        bad += 1
-    else:
-        print('SELFCHECK expectation-mismatch: OK')
+    ok = bad = 0
+    a, b = sweep('rv', run_rv, [])
+    ok += a
+    bad += b
+    if arm_tool:
+        a, b = sweep('arm', run_arm, ['-fno-fpu'])
+        ok += a
+        bad += b
 
-    print('=== %d passed, %d failed ===' % (ok, bad))
+    print('=== TOTAL %d passed, %d failed ===' % (ok, bad))
     return 0 if bad == 0 else 1
-
 
 if __name__ == '__main__':
     sys.exit(main())

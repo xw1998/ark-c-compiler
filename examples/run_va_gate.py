@@ -28,6 +28,7 @@ A target whose toolchain is missing is SKIPPED, not failed; exit 2 means no
 target could be run at all (nothing was verified), 1 means a real failure.
 """
 import argparse
+import glob
 import os
 import re
 import shutil
@@ -560,7 +561,15 @@ class Runner:
                     pass
         return out
 
-    def arm(self, name, src, tool):
+    def arm(self, name, src, tool, libgcc=''):
+        """Assemble/link/run one ARM case.
+
+        `libgcc` is the soft-float/no-FPU libgcc.a: the backend no longer
+        carries its own AEABI helpers (they answered 5 classes of calls
+        wrongly -- see backend_arm.c), so an image that uses a double, a
+        64-bit division or a float conversion must link the runtime.  A
+        missing library is therefore a link error, not a wrong answer.
+        """
         asm = os.path.join(TMP, name + '.s')
         gnu = os.path.join(TMP, name + '_gnu.s')
         obj = os.path.join(TMP, name + '.o')
@@ -581,8 +590,11 @@ class Runner:
                       '-mfloat-abi=hard', gnu, '-o', obj])
         if r.returncode != 0:
             return None, 'as: ' + r.stderr.strip()
-        r = self.run([tool('ld'), '-Ttext=0x08000000', '-e', '_start',
-                      os.path.join(TMP, 'start_arm.o'), obj, '-o', elf])
+        ldargs = [tool('ld'), '-Ttext=0x08000000', '-e', '_start',
+                  os.path.join(TMP, 'start_arm.o'), obj]
+        if libgcc:
+            ldargs.append(libgcc)
+        r = self.run(ldargs + ['-o', elf])
         if r.returncode != 0:
             return None, 'ld: ' + r.stderr.strip()
         r = self.run([tool('objcopy'), '-O', 'binary', elf, binf])
@@ -1043,9 +1055,31 @@ def opt_suite(args):
         return 1
     return 0
 
+def find_arm_libgcc(arm_tool_dir):
+    """libgcc.a for arm-none-eabi (thumb/v7-m, no FPU).
+
+    The arm backend emits AEABI calls (`__aeabi_dadd`, `__aeabi_ldivmod`, ...)
+    and expects the target runtime to provide them, the same way armcc expects
+    armlib.  Pick the *no-FPU* multilib: the backend calls those helpers with
+    integer registers, so a hard-float libgcc (which expects VFP arguments)
+    would be ABI-incompatible.
+    """
+    if not arm_tool_dir:
+        return ''
+    top = os.path.dirname(os.path.abspath(arm_tool_dir))   # .../tools
+    pat = os.path.join(top, 'lib', 'gcc', 'arm-none-eabi', '*',
+                       'thumb', 'v7-m', 'nofp', 'libgcc.a')
+    hits = sorted(glob.glob(pat))
+    return hits[-1] if hits else ''
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--arm-as', default=os.environ.get('ARKCC_ARM_AS', ''))
+    ap.add_argument('--arm-libgcc',
+                    default=os.environ.get('ARKCC_ARM_LIBGCC', ''),
+                    help='libgcc.a providing the AEABI helpers the arm '
+                         'backend calls (autodetected from --arm-as)')
     ap.add_argument('--rv-as', default=os.environ.get('ARKCC_RV_AS', ''))
     ap.add_argument('--gcc', default=os.environ.get('ARKCC_GCC', 'gcc'))
     # Extra arkcc options for the *case* compiles (e.g. "-O2 -freg-top"), so the
@@ -1082,6 +1116,11 @@ def main():
     shape_checks(r)
 
     arm_tool = tool_finder('arm-none-eabi-', args.arm_as)
+    arm_libgcc = args.arm_libgcc or find_arm_libgcc(args.arm_as)
+    if arm_tool and not arm_libgcc:
+        print('NOTE arm: no libgcc.a found next to the toolchain; cases that '
+              'need the AEABI runtime (double, float, 64-bit divide) will fail '
+              'to link.  Pass --arm-libgcc <path> to point at one.')
     if arm_tool:
         ran += 1
         rc = r.run([arm_tool('as'), '-mcpu=cortex-m4',
@@ -1101,7 +1140,7 @@ def main():
                 print('SKIP arm/%-9s no gcc oracle: %s' % (name, err.strip()[:80]))
                 r.failed += 1
                 continue
-            got, err = r.arm('arm_' + name, src, arm_tool)
+            got, err = r.arm('arm_' + name, src, arm_tool, arm_libgcc)
             if got is None:
                 print('FAIL arm/%-9s %s' % (name, err.strip()[:200]))
                 r.failed += 1
