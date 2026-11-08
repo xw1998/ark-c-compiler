@@ -285,6 +285,120 @@ int sb_pad;\nstruct P { int x, y; };\nstruct Q { int x, y, z; };\nstruct S3 { ch
         "expect": 50,
     },
     {
+        "name": "sret_cross_tu",
+        "why": "struct return > 8 bytes across translation units: the caller "
+               "only has a declaration (`struct S mk(int);`), so the hidden "
+               "result pointer must come from the call's type and not from a "
+               "table of definitions.  The table this used to use was built by "
+               "scanning the program being compiled, so a call to a callee "
+               "defined in another object was emitted with the AAPCS default "
+               "(no hidden pointer) and the callee's stores landed on r0.",
+        "files": {
+            "ka.c": STARTUP + """\
+int sxt_pad;
+struct S { int a, b, c; };
+struct S mk(int v);
+int main(void)
+{
+  struct S t = mk(3);
+  return t.a + t.b + t.c;
+}
+""",
+            "kb.c": "struct S { int a, b, c; };\n"
+                    "struct S mk(int v) { struct S s; s.a = v; s.b = v * 2; s.c = v * 3; return s; }\n",
+        },
+        "build": [
+            (["ka.c", "-target", "arm", "-c", "--vector-table", "-o", "ka.obj"], None),
+            (["kb.c", "-target", "arm", "-c", "-o", "kb.obj"], None),
+            (["-link", "ka.obj", "kb.obj", "--vector-table", "-o", "out.bin"], "out.bin"),
+        ],
+        "expect": 18,
+    },
+    {
+        "name": "sret_indirect",
+        "why": "struct return > 8 bytes through a function pointer: the callee "
+               "name is not known at the call site at all.  Same root cause as "
+               "sret_cross_tu -- the hidden pointer has to be part of the call, "
+               "not looked up by name -- and r0 has to be filled *after* the "
+               "argument pops and the BLX target is in ip, where the argument "
+               "pops cannot reach it.",
+        "files": {
+            "i.c": STARTUP + """\
+int si_pad;
+struct S { int a, b, c; };
+struct S mk(int v) { struct S s; s.a = v; s.b = v + 1; s.c = v + 2; return s; }
+int main(void)
+{
+    struct S (*fp)(int) = mk;
+    struct S t = fp(4);
+    int (*ip)(void) = 0;
+    (void)ip;
+    return t.a + t.b + t.c;
+}
+""",
+        },
+        "build": [(["i.c", "-target", "arm", "--vector-table", "-o", "out.bin"], "out.bin")],
+        "expect": 15,
+    },
+    {
+        "name": "sret_live_results",
+        "why": "several sret results alive at once (`f(mk(1), mk(2), mk(3))` and "
+               "`struct S a = mk(1), b = mk(2);`): each call site owns its own "
+               "buffer in the caller's frame.  One shared scratch area would "
+               "have every result overwrite the previous one, and a buffer "
+               "below SP would be overwritten by the callee's own frame.",
+        "files": {
+            "l.c": STARTUP + """\
+int sl_pad;
+struct S { int a, b, c; };
+struct S mk(int v) { struct S s; s.a = v; s.b = v * 10; s.c = v * 100; return s; }
+int pick(struct S x, struct S y, struct S z) { return x.a + y.b / 10 + z.c / 100; }
+int main(void)
+{
+    struct S a = mk(1), b = mk(2);
+    struct S arr[3];
+    int i;
+    arr[0] = mk(3);
+    arr[1] = mk(4);
+    arr[2] = mk(5);
+    if (pick(mk(1), mk(2), mk(3)) != 6) return 1;
+    if (a.a + b.b / 10 != 3) return 2;
+    for (i = 0; i < 3; i++) if (arr[i].c / 100 != i + 3) return 3 + i;
+    if (mk(6).b / 10 != 6) return 7;
+    return 50;
+}
+""",
+        },
+        "build": [(["l.c", "-target", "arm", "--vector-table", "-o", "out.bin"], "out.bin")],
+        "expect": 50,
+    },
+    {
+        "name": "sret_recur",
+        "why": "sret through recursion (fib returning a 12-byte struct): the "
+               "result pointer of the inner call must survive the outer "
+               "call's own frame, and the value has to come back out of the "
+               "caller-owned buffer at every level.",
+        "files": {
+            "r.c": STARTUP + """\
+int sr_pad;
+struct S { int a, b, c; };
+struct S fib(int n)
+{
+    struct S s;
+    if (n < 2) { s.a = n; s.b = 1; s.c = 0; return s; }
+    {
+        struct S p = fib(n - 1), q = fib(n - 2);
+        s.a = p.a + q.a; s.b = p.b; s.c = p.c; return s;
+    }
+}
+int main(void) { struct S t = fib(10); return t.a; }
+""",
+        },
+        "build": [(["r.c", "-target", "arm", "--vector-table", "-o", "out.bin"], "out.bin")],
+        "expect": 55,
+        "max_insn": 12000000,
+    },
+    {
         "name": "big_frame",
         "why": "a frame above 4095 bytes: one SUBW cannot do it, and the old "
                "single 'SUB sp, sp, #N' was truncated to (N/4) & 0x7f * 4 -- the "
@@ -485,6 +599,9 @@ def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--arkcc", default=None)
     ap.add_argument("--keep", action="store_true")
+    ap.add_argument("--selfcheck", action="store_true",
+                    help="feed one case a deliberately wrong expectation and require "
+                         "it to be rejected; a gate that cannot fail is not a gate")
     ap.add_argument("--extra", action="append", default=[],
                     help="extra arkcc flag for every case; repeat it, one flag per "
                          "call, and use the = form: --extra=-fopt-regalloc")
@@ -503,6 +620,33 @@ def main(argv=None):
 
     if args.extra:
         print("[arm-exec] extra flags: %s" % " ".join(args.extra))
+
+    if args.selfcheck:
+        # Anti-false-green: run the first case with a wrong expectation and
+        # require the comparison above to reject it.  If this prints FAIL, the
+        # expectations in CASES are not actually being checked.
+        case = dict(CASES[0])
+        case["expect"] = case["expect"] + 1
+        workdir = tempfile.mkdtemp(prefix="arkexec_sc_")
+        try:
+            err = build_case(arkcc, workdir, case, args.extra)
+            out = os.path.join(workdir, "out.bin")
+            if err or not os.path.exists(out):
+                print("[SELFCHECK] FAIL: could not build the self-check image: %s"
+                      % (err or "no image"))
+                return 1
+            with open(out, "rb") as fh:
+                status, value, detail = run_image(fh.read(),
+                                                  case.get("max_insn", 5000000))
+            if status == "returned" and value != case["expect"]:
+                print("[SELFCHECK] expectation-mismatch: OK")
+            else:
+                print("[SELFCHECK] FAIL: the wrong expectation was accepted "
+                      "(status=%s value=%d want=%d)" % (status, value, case["expect"]))
+                return 1
+        finally:
+            if not args.keep:
+                shutil.rmtree(workdir, ignore_errors=True)
     failures = 0
     for case in CASES:
         workdir = tempfile.mkdtemp(prefix="arkexec_")

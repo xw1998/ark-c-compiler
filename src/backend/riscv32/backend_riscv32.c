@@ -16,6 +16,7 @@
 #include "common.h"
 #include "diag.h"
 #include "agginit.h"
+#include "arkcc_config.h"
 /* On host, <stdlib.h> provides getenv() for the ARKCC_DUMP_SYMS symbol map
  * (see rv_assemble); on STM32 getenv() does not exist. */
 #if ARKCC_PROFILE != ARKCC_PROFILE_STM32_MIN
@@ -58,6 +59,10 @@ static const char *arg_reg_r(int i) {
 #define RV_SAVE_RA_OFF  36
 #define RV_SAVE_S0_OFF  40
 #define RV_LOCAL_BASE   48
+
+/* Struct-returning call (sret) buffers a single function may reserve in its
+ * frame are capped by ARK_MAX_SRET_FUNCS (arkcc_config.h): one buffer per call
+ * site, so it is a call-count limit, not a nesting limit. */
 
 /* GNU as encodes a 12-bit signed displacement only, and a slot can sit far
  * more than 2 KB below s0, so the s0-relative slot address is materialised in
@@ -113,6 +118,17 @@ static int rv_ret_is_two_words(Type *t) {
         return (sz > 4 && sz <= 8);
     }
     return 0;
+}
+
+/* A composite wider than two words cannot come back in registers, so the
+ * RISC-V psABI returns it through memory: the caller's buffer address is
+ * passed as a hidden first argument in a0 and handed back in a0.  irgen marks
+ * those calls (bit 36 of IR_CALL.val plus the payload size); this predicate is
+ * the callee's half of the same rule. */
+static int rv_ret_is_sret(Type *t) {
+    if (!t) return 0;
+    if (t->kind != TYPE_STRUCT && t->kind != TYPE_UNION) return 0;
+    return type_size(t) > 8;
 }
 
 /* Storage size of a global, from its declared type.  0 when the name is not in
@@ -727,7 +743,57 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
         IrFunc *f = prog->funcs[fi];
 
         int i;
-        int fsize = RV_LOCAL_BASE + f->local_size;
+        /* ---- sret: a composite wider than two words comes back through a
+         * buffer the *caller* owns.  irgen stamps every such call with bit 36
+         * of IR_CALL.val and the payload size in bits 37..52, so the size is
+         * known from the call expression itself -- no table of function names,
+         * and a callee that is only declared (or reached through a pointer) is
+         * covered exactly like one defined here.
+         *
+         * One buffer per call site, carved out of the bottom of this frame:
+         * the pointer the callee hands back in a0 then stays valid for as long
+         * as this frame does, which is what makes `struct S s = f();` and
+         * `h(g())` both correct.  Before this the callee returned the address
+         * of its *own* frame slot, so the payload survived only until the next
+         * call at the same depth reused that stack; an interrupt taking the
+         * same depth would have read garbage.
+         *
+         * sret_ptr_dst is the word that holds the *callee's* copy of the
+         * incoming result pointer, reserved only when this function is itself
+         * such a callee. */
+        int sret_off[ARK_MAX_SRET_FUNCS];
+        int sret_sz[ARK_MAX_SRET_FUNCS];
+        int sret_n = 0;
+        int sret_total = 0;
+        int sret_ptr_dst = 0;
+        int sret_is = rv_ret_is_sret(f->ret_type);
+        int sret_call_idx = 0;
+        int fsize;
+        for (i = 0; i < f->code_count; i++) {
+            IrInst *I = &f->code[i];
+            int sz;
+            if (I->op != IR_CALL || !((I->val >> 36) & 1)) continue;
+            sz = (int)((I->val >> 37) & 0xFFFF);
+            if (sz <= 0) sz = 4;
+            sz = (sz + 7) & ~7;      /* keep every buffer 8-byte aligned */
+            if (sret_n >= ARK_MAX_SRET_FUNCS) {
+                char b1[12];
+                diag_tool(DIAG_SEV_ERROR, "arkcc",
+                          "function '%s' makes more than %s struct-returning "
+                          "calls; raise ARK_MAX_SRET_FUNCS and rebuild arkcc",
+                          f->name, diag_num(b1, ARK_MAX_SRET_FUNCS), 0, 0, 0, 0);
+                break;
+            }
+            sret_off[sret_n] = sret_total;
+            sret_sz[sret_n] = sz;
+            sret_total += sz;
+            sret_n++;
+        }
+        if (sret_is) {
+            sret_ptr_dst = f->local_size + sret_total;
+            sret_total += 4;
+        }
+        fsize = RV_LOCAL_BASE + f->local_size + sret_total;
         /* Whether the body lowers a VLA anywhere: that is what decides if the
          * epilogue may assume sp still sits at the bottom of the fixed frame. */
         int has_alloca = 0;
@@ -752,6 +818,10 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                 else
                     va_named_words += (sz >= 8) ? 2 : 1;
             }
+            /* The hidden result pointer of an sret return occupies a0, so
+             * every named parameter sits one word later and va_arg must start
+             * one word later too. */
+            if (sret_is) va_named_words += 1;
             sp_size = (sp_size + 15) & ~15;
         }
 
@@ -776,6 +846,12 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
         asmbuf_puts(&buf, "\n    add t0, sp, t0\n    sw s0, 0(t0)\n    li t0, ");
         asmbuf_int(&buf, sp_size);
         asmbuf_puts(&buf, "\n    add s0, sp, t0\n");
+        /* The hidden result pointer arrives in a0 and is the destination
+         * IR_RETURN copies into; save it before the body can clobber a0. */
+        if (sret_is) {
+            rv_s0_slot(&buf, sret_ptr_dst - fsize);
+            asmbuf_puts(&buf, "    sw a0, 0(t2)\n");
+        }
         /* argument image: one word per argument register, written before the
          * body can touch a0-a7.  Words for named parameters are written too:
          * they are never read by va_arg (it starts at the first variadic
@@ -810,6 +886,10 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                     int st_sz = (I->aux >> 8) & 0xFFFFFF;
                     int dst = (int)I->val;
                     int k;
+                    /* The hidden result pointer took a0, so argument word n
+                     * is in a<n+1>, and once a1..a7 are used the caller's
+                     * first stack word is argument word 7 (at s0+0). */
+                    if (sret_is) slot += 1;
                     if (st_sz > 8) {
                         /* the payload travels by address: copy it into the
                          * local slot so the callee owns its own copy */
@@ -1927,6 +2007,13 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                      * 2 = the 16-byte _Complex double (a0..a3 = re_lo, re_hi,
                      * im_lo, im_hi -- see IR_RETURN above). */
                     int cplx_ret    = (int)((I->val >> 34) & 3);
+                    /* bit 36 (+ the payload size in bits 37..52): the result is
+                     * a composite wider than two words, which comes back
+                     * through a buffer in this frame -- its address goes out in
+                     * a0 as a hidden first argument (RISC-V psABI) and comes
+                     * back in a0.  See the sret prescan at the top of this
+                     * function for where the buffers live. */
+                    int sret_call   = (int)((I->val >> 36) & 1);
                     int kk, total = 0, inreg, off;
                     int abase[64];
                     int awords[64];
@@ -2007,10 +2094,33 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                         }
                         off += 4 * awords[kk];
                     }
-                    inreg = (total < 8) ? total : 8;
+                    if (sret_call) {
+                        /* Point a0 at this call site's result buffer.  This has
+                         * to happen before the argument words are loaded (they
+                         * only touch a1..a7) and before sp moves. */
+                        int b_off = 0;
+                        if (sret_call_idx < sret_n) {
+                            b_off = sret_off[sret_call_idx];
+                            sret_call_idx++;
+                        } else {
+                            char b2[12];
+                            diag_tool(DIAG_SEV_ERROR, "arkcc",
+                                      "sret site bookkeeping lost count in '%s' "
+                                      "(%s sites reserved); rebuild arkcc",
+                                      f->name, diag_num(b2, sret_n), 0, 0, 0, 0);
+                        }
+                        rv_s0_slot(&buf, (f->local_size + b_off) - fsize);
+                        asmbuf_puts(&buf, "    mv a0, t2\n");
+                    }
+                    /* With an sret call a0 already holds the result pointer, so
+                     * the first argument word moves to a1 and only seven words
+                     * fit in registers; the rest start at s0+0 as usual, one
+                     * word later in the callee's own numbering. */
+                    inreg = sret_call ? 7 : 8;
+                    if (total < inreg) inreg = total;
                     for (kk = 0; kk < inreg; kk++) {
                         asmbuf_puts(&buf, "    lw ");
-                        asmbuf_puts(&buf, arg_reg_r(kk));
+                        asmbuf_puts(&buf, arg_reg_r(sret_call ? kk + 1 : kk));
                         asmbuf_puts(&buf, ", ");
                         asmbuf_int(&buf, 4 * kk);
                         asmbuf_puts(&buf, "(sp)\n");
@@ -2098,6 +2208,44 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                                           "    lw a2, 12(sp)\n"
                                           "    lw a3, 8(sp)\n"
                                           "    addi sp, sp, 16\n");
+                        rv_pilogue(&buf, sp_size, has_alloca);
+                        break;
+                    }
+                    if (rv_ret_is_sret(f->ret_type)) {
+                        /* Composite wider than two words: the IR stack holds the
+                         * *address* of the object being returned.  The psABI
+                         * hands the payload back through memory, so copy it into
+                         * the caller's buffer -- whose address arrived in a0 and
+                         * was saved in the prologue -- and return that address in
+                         * a0.  Nothing after this point reads the IR stack, so
+                         * the popped source word is dropped.
+                         *
+                         * The copy is word-wise with a byte tail, the shape
+                         * IR_MEMCPY already uses on this target. */
+                        char b1[12];
+                        int rsz = type_size(f->ret_type);
+                        if (rsz <= 0) {
+                            diag_tool(DIAG_SEV_ERROR, "arkcc",
+                                      "cannot size the return value of '%s'; the "
+                                      "struct-return copy would be %s bytes",
+                                      f->name, diag_num(b1, rsz), 0, 0, 0, 0);
+                            rsz = 0;
+                        }
+                        asmbuf_puts(&buf, "    lw t0, 0(sp)\n    addi sp, sp, 4\n");
+                        rv_s0_slot(&buf, sret_ptr_dst - fsize);
+                        asmbuf_puts(&buf, "    lw t1, 0(t2)\n    li t3, 0\n    li t4, ");
+                        asmbuf_int(&buf, rsz & ~3);
+                        asmbuf_puts(&buf, "\n    li t5, ");
+                        asmbuf_int(&buf, rsz);
+                        asmbuf_puts(&buf, "\n61:\n    bgeu t3, t4, 62f\n"
+                                          "    add t6, t0, t3\n    lw t6, 0(t6)\n"
+                                          "    add t2, t1, t3\n    sw t6, 0(t2)\n"
+                                          "    addi t3, t3, 4\n    j 61b\n"
+                                          "62:\n    bgeu t3, t5, 63f\n"
+                                          "    add t6, t0, t3\n    lb t6, 0(t6)\n"
+                                          "    add t2, t1, t3\n    sb t6, 0(t2)\n"
+                                          "    addi t3, t3, 1\n    j 62b\n"
+                                          "63:\n    mv a0, t1\n");
                         rv_pilogue(&buf, sp_size, has_alloca);
                         break;
                     }
