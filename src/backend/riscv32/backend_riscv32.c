@@ -630,8 +630,20 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                 case IR_LOAD_IDX: {
                     /* 0(sp) = index, 4(sp) = address; the index is already a
                      * byte offset, irgen scales it before emitting.  val is
-                     * the element width, which is also the width to load. */
+                     * the element width, which is also the width to load.
+                     *
+                     * aux bit 0x400: the pointer is __packed (or the aggregate
+                     * is under-aligned), so the address is not guaranteed to
+                     * suit the width.  RISC-V raises a misaligned-access
+                     * exception instead of quietly doing something, and this
+                     * case used to ignore the flag and emit a plain load -- a
+                     * wrong answer that only waits for the right address.  The
+                     * bytes are now assembled by hand.  An 8-byte packed load is
+                     * refused rather than half-done: reading four bytes and
+                     * calling it a long long is exactly the kind of silent
+                     * short value the rest of this backend refuses to emit. */
                     int es = (int)I->val;
+                    int packed = (I->aux & 0x400) ? 1 : 0;
                     if (es != 1 && es != 2 && es != 4 && es != 8) {
                         char b1[12];
                         diag_tool(DIAG_SEV_ERROR, "arkcc",
@@ -640,8 +652,51 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                                   diag_num(b1, es), f->name, 0,0,0,0);
                         break;
                     }
-                    asmbuf_puts(&buf, "    lw t1, 0(sp)\n    lw t0, 4(sp)\n    addi sp, sp, 8\n    add t0, t0, t1\n");
-                    if (es == 8) {
+                    asmbuf_puts(&buf, "    lw t1, 0(sp)\n    lw t0, 4(sp)\n    addi sp, sp, 8\n");
+                    /* The pushed index is an *element* index, not a byte
+                     * offset: IR_LOAD_IDX scales it by the element size, the
+                     * same way the arm backend emits MUL r1, r2.  Without
+                     * this an aggregate written as consecutive words through
+                     * '...' was reassembled from base+j instead of base+4j
+                     * (measured: a 12-byte struct read s.b from base+2 and
+                     * s.c from base+1).  es==1 needs no scaling, and every
+                     * other producer of IR_LOAD_IDX pushes index 0, so the
+                     * added shift leaves those cases untouched. */
+                    if (es == 2)
+                        asmbuf_puts(&buf, "    slli t1, t1, 1\n");
+                    else if (es == 4)
+                        asmbuf_puts(&buf, "    slli t1, t1, 2\n");
+                    else if (es == 8)
+                        asmbuf_puts(&buf, "    slli t1, t1, 3\n");
+                    asmbuf_puts(&buf, "    add t0, t0, t1\n");
+                    if (packed && es == 2) {
+                        asmbuf_puts(&buf, "    lbu t1, 0(t0)\n    lbu t2, 1(t0)\n"
+                                          "    slli t2, t2, 8\n    or t0, t1, t2\n"
+                                          "    slli t0, t0, 16\n    srai t0, t0, 16\n");
+                        asmbuf_puts(&buf, "    addi sp, sp, -4\n    sw t0, 0(sp)\n");
+                    } else if (packed && es == 4) {
+                        asmbuf_puts(&buf, "    lbu t1, 0(t0)\n    lbu t2, 1(t0)\n"
+                                          "    slli t2, t2, 8\n    or t1, t1, t2\n"
+                                          "    lbu t2, 2(t0)\n    slli t2, t2, 16\n"
+                                          "    or t1, t1, t2\n"
+                                          "    lbu t2, 3(t0)\n    slli t2, t2, 24\n"
+                                          "    or t0, t1, t2\n");
+                        asmbuf_puts(&buf, "    addi sp, sp, -4\n    sw t0, 0(sp)\n");
+                    } else if (es == 8 && packed) {
+                        /* 8-byte __packed load: assemble both words from bytes.
+                         * Same push order as the aligned path below (low word
+                         * first, then high), so the consumer is unaffected. */
+                        asmbuf_puts(&buf, "    lbu t1, 0(t0)\n    lbu t3, 1(t0)\n"
+                                          "    slli t3, t3, 8\n    or t1, t1, t3\n"
+                                          "    lbu t3, 2(t0)\n    slli t3, t3, 16\n    or t1, t1, t3\n"
+                                          "    lbu t3, 3(t0)\n    slli t3, t3, 24\n    or t1, t1, t3\n");
+                        asmbuf_puts(&buf, "    lbu t2, 4(t0)\n    lbu t3, 5(t0)\n"
+                                          "    slli t3, t3, 8\n    or t2, t2, t3\n"
+                                          "    lbu t3, 6(t0)\n    slli t3, t3, 16\n    or t2, t2, t3\n"
+                                          "    lbu t3, 7(t0)\n    slli t3, t3, 24\n    or t2, t2, t3\n");
+                        asmbuf_puts(&buf, "    addi sp, sp, -4\n    sw t1, 0(sp)\n"
+                                          "    addi sp, sp, -4\n    sw t2, 0(sp)\n");
+                    } else if (es == 8) {
                         asmbuf_puts(&buf, "    lw t1, 0(t0)\n    lw t2, 4(t0)\n"
                                           "    addi sp, sp, -4\n    sw t1, 0(sp)\n"
                                           "    addi sp, sp, -4\n    sw t2, 0(sp)\n");
@@ -653,12 +708,35 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                     }
                     break;
                 }
+
                 case IR_STORE_IDX: {
                     /* es == 8: 0(sp) = high, 4(sp) = low, 8(sp) = address
                      * (irgen pushes value, address, then the value again, so
                      * the expression result is the stored value).  Otherwise
-                     * 0(sp) = value, 4(sp) = address. */
+                     * 0(sp) = value, 4(sp) = address.
+                     *
+                     * aux 0x400 = __packed store: same reasoning as the matching
+                     * load -- RISC-V traps on a misaligned halfword/word store,
+                     * so the bytes have to be written one at a time. */
                     int es = (int)I->val;
+                    int packed = (I->aux & 0x400) ? 1 : 0;
+                    if (es == 8 && packed) {
+                        /* 8-byte __packed store: byte by byte, then push the
+                         * value back (low word first) exactly like the aligned
+                         * path below. */
+                        asmbuf_puts(&buf, "    lw t0, 0(sp)\n    lw t1, 4(sp)\n    lw t2, 8(sp)\n    addi sp, sp, 12\n");
+                        asmbuf_puts(&buf, "    sb t1, 0(t2)\n"
+                                          "    srli t3, t1, 8\n    sb t3, 1(t2)\n"
+                                          "    srli t3, t1, 16\n    sb t3, 2(t2)\n"
+                                          "    srli t3, t1, 24\n    sb t3, 3(t2)\n");
+                        asmbuf_puts(&buf, "    sb t0, 4(t2)\n"
+                                          "    srli t3, t0, 8\n    sb t3, 5(t2)\n"
+                                          "    srli t3, t0, 16\n    sb t3, 6(t2)\n"
+                                          "    srli t3, t0, 24\n    sb t3, 7(t2)\n");
+                        asmbuf_puts(&buf, "    addi sp, sp, -4\n    sw t1, 0(sp)\n"
+                                          "    addi sp, sp, -4\n    sw t0, 0(sp)\n");
+                        break;
+                    }
                     if (es == 8) {
                         asmbuf_puts(&buf, "    lw t0, 0(sp)\n    lw t1, 4(sp)\n    lw t2, 8(sp)\n    addi sp, sp, 12\n");
                         asmbuf_puts(&buf, "    sw t1, 0(t2)\n    sw t0, 4(t2)\n");
@@ -666,9 +744,19 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                                           "    addi sp, sp, -4\n    sw t0, 0(sp)\n");
                     } else if (es == 1 || es == 2 || es == 4) {
                         asmbuf_puts(&buf, "    lw t0, 0(sp)\n    lw t1, 4(sp)\n    addi sp, sp, 8\n");
-                        asmbuf_puts(&buf, es == 1 ? "    sb t0, 0(t1)\n" :
-                                           (es == 2 ? "    sh t0, 0(t1)\n" :
-                                                      "    sw t0, 0(t1)\n"));
+                        if (packed && es == 2) {
+                            asmbuf_puts(&buf, "    sb t0, 0(t1)\n"
+                                              "    srli t2, t0, 8\n    sb t2, 1(t1)\n");
+                        } else if (packed && es == 4) {
+                            asmbuf_puts(&buf, "    sb t0, 0(t1)\n"
+                                              "    srli t2, t0, 8\n    sb t2, 1(t1)\n"
+                                              "    srli t2, t0, 16\n    sb t2, 2(t1)\n"
+                                              "    srli t2, t0, 24\n    sb t2, 3(t1)\n");
+                        } else {
+                            asmbuf_puts(&buf, es == 1 ? "    sb t0, 0(t1)\n" :
+                                               (es == 2 ? "    sh t0, 0(t1)\n" :
+                                                          "    sw t0, 0(t1)\n"));
+                        }
                         asmbuf_puts(&buf, "    addi sp, sp, -4\n    sw t0, 0(sp)\n");
                     } else {
                         char b1[12];
@@ -679,6 +767,7 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                     }
                     break;
                 }
+
                 case IR_BINARY:
                     asmbuf_puts(&buf, "    lw t1, 0(sp)\n    lw t0, 4(sp)\n    addi sp, sp, 4\n");
                     switch (I->aux) {
@@ -1007,15 +1096,26 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                         else if (kk < 16 && ((I->aux >> (2 * kk + 1)) & 1)) b = 8;
                         else b = 4;
                         if (b <= 0) b = 4;
-                        if (b > 8) {
+                        /* A composite wider than two words reaches here only
+                         * through `...` (irgen rejects it for the slot-image
+                         * backends).  It is a run of ceil(b/4) consecutive
+                         * argument words, word 0 first -- exactly what irgen
+                         * pushed, and exactly what <stdarg.h> walks on this
+                         * target.  It used to be an error ("passes at most two
+                         * words per argument"), which made printf-style code
+                         * with a 12-byte structure fail to build on RV32I while
+                         * ARM built and ran it.  Only an absurd width is
+                         * refused, so the word count cannot overflow the
+                         * per-argument arrays below. */
+                        if (b > 4 * 60) {
                             diag_tool(DIAG_SEV_ERROR, "arkcc",
                                       "argument %s of the call to '%s' is %s bytes "
-                                      "wide; the riscv32 backend passes at most two "
-                                      "words per argument",
+                                      "wide; the riscv32 backend passes at most "
+                                      "60 words per argument",
                                       diag_num(b1, kk),
                                       is_indirect ? "(indirect)" : (I->name ? I->name : "?"),
                                       diag_num(b2, b), 0,0,0);
-                            b = 8;
+                            b = 4 * 60;
                         }
                         abase[kk] = total;
                         awords[kk] = (b + 3) / 4;
@@ -1088,8 +1188,18 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                     break;
                 case IR_MEMCPY: {
                     /* whole-object copy: 0(sp) = destination, 4(sp) = source,
-                     * val = byte count.  Two words in, one out (the address of
-                     * the destination stays as the expression value). */
+                     * val = byte count.  Two words in, *none* out: the C, x86
+                     * and arm backends all pop both and push nothing (the C
+                     * backend's stack-effect table records "-2", i.e. pop two), and
+                     * and a struct-assignment expression keeps its value by
+                     * pushing the destination a third time in irgen.  This case
+                     * used to push the destination back, so a declaration
+                     * initialiser -- `struct S s = va_arg(ap, struct S)`, which
+                     * pushes only two words and never pops a result -- leaked one
+                     * stack word.  The epilogue then read the saved ra from sp+60
+                     * while sp was already 4 bytes low, and `ret` jumped into RAM
+                     * (measured as UC_ERR_EXCEPTION at 0x20080004).
+                     */
                     int nbytes = (int)I->val;
                     if (nbytes < 0) nbytes = 0;
                     asmbuf_puts(&buf, "    lw t0, 0(sp)\n    lw t1, 4(sp)\n    addi sp, sp, 8\n    li t2, 0\n    li t5, ");
@@ -1103,8 +1213,7 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                                       "62:\n    bgeu t2, t6, 63f\n"
                                       "    add t3, t1, t2\n    lb t4, 0(t3)\n"
                                       "    add t3, t0, t2\n    sb t4, 0(t3)\n"
-                                      "    addi t2, t2, 1\n    j 62b\n63:\n"
-                                      "    addi sp, sp, -4\n    sw t0, 0(sp)\n");
+                                      "    addi t2, t2, 1\n    j 62b\n63:\n");
                     break;
                 }
                 case IR_LOAD_FLD: {

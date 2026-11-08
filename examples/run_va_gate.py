@@ -101,6 +101,23 @@ static int four_named(int a, int b, int c, int d, ...)
     va_end(ap);
     return a + b + c + d + x * 10 + y * 100;
 }
+/* A 12-byte composite through `...` is three argument words, and this case is
+ * the one that made the riscv32 backend's word reassembly visible: the words
+ * have to come from base+4j, not base+j, or s.b/s.c are read out of the middle
+ * of a neighbouring word.  The members carry different weights so any swap
+ * changes the answer, and the trailing int proves the walk advanced by the
+ * whole payload rather than by one word. */
+struct s12 { int a, b, c; };
+static int struct12_va(int n, ...)
+{
+    va_list ap; struct s12 s; int t;
+    va_start(ap, n);
+    s = va_arg(ap, struct s12);
+    t = va_arg(ap, int);
+    va_end(ap);
+    (void)n;
+    return (s.a + s.b * 2 + s.c * 3 + t) & 0xFF;
+}
 '''
 
 # 64-bit and floating values: only the ARM target has the two-word value model
@@ -252,6 +269,8 @@ CASES = [
     ('two_ll',   'return two_named_ll(1, 0x1122334455667788LL, 0x99aabbccddeeff00LL) & 0xFF;', 'arm rv'),
     ('cross_ll', 'return cross_ll(1, 2, 3, 0x1122334455667788LL) & 0xFF;', 'arm rv'),
     ('struct_va', 'return struct_va(1, mk_s3()) & 0xFF;', 'arm'),
+    ('struct12', 'struct s12 v; v.a = 1; v.b = 2; v.c = 3;'
+                 ' return struct12_va(1, v, 100) & 0xFF;', 'arm rv'),
     ('struct2',  'return struct2_va(1, mk_s2x()) & 0xFF;', 'arm'),
     ('struct4',  'return struct4_va(1, mk_s4b()) & 0xFF;', 'arm'),
     ('struct8a', 'return struct8a_va(1, mk_s16a()) & 0xFF;', 'arm'),
@@ -279,13 +298,12 @@ CASES = [
 ]
 
 # Arguments a target cannot pass must be a build error, and that is asserted.
-REFUSE = [
-    # A composite wider than two words through `...` is implemented for ARM
-    # only: every other target builds a different argument image, where the
-    # inline words would be read as something else.  Refused, not miscompiled.
-    ('struct_refused', 'return xs3v(1, xmk()) & 0xFF;',
-     "passing a 12-byte structure through", 'struct'),
-]
+# Nothing is refused any more: a composite wider than two words through `...`
+# used to be an arm-only feature (riscv32 built a different argument image, so
+# the inline words would have been read as something else) and was a refusal
+# case here.  The riscv32 backend now lays the payload out as consecutive
+# argument words too, so it is the `struct12` result case above that guards it.
+REFUSE = []
 
 # A composite wider than two words for the refusal case above.
 STRUCT_SNIPPET = r'''

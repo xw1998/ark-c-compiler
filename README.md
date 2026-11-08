@@ -101,7 +101,7 @@
 | `__irq` | 是 | 中断序言 `PUSH {r0-r3,r12,lr}` / 结语 `POP {r0-r3,r12,pc}` |
 | `__weak` | 是 | `.weak <name>` |
 | `__naked` | 是 | 无序言/结语 |
-| `__packed` | 是 | 独立关键字形式 + `__attribute__((packed))` + 通过 `__packed` 指针非对齐访问 |
+| `__packed` | 是 | 独立关键字形式 + `__attribute__((packed))` + 通过 `__packed` 指针非对齐访问（逐字节 load-and-stitch，1/2/4/8 字节；ARM 与 RV32I 都做全 8 字节，不再只搬低 4 字节） |
 | `__align(n)` | 是 | 实际生效的对齐控制 |
 | `__at(addr)` | 是 | 绝对地址（同 `__attribute__((at(addr)))` / `#pragma location=`） |
 | `__forceinline` | 是 | 已解析（强制内联提示） |
@@ -193,7 +193,7 @@
 | 严格 AAPCS（>4 参数走栈） | 是 |
 | `setjmp/longjmp` 支持 | 是 |
 | `.init_array`/`.fini_array`（构造/析构函数） | 是 |
-| 通过 `__packed` 指针非对齐访问 | 是 |
+| 通过 `__packed` 指针非对齐访问 | 是（1/2/4/8 字节逐字节读写；8 字节先装配低字压栈、再装配高字压栈，与对齐路径的入栈顺序一致） |
 | 完整 DWARF 调试信息（`.file/.loc/.cfi_startproc/.size` + `.debug_info`/`.debug_abbrev`/`.debug_line`） | 是 |
 | TLS 线程局部存储（`.tbss`/`.tdata`） | 是 |
 | `--split_sections` 每函数一段（`.text.fn`） | 是 |
@@ -339,9 +339,10 @@ gcc 会把 NCRN 向上取到偶数再放，我们不做这个取整——因为 
   `extern void`/`extern long long` 调用压几个字。
 
 RV32I 剩下的是这个后端自己的边界，不是 va 特有的：它只从 a0-a7 传参（没有栈参数），
-也没有两字值模型，所以"超过 8 个参数字"和"64 位实参"都被**明确拒绝**（
-`stack arguments are not implemented` / `8-byte loads are not implemented`），不再像以前
-那样静默留下错值。
+所以"超过 8 个参数字"被**明确拒绝**（`stack arguments are not implemented`），不再像以前
+那样静默留下错值。64 位实参与变参里的 8 字节值都是真正的两个字（低字先压、高字压在上），
+`__packed` 指针的 1/2/4/8 字节非对齐访问也一律逐字节读写；>8 字节的聚合体穿 `...`
+按连续参数字铺开，读回时 `IR_LOAD_IDX` 的偏移是**元素下标**、由后端按元素宽度缩放。
 
 **变参的调用与 `__asm` 写法**：`__asm int printf(const char*, ...)` 那种"声明有 `...`、
 函数体是整段汇编"的写法不经过 va 区（`is_asm_func`），四个后端都照旧可用。float 实参
@@ -531,6 +532,7 @@ python tests/arm_exec/run_arm_exec.py                             # ARM 执行�
 python tests/asm_cases/run_asm_cmp.py                             # 汇编器对拍：arkc vs arm-none-eabi-as，含 --asm-extra 开关契约
 python tests/run_capacity_tests.py                                  # 容量门禁：120 对象 / 1200 头文件 / 520 条 -D / 129 条 -I（宿主不许有人为上限）
 python tests/run_rv_alloca_tests.py --rv-as <bin>                   # RV32I VLA 门禁：5 个用例与 gcc 对拍且各自断言硬编码期望值（两臂同时错也算错），覆盖早返回（尾声重建 sp）、两个 VLA、10 个栈参数（对齐）、`long long` VLA
+python tests/run_rv_packed_tests.py --rv-as <bin> [--arm-as <bin>]   # 非对齐访问门禁（RV32I + ARM，给 `--arm-as` 才跑 ARM 臂）：7 个用例 × 每臂，逐字节校验落点（不靠同一条通路回读自证）、2 字节符号扩展、奇数偏移不串扰、8 字节（`long long`，含负数）全 8 字节与高低字顺序
 python tests/run_regalloc_tests.py                                  # 寄存器分配门禁：关就是关 / 开确实改了 / unicorn 上答案不变，外加 volatile 与取地址两个负例要求文本逐字节不变
 python tests/arm_exec/run_arm_exec.py --extra=-fopt-regalloc        # 同一套执行级用例，打开寄存器分配再跑一遍
 python examples/run_va_gate.py --opt-suite --arm-as <bin> --rv-as <bin>  # 变参门禁五档开关全跑（默认/O2/regalloc/O2+regalloc/O2+regtop+inline+regalloc），任一组红即失败

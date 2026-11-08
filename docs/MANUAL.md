@@ -278,6 +278,7 @@ CPU 选择的实现位于 `include/cpu.h` + `src/cpu.c`，会根据 CPU 名字�
 | 强制类型转换 `(type)expr` | 是 | |
 | `sizeof(type)` / `sizeof expr` | 是 | 编译期求值 |
 | VLA 可变长度数组 | 是 | `int a[n]` 运行期 VLA，通过 `IR_ALLOCA` 在栈上分配；向上取整对齐：ARM / x86_64 取 8，RV32I 取 16（psABI 要求每次调用前 sp 16 字节对齐）。RV32I 的函数只要含 `IR_ALLOCA`，尾声就先 `sub sp, s0, frame_size` 把 sp 重建回固定帧底再弹帧，否则 `return` 会从错位处读 `ra`/`s0`。门禁：`tests/run_rv_alloca_tests.py --rv-as <bin>` |
+| `__packed` 非对齐访问 | 是 | 逐字节 load-and-stitch，1/2/4/8 字节全覆盖（ARM 与 RV32I）。8 字节即 `long long`/`double`：先装配低字压栈、再装配高字压栈，与对齐路径的入栈顺序一致。门禁：`tests/run_rv_packed_tests.py --rv-as <bin> [--arm-as <bin>]` |
 
 ### 4.2 字面量
 
@@ -1026,7 +1027,7 @@ A：目前仍是"单翻译单元"模型——多个 `.c` 文件通过 `#include`
 A：v0.8.0 已输出完整的 DWARF 段（`.debug_info`/`.debug_abbrev`/`.debug_line` + `.file/.loc/.cfi_startproc/.size`），可通过 `--dwarf2` 或 `--dwarf3` 选择版本。基本的行级调试可被 GDB 识别；变量值查看（`-print var`）暂未完全支持。
 
 **Q9：`__packed` 指针真的做非对齐访问吗？**
-A：是的。在 v0.8.0 中，`__packed` 指针（如 `__packed int *p`）会生成逐字节 load-and-stitch 代码，正确处理非对齐地址；违反对齐的普通指针属未定义行为。
+A：是的。`__packed` 指针（如 `__packed int *p`）会生成逐字节 load-and-stitch 代码，正确处理非对齐地址，1/2/4/8 字节都覆盖（ARM 与 RV32I 都做全 8 字节——早先 ARM 对 8 字节只搬低 4 字节，是静默短值，已修）。违反对齐的普通指针属未定义行为。
 
 **Q10：如何自举验证编译器？**
 A：项目提供 `bootstrap_build.ps1` 自举脚本：用 arkcc 编译自身 24 个源文件为 `.gen.c`，再用 gcc 编译为 `.o` 并链接得到 `arkcc_bootstrap.exe`；随后可继续用 `arkcc_bootstrap.exe` 编译一次自身，形成 bootstrap13/14/15 三代稳定自举。v0.8.0 已通过完整三代自举验证。
