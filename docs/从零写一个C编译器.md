@@ -8346,6 +8346,93 @@ moved registers: 1518 across 12 files
 路径，而临时文件名恰好含 `smc`，**检查被自己的文件名判成失败**。判据改成
 `SMC #`（指令 + 操作数前缀）后才只认指令。
 
+### D.1d 本轮第四轮：`_Complex` 变成真的可裁开关
+
+前三轮把"能编"和"编对"做完了，`_Complex` 却留了一个说不过去的尾巴：开关
+`ARKCC_FEATURE_COMPLEX` 只闸住 parser 的两处语法，机器后端的四字值通路
+（物化常量、取实/虚部、加宽、返回寄存器展开）**无条件编入**——板端固件因此
+长了 15.5 KB，而用户翻开关翻不动。这一轮把它做成真的开关。
+
+#### 为什么不是"插 40 处 `#if`"
+
+复数通路在 `irgen.c`（1700 行的 `irgen_expr`）与 `backend_arm.c`（3500 行的
+`codegen_arm`）里是**用位标和类型比较分支出来的**，不是独立函数。逐处 `#if`
+要动几十个 `if/else if` 链，改错一处就是静默走错分支。改用两件常量折叠：
+
+| 手法 | 闸门开 | 闸门关 |
+|---|---|---|
+| `IR_AUX_COMPLEX`（`include/ir.h`） | `0x800` | **`0`** |
+| `ARK_IS_CX(t)`（`include/type.h`） | `((t)->kind == TYPE_COMPLEX)` | **`0`** |
+
+位标拼成 0 之后，每一处 `I->aux & IR_AUX_COMPLEX` 都折成 `if (0)`，整块连同
+它调用的 `arm_cplx_push4/addsub/mul/div/cmp` 一起被丢掉（`-Wno-unused-function`
+保证不刷告警）。类型比较折成常量 0 之后，`kind == TYPE_COMPLEX` 的那些分支同样
+消失，而且**闸门开时的输出逐字节不变**——折叠只在关的时候起作用。
+
+这条推理的合法性靠一个前提：**闸门关时 parser 拒收 `_Complex`**，所以
+`TYPE_COMPLEX` 类型的对象根本不可能出现，被折掉的块本来就不可达。parser 里
+那条拒绝写成了双档：
+
+```c
+#if ARKCC_FEATURE_COMPLEX
+    if (g_config.enable_complex) complex_pending = 1;
+    else perror_at(p, "`_Complex` is switched off by the run-time configuration (complex=0)");
+#else
+    perror_at(p, "`_Complex` is not available in this build: it was configured out "
+                 "(ARKCC_FEATURE_COMPLEX=0)");
+#endif
+```
+
+顺带修掉一个**静默错答案**：运行期 `-fno-complex` 以前是*忽略*关键字，
+`double _Complex z` 被当成 `double z` 编过去；现在报错。这是本条唯一一处
+闸门开时也变大的地方（+88 B），属于有意新增。
+
+#### 剩下那部分只能手写 `#if`
+
+折叠只能吃掉"位测试"和"类型比较"。有四条通路是**值驱动**的，编译器看不出常量：
+
+| 位置 | 为什么折不掉 | 处理 |
+|---|---|---|
+| `sema.c` 的 `eval_const_cexpr` | 整个函数就是复数常量求值 | `#if` 包住定义；调用点本来只在一处 |
+| `irgen.c` 的 `irgen_try_complex_init` | 同上 | `#if` 包住定义，五个调用点改成 `#if ARKCC_FEATURE_FCONST_FOLD && ARKCC_FEATURE_COMPLEX` 只包那一句 `if`，`else` 留在外面，`else if` 链保持合法 |
+| 各后端的 `int cplx_ret = (int)((I->val >> 34) & 3)` | 从 IR 载荷里取，不是常量 | 关档时改成 `const int cplx_ret = 0`，它下面的两个 `cplx_ret == n` 分支自己折掉（ARM 与 RV32I 各一处） |
+| `irgen.c` 的复数常量池发射、`ir.c` 的 `ir_program_add_complex` | `prog->complex_count > 0` 恒假但字段还在 | 保留（体积可忽略），靠 `if (0)` 的调用点消失 |
+
+#### 实测
+
+| 口径 | 闸门开 | 闸门关 | 差 |
+|---|---|---|---|
+| H743 固件 `text`（`ARKRTOS_TEST`） | 438 812 | 424 988 | **−13 824 B** |
+| 同上 FLASH 占用 | 84.13% | 81.49% | −2.64 pp |
+| 同上 `data` / `bss` | 2 260 / 463 532 | 2 260 / 463 532 | 不变 |
+| 宿主 x86-64（四后端全编） | 556 740 | 535 484 | −21 256 B |
+| ARM 目标集（逐文件 `-c` 后 `size` 求和） | 246 554 | 232 926 | −13 628 B |
+
+逐目标文件（ARM 目标集）：`backend_arm.o −8 664`、`irgen.o −4 264`、
+`sema.o −608`、`parser.o −92`。
+
+**跟历史 `+15 560 B` 差约 1.7 KB，这 1.7 KB 不追。** 原因是那份增量按"整个
+复数特性带来的增长"算，其中有一部分是**双精度通路和常量序列化**，它们同时服务
+`double`，闸门关不掉；再加上 `init_is_complex` 字段的接线与上面那 +88 B 的新
+诊断。宁可报一个能复算的 −13 824，也不把"未回收"写成"已收回"。
+
+#### 门禁
+
+`tests/run_complex_gate.py` 把两档二进制**同时**摆进来验，防的是这类开关最常见
+的失败方向——**假绿**：宏拼错、头文件没包含、`-D` 没到编译行，结果"裁剪档"和
+全量档逐字节相同，而所有语义测试照样全绿。
+
+| 检查 | 判据 |
+|---|---|
+| `full/accepts-complex` | 全量档编 `_Complex` 程序必须成功（正控制） |
+| `trimmed/rejects-complex` | 裁剪档必须失败 |
+| `trimmed/reason-is-configured-out` | 失败原因必须是那句 `is not available in this build`，不是别的语法错 |
+| `trimmed/not-a-crash` | 输出里不得有信号/段错误字样 |
+| `trimmed/accepts-plain-C` | 裁剪档必须照收普通 C（没有误伤） |
+| `both/plain-asm-identical` | 不含 `_Complex` 的源在两档下**汇编文本逐字节相同**（"默认关 = 零变化"的落地证据） |
+| `full/-fno-complex-is-an-error` | 运行期开关必须报错而不是静默忽略 |
+| `selfcheck/plain-build-has-no-config-msg` | 自检的自检：普通源里不得出现裁剪档那句文案，证明上一条的字符串匹配确实有分辨力 |
+
 ### D.2 仍然存在（五项）
 
 | 限制 | 症状 | 现在的对策 |
@@ -8402,6 +8489,7 @@ moved registers: 1518 across 12 files
 | `ARKCC_FEATURE_BUILD_TIME` | `--build-date` `--build-time` `--source-date-epoch` | 开 | `__DATE__`/`__TIME__` 回到固定值（板端本来就是固定值） |
 | `ARKCC_FEATURE_MACRO_REDEF_CHECK` | （无） | 开 | 同名宏重定义重新变成静默覆盖，C99 6.10.3p2 的告警消失 |
 | `ARKCC_FEATURE_MACRO_BODY_DYN` | （无） | 开 | 宏替换文本回到固定的栈缓冲上限，超长宏被截断（有警告 `macro '<名>' body truncated at N bytes`） |
+| `ARKCC_FEATURE_COMPLEX` | `-fno-complex` | 开 | `_Complex` 整体编不进来：parser 硬报"is not available in this build"；机器后端的四字值通路（物化/取实虚部/加宽/返回展开）与 `irgen` 的复数分支一起消失。H743 固件 text 438812→424988（−13 824 B，FLASH 84.13%→81.49%），data/bss 不变；宿主四后端全编 −21 256 B。闸门开时输出逐字节不变，唯一例外是本轮新增的运行期 `-fno-complex` 报错（+88 B）——它以前是静默忽略关键字，属于错答案修复 |
 | `ARKCC_MAX_INC_FILES`（数值，不是开关） | （无） | 宿主 1024 / 板端 64 | 调小会让依赖文件更早不完整（超限仍会告警一次） |
 
 三条纪律，写在这里是给以后加开关的人看的：

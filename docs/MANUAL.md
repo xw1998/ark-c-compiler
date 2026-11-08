@@ -677,6 +677,8 @@ RV32I 早先的做法更隐蔽：把**被调方帧里的地址**放进 `a0`。�
 门禁：`python tests/run_complex_tests.py --arm-as <bin> --arm-libgcc <libgcc.a> --rv-as <bin>`，
 38 个用例 × 2 目标（ARM 与 RV32I 各自 as→链接→unicorn 真跑，比的是**运行退出码**而不是"有没有报错"）。
 软浮 helper（ARM `__aeabi_f2d`/`__aeabi_d2f`，RV `__extendsfdf2`/`__truncdfsf2`）来自 libgcc，**必须链运行库**。
+裁剪档门禁：`python tests/run_complex_gate.py --arkcc <全量二进制> --arkcc-off <ARKCC_FEATURE_COMPLEX=0 的二进制>` ——
+同时验"全量接受 / 裁剪档带原因地拒绝 / 裁剪档照收普通 C / 不含 `_Complex` 的源两档汇编逐字节相同 / `-fno-complex` 报错"。
 
 ## 5 多后端架构
 
@@ -1424,12 +1426,37 @@ v0.8.0 已实现完整的 C99 集合 + 98% 以上的 armcc 常用扩展，仅剩
 - **复数不走 sret、也不许穿过 `...`**：16 字节的 `_Complex double` 用返回值寄存器（ARM `r0-r3`、
   RV32I `a0-a3`），sret 只留给 size > 8 的 struct/union；穿过 `...` 传复数在调用点直接报错，
   因为 `va_arg` 只能按连续参数字走、被调方没有类型信息。完整矩阵见 4.10。
-- **复数支持让板端固件长了 15.5 KB**：H743 的 ARKCC 组件（不含 App）实测
-  `text 412972 → 428532`（+15 560 B，FLASH 79.20% → 82.17%），`data +4`、`bss -4`；
-  逐目标文件：`backend_arm.o +11 538`、`irgen.o +3 411`、`sema.o +568`、`parser.o +24`、
-  `ir.o +4`、`compiler.o +8`。原因是 `ARKCC_FEATURE_COMPLEX` 目前只闸住 parser 的两处语法，
-  机器后端的四字值通路（物化/取实虚部/加宽/返回寄存器展开）**无条件编入**；
-  要按档裁剪需给 irgen 与四个后端补闸门，这件事登记为欠账而不是在这里声称"可关"。
+- **`_Complex` 现在是真的可以裁掉的**（`ARKCC_FEATURE_COMPLEX=0`）：
+  早先 `+15 560 B` 的板端增量里，机器后端的四字值通路是无条件编入的，只有一个位标
+  `IR_AUX_COMPLEX` 在标记它；那个位现在按档拼接——闸门关时 `IR_AUX_COMPLEX` 展开成
+  常量 `0`，于是每一处 `I->aux & IR_AUX_COMPLEX` 都折成 `if (0)`，整块连同它调用的
+  `arm_cplx_*` 静态辅助函数一起被丢弃。同理 `ARK_IS_CX(t)` 在闸门关时展开成常量 `0`，
+  把 1700 行的 `irgen_expr` 与 3500 行的 `codegen_arm` 里 `kind == TYPE_COMPLEX` 的比较
+  折掉，不必插 40 处 `#if`。剩下的 value 驱动路径（复数常量池、复数返回形状 `cplx_ret`、
+  复数全局初值、`eval_const_cexpr`、`irgen_try_complex_init`）用 `#if` 直接包裹。
+  闸门关时 parser 对 `_Complex` **硬报错**（`is not available in this build: it was
+  configured out`），所以"闸门关时不可能出现 TYPE_COMPLEX"是闭合的，被折掉的块本来
+  就不可达。
+  - 实测（H743 固件，`ARKRTOS_TEST`，`-DARKCC_FEATURE_COMPLEX=0` 走 `OPTFLAGS`，
+    其余编译选项逐字不变）：`text 438 812 → 424 988`（**−13 824 B**，FLASH 84.13% → 81.49%），
+    `data 2 260`/`bss 463 532` 均不变。
+  - 宿主 x86-64（四个后端全编）：`text 556 740 → 535 484`（−21 256 B）。
+  - ARM 目标集（与固件同一套 `STM32_CFLAGS`，逐文件 `-c` 后 `size` 求和）：
+    `246 554 → 232 926`（−13 628 B）；逐目标 `backend_arm.o −8 664`、`irgen.o −4 264`、
+    `sema.o −608`、`parser.o −92`。
+  - 与历史 `+15 560 B` 的差额（约 1.7 KB）是**共用的双精度通路与常量序列化**——
+    它们同时服务 `double`，闸门关不掉；再加上 `init_is_complex` 字段的接线、
+    以及本轮新增的运行期诊断（见下一条，+88 B）。这里不把"−13 824"说成"−15 560"。
+  - **行为变化**：运行期 `-fno-complex` 以前是**忽略** `_Complex` 关键字，
+    `double _Complex z` 静默变成 `double z`（错答案）；现在报
+    `` `_Complex` is switched off by the run-time configuration (complex=0) ``。
+    这 +88 B 是本轮有意新增的。
+  - 默认值仍是 **1**（宿主 / 交叉 / 板端一致）。翻转默认属于行为变更，
+    要与实测体积一起发布，所以这里只提供开关、不改默认。
+  - 门禁：`tests/run_complex_gate.py --arkcc <全量> --arkcc-off <裁剪>` 同时钉住
+    五件事——全量接受 `_Complex`、裁剪档**带原因地**拒绝、裁剪档照收普通 C、
+    不含 `_Complex` 的源在两档下汇编文本**逐字节相同**、`-fno-complex` 报错而非忽略
+    （另带一条"自检的自检"：普通源不得出现裁剪档的那句文案）。
 - **一次调用的实参上限 64 个**：各后端的实参表停在 64，第 65 个起过去是静默丢弃，
   现在 `irgen` 直接报错；ARM 的总参数字上限 192（超过由后端报错，不截断）。
 

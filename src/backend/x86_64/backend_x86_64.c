@@ -519,7 +519,7 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
             /* The x86_64 backend does not implement _Complex at all; a global
              * of that type must not quietly get its real part written as one
              * .quad and the imaginary half dropped. */
-            if (g->type && g->type->kind == TYPE_COMPLEX) {
+            if (g->type && ARK_IS_CX(g->type)) {
                 x86_complex_unsupported(&buf, "global object");
                 asmbuf_puts(&buf, "    .zero ");
                 asmbuf_int(&buf, g->type && type_size(g->type) > 0 ? type_size(g->type) : 16);

@@ -2108,7 +2108,14 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                      * 8-byte _Complex float (a0 = re32, a1 = im32),
                      * 2 = the 16-byte _Complex double (a0..a3 = re_lo, re_hi,
                      * im_lo, im_hi -- see IR_RETURN above). */
+#if ARKCC_FEATURE_COMPLEX
                     int cplx_ret    = (int)((I->val >> 34) & 3);
+#else
+                    /* ARKCC_FEATURE_COMPLEX=0: irgen never stamps a complex
+                     * return shape, so both `cplx_ret == n` branches below are dead
+                     * and fold away. */
+                    const int cplx_ret = 0;
+#endif /* ARKCC_FEATURE_COMPLEX */
                     /* bit 36 (+ the payload size in bits 37..52): the result is
                      * a composite wider than two words, which comes back
                      * through a buffer in this frame -- its address goes out in
@@ -2291,7 +2298,7 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                      * the value as re_hi, re_lo, im_hi, im_lo (top first),
                      * which is not the object order -- hence the explicit
                      * word-by-word moves. */
-                    if (f->ret_type && f->ret_type->kind == TYPE_COMPLEX &&
+                    if (f->ret_type && ARK_IS_CX(f->ret_type) &&
                         type_size(f->ret_type) == 8) {
                         asmbuf_puts(&buf, "    addi sp, sp, -8\n");
                         /* value now at 8..23: [8]=re_hi [12]=re_lo [16]=im_hi [20]=im_lo */
@@ -2303,7 +2310,7 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                         rv_pilogue(&buf, sp_size, has_alloca);
                         break;
                     }
-                    if (f->ret_type && f->ret_type->kind == TYPE_COMPLEX &&
+                    if (f->ret_type && ARK_IS_CX(f->ret_type) &&
                         type_size(f->ret_type) > 8) {
                         asmbuf_puts(&buf, "    lw a0, 4(sp)\n"
                                           "    lw a1, 0(sp)\n"
