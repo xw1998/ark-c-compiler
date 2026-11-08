@@ -8433,6 +8433,53 @@ moved registers: 1518 across 12 files
 | `full/-fno-complex-is-an-error` | 运行期开关必须报错而不是静默忽略 |
 | `selfcheck/plain-build-has-no-config-msg` | 自检的自检：普通源里不得出现裁剪档那句文案，证明上一条的字符串匹配确实有分辨力 |
 
+### D.1e 本轮第五轮：块作用域的多余初值不再是"静默丢弃"
+
+`int b[2] = {1, 2, 3};` 写在函数里时，C99 6.7.9p2 说这是约束违反，必须给诊断。
+GCC/Clang 的做法是**警告并忽略多余元素**。arkcc 以前分两种：
+
+* **文件作用域**：报 `cannot turn the initialiser of the global 'a' into data`，
+  诊断正确（不产数据），但文案说的是"转不成数据"，不是"你多给了一个值"。
+* **块作用域**：多余元素**被直接丢掉，一句提示都没有**。这是"宁可报错也不给
+  错答案"最不能容忍的形态——结论本身不假，但用户以为自己写了三个元素。
+
+本轮只修第二种。做法是给 `LocalAggWalk` 加一个 `int *excess` 共享标志：嵌套走查
+（`lw_object` 为子 aggregate 新建的 `sub`）把指针复制下去，于是
+`int b[2][2] = {1,2,3,4,5}` 这种"里层越界"的形态也只警告一次，而不是每行一次。
+数组分支在 `cur >= len` 处、结构分支在"所有成员都填满"处触发：
+
+```c
+static void lw_warn_excess(LocalAggWalk *w, int cap, int is_array) {
+    char nb[12];
+    if (!w->excess || *w->excess) return;
+    *w->excess = 1;
+    diag_tool(DIAG_SEV_WARNING, "arkcc",
+              "excess elements in the initialiser are ignored: the %s "
+              "holds only %d", is_array ? "array" : "object",
+              diag_num(nb, cap), 0, 0, 0, 0);
+}
+```
+
+三处细节值得记下来：
+
+* 结构分支要先把成员链表走一遍数出 `nf`，因为那里的 `f` 只是"还有没有成员可填"
+  的游标，不是成员总数。
+* 花括号省略（`int b[2][2] = {1,2,3,4}`）**不能**误报：那种写法走的是
+  `!braced` 的早退分支，它本来就只表示"这一层到此为止"。
+* `diag_tool` 的签名是 `(sev, object, msg, a0..a5)`——六个字符串。数字必须先用
+  `diag_num(buf, v)` 渲染成字符串，直接传 `int` 会段错误（本轮踩过，`rc=139`）。
+
+**写入的字节一个没动**，只是补上了缺失的诊断。代价是诊断文本本身：
+
+| 口径 | 改前 | 改后 | 差 |
+|---|---|---|---|
+| 宿主 x86-64 `text` | 556 740 | 557 100 | +360 B |
+| H743 固件 `text` | 438 812 | 439 060 | +248 B |
+
+全局那条旧文案**有意不改**：`ark_agg_fill_ex` 是文本驱动的走查，要分清"多余"
+和"这个形态不支持"得穿透十几处 `return -1`，风险大于收益，留在 `MANUAL.md`
+的已知项里。
+
 ### D.2 仍然存在（五项）
 
 | 限制 | 症状 | 现在的对策 |

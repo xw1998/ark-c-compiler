@@ -630,7 +630,11 @@ constant expression`），再把外层形参表挂到指针类型上。
 - **标量给了多个值**：`int x = { 5, 6 };` 报 `has too many values: a scalar takes exactly one`
   （块作用域同）；`double _Complex z = {3.0, 4.0};` 报 `is a scalar; '{re, im}' is not a
   brace-elided form` —— 标量初值只能是一个表达式，GCC 只警告并丢掉虚部，这个错答案不照抄；
-- **数组／结构给了多余的值**：`int a[2] = {1,2,3}` 仍报 `cannot turn the initialiser ... into data`
+- **数组／结构给了多余的值**：块作用域以前**静默丢弃**多余元素、没有任何诊断；现已改为
+  GCC 风格的警告 `excess elements in the initialiser are ignored: the array holds only 2`
+  （结构体为 `the object holds only N`），只警告一次、`rc=0`，**写入的字节不变**（新增诊断代价
+  官方计账：宿主 `text 556 740 → 557 100`，H743 固件 `text 438 812 → 439 060`）。
+  全局 `int a[2] = {1,2,3}` 仍报 `cannot turn the initialiser ... into data`
   （诊断正确但不是最贴切的文案，属已知项）。
 
 **struct/union（> 8 字节）返回值：两个机器后端都走 sret（隐藏缓冲指针）**
