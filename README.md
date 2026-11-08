@@ -278,7 +278,37 @@
 镜像：未知助记符；分支超出 `beq/bne/blt/bge/bltu/bgeu` 的 ±4 KB（`jal/j` ±1 MB）；
 **引用本翻译单元没有定义的符号**（`a flat image has no linker to fill it in`）——
 留着一条半写的 `auipc` 让程序跳到镜像外、编译还 exit 0，正是这个项目不允许的静默
-错答案。`-c`（ARKOBJ2 对象）与 `-link` 仍然只有 ARM 支持，RV 的跨对象链接还没做。
+错答案。
+
+**RV32I 的对象模式（`-target riscv32 -c x.c -o x.ark_obj` + `-link`）**：`-c` 产出的是
+ARKOBJ2 对象，但对象体里装的是**已汇编好的机器码**（不是汇编文本），跨对象的引用
+留给链接器回填。RV32I 的 `la sym` / `call sym` 都是 `auipc`+`addi|jalr` 这种成对指令，
+两条指令合起来才决定低 12 位写到哪，所以重定位按**对**记录（`RV_RELOC_AUIPC`，8 字节）；
+`.word sym` 要的是绝对地址，单独一种（`RV_RELOC_ABS32`）。只改写 `auipc` 的上 20 位是
+不够的——`auipc` 的立即数会被左移 12 位，低位的进位必须跟着改到后一条指令里，这也是
+为什么两处必须一起算。
+
+对象内部一律用 PC 相对寻址，所以**每个对象可以落在镜像的任意偏移**：链接器把各对象
+按 16 字节对齐依次串联，对象内部的引用天然成立，只有表里的跨对象项需要打补丁。
+唯一走不通的是**跨对象分支**（RV32I 没有可重定位的 32 位分支形式），这种写法直接报错
+并建议改成函数调用——报错比造半个答案诚实。
+
+导出边界由**导出表**决定：只有被 `.globl`/`.weak` 命名的标签（C 侧即非 `static`
+的定义）才能跨对象被引用。不这样做的话，两个翻译单元各自的 `static helper` 会在链接时
+撞名，而链接器的策略是"重复的强符号取第一个"——那会把 A 文件的 static helper 静默
+绑进 B 文件的调用里，正是又一个静默错答案。
+
+对象带 ISA 描述符（`__arkcc_isa_riscv32`），链接时双向校验：`-target riscv32` 链接的
+对象必须是 RV，RV 对象也必须在 `-target riscv32` 下链接。少了这一步，一条
+`arkcc -link rv.obj` 会走 ARM 的重定位路径，把 Thumb 分支编码写进 RISC-V 镜像还 exit 0。
+`-v` 会打 `[link] object N: base 0x...`，配合 `ARKCC_DUMP_SYMS` 才能把"对象内偏移"
+换算成地址——扁平镜像自身没有符号表。
+
+已知边界：**跨翻译单元的函数指针全局初始化器**（`int (*gp)(void) = f;`）RV 后端目前
+直接报错（`cannot turn the initialiser of the global 'gp' into data`），这是既有限制；
+只用手写汇编时 `.word f` 可以（`RV_RELOC_ABS32`）。另外链接器对**重复的强符号**仍是
+警告 + 取第一个（ARM 同此策略，本轮未改），所以在 C 层面重复定义一个非 `static` 的
+全局函数/变量不会被拒。
 
 `li` 立即数接受整个无符号 32 位范围（`li t0, 4294967295` 就是 -1，与 GNU as 一致），
 超出 32 位才报错。
@@ -296,7 +326,7 @@
 | **ARM Thumb-2** | STM32 Cortex-M（默认，含软浮/硬件 FPU + 段分离 + 双精度桩 + AAPCS + 完整 DWARF + TLS + split_sections + scatter） |
 | **C 源码** | 宿主测试主路径（IR -> 可读 C，完整支持内联汇编操作数透传） |
 | **x86** | i386 cdecl，输出 GAS 汇编（`-target` 亦接受别名 `x86_64`/`x86-64`/`i386`/`i686`） |
-| **RV32I** | 输出 RV32I 汇编，并自带扁平镜像汇编器（`arkcc -target riscv32 x.c -o x.bin` 到 0x08000000，不需要外部 `as`/`ld`） |
+| **RV32I** | 输出 RV32I 汇编，并自带扁平镜像汇编器与对象路径（`arkcc -target riscv32 x.c -o x.bin` 直接出 0x08000000 的整张镜像；`-c`/`-link` 出机器码对象再串联，不需要外部 `as`/`ld`） |
 
 **各后端的能力不是同一张表：`stdarg.h` 有两条互不兼容的走法。**
 
@@ -589,6 +619,7 @@ python tests/run_rv_float_tests.py --arm-as <bin> --arm-libgcc <libgcc.a> --rv-a
 python tests/run_capacity_tests.py                                  # 容量门禁：120 对象 / 1200 头文件 / 520 条 -D / 129 条 -I（宿主不许有人为上限）
 python tests/run_rv_alloca_tests.py --rv-as <bin>                   # RV32I VLA 门禁：5 个用例与 gcc 对拍且各自断言硬编码期望值（两臂同时错也算错），覆盖早返回（尾声重建 sp）、两个 VLA、10 个栈参数（对齐）、`long long` VLA
 python tests/run_rv_image_tests.py [--rv-as <bin>]                   # RV32I 扁平镜像门禁（8 例）：编译成镜像 → 在 RISCV32 unicorn 上跑 `main` 比对硬编码期望值；校验镜像尾部就是最后一节的内容（不许有多余对齐填充）；三条拒绝用例（未知助记符 / 分支越界 / 未定义外部符号）必须失败且**不产镜像**；给 `--rv-as` 时再用对齐布局的链接脚本让 GNU as/ld 产一份参考镜像，要求逐字节相同
+python tests/run_rv_link_tests.py                                 # RV32I 对象模式门禁（6 例 + 3 拒绝 + 自检）：`-c` 出机器码对象、`-link` 串成一张镜像；跨 TU 调用 / extern 全局 / 跨对象读数组 / 两个 TU 各自的 `static helper` 不许撞名 / `.word sym` 绝对地址 / 三对象。未解析符号、跨对象分支、RV 对象缺 `-target riscv32` 必须失败且**不产镜像**；每个用例都在 riscv32 unicorn 上跑 `main` 比对硬编码值，另含"改了运算符必须看见不同答案"的自检
 python tests/run_rv_packed_tests.py --rv-as <bin> [--arm-as <bin>]   # 非对齐访问门禁（RV32I + ARM，给 `--arm-as` 才跑 ARM 臂）：7 个用例 × 每臂，逐字节校验落点（不靠同一条通路回读自证）、2 字节符号扩展、奇数偏移不串扰、8 字节（`long long`，含负数）全 8 字节与高低字顺序
 python tests/run_regalloc_tests.py                                  # 寄存器分配门禁：关就是关 / 开确实改了 / unicorn 上答案不变，外加 volatile 与取地址两个负例要求文本逐字节不变
 python tests/arm_exec/run_arm_exec.py --extra=-fopt-regalloc        # 同一套执行级用例，打开寄存器分配再跑一遍

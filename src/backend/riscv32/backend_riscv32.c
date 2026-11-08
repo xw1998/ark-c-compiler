@@ -453,9 +453,17 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
             sp_size = (sp_size + 15) & ~15;
         }
 
-        asmbuf_puts(&buf, "    .globl ");
-        asmbuf_puts(&buf, f->name);
-        asmbuf_putc(&buf, '\n');
+        /* A file-scope `static` function is not a link symbol.  A flat image
+         * never noticed the difference -- `.globl` is decoration when nothing
+         * links -- but `-c` must be honest about it: two translation units that
+         * each contain `static int helper(void)` would otherwise collide at
+         * -link with a duplicate-definition error that the source never
+         * implies. */
+        if (!f->is_static) {
+            asmbuf_puts(&buf, f->is_weak ? "    .weak " : "    .globl ");
+            asmbuf_puts(&buf, f->name);
+            asmbuf_putc(&buf, '\n');
+        }
         asmbuf_puts(&buf, f->name);
         asmbuf_puts(&buf, ":\n");
         rv_sp_adj(&buf, sp_size, 0);
@@ -1678,6 +1686,39 @@ typedef struct RvLabel {
     int   num;       /* -1 for a named label, else the numeric label's value */
 } RvLabel;
 
+/* ---- object mode (-c) --------------------------------------------------
+ * A flat image has no linker, so an undefined symbol is an error.  `-c` emits
+ * an ARKOBJ2 object instead, where such a reference becomes a relocation the
+ * -link driver fills in.  Two kinds cover everything this emitter produces:
+ *
+ *   RV_RELOC_AUIPC (13): an `auipc rd, hi20` + `addi/jalr rd, rd, lo12` pair
+ *       starting at `off`.  At link time d = S - (base + off); the linker
+ *       rewrites hi20 as (d + 0x800) >> 12 and lo12 as d - (hi20 << 12).
+ *       The displacement is recomputed from the real site, never from an
+ *       assembler-time guess, so the two instructions stay where they are.
+ *   RV_RELOC_ABS32 (14): a 4-byte absolute address (`.word sym`).  The value
+ *       written is image_base + S: a data word carries the address itself, so
+ *       there is no base to subtract.
+ *
+ * A branch (beq/j/jal) to a symbol outside the unit stays an error: its payload
+ * is a PC-relative distance limited to +-4 KB / +-1 MB and RV32I has no
+ * "materialise then jump" form the assembler could retarget afterwards.
+ *
+ * Only labels named by `.globl`/`.weak` are exported.  That is what keeps two
+ * translation units that both contain `static int helper(void)` from colliding
+ * at -link, and it is why the emitter now says so instead of gluing `.globl`
+ * onto every function. */
+typedef struct RvReloc {
+    int  off;
+    int  type;
+    char name[96];
+} RvReloc;
+
+typedef struct RvExport {
+    char name[96];
+    int  weak;
+} RvExport;
+
 typedef struct RvAsm {
     const char    *src;
     unsigned char *out;
@@ -1692,6 +1733,11 @@ typedef struct RvAsm {
     int            line;
     int            emit;   /* 0 = pass 1 (measure), 1 = pass 2 (encode) */
     int            seen;   /* label definitions met so far in pass 2 */
+    int            obj;    /* 1 = -c: undefined symbols become relocations */
+    RvReloc       *relocs;
+    int            reloc_count, reloc_cap;
+    RvExport      *exports;   /* names declared by .globl / .weak */
+    int            export_count, export_cap;
 } RvAsm;
 
 static int rv_a_alpha(int c) {
@@ -1737,6 +1783,66 @@ static void rv_add_label(RvAsm *a, const char *name, int num) {
     a->labels[a->label_count].off = a->sec_pc[a->cur_sec];
     a->labels[a->label_count].num = num;
     a->label_count++;
+}
+
+/* Offset of the current position inside the object/blob. This is the
+ * coordinate relocations are recorded in: the linker adds the object's base,
+ * so RV_IMAGE_BASE must not be in it (it cancels on both sides of a PC-relative
+ * displacement, and a .word gets it added explicitly). */
+static int rv_here_off(RvAsm *a) {
+    return a->sec_base[a->cur_sec] + a->sec_pc[a->cur_sec];
+}
+
+static void rv_add_reloc(RvAsm *a, const char *name, int off, int type) {
+    int k;
+    if (a->reloc_count >= a->reloc_cap) {
+        int nc = a->reloc_cap == 0 ? 16 : a->reloc_cap * 2;
+        a->relocs = (RvReloc *)mem_realloc(a->relocs,
+            a->reloc_cap * (int)sizeof(RvReloc),
+            nc * (int)sizeof(RvReloc));
+        a->reloc_cap = nc;
+    }
+    a->relocs[a->reloc_count].off  = off;
+    a->relocs[a->reloc_count].type = type;
+    for (k = 0; k < (int)sizeof(a->relocs[0].name) - 1 && name[k]; k++)
+        a->relocs[a->reloc_count].name[k] = name[k];
+    a->relocs[a->reloc_count].name[k] = 0;
+    a->reloc_count++;
+}
+
+/* .globl / .weak both run in pass 1 and pass 2, so the same name arrives
+ * twice; a second declaration only ever upgrades local -> weak -> strong in
+ * practice being impossible (the emitter says one thing per symbol), so the
+ * first entry wins except for the weak flag, which a repeat must not clobber. */
+static void rv_add_export(RvAsm *a, const char *name, int weak) {
+    int k, n;
+    for (k = 0; k < a->export_count; k++)
+        if (rv_streq_(a->exports[k].name, name)) {
+            if (!weak) a->exports[k].weak = 0;
+            return;
+        }
+    if (a->export_count >= a->export_cap) {
+        int nc = a->export_cap == 0 ? 16 : a->export_cap * 2;
+        a->exports = (RvExport *)mem_realloc(a->exports,
+            a->export_cap * (int)sizeof(RvExport),
+            nc * (int)sizeof(RvExport));
+        a->export_cap = nc;
+    }
+    n = a->export_count++;
+    for (k = 0; k < (int)sizeof(a->exports[0].name) - 1 && name[k]; k++)
+        a->exports[n].name[k] = name[k];
+    a->exports[n].name[k] = 0;
+    a->exports[n].weak = weak;
+}
+
+static int rv_exported(RvAsm *a, const char *name, int *weak) {
+    int k;
+    for (k = 0; k < a->export_count; k++)
+        if (rv_streq_(a->exports[k].name, name)) {
+            if (weak) *weak = a->exports[k].weak;
+            return 1;
+        }
+    return 0;
 }
 
 /* Absolute address of a named label, or -1 when this unit does not define it. */
@@ -2074,6 +2180,18 @@ static void rv_insn(RvAsm *a, const char **pp) {
         if (!a->emit) { rv_advance(a, 8); *pp = p; return; }
         addr = rv_sym_addr(a, sym, dir);
         if (addr < 0) {
+            if (a->obj && dir == 0) {
+                /* Object mode: record the site and emit a zero displacement.
+                 * A zero here is not a wrong answer -- it is an unrelocated
+                 * site, and -link refuses to write an image while one is left
+                 * (or while the symbol it names is missing). */
+                rv_add_reloc(a, sym, rv_here_off(a), RV_RELOC_AUIPC);
+                rv_ins(a, rv_enc_u(0, rd, RV_OP_AUIPC));
+                if (is_call) rv_ins(a, rv_enc_i(0, rd, 0, rd, RV_OP_JALR));
+                else         rv_ins(a, rv_enc_i(0, rd, 0, rd, RV_OP_IMM));
+                *pp = p;
+                return;
+            }
             rv_error(a, "line %s: '%s' is not a symbol this translation unit "
                         "defines; a flat image has no linker to fill it in", sym, "");
             return;
@@ -2151,8 +2269,14 @@ static void rv_insn(RvAsm *a, const char **pp) {
         if (!a->emit) { rv_advance(a, 4); *pp = p; return; }
         addr = rv_sym_addr(a, sym, dir);
         if (addr < 0) {
-            rv_error(a, "line %s: '%s' is not a label this translation unit defines",
-                     sym, "");
+            if (a->obj && dir == 0)
+                rv_error(a, "line %s: the branch to '%s' cannot cross objects: "
+                            "RV32I encodes it as a PC-relative distance, so the "
+                            "target has to be defined in this translation unit "
+                            "(call it as a function instead)", sym, "");
+            else
+                rv_error(a, "line %s: '%s' is not a label this translation unit "
+                            "defines", sym, "");
             return;
         }
         rel = addr - rv_here(a);
@@ -2429,10 +2553,30 @@ static void rv_directive(RvAsm *a, const char **pp) {
         *pp = p;
         return;
     }
-    if (rv_streq_(d, "globl") || rv_streq_(d, "global") || rv_streq_(d, "weak") ||
-        rv_streq_(d, "type") || rv_streq_(d, "size") || rv_streq_(d, "option") ||
+    if (rv_streq_(d, "globl") || rv_streq_(d, "global")) {
+        /* A flat image ignores this (nothing links, so every label is
+         * reachable); -c keeps it, because it is the only statement the text
+         * makes about which labels leave the translation unit. */
+        if (rv_read_ident(&p, sym, (int)sizeof(sym)) == 0) {
+            rv_error(a, "line %s: '.%s' needs a symbol name", d, "");
+            return;
+        }
+        rv_add_export(a, sym, 0);
+        *pp = p;
+        return;
+    }
+    if (rv_streq_(d, "weak")) {
+        if (rv_read_ident(&p, sym, (int)sizeof(sym)) == 0) {
+            rv_error(a, "line %s: '.weak' needs a symbol name", "", "");
+            return;
+        }
+        rv_add_export(a, sym, 1);
+        *pp = p;
+        return;
+    }
+    if (rv_streq_(d, "type") || rv_streq_(d, "size") || rv_streq_(d, "option") ||
         rv_streq_(d, "file") || rv_streq_(d, "ident")) {
-        /* nothing to do in a flat image */
+        /* nothing a flat image or an ARKOBJ2 object needs */
         *pp = p;
         return;
     }
@@ -2501,15 +2645,22 @@ static void rv_directive(RvAsm *a, const char **pp) {
                     rv_advance(a, 4);
                 } else {
                     addr = rv_sym_addr(a, sym, dir);
-                    if (addr < 0) {
+                    if (addr < 0 && a->obj && dir == 0) {
+                        /* .word sym in an object is an absolute address the
+                         * linker writes once the symbol has one. */
+                        rv_add_reloc(a, sym, rv_here_off(a), RV_RELOC_ABS32);
+                        rv_put32(a, a->cur_sec, a->sec_pc[a->cur_sec], 0u);
+                        rv_advance(a, 4);
+                    } else if (addr < 0) {
                         rv_error(a, "line %s: '%s' is not a symbol this translation "
                                     "unit defines; a flat image has no linker to "
                                     "fill it in", sym, "");
                         return;
+                    } else {
+                        rv_put32(a, a->cur_sec, a->sec_pc[a->cur_sec],
+                                 (unsigned int)addr);
+                        rv_advance(a, 4);
                     }
-                    rv_put32(a, a->cur_sec, a->sec_pc[a->cur_sec],
-                             (unsigned int)addr);
-                    rv_advance(a, 4);
                 }
             }
             rv_skip_ws(&p);
@@ -2594,6 +2745,18 @@ static void rv_pass(RvAsm *a) {
     }
 }
 
+/* ---- tables for write_ark_obj() ---------------------------------------
+ * The assembler keeps them in its own RvAsm while it runs; these copies exist
+ * because write_ark_obj() asks for them after assemble() has returned. */
+static RvLabel  *g_rv_labels;
+static int       g_rv_label_count;
+static int       g_rv_sec_base[RV_SEC_COUNT];
+static RvReloc  *g_rv_relocs;
+static int       g_rv_reloc_count;
+static int      *g_rv_sym_idx;
+static int      *g_rv_sym_weak;
+static int       g_rv_sym_count;
+
 static int rv_assemble(const char *asm_text, unsigned char *out, int cap) {
     RvAsm a;
     int i, total;
@@ -2610,6 +2773,13 @@ static int rv_assemble(const char *asm_text, unsigned char *out, int cap) {
     a.emit = 0;
     a.seen = 0;
     a.cur_sec = RV_SEC_TEXT;
+    a.obj = g_rv_obj_mode ? 1 : 0;
+    a.relocs = 0;
+    a.reloc_count = 0;
+    a.reloc_cap = 0;
+    a.exports = 0;
+    a.export_count = 0;
+    a.export_cap = 0;
 
     rv_pass(&a);
     if (a.hard_errors) return -1;
@@ -2653,8 +2823,134 @@ static int rv_assemble(const char *asm_text, unsigned char *out, int cap) {
         }
     }
 #endif
+    /* Publish the tables write_ark_obj() needs.  They live in the compiler
+     * pool and are never freed, so the driver may read them right after this
+     * call returns; -c is the only caller that asks. */
+    g_rv_labels      = a.labels;
+    g_rv_label_count = a.label_count;
+    g_rv_relocs      = a.relocs;
+    g_rv_reloc_count = a.reloc_count;
+    g_rv_sec_base[RV_SEC_TEXT]   = a.sec_base[RV_SEC_TEXT];
+    g_rv_sec_base[RV_SEC_RODATA] = a.sec_base[RV_SEC_RODATA];
+    g_rv_sec_base[RV_SEC_DATA]   = a.sec_base[RV_SEC_DATA];
+
+    /* Link symbols = labels this unit declared with .globl/.weak.  A `.L`
+     * label is local by construction and a numeric label is not even a name,
+     * so both are skipped before the export test. */
+    g_rv_sym_count = 0;
+    g_rv_sym_idx   = 0;
+    g_rv_sym_weak  = 0;
+    if (a.obj) {
+        int cap = a.label_count > 0 ? a.label_count : 1;
+        int *idx  = (int *)mem_pool_alloc(cap * (int)sizeof(int));
+        int *weak = (int *)mem_pool_alloc(cap * (int)sizeof(int));
+        for (i = 0; i < a.label_count; i++) {
+            int w = 0;
+            if (a.labels[i].num >= 0) continue;
+            if (a.labels[i].name[0] == '.' && a.labels[i].name[1] == 'L') continue;
+            if (!rv_exported(&a, a.labels[i].name, &w)) continue;
+            idx[g_rv_sym_count]  = i;
+            weak[g_rv_sym_count] = w;
+            g_rv_sym_count++;
+        }
+        g_rv_sym_idx  = idx;
+        g_rv_sym_weak = weak;
+    }
     return total;
 }
+
+int rv_get_symbol_count(void) { return g_rv_sym_count; }
+
+const char *rv_get_symbol_name(int i) {
+    if (i < 0 || i >= g_rv_sym_count) return "";
+    return g_rv_labels[g_rv_sym_idx[i]].name;
+}
+
+int rv_get_symbol_offset(int i) {
+    RvLabel *L;
+    if (i < 0 || i >= g_rv_sym_count) return 0;
+    L = &g_rv_labels[g_rv_sym_idx[i]];
+    return g_rv_sec_base[L->sec] + L->off;
+}
+
+int rv_get_symbol_type(int i) {
+    (void)i;
+    return 0;     /* code or data: the linker only needs the address */
+}
+
+int rv_get_symbol_weak(int i) {
+    if (i < 0 || i >= g_rv_sym_count) return 0;
+    return g_rv_sym_weak[i];
+}
+
+int rv_get_reloc_count(void) { return g_rv_reloc_count; }
+
+const char *rv_get_reloc_name(int i) {
+    if (i < 0 || i >= g_rv_reloc_count) return "";
+    return g_rv_relocs[i].name;
+}
+
+int rv_get_reloc_offset(int i) {
+    if (i < 0 || i >= g_rv_reloc_count) return 0;
+    return g_rv_relocs[i].off;
+}
+
+int rv_get_reloc_type(int i) {
+    if (i < 0 || i >= g_rv_reloc_count) return 0;
+    return g_rv_relocs[i].type;
+}
+
+/* Apply one riscv32 relocation to the merged image.  `off` is the site and
+ * `target` the symbol, both as offsets inside the image, so the flash base
+ * cancels in target - off and only reappears where it belongs (an absolute
+ * .word).  Returns 0 on success, -1 when the site does not hold the instruction
+ * pair the relocation describes or the displacement does not fit -- the caller
+ * must then refuse to write the image rather than ship one that jumps nowhere. */
+int rv_patch_reloc(unsigned char *code, int code_size, int off, int target,
+                   int type, unsigned image_base) {
+    unsigned w0, w1;
+    long long d, hi;
+    int lo;
+    if (type == RV_RELOC_AUIPC) {
+        if (off < 0 || off + 8 > code_size) return -1;
+        w0 = (unsigned)code[off] | ((unsigned)code[off + 1] << 8) |
+             ((unsigned)code[off + 2] << 16) | ((unsigned)code[off + 3] << 24);
+        w1 = (unsigned)code[off + 4] | ((unsigned)code[off + 5] << 8) |
+             ((unsigned)code[off + 6] << 16) | ((unsigned)code[off + 7] << 24);
+        if ((w0 & 0x7Fu) != RV_OP_AUIPC) return -1;
+        if ((w1 & 0x7Fu) != RV_OP_JALR && (w1 & 0x7Fu) != RV_OP_IMM) return -1;
+        d  = (long long)target - (long long)off;
+        hi = (d + 0x800) >> 12;
+        if (hi < -(1LL << 19) || hi > (1LL << 19) - 1) return -1;
+        lo = (int)(d - (hi << 12));
+        w0 = (w0 & 0x00000FFFu) | (((unsigned)hi & 0xFFFFFu) << 12);
+        w1 = (w1 & 0x000FFFFFu) | (((unsigned)lo & 0xFFFu) << 20);
+        code[off]     = (unsigned char)(w0 & 0xFF);
+        code[off + 1] = (unsigned char)((w0 >> 8) & 0xFF);
+        code[off + 2] = (unsigned char)((w0 >> 16) & 0xFF);
+        code[off + 3] = (unsigned char)((w0 >> 24) & 0xFF);
+        code[off + 4] = (unsigned char)(w1 & 0xFF);
+        code[off + 5] = (unsigned char)((w1 >> 8) & 0xFF);
+        code[off + 6] = (unsigned char)((w1 >> 16) & 0xFF);
+        code[off + 7] = (unsigned char)((w1 >> 24) & 0xFF);
+        return 0;
+    }
+    if (type == RV_RELOC_ABS32) {
+        unsigned v = image_base + (unsigned)target;
+        if (off < 0 || off + 4 > code_size) return -1;
+        code[off]     = (unsigned char)(v & 0xFF);
+        code[off + 1] = (unsigned char)((v >> 8) & 0xFF);
+        code[off + 2] = (unsigned char)((v >> 16) & 0xFF);
+        code[off + 3] = (unsigned char)((v >> 24) & 0xFF);
+        return 0;
+    }
+    return -1;
+}
+
+/* 1 = the driver is producing an ARKOBJ2 object (-c) instead of a flat image.
+ * Declared in backend.h; read only by rv_assemble(), which changes exactly one
+ * thing: an undefined symbol becomes a relocation instead of a hard error. */
+int g_rv_obj_mode = 0;
 
 static int rv_link(unsigned char *c, int s, struct LinkContext *lc) {
     (void)c; (void)s; (void)lc;
