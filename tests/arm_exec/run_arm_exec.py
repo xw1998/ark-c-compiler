@@ -403,8 +403,57 @@ int ar_pad;\nextern long long __aeabi_lmul(long long, long long);\nextern long l
         "build": link_with_runtime("r.c", "r.obj"),
         "expect": 50,
     },
+    {
+        "name": "const_fold_float",
+        "why": "float constant expressions folded at compile time (C99 6.6): "
+               "an explicit cast inside an enum, a cast initialiser, an "
+               "implicit float->int initialiser, an array dimension and a "
+               "64-bit initialiser.  Every operand is folded, so the image "
+               "carries no VFP instruction and runs on the M-class unicorn, "
+               "which has no FPU",
+        "runtime": True,
+        "files": {
+            "fc.c": STARTUP + """\
+enum { EA = (int)(1.5 + 1.5) };            /* 3: explicit cast, enum value */
+int g_cast     = (int)(2.5 * 4.0);         /* 10: explicit cast in an initialiser */
+int g_implicit = 2.5 * 4.0;                /* 10: implicit conversion (6.6) */
+int g_neg      = -2.5 * 4.0;               /* -10: unary minus folds with the rest */
+int g_arr[(int)(2.0 * 3.0)];               /* 6 elements */
+long long g_ll = (long long)(1.5e6 * 2.0); /* 3000000 through the 8-byte path */
+int main(void)
+{
+    int dim = (int)(sizeof g_arr / sizeof g_arr[0]);
+    if (g_neg != -10) return 70;
+    if (g_ll != 3000000LL) return 71;
+    return EA + g_cast + g_implicit + dim;   /* 3 + 10 + 10 + 6 = 29 */
+}
+""",
+        },
+        "build": link_with_runtime("fc.c", "fc.obj"),
+        "expect": 29,
+    },
+    {
+        "name": "const_fold_float_reject",
+        "why": "the same folding must refuse instead of inventing a value: a "
+               "float array dimension and a dimension whose value is UB "
+               "(1.0/0.0) are diagnostics, not a silent one-element array, "
+               "and an out-of-range conversion is not folded into a global",
+        "files": {
+            "bad1.c": "int a[2.5];\nint main(void) { return (int)sizeof a; }\n",
+            "bad2.c": "int a[(int)(1.0 / 0.0)];\nint main(void) { return (int)sizeof a; }\n",
+            "bad3.c": "int g = (int)1e30;\nint main(void) { return g; }\n",
+        },
+        "build": [],
+        "reject": [
+            {"argv": ["bad1.c", "-target", "arm", "--vector-table", "-o", "o1.bin"],
+             "expect_error": "not an integer constant expression"},
+            {"argv": ["bad2.c", "-target", "arm", "--vector-table", "-o", "o2.bin"],
+             "expect_error": "not an integer constant expression"},
+            {"argv": ["bad3.c", "-target", "arm", "--vector-table", "-o", "o3.bin"],
+             "expect_error": "cannot turn the initialiser"},
+        ],
+    },
 ]
-
 
 def build_case(arkcc, workdir, case, extra=()):
     for name, text in case["files"].items():
@@ -462,6 +511,35 @@ def main(argv=None):
             if err:
                 print("[ FAIL ] %-18s %s" % (case["name"], err))
                 failures += 1
+                continue
+            if "reject" in case:
+                # Compile-time refuse path: the compiler must fail *and* say
+                # why, and it must not leave an image behind.  The positive
+                # case above proves the folding works, so this cannot pass
+                # just because the feature is dead.
+                bad = 0
+                for item in case["reject"]:
+                    proc = subprocess.run([arkcc] + list(item["argv"]) + list(args.extra),
+                                          cwd=workdir, capture_output=True, text=True)
+                    text = proc.stderr + proc.stdout
+                    if proc.returncode == 0:
+                        print("[ FAIL ] %-18s compiled but must refuse: %s"
+                              % (case["name"], " ".join(item["argv"])))
+                        bad += 1
+                    elif item["expect_error"] not in text:
+                        print("[ FAIL ] %-18s refused for the wrong reason: %s"
+                              % (case["name"], text.strip()[:160]))
+                        bad += 1
+                    else:
+                        out_name = item["argv"][item["argv"].index("-o") + 1]
+                        if os.path.exists(os.path.join(workdir, out_name)):
+                            print("[ FAIL ] %-18s image written despite the error: %s"
+                                  % (case["name"], out_name))
+                            bad += 1
+                if bad:
+                    failures += 1
+                else:
+                    print("[ ok ] %-18s %s" % (case["name"], case["why"]))
                 continue
             if "link_must_fail" in case:
                 proc = subprocess.run([arkcc] + case["link_must_fail"], cwd=workdir,

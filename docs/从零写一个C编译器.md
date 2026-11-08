@@ -3647,7 +3647,21 @@ int eval_const_expr(AstNode *node, long long *out_value);
 
 实现上就是一个对树的后序遍历：先求左右子树，再按运算符计算。要处理的节点类型包括：数值常量、`sizeof`、强制转换、二元运算、三元运算、一元运算、枚举常量、字符常量。
 
-一个容易忽略的点：**浮点常量不在这里折叠**（代码注释写明 `Floating point constants are not folded here.`）。原因是整数求值用 `long long`，浮点要另一套。这也是一个登记在案的欠账。
+一个容易忽略的点：`eval_const_expr` 的出口是 `long long`，装不下浮点，所以浮点常量表达式走的是另一套求值函数：
+
+```c
+int eval_const_fexpr(AstNode *node, double *out);
+int fconst_to_int(double d, Type *t, long long *out);   /* 带目标类型范围检查 */
+```
+
+两者的分工是有意的，落点只有两处（都在 `ARKCC_FEATURE_FCONST_FOLD` 开关后面，默认开）：
+
+1. **显式转换到整型**：`eval_const_expr` 处理 `AST_CAST` 时先走整数路径，失败后如果目标类型是整型，就用 `eval_const_fexpr` 求出浮点值，再由 `fconst_to_int` 按目标类型截断。于是 `(int)(2.5 * 4.0)`、`enum { E = (int)(1.5 + 1.5) }`、`int a[(int)(2.0 * 3.0)]` 都成为整型常量表达式。
+2. **全局/静态局部初值的隐式转换**：C99 6.6 允许静态初始化器里的算术常量表达式，`int g = 2.5 * 4.0;` 是合法的。`irgen` 在整数求值失败后，若初值表达式是浮点常量表达式就把结果按 `g` 的类型折成整数写入 `.data`/`.bss` 的初始化体。
+
+**越界一律不折叠**，这就是"宁可报错不给错答案"的具体落点：`fconst_to_int` 遇到 NaN、无穷大、或超出目标类型表示范围的值返回 0（不折叠），于是 `int g = (int)1e30;` 报"cannot turn the initialiser of the global into data"而不是悄悄写一个截断值。无符号 64 位超过 `LLONG_MAX` 同样拒绝——那是 `long long` 出口本身的限制，写在函数注释里。
+
+数组维度还多一道闸：`int a[2.5]` 这种维度不是整数常量表达式，而 `eval_const_expr` 对 `1.0/0.0`（UB，不折叠）也失败，两者原本都会掉进"占位维度 1"、静默编成一个元素的数组。现在 `parser.c` 的 `expr_mentions_float()` 会在求值失败后检查表达式里有没有浮点操作数，有就报 `array dimension is not an integer constant expression`；只是"非常量"（VLA，`int a[n]`）不涉及浮点，仍走 VLA 路径不受影响。
 
 ---
 

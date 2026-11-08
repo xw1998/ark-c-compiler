@@ -218,8 +218,8 @@
 | 运行库按需发射 `--rt-lazy`（只发可达的 `__aeabi_*` 块） | 是（默认关；`add3.c` 1578 → 60 字节） |
 | IR 栈顶驻留 r0 `--reg-top`（有界寄存器化，非分配器） | 是（默认关；80 样例指令数 −7.1%） |
 | `float` ↔ `double` 显式转换（`VCVT.F32.F64` / `VCVT.F64.F32`） | 是 |
-| 浮点常量表达式折叠（`eval_const_expr` 支持浮点） | 是 |
-| 汇编器扩展指令集 `--asm-extra`（ADDS/SUBS/…/MRS/MSR、`LDM`/`STM` 的 32 位与减前形式、`TBB`/`TBH`、`LDRD`/`STRD` 共 30 个助记符 + `.W`/`.N` 后缀） | 是（默认关；关时报 unknown mnemonic） |
+| 浮点常量表达式折叠（`eval_const_fexpr` + `fconst_to_int`） | 是 | 两处落点：显式转换到整型（`(int)(2.5*4.0)`、`enum {E=(int)(1.5+1.5)}`、`int a[(int)(2.0*3.0)]`）与全局/静态初值的隐式转换（C99 6.6，`int g = 2.5*4.0;`）。NaN/无穷/超出目标类型范围**不折叠**，报错不发明值；`int a[2.5]` 与 `int a[(int)(1.0/0.0)]` 报 `array dimension is not an integer constant expression` 而不是静默取 1 个元素 |
+| 汇编器扩展指令集 `--asm-extra`（`ANDS`/`ORRS`/…/`MRS`/`MSR`、`LDM`/`STM` 的 32 位与减前形式、`TBB`/`TBH`、`LDRD`/`STRD` 共 24 个助记符 + `.W`/`.N` 后缀） | 是（默认关；关时报 unknown mnemonic。`ADDS`/`SUBS` 不在这份名单里：后端自己发射它们，所以无条件接受——GNU as 会把无 `S` 的 `ADD` 编成 32 位 `ADD.W`，静默丢掉标志位） |
 | 容量上限（宿主做全 / 板端可裁剪） | 是（`include/arkcc_config.h` 第 9 节，一处定义两套默认值，逐项 `-D` 覆盖；越界一律报错不静默丢弃） |
 
 ### `.sct` / `.s` 文件支持矩阵
