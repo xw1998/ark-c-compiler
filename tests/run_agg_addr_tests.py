@@ -167,6 +167,51 @@ const char *cs[3] = { "a", "b", "c" };
 int *pa[2] = { &g0, &g0 };
 int main(void) { return cs[1][0] + *pa[0] + (int)sizeof(cs); }
 """, 117),                                  # 'b' = 98, + 7, + 12
+
+    # --- designators: the same offsets, reached by "[k] = value" -------------
+    # A designator used to be refused (it moved the element without moving the
+    # cursor in lock step).  The AST walk now mirrors the filler's cursor
+    # semantics, so the offset it records is the offset the filler asks about.
+    ("ptr_designator", """\
+int gv = 1;
+int *pa[2] = { [1] = &gv };
+int main(void) { return *pa[1]; }
+""", 1),
+
+    # A constant *expression*, not just a literal, and a gap the filler leaves
+    # at its default: both elements of the gap must still be placed.
+    ("ptr_designator_gap", """\
+int gv = 1;
+int *pa[4] = { [0] = &gv, [3] = &gv };
+int main(void) { return *pa[0] + *pa[3] + (int)sizeof(pa); }
+""", 18),                                   # 1 + 1 + 16
+
+    ("ptr_designator_expr", """\
+int gv = 4;
+int *pa[3] = { [0 + 1] = &gv };
+int main(void) { return *pa[1]; }
+""", 4),
+
+    ("str_designator", """\
+char *cs[2] = { [1] = "x" };
+int main(void) { return cs[1][0]; }
+""", 120),                                  # 'x'
+
+    # Field designators still have to land on the right member offsets.
+    ("struct_designator", """\
+int gv = 1;
+struct S { int a; int *p; int b; };
+struct S s = { .a = 3, .p = &gv, .b = 5 };
+int main(void) { return s.a + *s.p + s.b; }
+""", 9),                                    # 3 + 1 + 5
+
+    # A union has exactly one live member, and that member may hold an address.
+    ("union_ptr", """\
+int gv = 1;
+union U { int *p; long long v; };
+union U u = { .p = &gv };
+int main(void) { return *u.p; }
+""", 1),
 ]
 
 # Sources that must be *rejected*.  `keyword` must appear in the message: a
@@ -179,13 +224,6 @@ int gv = 1;
 struct T { int *p; int *q; };
 struct T t[1] = { &gv, &gv };
 int main(void) { return *t[0].p; }
-""", "braces are not spelled out"),
-
-    # A designator moves the element without moving the cursor in lock step.
-    ("designator", """\
-int gv = 1;
-int *pa[2] = { [1] = &gv };
-int main(void) { return *pa[1]; }
 """, "braces are not spelled out"),
 
     # An automatic object has no address at load time.
@@ -207,11 +245,22 @@ char *cs[2] = { L"xy", "cd" };
 int main(void) { return 0; }
 """, "wide string literal"),
 
-    # Designator + literal element: same offset problem as the object case.
-    ("str_designator", """\
-char *cs[2] = { [1] = "x" };
+    # A union has exactly one live member (C99 6.7.8p10): two initialised
+    # members is not "braces elided", it cannot be represented at all.
+    ("union_two_members", """\
+int gv = 1;
+union U { int a; int *p; };
+union U u = { .a = 1, .p = &gv };
 int main(void) { return 0; }
-""", "braces are not spelled out"),
+""", "a union with more than one"),
+
+    # A designator index must be an integer constant expression (C99 6.6p6).
+    # This used to end in an error storm and "memory pool exhausted".
+    ("designator_not_constant", """\
+int i = 1;
+int *pa[2] = { [i] = 0 };
+int main(void) { return 0; }
+""", "integer constant expression"),
 ]
 
 # riscv32 keeps the symbol in the data section; a number there would be a
@@ -229,6 +278,13 @@ char *cs[2] = { "xy", "cd" };
 int main(void) { return cs[0][0] + cs[1][0]; }
 """, ['.asciz "xy"', '.asciz "cd"',
        ".word .Lgstr_cs_0", ".word .Lgstr_cs_4"]),
+    # The label offset has to follow the designator: a walk that keeps its own
+    # cursor (or an index that is read but not applied) would emit cs_0 here,
+    # which still assembles and still runs -- and reads the wrong byte.
+    ("str_designator", """\
+char *cs[2] = { [1] = "x" };
+int main(void) { return cs[1][0]; }
+""", ['.asciz "x"', ".word .Lgstr_cs_4"]),
 ]
 
 
@@ -347,6 +403,8 @@ def main():
     SELFCHECK = [
         ('fp_array', 46),        # both entries = add
         ('str_ptr_array', 240),  # both entries = the first literal ("xy")
+        ('ptr_designator', 0),   # designator ignored, element placed at [0]
+        ('ptr_designator_gap', 17),  # cursors not advanced past a designator
     ]
     by_name = {c[0]: c for c in CASES}
     for sname, wrong in SELFCHECK:

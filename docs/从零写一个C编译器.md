@@ -3356,16 +3356,18 @@ struct S { int n; int (*f)(int,int); int *p; } s = { 3, add, &gv };
 文本 + 类型。偏移对不上时 hook 不命中，`ark_agg_fill_ex` 返回 -1，后端报"cannot turn the
 initialiser into data"；**不会**出现"地址位置被写成 0 却没人报警"。这是这套设计唯一要买的东西。
 
-四个坑：
+五个坑：
 
 - **hook 命中后必须自己推进文本游标。** 第一版的 hook 分支只写零、不前进，于是下一轮数组循环
   看到游标还停在 `&gv` 上，以为"初值比元素多"，整条 walk 失败——症状是 `#1` 里的 `{&gv,&gv}`
   报"too many initialisers"式的后端错，而 `init_refs` 明明已经记了 2 条。修法是命中后前进到
   本层的下一个 `,` 或 `}`，并计 `()`/`[]`/`{}` 的嵌套深度（这样 `(int*)&gv`、`&a[i]` 都能跳过）。
 - **只接受花括号写全的初始化器。** 省略花括号时元素落点取决于展平后的布局，走查器不重推布局，
-  于是 bail；bail 单独报一条"braces are not spelled out level by level (or it uses a designator)"。
+  于是 bail；bail 单独报一条"its braces are not spelled out level by level ... write the braces out"。
   为了分辨"bail 因为地址不能放"和"bail 但和地址无关（纯数字的省略花括号，本来就不支持）"，
   另写了个只读扫描 `irgen_init_has_addr()`：初始化器里究竟有没有地址元素。
+  **注意这条边界不是地址元素特有的**：`int a[2][2] = {1,2,3,4}` 这种纯数字的省略花括号同样报这一句，
+  因为 `ark_agg_fill()` 从头到尾都要求逐层写花括号。地址元素只是**多**一条会让走查 bail 的路。
 - **字符串字面量元素：一个元素一个标签，且必须按偏移命名。** `char *cs[2] = { "xy", "cd" };`
   的元素存的是字面量的**地址**（C11 6.7.9p14），而这个字面量既不在表达式池里（池是发表达式时
   填的），也不是字符数组元素，于是两条老路都不管它：`ark_agg_fill` 把它当数字读失败，后端也就
@@ -3379,10 +3381,29 @@ initialiser into data"；**不会**出现"地址位置被写成 0 却没人报�
   `ark_agg_fill` 处理）会被误判成"地址元素但花括号没写全"而拒掉。判定必须带类型：只有
   **期望类型是指针**的槽位上的 `AST_STR` 才算地址（`irgen_init_has_str_addr(Type*, AstNode*)`）。
 
-门禁是 `tests/run_agg_addr_tests.py`：16 个运行时用例 × 2 后端（宿主 gcc 双校验）、6 个"必须
-报错"、2 个 RV 汇编编码断言（`.word add`/`.word sub`；字符串例必须同时出现两个 `.asciz` 和两条
-不同的 `.word .Lgstr_cs_<off>`——同时防"把地址折成数字"与"两个元素共用一个标签"），外加两条
-"错答案必须能被判出"的自检（`fp_array` 46、`str_ptr_array` 240）。
+- **指派器与 `union`：两个游标必须同语义。** `int *pa[2] = { [1] = &gv };`、
+  `struct S s = { .a = 3, .p = &gv };`、`union U u = { .p = &gv };` 一开始是被拒的
+  （旧版措辞是"braces are not spelled out ... or it uses a designator"），因为走查只按顺序推进，不跟随
+  `[k] =` / `.f =` 的落点。但填字节那一侧（`ark_agg_fill()`）本来就支持指派器，所以这是**真缺口**
+  而不是设计选择。补法是把走查改成**两个游标**：数组一个 `cur`（`[k]=` 直接 `cur = k`，每放一个
+  值 `cur++`），结构一个 `f`（按声明顺序走，`.name` 时 `type_find_field()` 重定位），`union` 按
+  "只有一个活跃成员"处理（多于一个仍拒）。两条游标语义必须与 `ark_agg_fill()` **逐字一致**——
+  不一致时 hook 会在填字节方问到的偏移上查不到，`ark_agg_fill_ex()` 返回 -1 并拒绝，也就是
+  **偏移对账本身就是安全网**，走查算错不会静默写零。
+  顺带修掉一个更早的坑：解析器原来只认裸字面量（`lexer_peek(...).kind == TOK_NUM`），
+  `{ [0 + 1] = ... }` 时 `has_index` 留 0 却仍 `expect "]"`，接着在错位的 token 上反复递归，
+  最后以 `[arkcc] FATAL: memory pool exhausted` 收场——崩溃级失败，比错答案更坏。现在
+  `parse_designator_index()` 用 `parse_cond_expr` + `eval_const_expr` 折常量（与数组维度、枚举值
+  同法），失败就报一条清晰错误并把 token 跳到 `]`，初始值解析继续走，构建按 `error_count` 失败。
+  下标是**整型常量表达式**（6.6p6）：`[0+1]`、`[1<<2]` 可以，`[i]` 报
+  `a designator index must be an integer constant expression`，`[-1]` 报
+  `a designator index must not be negative`。
+
+门禁是 `tests/run_agg_addr_tests.py`：22 个运行时用例 × 2 后端（宿主 gcc 双校验）、6 个"必须
+报错"、3 个 RV 汇编编码断言（`.word add`/`.word sub`；字符串例必须同时出现两个 `.asciz` 和两条
+不同的 `.word .Lgstr_cs_<off>`——同时防"把地址折成数字"与"两个元素共用一个标签"；指派器例必须是
+`.word .Lgstr_cs_4`，防"下标读了却没落到偏移上"），外加四条"错答案必须能被判出"的自检
+（`fp_array` 46、`str_ptr_array` 240、`ptr_designator` 0、`ptr_designator_gap` 17）。
 
 ---
 
