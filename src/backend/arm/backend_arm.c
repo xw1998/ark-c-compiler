@@ -3306,7 +3306,7 @@ static char *codegen_arm(IrProgram *prog) {
                          * the argmask otherwise -- in which case the numbers,
                          * and therefore the code, are exactly what they were. */
                         const int *wires = (I->aux2 > 0)
-                                           ? &g_ir_argbytes[I->aux2 - 1] : 0;
+                                           ? &prog->argbytes[I->aux2 - 1] : 0;
                         for (i = 0; i < 192; i++) { aslot_reg[i] = -1; aslot_soff[i] = -1; }
                         for (kk = 0; kk < real_args && kk < 64; kk++) {
                             int b = wires ? wires[kk]
@@ -4896,7 +4896,13 @@ static char *codegen_arm(IrProgram *prog) {
         asmbuf_puts(&buf, "    STRB r3, [r4]\n");
         asmbuf_puts(&buf, "    ADD r4, r4, #1\n");
         asmbuf_puts(&buf, "    ADD r1, r1, #1\n");
-        asmbuf_puts(&buf, "    SUBS r2, r2, #1\n");
+        /* SUB + CMP, not `SUBS`: the internal assembler takes SUBS only with
+         * --asm-extra, and this routine is emitted for every target build.
+         * Measured on the board: `cc --pack` refused the whole unit with
+         * "unknown mnemonic \"SUBS\"" -- the host gate assembles with GNU as,
+         * which takes it, so this only showed up on the target. */
+        asmbuf_puts(&buf, "    SUB r2, r2, #1\n");
+        asmbuf_puts(&buf, "    CMP r2, #0\n");
         asmbuf_puts(&buf, "    BNE .L_arkcc_mcpy_loop\n");
         asmbuf_puts(&buf, ".L_arkcc_mcpy_done:\n");
         asmbuf_puts(&buf, "    POP {r4}\n");

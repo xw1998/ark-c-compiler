@@ -134,6 +134,12 @@ typedef struct IrProgram {
     int        complex_capacity;
     /* Current source file for DWARF .file/.loc; NULL = unknown */
     const char *source_file;
+    /* Per-call argument sizes for IrInst.aux2 (see ir_program_add_argbytes).
+     * Owned by the program so it is released by the same pool reset as the IR
+     * that indexes it. */
+    int *argbytes;
+    int  argbytes_count;
+    int  argbytes_cap;
 } IrProgram;
 
 IrFunc    *ir_func_new(const char *name);
@@ -147,16 +153,21 @@ void       ir_emit(IrFunc *f, IrOp op, long long val, const char *name, int aux)
 extern int g_ir_va_slot_region;
 
 /* IR_CALL argument sizes, in bytes, for the calls that need a size the
- * argmask cannot express.  irgen appends one run per call and stamps the run's
- * index (1-based) into IrInst.aux2; the run is exactly as long as the call's
- * argument count (IrInst.val & 0xFFFFFFFF).  Entries are the *wire* sizes:
- * 4 for a word, 8 for a double word (even register pair / 8-byte stack slot),
- * and for a composite passed through `...` the struct's size rounded up to a
- * multiple of 4 -- one argument word per 4 bytes, laid out consecutively.
- * See irgen_call_arg_bytes() for the rule and backend_arm.c's IR_CALL for the
- * consumer. */
-extern int *g_ir_argbytes;
-extern int  g_ir_argbytes_count;
+ * argmask cannot express.  irgen appends one run per call to the *program's*
+ * table (IrProgram.argbytes) and stamps the run's index (1-based) into
+ * IrInst.aux2; the run is exactly as long as the call's argument count
+ * (IrInst.val & 0xFFFFFFFF).  Entries are the *wire* sizes: 4 for a word, 8 for
+ * a double word (even register pair / 8-byte stack slot), and for a composite
+ * passed through `...` the struct's size rounded up to a multiple of 4 -- one
+ * argument word per 4 bytes, laid out consecutively.
+ *
+ * The table lives in the program, not in a module global, because the driver
+ * resets the memory pool between translation units (compiler.c calls
+ * mem_pool_reset() per compile).  A global pointer into that pool went stale on
+ * the board's `cc --pack` -- three sources compiled in one process -- and the
+ * backend then read garbage argument sizes ("passes 900035835 argument
+ * words"). */
+int ir_program_add_argbytes(IrProgram *prog, const int *vals, int n);
 
 /* 1: this target can pass a composite larger than two words through `...`
  * (ARM Thumb-2 only, whose va region is the caller's own argument words).

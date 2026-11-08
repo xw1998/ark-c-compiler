@@ -31,29 +31,11 @@ int g_ir_va_slot_region = 1;
  * wrong words; the driver raises it for ARM (src/compiler.c). */
 int g_ir_vararg_words = 0;
 
-/* IR_CALL argument sizes that the argmask cannot express: one run per call,
- * appended in call order, IrInst.aux2 = 1 + the run's start index.  The run is
- * reallocated, not pooled, so the array can outgrow any fixed slot count. */
-int *g_ir_argbytes = 0;
-int  g_ir_argbytes_count = 0;
-static int  g_ir_argbytes_cap = 0;
-
-static int irgen_argbytes_begin(int n)
-{
-    int start = g_ir_argbytes_count;
-    if (n < 0) n = 0;
-    if (g_ir_argbytes_count + n > g_ir_argbytes_cap) {
-        int nc = g_ir_argbytes_cap ? g_ir_argbytes_cap : 64;
-        int old = g_ir_argbytes_cap;
-        while (nc < g_ir_argbytes_count + n) nc *= 2;
-        g_ir_argbytes = (int *)mem_realloc(g_ir_argbytes,
-                                           old * (int)sizeof(int),
-                                           nc * (int)sizeof(int));
-        g_ir_argbytes_cap = nc;
-    }
-    g_ir_argbytes_count += n;
-    return start;
-}
+/* IR_CALL argument sizes that the argmask cannot express live in the IR
+ * program's own table (ir_program_add_argbytes) -- not in a module global: the
+ * driver resets the memory pool between translation units, which on the board
+ * left a global pointer reading another unit's AST ("passes 900035835 argument
+ * words" from `cc --pack`, three sources in one process). */
 
 /* Internal buffer used to serialize an AST initializer list into a C source
  * snippet. 64 KB is enough for ordinary examples. */
@@ -3436,11 +3418,8 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                     }
                 }
                 if (wire_extra) {
-                    int j;
-                    int start = irgen_argbytes_begin(max_args);
-                    for (j = 0; j < max_args; j++)
-                        g_ir_argbytes[start + j] = wires[j];
-                    wire_idx = start + 1;
+                    int start = ir_program_add_argbytes(g->prog, wires, max_args);
+                    if (start >= 0) wire_idx = start + 1;
                 }
                 /* Encode indirect-call 64-bit return flag in bit 32 of val.
                  * All backends truncate val to int for the arg count, so the
