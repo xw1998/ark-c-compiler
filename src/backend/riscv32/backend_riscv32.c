@@ -145,6 +145,74 @@ static void rv_put_cstr(AsmBuffer *b, const char *s) {
     }
 }
 
+/* ---- soft-float helpers -------------------------------------------------
+ * This target has no F extension, so every floating-point operation is a call
+ * into libgcc's soft-float routines.  Under the ilp32 psABI a float travels in
+ * one integer register (a0) and a double in two, with the LOW word in the
+ * lower-numbered register; results come back the same way.  An image built for
+ * this backend therefore has to be linked against libgcc.a.
+ */
+static const char *rv_fbin_helper(int op, int is_dbl) {
+    switch (op) {
+        case (int)TOK_PLUS:  return is_dbl ? "__adddf3" : "__addsf3";
+        case (int)TOK_MINUS: return is_dbl ? "__subdf3" : "__subsf3";
+        case (int)TOK_MUL:   return is_dbl ? "__muldf3" : "__mulsf3";
+        case (int)TOK_DIV:   return is_dbl ? "__divdf3" : "__divsf3";
+        default: return 0;
+    }
+}
+
+/* The comparison helpers answer like strcmp -- negative / zero / positive --
+ * with unordered pairs folded in per IEEE: 1 for eq/ne and for lt/le, -1 for
+ * gt/ge.  That is exactly what C's six relational operators must return. */
+static const char *rv_fcmp_helper(int op, int is_dbl) {
+    switch (op) {
+        case (int)TOK_EQ: return is_dbl ? "__eqdf2" : "__eqsf2";
+        case (int)TOK_NE: return is_dbl ? "__nedf2" : "__nesf2";
+        case (int)TOK_LT: return is_dbl ? "__ltdf2" : "__ltsf2";
+        case (int)TOK_GT: return is_dbl ? "__gtdf2" : "__gtsf2";
+        case (int)TOK_LE: return is_dbl ? "__ledf2" : "__lesf2";
+        case (int)TOK_GE: return is_dbl ? "__gedf2" : "__gesf2";
+        default: return 0;
+    }
+}
+
+/* Pop two soft-float operands: the left one into a0 (a0:a1 for a double), the
+ * right one into a2 (a2:a3).  The IR stack keeps a 64-bit value with its HIGH
+ * word on top, while the psABI wants the low word in the lower register, so
+ * the four words are shuffled through t0..t3. */
+static void rv_fpop2(AsmBuffer *b, int is_dbl) {
+    if (is_dbl) {
+        asmbuf_puts(b, "    lw t3, 0(sp)\n    lw t2, 4(sp)\n"
+                       "    lw t1, 8(sp)\n    lw t0, 12(sp)\n"
+                       "    addi sp, sp, 16\n"
+                       "    mv a0, t0\n    mv a1, t1\n    mv a2, t2\n    mv a3, t3\n");
+    } else {
+        asmbuf_puts(b, "    lw t1, 0(sp)\n    lw t0, 4(sp)\n    addi sp, sp, 8\n"
+                       "    mv a0, t0\n    mv a1, t1\n");
+    }
+}
+
+/* Push a float result (a0) or a double result (a0:a1) back onto the IR stack,
+ * high word last so it ends up on top. */
+static void rv_fpush1(AsmBuffer *b, int is_dbl) {
+    if (is_dbl)
+        asmbuf_puts(b, "    addi sp, sp, -4\n    sw a0, 0(sp)\n"
+                       "    addi sp, sp, -4\n    sw a1, 0(sp)\n");
+    else
+        asmbuf_puts(b, "    addi sp, sp, -4\n    sw a0, 0(sp)\n");
+}
+
+/* A 32-bit bit pattern as eight lowercase hex digits, for .word. */
+static void rv_put_hex32(AsmBuffer *b, unsigned int v) {
+    static const char *hd = "0123456789abcdef";
+    char hex[9];
+    int k;
+    for (k = 7; k >= 0; k--) { hex[k] = hd[v & 0xF]; v >>= 4; }
+    hex[8] = 0;
+    asmbuf_puts(b, hex);
+}
+
 static int rv_emit(IrProgram *prog, char *out, int cap) {
     AsmBuffer buf;
     int fi;
@@ -174,6 +242,34 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                 }
             }
             asmbuf_puts(&buf, "\"\n");
+        }
+        asmbuf_puts(&buf, "    .text\n");
+    }
+
+    /* Floating-point constant pool.  Every constant gets both bit patterns --
+     * .L_flt_<i> (the double rounded to float, which is what `(float)c` means)
+     * and .L_dbl_<i> -- and IR_PUSH_FLOAT's aux bit 0x200 picks which one is
+     * loaded, so one index serves a constant used as a float in one place and
+     * as a double in another.  Each word is .balign 4 so `lw` is legal. */
+    if (prog->float_count > 0) {
+        int i;
+        asmbuf_puts(&buf, "    .section .rodata\n");
+        for (i = 0; i < prog->float_count; i++) {
+            union { float f; unsigned int u; } uf;
+            union { double d; unsigned int u[2]; } ud;
+            uf.f = (float)prog->floats[i];
+            ud.d = prog->floats[i];
+            asmbuf_puts(&buf, "    .balign 4\n.L_flt_");
+            asmbuf_int(&buf, i);
+            asmbuf_puts(&buf, ":\n    .word 0x");
+            rv_put_hex32(&buf, uf.u);
+            asmbuf_puts(&buf, "\n    .balign 4\n.L_dbl_");
+            asmbuf_int(&buf, i);
+            asmbuf_puts(&buf, ":\n    .word 0x");
+            rv_put_hex32(&buf, ud.u[0]);
+            asmbuf_puts(&buf, "\n    .word 0x");
+            rv_put_hex32(&buf, ud.u[1]);
+            asmbuf_putc(&buf, '\n');
         }
         asmbuf_puts(&buf, "    .text\n");
     }
@@ -806,6 +902,170 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                     asmbuf_puts(&buf, I->aux ? "    remu t0, t0, t1\n" : "    rem t0, t0, t1\n");
                     asmbuf_puts(&buf, "    sw t0, 0(sp)\n");
                     break;
+                /* ---- floating point (soft-float through libgcc) ---- */
+                case IR_PUSH_FLOAT: {
+                    int is_dbl = (I->aux & 0x200) != 0;
+                    if (I->aux & 0x400) {
+                        diag_tool(DIAG_SEV_ERROR, "arkcc",
+                                  "the riscv32 backend does not implement complex "
+                                  "constants (function '%s')",
+                                  f->name, 0,0,0,0,0);
+                    } else if (is_dbl) {
+                        asmbuf_puts(&buf, "    la t0, .L_dbl_");
+                        asmbuf_int(&buf, I->val);
+                        asmbuf_puts(&buf, "\n    lw t1, 0(t0)\n    lw t2, 4(t0)\n"
+                                          "    addi sp, sp, -4\n    sw t1, 0(sp)\n"
+                                          "    addi sp, sp, -4\n    sw t2, 0(sp)\n");
+                    } else {
+                        asmbuf_puts(&buf, "    la t0, .L_flt_");
+                        asmbuf_int(&buf, I->val);
+                        asmbuf_puts(&buf, "\n    lw t0, 0(t0)\n"
+                                          "    addi sp, sp, -4\n    sw t0, 0(sp)\n");
+                    }
+                    break;
+                }
+                case IR_FADD:
+                case IR_FSUB:
+                case IR_FMUL:
+                case IR_FDIV: {
+                    int is_dbl = (I->aux & 0x200) != 0;
+                    const char *h = rv_fbin_helper(I->aux & ~0x200, is_dbl);
+                    if (!h) {
+                        char b1[12];
+                        diag_tool(DIAG_SEV_ERROR, "arkcc",
+                                  "the riscv32 backend does not implement the "
+                                  "floating-point operator %s (function '%s')",
+                                  diag_num(b1, I->aux & ~0x200), f->name, 0,0,0,0);
+                        break;
+                    }
+                    rv_fpop2(&buf, is_dbl);
+                    asmbuf_puts(&buf, "    call ");
+                    asmbuf_puts(&buf, h);
+                    asmbuf_putc(&buf, '\n');
+                    rv_fpush1(&buf, is_dbl);
+                    break;
+                }
+                case IR_FCMP: {
+                    /* aux: low bits = the operator, 0x200 = double.  The helper
+                     * returns strcmp-style, so the boolean is a sign test. */
+                    int is_dbl = (I->aux & 0x200) != 0;
+                    int op = I->aux & ~0x200;
+                    const char *h = rv_fcmp_helper(op, is_dbl);
+                    if (!h) {
+                        char b1[12];
+                        diag_tool(DIAG_SEV_ERROR, "arkcc",
+                                  "the riscv32 backend does not implement the "
+                                  "floating-point comparison %s (function '%s')",
+                                  diag_num(b1, op), f->name, 0,0,0,0);
+                        break;
+                    }
+                    rv_fpop2(&buf, is_dbl);
+                    asmbuf_puts(&buf, "    call ");
+                    asmbuf_puts(&buf, h);
+                    asmbuf_putc(&buf, '\n');
+                    switch (op) {
+                        case (int)TOK_EQ: asmbuf_puts(&buf, "    seqz a0, a0\n"); break;
+                        case (int)TOK_NE: asmbuf_puts(&buf, "    snez a0, a0\n"); break;
+                        case (int)TOK_LT: asmbuf_puts(&buf, "    slti a0, a0, 0\n"); break;
+                        case (int)TOK_GT: asmbuf_puts(&buf, "    slt a0, x0, a0\n"); break;
+                        case (int)TOK_LE: asmbuf_puts(&buf, "    slti a0, a0, 1\n"); break;
+                        case (int)TOK_GE: asmbuf_puts(&buf, "    slti a0, a0, 0\n"
+                                                          "    xori a0, a0, 1\n"); break;
+                        default: break;
+                    }
+                    asmbuf_puts(&buf, "    addi sp, sp, -4\n    sw a0, 0(sp)\n");
+                    break;
+                }
+                case IR_F2I: {
+                    /* float/double -> int, truncated toward zero.
+                     * aux: 0x200 = double source, 0x400 = unsigned target. */
+                    int is_dbl = (I->aux & 0x200) != 0;
+                    int is_unsigned = (I->aux & 0x400) != 0;
+                    const char *h = is_dbl
+                        ? (is_unsigned ? "__fixunsdfsi" : "__fixdfsi")
+                        : (is_unsigned ? "__fixunssfsi" : "__fixsfsi");
+                    if (is_dbl)
+                        asmbuf_puts(&buf, "    lw t1, 0(sp)\n    lw t0, 4(sp)\n"
+                                          "    addi sp, sp, 8\n"
+                                          "    mv a0, t0\n    mv a1, t1\n");
+                    else
+                        asmbuf_puts(&buf, "    lw a0, 0(sp)\n    addi sp, sp, 4\n");
+                    asmbuf_puts(&buf, "    call ");
+                    asmbuf_puts(&buf, h);
+                    asmbuf_putc(&buf, '\n');
+                    asmbuf_puts(&buf, "    addi sp, sp, -4\n    sw a0, 0(sp)\n");
+                    break;
+                }
+                case IR_I2F: {
+                    /* int -> float/double.
+                     * aux: 0x200 = double destination, 0x400 = unsigned source. */
+                    int is_dbl = (I->aux & 0x200) != 0;
+                    int is_unsigned = (I->aux & 0x400) != 0;
+                    const char *h = is_dbl
+                        ? (is_unsigned ? "__floatunsidf" : "__floatsidf")
+                        : (is_unsigned ? "__floatunsisf" : "__floatsisf");
+                    asmbuf_puts(&buf, "    lw a0, 0(sp)\n    addi sp, sp, 4\n    call ");
+                    asmbuf_puts(&buf, h);
+                    asmbuf_putc(&buf, '\n');
+                    rv_fpush1(&buf, is_dbl);
+                    break;
+                }
+                case IR_64I2F: {
+                    /* long long -> float/double.
+                     * aux: 0x200 = double destination, 0x400 = unsigned source. */
+                    int is_dbl = (I->aux & 0x200) != 0;
+                    int is_unsigned = (I->aux & 0x400) != 0;
+                    const char *h = is_dbl
+                        ? (is_unsigned ? "__floatundidf" : "__floatdidf")
+                        : (is_unsigned ? "__floatundisf" : "__floatdisf");
+                    asmbuf_puts(&buf, "    lw t1, 0(sp)\n    lw t0, 4(sp)\n"
+                                      "    addi sp, sp, 8\n"
+                                      "    mv a0, t0\n    mv a1, t1\n    call ");
+                    asmbuf_puts(&buf, h);
+                    asmbuf_putc(&buf, '\n');
+                    rv_fpush1(&buf, is_dbl);
+                    break;
+                }
+                case IR_64F2I: {
+                    /* float/double -> long long.  A 64-bit result comes back in
+                     * a0:a1 (low word first), which is the same pair rv_fpush1
+                     * pushes for a double, so it is reused here.
+                     * aux: 0x200 = double source, 0x400 = unsigned target. */
+                    int is_dbl = (I->aux & 0x200) != 0;
+                    int is_unsigned = (I->aux & 0x400) != 0;
+                    const char *h = is_dbl
+                        ? (is_unsigned ? "__fixunsdfdi" : "__fixdfdi")
+                        : (is_unsigned ? "__fixunssfdi" : "__fixsfdi");
+                    if (is_dbl)
+                        asmbuf_puts(&buf, "    lw t1, 0(sp)\n    lw t0, 4(sp)\n"
+                                          "    addi sp, sp, 8\n"
+                                          "    mv a0, t0\n    mv a1, t1\n");
+                    else
+                        asmbuf_puts(&buf, "    lw a0, 0(sp)\n    addi sp, sp, 4\n");
+                    asmbuf_puts(&buf, "    call ");
+                    asmbuf_puts(&buf, h);
+                    asmbuf_putc(&buf, '\n');
+                    rv_fpush1(&buf, 1);
+                    break;
+                }
+                case IR_F2F: {
+                    /* float <-> double cast.
+                     * aux: 0x200 = double source (narrowing), 0x100 = double
+                     * destination (widening); neither means same width. */
+                    int src_dbl = (I->aux & 0x200) != 0;
+                    int dst_dbl = (I->aux & 0x100) != 0;
+                    if (src_dbl && !dst_dbl) {
+                        asmbuf_puts(&buf, "    lw t1, 0(sp)\n    lw t0, 4(sp)\n"
+                                          "    addi sp, sp, 8\n    mv a0, t0\n    mv a1, t1\n"
+                                          "    call __truncdfsf2\n");
+                        asmbuf_puts(&buf, "    addi sp, sp, -4\n    sw a0, 0(sp)\n");
+                    } else if (!src_dbl && dst_dbl) {
+                        asmbuf_puts(&buf, "    lw a0, 0(sp)\n    addi sp, sp, 4\n"
+                                          "    call __extendsfdf2\n");
+                        rv_fpush1(&buf, 1);
+                    }
+                    break;
+                }
                 case IR_UNARY: {
                     /* val: 0 = 32-bit, 1 = float (unimplemented here),
                      * 2 = 64-bit integer.  aux = the operator. */
@@ -830,10 +1090,25 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                         }
                         asmbuf_puts(&buf, "    sw t0, 0(sp)\n    sw t1, 4(sp)\n");
                     } else if (I->val == 1) {
-                        diag_tool(DIAG_SEV_ERROR, "arkcc",
-                                  "the riscv32 backend has no floating point: the "
-                                  "unary operator in '%s' cannot be emitted",
-                                  f->name, 0,0,0,0,0);
+                        /* Floating-point negation.  `-x` on a float/double is a
+                         * sign-bit flip, NOT an integer negate: the latter turns
+                         * -0.0 into +0.0 and mangles the exponent of every other
+                         * value.  val==1 means float; aux bit 0x200 marks a
+                         * double, whose sign bit sits in the HIGH word -- which
+                         * is the word on top of the stack, so one sequence does
+                         * both. */
+                        int op = I->aux & ~0x200;
+                        if (op != (int)TOK_MINUS) {
+                            char b1[12];
+                            diag_tool(DIAG_SEV_ERROR, "arkcc",
+                                      "the riscv32 backend does not implement the "
+                                      "floating-point unary operator %s in '%s'",
+                                      diag_num(b1, op), f->name, 0,0,0,0);
+                        } else {
+                            asmbuf_puts(&buf, "    lw t0, 0(sp)\n"
+                                              "    li t1, -2147483648\n"
+                                              "    xor t0, t0, t1\n    sw t0, 0(sp)\n");
+                        }
                     } else {
                         asmbuf_puts(&buf, "    lw t0, 0(sp)\n");
                         if (I->aux == (int)TOK_MINUS) asmbuf_puts(&buf, "    neg t0, t0\n");
