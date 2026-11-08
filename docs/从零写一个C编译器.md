@@ -3326,6 +3326,54 @@ arkc 的 `parse_declarator` 分三段处理：
 
 ---
 
+#### 8.5.4 聚合初始化器里的地址元素：为什么前端要再走一遍 AST
+
+8.5.3 只解决了"一个标量全局指针"的初值。把地址放进**聚合**里，问题换了个形状：
+
+```c
+int (*tab[2])(int,int) = { add, sub };      /* 函数指针数组 */
+int gv; int *pa[2] = { &gv, &gv };          /* 对象指针数组 */
+struct S { int n; int (*f)(int,int); int *p; } s = { 3, add, &gv };
+```
+
+三处都要改，缺一处就"能解析但报后端错"：
+
+1. **声明符**。`int (*tab[2])(int,int);` 的 `[2]` 写在括号内层。旧解析器在 `(*name)` 分支里，读完名字立刻 `expect RPAREN`，于是 `#18: expected a ")"`。正确顺序是：先把名字包成"指针"类型并打上 `is_func_ptr`，**再**解析括号内的数组维度（只接受整型常量维，否则报 `the dimension of an array of function pointers must be an integer constant expression`），之后才 `expect RPAREN`，最后把外层形参表挂到那个**指针**类型上（不是挂到 `t` 上——`t` 已经被数组包了一层）。
+2. **布局**。元素偏移必须由类型算出：数组用元素步长，结构体用 `StructField.offset`，`char` 数组的步长就是 1。靠数逗号推偏移是旧后端干过的事，嵌套与填充一掺就错。
+3. **两条路都要有。** 全局标量初值走 `init_sym/init_sym_off` 三元组；聚合初值走的是另一条路——`src/agginit.c` 把**序列化后的文本**变成字节。它拿不到 AST，也不该拿到：`ark_agg_fill()` 的契约是"类型 + 文本 → 字节"，被 4 个后端共用。
+
+于是问题变成：文本里出现 `add`，`ark_agg_fill()` 怎么知道它不是数字？
+
+**答案不是让它去猜，而是让前端再走一遍 AST，然后两边按偏移对账。** 具体是：
+
+- 前端新增 `irgen_try_agg_addr_init()`，沿类型树走 AST 初始化器，把每个地址常量记成
+  `IrSymRef { offset, sym, add, is_func }`，存进 `IrGlobal.init_refs`。它**不**产生字节。
+- `ark_agg_fill()` 多了个 `ark_agg_fill_ex(..., addr_hook, ud)`：读不出数字、类型又是指针或函数的
+  元素，就问 hook；hook 按 `offset` 在 `init_refs` 里查，命中就返回 1（"这个位置我来放"），
+  `ark_agg_fill_ex` 写 0 占位并跳过该元素的文本，最后由后端把真地址 `STR`/`.word` 写进去。
+
+为什么这是**交叉校验**而不是重复劳动：两个实现独立推导同一份布局——一个从 AST + 类型，一个从
+文本 + 类型。偏移对不上时 hook 不命中，`ark_agg_fill_ex` 返回 -1，后端报"cannot turn the
+initialiser into data"；**不会**出现"地址位置被写成 0 却没人报警"。这是这套设计唯一要买的东西。
+
+三个坑：
+
+- **hook 命中后必须自己推进文本游标。** 第一版的 hook 分支只写零、不前进，于是下一轮数组循环
+  看到游标还停在 `&gv` 上，以为"初值比元素多"，整条 walk 失败——症状是 `#1` 里的 `{&gv,&gv}`
+  报"too many initialisers"式的后端错，而 `init_refs` 明明已经记了 2 条。修法是命中后前进到
+  本层的下一个 `,` 或 `}`，并计 `()`/`[]`/`{}` 的嵌套深度（这样 `(int*)&gv`、`&a[i]` 都能跳过）。
+- **只接受花括号写全的初始化器。** 省略花括号时元素落点取决于展平后的布局，走查器不重推布局，
+  于是 bail；bail 单独报一条"braces are not spelled out level by level (or it uses a designator)"。
+  为了分辨"bail 因为地址不能放"和"bail 但和地址无关（纯数字的省略花括号，本来就不支持）"，
+  另写了个只读扫描 `irgen_init_has_addr()`：初始化器里究竟有没有地址元素。
+- **聚合体内的字符串字面量仍然拒绝。** `char *cs[2] = { "xy", "cd" };` 每个元素需要一个池化
+  字面量并各自重定位，不在本轮范围，安全报错。
+
+门禁是 `tests/run_agg_addr_tests.py`：12 个运行时用例 × 2 后端（宿主 gcc 双校验）、4 个"必须
+报错"、1 个 RV 汇编必须出现 `.word add` 的编码断言，外加"错答案必须能被判出"的自检。
+
+---
+
 ### 8.6 `typedef` 带来的歧义
 
 #### 8.6.1 歧义出在哪

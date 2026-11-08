@@ -157,6 +157,60 @@ static void rv_emit_bytes(AsmBuffer *b, const unsigned char *p, int n) {
     if (n > 0) asmbuf_putc(b, '\n');
 }
 
+/* Ask the aggregate filler to keep the four bytes at `off` for us.  This is
+ * not a guess: irgen walked the same initialiser against the same type and
+ * recorded that offset.  An offset it did not record means the two walks
+ * disagree, and the filler then fails instead of storing an address in the
+ * wrong field. */
+static int rv_agg_addr_hook(void *ud, int off, Type *t) {
+    IrGlobal *g = (IrGlobal *)ud;
+    int i;
+    (void)t;
+    if (!g) return 0;
+    for (i = 0; i < g->init_ref_count; i++)
+        if (g->init_refs[i].offset == off) return 1;
+    return 0;
+}
+
+/* Bytes with symbol references: an address element cannot be a byte pattern
+ * (its value is a link-time address), so the assembler is handed `.word name'
+ * instead and the offset of every recorded element splits the byte run. */
+static void rv_emit_bytes_refs(AsmBuffer *b, const unsigned char *p, int n,
+                               IrGlobal *g) {
+    int k = 0;
+    if (!g || g->init_ref_count <= 0) { rv_emit_bytes(b, p, n); return; }
+    while (k < n) {
+        const IrSymRef *r = 0;
+        int j, i;
+        for (i = 0; i < g->init_ref_count; i++)
+            if (g->init_refs[i].offset == k) { r = &g->init_refs[i]; break; }
+        if (r) {
+            asmbuf_puts(b, "    .word ");
+            asmbuf_puts(b, r->sym);
+            if (r->add > 0) {
+                asmbuf_puts(b, " + ");
+                asmbuf_int(b, (int)r->add);
+            } else if (r->add < 0) {
+                asmbuf_puts(b, " - ");
+                asmbuf_int(b, (int)(-r->add));
+            }
+            asmbuf_putc(b, '\n');
+            k += 4;
+            continue;
+        }
+        j = k + 1;
+        while (j < n) {
+            int hit = 0;
+            for (i = 0; i < g->init_ref_count; i++)
+                if (g->init_refs[i].offset == j) { hit = 1; break; }
+            if (hit) break;
+            j++;
+        }
+        rv_emit_bytes(b, p + k, j - k);
+        k = j;
+    }
+}
+
 /* A C string as assembler text, for .asciz. */
 static void rv_put_cstr(AsmBuffer *b, const char *s) {
     int k;
@@ -622,7 +676,8 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                 int k;
                 for (k = 0; k < gsz; k++) bytes[k] = 0;
                 if (g->init_aggregate) {
-                    if (ark_agg_fill(t, g->init_aggregate, bytes, gsz) != 0)
+                    if (ark_agg_fill_ex(t, g->init_aggregate, bytes, gsz,
+                                        rv_agg_addr_hook, (void *)g) != 0)
                         bad = 1;
                 } else if (kind == TYPE_ARRAY && t && t->base &&
                            type_size(t->base) == 1) {
@@ -642,7 +697,7 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                     asmbuf_int(&buf, gsz);
                     asmbuf_putc(&buf, '\n');
                 } else {
-                    rv_emit_bytes(&buf, bytes, gsz);
+                    rv_emit_bytes_refs(&buf, bytes, gsz, g);
                 }
             } else if (is_agg) {
                 asmbuf_puts(&buf, "    .space ");

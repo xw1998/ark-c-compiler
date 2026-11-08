@@ -517,6 +517,47 @@ top level`、`sizeof(F)` 静默返回 4。回归门禁：`tests/run_func_typedef
 回归门禁：`tests/run_func_ptr_global_tests.py`（16 例运行时 × 2 后端，与宿主 gcc 双校验 + 3 例"必须
 报错" + 2 组跨 TU `-c`/`-link`）。
 
+**聚合初始化器里的地址元素（C11 6.6p9）**
+
+聚合初值里也可以放地址常量，只要**花括号逐层写全**：
+
+| 形态 | ARM (Thumb-2) | RV32I |
+| --- | --- | --- |
+| `int (*tab[2])(int,int) = { add, sub };` | 每元素 `LDR r0,=add` 再 `STR` | `.word add` / `.word sub` |
+| `int gv; int *pa[2] = { &gv, &gv };` | 同上（`MOVW/MOVT`） | `.word gv` |
+| `struct S{int n; int (*f)(int,int); int *p;} s = {3, add, &gv};` | 按成员偏移写 | 按成员偏移分段 `.byte` / `.word` |
+| `struct C t[2] = { {1, add}, {2, sub} };` | 同上 | 同上 |
+| `char c[8]; char *cs[2] = { &c[1], &c[2] };` | 步长按元素类型（char 为 1） | 同左 |
+
+实现是**两条独立推导的交叉校验**，不是重复劳动：
+
+1. `src/irgen.c` 再走一遍 AST（`IrGlobal.init_refs`，每项 `(字节偏移, 符号, 加数, 是否函数)`），
+   偏移由类型树算出；
+2. `src/agginit.c` 仍按「文本 + 类型」填字节；凡读不出数字、而类型是指针或函数的元素，问后端
+   hook（`ark_agg_fill_ex()` 的 `addr_hook`），后端按偏移在 `init_refs` 里查：查到就写零占位、
+   随后由后端覆盖成真地址；查不到就拒绝（`cannot turn the initialiser ... into data`），
+   不会把地址静默写成 0。
+
+**必须拒绝的形态（已实现，均报错不产镜像）：**
+
+- **花括号省略**（brace elision）：`struct T{int *p,*q;}; struct T t[1] = { &gv, &gv };` ——
+  元素落点取决于展平后的布局，本走查不重推布局，报 `its braces are not spelled out level by level`；
+- **指派器**（designator）：`int *pa[2] = { [1] = &gv };` —— 同上（走查不跟随 `[k] =` / `.f =` 的游标）；
+- **自动变量的地址**：`static int *pa[2] = { &local, &gv };` —— 报 `is an address that is not a
+  constant expression (C11 6.6p9)`（该信息里的对象名是内部符号名，例如 `ark_sl_main_pa`）；
+- **函数 + 偏移**：`int (*t[2])(int,int) = { add + 1, sub };` —— 同上。
+
+**仍然不支持（安全报错）**：聚合里的**字符串字面量**元素（`char *cs[2] = { "xy", "cd" };`）——
+每个元素需要一个池化字面量并各自重定位，尚未实现，报 `cannot turn the initialiser ... into data`。
+
+**函数指针数组声明符**也一并支持：`int (*tab[2])(int,int);` 的 `[2]` 写在括号内层（`(*tab[2])`），
+旧版解析器在名字后直接 `expect ")"`，报 `#18: expected a ")"`；现在先解析括号内的数组维度
+（只接受整型常量维，否则报 `the dimension of an array of function pointers must be an integer
+constant expression`），再把外层形参表挂到指针类型上。
+
+回归门禁：`tests/run_agg_addr_tests.py`（12 例运行时 × 2 后端，与宿主 gcc 双校验；4 例"必须报错"；
+1 例 RV 汇编必须出现 `.word add`——防"把地址折成数字"那种能跑但错的假绿）。
+
 **struct/union（> 8 字节）返回值：两个机器后端都走 sret（隐藏缓冲指针）**
 
 | 目标 | 谁开缓冲 | 传入 / 回传 | 实参起点 | 栈上实参 |
@@ -1254,7 +1295,7 @@ v0.8.0 已实现完整的 C99 集合 + 98% 以上的 armcc 常用扩展，仅剩
 - **`sizeof(long double)` 为 8**：本编译器采用 LLP64 数据模型（与 armcc 默认一致），`long double` 与 `double` 同为 8 字节，而 32 位 x86 宿主 GCC 上是 12。依赖 `sizeof(long double)` 区分精度的代码不可移植，跨平台比对 `sizeof` 结果时须按目标模型而非宿主模型来判断。
 - **位域宽度上限 32 位**：`IR_LOAD_FLD`/`IR_STORE_FLD` 按 32 位容器读写，`long long x:40` 会读回错值。因此语法分析阶段直接报错（`bit-field width 40 exceeds 32`）、不生成代码，不做静默截断。
 - **`ret (*fn(params))(params)`（返回函数指针的函数）不可解析**：`(*name)` 形式目前要求名字后立刻是 `)`，不支持括号内再带一层参数表，因此 `int (*pick(int))(int,int){...}` 这类声明符会报语法错误。**当前行为是显式报错**（`[parser] ... syntax error(s); no code generated`），不会产出错误二进制。修法需要把 `parse_declarator` 改写成递归下降 + 占位类型替换，属结构性改动。
-- **聚合初始化器只认能变成字节的东西（两个机器后端共用一份实现）**：全局聚合初始化走 [include/agginit.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/agginit.h) 的 `ark_agg_fill()`，类型驱动地按声明偏移写字节，所以支持整数/字符常量、字符串填充 `char` 数组（含 `char m[2][6] = {"ab","cd"}` 这种按行的）、嵌套 `{}`、`.field=` 与 `[idx]=` 指派器。**浮点字面量、`union`（叠放存储无从猜）、位域（存储不是字节）、以及不能用字面量表示的初值一律显式报错**，绝不写零充数。两个后端调同一份实现，所以 ARM 与 RV32I 在这里给出的是同一组字节——曾经 ARM 自己那份"按逗号走"的解析器把字符串元素跳过存 0，`struct Q gq = {3, "abcd", 9}` 的成员全成了 NUL。
+- **聚合初始化器只认能变成字节的东西（两个机器后端共用一份实现）**：全局聚合初始化走 [include/agginit.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/agginit.h) 的 `ark_agg_fill()`，类型驱动地按声明偏移写字节，所以支持整数/字符常量、字符串填充 `char` 数组（含 `char m[2][6] = {"ab","cd"}` 这种按行的）、嵌套 `{}`、`.field=` 与 `[idx]=` 指派器，以及**地址常量元素**（`int (*tab[2])(int,int) = {add,sub};`——文本里读不出数字、类型是指针/函数的元素交给后端 hook，按 `IrGlobal.init_refs` 的偏移对账，见「聚合初始化器里的地址元素」一节）。**浮点字面量、`union`（叠放存储无从猜）、位域（存储不是字节）、以及不能用字面量表示的初值一律显式报错**，绝不写零充数。两个后端调同一份实现，所以 ARM 与 RV32I 在这里给出的是同一组字节——曾经 ARM 自己那份"按逗号走"的解析器把字符串元素跳过存 0，`struct Q gq = {3, "abcd", 9}` 的成员全成了 NUL。
 - **块作用域 `_Alignas` 上限 8 字节**：16/32/64 一律报错（`block-scope _Alignas above 8 bytes is not supported`），
   因为帧只保证 `sp` 8 字节对齐；文件作用域与结构体成员没有这个限制。
 - **`_Generic` 的关联类型不比函数签名**：`int (*)(int)` 与 `int (*)(double)` 视为同一类型（`is_func_ptr` 标志一致即匹配），
