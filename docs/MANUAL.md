@@ -277,7 +277,7 @@ CPU 选择的实现位于 `include/cpu.h` + `src/cpu.c`，会根据 CPU 名字�
 | `__thread`（TLS） | 是 | 线程本地存储，输出 `.tbss`/`.tdata` 段 |
 | 强制类型转换 `(type)expr` | 是 | |
 | `sizeof(type)` / `sizeof expr` | 是 | 编译期求值 |
-| VLA 可变长度数组 | 是 | `int a[n]` 运行期 VLA，通过 `IR_ALLOCA` 在栈上分配（8 字节对齐） |
+| VLA 可变长度数组 | 是 | `int a[n]` 运行期 VLA，通过 `IR_ALLOCA` 在栈上分配；向上取整对齐：ARM / x86_64 取 8，RV32I 取 16（psABI 要求每次调用前 sp 16 字节对齐）。RV32I 的函数只要含 `IR_ALLOCA`，尾声就先 `sub sp, s0, frame_size` 把 sp 重建回固定帧底再弹帧，否则 `return` 会从错位处读 `ra`/`s0`。门禁：`tests/run_rv_alloca_tests.py --rv-as <bin>` |
 
 ### 4.2 字面量
 

@@ -70,7 +70,15 @@ static void rv_sp_adj(AsmBuffer *b, int delta, int upward) {
 /* Restore ra/s0 and pop the frame.  Both the saved-register offsets and the
  * frame size are past the 12-bit immediate range for a big frame, so the
  * addresses are formed in t0 first. */
-static void rv_pilogue(AsmBuffer *b, int sp_size) {
+static void rv_pilogue(AsmBuffer *b, int sp_size, int dynamic) {
+    /* A VLA lowers to IR_ALLOCA, which moves sp at run time; the saved
+     * registers are then no longer at a fixed offset from the current sp.
+     * s0 is the frame base, so rebuild sp from it before touching the frame. */
+    if (dynamic) {
+        asmbuf_puts(b, "    li t0, ");
+        asmbuf_int(b, sp_size);
+        asmbuf_puts(b, "\n    sub sp, s0, t0\n");
+    }
     asmbuf_puts(b, "    li t0, ");
     asmbuf_int(b, sp_size - RV_SAVE_S0_OFF);
     asmbuf_puts(b, "\n    add t0, sp, t0\n    lw s0, 0(t0)\n    li t0, ");
@@ -313,6 +321,11 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
 
         int i;
         int fsize = RV_LOCAL_BASE + f->local_size;
+        /* Whether the body lowers a VLA anywhere: that is what decides if the
+         * epilogue may assume sp still sits at the bottom of the fixed frame. */
+        int has_alloca = 0;
+        for (i = 0; i < f->code_count; i++)
+            if (f->code[i].op == IR_ALLOCA) { has_alloca = 1; break; }
         int sp_size = (fsize + 15) & ~15;
         int va_named_words = 0;
         /* Words the named parameters occupy, counted exactly the way irgen
@@ -1065,7 +1078,7 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                                           "    lw a0, 0(sp)\n    addi sp, sp, 4\n");
                     else
                         asmbuf_puts(&buf, "    lw a0, 0(sp)\n    addi sp, sp, 4\n");
-                    rv_pilogue(&buf, sp_size);
+                    rv_pilogue(&buf, sp_size, has_alloca);
                     break;
                 case IR_PUSH_GLOBAL_ADDR:
                     /* the address of a global, without reading its value */
@@ -1161,6 +1174,21 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                                       "    sw t4, 0(t1)\n");
                     break;
                 }
+                case IR_ALLOCA: {
+                    /* VLA: irgen emits PUSH(count); PUSH_INT(elem_size);
+                     * BINARY(MUL); ALLOCA; STORE.  Pop the byte count, round
+                     * it UP to 16 so sp stays call-aligned (the psABI requires
+                     * 16 at every call, and a VLA can outlive a call), drop sp
+                     * and push the block address.  One pop in, one push out.
+                     * `andi` takes a 12-bit signed immediate, so -16 fits.
+                     * The matching epilogue rebuilds sp from s0 whenever the
+                     * function contains this op. */
+                    asmbuf_puts(&buf, "    lw t0, 0(sp)\n"
+                                      "    addi t0, t0, 15\n    andi t0, t0, -16\n"
+                                      "    sub sp, sp, t0\n    addi sp, sp, -4\n"
+                                      "    addi t1, sp, 4\n    sw t1, 0(sp)\n");
+                    break;
+                }
                 default:
                     /* Every op this backend does not implement used to be
                      * commented out, which left the IR stack unbalanced and
@@ -1180,7 +1208,7 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
             }
         }
         asmbuf_puts(&buf, "    li a0, 0\n");
-        rv_pilogue(&buf, sp_size);
+        rv_pilogue(&buf, sp_size, has_alloca);
         asmbuf_putc(&buf, '\n');
     }
     {
