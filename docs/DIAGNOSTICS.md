@@ -218,6 +218,13 @@ up to date (37 frontend, 7 driver)
   armcc 打印 30 条后**既不再打印也不再计数**，也没有"too many errors"之类的收尾行，
   arkc 照做。armcc **没有**对应选项（`--diag_limit=5` 被 `C3900U` 拒绝），
   所以 arkc 也不提供（`diag_at_limit()` 只是查询，上限是常量）。
+  上限同时是**解析的停止条件**：`parse_program` 与 `parse_block` 在 `diag_at_limit()`
+  时不再继续解析（文件已经看不懂了，继续建 AST 只会吃内存）。另有一条更根本的护栏：
+  语句解析若**一个 token 都没消费**，就强制 `lexer_advance` 一个——否则同一条错误会在
+  同一个 token 上无限重复。板上实测：`cc -S va.c` 不带 `-I`（`<stdarg.h>` 找不到）时
+  `u.v = va_arg(ap, long long);` 让 #65/#29 在同一行刷了 595 ms，最后停在
+  `[arkc] FATAL: memory pool exhausted`，真正的病因（缺 include）被最后一行盖住；
+  现在 30 条错误后即停，226 ms 返回，不碰分配器。
 
 ---
 
