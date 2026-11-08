@@ -463,7 +463,14 @@ v0.8.0 之后补上四个 C11 关键字，其余 C11 特性（`_Atomic`、`<thre
   `typedef Ret (*FP)(args);` 形式不受影响。
 - 全局函数指针的初值仍不支持（`cannot turn the initialiser of the global ... into data`），函数指针只能
   局部初始化或运行期赋值。
-- RV32I 的 **struct（> 8 字节）返回值**仍未实现（本轮只把 `_Complex` 从 sret 里摘出来）。
+- RV32I 的 **struct（> 8 字节）返回值没有 sret**：ARM 走 AAPCS 的隐藏缓冲指针（`r0` 传入、
+  调用者帧里开缓冲、`r0` 回传地址），RV32I 后端没有这条通路——`irgen` 照旧把值的**地址**推给
+  `IR_RETURN`，RV 后端就把它当返回值放进 `a0`，于是调用者拿到的是**被调方帧里的地址**，
+  随即 `memcpy` 出去。单线程下紧接着就复制、被调方那一段栈还没被复用，实测结果正确
+  （`struct S{a,b,c}` 返回 345，掩码后 89）；但这段地址在被调方 `ret` 之后已经无效，
+  **一旦有中断/信号复用同一段栈就会读到脏值**。这是一个已登记的正确性欠账，不是"支持"，
+  修法是让调用者在自己的帧里开缓冲、按 psABI 用 `a0` 传进去（同时把实参寄存器整体后移一位）。
+  复数不走这条通路（它用 `a0..a3` 直接回传）。
 
 门禁：`python tests/run_complex_tests.py --arm-as <bin> --arm-libgcc <libgcc.a> --rv-as <bin>`，
 38 个用例 × 2 目标（ARM 与 RV32I 各自 as→链接→unicorn 真跑，比的是**运行退出码**而不是"有没有报错"）。
