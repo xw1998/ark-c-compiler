@@ -70,7 +70,7 @@
 | 指针与数组 | 是 | 一维/多维数组、指针、函数指针、数组退化；数组维度支持常量表达式 `int arr[SIZE+2]` |
 | 变长数组 (VLA) | 是 | `int a[n]` 运行时变长数组，通过 `IR_ALLOCA` 在栈上分配；向上取整对齐：ARM / x86_64 取 8、RV32I 取 16（psABI 要求每次调用前 sp 16 对齐），RV32I 的尾声在函数含 `IR_ALLOCA` 时先用 `sub sp, s0, frame` 重建 sp 再弹帧——否则 `return` 从错位的地方读 `ra/s0` |
 | 复合类型 | 是 | `struct`/`union`/`enum`/`typedef`、位域（真正按位打包）、灵活数组成员 `data[]`、匿名 struct/union 字段提升 |
-| 复数类型 | 是 | `_Complex double`/`_Complex float`，透传给 gcc（`sizeof(_Complex double)==16`） |
+| 复数类型 | 是 | `_Complex double`/`_Complex float`：运算、实参、返回值、隐式转换、静态初值全通；16 字节的 `_Complex double` 返回在 ARM 用 r0-r3、RV32I 用 a0-a3（软浮点 AAPCS，**不走 sret**，与 gcc 被调方互操作），x86 后端明确拒绝、穿过 `...` 也明确拒绝。细节见 `docs/MANUAL.md` §4.10 |
 | 宽字符 | 是 | `wchar_t` + `L"..."` 宽字符串 + `L'...'` 宽字符字面量；通过 `--wchar16`/`--wchar32` 切换宽度 |
 | 三字符组 | 是 | 全部 9 个 C99 三字符组（`??=`->`#`、`??(`->`[`、`??/`->`\`、`??)`->`]`、`??'`->`^`、`??<`->`{`、`??>`->`}`、`??!`->`|`、`??-`->`~`） |
 | 限定符 | 是 | `const/volatile/restrict/inline` |
@@ -457,6 +457,34 @@ RV32I 剩下的是这个后端自己的边界，不是 va 特有的：它只从 
 函数体是整段汇编"的写法不经过 va 区（`is_asm_func`），四个后端都照旧可用。float 实参
 进变参调用时会先按 C99 6.5.2.2p6 提升成 double（`irgen` 发 `IR_F2F`），所以形参宽度按
 8 字节算。
+
+### 运行库依赖：哪些符号必须由外部提供
+
+后端**不再自带**任何 AEABI 软浮 / 64 位整数辅助例程，也不自带 RV32I 的软浮例程。
+它们属于目标运行库（AEABI 就是这么定义的），每个真实工具链都带：`arm-none-eabi-gcc`
+的 `libgcc.a`、armcc 的 `armlib`。
+
+| 用到了什么 | ARM Thumb-2 | RV32I |
+| --- | --- | --- |
+| `float`/`double` 算术（软浮） | `__aeabi_f*` / `__aeabi_d*`（`add/sub/mul/div`、`cmpeq/cmpgt/...`） | `__addsf3/__subsf3/__mulsf3/__divsf3`、`__adddf3/__subdf3/__muldf3/__divdf3` |
+| 浮点与整型/浮点互转 | `__aeabi_i2f` / `__aeabi_ui2d` / `__aeabi_f2iz` / `__aeabi_d2lz` … | `__extendsfdf2`、`__fixdf*`（软浮实现内部再链） |
+| 浮点比较 | `__aeabi_fcmp*` / `__aeabi_dcmp*` | `__eqdf2/__nedf2/__ltdf2/__ledf2/__gtdf2/__gedf2` |
+| 64 位整数乘 / 除 / 取模 | `__aeabi_lmul`、`__aeabi_ldivmod`、`__aeabi_uldivmod` | `__muldi3` / `__divdi3` / `__udivdi3`（`libgcc`） |
+| 64 位整数逻辑移位 | `__aeabi_llsl` / `__aeabi_llsr` / `__aeabi_lasr` | 内联（`slli`/`srli` 逐字拼） |
+| 64 位整数加减 | **内联**（`ADDS`/`ADCS` 序列，不需要库） | **内联**（`sltu` + `add`/`sub` 进位链） |
+| `memcpy` | 后端自带 `__aeabi_memcpy`（结构体赋值/传参/数组初始化都用它） | 后端自带同名块 |
+| 硬件 FPU 模式（ARM `--fpu=hard`） | 上面的软浮全部换成 `VADD/VMUL/VCVT/VCMP`，不依赖运行库 | 无（RV32I 没有浮点扩展） |
+
+因此：**用到浮点、64 位除法或 64 位↔浮点转换的镜像，链接时必须带运行库**。
+不带不会算出错值——会在链接期以 `undefined reference to __aeabi_...` /
+`undefined reference to __adddf3` 失败，这是刻意的：这些辅助例程曾被内联实现，
+实测 `__aeabi_f2iz`、`__aeabi_fdiv`、`__aeabi_uldivmod`、`__aeabi_ldivmod`、
+`__aeabi_dadd` 五个都是**静默错值**（详见 `src/backend/arm/backend_arm.c` 里那段注释），
+所以整批删掉，把"算错"变成"链不上"。纯整数、不用 64 位除法的程序仍然零依赖。
+
+RISC-V 侧同理：`arkcc -target riscv32 x.c -o x.bin` 出的镜像只含自己的代码，
+软浮和 64 位乘除要另外链 `libgcc`（或换成 `-target riscv32` 下自带汇编器产出的
+`.s` 交给完整工具链汇编链接）。
 
 ## 目录结构
 

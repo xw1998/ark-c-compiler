@@ -400,8 +400,9 @@ v0.8.0 之后补上四个 C11 关键字，其余 C11 特性（`_Atomic`、`<thre
 1. **块作用域 `_Alignas(> 8)` 报错**，不静默降级：帧是 `sp -= N; base = sp` 建的，AAPCS 只保证
    `sp` 8 字节对齐；要真支持 16/32/64 得改 prologue/epilogue 并处理变参序列占用 `r5` 存旧 `sp`
    的冲突。诊断文本：`block-scope _Alignas above 8 bytes is not supported (the frame is 8-byte aligned)`。
-2. **`_Generic` 的关联类型不比较函数签名**：`parse_declarator` 把 `int (*)(int)` 记成"指向返回类型的指针 +
-   `is_func_ptr` 标志"，参数表被跳过。因此 `int (*)(int)` 与 `int (*)(double)` 在关联表里无法区分。
+2. **`_Generic` 的关联类型不比较函数签名**：`parse_declarator` 解析 `(*fp)(params)` 时会把参数表
+   保留在指针类型上（供调用点判断实参宽度，见 4.10），但类型同一性判定只比 `is_func_ptr` 标志与
+   返回类型，不比参数列表。因此 `int (*)(int)` 与 `int (*)(double)` 在关联表里仍无法区分。
    `_Generic` 的匹配为此额外要求 `is_func_ptr` 标志一致（否则普通 `int *` 会匹配到函数指示符——
    这是本仓真踩过的错支）。
 3. **控制表达式只对"标识符 / 一元 `*` / 一元 `&`"做函数指示符退化**：sema 是浅层解析，
@@ -411,6 +412,62 @@ v0.8.0 之后补上四个 C11 关键字，其余 C11 特性（`_Atomic`、`<thre
 门禁：`python tests/run_c11_keywords_tests.py --arm-as <bin> [--rv-as <bin>]`，ARM + RV32I 双目标
 共 30 项（11 个运行时用例 × 2 目标 + 8 个诊断用例），另含三条自检（静态断言真/假对照、
 `_Alignof` 不得等于默认 4、期望值错配必须判红）。
+
+### 4.10 复数类型（`_Complex`）
+
+`_Complex float` 是 8 字节、`_Complex double` 是 16 字节，两者在**对象里**都是实部在前、虚部在后，
+每部分按各自的浮点宽度逐字节存放（小端，所以 `double` 的实部是 `[lo, hi]` 四个字节在前）：
+
+| 类型 | 偏移 0 | 偏移 4 | 偏移 8 | 偏移 12 |
+| --- | --- | --- | --- | --- |
+| `_Complex float` (8 B) | `re_f32` | `im_f32` | — | — |
+| `_Complex double` (16 B) | `re_lo` | `re_hi` | `im_lo` | `im_hi` |
+
+`sizeof`/`_Alignof` 与 gcc 一致（8/16，对齐 4/8）；静态初值（如 `double _Complex g = 3.0 - 2.0i;`）由前端
+常量折叠求值后写进 `.data`，两个机器后端共用同一份填充实现。
+
+**IR 值栈形状**：机器后端里一个复数值占 4 个 IR 字，栈顶在低地址，
+`sp+0 = re_hi, sp+4 = re_lo, sp+8 = im_hi, sp+12 = im_lo`（`_Complex float` 只用其中的 re/im 槽）。
+取实部/虚部、`float <-> double` 加宽、复共轭等由 `IR_AUX_COMPLEX` 系列 aux 编码在单条 IR 内完成，
+不经过函数调用。
+
+**返回值 ABI**：16 字节的 `_Complex double` **不进 sret**，直接用返回值寄存器：
+
+| 目标 | `_Complex float` (8 B) | `_Complex double` (16 B) |
+| --- | --- | --- |
+| ARM (Thumb-2, 软浮点) | `r0 = re_f32`, `r1 = im_f32` | `r0:r1 = re(lo,hi)`, `r2:r3 = im(lo,hi)` |
+| RV32I | `a0 = re_f32`, `a1 = im_f32` | `a0..a3 = re_lo, re_hi, im_lo, im_hi` |
+| x86_64 / C 后端 | 拒绝（见下） | 拒绝（见下） |
+
+这与 arm-none-eabi-gcc 的软浮点 AAPCS 一致（软浮点下 16 字节复合类型就是两个寄存器对），所以 arkc
+编的函数与 gcc 编的库函数可以互相调用。**sret 表现在只含 struct/union（size > 8）**。选它而不选 sret
+的直接理由：不需要调用者为返回值准备缓冲区，于是"通过声明调用""通过函数指针调用""跨翻译单元调用"
+三种形态自动全部可用——sret 下这三条都要各自的簿记，任何一条漏了就是静默错值。
+
+**实参 ABI**：C99 6.5.2.2 要求先把实参转换成形参类型。转换后若是 16 字节复数值，`irgen` 把它物化进
+临时对象、只压**一个地址字**，被调方 `IR_GETARG` 见 `aux` 上标的尺寸（> 8）就按地址 `memcpy` 进帧。
+两点注意：
+
+- 8 字节的 `_Complex float` 走"两字值"，不是地址字（与 `long long` 同形）；
+- 函数指针调用同样适用：`parse_declarator` 现在把 `(*fp)(参数表)` 的参数类型保留在指针类型上，
+  所以 `double _Complex (*fp)(double _Complex);` 的调用知道形参是 16 字节（更早的版本把参数表当
+  平衡括号跳过，这类调用会被诚实拒绝）。
+
+**明确拒绝（宁可报错，不给错答案）**：
+
+- x86_64 后端对复数全局对象与复数操作一律报错（`_Complex value not supported by the x86 backend`），
+  不产镜像；C 后端把初值原样输出成 C 源码，交给宿主 gcc。
+- 穿过 `...` 传复数：`va_arg` 只能按连续参数**字**走、被调方没有类型信息，所以调用点直接报
+  `passing a _Complex value without a _Complex parameter type ...`，而不是只物化一半。
+- `typedef Ret F(args);`（**函数类型** typedef，不带 `*`）整体不被接受（`expected declaration at top level`）；
+  `typedef Ret (*FP)(args);` 形式不受影响。
+- 全局函数指针的初值仍不支持（`cannot turn the initialiser of the global ... into data`），函数指针只能
+  局部初始化或运行期赋值。
+- RV32I 的 **struct（> 8 字节）返回值**仍未实现（本轮只把 `_Complex` 从 sret 里摘出来）。
+
+门禁：`python tests/run_complex_tests.py --arm-as <bin> --arm-libgcc <libgcc.a> --rv-as <bin>`，
+38 个用例 × 2 目标（ARM 与 RV32I 各自 as→链接→unicorn 真跑，比的是**运行退出码**而不是"有没有报错"）。
+软浮 helper（ARM `__aeabi_f2d`/`__aeabi_d2f`，RV `__extendsfdf2`/`__truncdfsf2`）来自 libgcc，**必须链运行库**。
 
 ## 5 多后端架构
 
@@ -1095,6 +1152,7 @@ v0.8.0 已实现完整的 C99 集合 + 98% 以上的 armcc 常用扩展，仅剩
 
 ### 部分支持
 
+- **必须链运行库（软浮 / 64 位乘除）**：后端**不再自带**`__aeabi_f*`/`__aeabi_d*`、`__aeabi_ldivmod`/`__aeabi_uldivmod`、`__aeabi_llsl` 这些 AEABI 辅助例程（[src/backend/arm/backend_arm.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/backend/arm/backend_arm.c) 里有逐条说明：`__aeabi_f2iz`、`__aeabi_fdiv`、`__aeabi_uldivmod`、`__aeabi_ldivmod`、`__aeabi_dadd` 五个自实现版本实测都是静默错值）。它们按 AEABI 的定义属于目标运行库——`arm-none-eabi-gcc` 的 `libgcc.a`、armcc 的 `armlib`。所以：**用到浮点、64 位除法或 64 位↔浮点转换的镜像必须链运行库**，否则链接期以 `undefined reference to __aeabi_...` 失败（刻意如此，把"算错"变成"链不上"）。RV32I 同理，软浮用 `__adddf3`/`__muldf3`/`__divdf3`/`__eqdf2` 一族、64 位乘除用 `__muldi3`/`__divdi3`，同样要链 `libgcc`。仍然自带的是 `__aeabi_memcpy`（结构体赋值/传参/数组初始化都用它，freestanding 目标没有 libc 的 `memcpy`）；64 位**加减**是内联的（ARM `ADDS/ADCS`，RV `sltu` 进位链），不需要库。硬件 FPU 模式（ARM `--fpu=hard`）把软浮换成 `VADD/VMUL/VCVT/VCMP`，那份依赖也就没了。
 - **RV32I 的内联汇编、`__svc`/`__smc` 与打包车道运算**：`asm("...")` 原样输出，扩展形式（`asm("t" : outs : ins : clobbers)`）的 `%0..%3` 换成 `a0..a3`（ARM 是 `r0..r3`）——两个后端都**没有操作数分配器**，outs/ins/clobbers 被丢弃，操作数需要自己在模板里点名。`__svc(n)`/`__smc(n)` 在 RV32I 上都编成 `li a7, n` + `ecall`：RV 基础指令集只有一条 trap 指令，编号按 RISC-V syscall ABI / SBI 的约定进 `a7`，所以二者在 RV 上不可区分（ARM 侧仍是 `SVC #n` / `SMC #n`）。自动向量化产生的 `IR_SIMD_ADD16/SUB16/ADD8/SUB8` 在 RV 上用 SWAR 精确模拟（逐车道有符号回绕，不饱和），代价是每条车道运算要 10 条左右基础指令。门禁：`python tests/run_rv_misc_ir_tests.py --rv-as <bin> [--arm-as <bin> --arm-libgcc <libgcc.a>]`。
 - **自动向量化的两条边界**：只处理"恰好两次 `LOAD_IDX` + 一次 `+`/`-` + 一次 `STORE_IDX`、元素 1 或 2 字节、循环次数是车道数整数倍"的循环；`volatile` 与 `__packed` 的循环**不进**向量化。宿主默认 `-O0` 也开（`ARKCC_FEATURE_OPT_VECTORIZE=1`），板端 profile 置 0，`--vectorize` / `--no_vectorize` 可显式开关。这一段曾经有静默错答案：宽度提升后元素窄化的 `IR_TRUNC` 没撤掉，四个车道只剩 lane 0，`char a[8]+b[8]` 算出 `{2,0,0,0,10,0,0,0}`（exit 0、无警告）。已修——相邻 `IR_TRUNC` 的目标位宽提到 32（即 no-op）。若日后改向量化，务必用 `examples/test_vectorize.c` 之外的形状再验一遍。
 - **跨翻译单元链接（ARKOBJ2，不是 ELF）**：`-c` 产出 arkCC 自有对象容器 ARKOBJ2，`-link` 只认这个格式（`ELF .o` 不支持）。`-link` 做的是符号合并 + 重定位回填 + 多对象 SRAM 重叠检查，**不做数据段重定位**——因此每个对象的 `.data/.bss` 必须落在自己的窗口里，两个对象都带全局变量时直接报 SRAM 重叠并不产出，而不是悄悄叠在一起。详见 5.7。RV32I 侧同样有 `-c`/`-link`（对象体装的是已汇编好的机器码，不是汇编文本）：对象内部全走 PC 相对量，因此可落在镜像任意偏移，链接器只按 16 字节对齐串联并回填 `RV_RELOC_AUIPC`(13) / `RV_RELOC_ABS32`(14)；导出边界由 `.globl`/`.weak` 决定，跨对象分支与跨 TU 的函数指针全局初始化器仍直接报错（详见 README 的「RV32I 的对象模式」）。
@@ -1150,6 +1208,9 @@ v0.8.0 已实现完整的 C99 集合 + 98% 以上的 armcc 常用扩展，仅剩
   我们不取整，因为 `stdarg.h` 只能按 `sizeof == 8` 判对齐（`_Alignof` 已实现，但 stdarg.h
   尚未改用它，调用侧的 NCRN 取偶也没做），取整留下的
   空洞它会当成数据读；两侧都是 arkc 时自洽，与 gcc 被调方混用会错位。
+- **复数不走 sret、也不许穿过 `...`**：16 字节的 `_Complex double` 用返回值寄存器（ARM `r0-r3`、
+  RV32I `a0-a3`），sret 只留给 size > 8 的 struct/union；穿过 `...` 传复数在调用点直接报错，
+  因为 `va_arg` 只能按连续参数字走、被调方没有类型信息。完整矩阵见 4.10。
 - **一次调用的实参上限 64 个**：各后端的实参表停在 64，第 65 个起过去是静默丢弃，
   现在 `irgen` 直接报错；ARM 的总参数字上限 192（超过由后端报错，不截断）。
 

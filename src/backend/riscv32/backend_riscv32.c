@@ -20,6 +20,7 @@
  * (see rv_assemble); on STM32 getenv() does not exist. */
 #if ARKCC_PROFILE != ARKCC_PROFILE_STM32_MIN
 #  include <stdlib.h>
+#  include <stdio.h>
 #endif
 
 static const char *arg_reg_r(int i) {
@@ -212,6 +213,245 @@ static void rv_fpush1(AsmBuffer *b, int is_dbl) {
         asmbuf_puts(b, "    addi sp, sp, -4\n    sw a0, 0(sp)\n");
 }
 
+/* ---- complex -------------------------------------------------------------
+ * A _Complex double is four stack words.  The IR stack keeps a 64-bit value
+ * with its HIGH word on top, so the four words of a value X are, relative to
+ * X's base:  [+0] re_hi  [+4] re_lo  [+8] im_hi  [+12] im_lo.
+ * The object image in memory is the ordinary C layout (re_lo, re_hi, im_lo,
+ * im_hi) -- the same order IR_STORE/IR_PUSH_VAR translate to -- so the two
+ * orders differ on purpose.
+ */
+static void rv_cx_push4_from_t(AsmBuffer *b);
+
+/* Push a0:a1 (real part) and a2:a3 (imaginary part) as one complex value:
+ * im_lo, im_hi, re_lo, re_hi, so the real high word ends up on top. */
+static void rv_cx_push4(AsmBuffer *b)
+{
+    asmbuf_puts(b, "    addi sp, sp, -4\n    sw a2, 0(sp)\n"
+                   "    addi sp, sp, -4\n    sw a3, 0(sp)\n"
+                   "    addi sp, sp, -4\n    sw a0, 0(sp)\n"
+                   "    addi sp, sp, -4\n    sw a1, 0(sp)\n");
+}
+
+/* Load the double whose HIGH word is at sp+off into a<pair>:a<pair+1>, low
+ * word in the lower-numbered register -- which is what the ilp32 soft-float
+ * routines expect.  The IR stack keeps every 64-bit value with its high word
+ * on top, so the low word sits at off+4. */
+static void rv_cx_ldh(AsmBuffer *b, int off, int pair)
+{
+    char line[80];
+    snprintf(line, sizeof line, "    lw a%d, %d(sp)\n    lw a%d, %d(sp)\n",
+             pair, off + 4, pair + 1, off);
+    asmbuf_puts(b, line);
+}
+
+/* Park a0:a1 (a double, low word in a0) in scratch at sp+off, low word first,
+ * so it can come back as a first or a second operand later. */
+static void rv_cx_park(AsmBuffer *b, int off)
+{
+    char line[80];
+    snprintf(line, sizeof line, "    sw a0, %d(sp)\n    sw a1, %d(sp)\n",
+             off, off + 4);
+    asmbuf_puts(b, line);
+}
+
+/* Reload a parked double into a<pair>:a<pair+1>. */
+static void rv_cx_unpark(AsmBuffer *b, int off, int pair)
+{
+    char line[80];
+    snprintf(line, sizeof line, "    lw a%d, %d(sp)\n    lw a%d, %d(sp)\n",
+             pair, off, pair + 1, off + 4);
+    asmbuf_puts(b, line);
+}
+
+/* a2:a3 = a0:a1 -- the second operand of a soft-float helper. */
+static void rv_cx_second(AsmBuffer *b)
+{
+    asmbuf_puts(b, "    mv a2, a0\n    mv a3, a1\n");
+}
+
+/* complex + and -: componentwise, no interaction between the parts.  A call
+ * clobbers a0-a3 and t0-t6 under the ilp32 psABI, so the imaginary result is
+ * parked in memory while the real part is computed -- and every operand is
+ * re-addressed off sp (never through a base register) after each call.
+ *
+ * Entry: B at sp+0..12, A at sp+16..28, each part stored high word first. */
+static void rv_cx_addsub(AsmBuffer *b, const char *helper)
+{
+    asmbuf_puts(b, "    addi sp, sp, -8\n");
+    rv_cx_ldh(b, 32, 0);                 /* A_im */
+    rv_cx_ldh(b, 16, 2);                 /* B_im */
+    asmbuf_puts(b, "    call ");
+    asmbuf_puts(b, helper);
+    asmbuf_putc(b, '\n');
+    rv_cx_park(b, 0);
+    rv_cx_ldh(b, 24, 0);                 /* A_re */
+    rv_cx_ldh(b, 8, 2);                  /* B_re */
+    asmbuf_puts(b, "    call ");
+    asmbuf_puts(b, helper);
+    asmbuf_putc(b, '\n');
+    asmbuf_puts(b, "    mv t0, a0\n    mv t1, a1\n");
+    rv_cx_unpark(b, 0, 2);               /* im_lo -> a2, im_hi -> a3 */
+    asmbuf_puts(b, "    addi sp, sp, 40\n");
+    asmbuf_puts(b, "    addi sp, sp, -4\n    sw a2, 0(sp)\n"
+                   "    addi sp, sp, -4\n    sw a3, 0(sp)\n"
+                   "    addi sp, sp, -4\n    sw t0, 0(sp)\n"
+                   "    addi sp, sp, -4\n    sw t1, 0(sp)\n");
+}
+
+/* (a+bi)(c+di) = (ac-bd) + (ad+bc)i.  32 bytes of scratch; the operands then
+ * sit at B=32..44, A=48..60. */
+static void rv_cx_mul(AsmBuffer *b)
+{
+    asmbuf_puts(b, "    addi sp, sp, -32\n");
+    rv_cx_ldh(b, 48, 0);                 /* A_re */
+    rv_cx_ldh(b, 32, 2);                 /* B_re */
+    asmbuf_puts(b, "    call __muldf3\n");
+    rv_cx_park(b, 0);                    /* ac */
+    rv_cx_ldh(b, 48, 0);                 /* A_re */
+    rv_cx_ldh(b, 40, 2);                 /* B_im */
+    asmbuf_puts(b, "    call __muldf3\n");
+    rv_cx_park(b, 8);                    /* ad */
+    rv_cx_ldh(b, 56, 0);                 /* A_im */
+    rv_cx_ldh(b, 40, 2);                 /* B_im */
+    asmbuf_puts(b, "    call __muldf3\n");
+    rv_cx_second(b);
+    rv_cx_unpark(b, 0, 0);               /* ac */
+    asmbuf_puts(b, "    call __subdf3\n");
+    rv_cx_park(b, 16);                   /* real */
+    rv_cx_ldh(b, 56, 0);                 /* A_im */
+    rv_cx_ldh(b, 32, 2);                 /* B_re */
+    asmbuf_puts(b, "    call __muldf3\n");
+    rv_cx_second(b);
+    rv_cx_unpark(b, 8, 0);               /* ad */
+    asmbuf_puts(b, "    call __adddf3\n");
+    asmbuf_puts(b, "    lw t0, 16(sp)\n    lw t1, 20(sp)\n    addi sp, sp, 64\n");
+    rv_cx_push4_from_t(b);
+}
+
+/* (a+bi)/(c+di) = ((ac+bd) + (bc-ad)i) / (c*c + d*d).
+ * Scratch: [0] denominator, [8] real numerator, [16] b*c, [24] imaginary
+ * numerator.  48 bytes; the operands then sit at B=48..60, A=64..76. */
+static void rv_cx_div(AsmBuffer *b)
+{
+    asmbuf_puts(b, "    addi sp, sp, -48\n");
+    rv_cx_ldh(b, 48, 0);                 /* B_re */
+    rv_cx_second(b);
+    asmbuf_puts(b, "    call __muldf3\n");
+    rv_cx_park(b, 0);                    /* c*c */
+    rv_cx_ldh(b, 56, 0);                 /* B_im */
+    rv_cx_second(b);
+    asmbuf_puts(b, "    call __muldf3\n");
+    rv_cx_second(b);
+    rv_cx_unpark(b, 0, 0);
+    asmbuf_puts(b, "    call __adddf3\n");
+    rv_cx_park(b, 0);                    /* denominator */
+    rv_cx_ldh(b, 64, 0);                 /* A_re */
+    rv_cx_ldh(b, 48, 2);                 /* B_re */
+    asmbuf_puts(b, "    call __muldf3\n");
+    rv_cx_park(b, 8);                    /* a*c */
+    rv_cx_ldh(b, 72, 0);                 /* A_im */
+    rv_cx_ldh(b, 56, 2);                 /* B_im */
+    asmbuf_puts(b, "    call __muldf3\n");
+    rv_cx_second(b);
+    rv_cx_unpark(b, 8, 0);
+    asmbuf_puts(b, "    call __adddf3\n");
+    rv_cx_park(b, 8);                    /* ac+bd */
+    rv_cx_ldh(b, 72, 0);                 /* A_im */
+    rv_cx_ldh(b, 48, 2);                 /* B_re */
+    asmbuf_puts(b, "    call __muldf3\n");
+    rv_cx_park(b, 16);                   /* b*c */
+    rv_cx_ldh(b, 64, 0);                 /* A_re */
+    rv_cx_ldh(b, 56, 2);                 /* B_im */
+    asmbuf_puts(b, "    call __muldf3\n");
+    rv_cx_second(b);
+    rv_cx_unpark(b, 16, 0);
+    asmbuf_puts(b, "    call __subdf3\n");
+    rv_cx_park(b, 24);                   /* bc-ad */
+    rv_cx_unpark(b, 8, 0);
+    rv_cx_unpark(b, 0, 2);
+    asmbuf_puts(b, "    call __divdf3\n");
+    rv_cx_park(b, 8);                    /* real */
+    rv_cx_unpark(b, 24, 0);
+    rv_cx_unpark(b, 0, 2);
+    asmbuf_puts(b, "    call __divdf3\n");
+    asmbuf_puts(b, "    lw t0, 8(sp)\n    lw t1, 12(sp)\n    addi sp, sp, 80\n");
+    rv_cx_push4_from_t(b);
+}
+
+/* == and != on two complex values: both parts must answer the same way, so
+ * the two strcmp-style __eqdf2 results are OR-ed and only the sign test is
+ * left.  8 bytes of scratch keep the first answer safe across the second
+ * call.  Entry: B at sp+0..12, A at sp+16..28. */
+static void rv_cx_cmp(AsmBuffer *b, int want_ne)
+{
+    asmbuf_puts(b, "    addi sp, sp, -8\n");
+    rv_cx_ldh(b, 24, 0);                 /* A_re */
+    rv_cx_ldh(b, 8, 2);                  /* B_re */
+    asmbuf_puts(b, "    call __eqdf2\n    sw a0, 0(sp)\n");
+    rv_cx_ldh(b, 32, 0);                 /* A_im */
+    rv_cx_ldh(b, 16, 2);                 /* B_im */
+    asmbuf_puts(b, "    call __eqdf2\n"
+                   "    lw t0, 0(sp)\n    addi sp, sp, 40\n"
+                   "    or t0, t0, a0\n");
+    asmbuf_puts(b, want_ne ? "    snez t0, t0\n" : "    seqz t0, t0\n");
+    asmbuf_puts(b, "    addi sp, sp, -4\n    sw t0, 0(sp)\n");
+}
+
+/* cabs(z) = sqrt(re*re + im*im).  libm's sqrt takes and returns a double.
+ * Entry: z at sp+0..12. */
+static void rv_cx_cabs(AsmBuffer *b)
+{
+    asmbuf_puts(b, "    addi sp, sp, -8\n");
+    rv_cx_ldh(b, 8, 0);                  /* re */
+    rv_cx_second(b);
+    asmbuf_puts(b, "    call __muldf3\n");
+    rv_cx_park(b, 0);
+    rv_cx_ldh(b, 16, 0);                 /* im */
+    rv_cx_second(b);
+    asmbuf_puts(b, "    call __muldf3\n");
+    rv_cx_second(b);
+    rv_cx_unpark(b, 0, 0);
+    asmbuf_puts(b, "    call __adddf3\n"
+                   "    addi sp, sp, 24\n"
+                   "    call sqrt\n");
+    rv_fpush1(b, 1);
+}
+
+/* cexp(z) = e^re * (cos(im) + i sin(im)).  libm exp/cos/sin.  Entry: z at
+ * sp+0..12; 32 bytes of scratch keep e^re and cos(im) across the calls. */
+static void rv_cx_cexp(AsmBuffer *b)
+{
+    asmbuf_puts(b, "    addi sp, sp, -32\n");   /* z now at 32..44 */
+    rv_cx_ldh(b, 32, 0);                        /* re */
+    asmbuf_puts(b, "    call exp\n");
+    rv_cx_park(b, 0);                           /* e^re */
+    rv_cx_ldh(b, 40, 0);                        /* im */
+    asmbuf_puts(b, "    call cos\n");
+    rv_cx_park(b, 8);
+    rv_cx_ldh(b, 40, 0);                        /* im */
+    asmbuf_puts(b, "    call sin\n");
+    rv_cx_second(b);
+    rv_cx_unpark(b, 0, 0);                      /* e^re * sin(im) */
+    asmbuf_puts(b, "    call __muldf3\n");
+    asmbuf_puts(b, "    mv t0, a0\n    mv t1, a1\n");
+    rv_cx_unpark(b, 8, 0);                      /* cos(im) */
+    rv_cx_unpark(b, 0, 2);                      /* e^re */
+    asmbuf_puts(b, "    call __muldf3\n");
+    asmbuf_puts(b, "    mv a2, t0\n    mv a3, t1\n    addi sp, sp, 48\n");
+    rv_cx_push4(b);
+}
+
+/* Push the real part from t0:t1 and the imaginary part from a0:a1 -- the
+ * epilogue shared by every complex arithmetic helper above. */
+static void rv_cx_push4_from_t(AsmBuffer *b)
+{
+    asmbuf_puts(b, "    addi sp, sp, -4\n    sw a0, 0(sp)\n"
+                   "    addi sp, sp, -4\n    sw a1, 0(sp)\n"
+                   "    addi sp, sp, -4\n    sw t0, 0(sp)\n"
+                   "    addi sp, sp, -4\n    sw t1, 0(sp)\n");
+}
+
 /* A 32-bit bit pattern as eight lowercase hex digits, for .word. */
 static void rv_put_hex32(AsmBuffer *b, unsigned int v) {
     static const char *hd = "0123456789abcdef";
@@ -278,6 +518,30 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
             rv_put_hex32(&buf, ud.u[0]);
             asmbuf_puts(&buf, "\n    .word 0x");
             rv_put_hex32(&buf, ud.u[1]);
+            asmbuf_putc(&buf, '\n');
+        }
+        asmbuf_puts(&buf, "    .text\n");
+    }
+
+    /* Complex constant pool: real low, real high, imag low, imag high --
+     * the same 16-byte object layout IR_STORE writes to a frame slot. */
+    if (prog->complex_count > 0) {
+        int i;
+        asmbuf_puts(&buf, "    .section .rodata\n");
+        for (i = 0; i < prog->complex_count; i++) {
+            union { double d; unsigned int u[2]; } ru, iu;
+            ru.d = prog->complexes[i].re;
+            iu.d = prog->complexes[i].im;
+            asmbuf_puts(&buf, "    .balign 4\n.L_cplx_");
+            asmbuf_int(&buf, i);
+            asmbuf_puts(&buf, ":\n    .word 0x");
+            rv_put_hex32(&buf, ru.u[0]);
+            asmbuf_puts(&buf, "\n    .word 0x");
+            rv_put_hex32(&buf, ru.u[1]);
+            asmbuf_puts(&buf, "\n    .word 0x");
+            rv_put_hex32(&buf, iu.u[0]);
+            asmbuf_puts(&buf, "\n    .word 0x");
+            rv_put_hex32(&buf, iu.u[1]);
             asmbuf_putc(&buf, '\n');
         }
         asmbuf_puts(&buf, "    .text\n");
@@ -379,8 +643,46 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                           "constant this backend can resolve)",
                           g->name, 0,0,0,0,0);
                 asmbuf_puts(&buf, "    .word 0\n");
+            } else if (kind == TYPE_COMPLEX) {
+                /* A _Complex object is two scalars back to back: the real part
+                 * at offset 0, the imaginary part right after it.  This used
+                 * to fall into the generic `gsz > 4` arm, which wrote the
+                 * initialiser's integer bits as the real part and stopped
+                 * after eight bytes -- so `double _Complex h = 3.0;` produced
+                 * a denormal real part and left the imaginary part to whatever
+                 * the next object was.  init_is_complex says whether a second
+                 * folded scalar exists; a plain real initialiser means +0.0. */
+                Type *bt = t ? t->base : 0;
+                int isf = (bt && bt->kind == TYPE_FLOAT);
+                double vals[2];
+                int k;
+                vals[0] = g->has_init ? g->init_float : 0.0;
+                vals[1] = (g->has_init && g->init_is_complex) ? g->init_float_im : 0.0;
+                if (isf) {
+                    union { float f; unsigned int u; } fu;
+                    for (k = 0; k < 2; k++) {
+                        fu.f = (float)vals[k];
+                        asmbuf_puts(&buf, "    .word ");
+                        asmbuf_int(&buf, (int)fu.u);
+                        asmbuf_putc(&buf, '\n');
+                    }
+                } else {
+                    union { double d; unsigned long long u; } du;
+                    for (k = 0; k < 2; k++) {
+                        du.d = vals[k];
+                        asmbuf_puts(&buf, "    .word ");
+                        asmbuf_int(&buf, (int)(du.u & 0xFFFFFFFFULL));
+                        asmbuf_puts(&buf, "\n    .word ");
+                        asmbuf_int(&buf, (int)((du.u >> 32) & 0xFFFFFFFFULL));
+                        asmbuf_putc(&buf, '\n');
+                    }
+                }
             } else if (gsz > 4) {
+                /* Every four-byte run of the object, not just the first two:
+                 * a sixteen-byte object used to reserve eight. */
                 unsigned long long v = 0ULL;
+                int nwords = (gsz + 3) / 4;
+                int k;
                 if (g->has_init) {
                     if (g->is_float && kind == TYPE_DOUBLE) {
                         union { double d; unsigned long long u; } du;
@@ -390,11 +692,11 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                         v = (unsigned long long)g->init_int;
                     }
                 }
-                asmbuf_puts(&buf, "    .word ");
-                asmbuf_int(&buf, (int)(v & 0xFFFFFFFFULL));
-                asmbuf_puts(&buf, "\n    .word ");
-                asmbuf_int(&buf, (int)((v >> 32) & 0xFFFFFFFFULL));
-                asmbuf_putc(&buf, '\n');
+                for (k = 0; k < nwords; k++) {
+                    asmbuf_puts(&buf, "    .word ");
+                    asmbuf_int(&buf, (k < 2) ? (int)((v >> (32 * k)) & 0xFFFFFFFFULL) : 0);
+                    asmbuf_putc(&buf, '\n');
+                }
             } else if (gsz == 2) {
                 asmbuf_puts(&buf, "    .short ");
                 asmbuf_int(&buf, (int)(g->has_init ? g->init_int : 0));
@@ -578,7 +880,7 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                      * so the load has to match the declaration. */
                     int width = I->aux & 0xFF;
                     int uns = (I->aux & 0x100) != 0;
-                    if (width > 8) {
+                    if (width > 8 && width != 16) {
                         char b1[12];
                         diag_tool(DIAG_SEV_ERROR, "arkcc",
                                   "%s-byte variables are not implemented by the "
@@ -587,7 +889,27 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                         break;
                     }
                     rv_s0_slot(&buf, (int)I->val - fsize);
-                    if (width == 8) {
+                    if (width == 8 && (I->aux & IR_AUX_COMPLEX)) {
+                        /* _Complex float: two floats in memory, two doubles on
+                         * the IR stack.  Widen the imaginary half first so the
+                         * real high word ends on top, exactly like the
+                         * _Complex double path below.  t2 does not survive the
+                         * libgcc call, so it is rebuilt for the second half. */
+                        asmbuf_puts(&buf, "    lw a0, 4(t2)\n    call __extendsfdf2\n");
+                        rv_fpush1(&buf, 1);
+                        rv_s0_slot(&buf, (int)I->val - fsize);
+                        asmbuf_puts(&buf, "    lw a0, 0(t2)\n    call __extendsfdf2\n");
+                        rv_fpush1(&buf, 1);
+                    } else if (width == 16) {
+                        /* A _Complex double object is re_lo, re_hi, im_lo,
+                         * im_hi in memory; push im_lo, im_hi, re_lo, re_hi so
+                         * the real high word ends up on top, which is what
+                         * every consumer of a complex value expects. */
+                        asmbuf_puts(&buf, "    lw t0, 8(t2)\n    addi sp, sp, -4\n    sw t0, 0(sp)\n"
+                                          "    lw t0, 12(t2)\n    addi sp, sp, -4\n    sw t0, 0(sp)\n"
+                                          "    lw t0, 0(t2)\n    addi sp, sp, -4\n    sw t0, 0(sp)\n"
+                                          "    lw t0, 4(t2)\n    addi sp, sp, -4\n    sw t0, 0(sp)\n");
+                    } else if (width == 8) {
                         /* low word first, so the high word ends up on top */
                         asmbuf_puts(&buf, "    lw t0, 0(t2)\n    lw t1, 4(t2)\n"
                                           "    addi sp, sp, -4\n    sw t0, 0(sp)\n"
@@ -650,7 +972,7 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                         asmbuf_puts(&buf, "\n    addi sp, sp, -4\n    sw t2, 0(sp)\n");
                         break;
                     }
-                    if (gsz > 8) {
+                    if (gsz > 8 && gsz != 16) {
                         char b1[12];
                         diag_tool(DIAG_SEV_ERROR, "arkcc",
                                   "the riscv32 backend cannot load the "
@@ -660,7 +982,21 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                     }
                     asmbuf_puts(&buf, "    la t1, ");
                     asmbuf_puts(&buf, I->name);
-                    if (gsz == 8) {
+                    if (gsz == 8 && (I->aux & IR_AUX_COMPLEX)) {
+                        /* _Complex float global: imaginary half first.  The
+                         * address register does not survive the call. */
+                        asmbuf_puts(&buf, "\n    lw a0, 4(t1)\n    call __extendsfdf2\n");
+                        rv_fpush1(&buf, 1);
+                        asmbuf_puts(&buf, "    la t1, ");
+                        asmbuf_puts(&buf, I->name);
+                        asmbuf_puts(&buf, "\n    lw a0, 0(t1)\n    call __extendsfdf2\n");
+                        rv_fpush1(&buf, 1);
+                    } else if (gsz == 16) {
+                        asmbuf_puts(&buf, "\n    lw t0, 8(t1)\n    addi sp, sp, -4\n    sw t0, 0(sp)\n"
+                                          "    lw t0, 12(t1)\n    addi sp, sp, -4\n    sw t0, 0(sp)\n"
+                                          "    lw t0, 0(t1)\n    addi sp, sp, -4\n    sw t0, 0(sp)\n"
+                                          "    lw t0, 4(t1)\n    addi sp, sp, -4\n    sw t0, 0(sp)\n");
+                    } else if (gsz == 8) {
                         /* low word first, high word on top */
                         asmbuf_puts(&buf, "\n    lw t0, 0(t1)\n    lw t2, 4(t1)\n"
                                           "    addi sp, sp, -4\n    sw t0, 0(sp)\n"
@@ -672,7 +1008,7 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                 }
                 case IR_STORE_GLOBAL: {
                     int gsz = rv_global_size(prog, I->name);
-                    if (gsz > 8) {
+                    if (gsz > 8 && gsz != 16) {
                         char b1[12];
                         diag_tool(DIAG_SEV_ERROR, "arkcc",
                                   "the riscv32 backend cannot store the "
@@ -680,7 +1016,29 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                                   diag_num(b1, gsz), I->name, 0,0,0,0);
                         break;
                     }
-                    if (gsz == 8) {
+                    if (gsz == 8 && (I->aux & IR_AUX_COMPLEX)) {
+                        /* _Complex float global store: narrow each double pair
+                         * back to a float.  The words are read by offset so the
+                         * calls cannot disturb the ones still to be read. */
+                        asmbuf_puts(&buf, "    lw t0, 4(sp)\n    lw t1, 0(sp)\n"
+                                          "    mv a0, t0\n    mv a1, t1\n    call __truncdfsf2\n"
+                                          "    la t2, ");
+                        asmbuf_puts(&buf, I->name);
+                        asmbuf_puts(&buf, "\n    sw a0, 0(t2)\n");
+                        asmbuf_puts(&buf, "    lw t0, 12(sp)\n    lw t1, 8(sp)\n"
+                                          "    mv a0, t0\n    mv a1, t1\n    call __truncdfsf2\n"
+                                          "    la t2, ");
+                        asmbuf_puts(&buf, I->name);
+                        asmbuf_puts(&buf, "\n    sw a0, 4(t2)\n    addi sp, sp, 16\n");
+                    } else if (gsz == 16) {
+                        /* 0..12 = re_hi, re_lo, im_hi, im_lo; the object image
+                         * is re_lo, re_hi, im_lo, im_hi. */
+                        asmbuf_puts(&buf, "    lw t0, 0(sp)\n    lw t1, 4(sp)\n    lw t3, 8(sp)\n"
+                                          "    lw t4, 12(sp)\n    addi sp, sp, 16\n    la t2, ");
+                        asmbuf_puts(&buf, I->name);
+                        asmbuf_puts(&buf, "\n    sw t1, 0(t2)\n    sw t0, 4(t2)\n"
+                                          "    sw t4, 8(t2)\n    sw t3, 12(t2)\n");
+                    } else if (gsz == 8) {
                         /* 0(sp) = high, 4(sp) = low */
                         asmbuf_puts(&buf, "    lw t0, 0(sp)\n    lw t1, 4(sp)\n    addi sp, sp, 8\n    la t2, ");
                         asmbuf_puts(&buf, I->name);
@@ -698,7 +1056,29 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                     asmbuf_puts(&buf, "    addi sp, sp, 4\n");
                     break;
                 case IR_DUP:
-                    asmbuf_puts(&buf, "    lw t0, 0(sp)\n    addi sp, sp, -4\n    sw t0, 0(sp)\n");
+                    /* I->val = how many stack words one value occupies: four
+                     * for a _Complex double, two for a 64-bit value, one
+                     * otherwise.  Copying a single word left the rest behind,
+                     * so `z = w` popped four words while only one had been
+                     * duplicated and the frame walked off.  Make room first,
+                     * then copy word by word: the original copy has moved up
+                     * by exactly the size of the new one. */
+                    if (I->val > 1) {
+                        int nw = I->val > 4 ? 4 : (int)I->val;
+                        int k;
+                        char s[64];
+                        asmbuf_puts(&buf, "    addi sp, sp, -");
+                        asmbuf_int(&buf, 4 * nw);
+                        asmbuf_putc(&buf, '\n');
+                        for (k = 0; k < nw; k++) {
+                            snprintf(s, sizeof s,
+                                     "    lw t0, %d(sp)\n    sw t0, %d(sp)\n",
+                                     4 * nw + 4 * k, 4 * k);
+                            asmbuf_puts(&buf, s);
+                        }
+                    } else {
+                        asmbuf_puts(&buf, "    lw t0, 0(sp)\n    addi sp, sp, -4\n    sw t0, 0(sp)\n");
+                    }
                     break;
                 case IR_SWAP:
                     asmbuf_puts(&buf, "    lw t0, 0(sp)\n    lw t1, 4(sp)\n    sw t1, 0(sp)\n    sw t0, 4(sp)\n");
@@ -719,7 +1099,7 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                      * imbalance turned the next `ret` into a jump to 0). */
                     int sw = I->aux & 0xFF;
                     if (sw == 0) sw = 4;
-                    if (sw > 8) {
+                    if (sw > 8 && sw != 16) {
                         char b1[12];
                         diag_tool(DIAG_SEV_ERROR, "arkcc",
                                   "%s-byte stores are not implemented by the "
@@ -727,7 +1107,28 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                                   diag_num(b1, sw), f->name, 0,0,0,0);
                         break;
                     }
-                    if (sw == 8) {
+                    if (sw == 8 && (I->aux & IR_AUX_COMPLEX)) {
+                        /* _Complex float local store: 0..12 on the stack hold
+                         * re_hi, re_lo, im_hi, im_lo as four double words; the
+                         * frame slot wants two floats (re at +0, im at +4). */
+                        asmbuf_puts(&buf, "    lw t0, 4(sp)\n    lw t1, 0(sp)\n"
+                                          "    mv a0, t0\n    mv a1, t1\n    call __truncdfsf2\n");
+                        rv_s0_slot(&buf, (int)I->val - fsize);
+                        asmbuf_puts(&buf, "    sw a0, 0(t2)\n");
+                        asmbuf_puts(&buf, "    lw t0, 12(sp)\n    lw t1, 8(sp)\n"
+                                          "    mv a0, t0\n    mv a1, t1\n    call __truncdfsf2\n");
+                        rv_s0_slot(&buf, (int)I->val - fsize);
+                        asmbuf_puts(&buf, "    sw a0, 4(t2)\n    addi sp, sp, 16\n");
+                    } else if (sw == 16) {
+                        /* A _Complex double: 0..12 = re_hi, re_lo, im_hi,
+                         * im_lo; the frame slot takes re_lo, re_hi, im_lo,
+                         * im_hi (the ordinary C object layout). */
+                        asmbuf_puts(&buf, "    lw t0, 0(sp)\n    lw t1, 4(sp)\n    lw t3, 8(sp)\n"
+                                          "    lw t4, 12(sp)\n    addi sp, sp, 16\n");
+                        rv_s0_slot(&buf, (int)I->val - fsize);
+                        asmbuf_puts(&buf, "    sw t1, 0(t2)\n    sw t0, 4(t2)\n"
+                                          "    sw t4, 8(t2)\n    sw t3, 12(t2)\n");
+                    } else if (sw == 8) {
                         asmbuf_puts(&buf, "    lw t0, 0(sp)\n    lw t1, 4(sp)\n    addi sp, sp, 8\n");
                         rv_s0_slot(&buf, (int)I->val - fsize);
                         asmbuf_puts(&buf, "    sw t1, 0(t2)\n    sw t0, 4(t2)\n");
@@ -757,7 +1158,7 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                      * short value the rest of this backend refuses to emit. */
                     int es = (int)I->val;
                     int packed = (I->aux & 0x400) ? 1 : 0;
-                    if (es != 1 && es != 2 && es != 4 && es != 8) {
+                    if (es != 1 && es != 2 && es != 4 && es != 8 && es != 16) {
                         char b1[12];
                         diag_tool(DIAG_SEV_ERROR, "arkcc",
                                   "%s-byte loads are not implemented by the "
@@ -781,8 +1182,29 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                         asmbuf_puts(&buf, "    slli t1, t1, 2\n");
                     else if (es == 8)
                         asmbuf_puts(&buf, "    slli t1, t1, 3\n");
+                    else if (es == 16)
+                        asmbuf_puts(&buf, "    slli t1, t1, 4\n");
                     asmbuf_puts(&buf, "    add t0, t0, t1\n");
-                    if (packed && es == 2) {
+                    if (es == 8 && (I->aux & IR_AUX_COMPLEX)) {
+                        /* _Complex float element: t0 is the element address,
+                         * whose object image is re at +0 and im at +4.  Park the
+                         * address on the stack across the two widening calls
+                         * (t0-t6 are all caller-saved). */
+                        asmbuf_puts(&buf, "    addi sp, sp, -4\n    sw t0, 0(sp)\n"
+                                          "    lw a0, 4(t0)\n    call __extendsfdf2\n"
+                                          "    lw t0, 0(sp)\n    addi sp, sp, 4\n");
+                        rv_fpush1(&buf, 1);
+                        asmbuf_puts(&buf, "    lw a0, 0(t0)\n    call __extendsfdf2\n");
+                        rv_fpush1(&buf, 1);
+                    } else if (es == 16) {
+                        /* 16-byte element (_Complex double): the object image
+                         * is re_lo, re_hi, im_lo, im_hi and the IR stack wants
+                         * im_lo, im_hi, re_lo, re_hi with re_hi on top. */
+                        asmbuf_puts(&buf, "    lw t1, 8(t0)\n    addi sp, sp, -4\n    sw t1, 0(sp)\n"
+                                          "    lw t1, 12(t0)\n    addi sp, sp, -4\n    sw t1, 0(sp)\n"
+                                          "    lw t1, 0(t0)\n    addi sp, sp, -4\n    sw t1, 0(sp)\n"
+                                          "    lw t1, 4(t0)\n    addi sp, sp, -4\n    sw t1, 0(sp)\n");
+                    } else if (packed && es == 2) {
                         asmbuf_puts(&buf, "    lbu t1, 0(t0)\n    lbu t2, 1(t0)\n"
                                           "    slli t2, t2, 8\n    or t0, t1, t2\n"
                                           "    slli t0, t0, 16\n    srai t0, t0, 16\n");
@@ -847,6 +1269,41 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                                           "    srli t3, t0, 16\n    sb t3, 6(t2)\n"
                                           "    srli t3, t0, 24\n    sb t3, 7(t2)\n");
                         asmbuf_puts(&buf, "    addi sp, sp, -4\n    sw t1, 0(sp)\n"
+                                          "    addi sp, sp, -4\n    sw t0, 0(sp)\n");
+                        break;
+                    }
+                    if (es == 8 && (I->aux & IR_AUX_COMPLEX)) {
+                        /* _Complex float element store: 0..12 = value
+                         * (re_hi, re_lo, im_hi, im_lo), 16 = address.  Read by
+                         * offset, never pop before the narrowing calls, then
+                         * push the value back by reloading what was just
+                         * written (a store still yields its value). */
+                        asmbuf_puts(&buf, "    lw t0, 4(sp)\n    lw t1, 0(sp)\n"
+                                          "    mv a0, t0\n    mv a1, t1\n    call __truncdfsf2\n"
+                                          "    lw t2, 16(sp)\n    sw a0, 0(t2)\n");
+                        asmbuf_puts(&buf, "    lw t0, 12(sp)\n    lw t1, 8(sp)\n"
+                                          "    mv a0, t0\n    mv a1, t1\n    call __truncdfsf2\n"
+                                          "    lw t2, 16(sp)\n    sw a0, 4(t2)\n");
+                        asmbuf_puts(&buf, "    lw t2, 16(sp)\n    addi sp, sp, 20\n"
+                                          "    addi sp, sp, -4\n    sw t2, 0(sp)\n"
+                                          "    lw a0, 4(t2)\n    call __extendsfdf2\n"
+                                          "    lw t2, 0(sp)\n    addi sp, sp, 4\n");
+                        rv_fpush1(&buf, 1);
+                        asmbuf_puts(&buf, "    lw a0, 0(t2)\n    call __extendsfdf2\n");
+                        rv_fpush1(&buf, 1);
+                        break;
+                    } else if (es == 16) {
+                        /* 0..12 = the value (re_hi, re_lo, im_hi, im_lo),
+                         * 16 = the address.  The object image is re_lo, re_hi,
+                         * im_lo, im_hi; the value is pushed back afterwards so
+                         * the store expression still has its result. */
+                        asmbuf_puts(&buf, "    lw t0, 0(sp)\n    lw t1, 4(sp)\n    lw t3, 8(sp)\n"
+                                          "    lw t4, 12(sp)\n    lw t2, 16(sp)\n    addi sp, sp, 20\n");
+                        asmbuf_puts(&buf, "    sw t1, 0(t2)\n    sw t0, 4(t2)\n"
+                                          "    sw t4, 8(t2)\n    sw t3, 12(t2)\n");
+                        asmbuf_puts(&buf, "    addi sp, sp, -4\n    sw t4, 0(sp)\n"
+                                          "    addi sp, sp, -4\n    sw t3, 0(sp)\n"
+                                          "    addi sp, sp, -4\n    sw t1, 0(sp)\n"
                                           "    addi sp, sp, -4\n    sw t0, 0(sp)\n");
                         break;
                     }
@@ -952,11 +1409,22 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                 /* ---- floating point (soft-float through libgcc) ---- */
                 case IR_PUSH_FLOAT: {
                     int is_dbl = (I->aux & 0x200) != 0;
-                    if (I->aux & 0x400) {
-                        diag_tool(DIAG_SEV_ERROR, "arkcc",
-                                  "the riscv32 backend does not implement complex "
-                                  "constants (function '%s')",
-                                  f->name, 0,0,0,0,0);
+                    /* IR_AUX_COMPLEX carries an index into prog->complexes, and
+                     * such a constant sets 0x200 as well, so it has to be
+                     * tested first -- checking is_dbl first would read the
+                     * complex pool index as a float pool index and push an
+                     * unrelated double twice (measured: `1.0 + 2.0i` compiled
+                     * to 1.0 + 1.0i). */
+                    if (I->aux & IR_AUX_COMPLEX) {
+                        /* .L_cplx_<i> is re_lo, re_hi, im_lo, im_hi; push
+                         * im_lo, im_hi, re_lo, re_hi so the real high word
+                         * ends up on top. */
+                        asmbuf_puts(&buf, "    la t0, .L_cplx_");
+                        asmbuf_int(&buf, I->val);
+                        asmbuf_puts(&buf, "\n    lw t1, 8(t0)\n    addi sp, sp, -4\n    sw t1, 0(sp)\n"
+                                          "    lw t1, 12(t0)\n    addi sp, sp, -4\n    sw t1, 0(sp)\n"
+                                          "    lw t1, 0(t0)\n    addi sp, sp, -4\n    sw t1, 0(sp)\n"
+                                          "    lw t1, 4(t0)\n    addi sp, sp, -4\n    sw t1, 0(sp)\n");
                     } else if (is_dbl) {
                         asmbuf_puts(&buf, "    la t0, .L_dbl_");
                         asmbuf_int(&buf, I->val);
@@ -976,6 +1444,18 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                 case IR_FMUL:
                 case IR_FDIV: {
                     int is_dbl = (I->aux & 0x200) != 0;
+                    if ((I->aux & 0xF00) == 0x900) {
+                        /* cexp(z) = e^re * (cos(im) + i sin(im)); libm. */
+                        rv_cx_cexp(&buf);
+                        break;
+                    }
+                    if (I->aux & IR_AUX_COMPLEX) {
+                        if (I->op == IR_FADD)      rv_cx_addsub(&buf, "__adddf3");
+                        else if (I->op == IR_FSUB) rv_cx_addsub(&buf, "__subdf3");
+                        else if (I->op == IR_FMUL) rv_cx_mul(&buf);
+                        else                       rv_cx_div(&buf);
+                        break;
+                    }
                     const char *h = rv_fbin_helper(I->aux & ~0x200, is_dbl);
                     if (!h) {
                         char b1[12];
@@ -997,7 +1477,12 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                      * returns strcmp-style, so the boolean is a sign test. */
                     int is_dbl = (I->aux & 0x200) != 0;
                     int op = I->aux & ~0x200;
-                    const char *h = rv_fcmp_helper(op, is_dbl);
+                    const char *h;
+                    if (I->aux & IR_AUX_COMPLEX) {
+                        rv_cx_cmp(&buf, (I->aux & ~(0x200 | IR_AUX_COMPLEX)) == (int)TOK_NE);
+                        break;
+                    }
+                    h = rv_fcmp_helper(op, is_dbl);
                     if (!h) {
                         char b1[12];
                         diag_tool(DIAG_SEV_ERROR, "arkcc",
@@ -1026,6 +1511,31 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                 case IR_F2I: {
                     /* float/double -> int, truncated toward zero.
                      * aux: 0x200 = double source, 0x400 = unsigned target. */
+                    if (I->aux & IR_AUX_COMPLEX) {
+                        /* Extraction from a four-word complex value.
+                         * aux & 0x300: 0x000 creal, 0x100 cimag, 0x200 cabs,
+                         * 0x300 carg.  cabs/carg need libm (sqrt / atan2) and
+                         * are emitted as calls, so a target without libm fails
+                         * to link instead of quietly producing another number. */
+                        int k = I->aux & 0x300;
+                        if (k == 0x200) {
+                            rv_cx_cabs(&buf);
+                        } else if (k == 0x300) {
+                            rv_cx_ldh(&buf, 8, 0);       /* im -> a0:a1 */
+                            rv_cx_ldh(&buf, 0, 2);       /* re -> a2:a3 */
+                            asmbuf_puts(&buf, "    addi sp, sp, 16\n    call atan2\n");
+                            rv_fpush1(&buf, 1);
+                        } else if (k == 0x100) {
+                            asmbuf_puts(&buf, "    lw a0, 12(sp)\n    lw a1, 8(sp)\n"
+                                              "    addi sp, sp, 16\n");
+                            rv_fpush1(&buf, 1);
+                        } else {
+                            asmbuf_puts(&buf, "    lw a0, 4(sp)\n    lw a1, 0(sp)\n"
+                                              "    addi sp, sp, 16\n");
+                            rv_fpush1(&buf, 1);
+                        }
+                        break;
+                    }
                     int is_dbl = (I->aux & 0x200) != 0;
                     int is_unsigned = (I->aux & 0x400) != 0;
                     const char *h = is_dbl
@@ -1046,6 +1556,24 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                 case IR_I2F: {
                     /* int -> float/double.
                      * aux: 0x200 = double destination, 0x400 = unsigned source. */
+                    if (I->aux & IR_AUX_COMPLEX) {
+                        /* real -> complex widening, imaginary part +0.0.
+                         * aux & 0x700: 0x000 float, 0x200 double, 0x100 int
+                         * (plus 0x400 when the source is unsigned). */
+                        int k = I->aux & 0x700;
+                        if (k == 0x100 || k == 0x500) {
+                            asmbuf_puts(&buf, "    lw a0, 0(sp)\n    addi sp, sp, 4\n    call ");
+                            asmbuf_puts(&buf, k == 0x500 ? "__floatunsidf\n" : "__floatsidf\n");
+                        } else if (k == 0x200) {
+                            asmbuf_puts(&buf, "    lw a0, 4(sp)\n    lw a1, 0(sp)\n    addi sp, sp, 8\n");
+                        } else {
+                            asmbuf_puts(&buf, "    lw a0, 0(sp)\n    addi sp, sp, 4\n"
+                                              "    call __extendsfdf2\n");
+                        }
+                        asmbuf_puts(&buf, "    li a2, 0\n    li a3, 0\n");
+                        rv_cx_push4(&buf);
+                        break;
+                    }
                     int is_dbl = (I->aux & 0x200) != 0;
                     int is_unsigned = (I->aux & 0x400) != 0;
                     const char *h = is_dbl
@@ -1116,6 +1644,13 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                 case IR_UNARY: {
                     /* val: 0 = 32-bit, 1 = float (unimplemented here),
                      * 2 = 64-bit integer.  aux = the operator. */
+                    if (I->aux & IR_AUX_COMPLEX) {
+                        /* conj: flip the sign bit of the imaginary part, whose
+                         * high word is at sp+8. */
+                        asmbuf_puts(&buf, "    lw t0, 8(sp)\n    li t1, -2147483648\n"
+                                          "    xor t0, t0, t1\n    sw t0, 8(sp)\n");
+                        break;
+                    }
                     if (I->val == 2) {
                         int op = I->aux & ~0x400;
                         /* high word on top, low word below */
@@ -1386,6 +1921,12 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                      * functions defined in this translation unit). */
                     int is_void_ret = (int)((I->val >> 33) & 1);
                     int is_ret64    = (int)((I->val >> 32) & 1);
+                    /* bits 34..35: the result is a _Complex object, which is
+                     * four IR words and fits no two-register pair.  1 = the
+                     * 8-byte _Complex float (a0 = re32, a1 = im32),
+                     * 2 = the 16-byte _Complex double (a0..a3 = re_lo, re_hi,
+                     * im_lo, im_hi -- see IR_RETURN above). */
+                    int cplx_ret    = (int)((I->val >> 34) & 3);
                     int kk, total = 0, inreg, off;
                     int abase[64];
                     int awords[64];
@@ -1487,7 +2028,35 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                     }
                     /* drop the stack arguments the callee read */
                     if (total > inreg) rv_sp_adj(&buf, 4 * (total - inreg), 1);
-                    if (is_ret64)
+                    if (cplx_ret == 1) {
+                        /* Widen each f32 half back to a double: the IR keeps
+                         * _Complex values as four double words at both object
+                         * widths.  The 16-byte block that the widening is
+                         * written into is itself the value slot, so it is
+                         * allocated once and never walked past -- the result
+                         * lands at sp+0..sp+15 in IR stack order
+                         * (re_hi, re_lo, im_hi, im_lo), which is exactly the
+                         * order every consumer of a complex operand expects.
+                         * Parking a separate scratch block above the pushed
+                         * words and then ADDing sp past them loses 16 bytes of
+                         * stack per call as well as reading stale slots. */
+                        asmbuf_puts(&buf, "    addi sp, sp, -16\n"
+                                          "    sw a0, 4(sp)\n"
+                                          "    sw a1, 12(sp)\n");
+                        asmbuf_puts(&buf, "    lw a0, 4(sp)\n"
+                                          "    call __extendsfdf2\n"
+                                          "    sw a1, 0(sp)\n"
+                                          "    sw a0, 4(sp)\n");
+                        asmbuf_puts(&buf, "    lw a0, 12(sp)\n"
+                                          "    call __extendsfdf2\n"
+                                          "    sw a1, 8(sp)\n"
+                                          "    sw a0, 12(sp)\n");
+                    } else if (cplx_ret == 2) {
+                        asmbuf_puts(&buf, "    addi sp, sp, -4\n    sw a2, 0(sp)\n"
+                                          "    addi sp, sp, -4\n    sw a3, 0(sp)\n"
+                                          "    addi sp, sp, -4\n    sw a0, 0(sp)\n"
+                                          "    addi sp, sp, -4\n    sw a1, 0(sp)\n");
+                    } else if (is_ret64)
                         asmbuf_puts(&buf, "    addi sp, sp, -4\n    sw a0, 0(sp)\n"
                                           "    addi sp, sp, -4\n    sw a1, 0(sp)\n");
                     else if (!is_void_ret)
@@ -1495,6 +2064,43 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                     break;
                 }
                 case IR_RETURN:
+                    /* _Complex results.  Two shapes, both described in the
+                     * IR_CALL case below:
+                     *   _Complex float  (8-byte object)  -> a0 = re32, a1 = im32
+                     *   _Complex double (16-byte object) -> a0..a3 =
+                     *        re_lo, re_hi, im_lo, im_hi
+                     * The 16-byte case is four integer registers rather than a
+                     * hidden result pointer: this backend defines its own
+                     * convention for composites (it does not follow the
+                     * RISC-V psABI, which would pass the buffer in a0) and
+                     * four registers need no caller-owned storage, so an
+                     * indirect call and a call to a function defined in
+                     * another translation unit both work.  The IR stack holds
+                     * the value as re_hi, re_lo, im_hi, im_lo (top first),
+                     * which is not the object order -- hence the explicit
+                     * word-by-word moves. */
+                    if (f->ret_type && f->ret_type->kind == TYPE_COMPLEX &&
+                        type_size(f->ret_type) == 8) {
+                        asmbuf_puts(&buf, "    addi sp, sp, -8\n");
+                        /* value now at 8..23: [8]=re_hi [12]=re_lo [16]=im_hi [20]=im_lo */
+                        asmbuf_puts(&buf, "    lw a0, 12(sp)\n    lw a1, 8(sp)\n");
+                        asmbuf_puts(&buf, "    call __truncdfsf2\n    sw a0, 0(sp)\n");
+                        asmbuf_puts(&buf, "    lw a0, 20(sp)\n    lw a1, 16(sp)\n");
+                        asmbuf_puts(&buf, "    call __truncdfsf2\n    mv a1, a0\n");
+                        asmbuf_puts(&buf, "    lw a0, 0(sp)\n    addi sp, sp, 24\n");
+                        rv_pilogue(&buf, sp_size, has_alloca);
+                        break;
+                    }
+                    if (f->ret_type && f->ret_type->kind == TYPE_COMPLEX &&
+                        type_size(f->ret_type) > 8) {
+                        asmbuf_puts(&buf, "    lw a0, 4(sp)\n"
+                                          "    lw a1, 0(sp)\n"
+                                          "    lw a2, 12(sp)\n"
+                                          "    lw a3, 8(sp)\n"
+                                          "    addi sp, sp, 16\n");
+                        rv_pilogue(&buf, sp_size, has_alloca);
+                        break;
+                    }
                     if (rv_ret_is_two_words(f->ret_type))
                         asmbuf_puts(&buf, "    lw a1, 0(sp)\n    addi sp, sp, 4\n"
                                           "    lw a0, 0(sp)\n    addi sp, sp, 4\n");

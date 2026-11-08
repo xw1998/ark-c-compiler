@@ -452,6 +452,32 @@ static void emit_aggregate_init(AsmBuffer *out, Type *t, const char *init_str) {
 /* Set when the emitter produced text it knows is not assemblable. */
 static int x86_emit_errors;
 
+/* _Complex on this backend is limited to what a single expression needs:
+ * a constant push, + - * /, and == / != .  Anything that has to move a whole
+ * 16-byte object through a local, a global, an array element, a cast or a
+ * copy used to be compiled as if it were a 4-byte scalar -- a silent wrong
+ * answer that only showed up at run time.  Those paths are hard errors now:
+ * x86_emit_errors makes the backend write no output at all. */
+static void x86_complex_unsupported(AsmBuffer *b, const char *what) {
+    ark_log("[x86] error: _Complex value not supported by the x86 backend (%s)\n", what);
+    x86_emit_errors++;
+    asmbuf_puts(b, "    # unsupported: _Complex ");
+    asmbuf_puts(b, what);
+    asmbuf_putc(b, '\n');
+}
+
+/* Size in bytes of a named global (0 when unknown). */
+static int x86_global_size(IrProgram *prog, const char *name) {
+    int i;
+    if (!name) return 0;
+    for (i = 0; i < prog->global_count; i++) {
+        IrGlobal *g = prog->globals[i];
+        if (g && g->name && ark_streq(g->name, name))
+            return g->type ? type_size(g->type) : 0;
+    }
+    return 0;
+}
+
 static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
     AsmBuffer buf;
     int fi;
@@ -490,7 +516,15 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
             }
             asmbuf_puts(&buf, g->name);
             asmbuf_puts(&buf, ":\n");
-            if (g->is_float && g->has_init) {
+            /* The x86_64 backend does not implement _Complex at all; a global
+             * of that type must not quietly get its real part written as one
+             * .quad and the imaginary half dropped. */
+            if (g->type && g->type->kind == TYPE_COMPLEX) {
+                x86_complex_unsupported(&buf, "global object");
+                asmbuf_puts(&buf, "    .zero ");
+                asmbuf_int(&buf, g->type && type_size(g->type) > 0 ? type_size(g->type) : 16);
+                asmbuf_putc(&buf, '\n');
+            } else if (g->is_float && g->has_init) {
                 /* Float/double global: emit raw bits.
                  * float (4 bytes) -> .long; double (8 bytes) -> .quad */
                 int tsz = g->type ? type_size(g->type) : 8;
@@ -650,6 +684,17 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                     asmbuf_puts(&buf, "]\n    push eax\n");
                     break;
                 case IR_PUSH_VAR:
+                    if ((I->aux & 0xFF) == 16) {
+                        x86_complex_unsupported(&buf, "local variable");
+                        break;
+                    }
+                    /* _Complex float is 8 bytes but occupies two doubles on the
+                     * IR stack; a single dword load would be a silently short
+                     * value, so refuse it here as well. */
+                    if ((I->aux & IR_AUX_COMPLEX) && (I->aux & 0xFF) == 8) {
+                        x86_complex_unsupported(&buf, "_Complex float local variable");
+                        break;
+                    }
                     asmbuf_puts(&buf, "    push dword ptr [ebp-");
                     asmbuf_int(&buf, 48 + I->val);
                     asmbuf_puts(&buf, "]\n");
@@ -660,6 +705,15 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                     asmbuf_puts(&buf, "]\n    push eax\n");
                     break;
                 case IR_PUSH_GLOBAL:
+                    if (x86_global_size(prog, I->name) == 16) {
+                        x86_complex_unsupported(&buf, "global variable");
+                        break;
+                    }
+                    if ((I->aux & IR_AUX_COMPLEX) &&
+                        x86_global_size(prog, I->name) == 8) {
+                        x86_complex_unsupported(&buf, "_Complex float global variable");
+                        break;
+                    }
                     /* Bug-X4: For variadic functions, _ark_va_ptr points to
                      * the variadic tail on the stack. */
                     if (f->is_variadic && I->name && ark_streq(I->name, "_ark_va_ptr")) {
@@ -673,6 +727,15 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                     }
                     break;
                 case IR_STORE_GLOBAL:
+                    if (x86_global_size(prog, I->name) == 16) {
+                        x86_complex_unsupported(&buf, "global variable");
+                        break;
+                    }
+                    if ((I->aux & IR_AUX_COMPLEX) &&
+                        x86_global_size(prog, I->name) == 8) {
+                        x86_complex_unsupported(&buf, "_Complex float global variable");
+                        break;
+                    }
                     asmbuf_puts(&buf, "    pop eax\n    mov [");
                     asmbuf_puts(&buf, I->name);
                     asmbuf_puts(&buf, "], eax\n");
@@ -681,12 +744,27 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                     asmbuf_puts(&buf, "    add esp, 4\n");
                     break;
                 case IR_DUP:
+                    if (I->val > 1) {
+                        /* 8/16-byte value: one dword copy would leave the rest
+                         * of the value behind and drift the operand stack. */
+                        x86_complex_unsupported(&buf, "duplicate");
+                        break;
+                    }
                     asmbuf_puts(&buf, "    mov eax, [esp]\n    push eax\n");
                     break;
                 case IR_SWAP:
                     asmbuf_puts(&buf, "    pop eax\n    pop ecx\n    push eax\n    push ecx\n");
                     break;
                 case IR_STORE:
+                    if ((I->aux & ~(IR_AUX_VOLATILE | IR_AUX_COMPLEX)) == 16) {
+                        x86_complex_unsupported(&buf, "store");
+                        break;
+                    }
+                    if ((I->aux & IR_AUX_COMPLEX) &&
+                        (I->aux & ~(IR_AUX_VOLATILE | IR_AUX_COMPLEX)) == 8) {
+                        x86_complex_unsupported(&buf, "_Complex float store");
+                        break;
+                    }
                     asmbuf_puts(&buf, "    pop eax\n    mov [ebp-");
                     asmbuf_int(&buf, 48 + I->val);
                     asmbuf_puts(&buf, "], eax\n");
@@ -697,6 +775,14 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                      * I->aux bit 0x1 = unsigned (use movzx vs movsx). */
                     int es = I->val;
                     int is_unsigned = (I->aux & 0x1) != 0;
+                    if (es == 16) {
+                        x86_complex_unsupported(&buf, "array element load");
+                        break;
+                    }
+                    if (es == 8 && (I->aux & IR_AUX_COMPLEX)) {
+                        x86_complex_unsupported(&buf, "_Complex float array element load");
+                        break;
+                    }
                     asmbuf_puts(&buf, "    pop ecx\n    pop eax\n");
                     if (es > 1) {
                         asmbuf_puts(&buf, "    imul ecx, ");
@@ -734,6 +820,14 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                     /* Pop value (edx), pop address (eax). Store value.
                      * I->val = element size (1/2/4/8). */
                     int es = I->val;
+                    if (es == 16) {
+                        x86_complex_unsupported(&buf, "array element store");
+                        break;
+                    }
+                    if (es == 8 && (I->aux & IR_AUX_COMPLEX)) {
+                        x86_complex_unsupported(&buf, "_Complex float array element store");
+                        break;
+                    }
                     if (es == 8) {
                         /* 64-bit store: pop low, pop high, store both */
                         asmbuf_puts(&buf, "    pop edx\n    pop ecx\n    pop eax\n");
@@ -786,6 +880,11 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                     break;
                 }
                 case IR_UNARY:
+                    if (I->aux & IR_AUX_COMPLEX) {
+                        /* __builtin conj() of a _Complex value. */
+                        x86_complex_unsupported(&buf, "conj");
+                        break;
+                    }
                     asmbuf_puts(&buf, "    pop eax\n");
                     /* val==1 is a float/double `-x`.  Both are held as a double
                      * on this stack with the HIGH dword on top, and that dword
@@ -1016,7 +1115,10 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                  * On x86-32, doubles are 8 bytes (pushed as two dwords). */
                 case IR_PUSH_FLOAT: {
                     int is_dbl = (I->aux & 0x200) != 0;
-                    int is_complex = (I->aux & 0x400) != 0;
+                    /* IR_AUX_COMPLEX, not the old 0x400: irgen puts 0x200 too
+                     * (a complex constant is a double pair), so this test has
+                     * to run first, exactly like the ARM and RV backends. */
+                    int is_complex = (I->aux & IR_AUX_COMPLEX) != 0;
                     if (is_complex) {
                         /* _Complex double: push real then imag (2 slots) */
                         int cid = I->val;
@@ -1083,8 +1185,15 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                         case IR_FDIV: op_s = "divsd"; break;
                         default: break;
                     }
-                    /* _Complex double (aux & 0x400): two ops on real/imag parts */
-                    if (I->aux & 0x400) {
+                    /* cexp() is a single-operand op that irgen encodes on the
+                     * IR_FADD slot with (aux & 0xF00) == 0x900.  Treating it as
+                     * a binary complex add would pop one operand too many. */
+                    if ((I->aux & 0xF00) == 0x900) {
+                        x86_complex_unsupported(&buf, "cexp");
+                        break;
+                    }
+                    /* _Complex double: two ops on real/imag parts */
+                    if (I->aux & IR_AUX_COMPLEX) {
                         asmbuf_puts(&buf, "    movq xmm1, [esp]\n    add esp, 8\n");  /* imag b */
                         asmbuf_puts(&buf, "    movq xmm3, [esp]\n    add esp, 8\n");  /* real b */
                         asmbuf_puts(&buf, "    movq xmm2, [esp]\n    add esp, 8\n");  /* imag a */
@@ -1108,7 +1217,7 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                 /* IR_FCMP: compare two doubles, push 0 or 1. */
                 case IR_FCMP: {
                     const char *cc = 0;
-                    int is_complex = (I->aux & 0x400) != 0;
+                    int is_complex = (I->aux & IR_AUX_COMPLEX) != 0;
                     int cmp_op = I->aux & 0xFF;
                     if (is_complex) {
                         /* _Complex comparison: only == and != are meaningful */
@@ -1144,6 +1253,11 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
 
                 /* IR_F2I: double -> int (truncate toward zero) */
                 case IR_F2I: {
+                    if (I->aux & IR_AUX_COMPLEX) {
+                        /* creal / cimag / cabs / carg of a _Complex value. */
+                        x86_complex_unsupported(&buf, "creal/cimag/cabs/carg");
+                        break;
+                    }
                     asmbuf_puts(&buf, "    movq xmm0, [esp]\n    add esp, 8\n");
                     asmbuf_puts(&buf, "    cvttsd2si eax, xmm0\n    push eax\n");
                     break;
@@ -1152,6 +1266,11 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                 /* IR_I2F: int -> double */
                 case IR_I2F: {
                     int is_dbl = (I->aux & 0x200) != 0;
+                    if (I->aux & IR_AUX_COMPLEX) {
+                        /* widening a real value to _Complex double */
+                        x86_complex_unsupported(&buf, "real to complex conversion");
+                        break;
+                    }
                     asmbuf_puts(&buf, "    pop eax\n    cvtsi2sd xmm0, eax\n");
                     if (!is_dbl) {
                         /* float: round to float precision then back to double */

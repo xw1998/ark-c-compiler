@@ -1417,8 +1417,9 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
                     asmbuf_puts(&buf, "LL;");
                     break;
                 case IR_PUSH_FLOAT:
-                    if (I->aux & 0x400) {
-                        /* Complex constant: aux 0x600 = double(0x200)+complex(0x400); val = constant index. */
+                    if (I->aux & IR_AUX_COMPLEX) {
+                        /* Complex constant: aux 0x800|0x200 = complex(0x800) +
+                         * double(0x200); val = index into prog->complexes[]. */
                         asmbuf_puts(&buf, "stk[sp++].c = ark_cflt_");
                         asmbuf_int(&buf, I->val);
                         asmbuf_puts(&buf, ";");
@@ -1636,24 +1637,25 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
                     asmbuf_putc(&buf, ';');
                     break;
                 case IR_FADD:
-                    if ((I->aux & 0x500) == 0x500) {
-                        /* cexp intrinsic: 1 arg in -> 1 complex result out. */
+                    if ((I->aux & 0xF00) == 0x900) {
+                        /* cexp intrinsic: aux = TOK_PLUS | 0x900 (complex bit
+                         * 0x800 plus the 0x100 sub-op selector). */
                         asmbuf_puts(&buf, "ark_ca = stk[--sp].c; stk[sp++].c = cexp(ark_ca);");
-                    } else if (I->aux & 0x400) {
+                    } else if (I->aux & IR_AUX_COMPLEX) {
                         asmbuf_puts(&buf, "ark_cc = stk[--sp].c; ark_ca = stk[--sp].c; stk[sp++].c = ark_ca + ark_cc;");
                     } else {
                         asmbuf_puts(&buf, "ark_fc = stk[--sp].f; ark_fa = stk[--sp].f; stk[sp++].f = ark_fa + ark_fc;");
                     }
                     break;
                 case IR_FSUB:
-                    if (I->aux & 0x400) {
+                    if (I->aux & IR_AUX_COMPLEX) {
                         asmbuf_puts(&buf, "ark_cc = stk[--sp].c; ark_ca = stk[--sp].c; stk[sp++].c = ark_ca - ark_cc;");
                     } else {
                         asmbuf_puts(&buf, "ark_fc = stk[--sp].f; ark_fa = stk[--sp].f; stk[sp++].f = ark_fa - ark_fc;");
                     }
                     break;
                 case IR_FMUL:
-                    if (I->aux & 0x400) {
+                    if (I->aux & IR_AUX_COMPLEX) {
                         asmbuf_puts(&buf, "ark_cc = stk[--sp].c; ark_ca = stk[--sp].c; stk[sp++].c = ark_ca * ark_cc;");
                     } else {
                         asmbuf_puts(&buf, "ark_fc = stk[--sp].f; ark_fa = stk[--sp].f; stk[sp++].f = ark_fa * ark_fc;");
@@ -1663,7 +1665,7 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
                     /* Float division follows IEEE754: x/0.0 = +/-inf or NaN.
                      * The result feeds isnan/isinf classification paths; we keep
                      * the division at IR_FDIV rather than IR_BINARY+emit_binop. */
-                    if (I->aux & 0x400) {
+                    if (I->aux & IR_AUX_COMPLEX) {
                         asmbuf_puts(&buf, "ark_cc = stk[--sp].c; ark_ca = stk[--sp].c; stk[sp++].c = ark_ca / ark_cc;");
                     } else {
                         asmbuf_puts(&buf, "ark_fc = stk[--sp].f; ark_fa = stk[--sp].f; stk[sp++].f = ark_fa / ark_fc;");
@@ -1672,7 +1674,7 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
                 case IR_FCMP: {
                     /* Mask out the aux double bit (0x200) and pick the comparison op.
                      * C99 floats use the same comparison regardless of width. */
-                    int op = I->aux & ~0x200;
+                    int op = I->aux & ~(0x200 | IR_AUX_COMPLEX);
                     const char *cop = "==";
                     switch (op) {
                         case (int)TOK_EQ: cop = "=="; break;
@@ -1683,35 +1685,63 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
                         case (int)TOK_GE: cop = ">="; break;
                         default: break;
                     }
+                    if (I->aux & IR_AUX_COMPLEX) {
+                        /* C99 6.5.9: the only comparison operators defined for
+                         * complex operands are == and !=, and they compare both
+                         * parts (NaN propagating exactly like the real case). */
+                        if (op == (int)TOK_NE) {
+                            asmbuf_puts(&buf, "ark_cc = stk[--sp].c; ark_ca = stk[--sp].c; "
+                                              "stk[sp++].i = ((__real__ ark_ca != __real__ ark_cc) || "
+                                              "(__imag__ ark_ca != __imag__ ark_cc)) ? 1 : 0;");
+                        } else {
+                            asmbuf_puts(&buf, "ark_cc = stk[--sp].c; ark_ca = stk[--sp].c; "
+                                              "stk[sp++].i = ((__real__ ark_ca == __real__ ark_cc) && "
+                                              "(__imag__ ark_ca == __imag__ ark_cc)) ? 1 : 0;");
+                        }
+                        break;
+                    }
                     asmbuf_puts(&buf, "ark_fc = stk[--sp].f; ark_fa = stk[--sp].f; stk[sp++].i = (ark_fa ");
                     asmbuf_puts(&buf, cop);
                     asmbuf_puts(&buf, " ark_fc) ? 1 : 0;");
                     break;
                 }
                 case IR_F2I:
-                    if ((I->aux & 0x500) == 0x500) {
-                        /* cabs intrinsic: 1 complex arg in -> 1 double result. */
-                        asmbuf_puts(&buf, "ark_ca = stk[--sp].c; stk[sp++].f = cabs(ark_ca);");
-                    } else if (I->aux & 0x400) {
-                        /* creal intrinsic: 1 complex arg in -> 1 double result. */
-                        asmbuf_puts(&buf, "ark_ca = stk[--sp].c; stk[sp++].f = creal(ark_ca);");
+                    if (I->aux & IR_AUX_COMPLEX) {
+                        /* Complex -> double extractions. aux & 0x300 selects:
+                         *   0x000 creal   (real part)
+                         *   0x100 cimag   (imaginary part)
+                         *   0x200 cabs    (needs libm)
+                         *   0x300 carg    (needs libm) */
+                        int k = I->aux & 0x300;
+                        if (k == 0x200)
+                            asmbuf_puts(&buf, "ark_ca = stk[--sp].c; stk[sp++].f = cabs(ark_ca);");
+                        else if (k == 0x300)
+                            asmbuf_puts(&buf, "ark_ca = stk[--sp].c; stk[sp++].f = carg(ark_ca);");
+                        else if (k == 0x100)
+                            asmbuf_puts(&buf, "ark_ca = stk[--sp].c; stk[sp++].f = cimag(ark_ca);");
+                        else
+                            asmbuf_puts(&buf, "ark_ca = stk[--sp].c; stk[sp++].f = creal(ark_ca);");
                     } else {
                         asmbuf_puts(&buf, "ark_fa = stk[--sp].f; stk[sp++].i = (long long)ark_fa;");
                     }
                     break;
                 case IR_I2F:
-                    if ((I->aux & 0x700) == 0x700) {
-                        /* int->complex: read .i as double, then write .c (imaginary=0). */
-                        asmbuf_puts(&buf, "ark_ca = (double)stk[--sp].i; stk[sp++].c = ark_ca;");
-                    } else if ((I->aux & 0x600) == 0x600) {
-                        /* float->complex: read .f, then write .c (imaginary=0). */
-                        asmbuf_puts(&buf, "ark_ca = stk[--sp].f; stk[sp++].c = ark_ca;");
-                    } else if ((I->aux & 0x500) == 0x500) {
-                        /* carg intrinsic: 1 complex arg in -> 1 double result. */
-                        asmbuf_puts(&buf, "ark_ca = stk[--sp].c; stk[sp++].f = carg(ark_ca);");
-                    } else if (I->aux & 0x400) {
-                        /* cimag intrinsic: extracts imaginary part, 1 complex in -> 1 double out. */
-                        asmbuf_puts(&buf, "ark_ca = stk[--sp].c; stk[sp++].f = cimag(ark_ca);");
+                    if (I->aux & IR_AUX_COMPLEX) {
+                        /* Real -> complex widening (imaginary part 0). aux & 0x700
+                         * selects the source representation:
+                         *   0x000 float       0x200 double
+                         *   0x100 int   (0x400 more if unsigned)
+                         * The C backend stores every real in the .f double member,
+                         * so float and double sources are the same operation. */
+                        int k = I->aux & 0x700;
+                        if (k == 0x100 || k == 0x500) {
+                            if (k == 0x500)
+                                asmbuf_puts(&buf, "ark_a = stk[--sp].i; ark_ca = (double)(unsigned long long)ark_a; stk[sp++].c = ark_ca;");
+                            else
+                                asmbuf_puts(&buf, "ark_ca = (double)stk[--sp].i; stk[sp++].c = ark_ca;");
+                        } else {
+                            asmbuf_puts(&buf, "ark_ca = stk[--sp].f; stk[sp++].c = ark_ca;");
+                        }
                     } else {
                         asmbuf_puts(&buf, "ark_a = stk[--sp].i; stk[sp++].f = (double)ark_a;");
                     }
@@ -1764,9 +1794,9 @@ static int c_emit(IrProgram *prog, char *out, int cap) {
                     }
                     break;
                 case IR_UNARY: {
-                    int op = I->aux;
+                    int op = I->aux & ~IR_AUX_COMPLEX;
                     int is_float = (I->val == 1);
-                    if (op & 0x400) {
+                    if (I->aux & IR_AUX_COMPLEX) {
                         /* Complex unary conj: 1 complex in -> 1 complex out. */
                         asmbuf_puts(&buf, "ark_ca = stk[--sp].c; stk[sp++].c = conj(ark_ca);");
                     } else if (is_float) {
