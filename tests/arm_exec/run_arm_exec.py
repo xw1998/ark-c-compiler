@@ -55,8 +55,14 @@ SRAM_SIZE = 0x00020000          # 128 KiB: the backend's default initial SP
 SENTINEL = 0x10000000           # unmapped -> "Reset_Handler returned"
 
 
-def run_image(blob, max_insn=5000000):
+def run_image(blob, max_insn=5000000, sram_fill=None):
     """Execute one raw arkc image.  Returns (status, value, detail).
+
+    sram_fill pre-loads the whole SRAM with a byte pattern before the image
+    runs.  A real board powers up with whatever the SRAM cells held, so a
+    case that asks for a fill proves the initialiser *writes* every byte it
+    claims to define: with a zeroed map (`sram_fill=None`) a byte the init
+    body forgot is indistinguishable from a byte it wrote as zero.
 
     max_insn is a hang guard, not a performance gate: a case whose
     reference value is computed by repeated 64-bit division spends about
@@ -75,6 +81,8 @@ def run_image(blob, max_insn=5000000):
     uc.mem_map(FLASH_BASE, (len(blob) + 0xFFF) & ~0xFFF, UC_PROT_ALL)
     uc.mem_write(FLASH_BASE, blob)
     uc.mem_map(SRAM_BASE, SRAM_SIZE, UC_PROT_ALL)
+    if sram_fill is not None:
+        uc.mem_write(SRAM_BASE, bytes([sram_fill & 0xFF]) * SRAM_SIZE)
 
     state = {"status": None, "detail": ""}
 
@@ -128,6 +136,11 @@ AEABI_BUILD = [
 ]
 
 
+def run_case_image(case, path):
+    with open(path, "rb") as fh:
+        return run_image(fh.read(), case.get("max_insn", 5000000),
+                         case.get("sram_fill"))
+
 def link_with_runtime(main_src, main_obj):
     """Build steps for one 64-bit case: runtime, program, link."""
     return AEABI_BUILD + [
@@ -150,6 +163,30 @@ int main(void) { g_bss = 3; return g_data + g_bss; }
         },
         "build": [(["g.c", "-target", "arm", "--vector-table", "-o", "out.bin"], "out.bin")],
         "expect": 14,
+    },
+    {
+        "name": "strinit_nul",
+        "why": ".data from a string literal writes the NUL and the zero fill; "
+               "SRAM is pre-loaded with 0xAA so a byte the init body forgets "
+               "cannot be mistaken for a byte it wrote as zero",
+        "files": {
+            "s.c": STARTUP + """\
+const char tag[] = "abc";
+const char pad[8] = "ab";
+int main(void)
+{
+    int n = 0;
+    int i;
+    for (i = 0; i < (int)sizeof(tag); i++) n = n * 3 + tag[i];
+    n = n * 3 + (int)sizeof(tag);
+    for (i = 0; i < 8; i++) n = n * 3 + pad[i];
+    return n;
+}
+""",
+        },
+        "build": [(["s.c", "-target", "arm", "--vector-table", "-o", "out.bin"], "out.bin")],
+        "sram_fill": 0xAA,
+        "expect": 75065859,
     },
     {
         "name": "reloc_data",
@@ -635,9 +672,7 @@ def main(argv=None):
                 print("[SELFCHECK] FAIL: could not build the self-check image: %s"
                       % (err or "no image"))
                 return 1
-            with open(out, "rb") as fh:
-                status, value, detail = run_image(fh.read(),
-                                                  case.get("max_insn", 5000000))
+            status, value, detail = run_case_image(case, out)
             if status == "returned" and value != case["expect"]:
                 print("[SELFCHECK] expectation-mismatch: OK")
             else:
@@ -704,9 +739,7 @@ def main(argv=None):
                 print("[ FAIL ] %-18s image not produced" % case["name"])
                 failures += 1
                 continue
-            with open(out, "rb") as fh:
-                status, value, detail = run_image(fh.read(),
-                                                    case.get("max_insn", 5000000))
+            status, value, detail = run_case_image(case, out)
             if status != "returned":
                 print("[ FAIL ] %-18s %s (%s)" % (case["name"], status, detail))
                 failures += 1
@@ -722,9 +755,7 @@ def main(argv=None):
                     print("[ FAIL ] %-18s --reg-top build: %s" % (case["name"], err))
                     failures += 1
                 else:
-                    with open(out, "rb") as fh:
-                        status, value, detail = run_image(fh.read(),
-                                                         case.get("max_insn", 5000000))
+                    status, value, detail = run_case_image(case, out)
                     if status != "returned" or value != case["expect"]:
                         print("[ FAIL ] %-18s --reg-top returned %s (%s), want %d"
                               % (case["name"], value, status, case["expect"]))
