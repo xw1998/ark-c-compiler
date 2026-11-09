@@ -667,8 +667,9 @@ powershell -ExecutionPolicy Bypass -File run_asm_test.ps1         # 汇编输入
 powershell -ExecutionPolicy Bypass -File run_arm_exec_test.ps1    # ARM 执行级：编译→链接→QEMU 真跑（需 qemu-system-arm）
 python tests/arm_exec/run_arm_exec.py                             # ARM 执行级（unicorn，无 qemu 也能跑；每例同时跑 --reg-top 臂）
 python tests/asm_cases/run_asm_cmp.py                             # 汇编器对拍：arkc vs arm-none-eabi-as，含 --asm-extra 开关契约
-python tests/run_c11_keywords_tests.py --arm-as <bin> [--rv-as <bin>]  # C11 关键字门禁（ARM + RV32I 双目标，30 项）：每个运行时用例都由程序自己算地址/值（汇编里出现 `.balign` 不算证据），另含静态断言真/假对照与三条自检
+python tests/run_c11_keywords_tests.py --arm-as <bin> [--rv-as <bin>]  # C11 关键字门禁（ARM + RV32I 双目标，32 项）：每个运行时用例都由程序自己算地址/值（汇编里出现 `.balign` 不算证据），另含静态断言真/假对照与三条自检
 python tests/run_arm_int64_tests.py --arm-as <bin>                # 64 位数据通路门禁（ARM，12 项）：加减内联 / 移位 / 比较 / 除模走运行库，含"运行库仍然必需"自证
+python tests/run_arm_abi_mix_tests.py --arm-as <bin>              # AAPCS 混编门禁（ARM，16 项 × 双向）：arkcc 与 arm-none-eabi-gcc 各持一侧、unicorn 跑同一镜像，钉住"穿过 ... 的复合体按 alignment 取偶""8 字节 align-4 复合体可拆分"与寄存器/栈之间的空位；纯 arkc 的同源 oracle（run_va_gate.py）看不见这类分歧，所以必须有这一道
 python tests/run_rv_float_tests.py --arm-as <bin> --arm-libgcc <libgcc.a> --rv-as <bin>  # RV32I 软浮点门禁（22 项）：浮点算术/比较/转换与 gcc 对拍
 python tests/run_capacity_tests.py                                  # 容量门禁：120 对象 / 1200 头文件 / 520 条 -D / 129 条 -I（宿主不许有人为上限）
 python tests/run_rv_alloca_tests.py --rv-as <bin>                   # RV32I VLA 门禁：5 个用例与 gcc 对拍且各自断言硬编码期望值（两臂同时错也算错），覆盖早返回（尾声重建 sp）、两个 VLA、10 个栈参数（对齐）、`long long` VLA

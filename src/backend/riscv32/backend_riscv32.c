@@ -2148,10 +2148,13 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                     /* Word size of every argument, in argument order.  wires[]
                      * carries the sizes argmask cannot state (a composite wider
                      * than 8 bytes through `...`); argmask itself only covers
-                     * the first 16 arguments. */
+                     * the first 16 arguments.  Bit 16 of a wires[] entry is the
+                     * ARM-only "needs 8-byte alignment" flag (see aapcs_assign
+                     * and irgen); RV32I numbers argument words with no holes, so
+                     * it masks it off. */
                     for (kk = 0; kk < nargs; kk++) {
                         int b;
-                        if (wires) b = wires[kk];
+                        if (wires) b = wires[kk] & 0xFFFF;
                         else if (kk < 16 && ((I->aux >> (2 * kk + 1)) & 1)) b = 8;
                         else b = 4;
                         if (b <= 0) b = 4;

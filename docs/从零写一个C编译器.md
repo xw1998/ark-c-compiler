@@ -8480,14 +8480,93 @@ static void lw_warn_excess(LocalAggWalk *w, int cap, int is_array) {
 和"这个形态不支持"得穿透十几处 `return -1`，风险大于收益，留在 `MANUAL.md`
 的已知项里。
 
-### D.2 仍然存在（五项）
+### D.1f 本轮第六轮：修掉三条"已登记"的欠账
+
+这一轮不动优化、不动体积，只把 `MANUAL.md` 已知限制里还挂着的三条清掉。
+三条有一个共同点：**都不是"没实现某个高级特性"，而是"某个本该成立的语义被
+一个方便的实现偷掉了"**。
+
+**（一）声明符改写成两相式。** 旧 `parse_declarator` 只认识一种带括号的形状
+`( * name )`，因此 `int (*pick(int))(int,int)`（返回函数指针的函数）直接是语法
+错误。改成所有正经 C 编译器都在用的两相式：
+
+* `decl_parse()` 向前走一遍，把声明符记成一棵小树（每层 = {前缀 `*`s，至多一个
+  后缀，内层声明符}），**类型一个字都还没拼**。所以要读两遍分组、把参数表注册
+  两遍的 chibicc 技巧不需要。
+* `decl_apply()` 由外向内套类型，规则就是 `T(* D') = T'(D')`、`T(D' suffix) =
+  T''(D')`——每层先套自己的指针与后缀，再往下钻内层，于是
+  `int (*pick(int))(int,int)` 自然读成"函数(int) → 返回 指向 函数(int,int) →
+  返回 int 的指针"。
+* `decl_normalise()` 再把 `pointer -> TYPE_FUNC` 压回全项目一直看到的形状
+  （指针自己带 `is_func_ptr` 与参数表、pointee 是返回类型）。**先建通用形状
+  再压回**是让嵌套成立的关键，压回一次则让 irgen/sema 一行都不用改。
+
+一种形状仍然"交还"给调用方：叶子前面没有任何括号（`int f(int)`、
+`int *f(int)`）时参数列表**不消费**，因为定义体要的是 `AstNode` 参数而不只是
+它们的 `Type`，`typedef int binop(int);` 走的也是这条。括号里碰到的全部在这里
+消费完。
+
+**（二）`_Generic` 开始比函数签名。** `generic_type_match()` 以前只比
+`is_func_ptr` 标志，于是 `int (*)(int)` 与 `int (*)(double)` 被当成同一类型——
+`_Generic` 最不能容忍的静默选错分支。现在两侧都是函数指针时再逐项比
+`param_count`、`is_variadic`，参数类型递归走同一个函数（6.7.6.3p15）。
+
+一个实现细节值得写下来：**签名存在哪一层取决于类型是怎么建出来的**。声明符
+路径（`decl_normalise`）把它放在指针自己身上，sema 的函数指示符路径建的是
+`type_pointer(fs->type)`、签名留在 `TYPE_FUNC` 的 pointee 上。新增的
+`generic_sig_of()` 两种形状都读，比较就不依赖"这个类型是谁造的"。
+`int (*)()`（`param_count == 0` 且没有 `params`）是无原型写法，兼容规则更松，
+**明确不动**，而不是顺手编一条规则。
+
+**（三）穿过 `...` 的复合体按 *alignment* 取偶。** 这是三条里唯一会给出**错
+答案**的一条：调用方与 gcc 被调方各按一套规则排寄存器，整体错位。
+
+规则本身早就写对了一半——`aapcs_assign()` 是调用方与被调方共用的唯一规则，
+"双字对齐"也在里面。错的是**判据**：旧代码用 `sizes[i] == 8` 隐式判"要取偶"，
+而 AAPCS32 说的是**类型的 8 字节对齐**。两者在 8 字节/align 8（`struct{long
+long;}`）上碰巧一致，在 8 字节/align 4（`struct{int;int;}`）上就分叉。四形状
+实测 `arm-none-eabi-gcc 12.3` 是决定性证据：A8(8/8) 从 r2:r3 起、A4(8/4) 从
+r1:r2 起、B8(16/8) 取偶、B4(16/4) 不取偶，`_Complex float`(8/4) 也不取偶。
+
+于是三件事一起改：
+
+1. `aapcs_assign()` 多吃一个 `aligns[]`（不传时退回旧的 `size == 8` 语义，
+   这样将来漏传表的调用点行为不变）；
+2. `irgen` 在 `wires[i]` 里额外置 **bit 16** 表示"需 8 字节对齐"（低 16 位仍是
+   字节数），`backend_arm` 读出它、RV32I 后端显式 `& 0xFFFF`；
+3. `stdarg.h` 的 `ark_va__take` 把 `sizeof(type) == 8` 换成 `_Alignof(type) >= 8`
+   ——否则被调方仍按旧判据跳槽，改了调用方等于只修一半。
+
+变参 `float` 还会踩一个坑：它已被提升成 `double`，所以按 `float` 的 4 判就
+会漏掉取偶。`irgen` 里写成 `al = (use_t->kind == TYPE_FLOAT) ? 8 :
+ type_align(use_t)`。这个错在门禁里表现为 `arm/d_prom` 得 240 应得 255——
+一个**看起来像"差一点"的数值错**，实际是 `double` 落到了 r1:r2 而不是 r2:r3。
+
+还有一条只有真混编才能看见的形状：**8 字节 align-4 复合体在只剩一个寄存器
+时会拆分**（word 0 → r3，word 1 → 栈），不是 all-or-nothing。旧调用方分支是
+"寄存器不够就整块走栈"，于是 `a4_split` 会多占一个寄存器并破坏 r4。修法是
+从栈顶把 word 0 抽走、word 1 留下：`POP {r7}; POP {r<reg>}; PUSH {r7}`（r7 在块
+前导码里会被复用，不能拿来跨块存活），块拷贝再按 `asplit[]` 只搬 word 1 到栈槽。
+
+**为什么必须新建一道闸门。** `examples/run_va_gate.py` 是**同源 oracle**：
+两侧都是 arkcc，规则一致时自洽——它根本看不见 AAPCS 的分歧。于是新增
+`tests/run_arm_abi_mix_tests.py`：arkcc 与 `arm-none-eabi-gcc` 各持一侧、unicorn
+跑同一个镜像。16 例 = `a8/a4/b4/b8` × 三字内奇偶 × 双向，加 `a4_split`（拆分）
+与 `b8_hole`（5 个命名字之后：e 在 `sp[0]`、空洞 `sp[4]`、B8 在 `sp[8]`）。
+修前基线是 **6 passed / 6 failed**，修后 16/0。闸门自带 `SELFCHECK`：把第一例
+的期望值故意取反（`want ^ 1`）再跑一次，若仍通过就判 harness 看不见差异。
+`_Complex float` 穿 `...` 没有对应用例——arkcc 明确拒绝那个形态，是设计选择
+而不是欠账。
+
+三条修完后 `MANUAL.md` 的已知限制里已无对应条目，`D.2` 从五项变成四项。
+
+### D.2 仍然存在（四项）
 
 | 限制 | 症状 | 现在的对策 |
 |---|---|---|
 | 运行库仍内联在每个翻译单元 | 两个都用 64 位算术的对象各带一整套 `__aeabi_*` | 已经有两道闸，都不改行为：`-link` 按符号名合并重复定义（实测两个对象合并 42 个），`--rt-lazy` 先把每个对象里不可达的块削掉（`a.o` 2865 → 254 字节、`b.o` 3097 → 529，链接后镜像 3680 → **400** 字节）。两道都不开只是体积大 |
 | 板端编译时间仍是固定值 | 板端没有读 RTC，`__DATE__` 恒为 `Jan  1 1970` | 这是**有意的**：板端构建要可复现，固定值比"每次不同"更好。需要真实时间时给 `--source-date-epoch <秒>`，或等板端接上 RTC 再改 `port/stm32/platform_stm32.c` |
 | `ADD/SUB/MOV` 的 16 位形式一律设标志 | 与 GAS 逐字节不同：GAS 会挑不设标志的宽形式 | 解码后的语义一致，门禁按**解码文本**比对而不是字节；要逐字节一致就得让每条算术都多花 2 字节，不值得 |
-| 返回函数指针的函数仍不可解析 | `int (*pick(int))(int,int){...}` 报语法错误 | `(*name)` 形式要求名字后紧跟 `)`，不支持括号里再带参数表。**显式报错、不产出**；修法要把 `parse_declarator` 改成递归下降 + 占位类型替换，属结构性改动。自举工程与 HAL/CMSIS 都不用这个形态，所以本轮没有为了它改解析器骨架 |
 | 汇编器不认的形态里有一部分是**体系结构不存在** | `LDMIB/LDMDA/STMIB/STMDA`、寄存器索引写回（`[Rn, Rm]!` / `[Rn], Rm`）、`LDRD/STRD` 的寄存器偏移、`VLDR/VSTR` 的寄存器偏移 | 不是"没实现"，是 Thumb 里没有这几种编码（`arm-none-eabi-as` 对同样的行也报 `selected processor does not support` / `Thumb does not support register indexing with writeback`）。遇到即**报错并说明原因**，不静默降级 |
 
 关于 `__DATE__`/`__TIME__` 的口径，一次讲清楚，因为"板端是固定值"很容易被误读成缺陷：

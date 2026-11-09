@@ -1375,7 +1375,6 @@ v0.8.0 已实现完整的 C99 集合 + 98% 以上的 armcc 常用扩展，仅剩
 - **IR 生成不完整即失败**：`irgen` 遇到无法降级的赋值目标时会累计 `g_irgen_errors`，驱动看到非 0 就 `return ARK_ERR_IRGEN` 并不产出镜像（原先只打一行日志再 push 一个 0，会得到静默算错的二进制）。
 - **`sizeof(long double)` 为 8**：本编译器采用 LLP64 数据模型（与 armcc 默认一致），`long double` 与 `double` 同为 8 字节，而 32 位 x86 宿主 GCC 上是 12。依赖 `sizeof(long double)` 区分精度的代码不可移植，跨平台比对 `sizeof` 结果时须按目标模型而非宿主模型来判断。
 - **位域宽度上限 32 位**：`IR_LOAD_FLD`/`IR_STORE_FLD` 按 32 位容器读写，`long long x:40` 会读回错值。因此语法分析阶段直接报错（`bit-field width 40 exceeds 32`）、不生成代码，不做静默截断。
-- **`ret (*fn(params))(params)`（返回函数指针的函数）不可解析**：`(*name)` 形式目前要求名字后立刻是 `)`，不支持括号内再带一层参数表，因此 `int (*pick(int))(int,int){...}` 这类声明符会报语法错误。**当前行为是显式报错**（`[parser] ... syntax error(s); no code generated`），不会产出错误二进制。修法需要把 `parse_declarator` 改写成递归下降 + 占位类型替换，属结构性改动。
 - **聚合初始化器只认能变成字节的东西（两个机器后端共用一份实现）**：全局聚合初始化走 [include/agginit.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/agginit.h) 的 `ark_agg_fill()`，类型驱动地按声明偏移写字节，所以支持整数/字符常量、字符串填充 `char` 数组（含 `char m[2][6] = {"ab","cd"}` 这种按行的）、嵌套 `{}`、`.field=` 与 `[idx]=` 指派器，以及**地址常量元素**（`int (*tab[2])(int,int) = {add,sub};`、`char *cs[2] = {"xy","cd"};`——文本里读不出数字、类型是指针/函数的元素交给后端 hook，按 `IrGlobal.init_refs` 的偏移对账，字符串元素额外在 `.rodata` 里按元素偏移各开一个标签，见「聚合初始化器里的地址元素」一节）。**读不出字节的初值一律显式报错**：聚合里的**浮点字面量**（`struct S{double d;} s = {1.5};` 报
 `the arm backend cannot turn the initialiser of the global 's' into data ...`）以及不能用字面量表示的初值，
 绝不写零充数。`union` 已支持：按 C99 6.7.8p10 只取**一个**活跃成员（无指派时取第一个，`.f=` 另指，
@@ -1383,8 +1382,6 @@ v0.8.0 已实现完整的 C99 集合 + 98% 以上的 armcc 常用扩展，仅剩
 （`union U u = { .b = "abc" };`）；位域也支持（`struct B{int a:3; int b:5;} b = {1,2};` 按位落，位域数组同理）。两个后端调同一份实现，所以 ARM 与 RV32I 在这里给出的是同一组字节——曾经 ARM 自己那份"按逗号走"的解析器把字符串元素跳过存 0，`struct Q gq = {3, "abcd", 9}` 的成员全成了 NUL。
 - **块作用域 `_Alignas` 上限 8 字节**：16/32/64 一律报错（`block-scope _Alignas above 8 bytes is not supported`），
   因为帧只保证 `sp` 8 字节对齐；文件作用域与结构体成员没有这个限制。
-- **`_Generic` 的关联类型不比函数签名**：`int (*)(int)` 与 `int (*)(double)` 视为同一类型（`is_func_ptr` 标志一致即匹配），
-  因为声明符解析跳过参数表。
 - **`va_arg` 依赖小端目标**：`stdlib/include/stdarg.h` 的 `va_arg` 按"槽位地址重解释"取值（`*(type *)(...)`），整数/指针/`double` 通吃，但要求目标为小端。ARM Thumb-2 与全部宿主均满足；大端目标需改为按类型分派。
 - **变参的两种镜像形状不能混用**：C/x86_64 每个实参一个 8 字节槽位（`frame+8000` 起，
   序言里把 a0..a7 镜像进去，`irgen` 的 `g_ir_va_slot_region` 负责预留 8064 字节）；
@@ -1423,10 +1420,25 @@ v0.8.0 已实现完整的 C99 集合 + 98% 以上的 armcc 常用扩展，仅剩
   其余进栈）；地址用 `IR_DUP`/`IR_SWAP` 只算一次，最后 `IR_POP` 丢掉。
   5..8 字节的结构体仍是原来的两字规则。**只有 ARM 实现**，另外三个后端由 `irgen`
   报错拒绝（`passing a N-byte structure through '...' is implemented for the arm
-  target only`）。已知偏离：8 字节对齐且超过 8 字节的结构体，gcc 会把 NCRN 取到偶数、
-  我们不取整，因为 `stdarg.h` 只能按 `sizeof == 8` 判对齐（`_Alignof` 已实现，但 stdarg.h
-  尚未改用它，调用侧的 NCRN 取偶也没做），取整留下的
-  空洞它会当成数据读；两侧都是 arkc 时自洽，与 gcc 被调方混用会错位。
+  target only`）。
+- **穿过 `...` 的复合体按 *alignment* 取偶，8 字节 align-4 复合体可拆分**：AAPCS32 的 NCRN
+  取偶条件是实参**类型的 8 字节对齐**，不是 size。实测 `arm-none-eabi-gcc 12.3` 给出决定性
+  证据：`struct A8{long long v;}`（8 B/align 8）从 r2:r3 起、`struct A4{int a,b;}`（8 B/align 4）
+  从 r1:r2 起不取偶、`struct B8{double;int;}`（16 B/align 8）取偶、`struct B4{4×int}`
+  （16 B/align 4）不取偶、`_Complex float`（8 B/align 4）不取偶。因此 `irgen` 在 `wires[i]`
+  里额外置 **bit 16** 表示"该实参需 8 字节对齐"（低 16 位仍是字节数）；变参 `float` 已被
+  提升成 `double`，所以这里按 8 判而不是按 `float` 的 4 判。`aapcs_assign()` 吃的是调用方与
+  被调方共用的对齐数组 `aligns[]`，取偶只由它决定（不传该数组时退回旧的 `size == 8` 语义）。
+  8 字节 align-4 复合体在只剩一个寄存器时**会拆分**（word 0 → 该寄存器、word 1 → 栈），
+  不是 all-or-nothing：调用方用 `POP {r7}; POP {r<reg>}; PUSH {r7}` 把 word 0 从栈顶抽走、
+  word 1 留在栈顶，块拷贝再按 `asplit[]` 只搬 word 1 到栈槽。
+  `stdarg.h` 的 `ark_va__take` 因此改用 **`_Alignof(type) >= 8`** 判"这个槽是否落在 8 对齐
+  位置"（旧代码用 `sizeof(type) == 8`，遇 A4 这种 8 B/align 4 的类型会多跳一格，与 gcc
+  被调方混用时整体错位）。互操作由 `tests/run_arm_abi_mix_tests.py` 钉住：arkcc 与
+  `arm-none-eabi-gcc` 各持一侧、unicorn 跑同一镜像，16 例（`a8/a4/b4/b8` × 三字内的奇偶、
+  `a4_split` 拆分、`b8_hole` 寄存器/栈之间的空位）双向全通，并带 `SELFCHECK`——故意把期望值
+  写错必须报错，否则判 harness 看不见差异。`_Complex` 穿 `...` 仍然拒绝（见下一条），
+  所以这一族没有对应用例。
 - **复数不走 sret、也不许穿过 `...`**：16 字节的 `_Complex double` 用返回值寄存器（ARM `r0-r3`、
   RV32I `a0-a3`），sret 只留给 size > 8 的 struct/union；穿过 `...` 传复数在调用点直接报错，
   因为 `va_arg` 只能按连续参数字走、被调方没有类型信息。完整矩阵见 4.10。

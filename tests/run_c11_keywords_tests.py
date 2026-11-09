@@ -165,6 +165,33 @@ int main(void) {
 }
 """, 64),
 
+    # Function pointers carry a signature: `int (*)(int)`, `int (*)(double)`,
+    # `int (*)(int, int)` and `int (*)(int, ...)` are four different types
+    # (6.7.6.3p15).  Until this case existed the match stopped at "pointer to
+    # int" and every branch was a coin flip on association order -- silently
+    # wrong in exactly the way _Generic must never be.  If the compiler went
+    # back to comparing only pointer kinds the sums would come out 129 / 15*8
+    # instead of 15, so the expectation is a real discriminator, not a
+    # restatement of the source.
+    ("generic_func_signature", """
+static int fi(int x) { return x; }
+static int f2(int a, int b) { return a + b; }
+static int fv(int n, ...) { return n; }
+int main(void) {
+    int (*pi)(int) = fi;
+    int (*pd)(double) = 0;      /* the type is what matters: never called */
+    int (*p2)(int, int) = f2;
+    int (*pv)(int, ...) = fv;
+    int s = 0;
+    s += _Generic(pi, int (*)(int): 1, int (*)(double): 64, int (*)(int, int): 128);
+    s += _Generic(pd, int (*)(int): 64, int (*)(double): 2);
+    s += _Generic(p2, int (*)(int): 64, int (*)(double): 128, int (*)(int, int): 4);
+    s += _Generic(pv, int (*)(int): 64, int (*)(int, ...): 8, default: 128);
+    s += _Generic(fi, int (*)(int): 1, int (*)(double): 64, default: 128);
+    return s;
+}
+""", 16),
+
     # A matching association beats `default`, and `default` is used when no
     # type-name is compatible (1.0f is a float, not a double).
     ("generic_default", """
