@@ -18,7 +18,7 @@
 | 阶段 2 | STM32 板载 arkCC 能编译 `.c` 源码生成 `.bin` | ✅ 已完成 |
 | 阶段 3a | 板载产物能在板上装载执行（RAM 池借块，`mini run`） | ✅ 已完成（2026-11-05） |
 | 阶段 3b | 板载产物掉电保留（外部 QSPI NOR + littlefs） | ✅ 已完成 |
-| 阶段 3c | 产物烧写回**内部 Flash** 并由引导跳转执行 | 🚧 进行中 |
+| 阶段 3c | 产物烧写回**内部 Flash** 并由引导跳转执行 | ✅ 已完成（2026-11-09，见 [docs/STM32_BUILD.md](docs/STM32_BUILD.md) §15） |
 | 阶段 4 | 无需改动的 MDK 工程可被 arkCC 直接编译 | ✅ 已完成（`--uvprojx` 自动提取 include 路径和宏定义；预处理除零保护） |
 | 阶段 5 | `__user_initial_stackheap`、HAL 重定向、scatter 链接完整支持 | ✅ 已完成（`__user_initial_stackheap` + `putchar`/`fputc` UART 重定向 + malloc/free + scatter 感知向量表生成） |
 
@@ -37,7 +37,7 @@
 | ② | 板上把一份 `.c` 编成机器码（`.bin`） | ✅ | `cc hello.c` |
 | ③ | **多份 `.c` → 一个可装载镜像 → 在板上执行** | ✅ 2026-11-05 | `make` 打出 `app.svcm` 4776 B；`mini run` 打出 `ARKMAKE: link ok` / `ARKMAKE: cross-file add3=6` |
 | ④ | 产物掉电保留（外部 QSPI NOR + littlefs） | ✅ | 产物在 `/mnt/nor`，复位后仍在，可直接 `mini run` |
-| ⑤ | 产物烧写回**内部 Flash** 并由引导跳转执行 | 🚧 未打通 | —— |
+| ⑤ | 产物烧写回**内部 Flash** 并由引导跳转执行 | ✅ 2026-11-09 | `app flash write /tmp/m5.bin` → 1452 B / crc `0x612B4A1E` 落到 `0x081E0000` 并回读逐字节通过；`app flash run` 打出 `M5 alive in flash`，日志入口 `0x081E0424` 就在 Flash 区内；**复位后** `/tmp` 已清空、同一份仍能跑（掉电不丢的判据） |
 
 第 ③ 段值得单列，因为它一次性排除了三类**看起来成功**的失败：
 

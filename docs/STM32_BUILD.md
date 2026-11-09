@@ -438,11 +438,11 @@ AXI = ARK_POOL_SIZE + ARK_ASM_BUF_SIZE + ARK_CODE_BUF_SIZE + ARK_OBJ_BUF_SIZE
 | --- | --- | :---: |
 | 阶段 1 | arkCC 自身用 armcc5 编译为 STM32 固件 | ✅ 已完成 |
 | 阶段 2 | STM32 板载 arkCC 能编译 `.c` 源码生成 `.bin` | ✅ 已完成 |
-| 阶段 3 | 板载编译产物能烧写回 Flash 并跳转执行 | 🚧 进行中（RAM 内装载+执行+返回已通，见 §12） |
+| 阶段 3 | 板载编译产物能烧写回 Flash 并跳转执行 | ✅ 已完成（Flash 应用区 `0x081E0000` 内取指执行、复位后仍在，见 §12 与 §15） |
 | 阶段 4 | 无需改动的 MDK 工程可被 arkCC 直接编译 | ✅ 已完成（`--uvprojx` 自动提取 include 路径和宏定义；预处理除零保护） |
 | 阶段 5 | `__user_initial_stackheap`、HAL 重定向、scatter 链接完整支持 | ✅ 已完成（`__user_initial_stackheap` + `putchar`/`fputc` UART 重定向 + malloc/free + scatter 感知向量表生成） |
 
-**阶段 1-2 已通过 `build_stm32_armcc.ps1` 实现，阶段 4-5 已完成**，本手册描述的全部内容均已在实际硬件上验证通过。阶段 3（板载产物烧写回 Flash 并跳转执行）仍在进行中。
+**阶段 1-2 已通过 `build_stm32_armcc.ps1` 实现，阶段 4-5 已完成**，本手册描述的全部内容均已在实际硬件上验证通过。阶段 3 的第三段（产物烧写回内部 Flash 并跳转执行）于 2026-11-09 打通，见 §15。
 
 ---
 
@@ -806,3 +806,165 @@ written by arkcc running on the STM32H743 itself
 同一类问题的第二次出现：本次 `--reloc-text` 的"对象描述符"一开始也算在
 `p_text_base` 赋值之前，结果对象里没有描述符、链接器拒绝链接（拒绝是对的，
 但错误来得太晚）。这类"顺序依赖 + 无报错"的组合只能靠门禁兜住。
+
+## 15 阶段 3c：产物烧进片内 Flash 并被执行（`app flash`）
+
+### 15.1 为什么要这一步
+
+阶段 3 的两条直跑路径都停在"RAM 里的产物"：
+
+| 路径 | 镜像从哪来 | 掉电后 |
+| --- | --- | --- |
+| `app run <path>`（固定窗口） | VFS 里取，装进 `0x24070000` 的 8 KB 窗口 | 没了（ramfs 易失） |
+| `mini run`（四遍差分打包） | VFS 里取，装进 RAM 池任意空块 | 没了 |
+
+编译器本身已经能在板上编出镜像，但它们只活得跟这块 RAM 一样久。
+阶段 3c 要补的就是最后一段：**镜像落进片内 Flash，复位后仍然在，可以直接执行**。
+
+### 15.2 形态：内核引导器起任务、从 Flash 取指
+
+刻意**不复用** bootloader 形状（裸跳 VTOR + `NVIC_SystemReset` 一次性接管）。
+选的形状是复用已经实机验证过的 apprun 那条路：
+
+```
+app flash write <path>
+        │  扫描 + 形状校验（先验后擦）
+        ▼
+   Flash 应用区 0x081E0000 .. 0x08200000   ← bank2 尾部，128 KB
+        │  区尾固定 32 B 元数据（magic / len / crc / version）
+        ▼
+app flash run
+        │  读元数据 + 复核入口/序言 → mini_alloc 借 RAM 窗口 → task_register
+        ▼
+   非特权任务，PC 在 0x081E0***，MPU 代码窗 = Flash 应用区，数据窗 = 0x24072000
+```
+
+好处是掉电保留天然成立，同时**没有**引入第二套调度/异常处理/退出路径：
+任务跑完走的是同一条 `SVC 0x1B` 退出，数据窗口照原样还给池子。
+
+> 诚实边界：这不是"接管整机"的 bootloader。内核还在、shell 还在，Flash 里的
+> 程序是一个**任务**，不是一个独立固件。
+
+### 15.3 分区与 MPU 窗口
+
+`config/stm32h743/arkrtos_partition.h`：
+
+```c
+KERNEL      0x08000000 + 512K    (bank1)
+CONFIG      0x08080000 + 128K
+IMAGE_POOL  0x080A0000 + 1280K   (= CHIP_FLASH_SIZE - BOOT - KERNEL - CONFIG - FLASHAPP)
+FLASHAPP    0x081E0000 + 128K    (= IMAGE_POOL_END，bank2 尾部)
+             终端 0x08200000
+```
+
+三条硬约束，都在头文件里做了编译期校验（`arkrtos_flashapp_layout_check`）：
+
+1. **FlashApp 区必须从 `IMAGE_POOL_SIZE` 里扣掉**，不能"池内保留"。池顶那一个
+   扇区是压实余量，动态占用必然冲突。
+2. **必须落在 bank2**。H743 双 bank，擦写 bank2 时内核仍从 bank1 取指
+   （read-while-write）；写 Flash 期间内核不能停。
+3. **`ARKRTOS_MPU_IMAGE_POOL_SIZE` 必须覆盖池 + FlashApp 两段**
+   （改成 `(CHIP_FLASH_BASE + CHIP_FLASH_SIZE) - IMAGE_POOL_BASE`）。原来它只覆盖
+   池：FlashApp 任务的 `rom_start` 落在窗口外，`arkrtos_mpu_rom_window()` 会
+   **静默 fallback 到内核 Flash 窗口**，第一次取指就 fault。
+
+### 15.4 元数据放区尾，不放镜像头
+
+`flashapp_meta_t` 固定在 `FLASHAPP_END - 32`：
+
+```c
+magic  'FLAP' (0x50414C46)   len   crc32   version=1   rsv[4]
+```
+
+放区尾而不是负载头部，是因为 Cortex-M 要求**向量表在镜像 +0**：SP 必须是镜像
+前 4 字节、Reset 是第 5..8 字节。任何头都会把 SP 推后，而形状校验正是靠 SP 判断
+"这份镜像是不是按这条地址链链接的"。
+
+CRC 用位算法（IEEE 反射 `0xEDB88320`）而不是 1 KB 查表：内核 RAM 只剩十一二 KB。
+
+### 15.5 写路径：先验后擦 + 回读校验
+
+`arkrtos_flashapp_write()` 的顺序是**有意的**：
+
+```
+参数/VFS 检查 → 判忙 → flashapp_scan()（单遍流式算 len + CRC，超 MAX_IMAGE 立刻拒）
+             → flashapp_check_shape()
+                  SP == RAM 窗口顶
+                  入口在 [BASE, BASE+len) 内
+                  入口前两字节 == 0xB5E0（arkc 序言 PUSH {r5-r7,lr}）
+             → sched_lock → erase 整个区 → 分块读 + 写
+             → 回读逐字节比对 → 写元数据 → 元数据回读 → 解锁
+```
+
+两处不那么显然的决定：
+
+* **形状校验放在擦除之前**。一个明显不对的文件不该擦掉区里那份还能跑的镜像。
+  一旦开始擦，失败就是"区里现在是空的"，shell 直说不做假补偿。
+* **回读逐字节比对**。`arkrtos_port_flash_write()` 是读-改-写逐 32 B flash word，
+  同一 32 B 块只能写一次；写进去不等于写对了，只有回读能证明。
+
+### 15.6 用法与错误码
+
+```
+app flash write <path>     把镜像烧进 Flash 应用区（自带 verified 读数）
+app flash run              从 Flash 应用区起任务执行
+app flash info             元数据 + 入口（只读，不核 CRC）
+app flash erase            擦掉整个区
+```
+
+| 码 | 名字 | 含义 |
+| --- | --- | --- |
+| -40 | BUSY | 已经有一个 FlashApp 任务在跑 |
+| -41 | WINDOW | 形状校验：SP 不在 RAM 窗口顶 / 入口不在镜像内 |
+| -42 | LAYOUT | 镜像长度越界 / 坐标不符 |
+| -43 | PROLOGUE | 入口前两字节不是 `0xB5E0` |
+| -44 | META | 区里没有镜像（magic 不对） |
+| -45 | VERIFY | 回读比对失败 |
+| -46 | FLASH | 擦/写底层报错 |
+
+`info` 打印入口时把 Thumb 位抹掉（`ent & ~1u`），否则与 `run` 的日志会差一个 1。
+
+### 15.7 板上实测读数
+
+```
+cc /tmp/m5.c --scatter /tmp/m5.sct --vector-table -o /tmp/m5.bin
+    cc: done in 58 ms                       -> 1452 B
+
+app flash write /tmp/m5.bin
+    FLASHAPP:410 /tmp/m5.bin: 1452 B, crc 0x612B4A1E -> 0x081E0000..0x081E05AC (verified)
+
+app flash info
+    flash app: 1452 B, crc 0x612B4A1E, entry 0x081E0424, area 0x081E0000 +128K
+
+app flash run
+    FLASHAPP:412 1452 B from flash 0x081E0000, entry 0x081E0424,
+                 data 0x24072000 (8192 B), task 4
+    M5 alive in flash
+    M5 tag bravo
+    FLASHAPP:413 task 4 exited, data window returned to the pool
+```
+
+复位之后（ramfs 已清空，`ls /tmp` 里没有 `m5.bin`）再 `info` / `run` 仍然成功
+——这一条是"烧在 Flash"与"读进 RAM"的唯一分辨点。
+
+固件体积（`USE_FLASHAPP=1` 全开）：`FLASH 497700 B / 512 KB / 94.93%`、
+`RAM 309360 B / 68.66%`。
+
+### 15.8 回归与反假绿
+
+两条板级用例（`tools/final_app.py`）：
+
+* **`m5-flashapp`**：空区 `info` 报 `-44` → `cc` → `write`(verified) → `info` →
+  `run`（**日志入口点在 `0x081E0***` + 程序打出源码独有字符串，两条缺一不可**）
+  → Reset → `ls /tmp` 无 `m5.bin` → `info`/`run` 仍成功 → `erase` → `run` 报
+  `-44` → `app flash bogus` 打 usage → 无异常。
+  只看字符串不够：把镜像拷到 RAM 里跑也能打出来，所以必须同时校验入口点。
+* **`m5-wrong-window`**：先用好镜像 `write` 成功，再用 RAM 窗口挪 4 KB 的坏镜像
+  `write`，必须报 `-42` **且区里那份仍能 `info` / `run`** —— 这就是"先验后擦"
+  的判据，而不是只看错误码。
+
+默认关闭（`ARKRTOS_USE_FLASHAPP=0`）时代码全部编不进来，命令表与体积零变化；
+`USE_FLASHAPP=1` 需要 `USE_APPRUN=1` 与 `USE_VFS=1`，`arkrtos_features.h` 里有
+`#error` 硬拦，`config/kconfig/Kconfig.features` 里有同一条 `depends on`。
+
+回归汇总：`all 16 cases PASS`；结构门禁 `12 check(s) passed, 0 failed`。
