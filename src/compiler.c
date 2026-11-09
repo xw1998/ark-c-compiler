@@ -577,10 +577,10 @@ static int ld_build_vector_table(unsigned char *out_buf,
 /* Point the reset vector at a trampoline that runs the initialiser before
  * Reset_Handler:
  *
- *     PUSH {lr}
+ *     PUSH {r5, r6, r7, lr}
  *     BL   __arkcc_init_globals
  *     BL   Reset_Handler        (a Reset_Handler that returns lands on LR)
- *     POP  {pc}
+ *     POP  {r5, r6, r7, pc}
  *
  * The BL matters: `B.W Reset_Handler` looks smaller, but a plain branch leaves
  * LR holding whatever the last call put there (measured: the chain's own BL
@@ -593,6 +593,12 @@ static int ld_build_vector_table(unsigned char *out_buf,
  * must not return).  Both BLs are filled in by ld_patch_ref, the same patcher
  * the object relocations use, so there is exactly one place that knows the
  * ARM encodings.
+ *
+ * The prologue is the one the ARM backend emits for every function, down to
+ * the register list (0xB5E0 = PUSH {r5, r6, r7, lr}): the board's app loader
+ * checks the word the reset vector points at for exactly that shape before it
+ * runs an image ("not an arkc image (bad prologue)").  PUSH {lr} alone would
+ * be smaller and equally correct, but the loader would refuse the image.
  *
  * It is needed whenever Reset_Handler's own call cannot reach every init body.
  * Each object that owns .data/.bss emits a `__arkcc_init_globals` body under
@@ -641,7 +647,7 @@ static int ld_init_trampoline(unsigned char *out_buf, int *out_len_p,
         out_buf[out_len++] = 0xBF;   /* NOP (align to 4) */
         out_buf[out_len++] = 0x00;
     }
-    if (out_len + 12 > LD_BUF_SIZE) {
+    if (out_len + 16 > LD_BUF_SIZE) {
         diag_tool(DIAG_SEV_ERROR, g_ld_image,
                   "no room for the __arkcc_init_globals trampoline; "
                   "raise ARK_LINK_BUF_SIZE", 0,0,0,0,0,0);
@@ -657,17 +663,20 @@ static int ld_init_trampoline(unsigned char *out_buf, int *out_len_p,
         return ARK_ERR_LINK;
     }
     t0 = out_len;
-    /* PUSH {lr} = B500, then two BL T1 placeholders (F000 D000) and
-     * POP {pc} = BD00.  ld_patch_ref overwrites both BL halves. */
-    out_buf[t0 + 0] = 0x00; out_buf[t0 + 1] = 0xB5;
+    /* PUSH {r5,r6,r7,lr} = B5E0, two BL T1 placeholders (F000 D000), then
+     * POP {r5,r6,r7,pc} = BDE0 and two bytes of padding (the block is kept
+     * 4-byte aligned, and padding behind an unconditional POP never runs).
+     * ld_patch_ref overwrites both BL halves. */
+    out_buf[t0 + 0] = 0xE0; out_buf[t0 + 1] = 0xB5;
     out_buf[t0 + 2] = 0xF0; out_buf[t0 + 3] = 0x00;
     out_buf[t0 + 4] = 0xD0; out_buf[t0 + 5] = 0x00;
     out_buf[t0 + 6] = 0xF0; out_buf[t0 + 7] = 0x00;
     out_buf[t0 + 8] = 0xD0; out_buf[t0 + 9] = 0x00;
-    out_buf[t0 + 10] = 0x00; out_buf[t0 + 11] = 0xBD;
-    ld_add_reloc("__arkcc_init_globals", t0 + 2, 1, 0);
-    ld_add_reloc("Reset_Handler", t0 + 6, 1, 0);
-    out_len += 12;
+    out_buf[t0 + 12] = 0xE0; out_buf[t0 + 13] = 0xBD;
+    out_buf[t0 + 14] = 0x00; out_buf[t0 + 15] = 0x00;
+    ld_add_reloc("__arkcc_init_globals", t0 + 4, 1, 0);
+    ld_add_reloc("Reset_Handler", t0 + 8, 1, 0);
+    out_len += 16;
     ld_write_word(out_buf, 4, (flash_base + (unsigned)t0) | 1u);
     *out_len_p = out_len;
     if (verbose)
