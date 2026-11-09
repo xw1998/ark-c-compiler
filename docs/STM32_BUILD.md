@@ -963,7 +963,12 @@ app flash run
   `write`，必须报 `-42` **且区里那份仍能 `info` / `run`** —— 这就是"先验后擦"
   的判据，而不是只看错误码。
 
-默认关闭（`ARKRTOS_USE_FLASHAPP=0`）时代码全部编不进来，命令表与体积零变化；
+默认关闭（`ARKRTOS_USE_FLASHAPP=0`）时代码全部编不进来、命令表也不含 `flash`
+子命令。有一处**不**随开关变化，是有意的：**分区里那 128 KB 照样预留**（实测
+`492956 B`，比不预留多 16 B；池少一个扇区）。分区是板级静态决定，`.sct` / `.ld`
+生成器与 C 必须看到同一个数——把它做成跟着开关变的，等于让同一个头文件对不同的
+工具说不同的话。不需要这块地就在编译命令行给 `-DARKRTOS_FLASHAPP_SIZE=0`
+（头里是 `#ifndef`，不会打架），但那样必须同时把生成器也指到同一份配置。
 `USE_FLASHAPP=1` 需要 `USE_APPRUN=1` 与 `USE_VFS=1`，`arkrtos_features.h` 里有
 `#error` 硬拦，`config/kconfig/Kconfig.features` 里有同一条 `depends on`。
 
