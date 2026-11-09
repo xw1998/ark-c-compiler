@@ -574,6 +574,115 @@ static int ld_build_vector_table(unsigned char *out_buf,
     return vt_size;
 }
 
+/* Point the reset vector at a trampoline that runs the initialiser before
+ * Reset_Handler:
+ *
+ *     PUSH {lr}
+ *     BL   __arkcc_init_globals
+ *     BL   Reset_Handler        (a Reset_Handler that returns lands on LR)
+ *     POP  {pc}
+ *
+ * The BL matters: `B.W Reset_Handler` looks smaller, but a plain branch leaves
+ * LR holding whatever the last call put there (measured: the chain's own BL
+ * left LR pointing into the chain, so Reset_Handler's epilogue returned into
+ * the middle of it and popped an empty stack - the harness saw an unmapped
+ * read at the stack top).  Saving LR here makes the trampoline a normal
+ * caller: Reset_Handler gets a return address, and a Reset_Handler that
+ * returns ends up exactly where a bare one would (the LR value the core had
+ * at reset - indeterminate on real hardware, which is why a reset handler
+ * must not return).  Both BLs are filled in by ld_patch_ref, the same patcher
+ * the object relocations use, so there is exactly one place that knows the
+ * ARM encodings.
+ *
+ * It is needed whenever Reset_Handler's own call cannot reach every init body.
+ * Each object that owns .data/.bss emits a `__arkcc_init_globals` body under
+ * that one name, so the symbol keeps the first and the others would never run.
+ * Two things make this invisible from the call site:
+ *   - a call from the object that owns the body is resolved at compile time to
+ *     that body's own offset and recorded as a --reloc-text delta site, which
+ *     carries no symbol at all, so the link cannot re-point it; and
+ *   - `calls_init` (a named relocation to the symbol) therefore says nothing
+ *     about the other objects' bodies.
+ * Measured on the board: with two objects, the second object's `b_bias` stayed
+ * at its SRAM power-up value and a call through a function pointer returned
+ * garbage while the link reported success. The body the baked call reaches is
+ * initialised twice here; that is idempotent (absolute stores, absolute
+ * zeroing).
+ *
+ * Returns 0 on success (including "not needed"), else an ARK_ERR_* after the
+ * reason has been reported. */
+static int ld_init_trampoline(unsigned char *out_buf, int *out_len_p,
+                              unsigned flash_base, int verbose) {
+    int init_idx  = ld_find_global("__arkcc_init_globals");
+    int reset_idx = ld_find_global("Reset_Handler");
+    int calls_init = 0;
+    int nbodies = 0;
+    int k, t0;
+    int out_len = *out_len_p;
+
+    for (k = 0; k < g_ld_reloc_count; k++)
+        if (ark_streq(g_ld_relocs[k].name, "__arkcc_init_globals")) {
+            calls_init = 1;
+            break;
+        }
+    for (k = 0; k < LD_MAX_OBJS; k++)
+        if (g_ld_init_body[k] >= 0) nbodies++;
+
+    if (init_idx < 0 || reset_idx < 0 || (calls_init && nbodies <= 1))
+        return 0;
+
+    if ((out_len & 3) != 0) {
+        if (out_len + 2 > LD_BUF_SIZE) {
+            diag_tool(DIAG_SEV_ERROR, g_ld_image,
+                      "no room for the __arkcc_init_globals trampoline; "
+                      "raise ARK_LINK_BUF_SIZE", 0,0,0,0,0,0);
+            return ARK_ERR_IO;
+        }
+        out_buf[out_len++] = 0xBF;   /* NOP (align to 4) */
+        out_buf[out_len++] = 0x00;
+    }
+    if (out_len + 12 > LD_BUF_SIZE) {
+        diag_tool(DIAG_SEV_ERROR, g_ld_image,
+                  "no room for the __arkcc_init_globals trampoline; "
+                  "raise ARK_LINK_BUF_SIZE", 0,0,0,0,0,0);
+        return ARK_ERR_IO;
+    }
+    if (g_ld_reloc_count + 2 > LD_MAX_RELOCS) {
+        char b1[12], b2[12];
+        diag_tool(DIAG_SEV_ERROR, g_ld_image,
+                  "relocation table is full (%s of %s); the startup trampoline "
+                  "cannot be resolved - raise ARK_LINK_MAX_RELOCS and relink",
+                  diag_num(b1, g_ld_reloc_count), diag_num(b2, LD_MAX_RELOCS),
+                  0,0,0,0);
+        return ARK_ERR_LINK;
+    }
+    t0 = out_len;
+    /* PUSH {lr} = B500, then two BL T1 placeholders (F000 D000) and
+     * POP {pc} = BD00.  ld_patch_ref overwrites both BL halves. */
+    out_buf[t0 + 0] = 0x00; out_buf[t0 + 1] = 0xB5;
+    out_buf[t0 + 2] = 0xF0; out_buf[t0 + 3] = 0x00;
+    out_buf[t0 + 4] = 0xD0; out_buf[t0 + 5] = 0x00;
+    out_buf[t0 + 6] = 0xF0; out_buf[t0 + 7] = 0x00;
+    out_buf[t0 + 8] = 0xD0; out_buf[t0 + 9] = 0x00;
+    out_buf[t0 + 10] = 0x00; out_buf[t0 + 11] = 0xBD;
+    ld_add_reloc("__arkcc_init_globals", t0 + 2, 1, 0);
+    ld_add_reloc("Reset_Handler", t0 + 6, 1, 0);
+    out_len += 12;
+    ld_write_word(out_buf, 4, (flash_base + (unsigned)t0) | 1u);
+    *out_len_p = out_len;
+    if (verbose)
+        ark_log("[link] note: %s; reset vector points at a trampoline at "
+                "0x%08X\n",
+                (nbodies > 1)
+                ? "several objects own .data/.bss, and the init body "
+                  "Reset_Handler's own (baked) call reaches is only the first "
+                  "of them - the chain must run for all"
+                : "Reset_Handler does not call __arkcc_init_globals (globals "
+                  "live in another object)",
+                flash_base + (unsigned)t0);
+    return 0;
+}
+
 /* Append one ARKOBJ2 symbol-table entry and return the new length:
  * name_len(4) + name(name_len) + offset(4) + type(1) + is_weak(1). */
 static int obj_put_sym(unsigned char *buf, int ol, const char *nm,
@@ -1428,6 +1537,11 @@ int ark_compile(const ArkOptions *opts) {
                         return ARK_ERR_LINK;
                     }
                     ld_build_vector_table(out_buf, flash_base, initial_sp);
+                    {
+                        int rc = ld_init_trampoline(out_buf, &out_len,
+                                                    flash_base, opts->verbose);
+                        if (rc != 0) return rc;
+                    }
                     if (opts->verbose) {
                         ark_log("[link] vector table written into the %d-byte hole "
                                 "the first object reserved (SP=0x%08X, entry=0x%08X)\n",
@@ -1478,80 +1592,13 @@ int ark_compile(const ArkOptions *opts) {
                                 "entry=0x%08X (flash base 0x%08X)\n",
                                 sp_w, en_a, flash_base);
                     }
-                    /* The backend emits `BL __arkcc_init_globals` at the top of
-                     * Reset_Handler only when *that* translation unit owns
-                     * .data/.bss (the call is written next to the init body it
-                     * generates). With -link the globals may live in another
-                     * object: the init body is then linked but never runs, and
-                     * the app reads zeroed/garbage globals while the link still
-                     * succeeds -- a silently wrong image. Point the reset vector
-                     * at a two-instruction trampoline in that case:
-                     *     BL   __arkcc_init_globals
-                     *     B.W  Reset_Handler
-                     * Both instructions are filled in by ld_patch_ref, the same
-                     * patcher the object relocations use, so there is exactly
-                     * one place that knows the ARM encodings. */
+                    /* The trampoline is shared with the --vector-table path;
+                     * see ld_init_trampoline() for why a baked-in call cannot
+                     * reach every object's init body. */
                     {
-                        int init_idx  = ld_find_global("__arkcc_init_globals");
-                        int reset_idx = ld_find_global("Reset_Handler");
-                        int calls_init = 0;
-                        int k;
-                        for (k = 0; k < g_ld_reloc_count; k++) {
-                            if (ark_streq(g_ld_relocs[k].name, "__arkcc_init_globals")) {
-                                calls_init = 1;
-                                break;
-                            }
-                        }
-                        if (init_idx >= 0 && reset_idx >= 0 && !calls_init) {
-                            int t0;
-                            if ((out_len & 3) != 0) {
-                                if (out_len + 2 > LD_BUF_SIZE) {
-                                    diag_tool(DIAG_SEV_ERROR, g_ld_image,
-                                              "no room for the __arkcc_init_globals "
-                                              "trampoline; raise ARK_LINK_BUF_SIZE",
-                                              0,0,0,0,0,0);
-                                    return ARK_ERR_IO;
-                                }
-                                out_buf[out_len++] = 0xBF;  /* NOP (align to 4) */
-                                out_buf[out_len++] = 0x00;
-                            }
-                            if (out_len + 8 > LD_BUF_SIZE) {
-                                diag_tool(DIAG_SEV_ERROR, g_ld_image,
-                                          "no room for the __arkcc_init_globals "
-                                          "trampoline; raise ARK_LINK_BUF_SIZE",
-                                          0,0,0,0,0,0);
-                                return ARK_ERR_IO;
-                            }
-                            if (g_ld_reloc_count + 2 > LD_MAX_RELOCS) {
-                                char b1[12], b2[12];
-                                diag_tool(DIAG_SEV_ERROR, g_ld_image,
-                                          "relocation table is full (%s of %s); the "
-                                          "startup trampoline cannot be resolved - "
-                                          "raise ARK_LINK_MAX_RELOCS and relink",
-                                          diag_num(b1, g_ld_reloc_count),
-                                          diag_num(b2, LD_MAX_RELOCS), 0,0,0,0);
-                                return ARK_ERR_LINK;
-                            }
-                            t0 = out_len;
-                            /* Placeholders: BL T1 = F000 D000, B.W T4 = F000 9000.
-                             * Only their low halves carry the branch shape; both
-                             * are overwritten by ld_patch_ref below. */
-                            out_buf[t0 + 0] = 0xF0; out_buf[t0 + 1] = 0x00;
-                            out_buf[t0 + 2] = 0xD0; out_buf[t0 + 3] = 0x00;
-                            out_buf[t0 + 4] = 0xF0; out_buf[t0 + 5] = 0x00;
-                            out_buf[t0 + 6] = 0x90; out_buf[t0 + 7] = 0x00;
-                            ld_add_reloc("__arkcc_init_globals", t0, 1, 0);
-                            ld_add_reloc("Reset_Handler", t0 + 4, 2, 0);
-                            out_len += 8;
-                            ld_write_word(out_buf, 4,
-                                          (flash_base + (unsigned)t0) | 1u);
-                            if (opts->verbose)
-                                ark_log("[link] note: Reset_Handler does not call "
-                                        "__arkcc_init_globals (globals live in "
-                                        "another object); reset vector points at "
-                                        "a trampoline at 0x%08X\n",
-                                        flash_base + (unsigned)t0);
-                        }
+                        int rc = ld_init_trampoline(out_buf, &out_len,
+                                                    flash_base, opts->verbose);
+                        if (rc != 0) return rc;
                     }
                     if (opts->verbose) {
                         int ri = ld_find_global("Reset_Handler");
@@ -1560,6 +1607,112 @@ int ark_compile(const ArkOptions *opts) {
                                     flash_base + (unsigned)g_ld_syms[ri].offset);
                     }
                 }
+                /* Startup convention: a hand-written or generated Reset_Handler
+                 * calls __arkcc_init_globals unconditionally. The body, however,
+                 * is only emitted by a translation unit that owns .data/.bss, so a
+                 * link whose objects have no RAM at all would stop on an unresolved
+                 * symbol that means "nothing to initialise". Define it as a
+                 * one-instruction stub in that case. An object that *does* declare
+                 * RAM but comes without an init body is a compiler inconsistency:
+                 * refuse instead of skipping its initialisation. */
+                if (ld_find_global("__arkcc_init_globals") < 0) {
+                    int referenced = 0;
+                    int k;
+                    for (k = 0; k < g_ld_reloc_count; k++) {
+                        if (ark_streq(g_ld_relocs[k].name, "__arkcc_init_globals")) {
+                            referenced = 1;
+                            break;
+                        }
+                    }
+                    if (referenced) {
+                        for (k = 0; k < LD_MAX_OBJS; k++) {
+                            if (g_ld_ram[k].have_start && g_ld_ram[k].have_end &&
+                                g_ld_ram[k].start < g_ld_ram[k].end) {
+                                char b1[12];
+                                diag_tool(DIAG_SEV_ERROR, g_ld_image,
+                                          "object #%s declares .data/.bss but carries "
+                                          "no __arkcc_init_globals body; its globals "
+                                          "would never be initialised - recompile it "
+                                          "with the same arkc that built the link",
+                                          diag_num(b1, k), 0,0,0,0,0);
+                                return ARK_ERR_LINK;
+                            }
+                        }
+                        if (out_len + 2 > LD_BUF_SIZE) {
+                            diag_tool(DIAG_SEV_ERROR, g_ld_image,
+                                      "no room for the __arkcc_init_globals stub; "
+                                      "raise ARK_LINK_BUF_SIZE", 0,0,0,0,0,0);
+                            return ARK_ERR_IO;
+                        }
+                        out_buf[out_len++] = 0x70;   /* BX lr - nothing to initialise */
+                        out_buf[out_len++] = 0x47;
+                        ld_add_sym("__arkcc_init_globals", out_len - 2, 0);
+                    }
+                }
+
+                /* --reloc-data: chain every object's __arkcc_init_globals.
+                 *
+                 * Each object that owns .data/.bss emits its own init body, but all
+                 * of them carry the same symbol name, so ld_add_sym keeps the first
+                 * and the others would never run - the second object's globals would
+                 * stay uninitialised while the link still reported success.  Emit a
+                 * chain at the end of the image that calls each body in object order
+                 * and then falls through into the one the symbol names, and point
+                 * the symbol at the chain.  Nothing already placed moves: the chain
+                 * is appended after the last object.
+                 */
+                if (g_config.enable_reloc_data) {
+                    int nb = 0, b;
+                    int idx = ld_find_global("__arkcc_init_globals");
+                    for (b = 0; b < LD_MAX_OBJS; b++)
+                        if (g_ld_init_body[b] >= 0) nb++;
+                    if (idx >= 0 && nb > 1) {
+                        int chain, t;
+                        if ((out_len & 3) != 0) {
+                            if (out_len + 2 > LD_BUF_SIZE) {
+                                diag_tool(DIAG_SEV_ERROR, g_ld_image,
+                                          "no room for the init chain; raise "
+                                          "ARK_LINK_BUF_SIZE", 0,0,0,0,0,0);
+                                return ARK_ERR_IO;
+                            }
+                            out_buf[out_len++] = 0xBF;   /* NOP (align to 4) */
+                            out_buf[out_len++] = 0x00;
+                        }
+                        if (out_len + 4 * (nb + 1) + 4 > LD_BUF_SIZE) {
+                            diag_tool(DIAG_SEV_ERROR, g_ld_image,
+                                      "no room for the init chain; raise "
+                                      "ARK_LINK_BUF_SIZE", 0,0,0,0,0,0);
+                            return ARK_ERR_IO;
+                        }
+                        chain = out_len;
+                        /* PUSH {lr} first: every body clobbers lr, so chaining by
+                         * tail-jumping from one body into the next makes the chain
+                         * return into itself (measured: an endless bss loop).  With
+                         * lr saved once here, each body returns to the next BL and
+                         * the final POP {pc} hands control back to Reset_Handler. */
+                        out_buf[out_len++] = 0x00;   /* PUSH {lr} = 0xB500 */
+                        out_buf[out_len++] = 0xB5;
+                        for (b = 0; b < LD_MAX_OBJS; b++) {
+                            if (g_ld_init_body[b] < 0) continue;
+                            t = out_len;
+                            /* BL T1 placeholder; ld_patch_ref fills both halves. */
+                            out_buf[t]     = 0xF0;
+                            out_buf[t + 1] = 0x00;
+                            out_buf[t + 2] = 0xD0;
+                            out_buf[t + 3] = 0x00;
+                            out_len += 4;
+                            ld_patch_ref(out_buf, out_len, t, g_ld_init_body[b], 1);
+                        }
+                        out_buf[out_len++] = 0x00;   /* POP {pc} = 0xBD00 */
+                        out_buf[out_len++] = 0xBD;
+                        g_ld_syms[idx].offset = chain;
+                        if (opts->verbose)
+                            ark_log("[link] note: %d objects own .data/.bss; "
+                                    "__arkcc_init_globals now runs all %d bodies "
+                                    "(chain at +0x%X)\n", nb, nb, chain);
+                    }
+                }
+
                 /* --reloc-text: the scatter file has now told us where the
                  * image lands, so the absolute addresses each object baked in
                  * can be corrected.  This has to happen after the vector table
@@ -1570,110 +1723,6 @@ int ark_compile(const ArkOptions *opts) {
                     if (ld_relocate_text(out_buf, out_len, flash_base) != 0) {
                         return ARK_ERR_LINK;
                     }
-                }
-            }
-            /* Startup convention: a hand-written or generated Reset_Handler
-             * calls __arkcc_init_globals unconditionally. The body, however,
-             * is only emitted by a translation unit that owns .data/.bss, so a
-             * link whose objects have no RAM at all would stop on an unresolved
-             * symbol that means "nothing to initialise". Define it as a
-             * one-instruction stub in that case. An object that *does* declare
-             * RAM but comes without an init body is a compiler inconsistency:
-             * refuse instead of skipping its initialisation. */
-            if (ld_find_global("__arkcc_init_globals") < 0) {
-                int referenced = 0;
-                int k;
-                for (k = 0; k < g_ld_reloc_count; k++) {
-                    if (ark_streq(g_ld_relocs[k].name, "__arkcc_init_globals")) {
-                        referenced = 1;
-                        break;
-                    }
-                }
-                if (referenced) {
-                    for (k = 0; k < LD_MAX_OBJS; k++) {
-                        if (g_ld_ram[k].have_start && g_ld_ram[k].have_end &&
-                            g_ld_ram[k].start < g_ld_ram[k].end) {
-                            char b1[12];
-                            diag_tool(DIAG_SEV_ERROR, g_ld_image,
-                                      "object #%s declares .data/.bss but carries "
-                                      "no __arkcc_init_globals body; its globals "
-                                      "would never be initialised - recompile it "
-                                      "with the same arkc that built the link",
-                                      diag_num(b1, k), 0,0,0,0,0);
-                            return ARK_ERR_LINK;
-                        }
-                    }
-                    if (out_len + 2 > LD_BUF_SIZE) {
-                        diag_tool(DIAG_SEV_ERROR, g_ld_image,
-                                  "no room for the __arkcc_init_globals stub; "
-                                  "raise ARK_LINK_BUF_SIZE", 0,0,0,0,0,0);
-                        return ARK_ERR_IO;
-                    }
-                    out_buf[out_len++] = 0x70;   /* BX lr - nothing to initialise */
-                    out_buf[out_len++] = 0x47;
-                    ld_add_sym("__arkcc_init_globals", out_len - 2, 0);
-                }
-            }
-            /* --reloc-data: chain every object's __arkcc_init_globals.
-             *
-             * Each object that owns .data/.bss emits its own init body, but all
-             * of them carry the same symbol name, so ld_add_sym keeps the first
-             * and the others would never run - the second object's globals would
-             * stay uninitialised while the link still reported success.  Emit a
-             * chain at the end of the image that calls each body in object order
-             * and then falls through into the one the symbol names, and point
-             * the symbol at the chain.  Nothing already placed moves: the chain
-             * is appended after the last object.
-             */
-            if (g_config.enable_reloc_data) {
-                int nb = 0, b;
-                int idx = ld_find_global("__arkcc_init_globals");
-                for (b = 0; b < LD_MAX_OBJS; b++)
-                    if (g_ld_init_body[b] >= 0) nb++;
-                if (idx >= 0 && nb > 1) {
-                    int chain, t;
-                    if ((out_len & 3) != 0) {
-                        if (out_len + 2 > LD_BUF_SIZE) {
-                            diag_tool(DIAG_SEV_ERROR, g_ld_image,
-                                      "no room for the init chain; raise "
-                                      "ARK_LINK_BUF_SIZE", 0,0,0,0,0,0);
-                            return ARK_ERR_IO;
-                        }
-                        out_buf[out_len++] = 0xBF;   /* NOP (align to 4) */
-                        out_buf[out_len++] = 0x00;
-                    }
-                    if (out_len + 4 * (nb + 1) + 4 > LD_BUF_SIZE) {
-                        diag_tool(DIAG_SEV_ERROR, g_ld_image,
-                                  "no room for the init chain; raise "
-                                  "ARK_LINK_BUF_SIZE", 0,0,0,0,0,0);
-                        return ARK_ERR_IO;
-                    }
-                    chain = out_len;
-                    /* PUSH {lr} first: every body clobbers lr, so chaining by
-                     * tail-jumping from one body into the next makes the chain
-                     * return into itself (measured: an endless bss loop).  With
-                     * lr saved once here, each body returns to the next BL and
-                     * the final POP {pc} hands control back to Reset_Handler. */
-                    out_buf[out_len++] = 0x00;   /* PUSH {lr} = 0xB500 */
-                    out_buf[out_len++] = 0xB5;
-                    for (b = 0; b < LD_MAX_OBJS; b++) {
-                        if (g_ld_init_body[b] < 0) continue;
-                        t = out_len;
-                        /* BL T1 placeholder; ld_patch_ref fills both halves. */
-                        out_buf[t]     = 0xF0;
-                        out_buf[t + 1] = 0x00;
-                        out_buf[t + 2] = 0xD0;
-                        out_buf[t + 3] = 0x00;
-                        out_len += 4;
-                        ld_patch_ref(out_buf, out_len, t, g_ld_init_body[b], 1);
-                    }
-                    out_buf[out_len++] = 0x00;   /* POP {pc} = 0xBD00 */
-                    out_buf[out_len++] = 0xBD;
-                    g_ld_syms[idx].offset = chain;
-                    if (opts->verbose)
-                        ark_log("[link] note: %d objects own .data/.bss; "
-                                "__arkcc_init_globals now runs all %d bodies "
-                                "(chain at +0x%X)\n", nb, nb, chain);
                 }
             }
             /* Resolve cross-object relocations via find_global (strong > weak).
