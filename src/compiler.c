@@ -1343,6 +1343,57 @@ int ark_compile(const ArkOptions *opts) {
                     }
                 }
 #endif
+
+                /* Every absolute .data/.bss address is baked into the object's
+                 * instruction stream when it is compiled, so an object is only
+                 * correct when the base it was compiled against IS the base the
+                 * scatter puts RW at.  The linker cannot move those addresses
+                 * unless the object carries --reloc-data sites, and it cannot
+                 * invent them.  Until now this situation was silent as long as
+                 * only one object declared RAM (the overlap check below needs
+                 * two): an object compiled without --scatter keeps the default
+                 * 0x20000000 window, the link moves nothing, and the image dies
+                 * on the first global write -- measured on the H743, CFSR=0x82
+                 * (DACCVIOL) with MMFAR=0x20000000 for a scatter whose ER_IRAM1
+                 * is 0x24072000.  Check the base instead of shipping that.
+                 *
+                 * Only two shapes are errors:
+                 *   - the window starts below the scatter's RW base (it can
+                 *     never be inside the region), or
+                 *   - the window is still the compiler's default 0x20000000
+                 *     while the scatter puts RW somewhere else (that is exactly
+                 *     "compiled without --scatter").
+                 * A window above the first RW region is left alone on purpose:
+                 * a scatter may put .bss in a second region (+ZI after +RW),
+                 * which is legitimate and must not be rejected here.
+                 */
+                if (have_ram_win) {
+                    int b, first = -1;
+                    for (b = 0; b < LD_MAX_OBJS; b++) {
+                        if (!g_ld_ram[b].have_start || !g_ld_ram[b].have_end) continue;
+                        if (g_ld_ram[b].end <= g_ld_ram[b].start) continue;
+                        first = b;
+                        break;
+                    }
+                    if (first >= 0 &&
+                        ((g_ld_ram[first].start < ram_lo) ||
+                         ((g_ld_ram[first].start == 0x20000000u) &&
+                          (ram_lo != 0x20000000u)))) {
+                        char gb1[12], gb2[12], gb3[12];
+                        diag_tool(DIAG_SEV_ERROR, g_ld_image,
+                                  "object #%s puts .data/.bss at %s but the scatter "
+                                  "file puts RW at %s: those addresses are baked "
+                                  "into its code, so the image would run with "
+                                  "stale ones. Recompile every object with "
+                                  "--scatter <the same file> and relink (add "
+                                  "--reloc-data when more than one object "
+                                  "declares RAM)",
+                                  diag_num(gb1, first),
+                                  ld_hex(gb2, g_ld_ram[first].start),
+                                  ld_hex(gb3, ram_lo), 0, 0, 0);
+                        return ARK_ERR_LINK;
+                    }
+                }
                 if (g_config.enable_reloc_data && g_ld_data_top != 0 &&
                     g_ld_data_top > initial_sp) {
                     char b1[12], b2[12];

@@ -82,9 +82,13 @@ int Reset_Handler(void)
 '''
 
 SRC_UNISTD = 'int write(int fd, const void *buf, unsigned int len);\n'
+# RESET is required because the objects are compiled with --vector-table: the
+# compiler reserves 0x400 at the front for the table and refuses a layout that
+# does not promise that region is the first thing in the image.
 SRC_SCT = ('LR_APP 0x24070000 0x0000F000 {\n'
            '    ER_APP 0x24070000 0x0000F000 {\n'
            '        *(InRoot$$Sections)\n'
+           '        *.o (RESET, +First)\n'
            '        .ANY (+RO)\n'
            '        .ANY (+RW +ZI)\n'
            '    }\n'
@@ -136,14 +140,25 @@ def addresses(img):
     return out
 
 
-def build(arkcc, where, reloc_text):
-    """Compile both objects and link them; return (obj0, obj1, image)."""
+def build(arkcc, where, reloc_text, scatter=True):
+    """Compile both objects and link them; return (obj0, obj1, image).
+
+    The objects are compiled WITH the same --scatter as the link.  That is not
+    a detail: arkc bakes the absolute .data/.bss and .rodata addresses into the
+    instruction stream, so an object only knows the right addresses when it was
+    compiled for the layout it will run at.  This gate used to compile at the
+    default base (0x08000000 / 0x20000000) and link at the app window, which
+    only looked fine because it never ran the image and the data base was not
+    checked -- the linker now refuses that combination (see refuse() below).
+    """
     flag = ['--reloc-text'] if reloc_text else []
+    sflag = ['--scatter', 'app.sct'] if scatter else []
     common = ['-target', 'arm', '--cpu', 'Cortex-M7', '-I', '.']
     rc, log = run(arkcc, ['-c', 'hello.c', '-o', 'hello.o', '--vector-table'] +
-                  common + flag, where)
+                  common + sflag + flag, where)
     assert rc == 0, 'compile hello.c failed:\n' + log
-    rc, log = run(arkcc, ['-c', 'crt.c', '-o', 'crt.o'] + common + flag, where)
+    rc, log = run(arkcc, ['-c', 'crt.c', '-o', 'crt.o'] + common + sflag + flag,
+                  where)
     assert rc == 0, 'compile crt.c failed:\n' + log
     rc, log = run(arkcc, ['-link', 'hello.o', 'crt.o', '-o', 'app.bin',
                           '--scatter', 'app.sct', '--vector-table'] + flag, where)
@@ -152,6 +167,20 @@ def build(arkcc, where, reloc_text):
     obj1 = open(os.path.join(where, 'crt.o'), 'rb').read()
     img = open(os.path.join(where, 'app.bin'), 'rb').read()
     return obj0, obj1, img
+
+
+def refuse(arkcc, where):
+    """Objects compiled against the default base must not link into an image
+    for another layout: their .data/.bss addresses are stale and nothing can
+    rewrite them.  Returns (rc, log) of that attempt."""
+    common = ['-target', 'arm', '--cpu', 'Cortex-M7', '-I', '.']
+    rc, log = run(arkcc, ['-c', 'hello.c', '-o', 'n0.o', '--vector-table'] +
+                  common, where)
+    assert rc == 0, 'compile hello.c (no scatter) failed:\n' + log
+    rc, log = run(arkcc, ['-c', 'crt.c', '-o', 'n1.o'] + common, where)
+    assert rc == 0, 'compile crt.c (no scatter) failed:\n' + log
+    return run(arkcc, ['-link', 'n0.o', 'n1.o', '-o', 'bad.bin',
+                       '--scatter', 'app.sct', '--vector-table'], where)
 
 
 def literal_addrs(img):
@@ -205,11 +234,29 @@ def main():
         check(on.get('obj1') == expected1, 'object #1 literal address corrected',
               '%.8X' % on['obj1'] if on.get('obj1') is not None else 'not found')
 
-        # 4. switch off must reproduce the old (wrong) address
-        off = literal_addrs(off_img)
-        check(off.get('obj0') == FLASH_DEFAULT + (off.get('obj0_at') or 0),
-              'without the flag the old base is still baked in',
-              '%.8X' % off['obj0'] if off.get('obj0') is not None else 'not found')
+        # 4. switch off: object #1's literal still carries its compile-time
+        #    address, i.e. it is short by object #0's size.  Object #0 sits
+        #    exactly where it was compiled, so only #1 can show the difference
+        #    (that is also why it is the interesting one).
+        #     Compare the immediate at the *same instruction offset*: the code
+        #     layout does not change, only the value baked into the pair, so
+        #     this is the exact site object #1 uses to load its literal.
+        on_pairs = {o: a for o, a in addresses(on_img)}
+        off_pairs = {o: a for o, a in addresses(off_img)}
+        sites = [o for o, a in on_pairs.items() if a == expected1]
+        off_at = off_pairs.get(sites[0]) if len(sites) == 1 else None
+        check(len(sites) == 1, 'object #1 literal address site is unique',
+              '%d site(s)' % len(sites))
+        check(off_at is not None and off_at != expected1,
+              'without the flag object #1 keeps its stale address',
+              '%.8X' % off_at if off_at is not None else 'not found')
+
+        # 4b. and the linker refuses the combination that cannot be repaired:
+        #     objects compiled at the default base, linked for the app window
+        refuse_rc, refuse_log = refuse(arkcc, work)
+        check(refuse_rc != 0 and 'puts .data/.bss at' in refuse_log,
+              'link refuses objects compiled for another layout',
+              (refuse_log.strip().splitlines() or [''])[-1][:90])
 
         # 5. the pass rewrites immediates, it does not move anything
         check(len(on_img) == len(off_img), 'image size unchanged by the pass',

@@ -810,6 +810,43 @@ arkCC 可直接编译 `.s`/`.S`/`.asm` 汇编文件为机器码，ARM 后端有�
 2. **两个对象都带 RAM 窗口时直接报错**：数据区不参与重定位，`[start,end)` 一旦重叠就打印 `[link] error: SRAM overlap between objects #i and #j` 并 `exit -8`，不产出镜像——因为静默出图会得到一个"两套全局变量压在同一个地址"的错误二进制。只有一个对象带 RAM（或都不带）时可以正常链接。
 3. **编译器私有运行时符号（名字以 `__` 开头，如 `__aeabi_*`）的重复定义静默合并**，链接结束打印一行 `[link] note: N duplicate compiler-runtime symbols merged`；用户符号的同名强定义仍逐条告警。
 
+### 5.8 多对象链接的基址契约（`--reloc-data` / `--reloc-text`）
+
+arkc 把 `.data`/`.bss`/`.rodata` 的**绝对地址烤进指令流**（`MOVW`+`MOVT`），所以一个
+对象只对它编译时假定的那份布局成立。多对象链接的正确姿势因此不是"随手编、链接器搞定"：
+
+```sh
+# 每个对象都按同一份 .sct 编（数据基址 = 该 .sct 的 +RW 区）
+.rkcc.exe a.c -target arm --scatter app.sct --reloc-data --reloc-text --vector-table -c -o a.obj
+.rkcc.exe b.c -target arm --scatter app.sct --reloc-data --reloc-text -c -o b.obj
+# 链接：--reloc-data 把 b 的数据窗口挪到 a 之后并改写 b 的地址；
+#       --reloc-text 逐个对象修正段内绝对地址（字符串字面量等）
+.rkcc.exe -link a.obj b.obj -target arm --scatter app.sct --reloc-data --reloc-text --vector-table -o app.bin
+```
+
+两条开关都是"**编译期记录站点 + 链接期按 delta 改写**"，关掉时产物逐字节不变（即旧行为）。
+
+- `--reloc-data`：让**第二个及以后**的对象各自占一段 SRAM（8 字节对齐接在前一个之后），
+  把它的 `.data`/`.bss` 地址改成新基址；同时把各对象的 `__arkcc_init_globals` **串成一条链**
+  ——否则同名符号合并只留第一份，后面对象的初值永远不会被写进去（症状是全局变量停在 0，
+  程序算出一个错答案却不报错）。
+- `--reloc-text`：逐个对象修正在代码段内部、指向**自己这段代码/只读数据**的绝对地址。
+  第一个对象保持原基址，所以单对象链接不受影响。
+
+**基址一致是有守卫的**：如果对象声明的 SRAM 窗口落在 scatter 的 `+RW` 区之外——典型情形是
+编译时忘了带 `--scatter`，还停在默认的 `0x20000000`——`-link` 不再出图，而是报
+
+```
+object #0 puts .data/.bss at 0x20000000 but the scatter file puts RW at 0x24072000: ...
+```
+
+这条错误值钱：它对应的坏镜像在实机上表现为第一次写全局就 `CFSR=0x82`（`DACCVIOL`）、
+`MMFAR=0x20000000`。**只在只有一个对象带 RAM 时**它才抓得到（两个对象都带时，重叠检查
+本来就会先报错），恰好是最容易漏的一种。
+
+板端 `cc` 的默认值跟着命令行走：只要出现 `-link` 或 `--scatter`，`--reloc-data` /
+`--reloc-text` 默认**打开**；`--no-reloc-data` / `--no-reloc-text` 退回旧输出。
+
 ### 5.x 平铺镜像的 64 位/AEABI 运行时要自己链
 
 后端把 64 位加/减内联成 `ADDS`/`ADC`、`SUBS`/`SBC`（不依赖运行库），其余 64 位运算（`*`、`/`、`%`、`<<`、`>>`、比较）发射标准 AEABI 符号（`__aeabi_lmul`、`__aeabi_ldivmod`、`__aeabi_uldivmod`、`__aeabi_llsl`、`__aeabi_llsr`、`__aeabi_lasr`、`__aeabi_lcmp`、`__aeabi_ulcmp`）。**编译器不会隐式把这些实现塞进镜像**，平铺镜像要自己链：
