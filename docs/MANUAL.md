@@ -204,6 +204,15 @@ arkcc <file.c|file.s> [options]
 
 CPU 选择的实现位于 `include/cpu.h` + `src/cpu.c`，会根据 CPU 名字自动设置相应预定义宏（如 `__TARGET_ARCH_7_M`、`__TARGET_ARCH_7E_M`、`__TARGET_FPU_VFP`）。
 
+**双精度 FPU 只跟 `-mcpu` 走**：`Cortex-M7` 的 FPU 是 VFPv5-**D16**（有双精度），
+M4/M33 只有单精度。传 `-mcpu Cortex-M7` 时，`double`↔`float` 的隐式转换直接发
+`VCVT.F64.F32` / `VCVT.F32.F64`；不传（或传 M4/M33）时编译器走保守路径，发
+`BL __aeabi_f2d` / `BL __aeabi_d2f`，**这两个符号必须由运行库提供**（libgcc 或等价实现）。
+在只有单精度硬件、又没有链接 libgcc 的裸机小程序里，后者就是链接期的
+`unresolved symbol "__aeabi_f2d"`——此时正确做法是明确告诉编译器目标 CPU，而不是去补软浮 helper。
+（这一条曾经是缺陷：`-mcpu` 算出的开关在后续初始化里被清零，`-mcpu Cortex-M7` 看着被接受、
+实际仍发 `__aeabi_f2d`。已修复，另见本章 Q5。）
+
 ### 3.3 依赖生成
 
 | 选项 | 说明 |
@@ -1334,6 +1343,8 @@ A：通过外部声明 + 链接重定位。编译后的代码声明 `extern void
 
 **Q5：ARM 后端会使用 FPU 吗？**
 A：会。使用 `--fpu=hard`，或在 `arkcc.cfg` 中设置 `fpu_hw=1`，ARM 后端会直接输出 VFP 指令（`VADD/VMUL/VCVT/VCMP`），替代 `__aeabi_f*`/`__aeabi_d*` 软浮点桩；默认情况下使用软浮点桩以兼容不带 FPU 的 Cortex-M3。`double` 始终为真正的 64 位精度。
+
+**双精度的 `double`↔`float` 转换另受 `-mcpu` 控制**（与 `--fpu` 无关）：`-mcpu Cortex-M7` 说明目标有 VFPv5-D16，转换直接发 `VCVT.F64.F32`/`VCVT.F32.F64`；不说明 CPU 时发 `BL __aeabi_f2d`/`BL __aeabi_d2f`，需要运行库提供这两个符号。在没链 libgcc 的裸机小程序上，后者会在链接期报 `unresolved symbol "__aeabi_f2d"`——补 `-mcpu` 而不是补软浮 helper（见 [3.2](#32-目标-cpu-选择)）。
 
 **Q6：编译大文件时报 "out of memory" 怎么办？**
 A：Bump 分配器默认 256 KB。可增大 [include/memory.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/memory.h) 中的 `ARK_POOL_SIZE`；或在 STM32 侧把 `.ark_heap` 段扩大到 128 KB+（注意 H743 AXI SRAM 总容量为 512 KB）。
