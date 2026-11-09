@@ -555,6 +555,44 @@ int ar_pad;\nextern long long __aeabi_lmul(long long, long long);\nextern long l
         "expect": 50,
     },
     {
+        "name": "setjmp_longjmp",
+        "why": "setjmp/longjmp as real Thumb-2 functions assembled from a .s "
+               "object (stdlib/src/arm/setjmp.s).  A C wrapper cannot capture "
+               "its caller's sp and lr -- it can only capture its own frame, "
+               "which the next call reuses -- so the jump has to be entered "
+               "directly.  The case also links an assembly object after a "
+               "data-carrying C object, which is where an assembler input used "
+               "to inherit the previous file's SRAM window and make the linker "
+               "try to relocate a window that had no patch sites",
+        "files": {
+            "sjmain.c": "#include <setjmp.h>\n" + STARTUP + """\
+static jmp_buf back;
+int sj_pad = 5;
+static int dive(int n)
+{
+    if (n == 0) longjmp(back, 7);
+    return dive(n - 1) + 1;
+}
+int main(void)
+{
+    int r = setjmp(back);
+    if (r == 0) { dive(20); return 90; }     /* dive() never returns */
+    if (r == 7) longjmp(back, 0);            /* C99 7.13.2.1p2: reads back as 1 */
+    if (r != 1) return 91;
+    return r + sj_pad + 6;                   /* 1 + 5 + 6 = 12 */
+}
+""",
+        },
+        "copy_stdlib": ["setjmp.s"],
+        "include": ["stdlib/include"],
+        "build": [
+            (["sjmain.c", "-target", "arm", "-c", "--vector-table", "-o", "sjmain.obj"], None),
+            (["setjmp.s", "-target", "arm", "-c", "-o", "setjmp.obj"], None),
+            (["-link", "sjmain.obj", "setjmp.obj", "--vector-table", "-o", "out.bin"], "out.bin"),
+        ],
+        "expect": 12,
+    },
+    {
         "name": "const_fold_float",
         "why": "float constant expressions folded at compile time (C99 6.6): "
                "an explicit cast inside an enum, a cast initialiser, an "
@@ -610,22 +648,26 @@ def build_case(arkcc, workdir, case, extra=()):
     for name, text in case["files"].items():
         with open(os.path.join(workdir, name), "w", newline="\n") as fh:
             fh.write(text)
-    if case.get("runtime"):
-        # A flat image (-o out.bin, no linker at run time) has to carry
-        # its own AEABI helpers: the compiler emits calls to
-        # __aeabi_ldivmod & friends but never links them in.  The
-        # sources under test are the repository ones, copied here so the
-        # gate exercises exactly what ships.
-        root = os.path.dirname(os.path.dirname(os.path.dirname(
-            os.path.abspath(__file__))))
-        srcdir = os.path.join(root, "stdlib", "src", "arm")
-        for fn in ("aeabi.c", "aeabi_divmod.s"):
-            src_path = os.path.join(srcdir, fn)
-            if not os.path.exists(src_path):
-                return "AEABI runtime source missing: %s" % src_path
-            shutil.copyfile(src_path, os.path.join(workdir, fn))
+    # Sources under test are the repository ones, copied in, so the gate
+    # exercises exactly what ships: the AEABI helpers a flat image must
+    # carry itself (the compiler emits calls to __aeabi_ldivmod & friends
+    # but never links them in) and, for the setjmp case, the assembly
+    # implementation from stdlib/src/arm.
+    root = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))
+    srcdir = os.path.join(root, "stdlib", "src", "arm")
+    needed = (("aeabi.c", "aeabi_divmod.s") if case.get("runtime") else ())
+    needed = needed + tuple(case.get("copy_stdlib", ()))
+    for fn in needed:
+        src_path = os.path.join(srcdir, fn)
+        if not os.path.exists(src_path):
+            return "stdlib source missing: %s" % src_path
+        shutil.copyfile(src_path, os.path.join(workdir, fn))
+    incs = []
+    for rel in case.get("include", ()):
+        incs += ["-I", os.path.join(root, rel)]
     for argv, _ in case["build"]:
-        proc = subprocess.run([arkcc] + list(argv) + list(extra), cwd=workdir,
+        proc = subprocess.run([arkcc] + list(argv) + incs + list(extra), cwd=workdir,
                               capture_output=True, text=True)
         if proc.returncode != 0:
             return "compile failed: %s %s" % (" ".join(argv), proc.stderr.strip() or proc.stdout.strip())

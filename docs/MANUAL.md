@@ -1352,7 +1352,7 @@ v0.8.0 覆盖了 armcc 5 常用扩展的 98% 以上。下表列出全部支持�
 | `stdio.h` | `printf puts putchar` |
 | `stdlib.h` | `abort exit malloc free`（声明） |
 | `math.h` | `sin cos sqrt pow fabs floor ceil fmod` + `M_PI` 等常量（实现在 `stdlib/src/math.c`） |
-| `setjmp.h` | `jmp_buf setjmp longjmp`（实现在 `stdlib/src/setjmp.c`，可移植的简化主机实现） |
+| `setjmp.h` | `jmp_buf setjmp longjmp`（ARM 实现是 `stdlib/src/arm/setjmp.s`：真 Thumb-2 函数，`jmp_buf[0..7]=r4-r11`、`[8]=sp`、`[9]=lr`；C 包装做不到，因为包装里拿到的 sp/lr 是自己那一帧。`stdlib/src/setjmp.c` 只是宿主测试的可移植简化实现，转发给宿主 `<setjmp.h>`） |
 
 > `c` 后端下，这些函数直接路由到主机 libc；`arm` 后端下，需要在 STM32 用户代码中提供实现，或链接 newlib-nano，或直接使用 `stdlib/src/` 中的实现源码。
 

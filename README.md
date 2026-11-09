@@ -246,7 +246,8 @@
 | `stdlib/src/printf.c` | 精简 `printf`（`%d/%u/%x/%X/%s/%c/%p/%%` + 宽度/0 填充，64 位 long long 不截断） |
 | `stdlib/src/string.c` | `memcpy/memset/memmove/memcmp/strlen/strcpy/strcmp` |
 | `stdlib/src/math.c` | `sin/cos/sqrt/pow/fabs/floor/ceil/fmod` |
-| `stdlib/src/setjmp.c` | `setjmp/longjmp`（可移植简化宿主实现） |
+| `stdlib/src/setjmp.c` | `setjmp/longjmp`（可移植简化宿主实现，只给宿主测试用） |
+| `stdlib/src/arm/setjmp.s` | `setjmp/longjmp` 的 **ARM Thumb-2 真实现**（`jmp_buf` 存 r4-r11/sp/lr，`longjmp(env,0)` 读回 1）；为什么必须是汇编、为什么不能是 C 包装见文件头 |
 | `stdlib/src/putchar_default.c` | `putchar` 弱默认实现 |
 | `stdlib/src/arm/aeabi.c` | 平铺 ARM 镜像用的 64 位 AEABI 运行时：`lmul` / `ldiv` / `udiv` / `llsl` / `llsr` / `lasr` / `lcmp` / `ulcmp`，全部只用 32 位算子（不会递归到自己），C 源，可被 arkc 自己编译 |
 | `stdlib/src/arm/aeabi_divmod.s` | `__aeabi_ldivmod` / `__aeabi_uldivmod` 的四寄存器返回包装（商 `r0:r1`、余 `r2:r3`）——C 语言写不出四寄存器返回（`__value_in_regs` 只解析不 codegen），所以这一段必须是汇编，算术复用上面的 `aeabi.c` |
