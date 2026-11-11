@@ -1,0 +1,93 @@
+name: CI
+
+# What this pipeline is allowed to prove, and what it cannot.
+#
+# It builds arkcc with the host gcc, then runs `make test`.  That covers the
+# emit smoke test for all five backends plus the four gates that actually
+# *execute* generated code on an emulated core (stdlib on ARM, install-and-run,
+# --reloc-text, x86-64).  The emulator is the pip package `unicorn`, so no
+# external toolchain is needed beyond gcc/make/python3.
+#
+# Deliberately not run here:
+#   * the PowerShell gates (run_full_test.ps1, run_tests_x86.ps1,
+#     run_link_test.ps1, run_asm_test.ps1, examples/run_tests.ps1) -- they are
+#     Windows-only; see docs/CI.md for the mapping to the steps below.
+#   * the STM32 cross build (`make stm32`) -- needs arm-none-eabi-gcc.
+#   * the RV32 link gate that shells out to a GNU riscv toolchain -- it SKIPs
+#     itself when the toolchain is absent, and prints that it did.
+#   * the on-board (STM32H743) self-host run -- needs hardware.
+#
+# A gate that cannot run must say so out loud.  The gate scripts already print
+# SKIP with the measured reason instead of passing silently; this file never
+# turns a missing dependency into a green step.
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-gates:
+    name: build + gates (ubuntu, gcc + unicorn)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain versions
+        run: |
+          set -eux
+          gcc --version | head -1
+          make --version | head -1
+          python3 --version
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install the emulator used by the executing gates
+        run: |
+          set -eux
+          python3 -m pip install --upgrade pip
+          python3 -m pip install unicorn
+          python3 -c "import unicorn; print('unicorn', unicorn.__version__)"
+
+      - name: Build arkcc
+        run: make CC=gcc
+
+      - name: Backend registry (all five targets, x86_64 is not an alias)
+        run: |
+          set -eux
+          ./arkcc --list-backends | tee backends.txt
+          grep -q '^  arm ' backends.txt
+          grep -q '^  x86 ' backends.txt
+          grep -q '^  x86_64 ' backends.txt
+          grep -q '^  riscv32 ' backends.txt
+          grep -q '^  c ' backends.txt
+          # x86_64 must advertise the SysV triple, not the i386 one
+          grep -q 'x86_64-unknown-linux-gnu' backends.txt
+          # a hyphenated spelling must resolve to the same real backend
+          ./arkcc examples/hello.c -target x86-64 -S -o /dev/null
+
+      - name: Gates (emit smoke for every backend + four executing gates)
+        run: make test PYTHON=python3
+
+      - name: install --dry-run writes nothing
+        run: |
+          set -eux
+          tmp="$(mktemp -d)"
+          python3 tools/install.py --prefix "$tmp/prefix" --dry-run --arkcc ./arkcc
+          test -z "$(ls -A "$tmp/prefix" 2>/dev/null || true)"
+
+      - name: Show gate logs on failure
+        if: failure()
+        run: |
+          ls -la
+          for f in test_result.txt test_results.txt; do
+            [ -f "$f" ] && cat "$f"
+          done
+          exit 0

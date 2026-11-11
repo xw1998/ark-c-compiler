@@ -519,6 +519,7 @@ ark c compiler/
 ├── docs/MANUAL.md          用户手册（中文，UTF-8）
 ├── docs/STM32_BUILD.md     STM32 + armcc5 构建手册（中文，UTF-8）
 ├── docs/DIAGNOSTICS.md     诊断层：与 armcc 逐字节对齐的排版契约（中文，UTF-8）
+├── docs/CI.md              持续集成：跑什么、跳过什么、为什么（中文，UTF-8）
 ├── docs/从零写一个C编译器.md  教材体逐代码教程：19 章，从 30 行到 3 万行（中文，UTF-8）
 └── README.md               项目简介（UTF-8）
 ```
@@ -697,6 +698,12 @@ debug_info  = 0
 - `.debug_info` / `.debug_abbrev` / `.debug_line` 完整 DWARF 段（用 `--dwarf2`/`--dwarf3` 切换版本）
 
 ## 测试
+
+**持续集成**：`.workflow/main-pipeline.yml`（Gitee Go，仓库主线在 Gitee，这是真正会跑的那条）与
+`.github/workflows/ci.yml`（GitHub Actions，镜像到 GitHub 时才生效）做同一件事——用宿主 gcc 构建
+arkcc、`pip install unicorn`、然后 `make test`。只依赖 gcc/make/python3，不碰交叉工具链和硬件；
+PowerShell 门禁（Windows 专用）、`make stm32`、需要 armcc/臂工具链的对拍、板载自托管都不在 CI 里。
+跑什么、跳过什么、为什么，见 [docs/CI.md](docs/CI.md)。
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File examples\run_tests.ps1   # 75 个用例（71 断言 + 4 跳过）

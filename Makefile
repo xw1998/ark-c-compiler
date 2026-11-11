@@ -13,9 +13,11 @@ SRC      := $(SRC_CORE) $(SRC_BE) $(SRC_HOST)
 ifeq ($(OS),Windows_NT)
 ARKCC := arkcc.exe
 RM    := del /Q
+NULLDEV := nul
 else
 ARKCC := arkcc
 RM    := rm -f
+NULLDEV := /dev/null
 endif
 
 .PHONY: all clean test test-arm test-c test-stdlib test-install test-x86 test-x86-64 \
@@ -29,12 +31,16 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # "Nothing to be done" while the source tree said otherwise.
 	$(CC) $(CFLAGS) $(SRC) -o $(ARKCC) $(LDFLAGS)
 
-test: test-arm test-c test-stdlib test-install test-reloc-text test-x86-64
+# Every backend gets at least an emit smoke test here, so a change that breaks
+# one target cannot hide behind the others' gates.  The four symbolic targets
+# (stdlib / install / reloc-text / x86-64) execute code; they are what actually
+# say "this works", the rest only say "this still compiles".
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64
 
 test-arm: $(ARKCC)
-	./$(ARKCC) examples/hello.c -target arm -S -o nul
-	./$(ARKCC) examples/arith.c -target arm -S -o nul
-	./$(ARKCC) examples/func.c  -target arm -S -o nul
+	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
+	./$(ARKCC) examples/arith.c -target arm -S -o $(NULLDEV)
+	./$(ARKCC) examples/func.c  -target arm -S -o $(NULLDEV)
 
 test-c: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target c -o hello.gen.c
@@ -56,9 +62,9 @@ test-stdlib: $(ARKCC)
 	$(PYTHON) tests/run_stdlib_tests.py --arkcc ./$(ARKCC)
 
 test-x86: $(ARKCC)
-	./$(ARKCC) examples/hello.c -target x86 -S -o nul
-	./$(ARKCC) examples/arith.c -target x86 -S -o nul
-	./$(ARKCC) examples/func.c  -target x86 -S -o nul
+	./$(ARKCC) examples/hello.c -target x86 -S -o $(NULLDEV)
+	./$(ARKCC) examples/arith.c -target x86 -S -o $(NULLDEV)
+	./$(ARKCC) examples/func.c  -target x86 -S -o $(NULLDEV)
 
 # x86-64 gate: sixteen programs are compiled to a flat image and executed on a
 # 64-bit core, each asserting a constant computed outside the program.  The
@@ -71,9 +77,9 @@ test-x86-64: $(ARKCC)
 	$(PYTHON) tests/run_x86_64_image_tests.py --arkcc ./$(ARKCC)
 
 test-riscv: $(ARKCC)
-	./$(ARKCC) examples/hello.c -target riscv32 -S -o nul
-	./$(ARKCC) examples/arith.c -target riscv32 -S -o nul
-	./$(ARKCC) examples/func.c  -target riscv32 -S -o nul
+	./$(ARKCC) examples/hello.c -target riscv32 -S -o $(NULLDEV)
+	./$(ARKCC) examples/arith.c -target riscv32 -S -o $(NULLDEV)
+	./$(ARKCC) examples/func.c  -target riscv32 -S -o $(NULLDEV)
 
 # The install gate builds a program *against the installed tree* (malloc + div
 # + qsort) and runs it on the emulator, so "the copy is byte-identical" is not

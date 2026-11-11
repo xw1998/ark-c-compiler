@@ -966,6 +966,25 @@ gcc -m32 -c foo.s -o foo.o    # 只校验 GAS 是否接受（本机 MinGW 没有
 riscv32-unknown-elf-gcc foo.s -o foo.elf    # 需自行安装对应工具链，本机未装
 ```
 
+### 6.4 CI（持续集成）
+
+仓库里有两份流水线配置，做的事完全一样：**宿主 gcc 构建 arkcc → `pip install unicorn` → `make test`**。
+
+| 文件 | 平台 |
+| --- | --- |
+| `.workflow/main-pipeline.yml` | Gitee Go（`build@gcc` 插件，Ubuntu 镜像）——仓库主线在 Gitee，这是真正会跑的那条 |
+| `.github/workflows/ci.yml` | GitHub Actions（`ubuntu-latest`），镜像到 GitHub 时才生效 |
+
+CI 覆盖的是 `make test` 的全部内容：四个后端的 emit 冒烟 + 四个执行级门禁
+（stdlib on unicorn ARM、install 后按安装树构建并运行、`--reloc-text`、x86-64 平铺镜像）。
+它**不**覆盖：PowerShell 门禁（Windows 专用）、需要 `arm-none-eabi-as` / `riscv32-unknown-elf-gcc` /
+`libgcc.a` 的交叉对拍、需要真实 armcc 的诊断逐字节比对、`make stm32`、以及板载自托管。
+缺工具链的门禁一律自己打印 `SKIP: <实测原因>`；流水线配置里没有 `|| true`，不会把缺依赖变成绿灯。
+细节见 [CI.md](CI.md)。
+
+为此把 Makefile 里九处 `-o nul` 改成 `-o $(NULLDEV)`（Windows 仍是 `nul`，其他平台是 `/dev/null`），
+并把 `test-x86` / `test-riscv` 也挂进 `test`。
+
 ---
 
 ## 7 STM32H743 + Keil MDK 工程

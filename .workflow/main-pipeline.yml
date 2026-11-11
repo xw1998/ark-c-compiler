@@ -1,0 +1,50 @@
+version: "1.0"
+name: ci
+displayName: arkcc CI (gcc + unicorn gates)
+
+# Gitee Go 流水线。仓库主线在 Gitee（origin），所以这是真正会跑的那条。
+#
+# 做什么：用 build@gcc 插件（Ubuntu 基础镜像）装 gcc/make/python3-pip，
+# 用 host gcc 构建 arkcc，然后跑 `make test` —— 五个后端各一条 emit 冒烟，
+# 加四个「真的执行生成代码」的门禁（stdlib on ARM / install 后按安装树构建并运行 /
+# --reloc-text / x86-64）。仿真器是 pip 包 unicorn，没有别的外部工具链依赖。
+#
+# 不在这里跑（理由写在 docs/CI.md）：PowerShell 那几个门禁是 Windows 专用；
+# `make stm32` 需要 arm-none-eabi-gcc；需要硬件在环的板载自托管更不可能；
+# 缺工具链的门禁脚本自己会打印 SKIP 并给出实测原因，本文件不会把缺依赖变成绿灯。
+#
+# 启用方式：仓库 → 服务 → Gitee Go → 新建流水线，或直接提交本文件后
+# 在流水线页面选择它。免费额度按分钟计，见仓库设置。
+
+triggers:
+  trigger: auto
+  push:
+    branches:
+      include:
+        - master
+
+stages:
+- name: build
+  displayName: 构建 + 门禁
+  strategy: naturally
+  trigger: auto
+  steps:
+  - step: build@gcc
+    name: gcc_build_and_gates
+    displayName: GCC 构建 + make test
+    gccVersion: 9.4
+    # 顺序是有意的：门禁（最后一行）必须是最后一条命令。即使插件把每行当成独立 shell、
+    # 只看最后一条的退出码，构建失败也不可能被后面的步骤盖成绿灯。
+    commands:
+    - set -e
+    - gcc --version | head -1
+    - command -v make || (apt-get update && apt-get install -y make)
+    - make --version | head -1
+    - python3 --version
+    - python3 -m pip --version || (apt-get update && apt-get install -y python3-pip)
+    - python3 -m pip install --upgrade pip
+    - python3 -m pip install unicorn
+    - python3 -c "import unicorn; print('unicorn', unicorn.__version__)"
+    - make CC=gcc
+    - ./arkcc --list-backends
+    - make test PYTHON=python3
