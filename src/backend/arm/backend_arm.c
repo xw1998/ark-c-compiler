@@ -1071,6 +1071,17 @@ static unsigned    g_gvar_addrs[ARM_MAX_GVARS];
 static int         g_gvar_sizes[ARM_MAX_GVARS];  /* #6 FIX: track global variable sizes */
 static int         g_gvar_count = 0;
 
+/* Global objects this unit defines, exported to -link as data symbols so that
+ * another object can name their address (see gvar_assign / arm_save_syms).
+ * Only non-static objects are here: a static one may legitimately share its
+ * name with a static in another unit. */
+typedef struct ArmDataSym {
+    const char *name;
+    unsigned    addr;
+} ArmDataSym;
+static ArmDataSym  g_obj_dsyms[ARM_MAX_SYMBOLS];
+static int         g_obj_dsym_count = 0;
+
 /* SCT-1/SCT-3: Custom section address tracking. When a global has a
  * g->section (from #pragma arm section / __attribute__((section))),
  * gvar_assign looks up the section's exec region base from the scatter
@@ -1296,6 +1307,29 @@ static void arm_scatter_load(void) {
 #endif
 }
 
+/* Globals this unit only *declares* (extern): name + declared size.
+ *
+ * gvar_assign() skips externs, so gvar_find() answers 0 for them, and the old
+ * emit path turned that into "MOV r1,#0 / STR r0,[r1]" with no relocation and
+ * no diagnostic -- measured: the store landed on the vector table at power-on
+ * and -link reported nothing.  Two things are missing for a correct answer:
+ * the declared type (an `extern long long` must not be read as 32 bits) and a
+ * name, because only -link knows where the defining unit's data ended up. */
+static const char *g_ext_names[ARM_MAX_GVARS];
+static int         g_ext_sizes[ARM_MAX_GVARS];
+static int         g_ext_count = 0;
+
+static void gvar_note_extern(const char *name, int size) {
+    int i;
+    if (!name || !name[0]) return;
+    for (i = 0; i < g_ext_count; i++)
+        if (ark_streq(g_ext_names[i], name)) return;   /* first declaration wins */
+    if (g_ext_count >= ARM_MAX_GVARS) return;          /* reported by the caller */
+    g_ext_names[g_ext_count] = name;
+    g_ext_sizes[g_ext_count] = size;
+    g_ext_count++;
+}
+
 static unsigned gvar_find(const char *name) {
     int i;
     for (i = 0; i < g_gvar_count; i++)
@@ -1322,7 +1356,87 @@ static int gvar_find_size(const char *name) {
     int i;
     for (i = 0; i < g_gvar_count; i++)
         if (ark_streq(g_gvar_names[i], name)) return g_gvar_sizes[i];
+    /* Declared only: the declaration still says how wide the object is, and a
+     * 64-bit extern read as one word is a wrong answer, not a small one. */
+    for (i = 0; i < g_ext_count; i++)
+        if (ark_streq(g_ext_names[i], name)) return g_ext_sizes[i];
     return 4;  /* default 4 bytes */
+}
+
+/* 1 = defined in this translation unit (`addr` valid), 2 = declared only,
+ * 0 = unknown to this unit. */
+static int gvar_kind(const char *name, unsigned *addr, int *size) {
+    int i;
+    for (i = 0; i < g_gvar_count; i++) {
+        if (ark_streq(g_gvar_names[i], name)) {
+            if (addr) *addr = g_gvar_addrs[i];
+            if (size) *size = g_gvar_sizes[i];
+            return 1;
+        }
+    }
+    for (i = 0; i < g_ext_count; i++) {
+        if (ark_streq(g_ext_names[i], name)) {
+            if (size) *size = g_ext_sizes[i];
+            return 2;
+        }
+    }
+    return 0;
+}
+
+/* Materialise the address of the global object `name` in rd.
+ *
+ * Defined here: unchanged, a constant --reloc-data may shift.
+ *
+ * Declared only: there is no address in this object.  With --reloc-data the
+ * site is tagged `.arkdatasym <name>` and the pair starts at 0, so -link can
+ * add the defining object's final address in one place (the delta trick cannot
+ * express this: the target may live in a *different* window).  Without the
+ * flag no channel exists -- a single-object image has nowhere to carry another
+ * unit's data address -- so the reference is reported instead of being baked
+ * as 0.
+ */
+static void emit_gvar_addr32(AsmBuffer *b, int rd, const char *name) {
+    unsigned addr = 0;
+    int size = 4;
+    int kind = gvar_kind(name, &addr, &size);
+    (void)size;
+    if (kind != 2) {
+        emit_mov_addr32(b, rd, addr, addr_in_own_data(addr));
+        return;
+    }
+#if ARKCC_FEATURE_ARM_RELOC_DATA
+    if (g_config.enable_reloc_data) {
+        asmbuf_puts(b, "    .arkdatasym ");
+        asmbuf_puts(b, name);
+        asmbuf_putc(b, '\n');
+        asmbuf_puts(b, "    MOVW r");
+        asmbuf_int(b, rd);
+        asmbuf_puts(b, ", #0\n    MOVT r");
+        asmbuf_int(b, rd);
+        asmbuf_puts(b, ", #0\n");
+        return;
+    }
+#endif
+    {
+        /* One diagnostic per distinct name: `errno` may be referenced dozens of
+         * times in one unit, and 40 copies of the same sentence bury it. */
+        static const char *reported[8];
+        static int reported_n = 0;
+        int i, seen = 0;
+        for (i = 0; i < reported_n; i++)
+            if (ark_streq(reported[i], name)) seen = 1;
+        if (!seen) {
+            if (reported_n < 8) reported[reported_n++] = name;
+            diag_tool(DIAG_SEV_ERROR, "arkcc",
+                      "reference to the global '%s', which this translation unit "
+                      "only declares; a single-object image carries no channel for "
+                      "another unit's data address - compile this unit with "
+                      "-c --reloc-data and link it with the object that defines "
+                      "'%s'",
+                      name, name, 0,0,0,0);
+        }
+    }
+    emit_mov_imm(b, rd, 0);
 }
 
 /* --- --reg-top: keep the top of the IR stack in r0 ------------------------
@@ -1452,21 +1566,19 @@ static int ark_top_try(AsmBuffer *b, IrInst *I, int *top, int *ret_in_r0) {
             *top = 1;
             return 1;
         }
-        addr = gvar_find(I->name);
         if (gvar_find_size(I->name) >= 8) {           /* two words: fall back */
             ark_top_drain(b, top);
             return 0;
         }
         ark_top_drain(b, top);
-        emit_mov_addr32(b, 0, addr, addr_in_own_data(addr));
+        emit_gvar_addr32(b, 0, I->name);
         emit_line(b, "LDR r0, [r0]");
         *top = 1;
         return 1;
     }
     case IR_PUSH_GLOBAL_ADDR: {
-        unsigned addr = gvar_find(I->name);
         ark_top_drain(b, top);
-        emit_mov_addr32(b, 0, addr, addr_in_own_data(addr));
+        emit_gvar_addr32(b, 0, I->name);
         *top = 1;
         return 1;
     }
@@ -1515,7 +1627,7 @@ static int ark_top_try(AsmBuffer *b, IrInst *I, int *top, int *ret_in_r0) {
             return 0;
         }
         if (!*top) emit_pop_r0(b);
-        emit_mov_addr32(b, 1, addr, addr_in_own_data(addr));
+        emit_gvar_addr32(b, 1, I->name);
         emit_line(b, "STR r0, [r1]");
         *top = 0;                        /* the store consumes the value */
         return 1;
@@ -1645,6 +1757,19 @@ static void gvar_assign(IrProgram *prog) {
             return;
         }
     }
+    /* What this unit only declares: the declared type decides how many words
+     * an access has to load, and the name is what -link resolves the address
+     * against later. */
+    g_ext_count = 0;
+    for (gi = 0; gi < prog->global_count; gi++) {
+        IrGlobal *g = prog->globals[gi];
+        int esz;
+        if (!g->is_extern || !g->name) continue;
+        esz = g->type ? type_size(g->type) : 4;
+        if (esz <= 0) esz = 4;
+        gvar_note_extern(g->name, esz);
+    }
+    g_obj_dsym_count = 0;  /* rebuilt below, once every address is final */
     g_custom_sect_count = 0;  /* SCT-1/SCT-3: reset custom section tracking */
     g_data_sram_start = data_sram;  /* will be updated if .data globals exist */
     g_data_sram_end = data_sram;
@@ -1758,6 +1883,36 @@ static void gvar_assign(IrProgram *prog) {
      * or uint8_t array), r0 would never equal r1, causing an infinite loop
      * that writes zeros past .bss into adjacent memory or HardFault. */
     g_bss_sram_end = (bss_sram + 3) & ~3u;
+
+    /* Cross-object data symbols for -link.
+     *
+     * Object files used to carry code labels only, so a unit that referenced
+     * `errno` had no way to name the object the *other* unit had defined.  Every
+     * non-static global defined here is exported with type 1 and its absolute
+     * address in the offset field (see arm_save_syms; the linker treats that
+     * field differently from a code label's offset).  `__at` objects are skipped:
+     * their address is fixed by the programmer and must not follow the window. */
+    g_obj_dsym_count = 0;
+    for (gi = 0; gi < prog->global_count; gi++) {
+        IrGlobal *g = prog->globals[gi];
+        unsigned a;
+        if (g->is_extern || g->is_static || g->has_at) continue;
+        if (!g->name || !g->name[0]) continue;
+        a = gvar_find(g->name);
+        if (a == 0) continue;
+        if (g_obj_dsym_count >= ARM_MAX_SYMBOLS) {
+            char b1[12], b2[12];
+            diag_tool(DIAG_SEV_ERROR, "arkcc",
+                      "%s global objects did not fit the %s-entry object symbol "
+                      "table; raise ARM_MAX_SYMBOLS and rebuild arkcc",
+                      diag_num(b1, g_obj_dsym_count),
+                      diag_num(b2, ARM_MAX_SYMBOLS), 0,0,0,0);
+            break;
+        }
+        g_obj_dsyms[g_obj_dsym_count].name = g->name;
+        g_obj_dsyms[g_obj_dsym_count].addr = a;
+        g_obj_dsym_count++;
+    }
 
     /* Scatter overflow check: warn (do not fail) if .data/.bss grew past their
      * declared execution-region size. Helps catch layout mistakes early. */
@@ -2876,7 +3031,6 @@ static char *codegen_arm(IrProgram *prog) {
                     emit_push_r0(&buf);
                     break;
                 case IR_PUSH_GLOBAL: {
-                    unsigned addr;
                     int gsz;
                     if (is_va_ptr_sym(I->name)) {
                         if (!g_va_active) va_ptr_needs_variadic();
@@ -2884,37 +3038,36 @@ static char *codegen_arm(IrProgram *prog) {
                         emit_push_r0(&buf);
                         break;
                     }
-                    addr = gvar_find(I->name);
                     gsz = gvar_find_size(I->name);
                     if (gsz == 8 && (I->aux & IR_AUX_COMPLEX)) {
                         /* _Complex float global: widen both halves.  The address is
                          * rebuilt after the call because r0/r1 hold the result. */
-                        emit_mov_addr32(&buf, 1, addr, addr_in_own_data(addr));
+                        emit_gvar_addr32(&buf, 1, I->name);
                         emit_line(&buf, "LDR r0, [r1, #4]");
                         arm_cvt_f2d(&buf);
                         emit_push_r0(&buf);
                         asmbuf_puts(&buf, "    PUSH {r1}\n");
-                        emit_mov_addr32(&buf, 1, addr, addr_in_own_data(addr));
+                        emit_gvar_addr32(&buf, 1, I->name);
                         emit_line(&buf, "LDR r0, [r1, #0]");
                         arm_cvt_f2d(&buf);
                         emit_push_r0(&buf);
                         asmbuf_puts(&buf, "    PUSH {r1}\n");
                     } else if (gsz >= 16) {
                         /* _Complex double global: four words, imag first. */
-                        emit_mov_addr32(&buf, 1, addr, addr_in_own_data(addr));
+                        emit_gvar_addr32(&buf, 1, I->name);
                         asmbuf_puts(&buf, "    LDR r0, [r1, #8]\n    PUSH {r0}\n");
                         asmbuf_puts(&buf, "    LDR r0, [r1, #12]\n    PUSH {r0}\n");
                         asmbuf_puts(&buf, "    LDR r0, [r1, #0]\n    PUSH {r0}\n");
                         asmbuf_puts(&buf, "    LDR r0, [r1, #4]\n    PUSH {r0}\n");
                     } else if (gsz >= 8) {
                         /* #6 FIX: 64-bit global read - load low and high words */
-                        emit_mov_addr32(&buf, 1, addr, addr_in_own_data(addr));
+                        emit_gvar_addr32(&buf, 1, I->name);
                         asmbuf_puts(&buf, "    LDR r0, [r1, #0]\n");
                         asmbuf_puts(&buf, "    LDR r2, [r1, #4]\n");
                         emit_push_r0(&buf);  /* push low word */
                         asmbuf_puts(&buf, "    PUSH {r2}\n");  /* push high word */
                     } else {
-                        emit_mov_addr32(&buf, 0, addr, addr_in_own_data(addr));
+                        emit_gvar_addr32(&buf, 0, I->name);
                         emit_line(&buf, "LDR r0, [r0]");
                         emit_push_r0(&buf);
                     }
@@ -2947,28 +3100,29 @@ static char *codegen_arm(IrProgram *prog) {
                     emit_push_r0(&buf);
                     break;
                 case IR_PUSH_GLOBAL_ADDR:
-                    /* Take the global symbol address only (no dereference), for array/struct decay
-                     * and compound literal scenarios. */
-                    {
-                        unsigned addr = gvar_find(I->name);
-                        emit_mov_addr32(&buf, 0, addr, addr_in_own_data(addr));
-                        emit_push_r0(&buf);
-                    }
+                    /* Take the global symbol address only (no dereference), for
+                     * array/struct decay and compound literal scenarios.
+                     * This is the path `table[i]` takes when `table` is an
+                     * extern array: it used to emit MOV r0,#0 + the index
+                     * offset, i.e. a read/write through the vector table with
+                     * no relocation and no diagnostic (measured: an extern
+                     * `int table[4]` store landed at address 0x8). */
+                    emit_gvar_addr32(&buf, 0, I->name);
+                    emit_push_r0(&buf);
                     break;
                 case IR_STORE_GLOBAL: {
-                    unsigned addr = gvar_find(I->name);
                     int gsz = gvar_find_size(I->name);
                     if (gsz == 8 && (I->aux & IR_AUX_COMPLEX)) {
                         /* _Complex float global: narrow each double pair back to a float. */
                         asmbuf_puts(&buf, "    POP {r1}\n");
                         emit_pop_r0(&buf);
                         arm_cvt_d2f(&buf);
-                        emit_mov_addr32(&buf, 2, addr, addr_in_own_data(addr));
+                        emit_gvar_addr32(&buf, 2, I->name);
                         emit_line(&buf, "STR r0, [r2, #0]");
                         asmbuf_puts(&buf, "    POP {r1}\n");
                         emit_pop_r0(&buf);
                         arm_cvt_d2f(&buf);
-                        emit_mov_addr32(&buf, 2, addr, addr_in_own_data(addr));
+                        emit_gvar_addr32(&buf, 2, I->name);
                         emit_line(&buf, "STR r0, [r2, #4]");
                     } else if (gsz >= 16) {
                         /* _Complex double global: the value is a dup'd copy of
@@ -2983,7 +3137,7 @@ static char *codegen_arm(IrProgram *prog) {
                         emit_pop_r0(&buf);                      /* re_lo */
                         asmbuf_puts(&buf, "    POP {r3}\n");   /* im_hi */
                         asmbuf_puts(&buf, "    POP {r2}\n");   /* im_lo */
-                        emit_mov_addr32(&buf, 12, addr, addr_in_own_data(addr));
+                        emit_gvar_addr32(&buf, 12, I->name);
                         asmbuf_puts(&buf, "    STR r0, [r12, #0]\n");
                         asmbuf_puts(&buf, "    STR r1, [r12, #4]\n");
                         asmbuf_puts(&buf, "    STR r2, [r12, #8]\n");
@@ -2992,12 +3146,12 @@ static char *codegen_arm(IrProgram *prog) {
                         /* #6 FIX: 64-bit global store - pop high then low, store both */
                         asmbuf_puts(&buf, "    POP {r1}\n");  /* high word */
                         emit_pop_r0(&buf);                     /* low word */
-                        emit_mov_addr32(&buf, 2, addr, addr_in_own_data(addr));
+                        emit_gvar_addr32(&buf, 2, I->name);
                         asmbuf_puts(&buf, "    STR r0, [r2, #0]\n");
                         asmbuf_puts(&buf, "    STR r1, [r2, #4]\n");
                     } else {
                         emit_pop_r0(&buf);
-                        emit_mov_addr32(&buf, 1, addr, addr_in_own_data(addr));
+                        emit_gvar_addr32(&buf, 1, I->name);
                         emit_line(&buf, "STR r0, [r1]");
                     }
                     break;
@@ -5631,6 +5785,15 @@ typedef struct AsmLabel {
  * CBZ/CBNZ (8, 9) and the cross-object LDR= sites (10 data / 11 function). */
 #define ARM_RELOC_TEXT       12
 #define ARM_RELOC_TEXT_NAME  ".arktext"
+/* Cross-object reference to a *data* object: `extern int errno;` in a unit
+ * that does not define it.  The MOVW/MOVT pair at the recorded offset has to
+ * end up holding the final address of the named global, and that address is
+ * only known after -link has placed every object's data window -- so the ref
+ * carries the symbol name and the linker looks it up in the data-symbol table
+ * instead of adding a delta.  15 is the next free number after .arkdata (6),
+ * ADR (7), CBZ/CBNZ (8, 9), the cross-object LDR= sites (10, 11) and
+ * .arktext (12). */
+#define ARM_RELOC_DATA_SYM   15
 
 typedef struct AsmRef   { int pc; char *name; int type; } AsmRef;
 /* Literal pool entry: LDR rd,=label at ldr_pc needs a 4-byte literal at pool_offset */
@@ -7033,11 +7196,27 @@ static int read_label_name_a(const char **p, char *buf, int cap) {
 
 /* Reverse of the Thumb-2 ThumbExpandImm() function: split a 32-bit
  * constant into the (i, imm3, imm8) fields of a modified immediate.
- *   rot = imm12[11:10]; value = ROR(bit7-replicated imm8, rot * 8)
- *   rot == 0        : value = ZeroExtend(imm8)
+ *   rot = i:imm3;   unrotated = ZeroExtend('1':imm8[6:0], 32)
+ *   value = ROR(unrotated, rot * 8),  rot = 1..15
+ *   rot == 0      : value = ZeroExtend(imm8)
  * Returns 1 when the constant is representable, 0 otherwise. Used by the
  * MOVS/CMP.W immediate forms so an unrepresentable constant is reported
- * instead of being silently truncated to 8 bits. */
+ * instead of being silently truncated to 8 bits.
+ *
+ * Two details of the spec this used to get wrong.  Both only ever showed up
+ * in --object mode: -S writes text that GNU as accepts, while the internal
+ * assembler runs this check and turned a legal constant into a hard error.
+ * `EOR r0, r0, #0x80000000` (what a double negation emits) was the first
+ * thing to hit it.
+ *
+ *   - the unrotated value is '1':imm8[6:0] ZERO-EXTENDED, not bit7
+ *     replicated into bits 31:8.  Building 0xFFFFFF00|imm8 made the
+ *     round-trip check `ROR(cand, sh) == val` fail for every constant that
+ *     needed a rotation, and made it succeed for values that are NOT
+ *     representable (0xFFFFFF80 and its two rotations) -- i.e. the old check
+ *     rejected everything legal and accepted four illegal constants.
+ *   - rot is four bits (i:imm3), not two, so rotations of 32..120 bits were
+ *     never tried.  0x80000000 is ROR(0x80, 8), i.e. rot=1, imm8=0x80. */
 static int thumb_imm12_a(unsigned val, unsigned *out_i, unsigned *out_imm3,
                          unsigned *out_imm8) {
     unsigned rot;
@@ -7045,15 +7224,15 @@ static int thumb_imm12_a(unsigned val, unsigned *out_i, unsigned *out_imm3,
         *out_i = 0; *out_imm3 = 0; *out_imm8 = val;
         return 1;
     }
-    for (rot = 1; rot < 4; rot++) {
-        unsigned sh = rot * 8;
-        unsigned unrot = (val << sh) | (val >> (32 - sh));   /* ROL by sh */
-        unsigned imm8 = unrot & 0xFFu;
-        unsigned cand;
+    for (rot = 1; rot < 16; rot++) {
+        unsigned sh = (rot * 8) & 31u;
+        unsigned unrot = sh ? ((val << sh) | (val >> (32u - sh)))  /* ROL by sh */
+                            : val;
+        unsigned imm8;
+        if ((unrot & 0xFFFFFF00u) != 0) continue;   /* must fit in 8 bits */
+        imm8 = unrot & 0xFFu;
         if ((imm8 & 0x80u) == 0) continue;   /* bit7 must be set here */
-        cand = 0xFFFFFF00u | imm8;           /* '1':imm8 */
-        if (((cand >> sh) | (cand << (32 - sh))) != val) continue;
-        *out_i = (rot >> 1) & 1u;
+        *out_i = (rot >> 3) & 1u;
         *out_imm3 = rot & 7u;
         *out_imm8 = imm8;
         return 1;
@@ -7349,6 +7528,23 @@ static void pass2_a(ArmAsm *a) {
                  * Pass-1 ignores this directive: it occupies no bytes, so the
                  * offsets it records are the ones the image really has. */
                 add_ref_a(a, a->pc, ".arkdata", 6);
+            } else if (strieq_a(first, ".arkdatasym")) {
+                /* --reloc-data, cross-object data reference: the MOVW/MOVT
+                 * pair that follows must hold the address of the named global,
+                 * which is defined in another object.  Record the site with
+                 * the symbol name (type 15) so -link can resolve it after the
+                 * data windows are placed.  Zero bytes, like .arkdata. */
+                char sym_name[128];
+                int sn = 0;
+                skip_space_a(&p);
+                while (*p && *p != ',' && *p != '\n' &&
+                       *p != ' ' && *p != '\t' &&
+                       sn < (int)sizeof(sym_name) - 1) {
+                    sym_name[sn++] = *p++;
+                }
+                sym_name[sn] = 0;
+                if (sn > 0)
+                    add_ref_a(a, a->pc, sym_name, ARM_RELOC_DATA_SYM);
             } else if (strieq_a(first, ".byte")) {
                 while (*p && *p != '\n') {
                     int val = 0;
@@ -9387,8 +9583,10 @@ static void resolve_refs_a(ArmAsm *a) {
     for (i = 0; i < a->ref_count; i++) {
         AsmRef *r = &a->refs[i];
         int addr;
-        if (r->type == 6 || r->type == ARM_RELOC_TEXT)
-            continue;   /* .arkdata / .arktext: patch sites, not labels */
+        if (r->type == 6 || r->type == ARM_RELOC_TEXT ||
+            r->type == ARM_RELOC_DATA_SYM)
+            continue;   /* .arkdata / .arktext / .arkdatasym: patch sites, not
+                         * labels */
         addr = find_label_a(a, r->name);
         if (addr < 0) {
             /* Not a local label: this is a cross-object reference and has
@@ -9659,6 +9857,17 @@ static void arm_save_syms(ArmAsm *a) {
         g_arm_syms[g_arm_sym_count].is_weak = a->labels[i].is_weak;
         g_arm_sym_count++;
     }
+    /* Data objects: type 1, offset = absolute address (not a code offset).
+     * Appended after the code labels so a reader that stops at the label count
+     * it knows about still sees a valid table. */
+    for (i = 0; i < g_obj_dsym_count; i++) {
+        if (g_arm_sym_count >= ARM_MAX_SYMBOLS) { dropped++; continue; }
+        g_arm_syms[g_arm_sym_count].name   = (char *)g_obj_dsyms[i].name;
+        g_arm_syms[g_arm_sym_count].offset = (int)g_obj_dsyms[i].addr;
+        g_arm_syms[g_arm_sym_count].type   = 1;  /* data/global */
+        g_arm_syms[g_arm_sym_count].is_weak = 0;
+        g_arm_sym_count++;
+    }
     if (dropped) {
         /* A symbol missing from the object is a symbol -link cannot resolve. */
         char b1[12], b2[12];
@@ -9680,8 +9889,10 @@ static void arm_save_relocs(ArmAsm *a) {
     for (i = 0; i < a->ref_count; i++) {
         AsmRef *r = &a->refs[i];
         int addr;
-        if (r->type == 6 || r->type == ARM_RELOC_TEXT) {
-            /* .arkdata / .arktext: not a reference to a label, but the offset of a
+        if (r->type == 6 || r->type == ARM_RELOC_TEXT ||
+            r->type == ARM_RELOC_DATA_SYM) {
+            /* .arkdata / .arktext / .arkdatasym: not a reference to a label, but
+             * the offset of a
              * MOVW/MOVT pair the -link stage may have to shift.  It is saved
              * whether or not the object ends up being relocated, so that the
              * decision stays with the linker (which knows every object). */

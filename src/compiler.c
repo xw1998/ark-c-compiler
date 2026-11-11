@@ -136,6 +136,27 @@ typedef struct LdReloc {
     int  obj;      /* 0-based index of the object it came from (--reloc-data) */
 } LdReloc;
 
+/* --reloc-data, cross-object form: a MOVW/MOVT pair that must hold the
+ * final address of a global defined in *another* object.
+ *
+ * Why type 6 is not enough: a type-6 site means "this object's own data
+ * window moved by delta", which that object alone can answer.  An external
+ * global needs two facts that only the whole link set can supply -- which
+ * object defines it, and where that object's window ended up -- so the site
+ * is emitted as movw/movt #0 plus a named relocation and resolved here.  The
+ * previous behaviour (no symbol, no relocation) folded every external global
+ * to MOV r,#0 / STR r,[r] : a store into the vector table, with exit code 0.
+ * Keep this number in step with ARM_RELOC_DATA_SYM in backend_arm.c. */
+#define ARM_RELOC_DATA_SYM 15
+
+/* One global object exported by an object file (symbol type 1). */
+typedef struct LdDataSym {
+    char     name[128];
+    unsigned addr;     /* absolute address as compiled (pre-relocation) */
+    int      obj;      /* object that defines it */
+    int      is_weak;
+} LdDataSym;
+
 /* Per-object SRAM footprint reported by the object's reserved
  * __arkcc_ram_start / __arkcc_ram_end symbols (absolute addresses). */
 typedef struct LdRam {
@@ -183,6 +204,9 @@ static LdSym    g_ld_syms[LD_MAX_SYMS];
 static int      g_ld_sym_count = 0;
 static LdReloc  g_ld_relocs[LD_MAX_RELOCS];
 static int      g_ld_reloc_count = 0;
+/* Globals exported by the loaded objects (--reloc-data, cross-object). */
+static LdDataSym g_ld_dsyms[LD_MAX_SYMS];
+static int       g_ld_dsym_count = 0;
 
 static int rd_le32(const unsigned char *p) {
     /* Byte-wise through a volatile pointer on purpose: do not let the
@@ -266,6 +290,58 @@ static void ld_add_reloc(const char *name, int offset, int type, int obj) {
     g_ld_reloc_count++;
 }
 
+/* find_dsym: strong beats weak, first weak otherwise (same policy as code
+ * labels).  Two strong definitions with different addresses are a genuine
+ * duplicate-object error, so that is reported rather than silently picking
+ * one: the two copies would keep separate state. */
+static int ld_find_dsym(const char *name) {
+    int weak_idx = -1;
+    int i;
+    for (i = 0; i < g_ld_dsym_count; i++) {
+        if (ark_streq(g_ld_dsyms[i].name, name)) {
+            if (!g_ld_dsyms[i].is_weak) return i;
+            if (weak_idx < 0) weak_idx = i;
+        }
+    }
+    return weak_idx;
+}
+
+static void ld_add_dsym(const char *name, unsigned addr, int obj, int is_weak) {
+    int idx, n;
+    if (g_ld_dsym_count >= LD_MAX_SYMS) { ld_table_overflow++; return; }
+    idx = ld_find_dsym(name);
+    if (idx >= 0) {
+        if (!g_ld_dsyms[idx].is_weak && is_weak) return;   /* strong wins */
+        if (g_ld_dsyms[idx].is_weak && !is_weak) {         /* strong overrides */
+            g_ld_dsyms[idx].addr = addr;
+            g_ld_dsyms[idx].obj = obj;
+            g_ld_dsyms[idx].is_weak = 0;
+            return;
+        }
+        if (!g_ld_dsyms[idx].is_weak && !is_weak &&
+            g_ld_dsyms[idx].addr != addr) {
+            char b1[12], b2[12];
+            diag_tool(DIAG_SEV_ERROR, g_ld_image,
+                      "global variable %sq is defined twice (addresses %s and %s); "
+                      "the two copies would hold separate values, so no image "
+                      "was written",
+                      name, ld_hex(b1, g_ld_dsyms[idx].addr), ld_hex(b2, addr),
+                      0, 0, 0);
+            return;  /* first definition kept; the error aborts the link */
+        }
+        return;
+    }
+    n = 0;
+    while (name[n] && n < (int)sizeof(g_ld_dsyms[g_ld_dsym_count].name) - 1) {
+        g_ld_dsyms[g_ld_dsym_count].name[n] = name[n]; n++;
+    }
+    g_ld_dsyms[g_ld_dsym_count].name[n] = 0;
+    g_ld_dsyms[g_ld_dsym_count].addr = addr;
+    g_ld_dsyms[g_ld_dsym_count].obj = obj;
+    g_ld_dsyms[g_ld_dsym_count].is_weak = is_weak;
+    g_ld_dsym_count++;
+}
+
 /* Implemented in the ARM backend (same encoder the assembler uses, so the
  * linker cannot drift from it). */
 extern int arm_patch_movw_movt(unsigned char *code, int code_len, int off, int delta);
@@ -341,6 +417,55 @@ static int ld_relocate_data(unsigned char *code, int code_len) {
     }
     g_ld_data_top = cursor;
     return 0;
+}
+
+/* --reloc-data, cross-object form: write the final address of every
+ * externally referenced global into its movw/movt pair.
+ *
+ * Must run *after* ld_relocate_data: the answer is (definition address +
+ * the data-window delta of the object that defines it), and those deltas do
+ * not exist until every window has been placed.  Unlike the type-6 pass this
+ * cannot skip delta 0 -- object #0 keeps its window, so its globals need
+ * their address written by this pass alone.  The site was emitted as
+ * movw/movt #0, therefore "adding" the final address yields exactly it.
+ *
+ * An undefined global is a hard error.  There is no correct address to fall
+ * back to, and the previous silent fallback (0) was a write into the vector
+ * table. */
+static int ld_resolve_data_syms(unsigned char *code, int code_len) {
+    int k, bad = 0;
+    for (k = 0; k < g_ld_reloc_count; k++) {
+        int idx;
+        unsigned final;
+        if (g_ld_relocs[k].type != ARM_RELOC_DATA_SYM) continue;
+        idx = ld_find_dsym(g_ld_relocs[k].name);
+        if (idx < 0) {
+            char b1[12];
+            diag_tool(DIAG_SEV_ERROR, g_ld_image,
+                      "unresolved global variable %sq (referenced from object "
+                      "#%s); no object in this link defines it, so its address "
+                      "is unknown and no image was written",
+                      g_ld_relocs[k].name,
+                      diag_num(b1, g_ld_relocs[k].obj), 0,0,0,0);
+            bad++;
+            continue;
+        }
+        final = g_ld_dsyms[idx].addr;
+        if (g_ld_dsyms[idx].obj >= 0 && g_ld_dsyms[idx].obj < LD_MAX_OBJS)
+            final = (unsigned)((int)final + g_ld_data_delta[g_ld_dsyms[idx].obj]);
+        if (arm_patch_movw_movt(code, code_len, g_ld_relocs[k].offset,
+                                (int)final) != 0) {
+            char b1[12], b2[12];
+            diag_tool(DIAG_SEV_ERROR, g_ld_image,
+                      "the external data reference at offset %s (object #%s) is "
+                      "not a MOVW/MOVT pair; that object did not come from this "
+                      "compiler, so no image was written",
+                      diag_num(b1, g_ld_relocs[k].offset),
+                      diag_num(b2, g_ld_relocs[k].obj), 0,0,0,0);
+            bad++;
+        }
+    }
+    return bad > 0 ? -1 : 0;
 }
 
 /* --reloc-text: rewrite every MOVW/MOVT pair that carries an address inside an
@@ -733,6 +858,14 @@ static int obj_put_sym(unsigned char *buf, int ol, const char *nm,
  * link.  The offset field is unused (0). */
 #define OBJ_ISA_RV32_SYM "__arkcc_isa_riscv32"
 #define OBJ_SYM_TYPE_ISA 5
+/* A global object (not a code label) that this object *defines*.  Its
+ * offset field is an absolute address, like the RAM descriptors above, so
+ * the code base is not added and it never enters the code-label table: the
+ * same name may legitimately be a file-static object in another unit.  An
+ * ARM object built before this existed carries type 0 on every symbol, so
+ * old objects still link (they simply cannot satisfy a cross-object data
+ * reference, which used to be silently folded to address 0). */
+#define OBJ_SYM_TYPE_DATA 1
 
 /* Write an ARKOBJ2 object file: "ARKOBJ2\n" + u32 code size + code body +
  * u32 symbol count + symbols + u32 reloc count + relocs (readers live in the
@@ -1201,6 +1334,7 @@ int ark_compile(const ArkOptions *opts) {
                   g_ld_have_text_base[k] = 0; } }
             g_ld_data_top = 0;
             ld_table_overflow = 0;
+            g_ld_dsym_count = 0;
             for (li = 0; li < opts->link_input_count; li++) {
                 int n = fs_read_file(opts->link_inputs[li], buf, LD_BUF_SIZE);
                 const unsigned char *up = (const unsigned char *)buf;
@@ -1261,15 +1395,23 @@ int ark_compile(const ArkOptions *opts) {
                 sym_cnt = rd_le32(up + pos); pos += 4;
                 for (si = 0; si < sym_cnt; si++) {
                     char sym_name[128];
-                    int name_len, sym_off, sym_weak, k;
+                    int name_len, sym_off, sym_weak, sym_type, k;
                     name_len = rd_le32(up + pos); pos += 4;
                     for (k = 0; k < name_len && k < (int)sizeof(sym_name) - 1; k++)
                         sym_name[k] = (char)up[pos + k];
                     sym_name[k] = 0;
                     pos += name_len;
                     sym_off = rd_le32(up + pos); pos += 4;
-                    pos += 1;           /* type (unused by linker) */
+                    sym_type = up[pos]; pos += 1;
                     sym_weak = up[pos]; pos += 1;
+                    if (sym_type == OBJ_SYM_TYPE_DATA) {
+                        /* A global object this unit defines.  Its offset is
+                         * an absolute address, so the code base is not added
+                         * and it stays out of the code-label table. */
+                        if (li < LD_MAX_OBJS)
+                            ld_add_dsym(sym_name, (unsigned)sym_off, li, sym_weak);
+                        continue;
+                    }
                     /* RAM footprint descriptors: the offset field is an
                      * absolute address, so it must NOT get the object code
                      * base added, and it is not a resolvable label. */
@@ -1365,6 +1507,26 @@ int ark_compile(const ArkOptions *opts) {
                  * the new bases, so the overlap check below still runs and now
                  * passes on genuine layout, not on a bypass. */
                 if (ld_relocate_data(out_buf, out_len) != 0) return ARK_ERR_LINK;
+                /* Cross-object globals need the window layout computed just
+                 * above, hence the second pass. */
+                if (ld_resolve_data_syms(out_buf, out_len) != 0)
+                    return ARK_ERR_LINK;
+            } else {
+                /* An object that names a global it does not define needs the
+                 * cross-object resolver; without --reloc-data there is none,
+                 * and the site still holds movw/movt #0. */
+                int k, hits = 0;
+                for (k = 0; k < g_ld_reloc_count; k++)
+                    if (g_ld_relocs[k].type == ARM_RELOC_DATA_SYM) hits++;
+                if (hits > 0) {
+                    char b1[12];
+                    diag_tool(DIAG_SEV_ERROR, g_ld_image,
+                              "%s reference(s) to globals defined in another "
+                              "object need --reloc-data, which is off; they "
+                              "would run with address 0",
+                              diag_num(b1, hits), 0,0,0,0,0);
+                    return ARK_ERR_LINK;
+                }
             }
             {
                 int obj_a, obj_b;
@@ -1747,8 +1909,11 @@ int ark_compile(const ArkOptions *opts) {
                 int unresolved = 0;
                 for (ri = 0; ri < g_ld_reloc_count; ri++) {
                     int idx;
-                    if (g_ld_relocs[ri].type == 6 || g_ld_relocs[ri].type == 12)
-                        continue;  /* .arkdata / .arktext site: already patched
+                    if (g_ld_relocs[ri].type == 6 ||
+                        g_ld_relocs[ri].type == 12 ||
+                        g_ld_relocs[ri].type == ARM_RELOC_DATA_SYM)
+                        continue;  /* .arkdata / .arktext / .arkdatasym site:
+                        * already patched
                         * already handled by ld_relocate_data; it names no
                         * symbol, so treating it as an unresolved reference
                         * would fail the link on a valid image. */

@@ -917,6 +917,10 @@ static void irgen_lvalue_addr(IrGen *g, AstNode *node);
 static void irgen_cond_to_bool(IrGen *g, AstNode *cond);
 static void irgen_widen_to_64(IrGen *g, Type *src_t, Type *dst_t);
 static void irgen_truncate_int(IrGen *g, Type *dst_t);
+/* Convert the top of the IR stack from src_t to dst_t, the way an assignment
+ * would.  Used by `return` (C99 6.8.6.4p1); defined next to
+ * irgen_truncate_int. */
+static void irgen_convert_value(IrGen *g, Type *src_t, Type *dst_t);
 /* Recursively perform aggregate initialization: write the scalar values of
  * init_list into the object of type t at frame offset off (C99 nested lists, designated initializers). */
 static void irgen_local_aggregate_init(IrGen *g, int off, Type *t, AstNode *init_list);
@@ -2631,13 +2635,18 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
                     /* real -> _Complex return (C99 6.8.6.4): the same
                      * conversion an assignment does.  Without it
                      * `double _Complex f(void) { return 3.0; }` left two words
-                     * on the stack where the backends read four. */
+                     * on the stack where the backends read four.
+                     * Every other scalar return type goes through
+                     * irgen_convert_value for the same reason: the value has
+                     * to arrive in the shape the epilogue will pop. */
                     {
                         Type *ot = node->u.unary.operand->type;
                         Type *ft = g->fn->ret_type;
                         if (ft && ARK_IS_CX(ft) &&
                             (!ot || !ARK_IS_CX(ot)))
                             irgen_widen_real_to_complex(g, ot);
+                        else
+                            irgen_convert_value(g, ot, ft);
                     }
                 }
             } else {
@@ -3103,6 +3112,85 @@ static void irgen_truncate_int(IrGen *g, Type *dst_t) {
         default:         return;    /* llong / bool handled elsewhere */
     }
     ir_emit(g->fn, IR_TRUNC, bits, 0, dst_t->is_unsigned ? 1 : 0);
+}
+
+/* C99 6.8.6.4p1: `return expr;` converts its operand to the function's
+ * return type "as if by assignment".  sema only type-checks the operand and
+ * inserts no cast node, so the value reached IR_RETURN still carrying the
+ * operator's own type.  The register-pair backends then disagreed with
+ * themselves about how many stack words a return takes:
+ *
+ *   unsigned long long f(void) { return 0; }
+ *       -> one word pushed, epilogue pops two  => high half = stack garbage.
+ *          Measured: strtoull("abc") answered 0x...0C, not 0, and
+ *          strtol("5", &e, 1) (EINVAL early return) was equally wrong.
+ *   unsigned char g(void) { return 300; }
+ *       -> 300 instead of 44: no assignment-style truncation at all.
+ *
+ * The dispatch below is the same matrix AST_CAST uses; duplicating it here
+ * is deliberate -- the cast version works on a syntax node it has to
+ * evaluate itself, this one works on two types after the operand has already
+ * been emitted.
+ *
+ * Complex and aggregate types are left alone: real -> _Complex is done by
+ * irgen_widen_real_to_complex at the call site, and a struct return travels
+ * as an address (handled by the branches above this one). */
+static void irgen_convert_value(IrGen *g, Type *src_t, Type *dst_t) {
+    int src_float, dst_float, src_int, dst_int;
+    if (!src_t || !dst_t) return;
+    if (ARK_IS_CX(src_t) || ARK_IS_CX(dst_t)) return;
+    if (src_t->kind == TYPE_STRUCT || src_t->kind == TYPE_UNION) return;
+    if (dst_t->kind == TYPE_STRUCT || dst_t->kind == TYPE_UNION) return;
+    src_float = (src_t->kind == TYPE_FLOAT || src_t->kind == TYPE_DOUBLE);
+    dst_float = (dst_t->kind == TYPE_FLOAT || dst_t->kind == TYPE_DOUBLE);
+    src_int   = type_is_integer(src_t);
+    dst_int   = type_is_integer(dst_t);
+
+    if (src_float && dst_int) {
+        /* aux: 0x200 = source is double, 0x400 = destination is unsigned
+         * (same encoding AST_CAST and the backends already agree on). */
+        int aux = (src_t->kind == TYPE_DOUBLE) ? 0x200 : 0;
+        if (dst_t->is_unsigned) aux |= 0x400;
+        if (dst_t->kind == TYPE_LLONG)
+            ir_emit(g->fn, IR_64F2I, 0, 0, aux);
+        else
+            ir_emit(g->fn, IR_F2I, 0, 0, aux);
+        /* IR_F2I yields a 32-bit int; `return (double)300.0;` from a
+         * function returning unsigned char still has to lose the top
+         * bits and be re-extended. */
+        if (type_size(dst_t) < 4) irgen_truncate_int(g, dst_t);
+        return;
+    }
+    if (src_int && dst_float) {
+        /* aux: 0x200 = destination is double, 0x400 = source is unsigned. */
+        int aux = (dst_t->kind == TYPE_DOUBLE) ? 0x200 : 0;
+        if (src_t->is_unsigned) aux |= 0x400;
+        if (src_t->kind == TYPE_LLONG)
+            ir_emit(g->fn, IR_64I2F, 0, 0, aux);
+        else
+            ir_emit(g->fn, IR_I2F, 0, 0, aux);
+        return;
+    }
+    if (src_float && dst_float) {
+        int src_dbl = (src_t->kind == TYPE_DOUBLE);
+        int dst_dbl = (dst_t->kind == TYPE_DOUBLE);
+        if (src_dbl != dst_dbl)
+            ir_emit(g->fn, IR_F2F, 0, 0, src_dbl ? 0x200 : 0x100);
+        return;
+    }
+    if (src_int && dst_int) {
+        /* Widen/narrow to the destination width, then re-extend when the
+         * destination is narrower or differs only in signedness.  Both
+         * conditions are copied from AST_CAST so a `return` and an explicit
+         * cast of the same expression produce identical code. */
+        irgen_widen_to_64(g, src_t, dst_t);
+        if (dst_t->kind != TYPE_BOOL &&
+            (type_size(dst_t) < type_size(src_t) ||
+             (type_size(dst_t) == 4 && src_t->is_unsigned != dst_t->is_unsigned)))
+            irgen_truncate_int(g, dst_t);
+    }
+    /* int -> pointer / pointer -> int: the front end already diagnosed the
+     * cases that are not allowed, and both live in a 32-bit stack slot. */
 }
 
 /* Narrow loads land in a 32-bit stack slot, and IR_LOAD_IDX carries the
@@ -4903,6 +4991,22 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                     if (node->type &&
                         (node->type->kind == TYPE_LLONG || node->type->kind == TYPE_DOUBLE))
                         call_val |= 0x100000000LL;
+                    /* A composite of 5..8 bytes comes back in the same two
+                     * registers (AAPCS r0:r1, RISC-V a0:a1), and both backends
+                     * already say so for a callee they can see:
+                     * ret_is_two_words() / rv_ret_is_two_words() answer "two
+                     * words" for exactly this shape.  The declared-only path
+                     * reads bit 32 instead, so without this the callee pushed
+                     * r0 alone while the caller's store -- and
+                     * irgen_discard_result -- took two words.  Measured:
+                     * `div_t d = div(17, 5);` with div() declared in a header
+                     * and defined in another object gave d.quot = garbage. */
+                    if (node->type &&
+                        (node->type->kind == TYPE_STRUCT || node->type->kind == TYPE_UNION)) {
+                        int tsz = type_size(node->type);
+                        if (tsz > 4 && tsz <= 8)
+                            call_val |= 0x100000000LL;
+                    }
                     if (node->type && node->type->kind == TYPE_VOID)
                         call_val |= 0x200000000LL;
                     /* bits 34..35: the result is a _Complex value on the

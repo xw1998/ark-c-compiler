@@ -18,7 +18,7 @@ ARKCC := arkcc
 RM    := rm -f
 endif
 
-.PHONY: all clean test test-arm test-c test-x86 test-riscv test-reloc-text stm32
+.PHONY: all clean test test-arm test-c test-stdlib test-install test-x86 test-riscv test-reloc-text install stm32
 
 all: $(ARKCC)
 
@@ -28,7 +28,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # "Nothing to be done" while the source tree said otherwise.
 	$(CC) $(CFLAGS) $(SRC) -o $(ARKCC) $(LDFLAGS)
 
-test: test-arm test-c test-reloc-text
+test: test-arm test-c test-stdlib test-install test-reloc-text
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o nul
@@ -47,6 +47,13 @@ test-c: $(ARKCC)
 test-reloc-text: $(ARKCC)
 	$(PYTHON) tests/run_reloc_text_tests.py ./$(ARKCC)
 
+# Library gate: every stdlib entry point is compiled and run on the ARM
+# emulator, and each case asserts a number the program itself computed.  A
+# case that needs hardware the emulator does not have (double-precision FPU)
+# is reported as SKIP with the measured reason -- never silently passed.
+test-stdlib: $(ARKCC)
+	$(PYTHON) tests/run_stdlib_tests.py --arkcc ./$(ARKCC)
+
 test-x86: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target x86 -S -o nul
 	./$(ARKCC) examples/arith.c -target x86 -S -o nul
@@ -56,6 +63,23 @@ test-riscv: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target riscv32 -S -o nul
 	./$(ARKCC) examples/arith.c -target riscv32 -S -o nul
 	./$(ARKCC) examples/func.c  -target riscv32 -S -o nul
+
+# The install gate builds a program *against the installed tree* (malloc + div
+# + qsort) and runs it on the emulator, so "the copy is byte-identical" is not
+# the only thing it proves.
+test-install: $(ARKCC)
+	$(PYTHON) tests/run_install_tests.py --arkcc ./$(ARKCC)
+
+# ===== install =====
+# Stages the driver, headers and library sources under $(DESTDIR)$(PREFIX).
+# DESTDIR is a staging root (package builds) and is empty by default; the
+# script refuses to write outside it, never deletes, and reads every installed
+# file back byte-for-byte.
+PREFIX  ?= /usr/local
+DESTDIR ?=
+
+install: $(ARKCC)
+	$(PYTHON) tools/install.py --prefix "$(PREFIX)" $(if $(DESTDIR),--destdir "$(DESTDIR)") --arkcc ./$(ARKCC)
 
 # ===== STM32 cross-compilation =====
 # Fails if arm-none-eabi-gcc is missing, but Makefile syntax stays valid.

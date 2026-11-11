@@ -248,11 +248,17 @@
 | `stdlib/src/math.c` | `sin/cos/sqrt/pow/fabs/floor/ceil/fmod` |
 | `stdlib/src/setjmp.c` | `setjmp/longjmp`（可移植简化宿主实现，只给宿主测试用） |
 | `stdlib/src/arm/setjmp.s` | `setjmp/longjmp` 的 **ARM Thumb-2 真实现**（`jmp_buf` 存 r4-r11/sp/lr，`longjmp(env,0)` 读回 1）；为什么必须是汇编、为什么不能是 C 包装见文件头 |
+| `stdlib/src/stdlib.c` | 转换与整数算术：`strtol/strtoul/strtoll/strtoull`（base 2..36、`errno=ERANGE` 饱和、`endp` 语义）、`atoi/atol/atoll`、`strtod/strtof/strtold/atof`、`labs/llabs`、`div/ldiv/lldiv`、`qsort`（插入排序，稳定、不用递归）、`abs` |
+| `stdlib/src/heap.c` | `malloc/free/calloc/realloc`：`ARK_STDLIB_HEAP_SIZE` 字节的静态 arena（默认 8 KB，`-DARK_STDLIB_HEAP_SIZE=…` 改），按块分裂/相邻合并；**耗尽时返回 `NULL`**（不静默给假地址），只读诊断 `ark_heap_used/ark_heap_capacity` 供门禁与板上 `mem` 命令 |
+| `stdlib/src/errno.c` | `errno` 真对象（一个 4 字节全局，各 TU `extern int errno` 共享；`E*` 宏在 `<errno.h>`，换号只需换头） |
+| `stdlib/src/exit.c` | `exit/_Exit/abort/atexit`：按注册逆序跑 `atexit` 链，再调端口钩子 `_ark_exit(status)` |
+| `stdlib/src/exit_default.c` | `_ark_exit` 的弱定义（死循环）：目标工程可以覆盖它，覆盖后 `exit()` 才真正离开镜像 |
+| `stdlib/src/signal.c` | `signal/raise`（子集）：`SIGINT/SIGTERM/SIGABRT/SIGFPE/SIGSEGV/SIGILL`，`SIG_DFL` 走 `_ark_exit`，`SIG_IGN` 忽略 |
 | `stdlib/src/putchar_default.c` | `putchar` 弱默认实现 |
 | `stdlib/src/arm/aeabi.c` | 平铺 ARM 镜像用的 64 位 AEABI 运行时：`lmul` / `ldiv` / `udiv` / `llsl` / `llsr` / `lasr` / `lcmp` / `ulcmp`，全部只用 32 位算子（不会递归到自己），C 源，可被 arkc 自己编译 |
 | `stdlib/src/arm/aeabi_divmod.s` | `__aeabi_ldivmod` / `__aeabi_uldivmod` 的四寄存器返回包装（商 `r0:r1`、余 `r2:r3`）——C 语言写不出四寄存器返回（`__value_in_regs` 只解析不 codegen），所以这一段必须是汇编，算术复用上面的 `aeabi.c` |
 
-`stdlib/include/` 头文件：`stdint.h`/`stdbool.h`/`stddef.h`/`stdarg.h`/`string.h`/`stdio.h`/`stdlib.h`/`math.h`（含 `M_PI` 等常量）/`setjmp.h`。
+`stdlib/include/` 头文件（22 个）：`complex.h`/`ctype.h`/`errno.h`/`fenv.h`/`float.h`/`inttypes.h`/`limits.h`/`locale.h`/`math.h`（含 `M_PI` 等常量）/`setjmp.h`/`signal.h`/`stdarg.h`/`stdbool.h`/`stddef.h`/`stdint.h`/`stdio.h`/`stdlib.h`/`string.h`/`tgmath.h`/`time.h`/`wchar.h`/`wctype.h` 的子集，全部按 C99/C11 声明原型——**声明与实现同源**，门禁会拿头文件里的原型去编实现文件。
 
 **平铺镜像（`-o image.bin` / `--vector-table`）与上面两份 ARM 运行时**：编译 `.c` 到 `.obj` 时，64 位乘/除/取模/移位/比较会发射 `__aeabi_lmul` 等外部符号（64 位加减已内联成 `ADDS`/`ADC`、`SUBS`/`SBC`，不需要运行库）。**编译器绝不隐式链接这两份源**——镜像里到底要不要软浮/64 位运行时，由链接方决定。所以一条能跑通的平铺镜像命令是三步：
 
@@ -519,9 +525,37 @@ ark c compiler/
 
 ```bash
 make            # 生成 arkcc.exe
-make test       # 编译 examples
+make test       # 编译 examples + 跑 reloc-text / stdlib 门禁
 make clean
 ```
+
+### `make install`（DESTDIR / PREFIX）
+
+```bash
+make install                                   # 装到 PREFIX（默认 /usr/local）
+make install PREFIX=$HOME/arkcc                 # 换安装根
+make install DESTDIR=/tmp/stage PREFIX=usr/local  # 打包暂存（文件落在 /tmp/stage/usr/local）
+```
+
+装出来的布局：
+
+```
+$PREFIX/bin/arkcc[.exe]        编译器
+$PREFIX/include/ark/*.h        22 个标准头文件
+$PREFIX/lib/ark/src/*.c|*.s    库源码（不预编译：镜像要哪一份运行时由链接方决定）
+$PREFIX/lib/ark/src/arm/*      平铺 ARM 镜像用的 AEABI / setjmp 汇编
+$PREFIX/lib/ark/README.md      这份库该怎么给某个 target 编译
+```
+
+三条硬约定：**`DESTDIR` 是暂存根，`PREFIX` 必须是它内部的相对路径**（给了 `DESTDIR` 又给绝对
+`PREFIX` 直接报错——否则在 Windows 上 `os.path.join()` 会丢掉 `DESTDIR`，文件静默装到
+`PREFIX` 本身上去）；**从不删除任何文件**，内容不同的才覆盖；**装完逐字节读回比对**，
+不一致就失败。重复跑 `make install` 不会给任何文件重打时间戳（38 个文件 mtime 全不变），
+`--dry-run` 一个字节都不写。
+
+> Git Bash / MSYS 会把 `/usr/local` 改写成 `C:/…/PortableGit/usr/local` 再传给脚本，
+> 所以在这类 shell 下要么用 Windows 风格路径（`make install PREFIX=C:/ArkCC`），
+> 要么 `MSYS_NO_PATHCONV=1 make install DESTDIR=/tmp/stage PREFIX=usr/local`。
 
 ### 方式 2：armcc5 构建（生成 STM32 固件）
 
@@ -662,6 +696,8 @@ debug_info  = 0
 ```powershell
 powershell -ExecutionPolicy Bypass -File examples\run_tests.ps1   # 75 个用例（71 断言 + 4 跳过）
 powershell -ExecutionPolicy Bypass -File run_full_test.ps1        # 73 个样例全量回归
+python tests/run_stdlib_tests.py                                  # 标准库门禁（编译→多对象链接→unicorn 真跑）：21 个用例的期望值全是程序自己算出来的数；`strtod` 一例 SKIP 并打印实测理由（宿主 emulator 没有双精度 FPU，不是库的问题）
+python tests/run_install_tests.py                                 # `make install` 门禁：38 个文件逐字节等于源、第二次跑不改任何 mtime、`--dry-run` 不写盘、绝对 PREFIX + DESTDIR 被拒；最后拿**装出来那棵树**建一个用到 malloc/div/qsort 的程序跑出 181（宿主 gcc 同一份源码算 181，对拍）
 python tests/run_diag_tests.py                                    # 诊断排版门禁（需 armcc）
 python tests/run_diag_boundary.py                                 # 诊断边界契约（长行/上限/CJK/tab，无需 armcc）
 powershell -ExecutionPolicy Bypass -File run_asm_test.ps1         # 汇编输入门禁（.s/.S/.asm/.ASM）
