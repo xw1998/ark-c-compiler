@@ -19,6 +19,10 @@ extern int g_irgen_errors;
  * 启用后 irgen_widen_to_64 和 irgen_cond_to_bool 成为 no-op，
  * 因为 8 字节 long long 槽无需符号扩展或高低字合并。 */
 void irgen_set_64bit_slots(int enabled);
+/* Tell irgen that the target keeps a pointer in a single 8-byte stack word
+ * even though the IR word is 32 bits wide (x86-64).  Off by default, so every
+ * other target emits exactly the IR it emitted before.  See IR_AUX_SLOT64. */
+void irgen_set_slot64_ptrs(int enabled);
 
 /* Number of stack words a _Complex double occupies on the selected backend.
  * The C backend keeps a complex value in one 8-byte union slot (1); the

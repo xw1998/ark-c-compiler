@@ -42,6 +42,15 @@
  * A complex value is four stack words on the machine backends (re_lo, re_hi,
  * im_lo, im_hi) and one 8-byte slot in the C backend.
  */
+/* Bit 0x2000 in aux marks an 8-byte object that a 64-bit target carries in a
+ * single stack word.  The IR word model is 32 bits wide, so a `long long`,
+ * a `double` or a 5..8-byte struct travels as two words; a *pointer* on
+ * x86-64 is 8 bytes but is a single address, and the AMD64 backend keeps it
+ * in one 8-byte slot.  irgen sets this bit (only when the target's pointer
+ * size is greater than 4) on IR_PUSH_VAR, IR_STORE, IR_LOAD_IDX and
+ * IR_STORE_IDX so the backend neither splits it in two nor widens it. */
+#define IR_AUX_SLOT64 0x2000
+
 #if ARKCC_FEATURE_COMPLEX
 #define IR_AUX_COMPLEX 0x800
 #else

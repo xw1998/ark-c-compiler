@@ -32,7 +32,7 @@
 **Ark C Compiler**（简称 `arkcc`）是一款用 C99 编写的极简 C 语言编译器。当前版本 v0.8.0 覆盖了 ARM Compiler 5（armcc）常用扩展中的 98% 以上（仅缺 C++ 模式与高级优化）。设计目标：
 
 - **嵌入式自举**：编译器本身能在 STM32H743 等 Cortex-M7 微控制器上 **原生** 运行，从外部 SPI Flash 读取 `.c` 源码，就地生成机器码，然后直接跳转执行。`port/stm32/main_stm32.c` 提供了独立入口，构成"编译-链接-执行"的完整闭环，无需任何 PC 侧工具链。
-- **多后端**：核心前端只产生与目标无关的栈式虚拟机中间代码（IR），后端可以在 `arm` / `x86`（i386 cdecl，别名 `x86_64`）/ `riscv32` / `c` 之间自由切换。
+- **多后端**：核心前端只产生与目标无关的栈式虚拟机中间代码（IR），后端可以在 `arm` / `x86_64`（SysV AMD64）/ `x86`（i386 cdecl）/ `riscv32` / `c` 之间自由切换。`x86_64` 曾经只是 `x86` 的别名，现在是独立后端（详见 [X86_64_BACKEND.md](X86_64_BACKEND.md)）。
 - **易于扩展**：各层（lexer/parser/sema/irgen/codegen/asm/linker）独立成文件，添加关键字、AST 节点或目标平台都有清晰的扩展点。
 - **易于在 Windows 上测试**：内置的 `c` 后端把 IR 翻译回可读的 C 代码，可直接用主机 gcc 编译执行，无需模拟器或真实硬件。
 
@@ -52,7 +52,7 @@
                                             +--------+
                                                 |
                                                 v
-                          backend = arm | x86 | riscv32 | c
+                   backend = arm | x86_64 | x86 | riscv32 | c
                                                 |
                                                 v
                            +---------------+--------------+
@@ -76,7 +76,7 @@ ark c compiler/
 │   └── backend/              所有后端
 │       ├── registry.c        后端注册表
 │       ├── arm/              ARM Cortex-M Thumb-2 后端
-│       ├── x86_64/           x86（i386 cdecl）GAS 后端
+│       ├── x86_64/           两个 x86 后端：i386 cdecl（x86）+ SysV AMD64（x86_64）
 │       ├── riscv32/          RV32I GAS 后端
 │       └── c/                主机测试后端（IR -> C）
 ├── stdlib/                   编译器自带的极简标准库
@@ -175,7 +175,7 @@ arkcc <file.c|file.s> [options]
 | `-c` | 只编译不链接，产出 `.ark_obj`（ARKOBJ2 容器）。C 源与 `.s/.S/.asm` 汇编源走同一条路径 |
 | `-E` | 只做预处理 |
 | `-link a.o b.o` | 链接多个 `.ark_obj`；任一对象带 `.data/.bss` 时做 SRAM 窗口重叠检查，重叠即报错不产出 |
-| `-target <name>` | 选择后端：`arm`（默认）、`x86`、`riscv32`、`c`。`x86_64`/`x86-64`/`i386`/`i686` 是 `x86` 的别名 |
+| `-target <name>` | 选择后端：`arm`（默认）、`x86_64`、`x86`、`riscv32`、`c`。别名：`amd64`/`x86-64` → `x86_64`；`i386`/`i686`/`x86_64-msvc`/`x86-msvc` → `x86` |
 | `-I <dir>` | 添加额外的 `#include` 搜索路径（可多次使用） |
 | `-v` | 详细模式：打印每一阶段耗时与输出大小 |
 | `-O0/-O1/-O2` | 优化等级（0=无，1=基本常量折叠 + DCE，2=激进优化 + 内联） |
@@ -711,7 +711,7 @@ typedef struct ArkBackend {
 ```
 
 - `emit_asm`：把 IR 翻译成文本汇编（或目标 C 代码），写入 `out`，返回字节数。
-- `assemble`：把文本汇编编码为机器码。c/riscv32 后端直接透传汇编文本交给主机工具链；`x86` 后端走自己的编码器（`%N` 操作数会被拒绝）。
+- `assemble`：把文本汇编编码为机器码。c 后端透传汇编文本交给主机工具链；`riscv32` 输出 GAS 文本、由它自带的扁平镜像汇编器编码；`x86` / `x86_64` 走自己的编码器（`%N` 操作数会被拒绝，`rep` 前缀的未知助记符同样报错而不是发裸前缀）。
 - `link`：跨函数符号重定位（ARM 后端用它回填 `BL` 偏移）。
 
 ### 5.2 已实现的后端
@@ -719,7 +719,8 @@ typedef struct ArkBackend {
 | 后端 | 目录 | 入口符号 | 主要用途 |
 | --- | --- | --- | --- |
 | `arm` | [src/backend/arm/](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/backend/arm) | `ark_backend_arm()` | STM32 Cortex-M3/M4/M7/M33（Thumb-2），完整 DWARF + TLS + Scatter |
-| `x86` | [src/backend/x86_64/](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/backend/x86_64) | `ark_backend_x86_64()` | i386（32 位、cdecl）GAS 汇编；`-target` 亦接受 `x86_64`/`x86-64`/`x86_64-msvc`/`x86-msvc`/`i386`/`i686` |
+| `x86_64` | [src/backend/x86_64/](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/backend/x86_64) | `ark_backend_amd64()` | SysV AMD64：8 字节指针、`rdi rsi rdx rcx r8 r9` + `xmm0-7` + 8 字节栈槽、0x400000 平铺镜像；自带 64 位编码器。别名 `amd64`/`x86-64` |
+| `x86` | [src/backend/x86_64/](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/backend/x86_64) | `ark_backend_x86_64()` | i386（32 位、cdecl）GAS 汇编；别名 `i386`/`i686`/`x86_64-msvc`/`x86-msvc` |
 | `riscv32` | [src/backend/riscv32/](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/backend/riscv32) | `ark_backend_riscv32()` | 生成 RV32I 汇编（GAS） |
 | `c` | [src/backend/c/](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/backend/c) | `ark_backend_c()` | IR -> 可读 C 源码（主机测试主路径） |
 
@@ -742,7 +743,9 @@ Available targets:
   arm        armv7m-thumb2-eabi
     aliases: thumb, thumb2, cortex-m
   x86        i386-pc-linux-cdecl
-    aliases: x86_64, x86-64, x86_64-msvc, x86-msvc, i386, i686
+    aliases: x86_64-msvc, x86-msvc, i386, i686
+  x86_64     x86_64-unknown-linux-gnu
+    aliases: amd64, x86-64
   riscv32    riscv32-unknown-elf
   c          host-c-source
 ```
@@ -883,14 +886,15 @@ echo $LASTEXITCODE
 powershell -ExecutionPolicy Bypass -File examples\run_tests.ps1
 ```
 
-**仓库里的六套门禁**（都是可直接重跑、失败即非 0 退出的脚本；数字是 2026-11-02 的实测值）：
+**仓库里的门禁脚本**（都是可直接重跑、失败即非 0 退出的脚本；数字是 2026-11-02 的实测值）：
 
 | 门禁 | 覆盖什么 | 判据 | 实测 |
 | --- | --- | --- | --- |
-| `run_full_test.ps1` | 73 个样例 ARM 发射 + C 后端执行 | 每个样例的退出码不得为负（崩溃），并自检 IR 生成门 | `PASS=73 FAIL=0 CRASH=0`，`SELFCHECK irgen-gate: OK` |
+| `run_full_test.ps1` | 73 个样例 ARM 发射 + C 后端执行 | 每个样例的退出码不得为负（崩溃），并自检 IR 生成门；某样例若按设计无法单对象 emit，必须记成 `EXPECTED-FAIL` 并写清理由 | `PASS=73 FAIL=0 CRASH=0`（`c99_armcc5_compat_test.c` 的 ARM 侧记 `EXPECTED-FAIL`：`errno` 的存储定义在 `stdlib/src/errno.c`，单对象镜像没有通道带另一个编译单元的数据地址），`SELFCHECK irgen-gate: OK` |
 | `examples\run_tests.ps1` | 75 个样例的 ARM 发射 + C 后端执行 | 退出码必须等于样例头部 `Expected exit code: N`；skip 与 pass 分开计数 | `asserted pass 71 / failed 0 / skipped 4` |
 | `run_asm_test.ps1` | `.s/.asm` 输入路径 | 产物尺寸 + ARKOBJ2 头 + 与 armasm 黄金字节逐字节相同（含 `BKPT` 与三操作数 `MUL`）+ 未知助记符与三寄存器 `MUL` 都必须失败 | `pass=17 fail=0` |
-| `run_tests_x86.ps1` | `x86` 后端 | emit 成功、GAS 语法接受、别名逐字节等价、三条负向对照 | `pass=158 fail=0 skip=0` |
+| `run_tests_x86.ps1` | `x86` / `x86_64` 后端 | emit 成功、GAS 语法接受、`x86` 的真别名（`i386`/`i686`/`*-msvc`）字节等价、`x86_64` **必须不是** `x86` 的别名且产物含 64 位寄存器、三条负向对照 | `pass=85 fail=0 skip=2`（`gcc` 不在 PATH 时两项 SKIP） |
+| `tests/run_x86_64_image_tests.py` | `x86_64` 执行级 | 16 个用例的 `main` 返回值 == 程序之外算出的常量；未解析符号必须被拒且不留镜像；期望值 +1 必须判 DIFF | `17 passed, 0 failed`（`make test-x86-64`） |
 | `run_link_test.ps1` | `-c` + `-link` 多对象 | ARKOBJ2 头、RAM 描述符、**输出不是原始对象拼接**、镜像长度 == 两对象代码长度之和、重叠必须报错且不留产物 | `pass=17 fail=0` |
 | `run_arm_exec_test.ps1` | ARM **执行级**（编译→链接→QEMU 真跑） | 向量表 SP/reset 向量合法（reset 向量必须带 Thumb 位）、两个不同负载分别返回 8 与 3、负向对照必须被拒；QEMU 缺失时 `exit 2` | `pass=13 fail=0` |
 
@@ -937,9 +941,25 @@ powershell -ExecutionPolicy Bypass -File run_arm_exec_test.ps1
 gcc -m32 -c foo.s -o foo.o    # 只校验 GAS 是否接受（本机 MinGW 没有 32 位 CRT，无法链接执行）
 ```
 
-`-target x86_64` 是同一后端的别名（历史名字），字节输出完全相同——`run_tests_x86.ps1` 里有逐字节等价断言。
+`-target x86_64` 曾经是同一后端的别名，现在是**独立的 SysV AMD64 后端**：8 字节指针、
+`rdi rsi rdx rcx r8 r9` + `xmm0-7` + 右到左 8 字节栈槽、0x400000 平铺镜像（数据 RIP 相对）、
+自带 64 位编码器。两边的字节输出不再相同，也没有"等价"这回事。
 
-**执行级验证的缺口**：MinGW 的 `gcc -m32` 只能汇编不能链接（缺 32 位 crt 与 `_main`/`_printf` 前缀），所以 x86 侧不跑程序。`run_tests_x86.ps1` 用四段替代判据：emit 成功、GAS 语法接受、别名逐字节等价、三条负向对照（含内联汇编 `%N` 必须被拒）。这是"能保证语法与结构正确"，不是"能保证执行正确"。
+```powershell
+.\arkcc.exe foo.c -target x86_64 -o foo.bin        # 平铺镜像，可直接在 64 位核上跑
+.\arkcc.exe foo.c -target x86_64 -S -o foo.s       # 看 SysV 汇编
+```
+
+**执行级验证**：`tests/run_x86_64_image_tests.py`（`make test-x86-64`）把 16 个程序编成
+0x400000 的镜像、在 unicorn 的 64 位核上跑 `main`，逐个断言一个**在程序之外算出来的常量**；
+另有两段自检——未定义的外部符号必须被拒绝且不留镜像（否则 `call foo` 退化成 `call +0`，
+镜像自己调自己而 arkcc 退出 0），以及"期望值 +1"必须被判成 DIFF。
+
+**i386 侧的执行级验证缺口**：MinGW 的 `gcc -m32` 只能汇编不能链接（缺 32 位 crt 与
+`_main`/`_printf` 前缀），所以 i386 只跑到"emit 成功 / GAS 语法接受 / 负向对照"这一层。
+它还有三处历史缺陷（浮点 `movq needs an xmm operand`、64 位算术 `UC_ERR_EXCEPTION`、
+>8 字节结构体按值传参结果错），在 x86-64 门禁里作为**参考臂显式 SKIP**，既不判 PASS
+也不判 FAIL。详见 [X86_64_BACKEND.md](X86_64_BACKEND.md) §5。
 
 ```powershell
 .\arkcc.exe foo.c -target riscv32 -S -o foo.s
@@ -1536,7 +1556,8 @@ v0.8.0 已实现完整的 C99 集合 + 98% 以上的 armcc 常用扩展，仅剩
 ### 验证边界
 
 - **ARM 执行语义**：已由 `run_arm_exec_test.ps1` 在 `qemu-system-arm -machine mps2-an385` 上验证（编译→链接→真跑→semihosting 退出码，两个不同负载 8/3）；**仍未验**的是"板载产物烧回 Flash 再跳转"这一层（无硬件）。细节见 6.2。
-- **x86 执行语义未验证**：本机 MinGW `gcc -m32` 只能汇编不能链接，x86 侧只验 emit/GAS 语法/别名等价/负向对照，见 6.3。
+- **x86-64 执行语义已验证**：16 个用例在 unicorn 64 位核上真跑 `main` 并断言独立算出的常量，见 6.3 与 [X86_64_BACKEND.md](X86_64_BACKEND.md)。
+- **i386 执行语义未验证**：本机 MinGW `gcc -m32` 只能汇编不能链接；i386 只验 emit / GAS 语法 / 负向对照，且其浮点、64 位算术、大结构体按值传参三处仍有历史缺陷，见 6.3。
 - **`__at` / `__global_reg` 在 `c` 后端降级为注释**：这两个是 ARM 特有的放置语义，C 后端只把 `__at(addr)` 输出成一条注释，`__global_reg` 仅做解析（提示性关键字），不改变生成代码。要它们真正生效请用 `-target arm`。
 
 - 部分高级优化（循环展开、循环不变量外提、PHI 节点合并等）暂未实现；对性能敏感的代码，建议使用 `__forceinline` 手动控制。

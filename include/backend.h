@@ -49,6 +49,10 @@ void ark_backend_list(void);
 const ArkBackend *ark_backend_arm(void);
 const ArkBackend *ark_backend_x86_64(void);
 const ArkBackend *ark_backend_x86_64_msvc(void);
+/* True 64-bit backend (name "x86_64", SysV AMD64, pointer_size 8).
+ * ark_backend_i386() is the same object ark_backend_x86_64() returns. */
+const ArkBackend *ark_backend_amd64(void);
+const ArkBackend *ark_backend_i386(void);
 const ArkBackend *ark_backend_riscv32(void);
 const ArkBackend *ark_backend_c(void);
 

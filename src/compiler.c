@@ -886,6 +886,7 @@ static int write_ark_obj(const ArkBackend *be, const ArkOptions *opts,
     static unsigned char obj_buf[ARK_OBJ_BUF_SIZE] __attribute__((section(".ark_buf")));
     int ol = 0;
     int is_obj_backend = ark_streq(be->name, "arm") || ark_streq(be->name, "x86") ||
+                         ark_streq(be->name, "x86_64") ||
                          ark_streq(be->name, "riscv32");
     int code_len = is_obj_backend ? bin_len : asm_len;
     int isa_extra = ark_streq(be->name, "riscv32") ? 1 : 0;
@@ -968,7 +969,7 @@ static int write_ark_obj(const ArkBackend *be, const ArkOptions *opts,
         p_reloc_offset= arm_get_reloc_offset;
         p_reloc_type  = arm_get_reloc_type;
         p_text_base   = arm_get_text_base;
-    } else if (ark_streq(be->name, "x86")) {
+    } else if (ark_streq(be->name, "x86") || ark_streq(be->name, "x86_64")) {
 #if ARKCC_BACKEND_X86_64
         extern int   x86_get_symbol_count(void);
         extern const char *x86_get_symbol_name(int idx);
@@ -2473,6 +2474,10 @@ int ark_compile(const ArkOptions *opts) {
     /* C 后端使用 8 字节 long long 虚拟栈槽，irgen 无需生成 32→64 位
      * widen/narrow 序列（DUP+PUSH+LT+NEG）或 64 位条件 BOR 合并。 */
     irgen_set_64bit_slots(ark_streq(be->name, "c"));
+    /* x86-64: a pointer is 8 bytes but occupies a single stack word.  Only
+     * that target needs the IR_AUX_SLOT64 marker; everywhere else the flag
+     * stays 0 and the emitted IR is unchanged. */
+    irgen_set_slot64_ptrs(ark_streq(be->name, "x86_64"));
     /* The C backend stores a complex value in one 8-byte slot; the machine
      * backends carry four 32-bit words on the expression stack. */
     irgen_set_complex_words(ark_streq(be->name, "c") ? 1 : 4);
@@ -2555,6 +2560,7 @@ int ark_compile(const ArkOptions *opts) {
     if (opts->compile_only) {
         int code_len = asm_len;
         if (ark_streq(be->name, "arm") || ark_streq(be->name, "x86") ||
+            ark_streq(be->name, "x86_64") ||
             ark_streq(be->name, "riscv32")) {
             /* riscv32 used to fall through with code_len = asm_len, i.e. the
              * object body was the assembly text -- an "object" nothing could
@@ -2657,6 +2663,28 @@ int ark_compile(const ArkOptions *opts) {
             return ARK_ERR_ASM;
         }
     }
+#if ARKCC_BACKEND_X86_64
+    /* Same contract for the two x86 targets.  resolve_refs_x leaves a label it
+     * cannot find as an all-zero disp32, so a call to it becomes a call to +0:
+     * the image re-enters itself and spins while arkcc exits 0.  A raw image
+     * has no linker to fix that up, so refuse instead of shipping it. */
+    if (ark_streq(be->name, "x86") || ark_streq(be->name, "x86_64")) {
+        extern int   x86_get_reloc_count(void);
+        extern const char *x86_get_reloc_name(int idx);
+        int unresolved = x86_get_reloc_count();
+        if (unresolved > 0) {
+            char b1[12];
+            const char *first = x86_get_reloc_name(0);
+            diag_tool(DIAG_SEV_ERROR, "arkcc",
+                      "%s reference(s) cannot be resolved in a single-file image "
+                      "(first: %sq); compile with -c and link the objects, or "
+                      "define them in this translation unit",
+                      diag_num(b1, unresolved),
+                      first ? first : "?", 0,0,0,0);
+            return ARK_ERR_ASM;
+        }
+    }
+#endif
     if (be->link) {
         int rc = be->link(g_code, code_size, 0);
         if (rc < 0) return ARK_ERR_LINK;

@@ -938,6 +938,14 @@ static int g_compound_lit_counter = 0;
  * 设为 1 时 irgen_widen_to_64 和 irgen_cond_to_bool 成为 no-op。 */
 static int g_irgen_64bit_slots = 0;
 
+/* x86-64 keeps an 8-byte pointer in ONE stack word.  0 for every other
+ * target, which keeps the IR it emits byte-identical. */
+static int g_irgen_slot64_ptrs = 0;
+
+void irgen_set_slot64_ptrs(int enabled) {
+    g_irgen_slot64_ptrs = enabled ? 1 : 0;
+}
+
 void irgen_set_64bit_slots(int enabled) {
     g_irgen_64bit_slots = enabled;
 }
@@ -1814,6 +1822,9 @@ IrProgram *irgen_program(AstNode *prog) {
                         else if (g_irgen_complex_words > 1 && ptype &&
                                  ARK_IS_CX(ptype) && sz > 8)
                             pwords = 1;   /* four-word value, passed as one address word */
+                        else if (g_irgen_slot64_ptrs && ptype &&
+                                 ptype->kind == TYPE_PTR)
+                            pwords = 1;   /* x86-64: one 8-byte address word */
                         else
                             pwords = (sz >= 8) ? 2 : 1;   /* long long / double */
                         slot += pwords;
@@ -2581,6 +2592,14 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
                                  * past the 8-byte float complex object and
                                  * clobbered the neighbouring local. */
                                 case TYPE_COMPLEX: store_aux = irgen_complex_aux(node->u.var.var_type, type_size(node->u.var.var_type)); break;
+                                /* x86-64: an 8-byte pointer is stored as ONE
+                                 * 8-byte word, not as low/high halves.  On a
+                                 * 32-bit target the width stays 0 (4 bytes),
+                                 * exactly as before. */
+                                case TYPE_PTR:
+                                    store_aux = (type_size(node->u.var.var_type) > 4)
+                                                ? (8 | IR_AUX_SLOT64) : 0;
+                                    break;
                                 default:         store_aux = 0; break;
                             }
                             if (node->u.var.var_type->is_volatile)
@@ -3065,6 +3084,8 @@ static void irgen_dup_words(IrGen *g, int nw) {
 static int irgen_store_dup_words(Type *t) {
     if (!t) return 1;
     if (ARK_IS_CX(t)) return g_irgen_complex_words;
+    /* An 8-byte pointer is still one word on x86-64 (IR_AUX_SLOT64). */
+    if (g_irgen_slot64_ptrs && t->kind == TYPE_PTR) return 1;
     if (type_size(t) >= 8) return 2;
     return 1;
 }
@@ -3093,6 +3114,16 @@ static int irgen_is_cplx_float(Type *t) {
  * the object is an 8-byte _Complex float (see irgen_is_cplx_float). */
 static int irgen_complex_aux(Type *t, int width) {
     return irgen_is_cplx_float(t) ? (width | IR_AUX_COMPLEX) : width;
+}
+
+/* aux for an IR_LOAD_IDX / IR_STORE_IDX access of element type t: the complex
+ * marker, plus "this 8-byte element is a single word" for pointer elements on
+ * x86-64.  Without the pointer bit the backend reads `int **pp; *pp` as a
+ * two-word value and the following IR_STORE (which pops one word) mismatches. */
+static int irgen_idx_aux(Type *t, int aux) {
+    aux = irgen_complex_aux(t, aux);
+    if (g_irgen_slot64_ptrs && t && t->kind == TYPE_PTR) aux |= IR_AUX_SLOT64;
+    return aux;
 }
 
 /* C99 6.3.1.3: convert the top-of-stack integer to dst_t's representation,
@@ -3204,6 +3235,9 @@ static void irgen_load_idx(IrGen *g, Type *elem, int es, int aux) {
      * this is the single funnel for array subscripts, `*p` and struct
      * members, so marking it here covers all of them. */
     if (irgen_is_cplx_float(elem)) aux |= IR_AUX_COMPLEX;
+    /* x86-64: a pointer element is one 8-byte word, not low/high halves. */
+    if (g_irgen_slot64_ptrs && elem && elem->kind == TYPE_PTR)
+        aux |= IR_AUX_SLOT64;
     ir_emit(g->fn, IR_LOAD_IDX, es, 0, aux);
     if (!elem) return;
     if (elem->kind == TYPE_CHAR)
@@ -3540,6 +3574,11 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         case TYPE_LLONG: aux = 8 | uns; break;  /* #5 FIX: 64-bit local */
                         case TYPE_DOUBLE: aux = 8; break;       /* #5 FIX: double local */
                         case TYPE_COMPLEX: aux = irgen_complex_aux(s->type, type_size(s->type)); break;
+                        /* x86-64: an 8-byte pointer is one 8-byte word. */
+                        case TYPE_PTR:
+                            aux = (type_size(s->type) > 4)
+                                  ? (8 | IR_AUX_SLOT64) : 0;
+                            break;
                         default:         aux = 0; break;
                     }
                     /* #11 FIX: Mark volatile variable reads */
@@ -4125,6 +4164,11 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                                 case TYPE_LLONG:  store_aux = 8; break;  /* 64-bit local */
                                 case TYPE_DOUBLE: store_aux = 8; break;
                                 case TYPE_COMPLEX: store_aux = irgen_complex_aux(s->type, type_size(s->type)); break;
+                                /* x86-64: 8-byte pointers are one word. */
+                                case TYPE_PTR:
+                                    store_aux = (type_size(s->type) > 4)
+                                                ? (8 | IR_AUX_SLOT64) : 0;
+                                    break;
                                 default:         store_aux = 0; break;
                             }
                             /* #11 FIX: Mark volatile variable writes */
@@ -4205,7 +4249,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                             irgen_widen_to_64(g, st, dt);
                         }
                     }
-                    ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, irgen_complex_aux(L->type, packed_aux));
+                    ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, irgen_idx_aux(L->type, packed_aux));
                 } else if (L->kind == AST_UNARY && L->u.unary.op == (int)TOK_MUL) {
                     int elem_sz = type_size(L->type ? L->type : type_int());
                     int packed_aux = 0;
@@ -4246,7 +4290,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                             irgen_widen_to_64(g, st, dt);
                         }
                     }
-                    ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, irgen_complex_aux(L->type, packed_aux));
+                    ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, irgen_idx_aux(L->type, packed_aux));
                 } else if (L->kind == AST_MEMBER) {
                     int bo, bw;
                     if (member_bitfield_info(L, &bo, &bw)) {
@@ -4299,7 +4343,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                                 irgen_widen_to_64(g, st, dt);
                             }
                         }
-                        ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, irgen_complex_aux(L->type, 0));
+                        ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, irgen_idx_aux(L->type, 0));
                     }
                 } else {
                     {
@@ -4354,6 +4398,11 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                                 case TYPE_LLONG:  store_aux = 8; break;
                                 case TYPE_DOUBLE: store_aux = 8; break;
                                 case TYPE_COMPLEX: store_aux = irgen_complex_aux(s->type, type_size(s->type)); break;
+                                /* x86-64: `p += n` must write all 8 bytes. */
+                                case TYPE_PTR:
+                                    store_aux = (type_size(s->type) > 4)
+                                                ? (8 | IR_AUX_SLOT64) : 0;
+                                    break;
                                 default:         store_aux = 0; break;
                             }
                             /* push_aux must carry the storage width and unsigned
@@ -4406,7 +4455,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                     irgen_expr(g, node->u.binary.right);            /* [addr, old_val, rhs] */
                     irgen_maybe_widen_for_binary(g, L->type, node->u.binary.right ? node->u.binary.right->type : 0);
                     irgen_emit_binary_op(g, bop, L->type, node->u.binary.right ? node->u.binary.right->type : 0); /* [addr, new_val] */
-                    ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, irgen_complex_aux(L->type, packed_aux)); /* [new_val] */
+                    ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, irgen_idx_aux(L->type, packed_aux)); /* [new_val] */
                 } else if (L->kind == AST_ARRAY_ACCESS) {
                     /* arr[i] OP= val
                      * Bug-I4 FIX: Evaluate the lvalue address ONCE and duplicate
@@ -4432,7 +4481,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                     irgen_expr(g, node->u.binary.right);            /* [addr, old_val, rhs] */
                     irgen_maybe_widen_for_binary(g, L->type, node->u.binary.right ? node->u.binary.right->type : 0);
                     irgen_emit_binary_op(g, bop, L->type, node->u.binary.right ? node->u.binary.right->type : 0); /* [addr, new_val] */
-                    ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, irgen_complex_aux(L->type, packed_aux)); /* [new_val] */
+                    ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, irgen_idx_aux(L->type, packed_aux)); /* [new_val] */
                 } else if (L->kind == AST_MEMBER) {
                     int bo, bw;
                     if (member_bitfield_info(L, &bo, &bw)) {
@@ -4473,7 +4522,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         irgen_expr(g, node->u.binary.right);            /* [addr, old_val, rhs] */
                         irgen_maybe_widen_for_binary(g, L->type, node->u.binary.right ? node->u.binary.right->type : 0);
                         irgen_emit_binary_op(g, bop, L->type, node->u.binary.right ? node->u.binary.right->type : 0); /* [addr, new_val] */
-                        ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, irgen_complex_aux(L->type, vol_aux)); /* [new_val] */
+                        ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, irgen_idx_aux(L->type, vol_aux)); /* [new_val] */
                     }
                 } else {
                     {
@@ -4877,6 +4926,21 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                                  ? callee_params[i] : 0;
                     Type *use_t = pt ? pt : (arg ? arg->type : 0);
                     wires[i] = 4;      /* one word unless a wider shape says otherwise */
+                    /* x86_64 keeps its 4-byte stack-word model, so a pointer
+                     * is a single word whose slot holds the whole 64-bit
+                     * address (IR_AUX_SLOT64).  bit 16 (0x20000) is how the
+                     * call site is told "b = 8 bytes but only one IR word",
+                     * which it must not confuse with long long's two words. */
+                    if (g_irgen_slot64_ptrs && use_t && use_t->kind == TYPE_PTR) {
+                        wires[i] = 8 | 0x20000;
+                        /* argmask cannot say "one IR word, but eight bytes
+                         * wide", so the side table has to be emitted even
+                         * when nothing else in this call needs it.  Without
+                         * this the call site fell back to argmask, loaded the
+                         * pointer with a 32-bit move and only worked while
+                         * every address happened to fit in 32 bits. */
+                        wire_extra = 1;
+                    }
                     if (use_t) {
                         int k = use_t->kind;
                         /* A float variadic argument has been promoted to double
@@ -4924,6 +4988,12 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                             if (ssz > 4 && ssz <= 8) {
                                 if (i < 16) argmask |= (1 << (2 * i + 1));
                                 wires[i] = 8;
+                            } else if (ssz > 8 && pt != 0 && g_irgen_slot64_ptrs) {
+                                /* A named parameter larger than 8 bytes travels
+                                 * as one pointer word whose slot holds a full
+                                 * 64-bit address -- same shape as TYPE_PTR. */
+                                wires[i] = 8 | 0x20000;
+                                wire_extra = 1;
                             } else if (ssz > 8 && pt == 0) {
                                 /* Variadic composite: the payload travels
                                  * inline (see the push above), one word per
@@ -5009,6 +5079,17 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                     }
                     if (node->type && node->type->kind == TYPE_VOID)
                         call_val |= 0x200000000LL;
+                    /* bit 53: the result comes back in an SSE register
+                     * (xmm0), not in rax.  Floating results are one or two
+                     * stack words depending on the type, and the word count
+                     * already says so, but nothing else tells the x86_64
+                     * backend that the payload lives in xmm0 rather than in
+                     * rax -- it would push the stale integer register.  Only
+                     * that backend looks at this bit, so the others keep
+                     * reading rax/r0/a0 exactly as before. */
+                    if (node->type &&
+                        (node->type->kind == TYPE_FLOAT || node->type->kind == TYPE_DOUBLE))
+                        call_val |= 0x2000000000000LL;
                     /* bits 34..35: the result is a _Complex value on the
                      * machine backends, which carry it as four stack words that
                      * no register pair can hold.  The backend turns it into

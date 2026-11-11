@@ -91,6 +91,16 @@ $skipC = @{
 # unicorn and compares the result against gcc.
 $expectArmFail = @{}
 
+# Files that *declare* a global whose storage lives in another translation unit
+# (stdlib/src/errno.c defines `errno`, errno.h only declares it).  A single-object
+# ARM image has no channel for another unit's data address, so the ARM emit must
+# fail -- with exactly that diagnostic.  It is not an unimplemented feature, so
+# it does not belong in $expectArmFail; and it is not a failure either, because
+# the file still runs through the C backend (host gcc links the real errno).
+$armNeedsLink = @{
+    "c99_armcc5_compat_test" = "errno lives in stdlib/src/errno.c (build with -c + link)"
+}
+
 function Get-ExpectedExitCode {
     param([string]$Path)
 
@@ -179,6 +189,15 @@ foreach ($f in $examples) {
             $detail = $arm.First
         } else {
             Write-Host "  [arm] REFUSED as expected ($($expectArmFail[$base]))"
+        }
+    } elseif ($arm.Code -ne 0 -and $armNeedsLink.ContainsKey($base)) {
+        if ($arm.Text -notmatch "carries no channel for another unit's data address") {
+            Write-Host "  [arm] EMIT FAILED for an unexpected reason (exit $($arm.Code))"
+            if ($arm.First -ne "") { Write-Host "        $($arm.First)" }
+            $fileFailures += "arm emit failed with the wrong diagnostic"
+            $detail = $arm.First
+        } else {
+            Write-Host "  [arm] REFUSED as expected ($($armNeedsLink[$base]))"
         }
     } elseif ($arm.Code -ne 0) {
         Write-Host "  [arm] EMIT FAILED (exit $($arm.Code))"

@@ -51,6 +51,9 @@ $skipFiles = @('feat_multifile_a.c', 'feat_multifile_b.c', 'feat_multifile_main.
 # Extended inline asm needs operand substitution, which this backend refuses
 # on purpose (it would otherwise emit text no assembler accepts).
 $expectEmitFail = @('test_asm_operand.c')
+# `_Complex` is refused by the x86 backend by design (MANUAL 4.10): there is no
+# x87/SSE complex lowering here, and inventing one would be a wrong answer.
+$expectComplexFail = @('c99_test.c', 'c99_armcc5_compat_test.c')
 
 $examples = Get-ChildItem examples\*.c |
     Where-Object { $_.Name -notin $skipFiles -and $_.Name -notlike '*.gen.c' }
@@ -72,6 +75,10 @@ foreach ($f in $examples) {
         Check "emit-expected-fail/$($f.Name)" ($rc -ne 0) "exit=$rc (operand substitution refused)"
         continue
     }
+    if ($f.Name -in $expectComplexFail) {
+        Check "emit-expected-fail/$($f.Name)" ($rc -ne 0) "exit=$rc (_Complex refused by design)"
+        continue
+    }
     if ($rc -ne 0) {
         Check "emit/$($f.Name)" $false "emit failed exit=$rc"
         continue
@@ -88,7 +95,7 @@ Write-Host ""
 Write-Host "--- 2. assembler cross-check (text must be real, assemblable asm) ---"
 if ($gasGate) {
     foreach ($f in $examples) {
-        if ($f.Name -in $expectEmitFail) { continue }
+        if ($f.Name -in $expectEmitFail -or $f.Name -in $expectComplexFail) { continue }
         $base = $f.BaseName
         $outS = Join-Path $tmp "$base.s"
         if (-not (Test-Path $outS)) { continue }
@@ -111,7 +118,7 @@ Set-Content -Path $probe -Value @(
     'static int helper(int x) { return x * 3 + 1; }',
     'int main(void) { g = helper(7); return g; }'
 ) -Encoding ASCII
-$aliasNames = @('x86', 'x86_64', 'x86-64', 'x86_64-msvc', 'i386', 'i686')
+$aliasNames = @('x86', 'x86_64-msvc', 'x86-msvc', 'i386', 'i686')
 $refFile = Join-Path $tmp 'alias_x86.s'
 & .\arkcc.exe $probe -target x86 -S -o $refFile 2>&1 | Out-Null
 Check 'alias/x86-baseline' ($LASTEXITCODE -eq 0 -and (Test-Path $refFile)) 'canonical name emits'
@@ -132,6 +139,31 @@ foreach ($name in $aliasNames) {
         }
     }
     Check "alias/$name" $same 'byte-identical to -target x86'
+}
+
+Write-Host ""
+Write-Host "--- 3b. x86_64 is a real backend, not an alias ---"
+# It used to resolve to `x86` and produce byte-identical i386 code, which is
+# exactly how every 64-bit value got truncated.  Three signals together: the
+# alias resolves, the output is *not* the i386 output, and the code really is
+# 64-bit (64-bit registers + the SysV argument register).
+foreach ($name in @('x86_64', 'x86-64', 'amd64')) {
+    $outS = Join-Path $tmp "amd64_$($name -replace '[^A-Za-z0-9]','_').s"
+    & .\arkcc.exe $probe -target $name -S -o $outS 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $outS)) {
+        Check "amd64/$name" $false 'did not resolve'
+        continue
+    }
+    $b = [System.IO.File]::ReadAllBytes($outS)
+    $same = ($b.Length -eq $refBytes.Length)
+    if ($same) {
+        for ($i = 0; $i -lt $b.Length; $i++) {
+            if ($b[$i] -ne $refBytes[$i]) { $same = $false; break }
+        }
+    }
+    $text = [System.Text.Encoding]::ASCII.GetString($b)
+    $is64 = $text.Contains('rdi') -and $text.Contains('rbp') -and $text.Contains('push rbp')
+    Check "amd64/$name" ((-not $same) -and $is64) $(if ($same) { 'byte-identical to x86 (alias again?)' } elseif (-not $is64) { 'output is not SysV AMD64' } else { 'distinct 64-bit output' })
 }
 
 Write-Host ""

@@ -18,7 +18,8 @@ ARKCC := arkcc
 RM    := rm -f
 endif
 
-.PHONY: all clean test test-arm test-c test-stdlib test-install test-x86 test-riscv test-reloc-text install stm32
+.PHONY: all clean test test-arm test-c test-stdlib test-install test-x86 test-x86-64 \
+        test-riscv test-reloc-text install stm32
 
 all: $(ARKCC)
 
@@ -28,7 +29,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # "Nothing to be done" while the source tree said otherwise.
 	$(CC) $(CFLAGS) $(SRC) -o $(ARKCC) $(LDFLAGS)
 
-test: test-arm test-c test-stdlib test-install test-reloc-text
+test: test-arm test-c test-stdlib test-install test-reloc-text test-x86-64
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o nul
@@ -58,6 +59,16 @@ test-x86: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target x86 -S -o nul
 	./$(ARKCC) examples/arith.c -target x86 -S -o nul
 	./$(ARKCC) examples/func.c  -target x86 -S -o nul
+
+# x86-64 gate: sixteen programs are compiled to a flat image and executed on a
+# 64-bit core, each asserting a constant computed outside the program.  The
+# last two stages are the ones that make the passes mean anything: an external
+# symbol the image cannot resolve must be refused (not linked as `call +0`),
+# and the harness re-runs a case with a deliberately wrong expectation and
+# requires it to fail.  The 32-bit `x86` result is printed as a reference arm
+# only -- that backend's pre-existing 64-bit/FP gaps are reported as SKIP.
+test-x86-64: $(ARKCC)
+	$(PYTHON) tests/run_x86_64_image_tests.py --arkcc ./$(ARKCC)
 
 test-riscv: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target riscv32 -S -o nul

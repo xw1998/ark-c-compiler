@@ -41,7 +41,11 @@ static void registry_init(void) {
      * made --list-backends print "x86" twice and made lookups ambiguous. Name
      * variants such as x86_64 / x86_64-msvc / i386 are handled by the alias
      * table below instead of by extra registry slots. */
-    g_backends[g_count++] = ark_backend_x86_64();
+    g_backends[g_count++] = ark_backend_i386();
+    /* The 64-bit backend used to be reachable only as an alias for i386,
+     * i.e. -target x86_64 silently produced 32-bit code. It is registered on
+     * its own now; the aliases below no longer shadow it. */
+    g_backends[g_count++] = ark_backend_amd64();
 #endif
 #if ARKCC_BACKEND_RISCV32
     g_backends[g_count++] = ark_backend_riscv32();
@@ -56,8 +60,8 @@ static void registry_init(void) {
  * ark_backend_list() at one line per backend while users can still write the
  * name they expect from other toolchains. */
 static const struct { const char *alias; const char *target; } g_backend_aliases[] = {
-    { "x86_64",      "x86" },  /* directory/triple spelling of the i386 backend */
-    { "x86-64",      "x86" },
+    { "amd64",       "x86_64" },
+    { "x86-64",      "x86_64" },  /* hyphenated spelling; same backend as amd64 */
     { "x86_64-msvc", "x86" },  /* legacy B01 name: same cdecl backend now      */
     { "x86-msvc",    "x86" },
     { "i386",        "x86" },

@@ -358,8 +358,12 @@ ARKOBJ2 对象，但对象体里装的是**已汇编好的机器码**（不是�
 | --- | --- |
 | **ARM Thumb-2** | STM32 Cortex-M（默认，含软浮/硬件 FPU + 段分离 + 双精度桩 + AAPCS + 完整 DWARF + TLS + split_sections + scatter） |
 | **C 源码** | 宿主测试主路径（IR -> 可读 C，完整支持内联汇编操作数透传） |
-| **x86** | i386 cdecl，输出 GAS 汇编（`-target` 亦接受别名 `x86_64`/`x86-64`/`i386`/`i686`） |
+| **x86_64** | 真 SysV AMD64 后端：8 字节指针、`rdi rsi rdx rcx r8 r9` + `xmm0-7` + 右到左 8 字节栈槽、`al` 传 xmm 个数、0x400000 平铺镜像（RIP 相对取数）、自带 64 位编码器（`-target x86_64`；别名 `x86-64`/`amd64` 指向它） |
+| **x86** | i386 cdecl，输出 GAS 汇编（别名 `i386`/`i686`） |
 | **RV32I** | 输出 RV32I 汇编，并自带扁平镜像汇编器与对象路径（`arkcc -target riscv32 x.c -o x.bin` 直接出 0x08000000 的整张镜像；`-c`/`-link` 出机器码对象再串联，不需要外部 `as`/`ld`） |
+
+x86-64 的 ABI 模型、本轮修掉的四个静默错答案、i386 的两处有意行为变化与已知缺陷清单，
+见 [docs/X86_64_BACKEND.md](docs/X86_64_BACKEND.md)。
 
 **各后端的能力不是同一张表：`stdarg.h` 有两条互不兼容的走法。**
 
@@ -368,7 +372,7 @@ ARKOBJ2 对象，但对象体里装的是**已汇编好的机器码**（不是�
 
 | 后端 | 走法 | 布局 |
 | --- | --- | --- |
-| C / x86_64 | 8 字节槽位（默认分支） | 每个实参一个 8 字节槽，按序号编号，`long long *` 前进 |
+| C / x86 / x86_64 | 8 字节槽位（默认分支） | 每个实参一个 8 字节槽，按序号编号，`long long *` 前进 |
 | ARM Thumb-2 | `__ARK_VA_WORD_SLOTS` | 每个 AAPCS 参数字一个 4 字节字，`va_start` 指向第一个变参字；64 位实参就是相邻两个字，读之前把指针向上取整到 8 字节（吃掉调用方为偶数寄存器对/8 字节栈槽留的空洞） |
 | RV32I | `__ARK_VA_WORD_SLOTS` + `__ARK_VA_PACKED_WORDS` | 同上，但这个后端的参数字**没有对齐空洞**（a0..a7 平铺），所以不做 8 字节取整 |
 
@@ -501,7 +505,7 @@ ark c compiler/
 ├── src/                    编译器核心（lexer/parser/sema/ir/irgen/preproc/config/opt/cpu/scatter）
 ├── src/backend/arm/        ARM Thumb-2 后端（codegen + 汇编器 + 链接器 + 软浮/硬件 FPU + 完整 DWARF + TLS）
 ├── src/backend/c/          C 源码后端（宿主测试）
-├── src/backend/x86_64/     x86（i386 cdecl）汇编后端
+├── src/backend/x86_64/     两个 x86 后端：i386 cdecl（`x86`）+ SysV AMD64（`x86_64`）
 ├── src/backend/riscv32/    RV32I 汇编后端
 ├── stdlib/include/         内置标准库头文件
 ├── port/host/              PC 平台层
@@ -525,7 +529,7 @@ ark c compiler/
 
 ```bash
 make            # 生成 arkcc.exe
-make test       # 编译 examples + 跑 reloc-text / stdlib 门禁
+make test       # 编译 examples + reloc-text / stdlib / install / x86-64 门禁
 make clean
 ```
 
@@ -577,7 +581,8 @@ arkcc <file.c|file.s> [选项]
   -E                 仅预处理
   -link a.o b.o      链接多个 .ark_obj（多个对象各自带 .data/.bss 时报 SRAM 重叠）
   -v                 详细模式
-  -target <name>     arm | x86 | riscv32 | c（默认 arm；x86_64/i386 为 x86 的别名）
+  -target <name>     arm | x86_64 | x86 | riscv32 | c（默认 arm；x86_64 是真 SysV AMD64
+                     后端，i386 是 x86 的别名，x86-64/amd64 是 x86_64 的别名）
   -I <dir>           头文件搜索路径
   -O0/-O1/-O2        优化级别（0=无，1=基本常量折叠+DCE，2=激进）
   -g                 输出 DWARF 调试信息
@@ -697,6 +702,7 @@ debug_info  = 0
 powershell -ExecutionPolicy Bypass -File examples\run_tests.ps1   # 75 个用例（71 断言 + 4 跳过）
 powershell -ExecutionPolicy Bypass -File run_full_test.ps1        # 73 个样例全量回归
 python tests/run_stdlib_tests.py                                  # 标准库门禁（编译→多对象链接→unicorn 真跑）：21 个用例的期望值全是程序自己算出来的数；`strtod` 一例 SKIP 并打印实测理由（宿主 emulator 没有双精度 FPU，不是库的问题）
+python tests/run_x86_64_image_tests.py --arkcc ./arkcc.exe        # x86-64 门禁：16 个程序编成 0x400000 平铺镜像、在 unicorn 64 位核上跑 main，期望值全在程序之外算出；另含「未解析符号必须拒绝且不留镜像」与「期望值 +1 必须被判成 DIFF」两段自检。32 位 x86 只作参考臂，其历史缺陷显式 SKIP
 python tests/run_install_tests.py                                 # `make install` 门禁：38 个文件逐字节等于源、第二次跑不改任何 mtime、`--dry-run` 不写盘、绝对 PREFIX + DESTDIR 被拒；最后拿**装出来那棵树**建一个用到 malloc/div/qsort 的程序跑出 181（宿主 gcc 同一份源码算 181，对拍）
 python tests/run_diag_tests.py                                    # 诊断排版门禁（需 armcc）
 python tests/run_diag_boundary.py                                 # 诊断边界契约（长行/上限/CJK/tab，无需 armcc）
