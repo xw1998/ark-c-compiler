@@ -312,6 +312,30 @@ int main(void){ struct S s; struct S *p = &s;
   return 0; }
 """, 0, "sizeof of a struct-member array is the array size, not the generic 4 (it was 4 while self-hosting)"),
 
+    ("ptr_llong_roundtrip",
+     """
+int main(void){
+  char *p = (char *)0x1;
+  char *q = p + 4;
+  long long d = (long long)q;   /* explicit cast */
+  char *r = (char *)d;          /* back to a pointer */
+  long long e = q;              /* implicit assignment */
+  if (d != 5) return 1;
+  if (r != q) return 2;
+  if (e != d) return 3;
+  return (int)d; }
+""", 5, "pointer <-> long long: a pointer is ONE stack word, a long long TWO, so the high half has to be created and dropped (it was neither: every cast answered 0)"),
+
+    ("ptr_llong_arg",
+     """
+long long f(long long x){ return x + 1; }
+long long g(char *q){ return (long long)q; }
+int main(void){ char *p = (char *)0x10; char *q = p + 4;
+  long long a = f(q);
+  long long b = g(q);
+  return (int)(a + b) % 251; }
+""", 41, "pointer as a 64-bit argument and as a 64-bit return value (20+1 + 20 = 41)"),
+
     ("varargs_copy",
      """
 #include <stdarg.h>
@@ -479,6 +503,7 @@ def main():
 
         # reference arm -- never a verdict
         note = ''
+        i386_bad = False
         rc2, msg2, syms2 = build(arkcc, src, 'x86', img32)
         if rc2 != 0:
             # A crashed or silently-killed arkcc leaves msg2 empty; indexing the
@@ -498,7 +523,11 @@ def main():
             else:
                 note = '| i386=%d' % got32
                 if got32 != expect:
-                    note += ' (known 32-bit backend gap, not a verdict)'
+                    # Every item on the old "known i386 gap" list is closed, so a
+                    # 32-bit mismatch is now a verdict, not a footnote: if it ever
+                    # comes back the gate has to go red.
+                    note += ' (32-bit mismatch)'
+                    i386_bad = True
 
         if why:
             print('FAIL %-16s %s %s' % (name, why, note))
@@ -506,6 +535,10 @@ def main():
         elif got != expect:
             print('FAIL %-16s x86_64=%d expect=%d  [%s] %s'
                   % (name, got, expect, about, note))
+            failed += 1
+        elif i386_bad:
+            print('FAIL %-16s x86_64=%d i386=%d expect=%d  [%s] %s'
+                  % (name, got, got32, expect, about, note))
             failed += 1
         else:
             print('PASS %-16s x86_64=%d  [%s] %s' % (name, got, about, note))

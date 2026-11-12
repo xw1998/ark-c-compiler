@@ -160,38 +160,102 @@ new:  mov eax, esp
 
 ② **`rep movsb` 现在真的发出字节**（见 §3.4），所以聚合体拷贝开始生效。
 
-## 5. i386 的已知缺陷（不是本轮引入，门禁里显式 SKIP）
+## 5. i386 的四类历史欠账：已全部清零
 
-| 现象 | 触发 |
-| --- | --- |
-| `movq needs an xmm operand` | 浮点路径（`double` 参数/比较） |
-| `UC_ERR_EXCEPTION` | 64 位算术（`long long` 乘除、64 位循环） |
-| 结果明明是整数却是个大数（如 `7335887`） | >8 字节结构体按值传参 |
-| 本地数组下标全读到错的元素（`int a[3]={1,2,3}; a[1]` 得 1、`const char *p[2]={"ab","cd"}; p[1][0]` 得 `'a'`、两个本地数组同时用得 0） | 本地数组的**取址与下标** |
+曾经的四类缺陷（`movq needs an xmm operand`、64 位算术 `UC_ERR_EXCEPTION`、
+结构体按值传参得到大数、本地数组下标读到错的元素）**都已修好**，i386 与 x86-64
+现在跑同一批程序给同一个答案。本节的表格是当时的记录，下面是修复后的实测读数；
+x86-64 门禁不再对任何一类标 SKIP。
 
-这些是 i386 后端的历史欠账。x86-64 门禁把它们**明确打印成 SKIP 并给出实测理由**，
-既不判 PASS 也不判 FAIL——否则要么假绿、要么把 x86-64 的正确结果误判成回归。
+### 5.1 本地数组下标：帧映射改成与 x86-64 同构
 
-最后一行是 2026-11-12 新查清的一条，写在这里是为了让"已知缺口"有坐标，而不是当免责声明：
+根因是 32 位发射器把本地变量定位成 `[ebp - (48 + off)]`（`IR_STORE`／`IR_PUSH_VAR`／
+`IR_PUSH_ADDR`／`IR_GETARG` 四处都这么算）：帧偏移递增 ⇒ 地址递减，而 `IR_LOAD_IDX`
+与 `&obj + k` 在地址空间里 `base + i*es` 递增，于是"初始化写"和"下标读"方向相反。
+修法是把 32 位帧映射改成 `[ebp - framelo + off]`（`framelo = 48 + round16(local_size)`），
+与 x86-64 同构；`sret_area_off`、变参区与 scratch 布局随之平移。
 
-32 位路径把本地变量定位成 `[ebp - (48 + off)]`（`backend_x86_64.c` 的 32 位发射器里
-`48 + I->val` 出现在 `IR_STORE`/`IR_PUSH_VAR`/`IR_PUSH_ADDR`/`IR_GETARG` 四处），
-**帧偏移递增 ⇒ 地址递减**；而 `IR_LOAD_IDX` 与 `&obj + k` 是在**地址空间**里
-`base + i*es` 递增。于是同一个对象的"初始化写"（帧偏移，向下）和"下标读"（地址，向上）
-方向相反。实测三例都只有 32 位臂错、x86-64 臂对：
+实测（`tests/run_x86_64_image_tests.py` 的数组族用例，双后端逐例断言）：
+
+| 源 | 期望 | x86_64 | x86 |
+| --- | :---: | :---: | :---: |
+| `int a[3]={1,2,3}; return a[0]+10*a[1]+100*a[2];` | 321 | 321 | 321 |
+| `const char *p[2]={"ab","cd"}; return p[1][0];` | 99 | 99 | 99 |
+| `int a[3]={1,2,3}; int b[3]={4,5,6}; return a[1]+10*b[1];` | 52 | 52 | 52 |
+| `int a[4][3]; … 嵌套下标` | 43 | 43 | 43 |
+| `struct {int v;} a[2]` 成员读 | 987 | 987 | 987 |
+
+### 5.2 结构体按值传参与返回（sret）
+
+`>8` 字节结构体走隐藏返回缓冲 + 地址传递，`<=8` 字节走 `edx:eax`。实测 765／321／987／777
+五组双后端全等，`sret` 与 `sret2` 两组探针逐例一致。
+
+**最后一条残留（`struct_sret40`，40 字节按值返回）**：i386 上 `T5 x = mk5(3)` 拿回全 0。
+根因是 callee 读参数的循环用 `reg_idx` 当边界：
+
+```c
+for (j = 0; j < reg_idx && j < 64; j++)      /* reg_idx 对 sret 函数还含隐藏指针 */
+    stk += width_of(param_types[j]);
+```
+
+`reg_idx` 在 sret 函数里比真实参数序号大 1（隐藏返回缓冲指针占了 index 0），于是这个
+"累加前面各参宽度"的循环把**本参数自己的宽度**也加了进去：`mk5(int v)` 的 `v` 在
+`[ebp+12]`，却被读成 `[ebp+16]`，拿到的正好是返回缓冲指针的高半（0），所以 `x.a`
+`x.b` `x.c[0..3]` 全是 0、只有 `x.c[4]` 是 4。修法是把边界换成"前面真实参数的个数"
+（`param_idx - 1`，`param_idx` 此时已自增），非 sret 函数里两者本来相等 ⇒ 其它形态零变化。
+
+修复后细分探针 6 例双后端全等（`s_a=3`、`s_b=6`、`s_c0=3`、`s_c4=7`、`s_all=19`、
+`s_ptr=16`），门禁里 `struct_sret40` 的 i386 从 4 变 19，该行原有的
+`(known 32-bit backend gap)` 注记已删除，并且**门禁升级为"i386 结果与期望不符即判 FAIL"**——
+旧口径只把 i386 当脚注，等于给回归留了一条不必红的缝。
+
+### 5.3 浮点：`x86_pair_swap_at` 在偏移 0 上是空操作
+
+`double` 在栈上按"高字在上"传，`movq xmm0,[esp]` 之前要先把两个字调头。
+`x86_pair_swap_at(&buf, off)` 原来写的是 `if (off) { 打印 [esp+off+4] }`，
+`off == 0` 时**两处都读 `[esp]`**，交换退化成空操作，`movq` 把 hi:lo 当 lo:hi 装进 xmm0。
+实测 `double d=7.9; (int)d;` 得 0。修法是两个位移永远都打印。
+
+修复后浮点族 17 个用例（`f32` 9 例 + `f32b` 8 例）全等，含 `g3=59`、`g4=6`、`g5=7`、`g8=10`
+这类"先算后转"的复合表达式。
+
+### 5.4 64 位整数：四个根因
+
+| 根因 | 现象 | 修法 |
+| --- | --- | --- |
+| `IR_UNARY` 忽略 `I->val` | `-1000000000LL` 变成 +1000000000（只翻了高半字，还漂 4 字节栈） | 新增 `I->val == 2` 分支（64 位 neg／bnot／逻辑非） |
+| 64 位除法的 `|a|` 掩码写成 `sar esi,31` | 所有带负被除数的除法错值（`-1000000000LL/1000000` 给 140463611） | 改成 `neg esi`：`esi` 里是 0／1 符号位，`sar 31` 得 0 ⇒ `|a|` 从未取到 |
+| 除法移位链用 `add ecx,ecx` | 所有 64 位除法答 0 | 四字全用 `add/adc` 链 |
+| `IR_PUSH_INT` 只有 1 word | 64 位常量走 `IR_64PUSH`（val=high32, aux=low32） | 前端已按此分裂，此处记录口径 |
+
+实测 `i64` 14 例、`i64b` 4 例、`neg` 6 例双后端全等（`p_sub=4294966296`、`p_mod=182`、
+`p_shl=8`、`p_add=4000`、`n5`（`-1e9LL>>20`）=4294966342）。
+
+### 5.5 C 档三条错值（同一轮修完）
+
+| 缺陷 | 触发 | 修法 |
+| --- | --- | --- |
+| float／double 局部 `++`／`--` 当整数 1 加 | `double d=1.5; d++` 把 1 加到 bit pattern 上且只存 1 word | irgen 的 `AST_VAR` 分支补浮点路径（`irgen_push_step` + `IR_FADD` + 8 字节 store） |
+| `IR_BINARY` 对 8 字节指针只做 32 位运算 | `p+n` 截断到 4 GB、`p<q` 只比低半 | irgen 打 `IR_AUX_SLOT64`，x86-64 发射器走 `rax/rcx` 形式 |
+| 指针 ↔ `long long` 转换是 no-op | `char *q=p+4; (long long)q` 得 0（want 5）——指针 1 word、`long long` 2 word，高半是栈上垃圾 | irgen 新增 `irgen_ptr_to_int64`／`irgen_int64_to_ptr`，接到 cast／声明初始化／赋值／`return`／调用实参五处；x86-64 用 `IR_SEXT`／`IR_ZEXT` + `IR_AUX_SLOT64` 拆分／合并那个字，32 位目标用 `PUSH 0`／`POP` |
+
+指针这一族的实测（11 个构造，双后端断言；32 位指针装不下 >4 GB，两例按 ISA 分别取值）：
 
 | 源 | x86_64 | x86 |
 | --- | :---: | :---: |
-| `int a[3]={1,2,3}; return a[0]+10*a[1]+100*a[2];` | 321 | 1 |
-| `const char *p[2]={"ab","cd"}; return p[1][0];` | 99 | 97 |
-| `int a[3]={1,2,3}; int b[3]={4,5,6}; return a[1]+10*b[1];` | 52 | 0 |
+| `q=p+4; (long long)q` | 5 | 5 |
+| `long long d=q;`（隐式赋值） | 5 | 5 |
+| `(long long)q >> 32`（`p=(char*)0x100000000LL`） | 1 | 0 |
+| `long long d; d=q; d=d+1;` | 6 | 6 |
+| `(char*)5LL + 2` | 7 | 7 |
+| `(char*)0x300000000LL != 0` | 1 | 0 |
+| `f((long long)q)` / `f(q)`（`long long f(long long)`） | 6 | 6 |
+| `long long f(char *q){return (long long)q;}` 的返回值 | 10 | 10 |
+| `(char*)(long long)p == p` | 1 | 1 |
 
-结构体字段**碰巧**能用，是因为地址向上的偏移落进了帧底那 36 字节 padding
-（`[ebp-12]` 存器区与 `[ebp-48]` 本地区之间），对象一旦大到越过 padding 就会写到
-保存的寄存器上。**修它不是一行**：把 32 位帧映射改成与 x86-64 同构的
-`[ebp - framelo + off]`（`framelo = 48 + round16(local_size)`）会同时动到
-`IR_GETARG` 的 8000 变参区、`sret_off` 与 300 字节 scratch 布局，
-按"后端另议"暂挂——**这是缺陷，不是设计**，x86-64 侧不受影响。
+> 口径：`0x100000000LL` 转成 32 位指针必然截成 0，这是 ISA 事实，不是后端差异；
+> x86-64 的 `(long long)q >> 32` 必须给 1，这正是那条"高半不能靠压 0"的分辨点。
+
 
 ## 6. 单文件镜像拒绝未解析符号
 
@@ -208,8 +272,10 @@ make test-x86-64                  # 已挂进 make test
 python tests/run_x86_64_image_tests.py --arkcc ./arkcc.exe
 ```
 
-33 个程序编译成 0x400000 的平铺镜像，在 unicorn 的 64 位核上跑 `main`，逐个断言一个
-**在程序之外算出来的常量**（不拿宿主 gcc 当 oracle）。下表只列锚点用例，不是全表：
+35 个程序编译成 0x400000 的平铺镜像，在 unicorn 的 64 位核上跑 `main`，逐个断言一个
+**在程序之外算出来的常量**（不拿宿主 gcc 当 oracle）；同一个程序**再编一次 32 位并在
+unicorn 的 32 位核上跑**，`i386` 列与期望不符即判 FAIL（早期只把它写成脚注，
+"32 位已知差距"因此长期没有变红）。下表只列锚点用例，不是全表：
 
 | 用例 | 覆盖 | 期望 |
 | --- | --- | :---: |
@@ -234,6 +300,8 @@ python tests/run_x86_64_image_tests.py --arkcc ./arkcc.exe
 | `struct_sret24` / `struct_sret40` | 24 / 40 字节结构体按值返回：被调方必须真的把 payload 拷进 `*sret`（曾整个丢掉拷贝） | 38 / 19 |
 | `ptr_array_init` | 本地与文件级指针数组初始化：每个元素占满 8 字节，下标与元素内容都要对 | 0 |
 | `sizeof_member_array` | `sizeof(s.sym)` / `sizeof(p->sym)` 是成员数组的大小而不是 4（§3.5） | 0 |
+| `ptr_llong_roundtrip` | 指针 ↔ `long long` 双向转换：高半要补也要丢（曾全给 0，§5.5） | 5 |
+| `ptr_llong_arg` | 指针当 64 位实参传、并当 64 位返回值 | 41 |
 
 再加三段让上面那些 PASS 有意义的东西：
 
@@ -245,7 +313,7 @@ python tests/run_x86_64_image_tests.py --arkcc ./arkcc.exe
 - **selfcheck**：用「期望值 +1」重跑一个用例，必须被判成 DIFF。判不出错的 harness
   证明不了任何通过
 
-当前实测：`33 passed, 0 failed, 0 skipped`。
+当前实测：`35 passed, 0 failed, 0 skipped`。
 
 ### 7.1 自举门禁：把"能跑一次"变成"逐字节复现宿主对象"
 
@@ -298,7 +366,24 @@ PASS self-host: byte-identical object
 
 ## 8. 明确不支持（构造时报错，不静默降级）
 
-- `_Complex` 全部形态
-- 变参函数的**定义**（调用可以）
-- >8 字节复合体按值参数 / 按值返回（sret 的**接收**方向已支持）
-- 16 字节 load/store、`DUP > 4`、参数个数 > 64
+先记一条**已经不再是缺口**的事实（旧版这里写着"变参函数的定义不支持"，已经不成立）：
+x86-64 与 i386 都支持变参函数的**定义**，`va_arg` 的 `int`／`long long`／指针／`double`／
+≤8 字节聚合体都在门禁或探针里真跑过——`sum2(4,1,2,3,4)=20`（门禁用例 `varargs_copy`）、
+`sd(3,1.5,2.5,3.0)=7`、`sl(1,3000000000LL)%251=59`、`ss(1,{1,2})=3`。
+>8 字节结构体的按值传参与按值返回也支持（`struct_byval=45`、`struct_sret24=38`、
+`struct_sret40=19`、64 字节返回体），18 个参数的调用（9 个寄存器 + 9 个栈槽）同样能编。
+
+真正不支持的只剩下面这些，全部在**构造时报错**：
+
+| 不支持的形态 | 现在的行为 |
+| --- | --- |
+| `_Complex` 全部形态 | 两个后端都在代码生成时报错（`real to complex conversion is not supported by the x86_64 backend`／`_Complex float store is not supported`／`[x86] _Complex value not supported`） |
+| `va_list` 作为**文件级对象** | `__builtin_va_list g_ap;` 报 `expected declaration at top level`；函数内的 `va_list` 完全可用 |
+| 单条 16 字节 load/store、`IR_DUP > 4`、参数个数 > 64 | IR／发射器内部上限。C 源码里需要 16 字节读写的唯一形态是 16 字节聚合体，而聚合体走 `rep movsb` 拷贝（`struct_copy16=11`），不受影响 |
+
+`sizeof(long double) == 8`（`long double` 等同 `double`）是有意为之：C99 只要求
+long double 的值集**至少**与 double 相同，等同是合法的，不构成降级。
+
+C++ 不在范围内。已知的不设防点：`.cpp`／`.cxx` 输入会被按 C 编译而不报错，
+此时得到的是 C 语义（没有 `bool` 类型名、类、重载、引用），不要把它当 C++ 用。
+

@@ -876,6 +876,14 @@ static void irgen_lvalue_addr(IrGen *g, AstNode *node);
 static void irgen_cond_to_bool(IrGen *g, AstNode *cond);
 static void irgen_widen_to_64(IrGen *g, Type *src_t, Type *dst_t);
 static void irgen_truncate_int(IrGen *g, Type *dst_t);
+/* Pointer <-> 64-bit integer conversion.  A pointer occupies ONE IR word,
+ * so converting it to a 64-bit integer has to produce the missing high half
+ * (and converting back has to drop it).  Both were missing, which made every
+ * `(long long)p` store garbage as the high word -- measured: `char *q = p + 4;
+ * (long long)q` answered 0 instead of 5 on BOTH the i386 and x86-64 backends. */
+static int irgen_is_ptrish(Type *t);
+static void irgen_ptr_to_int64(IrGen *g);
+static void irgen_int64_to_ptr(IrGen *g);
 /* Convert the top of the IR stack from src_t to dst_t, the way an assignment
  * would.  Used by `return` (C99 6.8.6.4p1); defined next to
  * irgen_truncate_int. */
@@ -2532,6 +2540,20 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
                         if (si && di) {
                             irgen_widen_to_64(g, st, dt);
                         }
+                        /* Pointer <-> 64-bit integer follows the same conversion matrix
+                         * (C99 6.5.16.1p1): a pointer is one IR word while a long long is
+                         * two, so the high half has to be created (or dropped) here or the
+                         * store/ALU reads a stray word as the upper half. Measured before
+                         * this fix: `char *q = p + 4; long long d = q;` answered 0, want 5. */
+                        else if (irgen_is_ptrish(st) && dt && type_is_integer(dt) &&
+                                 type_size(dt) == 8) {
+                            irgen_ptr_to_int64(g);
+                        }
+                        else if (st && type_is_integer(st) && type_size(st) == 8 &&
+                                 irgen_is_ptrish(dt)) {
+                            irgen_int64_to_ptr(g);
+                        }
+
                         /* real -> _Complex initialiser (C99 6.7.9 + 6.5.16.1):
                          * the destination object holds four stack words on the
                          * machine backends, so a real source is widened here.
@@ -3034,6 +3056,51 @@ static void irgen_widen_to_64(IrGen *g, Type *src_t, Type *dst_t) {
     }
 }
 
+/* Does this type live in a single IR word but hold an address? */
+static int irgen_is_ptrish(Type *t) {
+    if (!t) return 0;
+    if (t->kind == TYPE_PTR) return 1;
+    if (t->kind == TYPE_FUNC) return 1;
+    return 0;
+}
+
+/* Push the missing high half so the single pointer word becomes the two-word
+ * (lo, hi-on-top) 64-bit integer representation.
+ *
+ * 32-bit targets / C backend: the word is a 32-bit address, so the high half
+ * is zero -- exactly what an unsigned 32->64 widening does.
+ * x86-64 (g_irgen_slot64_ptrs): the single word already carries all 64 bits.
+ * Pushing a zero high half there would truncate every address above 4 GB, so
+ * the word has to be split instead; that is IR_SEXT with IR_AUX_SLOT64, which
+ * the x86-64 backend implements as `lo = zero-extended low 32 / hi = high 32`. */
+static void irgen_ptr_to_int64(IrGen *g) {
+    if (g_irgen_64bit_slots) return;
+    if (g_irgen_slot64_ptrs) {
+        ir_emit(g->fn, IR_SEXT, 0, 0, IR_AUX_SLOT64);
+        return;
+    }
+    ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
+}
+
+/* Make a 64-bit integer value fit in the single pointer word.
+ *
+ * 32-bit targets / C backend: the pointer is 32 bits wide, so the high half is
+ * simply discarded -- the IR stack keeps the high word on top and a plain pop
+ * removes it.
+ * x86-64 (g_irgen_slot64_ptrs): the slot holds all 64 bits, so dropping the
+ * high half would keep only the low 32 of the address.  The two words have to
+ * be merged instead (IR_ZEXT + IR_AUX_SLOT64, implemented by the x86-64
+ * backend as (hi << 32) | lo).  Measured before the fix: `(char *)0x300000000LL
+ * != 0` answered 0 on x86-64. */
+static void irgen_int64_to_ptr(IrGen *g) {
+    if (g_irgen_64bit_slots) return;
+    if (g_irgen_slot64_ptrs) {
+        ir_emit(g->fn, IR_ZEXT, 0, 0, IR_AUX_SLOT64);
+        return;
+    }
+    ir_emit(g->fn, IR_POP, 0, 0, 0);
+}
+
 /* Duplicate the top `nw` 32-bit words of the IR stack.
  * A 64-bit value occupies TWO stack words on the register-pair backends
  * (ARM / RV32 / x86-64), so duplicating one word there produced a stack
@@ -3191,6 +3258,17 @@ static void irgen_convert_value(IrGen *g, Type *src_t, Type *dst_t) {
             (type_size(dst_t) < type_size(src_t) ||
              (type_size(dst_t) == 4 && src_t->is_unsigned != dst_t->is_unsigned)))
             irgen_truncate_int(g, dst_t);
+    }
+    /* Pointer <-> 64-bit integer (C99 6.3.2.3): a pointer is one IR word
+     * while a long long is two, so the missing high half has to be created
+     * (and dropped on the way back) exactly as for an explicit cast. */
+    if (irgen_is_ptrish(src_t) && dst_int && type_size(dst_t) == 8) {
+        irgen_ptr_to_int64(g);
+        return;
+    }
+    if (src_int && type_size(src_t) == 8 && irgen_is_ptrish(dst_t)) {
+        irgen_int64_to_ptr(g);
+        return;
     }
     /* int -> pointer / pointer -> int: the front end already diagnosed the
      * cases that are not allowed, and both live in a 32-bit stack slot. */
@@ -3661,6 +3739,19 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         irgen_truncate_int(g, dst_t);
                     }
                 }
+                /* Pointer <-> 64-bit integer cast (C99 6.3.2.3p6/p7).  A
+                 * pointer lives in ONE IR word; a long long in two.  Before
+                 * these branches the cast fell into "everything else is a
+                 * no-op", so the store that followed popped a stray word as
+                 * the high half -- `(long long)(p + 4)` answered 0, want 5,
+                 * on the i386 and x86-64 backends alike. */
+                else if (irgen_is_ptrish(src_t) && dst_t && type_is_integer(dst_t) &&
+                         type_size(dst_t) == 8) {
+                    irgen_ptr_to_int64(g);
+                }
+                else if (src_int && src_t && type_size(src_t) == 8 && irgen_is_ptrish(dst_t)) {
+                    irgen_int64_to_ptr(g);
+                }
                 /* complex -> real: use IR_F2I with aux 0x400 (the same encoding as
                  * creal() in the C backend), so no extra conversion is required. */
                 if (src_t && ARK_IS_CX(src_t) &&
@@ -3851,6 +3942,17 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                                         op == (int)TOK_SHR)) {
                         aux_op = op | 0x100;
                     }
+                    /* A pointer is ONE word carrying a 64-bit address on
+                     * x86-64 (IR_AUX_SLOT64).  Without this mark the backend
+                     * emitted `add eax, ecx`, whose 32-bit write zeroes the
+                     * upper half of rax: `p + n` silently truncated every
+                     * address above 4 GB (and `p < q` compared only the low
+                     * halves).  Only x86-64 sets the flag, so the other
+                     * backends keep the exact IR they emitted before. */
+                    if (g_irgen_slot64_ptrs &&
+                        ((lt && lt->kind == TYPE_PTR) || (rt && rt->kind == TYPE_PTR))) {
+                        aux_op |= IR_AUX_SLOT64;
+                    }
                     ir_emit(g->fn, IR_BINARY, 0, 0, aux_op);
                     if (ptr_diff_div > 0) {
                         ir_emit(g->fn, IR_PUSH_INT, ptr_diff_div, 0, 0);
@@ -3968,6 +4070,27 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         ir_emit(g->fn, IR_STORE, s->offset, operand->u.name, 8);
                         if (!node->u.unary.is_postfix)
                             ir_emit(g->fn, IR_PUSH_VAR, s->offset, operand->u.name, 8);
+                    } else if (s->type && (s->type->kind == TYPE_FLOAT ||
+                                           s->type->kind == TYPE_DOUBLE)) {
+                        /* float/double ++/--: the generic branch below pushed
+                         * ONE dword of the value, added the integer 1 to the
+                         * bit pattern and stored one dword back, so
+                         * `double d = 1.5; d++;` left an unchanged exponent
+                         * and a mangled mantissa.  Route it through the same
+                         * step / binary helpers the general-lvalue path uses,
+                         * with the width the 8-byte value really occupies. */
+                        int waux = (s->type->kind == TYPE_DOUBLE) ? 8 : 0;
+                        if (node->u.unary.is_postfix) {
+                            ir_emit(g->fn, IR_PUSH_VAR, s->offset, operand->u.name, waux);
+                            ir_emit(g->fn, IR_PUSH_VAR, s->offset, operand->u.name, waux);
+                        } else {
+                            ir_emit(g->fn, IR_PUSH_VAR, s->offset, operand->u.name, waux);
+                        }
+                        irgen_push_step(g, s->type, delta);
+                        irgen_emit_binary_op(g, (int)TOK_PLUS, s->type, s->type);
+                        ir_emit(g->fn, IR_STORE, s->offset, operand->u.name, waux);
+                        if (!node->u.unary.is_postfix)
+                            ir_emit(g->fn, IR_PUSH_VAR, s->offset, operand->u.name, waux);
                     } else if (node->u.unary.is_postfix) {
                         ir_emit(g->fn, IR_PUSH_VAR, s->offset, operand->u.name, 0);
                         ir_emit(g->fn, IR_PUSH_VAR, s->offset, operand->u.name, 0);
@@ -4131,6 +4254,20 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         if (si && di) {
                             irgen_widen_to_64(g, st, dt);
                         }
+                        /* Pointer <-> 64-bit integer follows the same conversion matrix
+                         * (C99 6.5.16.1p1): a pointer is one IR word while a long long is
+                         * two, so the high half has to be created (or dropped) here or the
+                         * store/ALU reads a stray word as the upper half. Measured before
+                         * this fix: `char *q = p + 4; long long d = q;` answered 0, want 5. */
+                        else if (irgen_is_ptrish(st) && dt && type_is_integer(dt) &&
+                                 type_size(dt) == 8) {
+                            irgen_ptr_to_int64(g);
+                        }
+                        else if (st && type_is_integer(st) && type_size(st) == 8 &&
+                                 irgen_is_ptrish(dt)) {
+                            irgen_int64_to_ptr(g);
+                        }
+
                         /* real -> _Complex assignment (C99 6.5.16.1): the
                          * destination object is four stack words on the machine
                          * backends, so a real source has to be widened here.
@@ -4248,6 +4385,20 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         if (si && di) {
                             irgen_widen_to_64(g, st, dt);
                         }
+                        /* Pointer <-> 64-bit integer follows the same conversion matrix
+                         * (C99 6.5.16.1p1): a pointer is one IR word while a long long is
+                         * two, so the high half has to be created (or dropped) here or the
+                         * store/ALU reads a stray word as the upper half. Measured before
+                         * this fix: `char *q = p + 4; long long d = q;` answered 0, want 5. */
+                        else if (irgen_is_ptrish(st) && dt && type_is_integer(dt) &&
+                                 type_size(dt) == 8) {
+                            irgen_ptr_to_int64(g);
+                        }
+                        else if (st && type_is_integer(st) && type_size(st) == 8 &&
+                                 irgen_is_ptrish(dt)) {
+                            irgen_int64_to_ptr(g);
+                        }
+
                     }
                     ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, irgen_idx_aux(L->type, packed_aux));
                 } else if (L->kind == AST_UNARY && L->u.unary.op == (int)TOK_MUL) {
@@ -4289,6 +4440,20 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         if (si && di) {
                             irgen_widen_to_64(g, st, dt);
                         }
+                        /* Pointer <-> 64-bit integer follows the same conversion matrix
+                         * (C99 6.5.16.1p1): a pointer is one IR word while a long long is
+                         * two, so the high half has to be created (or dropped) here or the
+                         * store/ALU reads a stray word as the upper half. Measured before
+                         * this fix: `char *q = p + 4; long long d = q;` answered 0, want 5. */
+                        else if (irgen_is_ptrish(st) && dt && type_is_integer(dt) &&
+                                 type_size(dt) == 8) {
+                            irgen_ptr_to_int64(g);
+                        }
+                        else if (st && type_is_integer(st) && type_size(st) == 8 &&
+                                 irgen_is_ptrish(dt)) {
+                            irgen_int64_to_ptr(g);
+                        }
+
                     }
                     ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, irgen_idx_aux(L->type, packed_aux));
                 } else if (L->kind == AST_MEMBER) {
@@ -4342,6 +4507,20 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                             if (si && di) {
                                 irgen_widen_to_64(g, st, dt);
                             }
+                            /* Pointer <-> 64-bit integer follows the same conversion matrix
+                             * (C99 6.5.16.1p1): a pointer is one IR word while a long long is
+                             * two, so the high half has to be created (or dropped) here or the
+                             * store/ALU reads a stray word as the upper half. Measured before
+                             * this fix: `char *q = p + 4; long long d = q;` answered 0, want 5. */
+                            else if (irgen_is_ptrish(st) && dt && type_is_integer(dt) &&
+                                     type_size(dt) == 8) {
+                                irgen_ptr_to_int64(g);
+                            }
+                            else if (st && type_is_integer(st) && type_size(st) == 8 &&
+                                     irgen_is_ptrish(dt)) {
+                                irgen_int64_to_ptr(g);
+                            }
+
                         }
                         ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, irgen_idx_aux(L->type, 0));
                     }
@@ -4838,7 +5017,18 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         } else {
                             if (at && (at->is_unsigned || at->kind == TYPE_PTR ||
                                        at->kind == TYPE_ARRAY)) {
-                                ir_emit(g->fn, IR_ZEXT, 0, 0, 0);
+                                /* x86-64: a pointer argument is one word that
+                                 * already holds the whole address, so widening
+                                 * it to the two-word long long argument has to
+                                 * SPLIT that word (IR_SEXT + IR_AUX_SLOT64)
+                                 * rather than push a zero high half, which
+                                 * would truncate every address above 4 GB.
+                                 * Measured: `long long f(long long)` called as
+                                 * f(q) answered 1 instead of 6. */
+                                if (g_irgen_slot64_ptrs && irgen_is_ptrish(at))
+                                    ir_emit(g->fn, IR_SEXT, 0, 0, IR_AUX_SLOT64);
+                                else
+                                    ir_emit(g->fn, IR_ZEXT, 0, 0, 0);
                             } else {
                                 ir_emit(g->fn, IR_SEXT, 0, 0, 0);
                             }
@@ -5089,7 +5279,12 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                      * reading rax/r0/a0 exactly as before. */
                     if (node->type &&
                         (node->type->kind == TYPE_FLOAT || node->type->kind == TYPE_DOUBLE))
-                        call_val |= 0x2000000000000LL;
+                        /* 1 << 53.  This used to be 0x2000000000000 (bit
+                         * 49), which is inside the sret-size field and is
+                         * exactly what both backends do *not* test -- so
+                         * every floating-point result was pushed as if it had
+                         * come back in eax/rax and read back as 0. */
+                        call_val |= 0x20000000000000LL;
                     /* bits 34..35: the result is a _Complex value on the
                      * machine backends, which carry it as four stack words that
                      * no register pair can hold.  The backend turns it into

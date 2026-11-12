@@ -34,7 +34,7 @@ static void usage(void) {
         "                     Off by default; required for multi-object images whose\n"
         "                     objects were compiled against a different base.\n"
         "  -v                 verbose\n"
-        "  -target <name>     select backend (arm|x86|riscv32|c)\n"
+        "  -target <name>     select backend (arm|x86|x86_64|riscv32|c)\n"
         "  -I <dir>           additional include path\n"
         "  -O0/-O1/-O2        optimisation level: IR constant folding + dead code\n"
         "                     elimination; -O2 also enables inline/vectorise\n"

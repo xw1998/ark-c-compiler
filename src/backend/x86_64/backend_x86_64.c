@@ -431,6 +431,72 @@ static void x86_emit_data_sections(AsmBuffer *buf, IrProgram *prog) {
     }
 }
 
+/* === 64-bit / floating-point helpers for the i386 emitter ================
+ *
+ * Every 8-byte value on the IR stack keeps its HIGH dword on top.  That is the
+ * canonical order irgen, the ARM, RISC-V and AMD64 backends all use, and the
+ * i386 emitter was the only one that disagreed -- with itself: IR_TRUNC and
+ * irgen's own narrowing (a bare IR_POP, which discards "the high word on top")
+ * assumed high-on-top while IR_PUSH_VAR / IR_LOAD_IDX / IR_64PUSH built the
+ * mirror image.  The result was that a 64-bit value was only right when it was
+ * never taken apart again, and `(int)some_long_long` read the high half.
+ */
+
+/* Flip the two dwords of an 8-byte stack slot in place.  Everything that has
+ * to treat such a slot as a *blob* -- a double read with movq, a 64-bit value
+ * handed to cdecl -- uses this instead of a separate movq encoding.  eax/edx
+ * are scratch registers in this backend. */
+static void x86_pair_swap_at(AsmBuffer *b, int off) {
+    /* Swap the two dwords of the 8-byte blob at [esp+off].  Both
+     * displacements must always be printed: the old version only emitted a
+     * displacement when `off` was non-zero, so the off==0 case (the common
+     * one) read the SAME slot twice and "swapped" nothing.  Every 64-bit
+     * `movq xmm, [esp]` then loaded high:low backwards, which is why
+     * `double d = 7.9; (int)d;` answered 0 on the i386 target. */
+    asmbuf_puts(b, "    mov eax, [esp+");
+    asmbuf_int(b, off);
+    asmbuf_puts(b, "]\n    mov edx, [esp+");
+    asmbuf_int(b, off + 4);
+    asmbuf_puts(b, "]\n    mov [esp+");
+    asmbuf_int(b, off);
+    asmbuf_puts(b, "], edx\n    mov [esp+");
+    asmbuf_int(b, off + 4);
+    asmbuf_puts(b, "], eax\n");
+}
+
+/* A unique label inside one function.  The internal assembler has no numeric
+ * local labels: "1:" defines a symbol literally named "1", so a reference to
+ * "1f" never resolves.  Every helper-generated label therefore carries the
+ * function name plus a per-function counter (def=1 defines it, 0 references
+ * it). */
+static void x86_elbl(AsmBuffer *b, const char *fname, const char *tag,
+                     int n, int def) {
+    char nb[24];
+    asmbuf_puts(b, ".L");
+    asmbuf_puts(b, fname);
+    asmbuf_putc(b, '_');
+    asmbuf_puts(b, tag);
+    asmbuf_puts(b, diag_num(nb, n));
+    asmbuf_puts(b, def ? ":" : "");
+    asmbuf_putc(b, '\n');
+}
+
+/* eax (as an UNSIGNED 32-bit value) -> double in `dst`.  cvtsi2sd is
+ * signed-only, so split off the low bit: (u >> 1) always fits in 31 bits and
+ * the answer is 2 * (u >> 1) + (u & 1).  Clobbers ecx, edx, xmm3; leaves eax
+ * holding the original value again. */
+static void x86_u32_to_xmm(AsmBuffer *b, const char *dst) {
+    asmbuf_puts(b, "    mov ecx, eax\n    and ecx, 1\n    mov edx, eax\n    shr eax, 1\n    cvtsi2sd ");
+    asmbuf_puts(b, dst);
+    asmbuf_puts(b, ", eax\n    addsd ");
+    asmbuf_puts(b, dst);
+    asmbuf_puts(b, ", ");
+    asmbuf_puts(b, dst);
+    asmbuf_puts(b, "\n    cvtsi2sd xmm3, ecx\n    addsd ");
+    asmbuf_puts(b, dst);
+    asmbuf_puts(b, ", xmm3\n    mov eax, edx\n");
+}
+
 static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
     AsmBuffer buf;
     int fi;
@@ -447,6 +513,70 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
         int i;
         int local_size = (f->local_size + 15) & ~15;
         if (local_size < 16) local_size = 16;
+        /* 32-bit frame geometry: locals live at [ebp - framelo + off], with
+         * `off` counted *upward* from the bottom of the local area -- exactly
+         * like the AMD64 path's [rbp - FRAMELO + off].  This used to be
+         * [ebp - (48 + off)], which counted downward, so element k of a local
+         * array sat at a *lower* address than element 0 while IR_LOAD_IDX /
+         * IR_PUSH_ADDR walk upward: every local array read a stale or
+         * unrelated slot (int a[3]={1,2,3} read back 1,0,0).  Members of a
+         * struct only "worked" because the upward offsets still landed in the
+         * 36-byte gap between the saved registers and the local area. */
+        int framelo = 48 + local_size;
+        /* One result buffer per call site that returns a struct/union wider
+         * than 8 bytes (IR_CALL bit 36).  cdecl hands such a result back
+         * through a buffer the caller owns, passed as the hidden first
+         * argument ([ebp+8]), so a call site needs both a buffer and an extra
+         * pushed word.  One buffer per *site*: in `struct S a = f(), b = g();`
+         * two results are live at the same time.  The buffers sit below the
+         * call-scratch area, which is why the reservation below is computed
+         * instead of being the old constant 512. */
+        int sret_off_tab[ARK_MAX_SRET_FUNCS];
+        int sret_sz_tab[ARK_MAX_SRET_FUNCS];
+        int sret_site_n = 0;
+        int sret_site_cur = 0;
+        int sret_pool = 0;
+        int sret_area_off = framelo + 512;
+        int frame_reserve;
+        {
+            int ii;
+            for (ii = 0; ii < f->code_count; ii++) {
+                IrInst *si = &f->code[ii];
+                int sz;
+                if (si->op != IR_CALL || !((si->val >> 36) & 1)) continue;
+                sz = (int)((si->val >> 37) & 0xFFFF);
+                sz = (sz + 7) & ~7;
+                if (sz <= 0 || sz > 0xFFFF) {
+                    char b1[12];
+                    diag_tool(DIAG_SEV_ERROR, "arkcc",
+                              "call site in '%s' returns a composite of %s bytes; "
+                              "the x86 backend needs 1..65535",
+                              f->name, diag_num(b1, sz), 0, 0, 0, 0);
+                    sz = 8;
+                }
+                if (sret_site_n >= ARK_MAX_SRET_FUNCS) {
+                    char b1[12], b2[12];
+                    diag_tool(DIAG_SEV_ERROR, "arkcc",
+                              "function '%s' has %s call sites returning a struct "
+                              "wider than 8 bytes; at most %s are supported; raise "
+                              "ARK_MAX_SRET_FUNCS and rebuild arkcc",
+                              f->name, diag_num(b1, sret_site_n + 1),
+                              diag_num(b2, ARK_MAX_SRET_FUNCS), 0, 0, 0);
+                    break;
+                }
+                sret_off_tab[sret_site_n] = sret_pool;
+                sret_sz_tab[sret_site_n] = sz;
+                sret_pool += sz;
+                sret_site_n++;
+            }
+        }
+        /* The prologue pushes exactly 12 bytes (ebx, esi, edi), so the frame
+         * bottom is ebp - (12 + frame_reserve).  The reservation must reach the
+         * lowest byte of the sret pool, otherwise the buffer sits *below* esp:
+         * restoring esp to the saved value and then `push eax` (the result
+         * pointer) overwrites the buffer's first word, and the caller reads a
+         * stack address back as the struct's leading member. */
+        frame_reserve = (sret_area_off + sret_pool) - 12;
         /* sret detection: if the function returns a struct/union > 8 bytes,
          * cdecl passes a hidden first arg = return buffer pointer at [ebp+8]. */
         int sret_off = 0;
@@ -466,13 +596,14 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
         asmbuf_puts(&buf, f->name);
         asmbuf_puts(&buf, ":\n");
         /* cdecl prologue: push ebp; mov ebp, esp; save callee-saved (ebx, esi,
-         * edi); sub esp for locals + scratch. Locals at [ebp-48].
-         * 3 pushes (12 bytes) + 36 padding = 48 byte gap before locals. */
+         * edi); sub esp for locals + scratch. 3 pushes (12 bytes) + 36 padding
+         * = 48 byte gap before the local area, which spans
+         * [ebp - framelo, ebp - 48) -- see the framelo comment above. */
         asmbuf_puts(&buf, "    push ebp\n");
         asmbuf_puts(&buf, "    mov ebp, esp\n");
         asmbuf_puts(&buf, "    push ebx\n    push esi\n    push edi\n");
         asmbuf_puts(&buf, "    sub esp, ");
-        asmbuf_int(&buf, local_size + 300);
+        asmbuf_int(&buf, frame_reserve);
         asmbuf_putc(&buf, '\n');
         /* Save sret pointer if this function uses sret */
         if (sret_off) {
@@ -486,6 +617,12 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
          * start at index 1. param_idx tracks the original parameter index. */
         int arg_idx = sret_off ? 1 : 0;
         int param_idx = 0;
+        /* Counter for helper-generated internal labels (see x86_elbl). */
+        int lbl64 = 0;
+        /* 16 spare bytes for the 64-bit divide loop, in the hole between the
+         * call-argument scratch area (which ends at framelo + 496 for the 116
+         * words the width check allows) and the sret pool (framelo + 512). */
+        int divtmp = framelo + 496;
         for (i = 0; i < f->code_count; i++) {
             IrInst *I = &f->code[i];
             switch (I->op) {
@@ -507,12 +644,15 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                             /* cdecl: no register args, this branch is dead */
                             break;
                         } else {
-                            int stk = stack_arg_offset(reg_idx, abi);
-                            asmbuf_puts(&buf, "    mov eax, [ebp+");
-                            asmbuf_int(&buf, stk);
-                            asmbuf_puts(&buf, "]\n    mov [ebp-");
-                            asmbuf_int(&buf, 48 + I->val);
-                            asmbuf_puts(&buf, "], eax\n");
+                            /* The 8000..8063 mirror region is an AMD64 shape;
+                             * the driver clears g_ir_va_slot_region for this
+                             * target, so this path is unreachable by
+                             * construction.  With the upward frame mapping an
+                             * offset of 8000 would land *above* ebp, so refuse
+                             * loudly instead of scribbling on the caller. */
+                            ark_log("[x86] error: va_arg frame slot is an AMD64-only shape\n");
+                            x86_emit_errors++;
+                            asmbuf_puts(&buf, "    # unsupported: va_arg frame slot on i386\n");
                         }
                         break;
                     }
@@ -520,16 +660,72 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                     if (f->param_types && param_idx < f->param_count)
                         pt = f->param_types[param_idx];
                     param_idx++;
-                    /* cdecl: all params on stack, ignore float/int distinction */
                     reg_idx = arg_idx;
                     arg_idx++;
+                    /* cdecl packs the arguments in declaration order with no
+                     * padding, so the offset of slot k is the sum of the real
+                     * widths of slots 0..k-1 -- not 4 * k.  A double or a long
+                     * long takes two words; a composite wider than 8 bytes
+                     * travels as one address word.  The old 4*k offset put
+                     * every parameter after the first double in the wrong
+                     * place (f(1.5, 2.25) read b's low word as its `a`).
+                     * stack_arg_offset() is kept for the va tail's 4-byte
+                     * walk, which is a different (and deliberately uniform)
+                     * shape. */
                     {
-                        int stk = stack_arg_offset(reg_idx, abi);
-                        asmbuf_puts(&buf, "    mov eax, [ebp+");
-                        asmbuf_int(&buf, stk);
-                        asmbuf_puts(&buf, "]\n    mov [ebp-");
-                        asmbuf_int(&buf, 48 + I->val);
-                        asmbuf_puts(&buf, "], eax\n");
+                        int stk = 8 + (sret_off ? 4 : 0);
+                        int st_sz = (I->aux >> 8) & 0xFFFFFF;
+                        /* param_idx was already bumped, so param_idx - 1 is the
+                         * number of *real* parameters ahead of this one.  It must
+                         * not be confused with reg_idx: for sret functions
+                         * reg_idx also counts the hidden return-buffer pointer,
+                         * and using it as the loop bound made the walk add this
+                         * very parameter's own width -- mk5(int v) then read
+                         * [ebp+16] instead of [ebp+12] and every >8-byte
+                         * struct return on i386 came back as zeros. */
+                        int nprev = param_idx - 1;
+                        int j;
+                        int dst = framelo - (int)I->val;
+                        /* st_sz comes from irgen as the parameter's real
+                         * width: float 4, double 8. */
+                        for (j = 0; j < nprev && j < 64; j++) {
+                            int w = 4;
+                            if (f->param_types && j < f->param_count) {
+                                int ps = type_size(f->param_types[j]);
+                                if (ps > 4) w = (ps <= 8) ? 8 : 4;
+                            }
+                            stk += w;
+                        }
+                        if (st_sz > 8) {
+                            /* Named composite wider than 8 bytes: the slot holds
+                             * a pointer, and the payload is copied into the
+                             * frame -- same wire shape the caller emitted. */
+                            asmbuf_puts(&buf, "    mov esi, [ebp+");
+                            asmbuf_int(&buf, stk);
+                            asmbuf_puts(&buf, "]\n    lea edi, [ebp-");
+                            asmbuf_int(&buf, dst);
+                            asmbuf_puts(&buf, "]\n    mov ecx, ");
+                            asmbuf_int(&buf, st_sz);
+                            asmbuf_puts(&buf, "\n    rep movsb\n");
+                        } else if (st_sz > 4) {
+                            /* 64-bit scalar or a 5..8 byte composite: two
+                             * words, low word at the lower address. */
+                            asmbuf_puts(&buf, "    mov eax, [ebp+");
+                            asmbuf_int(&buf, stk);
+                            asmbuf_puts(&buf, "]\n    mov [ebp-");
+                            asmbuf_int(&buf, dst);
+                            asmbuf_puts(&buf, "], eax\n    mov eax, [ebp+");
+                            asmbuf_int(&buf, stk + 4);
+                            asmbuf_puts(&buf, "]\n    mov [ebp-");
+                            asmbuf_int(&buf, dst - 4);
+                            asmbuf_puts(&buf, "], eax\n");
+                        } else {
+                            asmbuf_puts(&buf, "    mov eax, [ebp+");
+                            asmbuf_int(&buf, stk);
+                            asmbuf_puts(&buf, "]\n    mov [ebp-");
+                            asmbuf_int(&buf, dst);
+                            asmbuf_puts(&buf, "], eax\n");
+                        }
                     }
                     break;
                 }
@@ -555,13 +751,27 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                         x86_complex_unsupported(&buf, "_Complex float local variable");
                         break;
                     }
-                    asmbuf_puts(&buf, "    push dword ptr [ebp-");
-                    asmbuf_int(&buf, 48 + I->val);
-                    asmbuf_puts(&buf, "]\n");
+                    if ((I->aux & 0xFF) == 8) {
+                        /* double / long long local: two words with the HIGH
+                         * one on top, the same shape IR_LOAD_IDX builds and the
+                         * order irgen, ARM, RISC-V and AMD64 use.  Pushing
+                         * only the low dword lost the high half of every
+                         * 64-bit local, which is why `double r = f(); return
+                         * (int)r;` answered 0. */
+                        asmbuf_puts(&buf, "    push dword ptr [ebp-");
+                        asmbuf_int(&buf, framelo - (int)I->val);
+                        asmbuf_puts(&buf, "]\n    push dword ptr [ebp-");
+                        asmbuf_int(&buf, framelo - (int)I->val - 4);
+                        asmbuf_puts(&buf, "]\n");
+                    } else {
+                        asmbuf_puts(&buf, "    push dword ptr [ebp-");
+                        asmbuf_int(&buf, framelo - (int)I->val);
+                        asmbuf_puts(&buf, "]\n");
+                    }
                     break;
                 case IR_PUSH_ADDR:
                     asmbuf_puts(&buf, "    lea eax, [ebp-");
-                    asmbuf_int(&buf, 48 + I->val);
+                    asmbuf_int(&buf, framelo - (int)I->val);
                     asmbuf_puts(&buf, "]\n    push eax\n");
                     break;
                 case IR_PUSH_GLOBAL:
@@ -580,6 +790,12 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                         asmbuf_puts(&buf, "    lea eax, [ebp+");
                         asmbuf_int(&buf, 8 + f->param_count * 4);
                         asmbuf_puts(&buf, "]\n    push eax\n");
+                    } else if (x86_global_size(prog, I->name) == 8) {
+                        asmbuf_puts(&buf, "    mov eax, [");
+                        asmbuf_puts(&buf, I->name);
+                        asmbuf_puts(&buf, "]\n    push eax\n    mov eax, [");
+                        asmbuf_puts(&buf, I->name);
+                        asmbuf_puts(&buf, "+4]\n    push eax\n");
                     } else {
                         asmbuf_puts(&buf, "    mov eax, [");
                         asmbuf_puts(&buf, I->name);
@@ -596,9 +812,17 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                         x86_complex_unsupported(&buf, "_Complex float global variable");
                         break;
                     }
-                    asmbuf_puts(&buf, "    pop eax\n    mov [");
-                    asmbuf_puts(&buf, I->name);
-                    asmbuf_puts(&buf, "], eax\n");
+                    if (x86_global_size(prog, I->name) == 8) {
+                        asmbuf_puts(&buf, "    pop edx\n    pop eax\n    mov [");
+                        asmbuf_puts(&buf, I->name);
+                        asmbuf_puts(&buf, "], eax\n    mov [");
+                        asmbuf_puts(&buf, I->name);
+                        asmbuf_puts(&buf, "+4], edx\n");
+                    } else {
+                        asmbuf_puts(&buf, "    pop eax\n    mov [");
+                        asmbuf_puts(&buf, I->name);
+                        asmbuf_puts(&buf, "], eax\n");
+                    }
                     break;
                 case IR_POP:
                     asmbuf_puts(&buf, "    add esp, 4\n");
@@ -625,9 +849,18 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                         x86_complex_unsupported(&buf, "_Complex float store");
                         break;
                     }
-                    asmbuf_puts(&buf, "    pop eax\n    mov [ebp-");
-                    asmbuf_int(&buf, 48 + I->val);
-                    asmbuf_puts(&buf, "], eax\n");
+                    if ((I->aux & ~(IR_AUX_VOLATILE | IR_AUX_COMPLEX)) == 8) {
+                        /* double / long long: pop both words (high on top). */
+                        asmbuf_puts(&buf, "    pop edx\n    pop eax\n    mov [ebp-");
+                        asmbuf_int(&buf, framelo - (int)I->val);
+                        asmbuf_puts(&buf, "], eax\n    mov [ebp-");
+                        asmbuf_int(&buf, framelo - (int)I->val - 4);
+                        asmbuf_puts(&buf, "], edx\n");
+                    } else {
+                        asmbuf_puts(&buf, "    pop eax\n    mov [ebp-");
+                        asmbuf_int(&buf, framelo - (int)I->val);
+                        asmbuf_puts(&buf, "], eax\n");
+                    }
                     break;
                 case IR_LOAD_IDX: {
                     /* Pop index (ecx), pop base (eax). Load element at
@@ -660,10 +893,11 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                         else
                             asmbuf_puts(&buf, "    movsx eax, word ptr [eax]\n");
                     } else if (es == 8) {
-                        /* 64-bit load: push low then high dword */
-                        asmbuf_puts(&buf, "    mov edx, dword ptr [eax+4]\n");
+                        /* 64-bit load: push low then high dword, so the high
+                         * one ends up on top (canonical order). */
+                        asmbuf_puts(&buf, "    mov edx, dword ptr [eax]\n");
                         asmbuf_puts(&buf, "    push edx\n");
-                        asmbuf_puts(&buf, "    mov eax, dword ptr [eax]\n");
+                        asmbuf_puts(&buf, "    mov eax, dword ptr [eax+4]\n");
                         asmbuf_puts(&buf, "    push eax\n");
                         break;
                     } else {
@@ -689,11 +923,15 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                         break;
                     }
                     if (es == 8) {
-                        /* 64-bit store: pop low, pop high, store both */
+                        /* 64-bit store: the value sits high-dword-on-top, so
+                         * the pops are high, low, address.  The value is put
+                         * back on the IR stack because an assignment is an
+                         * expression -- the old code pushed one word only,
+                         * which drifted the operand stack by 4 bytes. */
                         asmbuf_puts(&buf, "    pop edx\n    pop ecx\n    pop eax\n");
-                        asmbuf_puts(&buf, "    mov dword ptr [eax], edx\n");
-                        asmbuf_puts(&buf, "    mov dword ptr [eax+4], ecx\n");
-                        asmbuf_puts(&buf, "    push edx\n");
+                        asmbuf_puts(&buf, "    mov dword ptr [eax], ecx\n");
+                        asmbuf_puts(&buf, "    mov dword ptr [eax+4], edx\n");
+                        asmbuf_puts(&buf, "    push ecx\n    push edx\n");
                     } else {
                         asmbuf_puts(&buf, "    pop edx\n    pop eax\n");
                         if (es == 1)
@@ -743,6 +981,30 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                     if (I->aux & IR_AUX_COMPLEX) {
                         /* __builtin conj() of a _Complex value. */
                         x86_complex_unsupported(&buf, "conj");
+                        break;
+                    }
+                    if (I->val == 2) {
+                        /* 64-bit integer unary: two words, HIGH one on top.
+                         * A single-word `neg` here only touched the high half,
+                         * so `-1000000000LL` came out as +1000000000 and every
+                         * signed 64-bit divide / shift derived from a negated
+                         * literal was silently wrong. */
+                        if (I->aux == (int)TOK_MINUS) {
+                            asmbuf_puts(&buf, "    pop edx\n    pop eax\n"
+                                              "    neg eax\n    adc edx, 0\n    neg edx\n"
+                                              "    push eax\n    push edx\n");
+                        } else if (I->aux == (int)TOK_BNOT) {
+                            asmbuf_puts(&buf, "    pop edx\n    pop eax\n"
+                                              "    not eax\n    not edx\n"
+                                              "    push eax\n    push edx\n");
+                        } else if (I->aux == (int)TOK_NOT) {
+                            asmbuf_puts(&buf, "    pop edx\n    pop eax\n"
+                                              "    or eax, edx\n    test eax, eax\n"
+                                              "    sete al\n    movzx eax, al\n    push eax\n");
+                        } else {
+                            asmbuf_puts(&buf, "    pop edx\n    pop eax\n"
+                                              "    push eax\n    push edx\n");
+                        }
                         break;
                     }
                     asmbuf_puts(&buf, "    pop eax\n");
@@ -800,15 +1062,24 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                     asmbuf_int(&buf, I->val);
                     asmbuf_putc(&buf, '\n');
                     break;
-                case IR_CMP_JMP_EQ:
+                case IR_CMP_JMP_EQ: {
+                    /* The internal assembler has no numeric local labels:
+                     * "1:" defines a symbol literally named "1", so the
+                     * `jne 1f` this used to emit never resolved.  Use a
+                     * per-function name instead. */
+                    int lcj = ++lbl64;
                     asmbuf_puts(&buf, "    mov eax, [esp]\n    cmp eax, ");
                     asmbuf_int(&buf, I->val);
-                    asmbuf_puts(&buf, "\n    jne 1f\n    add esp, 4\n    jmp .L");
+                    asmbuf_puts(&buf, "\n    jne ");
+                    x86_elbl(&buf, f->name, "cj", lcj, 0);
+                    asmbuf_puts(&buf, "    add esp, 4\n    jmp .L");
                     asmbuf_puts(&buf, f->name);
                     asmbuf_putc(&buf, '_');
                     asmbuf_int(&buf, I->aux);
-                    asmbuf_puts(&buf, "\n1:\n");
+                    asmbuf_putc(&buf, '\n');
+                    x86_elbl(&buf, f->name, "cj", lcj, 1);
                     break;
+                }
                 case IR_CALL: {
                     /* cdecl calling convention: all arguments passed on stack
                      * (right to left), caller cleans up via saved esp restore.
@@ -823,8 +1094,16 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                     int is_indirect = (I->name && I->name[0] == '?');
                     int k;
                     int stack_cnt = 0;
-                    int scratch_base = 48 + local_size;
+                    /* 16 bytes below the bottom of the local area, so the
+                     * saved-esp slot can never overlap the lowest local. */
+                    int scratch_base = framelo + 16;
                     int is_void_ret = 0;
+                    int sret_call = (int)((I->val >> 36) & 1);
+                    int sret_buf_off = 0;
+                    int sret_buf_sz = 0;
+                    const int *wires = (I->aux2 > 0) ? &prog->argbytes[I->aux2 - 1] : 0;
+                    int wb[64];
+                    int words_total = 0;
                     (void)argmask;  /* cdecl ignores float/int distinction for arg passing */
 
                     /* For indirect calls, the callee pointer was pushed last
@@ -834,13 +1113,116 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                         asmbuf_puts(&buf, "    pop ecx\n");
                         n = n - 1;
                     }
+                    if (sret_call) {
+                        if (sret_site_cur < sret_site_n) {
+                            sret_buf_off = sret_off_tab[sret_site_cur];
+                            sret_buf_sz = sret_sz_tab[sret_site_cur];
+                            sret_site_cur++;
+                        } else {
+                            ark_log("[x86] error: more struct-returning calls in '%s' "
+                                    "than the frame reserved\n", f->name);
+                            x86_emit_errors++;
+                            sret_call = 0;
+                        }
+                    }
+                    /* The call-scratch area holds 4 bytes per argument; it ends
+                     * where the sret buffers begin.  Overflow is an error, not
+                     * a silent overlap. */
+                    if (n > 120) {
+                        ark_log("[x86] error: call in '%s' passes more than 120 "
+                                "arguments\n", f->name);
+                        x86_emit_errors++;
+                        break;
+                    }
+                    /* Width of every argument word on the wire.  i386 keeps
+                     * each floating value as a 2-word double on the IR stack
+                     * (IR_PUSH_FLOAT promotes float constants), so a `float`
+                     * parameter is 8 bytes here even though sizeof is 4 --
+                     * IR_GETARG reads it with the same table.  Without this the
+                     * pop loop moved one word per *argument*, so f(1.5,2.25)
+                     * handed the callee the two low words and left the high
+                     * words on the stack, and every double/float/long long
+                     * argument lost its upper half. */
+                    {
+                        int wi, ptn = 0, found_pt = 0;
+                        Type **pt = 0;
+                        if (!is_indirect) {
+                            for (wi = 0; wi < prog->func_count; wi++) {
+                                if (ark_streq(prog->funcs[wi]->name, I->name)) {
+                                    pt = prog->funcs[wi]->param_types;
+                                    ptn = prog->funcs[wi]->param_count;
+                                    found_pt = 1;
+                                    break;
+                                }
+                            }
+                        }
+                        for (wi = 0; wi < n; wi++) {
+                            int b = 4;
+                            if (wi < 64) {
+                                if (wires) b = wires[wi] & 0xFFFF;
+                                else if (wi < 16 && ((argmask >> (2 * wi + 1)) & 1)) b = 8;
+                            }
+                            if (found_pt && pt && wi < ptn && pt[wi]) {
+                                Type *t = pt[wi];
+                                int ts = type_size(t);
+                                if (t->kind == TYPE_DOUBLE || t->kind == TYPE_LLONG)
+                                    b = 8;
+                                else if (t->kind == TYPE_FLOAT)
+                                    b = 4;
+                                else if (t->kind == TYPE_STRUCT || t->kind == TYPE_UNION)
+                                    b = (ts > 8) ? 4 : ((ts > 4) ? 8 : 4);
+                                else
+                                    b = 4;
+                            }
+                            if (b <= 0) b = 4;
+                            if (wi < 64) {
+                                wb[wi] = b;
+                                words_total += (b + 3) / 4;
+                            }
+                        }
+                    }
 
-                    /* Pop args 0..n-1. Save each to scratch area (4-byte slots). */
-                    for (k = 0; k < n; k++) {
-                        asmbuf_puts(&buf, "    pop eax\n    mov [ebp-");
-                        asmbuf_int(&buf, scratch_base + 16 + 4 * stack_cnt);
-                        asmbuf_puts(&buf, "], eax\n");
-                        stack_cnt++;
+                    /* The call-scratch area holds 4 bytes per argument word;
+                     * it ends where the sret buffers begin.  The check has to
+                     * run here, after the width table is built -- it used to
+                     * sit above the loop that computes words_total, so it
+                     * compared an initialised 0 and could never fire. */
+                    if (words_total > 116) {
+                        ark_log("[x86] error: call in '%s' needs %d argument words "
+                                "but the call-scratch area holds 116\n",
+                                f->name, words_total);
+                        x86_emit_errors++;
+                        break;
+                    }
+
+                    /* Pop every argument word into the scratch area.  Slot k
+                     * holds wire word k, and slot 0 ends up at [esp] so the
+                     * callee reads it as its first argument.  A 2-word
+                     * argument arrives high-dword-on-top, so its words are
+                     * stored in the opposite order -- that is the internal to
+                     * cdecl conversion, which is why IR_CDECL64 is a no-op in
+                     * this backend. */
+                    {
+                        int ai2;
+                        for (ai2 = 0; ai2 < n; ai2++) {
+                            int w = (ai2 < 64) ? (wb[ai2] + 3) / 4 : 1;
+                            if (w == 2) {
+                                asmbuf_puts(&buf, "    pop eax\n    mov [ebp-");
+                                asmbuf_int(&buf, scratch_base + 16 + 4 * (stack_cnt + 1));
+                                asmbuf_puts(&buf, "], eax\n    pop eax\n    mov [ebp-");
+                                asmbuf_int(&buf, scratch_base + 16 + 4 * stack_cnt);
+                                asmbuf_puts(&buf, "], eax\n");
+                                stack_cnt += 2;
+                            } else {
+                                int wi3;
+                                for (wi3 = 0; wi3 < w; wi3++) {
+                                    asmbuf_puts(&buf, "    pop eax\n    mov [ebp-");
+                                    asmbuf_int(&buf, scratch_base + 16 + 4 * stack_cnt);
+                                    asmbuf_puts(&buf, "], eax\n");
+                                    stack_cnt++;
+                                }
+                            }
+                        }
                     }
 
                     /* Save esp before stack adjustments. */
@@ -858,9 +1240,9 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                      * (esp - 4N) mod 16, which leaves esp a multiple of 16 at
                      * the call instruction. */
                     asmbuf_puts(&buf, "    mov eax, esp\n");
-                    if (stack_cnt > 0) {
+                    if (stack_cnt + (sret_call ? 1 : 0) > 0) {
                         asmbuf_puts(&buf, "    sub eax, ");
-                        asmbuf_int(&buf, 4 * stack_cnt);
+                        asmbuf_int(&buf, 4 * (stack_cnt + (sret_call ? 1 : 0)));
                         asmbuf_putc(&buf, '\n');
                     }
                     asmbuf_puts(&buf, "    and eax, 15\n    sub esp, eax\n");
@@ -871,6 +1253,14 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                         asmbuf_puts(&buf, "    push dword ptr [ebp-");
                         asmbuf_int(&buf, scratch_base + 16 + 4 * k);
                         asmbuf_puts(&buf, "]\n");
+                    }
+                    /* Hidden first argument: the address of this site's result
+                     * buffer.  Pushed last so it sits at [esp] = [ebp+8] in the
+                     * callee, where the sret prologue reads it. */
+                    if (sret_call) {
+                        asmbuf_puts(&buf, "    lea eax, [ebp-");
+                        asmbuf_int(&buf, sret_area_off + sret_buf_off + sret_buf_sz);
+                        asmbuf_puts(&buf, "]\n    push eax\n");
                     }
 
                     /* For direct calls, check if the callee returns void.
@@ -907,18 +1297,80 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                     asmbuf_int(&buf, scratch_base);
                     asmbuf_puts(&buf, "]\n");
 
-                    if (!is_void_ret)
-                        asmbuf_puts(&buf, "    push eax\n");
+                    if (sret_call) is_void_ret = 0;
+                    if (!is_void_ret) {
+                        /* bit 53: the result came back in xmm0, bit 32: it is
+                         * two words (edx:eax) -- the same encoding irgen uses
+                         * for the AMD64 backend.  Pushing `eax` alone dropped
+                         * every double return's high half and every 64-bit
+                         * integer result's upper word. */
+                        int retfloat = (int)((I->val >> 53) & 1);
+                        int ret2 = (int)((I->val >> 32) & 1);
+                        if (retfloat && !ret2)
+                            asmbuf_puts(&buf, "    sub esp, 4\n    movss [esp], xmm0\n");
+                        else if (retfloat) {
+                            /* A double comes back in xmm0; store it and flip the
+                             * two dwords so the high one is on top, the order
+                             * every other 64-bit value on this stack uses. */
+                            asmbuf_puts(&buf, "    sub esp, 8\n    movq [esp], xmm0\n");
+                            x86_pair_swap_at(&buf, 0);
+                        } else if (ret2) {
+                            /* edx:eax is high:low, so the low word is pushed
+                             * first and the high word ends up on top. */
+                            asmbuf_puts(&buf, "    push eax\n    push edx\n");
+                        }
+                        else
+                            asmbuf_puts(&buf, "    push eax\n");
+                    }
                     break;
                 }
                 case IR_RETURN:
                     if (sret_off) {
-                        /* sret return: return the saved sret pointer in eax. */
-                        asmbuf_puts(&buf, "    pop eax\n    mov eax, [ebp-");
+                        /* sret return: irgen pushes the *address* of the object
+                         * being returned, so the copy into the caller's buffer
+                         * belongs here (the AMD64 path does the same).  Without
+                         * it the callee only handed back the buffer pointer and
+                         * `struct S r = mk(1)` read uninitialised memory --
+                         * e.g. s12b (1,2,3) came back as 3952145335.  rep movsb
+                         * clobbers edi/esi/ecx, all of which are either
+                         * callee-saved and restored below, or dead here. */
+                        int rsz = f->ret_type ? type_size(f->ret_type) : 0;
+                        if (rsz <= 0) rsz = 8;
+                        asmbuf_puts(&buf, "    pop esi\n    mov edi, [ebp-");
+                        asmbuf_int(&buf, sret_off);
+                        asmbuf_puts(&buf, "]\n    mov ecx, ");
+                        asmbuf_int(&buf, rsz);
+                        asmbuf_puts(&buf, "\n    rep movsb\n    mov eax, [ebp-");
                         asmbuf_int(&buf, sret_off);
                         asmbuf_puts(&buf, "]\n    lea esp, [ebp-12]\n    pop edi\n    pop esi\n    pop ebx\n    pop ebp\n    ret\n");
                     } else {
-                        asmbuf_puts(&buf, "    pop eax\n    lea esp, [ebp-12]\n    pop edi\n    pop esi\n    pop ebx\n    pop ebp\n    ret\n");
+                        Type *rt = f->ret_type;
+                        int is_fp = rt && (rt->kind == TYPE_FLOAT ||
+                                           rt->kind == TYPE_DOUBLE);
+                        int two = rt && ((rt->kind == TYPE_LLONG ||
+                                          rt->kind == TYPE_DOUBLE) ||
+                                         ((rt->kind == TYPE_STRUCT ||
+                                           rt->kind == TYPE_UNION) &&
+                                          type_size(rt) > 4 && type_size(rt) <= 8));
+                        if (is_fp && rt->kind == TYPE_FLOAT) {
+                            asmbuf_puts(&buf, "    movss xmm0, [esp]\n    add esp, 4\n");
+                        } else if (is_fp) {
+                            /* A double result travels in xmm0, the mirror of
+                             * the call site's bit-53 handling.  `pop eax` used
+                             * to hand back only the low word.  The two words
+                             * arrive high-dword-on-top, so they are flipped
+                             * before movq reads them as a blob. */
+                            x86_pair_swap_at(&buf, 0);
+                            asmbuf_puts(&buf, "    movq xmm0, [esp]\n    add esp, 8\n");
+                        } else if (two) {
+                            /* 64-bit scalars and 5..8 byte composites come back
+                             * in edx:eax (high:low); the IR stack keeps the high
+                             * word on top, so edx is popped first. */
+                            asmbuf_puts(&buf, "    pop edx\n    pop eax\n");
+                        } else {
+                            asmbuf_puts(&buf, "    pop eax\n");
+                        }
+                        asmbuf_puts(&buf, "    lea esp, [ebp-12]\n    pop edi\n    pop esi\n    pop ebx\n    pop ebp\n    ret\n");
                     }
                     break;
                 /* === B1: Missing IR operations for completeness === */
@@ -926,6 +1378,28 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                 case IR_LOCAL_ALLOC:
                     break;
                 case IR_ARG:
+                    break;
+
+                /* IR_CDECL64: convert one 64-bit value from the internal
+                 * order (high dword on top) to cdecl's (low dword first).
+                 * Every 2-word value this backend builds -- and every cdecl
+                 * argument -- is already in the internal order, with the swap
+                 * folded into the call site's argument shuffle, so this is a
+                 * no-op.  Falling through to `default` printed "# unknown IR
+                 * op" and emitted nothing, which silently kept the wrong
+                 * order on the wire. */
+                case IR_CDECL64:
+                    break;
+
+                /* IR_SEXT / IR_ZEXT: widen a 32-bit value on the stack to 64
+                 * bits.  Both used to fall through to `default` (no code at
+                 * all), so `(long long)some_int` left the upper half as
+                 * whatever happened to be below it on the IR stack. */
+                case IR_SEXT:
+                    asmbuf_puts(&buf, "    pop eax\n    cdq\n    push eax\n    push edx\n");
+                    break;
+                case IR_ZEXT:
+                    asmbuf_puts(&buf, "    pop eax\n    xor edx, edx\n    push eax\n    push edx\n");
                     break;
 
                 /* IR_TRUNC: val = target width, aux = 1 zero-extend. */
@@ -1022,24 +1496,27 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                         union { double d; long long i; } u;
                         u.d = v;
                         asmbuf_puts(&buf, "    mov eax, ");
-                        asmbuf_int(&buf, (int)((u.i >> 32) & 0xFFFFFFFF));
+                        asmbuf_int(&buf, (int)(u.i & 0xFFFFFFFF));
                         asmbuf_puts(&buf, "\n    push eax\n");
                         asmbuf_puts(&buf, "    mov eax, ");
-                        asmbuf_int(&buf, (int)(u.i & 0xFFFFFFFF));
+                        asmbuf_int(&buf, (int)((u.i >> 32) & 0xFFFFFFFF));
                         asmbuf_puts(&buf, "\n    push eax\n");
                     } else {
-                        /* float: promote to double for uniform stack representation */
+                        /* float: one word, the single-precision bit pattern.
+                         * This used to widen the constant to a double and push
+                         * two words, which disagreed with the IR model (a
+                         * float expression is one stack word) and with
+                         * IR_PUSH_VAR/IR_STORE for a float local, so every
+                         * `float f = 1.5f;` left a word behind on the IR stack
+                         * -- and IR_FADD then popped a double built from the
+                         * float's bits plus whatever was underneath. */
                         float fv = (float)((I->val >= 0 && I->val < prog->float_count) ?
                                    prog->floats[I->val] : 0.0);
-                        double v = (double)fv;
-                        union { double d; long long i; } u;
-                        u.d = v;
-                        asmbuf_puts(&buf, "    mov eax, ");
-                        asmbuf_int(&buf, (int)((u.i >> 32) & 0xFFFFFFFF));
-                        asmbuf_puts(&buf, "\n    push eax\n");
-                        asmbuf_puts(&buf, "    mov eax, ");
-                        asmbuf_int(&buf, (int)(u.i & 0xFFFFFFFF));
-                        asmbuf_puts(&buf, "\n    push eax\n");
+                        union { float f; unsigned int i; } uf;
+                        uf.f = fv;
+                        asmbuf_puts(&buf, "    push ");
+                        asmbuf_int(&buf, (int)uf.i);
+                        asmbuf_putc(&buf, '\n');
                     }
                     break;
                 }
@@ -1079,11 +1556,29 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                         asmbuf_puts(&buf, " xmm2, xmm1\n");
                         asmbuf_puts(&buf, "    sub esp, 8\n    movq [esp], xmm0\n");
                         asmbuf_puts(&buf, "    sub esp, 8\n    movq [esp], xmm2\n");
-                    } else {
+                    } else if ((I->aux & 0x200) != 0) {
+                        x86_pair_swap_at(&buf, 0);
                         asmbuf_puts(&buf, "    movq xmm1, [esp]\n    add esp, 8\n");
+                        x86_pair_swap_at(&buf, 0);
                         asmbuf_puts(&buf, "    movq xmm0, [esp]\n    add esp, 8\n    ");
                         asmbuf_puts(&buf, op_s);
                         asmbuf_puts(&buf, " xmm0, xmm1\n    sub esp, 8\n    movq [esp], xmm0\n");
+                        x86_pair_swap_at(&buf, 0);
+                    } else {
+                        /* float: one word per operand, single precision.
+                         * `addsd` on a 4-byte operand read the neighbouring
+                         * word as the high half of a double. */
+                        const char *ops = "addss";
+                        switch (I->op) {
+                            case IR_FSUB: ops = "subss"; break;
+                            case IR_FMUL: ops = "mulss"; break;
+                            case IR_FDIV: ops = "divss"; break;
+                            default: ops = "addss"; break;
+                        }
+                        asmbuf_puts(&buf, "    movss xmm1, [esp]\n    add esp, 4\n");
+                        asmbuf_puts(&buf, "    movss xmm0, [esp]\n    add esp, 4\n    ");
+                        asmbuf_puts(&buf, ops);
+                        asmbuf_puts(&buf, " xmm0, xmm1\n    sub esp, 4\n    movss [esp], xmm0\n");
                     }
                     break;
                 }
@@ -1094,18 +1589,12 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                     int is_complex = (I->aux & IR_AUX_COMPLEX) != 0;
                     int cmp_op = I->aux & 0xFF;
                     if (is_complex) {
-                        /* _Complex comparison: only == and != are meaningful */
-                        asmbuf_puts(&buf, "    mov edx, [esp]\n    add esp, 4\n");  /* b imag hi */
-                        asmbuf_puts(&buf, "    pop ecx\n");  /* b imag lo -> ecx */
-                        asmbuf_puts(&buf, "    pop esi\n");  /* b real lo */
-                        asmbuf_puts(&buf, "    pop edi\n");  /* b real hi */
-                        asmbuf_puts(&buf, "    xor eax, eax\n    cmp edi, edx\n    sete al\n");
-                        asmbuf_puts(&buf, "    mov ebx, eax\n    cmp esi, ecx\n    sete al\n");
-                        asmbuf_puts(&buf, "    and eax, ebx\n");
-                        if ((cmp_op & 0xF) == (int)TOK_NE) {
-                            asmbuf_puts(&buf, "    xor eax, 1\n");
-                        }
-                        asmbuf_puts(&buf, "    movzx eax, al\n    push eax\n");
+                        /* A _Complex value is four words and this emitter has
+                         * no complex code generation at all; the old code
+                         * popped three words and answered from the wrong
+                         * halves.  Refuse loudly instead of inventing a value.
+                         */
+                        x86_complex_unsupported(&buf, "_Complex comparison");
                     } else {
                         switch (cmp_op) {
                             case (int)TOK_EQ: cc = "sete";  break;
@@ -1116,9 +1605,20 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                             case (int)TOK_GE: cc = "setae"; break;
                             default: cc = "sete"; break;
                         }
-                        asmbuf_puts(&buf, "    movq xmm1, [esp]\n    add esp, 8\n");
-                        asmbuf_puts(&buf, "    movq xmm0, [esp]\n    add esp, 8\n");
-                        asmbuf_puts(&buf, "    ucomisd xmm0, xmm1\n    ");
+                        if ((I->aux & 0x200) != 0) {
+                            /* Flip each operand in place (high dword on top ->
+                             * blob order) before reading it with movq. */
+                            x86_pair_swap_at(&buf, 0);
+                            asmbuf_puts(&buf, "    movq xmm1, [esp]\n    add esp, 8\n");
+                            x86_pair_swap_at(&buf, 0);
+                            asmbuf_puts(&buf, "    movq xmm0, [esp]\n    add esp, 8\n");
+                            asmbuf_puts(&buf, "    ucomisd xmm0, xmm1\n    ");
+                        } else {
+                            /* float: one word per side, ucomiss. */
+                            asmbuf_puts(&buf, "    movss xmm1, [esp]\n    add esp, 4\n");
+                            asmbuf_puts(&buf, "    movss xmm0, [esp]\n    add esp, 4\n");
+                            asmbuf_puts(&buf, "    ucomiss xmm0, xmm1\n    ");
+                        }
                         asmbuf_puts(&buf, cc);
                         asmbuf_puts(&buf, " al\n    movzx eax, al\n    push eax\n");
                     }
@@ -1132,8 +1632,14 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                         x86_complex_unsupported(&buf, "creal/cimag/cabs/carg");
                         break;
                     }
-                    asmbuf_puts(&buf, "    movq xmm0, [esp]\n    add esp, 8\n");
-                    asmbuf_puts(&buf, "    cvttsd2si eax, xmm0\n    push eax\n");
+                    if ((I->aux & 0x200) != 0) {
+                        x86_pair_swap_at(&buf, 0);
+                        asmbuf_puts(&buf, "    movq xmm0, [esp]\n    add esp, 8\n");
+                        asmbuf_puts(&buf, "    cvttsd2si eax, xmm0\n    push eax\n");
+                    } else {
+                        asmbuf_puts(&buf, "    movss xmm0, [esp]\n    add esp, 4\n");
+                        asmbuf_puts(&buf, "    cvttss2si eax, xmm0\n    push eax\n");
+                    }
                     break;
                 }
 
@@ -1145,24 +1651,60 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                         x86_complex_unsupported(&buf, "real to complex conversion");
                         break;
                     }
-                    asmbuf_puts(&buf, "    pop eax\n    cvtsi2sd xmm0, eax\n");
-                    if (!is_dbl) {
-                        /* float: round to float precision then back to double */
-                        asmbuf_puts(&buf, "    cvtsd2ss xmm0, xmm0\n    cvtss2sd xmm0, xmm0\n");
+                    if (is_dbl) {
+                        asmbuf_puts(&buf, "    pop eax\n    cvtsi2sd xmm0, eax\n"
+                                          "    sub esp, 8\n    movq [esp], xmm0\n");
+                        x86_pair_swap_at(&buf, 0);
+                    } else {
+                        /* float result: one word, genuinely single precision.
+                         * The old code produced a 2-word double that merely
+                         * had float-ish precision, so a float store popped one
+                         * word and left the other on the IR stack. */
+                        asmbuf_puts(&buf, "    pop eax\n    cvtsi2ss xmm0, eax\n"
+                                          "    sub esp, 4\n    movss [esp], xmm0\n");
                     }
-                    asmbuf_puts(&buf, "    sub esp, 8\n    movq [esp], xmm0\n");
+                    break;
+                }
+
+                /* IR_F2F: float <-> double cast.  On i386 every floating
+                 * value already lives on the IR stack as a 2-word double (see
+                 * IR_PUSH_FLOAT), so widening needs no code at all and
+                 * narrowing only has to round to single precision.  Without
+                 * this case the emitter printed "# unknown IR op: F2F" and
+                 * `double f(float x){return x;}` produced garbage. */
+                case IR_F2F: {
+                    /* aux 0x100 = float -> double (widen, 1 word -> 2),
+                     * aux 0x200 = double -> float (narrow, 2 -> 1).  The old
+                     * code printed "# unknown IR op: F2F", so every cast
+                     * between the two widths produced garbage. */
+                    int src_dbl = (I->aux & 0x200) != 0;
+                    int dst_dbl = (I->aux & 0x100) != 0;
+                    if (src_dbl && !dst_dbl) {
+                        /* Read the 2-word double as a blob (flip first, the
+                         * high dword is on top), then narrow. */
+                        x86_pair_swap_at(&buf, 0);
+                        asmbuf_puts(&buf, "    movq xmm0, [esp]\n    add esp, 8\n"
+                                          "    cvtsd2ss xmm0, xmm0\n"
+                                          "    sub esp, 4\n    movss [esp], xmm0\n");
+                    } else if (!src_dbl && dst_dbl) {
+                        asmbuf_puts(&buf, "    movss xmm0, [esp]\n    add esp, 4\n"
+                                          "    cvtss2sd xmm0, xmm0\n"
+                                          "    sub esp, 8\n    movq [esp], xmm0\n");
+                        x86_pair_swap_at(&buf, 0);
+                    }
                     break;
                 }
 
                 /* IR_64PUSH: push 64-bit immediate.
-                 * val=high32, aux=low32. Pushed as two dwords (high then low). */
+                 * val=high32, aux=low32. Pushed as two dwords, low first, so the
+                 * high word ends up on top like every other 64-bit value. */
                 case IR_64PUSH: {
                     long long v = ((long long)(int)I->val << 32) | (unsigned int)I->aux;
                     asmbuf_puts(&buf, "    mov eax, ");
-                    asmbuf_int(&buf, (int)((v >> 32) & 0xFFFFFFFF));
+                    asmbuf_int(&buf, (int)(v & 0xFFFFFFFF));
                     asmbuf_puts(&buf, "\n    push eax\n");
                     asmbuf_puts(&buf, "    mov eax, ");
-                    asmbuf_int(&buf, (int)(v & 0xFFFFFFFF));
+                    asmbuf_int(&buf, (int)((v >> 32) & 0xFFFFFFFF));
                     asmbuf_puts(&buf, "\n    push eax\n");
                     break;
                 }
@@ -1172,83 +1714,218 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                 case IR_64BINARY: {
                     int op = I->aux & 0xFF;
                     const char *bop = binop_x(op);
+                    int uns = (I->aux & 0x100) != 0;
+                    /* A 64-bit value sits on the IR stack with its HIGH dword on
+                     * top and `b` above `a`, so the pops are b_hi, b_lo, a_hi,
+                     * a_lo.  Every result is pushed back low-first to keep that
+                     * invariant. */
                     if (bop) {
-                        /* add/sub/and/or/xor: operate on both dwords independently */
-                        asmbuf_puts(&buf, "    pop ecx\n    pop ebx\n");  /* b (lo,hi) */
-                        asmbuf_puts(&buf, "    pop eax\n    pop edx\n");  /* a (lo,hi) */
+                        int is_add = ark_streq(bop, "add");
+                        int is_sub = ark_streq(bop, "sub");
+                        asmbuf_puts(&buf, "    pop edx\n    pop ecx\n    pop ebx\n    pop eax\n");
                         asmbuf_puts(&buf, "    ");
                         asmbuf_puts(&buf, bop);
                         asmbuf_puts(&buf, " eax, ecx\n    ");
-                        asmbuf_puts(&buf, bop);
-                        asmbuf_puts(&buf, " edx, ebx\n");
-                        asmbuf_puts(&buf, "    push edx\n    push eax\n");
-                    } else if (op == (int)TOK_SHL) {
-                        /* 64-bit left shift.  `shld`/`shl` use cl & 31, so the
-                         * n >= 32 half has to be a separate path or 1ULL << 32
-                         * silently answers 1 (the old code did exactly that):
-                         *   n <  32:  hi = shld(hi,lo,n); lo = lo << n
-                         *   n >= 32:  hi = lo << (n-32); lo = 0 (bits pushed
-                         *             past bit 63 are discarded)
-                         * The count comes from the low dword of b. */
-                        asmbuf_puts(&buf, "    pop ecx\n    add esp, 4\n");  /* shift count, skip hi */
-                        asmbuf_puts(&buf, "    pop eax\n    pop edx\n");  /* a (lo,hi) */
-                        asmbuf_puts(&buf, "    mov ebx, ecx\n    and cl, 31\n");
-                        asmbuf_puts(&buf, "    cmp ebx, 32\n    jb 1f\n");
-                        asmbuf_puts(&buf, "    mov edx, eax\n    shl edx, cl\n    xor eax, eax\n    jmp 2f\n");
-                        asmbuf_puts(&buf, "1:  shld edx, eax, cl\n    shl eax, cl\n");
-                        asmbuf_puts(&buf, "2:  push edx\n    push eax\n");
-                    } else {
-                        /* mul/div/mod/shr/comparisons: fall back to 32-bit behavior
-                         * for syntactic validity. Full 64-bit would require a helper. */
-                        const char *cc = 0;
-                        switch (op) {
-                            case (int)TOK_MUL:
-                                asmbuf_puts(&buf, "    pop ecx\n    add esp, 4\n    pop eax\n    add esp, 4\n    imul eax, ecx\n    push 0\n    push eax\n");
-                                break;
-                            case (int)TOK_DIV:
-                                if (I->aux & 0x100)
-                                    asmbuf_puts(&buf, "    pop ecx\n    add esp, 4\n    pop eax\n    add esp, 4\n    xor edx, edx\n    div ecx\n    push 0\n    push eax\n");
-                                else
-                                    asmbuf_puts(&buf, "    pop ecx\n    add esp, 4\n    pop eax\n    add esp, 4\n    cdq\n    idiv ecx\n    push edx\n    push eax\n");
-                                break;
-                            case (int)TOK_MOD:
-                                if (I->aux & 0x100)
-                                    asmbuf_puts(&buf, "    pop ecx\n    add esp, 4\n    pop eax\n    add esp, 4\n    xor edx, edx\n    div ecx\n    push 0\n    push edx\n");
-                                else
-                                    asmbuf_puts(&buf, "    pop ecx\n    add esp, 4\n    pop eax\n    add esp, 4\n    cdq\n    idiv ecx\n    push 0\n    push edx\n");
-                                break;
-                            case (int)TOK_SHR:
-                                /* 64-bit right shift, same n < 32 / n >= 32 split
-                                 * as the left shift above (cl is masked to 5 bits
-                                 * by the hardware, so a single shift is not enough):
-                                 *   n <  32:  lo = shrd(lo,hi,n); hi = hi >> n
-                                 *   n >= 32:  lo = hi >> (n-32); hi = 0 or sign(hi) */
-                                asmbuf_puts(&buf, "    pop ecx\n    add esp, 4\n    pop eax\n    pop edx\n");
-                                asmbuf_puts(&buf, "    mov ebx, ecx\n    and cl, 31\n");
-                                asmbuf_puts(&buf, "    cmp ebx, 32\n    jb 1f\n");
-                                if (I->aux & 0x100)
-                                    asmbuf_puts(&buf, "    mov eax, edx\n    shr eax, cl\n    xor edx, edx\n    jmp 2f\n");
-                                else
-                                    asmbuf_puts(&buf, "    mov eax, edx\n    sar eax, cl\n    sar edx, 31\n    jmp 2f\n");
-                                if (I->aux & 0x100)
-                                    asmbuf_puts(&buf, "1:  shrd eax, edx, cl\n    shr edx, cl\n");
-                                else
-                                    asmbuf_puts(&buf, "1:  shrd eax, edx, cl\n    sar edx, cl\n");
-                                asmbuf_puts(&buf, "2:  push edx\n    push eax\n");
-                                break;
-                            case (int)TOK_EQ: cc = "sete";  goto cmp64;
-                            case (int)TOK_NE: cc = "setne"; goto cmp64;
-                            case (int)TOK_LT: cc = (I->aux & 0x100) ? "setb" : "setl";  goto cmp64;
-                            case (int)TOK_GT: cc = (I->aux & 0x100) ? "seta" : "setg";  goto cmp64;
-                            case (int)TOK_LE: cc = (I->aux & 0x100) ? "setbe" : "setle"; goto cmp64;
-                            case (int)TOK_GE: cc = (I->aux & 0x100) ? "setae" : "setge"; goto cmp64;
-                            default: cc = "sete";  goto cmp64;
-                        cmp64:
-                            asmbuf_puts(&buf, "    pop ecx\n    add esp, 4\n    pop eax\n    add esp, 4\n    cmp eax, ecx\n    ");
-                            asmbuf_puts(&buf, cc);
-                            asmbuf_puts(&buf, " al\n    movzx eax, al\n    push eax\n");
-                            break;
+                        if (is_add) asmbuf_puts(&buf, "adc ebx, edx\n");
+                        else if (is_sub) asmbuf_puts(&buf, "sbb ebx, edx\n");
+                        else {
+                            asmbuf_puts(&buf, bop);
+                            asmbuf_puts(&buf, " ebx, edx\n");
                         }
+                        asmbuf_puts(&buf, "    push eax\n    push ebx\n");
+                    } else if (op == (int)TOK_SHL || op == (int)TOK_SHR) {
+                        /* 64-bit shift.  shld/shrd only move bits across the
+                         * two dwords for a count below 32; the hardware masks
+                         * `cl` to 5 bits, so the n >= 32 half has to be a
+                         * separate path or 1ULL << 32 silently answers 1.
+                         *   n <  32:  hi = shld(hi,lo,n); lo = lo << n
+                         *   n >= 32:  hi = lo << (n-32); lo = 0
+                         * (and the mirror for right shifts; for n in 32..63,
+                         * n-32 == n & 31). */
+                        int is_shr = (op == (int)TOK_SHR);
+                        int lhi = ++lbl64, lend = ++lbl64;
+                        asmbuf_puts(&buf, "    pop ecx\n    pop esi\n    pop ebx\n    pop eax\n");
+                        asmbuf_puts(&buf, "    mov edx, esi\n    mov ecx, esi\n    and ecx, 31\n");
+                        asmbuf_puts(&buf, "    cmp edx, 32\n    jae ");
+                        x86_elbl(&buf, f->name, "sh", lhi, 0);
+                        if (is_shr) {
+                            asmbuf_puts(&buf, "    shrd eax, ebx, cl\n    ");
+                            asmbuf_puts(&buf, uns ? "shr ebx, cl\n" : "sar ebx, cl\n");
+                        } else {
+                            asmbuf_puts(&buf, "    shld ebx, eax, cl\n    shl eax, cl\n");
+                        }
+                        asmbuf_puts(&buf, "    jmp ");
+                        x86_elbl(&buf, f->name, "sh", lend, 0);
+                        x86_elbl(&buf, f->name, "sh", lhi, 1);
+                        if (is_shr) {
+                            asmbuf_puts(&buf, "    mov eax, ebx\n    ");
+                            asmbuf_puts(&buf, uns ? "shr eax, cl\n    xor ebx, ebx\n"
+                                                  : "sar eax, cl\n    sar ebx, 31\n");
+                        } else {
+                            asmbuf_puts(&buf, "    shl eax, cl\n    mov ebx, eax\n    xor eax, eax\n");
+                        }
+                        x86_elbl(&buf, f->name, "sh", lend, 1);
+                        asmbuf_puts(&buf, "    push eax\n    push ebx\n");
+                    } else if (op == (int)TOK_MUL) {
+                        /* 64x64 -> low 64 bits:
+                         *   lo = lo(a_lo*b_lo)
+                         *   hi = hi32(a_lo*b_lo) + a_hi*b_lo + a_lo*b_hi */
+                        asmbuf_puts(&buf, "    pop edx\n    pop ecx\n    pop ebx\n    pop eax\n");
+                        asmbuf_puts(&buf, "    mov esi, edx\n    mov edi, eax\n");
+                        asmbuf_puts(&buf, "    mul ecx\n");
+                        asmbuf_puts(&buf, "    imul ebx, ecx\n    add edx, ebx\n");
+                        asmbuf_puts(&buf, "    imul edi, esi\n    add edx, edi\n");
+                        asmbuf_puts(&buf, "    push eax\n    push edx\n");
+                    } else if (op == (int)TOK_DIV || op == (int)TOK_MOD) {
+                        /* Restoring shift-subtract, 64 rounds.  Registers:
+                         *   a=|a| in ebx:eax   d=|b| in [divtmp+4:divtmp+0]
+                         *   r in edx:ecx       q in esi:edi
+                         * sign bits in [divtmp+12]: bit0 = a<0, bit1 = b<0.
+                         * Six registers plus the divisor is all this needs, and
+                         * no shld is required -- the 128-bit (r:n) shift is an
+                         * add/adc chain.  A zero divisor is undefined in C; it
+                         * answers 0 here instead of looping or faulting. */
+                        int linit = ++lbl64, lloop = ++lbl64, lsub = ++lbl64;
+                        int lnosub = ++lbl64, lqpos = ++lbl64, lrpos = ++lbl64;
+                        int lend = ++lbl64;
+                        asmbuf_puts(&buf, "    pop edx\n    pop ecx\n    pop ebx\n    pop eax\n");
+                        asmbuf_puts(&buf, "    mov dword ptr [ebp-");
+                        asmbuf_int(&buf, divtmp + 12);
+                        asmbuf_puts(&buf, "], 0\n");
+                        if (!uns) {
+                            asmbuf_puts(&buf, "    mov esi, ebx\n    shr esi, 31\n");
+                            asmbuf_puts(&buf, "    mov dword ptr [ebp-");
+                            asmbuf_int(&buf, divtmp + 12);
+                            asmbuf_puts(&buf, "], esi\n");
+                            /* esi holds the 0/1 sign BIT here, not the
+                             * full high word: `sar esi, 31` on 1 gives 0, so
+                             * |a| was never taken and every signed 64-bit
+                             * divide with a negative dividend divided the
+                             * raw two's-complement pattern.  `neg` turns the
+                             * bit into the 0 / -1 mask the xor/sub pair
+                             * needs. */
+                            asmbuf_puts(&buf, "    neg esi\n");
+                            asmbuf_puts(&buf, "    xor eax, esi\n    xor ebx, esi\n");
+                            asmbuf_puts(&buf, "    sub eax, esi\n    sbb ebx, esi\n");
+                            asmbuf_puts(&buf, "    mov esi, edx\n    shr esi, 31\n");
+                            asmbuf_puts(&buf, "    add esi, esi\n    mov edi, [ebp-");
+                            asmbuf_int(&buf, divtmp + 12);
+                            asmbuf_puts(&buf, "]\n    or edi, esi\n");
+                            asmbuf_puts(&buf, "    mov dword ptr [ebp-");
+                            asmbuf_int(&buf, divtmp + 12);
+                            asmbuf_puts(&buf, "], edi\n");
+                            asmbuf_puts(&buf, "    mov esi, edx\n    sar esi, 31\n");
+                            asmbuf_puts(&buf, "    mov edi, ecx\n");
+                            asmbuf_puts(&buf, "    xor edi, esi\n    xor edx, esi\n");
+                            asmbuf_puts(&buf, "    sub edi, esi\n    sbb edx, esi\n");
+                            asmbuf_puts(&buf, "    mov [ebp-");
+                            asmbuf_int(&buf, divtmp);
+                            asmbuf_puts(&buf, "], edi\n    mov [ebp-");
+                            asmbuf_int(&buf, divtmp + 4);
+                            asmbuf_puts(&buf, "], edx\n");
+                        } else {
+                            asmbuf_puts(&buf, "    mov [ebp-");
+                            asmbuf_int(&buf, divtmp);
+                            asmbuf_puts(&buf, "], ecx\n    mov [ebp-");
+                            asmbuf_int(&buf, divtmp + 4);
+                            asmbuf_puts(&buf, "], edx\n");
+                        }
+                        asmbuf_puts(&buf, "    mov esi, [ebp-");
+                        asmbuf_int(&buf, divtmp);
+                        asmbuf_puts(&buf, "]\n    or esi, [ebp-");
+                        asmbuf_int(&buf, divtmp + 4);
+                        asmbuf_puts(&buf, "]\n    jnz ");
+                        x86_elbl(&buf, f->name, "dv", linit, 0);
+                        asmbuf_puts(&buf, "    push 0\n    push 0\n    jmp ");
+                        x86_elbl(&buf, f->name, "dv", lend, 0);
+                        x86_elbl(&buf, f->name, "dv", linit, 1);
+                        asmbuf_puts(&buf, "    xor esi, esi\n    xor edi, edi\n");
+                        asmbuf_puts(&buf, "    xor ecx, ecx\n    xor edx, edx\n");
+                        asmbuf_puts(&buf, "    mov dword ptr [ebp-");
+                        asmbuf_int(&buf, divtmp + 8);
+                        asmbuf_puts(&buf, "], 64\n");
+                        x86_elbl(&buf, f->name, "dv", lloop, 1);
+                        /* Shift the 128-bit (r:n) pair left by one the
+                         * way the restoring algorithm needs it: the bit
+                         * shifted out of n's top goes into r's bottom,
+                         * which is what adc (not add) does here.  With
+                         * `add` the dividend's high bits were dropped and
+                         * every 64-bit division answered 0. */
+                        asmbuf_puts(&buf, "    add eax, eax\n    adc ebx, ebx\n");
+                        asmbuf_puts(&buf, "    adc ecx, ecx\n    adc edx, edx\n");
+                        asmbuf_puts(&buf, "    add edi, edi\n    adc esi, esi\n");
+                        asmbuf_puts(&buf, "    cmp edx, [ebp-");
+                        asmbuf_int(&buf, divtmp + 4);
+                        asmbuf_puts(&buf, "]\n    jb ");
+                        x86_elbl(&buf, f->name, "dv", lnosub, 0);
+                        asmbuf_puts(&buf, "    ja ");
+                        x86_elbl(&buf, f->name, "dv", lsub, 0);
+                        asmbuf_puts(&buf, "    cmp ecx, [ebp-");
+                        asmbuf_int(&buf, divtmp);
+                        asmbuf_puts(&buf, "]\n    jb ");
+                        x86_elbl(&buf, f->name, "dv", lnosub, 0);
+                        x86_elbl(&buf, f->name, "dv", lsub, 1);
+                        asmbuf_puts(&buf, "    sub ecx, [ebp-");
+                        asmbuf_int(&buf, divtmp);
+                        asmbuf_puts(&buf, "]\n    sbb edx, [ebp-");
+                        asmbuf_int(&buf, divtmp + 4);
+                        asmbuf_puts(&buf, "]\n    or edi, 1\n");
+                        x86_elbl(&buf, f->name, "dv", lnosub, 1);
+                        asmbuf_puts(&buf, "    sub dword ptr [ebp-");
+                        asmbuf_int(&buf, divtmp + 8);
+                        asmbuf_puts(&buf, "], 1\n    jnz ");
+                        x86_elbl(&buf, f->name, "dv", lloop, 0);
+                        if (!uns) {
+                            /* Quotient is negative iff exactly one operand was
+                             * (sign word 1 or 2); the remainder follows
+                             * dividend's sign (bit 0). */
+                            asmbuf_puts(&buf, "    mov eax, [ebp-");
+                            asmbuf_int(&buf, divtmp + 12);
+                            asmbuf_puts(&buf, "]\n    mov ebx, eax\n    and ebx, 1\n");
+                            asmbuf_puts(&buf, "    cmp eax, 0\n    je ");
+                            x86_elbl(&buf, f->name, "dv", lqpos, 0);
+                            asmbuf_puts(&buf, "    cmp eax, 3\n    je ");
+                            x86_elbl(&buf, f->name, "dv", lqpos, 0);
+                            asmbuf_puts(&buf, "    not edi\n    not esi\n");
+                            asmbuf_puts(&buf, "    add edi, 1\n    adc esi, 0\n");
+                            x86_elbl(&buf, f->name, "dv", lqpos, 1);
+                            asmbuf_puts(&buf, "    test ebx, ebx\n    jz ");
+                            x86_elbl(&buf, f->name, "dv", lrpos, 0);
+                            asmbuf_puts(&buf, "    not ecx\n    not edx\n");
+                            asmbuf_puts(&buf, "    add ecx, 1\n    adc edx, 0\n");
+                            x86_elbl(&buf, f->name, "dv", lrpos, 1);
+                        }
+                        if (op == (int)TOK_DIV)
+                            asmbuf_puts(&buf, "    push edi\n    push esi\n");
+                        else
+                            asmbuf_puts(&buf, "    push ecx\n    push edx\n");
+                        x86_elbl(&buf, f->name, "dv", lend, 1);
+                    } else {
+                        int uns2 = uns;
+                        const char *cc = 0;
+                        int ld = ++lbl64;
+                        switch (op) {
+                            case (int)TOK_EQ: cc = "sete";  break;
+                            case (int)TOK_NE: cc = "setne"; break;
+                            case (int)TOK_LT: cc = uns2 ? "setb" : "setl";  break;
+                            case (int)TOK_GT: cc = uns2 ? "seta" : "setg";  break;
+                            case (int)TOK_LE: cc = uns2 ? "setbe" : "setle"; break;
+                            case (int)TOK_GE: cc = uns2 ? "setae" : "setge"; break;
+                            default: cc = "sete"; break;
+                        }
+                        /* Two-word compare: the high dwords decide unless they
+                         * are equal, and then the low dwords decide with the
+                         * same condition code.  Comparing only the low words
+                         * (what this used to do) answered 0 for every ordering
+                         * question on 64-bit values. */
+                        asmbuf_puts(&buf, "    pop edx\n    pop ecx\n    pop ebx\n    pop eax\n");
+                        asmbuf_puts(&buf, "    cmp ebx, edx\n    jne ");
+                        x86_elbl(&buf, f->name, "cm", ld, 0);
+                        asmbuf_puts(&buf, "    cmp eax, ecx\n");
+                        x86_elbl(&buf, f->name, "cm", ld, 1);
+                        asmbuf_puts(&buf, "    ");
+                        asmbuf_puts(&buf, cc);
+                        asmbuf_puts(&buf, " al\n    movzx eax, al\n    push eax\n");
                     }
                     break;
                 }
@@ -1256,17 +1933,26 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                 /* IR_64CMP: 64-bit compare. aux = TOK_xxx | (0x100 if unsigned). */
                 case IR_64CMP: {
                     int op = I->aux & 0xFF;
-                    const char *cc = 0;
+                    int uns = (I->aux & 0x100) != 0;
+                    const char *cc;
+                    int ld = ++lbl64;
                     switch (op) {
                         case (int)TOK_EQ: cc = "sete";  break;
                         case (int)TOK_NE: cc = "setne"; break;
-                        case (int)TOK_LT: cc = (I->aux & 0x100) ? "setb" : "setl";  break;
-                        case (int)TOK_GT: cc = (I->aux & 0x100) ? "seta" : "setg";  break;
-                        case (int)TOK_LE: cc = (I->aux & 0x100) ? "setbe" : "setle"; break;
-                        case (int)TOK_GE: cc = (I->aux & 0x100) ? "setae" : "setge"; break;
+                        case (int)TOK_LT: cc = uns ? "setb" : "setl";  break;
+                        case (int)TOK_GT: cc = uns ? "seta" : "setg";  break;
+                        case (int)TOK_LE: cc = uns ? "setbe" : "setle"; break;
+                        case (int)TOK_GE: cc = uns ? "setae" : "setge"; break;
                         default: cc = "sete"; break;
                     }
-                    asmbuf_puts(&buf, "    pop ecx\n    add esp, 4\n    pop eax\n    add esp, 4\n    cmp eax, ecx\n    ");
+                    /* High dwords first, then the low ones when they tie; the
+                     * condition code is the same for both halves. */
+                    asmbuf_puts(&buf, "    pop edx\n    pop ecx\n    pop ebx\n    pop eax\n");
+                    asmbuf_puts(&buf, "    cmp ebx, edx\n    jne ");
+                    x86_elbl(&buf, f->name, "cm", ld, 0);
+                    asmbuf_puts(&buf, "    cmp eax, ecx\n");
+                    x86_elbl(&buf, f->name, "cm", ld, 1);
+                    asmbuf_puts(&buf, "    ");
                     asmbuf_puts(&buf, cc);
                     asmbuf_puts(&buf, " al\n    movzx eax, al\n    push eax\n");
                     break;
@@ -1274,14 +1960,91 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
 
                 /* IR_64F2I / IR_64I2F: 64-bit float <-> 64-bit int.
                  * On x86-32 these operate on 8-byte stack slots. */
-                case IR_64F2I:
-                    asmbuf_puts(&buf, "    movq xmm0, [esp]\n    add esp, 8\n");
-                    asmbuf_puts(&buf, "    cvttsd2si eax, xmm0\n    push 0\n    push eax\n");
+                case IR_64F2I: {
+                    /* double (or float, aux bit 0x200 clear) -> long long.
+                     * aux 0x200 = source is double, 0x400 = destination is
+                     * unsigned.  The source sits high-dword-first on the IR
+                     * stack, so it has to be flipped before the movq.  A single
+                     * cvttsd2si saturated at 2^31; the real conversion splits
+                     * the value into hi*2^32 + lo. */
+                    int lp = ++lbl64, ld = ++lbl64;
+                    if (I->aux & 0x200) {
+                        x86_pair_swap_at(&buf, 0);
+                        asmbuf_puts(&buf, "    movq xmm0, [esp]\n    add esp, 8\n");
+                    } else {
+                        asmbuf_puts(&buf, "    movss xmm0, [esp]\n    add esp, 4\n");
+                        asmbuf_puts(&buf, "    cvtss2sd xmm0, xmm0\n");
+                    }
+                    /* xmm2 = 2^32, xmm3 = 2^31 */
+                    asmbuf_puts(&buf, "    mov ecx, 65536\n    cvtsi2sd xmm2, ecx\n    mulsd xmm2, xmm2\n");
+                    asmbuf_puts(&buf, "    mov ecx, 1073741824\n    cvtsi2sd xmm3, ecx\n    addsd xmm3, xmm3\n");
+                    asmbuf_puts(&buf, "    movapd xmm1, xmm0\n    divsd xmm1, xmm2\n");
+                    if (I->aux & 0x400) {
+                        /* unsigned destination: both halves are converted as
+                         * unsigned, which is what the 2^31 split is for. */
+                        asmbuf_puts(&buf, "    subsd xmm1, xmm3\n    cvttsd2si edx, xmm1\n");
+                        asmbuf_puts(&buf, "    add edx, 0x80000000\n");
+                        asmbuf_puts(&buf, "    mov eax, edx\n");
+                        x86_u32_to_xmm(&buf, "xmm1");
+                        asmbuf_puts(&buf, "    mulsd xmm1, xmm2\n    subsd xmm0, xmm1\n");
+                        asmbuf_puts(&buf, "    subsd xmm0, xmm3\n    cvttsd2si eax, xmm0\n");
+                        asmbuf_puts(&buf, "    add eax, 0x80000000\n");
+                    } else {
+                        /* Signed: take the magnitude first (|x| < 2^63, so the
+                         * high half always fits a signed 32-bit conversion),
+                         * then re-apply the sign. */
+                        asmbuf_puts(&buf, "    xorpd xmm7, xmm7\n    xor edi, edi\n");
+                        asmbuf_puts(&buf, "    comisd xmm0, xmm7\n    jae ");
+                        x86_elbl(&buf, f->name, "f2i", lp, 0);
+                        asmbuf_puts(&buf, "    mov edi, 1\n    subsd xmm7, xmm0\n");
+                        asmbuf_puts(&buf, "    movapd xmm0, xmm7\n    movapd xmm1, xmm0\n");
+                        asmbuf_puts(&buf, "    divsd xmm1, xmm2\n");
+                        x86_elbl(&buf, f->name, "f2i", lp, 1);
+                        asmbuf_puts(&buf, "    cvttsd2si edx, xmm1\n");
+                        asmbuf_puts(&buf, "    cvtsi2sd xmm1, edx\n    mulsd xmm1, xmm2\n");
+                        asmbuf_puts(&buf, "    subsd xmm0, xmm1\n");
+                        asmbuf_puts(&buf, "    subsd xmm0, xmm3\n    cvttsd2si eax, xmm0\n");
+                        asmbuf_puts(&buf, "    add eax, 0x80000000\n");
+                        asmbuf_puts(&buf, "    test edi, edi\n    jz ");
+                        x86_elbl(&buf, f->name, "f2i", ld, 0);
+                        asmbuf_puts(&buf, "    not eax\n    not edx\n");
+                        asmbuf_puts(&buf, "    add eax, 1\n    adc edx, 0\n");
+                        x86_elbl(&buf, f->name, "f2i", ld, 1);
+                    }
+                    asmbuf_puts(&buf, "    push eax\n    push edx\n");
                     break;
-                case IR_64I2F:
-                    asmbuf_puts(&buf, "    pop eax\n    add esp, 4\n    cvtsi2sd xmm0, eax\n");
-                    asmbuf_puts(&buf, "    sub esp, 8\n    movq [esp], xmm0\n");
+                }
+                case IR_64I2F: {
+                    /* long long -> double/float.  aux 0x200 = destination is
+                     * double, 0x400 = source is unsigned.  |x| is assembled as
+                     * hi*2^32 + lo with each half converted as unsigned
+                     * (cvtsi2sd is signed only), then the sign is applied as a
+                     * multiply. */
+                    asmbuf_puts(&buf, "    pop edx\n    pop eax\n");
+                    if (!(I->aux & 0x400)) {
+                        asmbuf_puts(&buf, "    mov esi, edx\n    sar esi, 31\n");
+                        asmbuf_puts(&buf, "    xor eax, esi\n    xor edx, esi\n");
+                        asmbuf_puts(&buf, "    sub eax, esi\n    sbb edx, esi\n");
+                    } else {
+                        asmbuf_puts(&buf, "    xor esi, esi\n");
+                    }
+                    asmbuf_puts(&buf, "    mov ebx, eax\n    mov eax, edx\n");
+                    x86_u32_to_xmm(&buf, "xmm1");
+                    asmbuf_puts(&buf, "    mov eax, ebx\n");
+                    x86_u32_to_xmm(&buf, "xmm0");
+                    asmbuf_puts(&buf, "    mov ecx, 65536\n    cvtsi2sd xmm2, ecx\n    mulsd xmm2, xmm2\n");
+                    asmbuf_puts(&buf, "    mulsd xmm1, xmm2\n    addsd xmm0, xmm1\n");
+                    asmbuf_puts(&buf, "    mov ecx, esi\n    add ecx, ecx\n    add ecx, 1\n");
+                    asmbuf_puts(&buf, "    cvtsi2sd xmm2, ecx\n    mulsd xmm0, xmm2\n");
+                    if (I->aux & 0x200) {
+                        asmbuf_puts(&buf, "    sub esp, 8\n    movq [esp], xmm0\n");
+                        x86_pair_swap_at(&buf, 0);
+                    } else {
+                        asmbuf_puts(&buf, "    cvtsd2ss xmm0, xmm0\n");
+                        asmbuf_puts(&buf, "    sub esp, 4\n    movss [esp], xmm0\n");
+                    }
                     break;
+                }
 
                 /* IR_STORE_FLD: bitfield store. val=bit_off, aux=bit_width. */
                 case IR_STORE_FLD: {
@@ -1844,9 +2607,33 @@ static int amd64_emit_internal(IrProgram *prog, char *out, int cap) {
                 /* The IR spells every widening out itself (PUSH 0 + compare +
                  * negate for signed, PUSH 0 for unsigned) and every narrowing
                  * as an explicit IR_TRUNC, so these three are no-ops -- the
-                 * same contract the ARM and RISC-V backends work under. */
+                 * same contract the ARM and RISC-V backends work under.
+                 *
+                 * One exception: IR_SEXT with IR_AUX_SLOT64.  irgen emits it
+                 * for `(long long)p`, where the single word on the stack is a
+                 * complete 64-bit address rather than a 32-bit payload, so the
+                 * missing high half cannot be a zero -- that would truncate
+                 * every pointer above 4 GB.  Split the word instead: the low
+                 * word becomes the zero-extended low 32 bits, the high word
+                 * the upper 32, matching amd_pop64's (hi << 32) | lo. */
                 case IR_SEXT:
+                    if (I->aux & IR_AUX_SLOT64) {
+                        asmbuf_puts(&buf, "    pop rax\n    mov rdx, rax\n    shr rdx, 32\n"
+                                          "    mov eax, eax\n    push rax\n    push rdx\n");
+                    }
+                    break;
                 case IR_ZEXT:
+                    /* IR_AUX_SLOT64: the mirror of the case above -- pack the
+                     * two-word 64-bit integer (lo, hi-on-top) back into the
+                     * single pointer slot, keeping all 64 bits.  irgen emits it
+                     * for `(char *)some_long_long`; dropping the high half
+                     * instead would keep only the low 32 bits of the address
+                     * (measured: `(char *)0x300000000LL != 0` answered 0). */
+                    if (I->aux & IR_AUX_SLOT64) {
+                        asmbuf_puts(&buf, "    pop rdx\n    pop rax\n    mov eax, eax\n"
+                                          "    shl rdx, 32\n    or rax, rdx\n    push rax\n");
+                    }
+                    break;
                 case IR_CDECL64:
                     break;
 
@@ -2170,8 +2957,38 @@ static int amd64_emit_internal(IrProgram *prog, char *out, int cap) {
                 case IR_BINARY: {
                     int op = (int)(I->aux & 0xFF);
                     int uns = (I->aux & 0x100) != 0;
+                    /* IR_AUX_SLOT64 says both operands are ONE word holding a
+                     * full 64-bit value (a pointer on this ABI).  The plain
+                     * 32-bit forms below wrote eax, which zero-extends into
+                     * rax and threw the upper half of the address away. */
+                    int w64 = (I->aux & IR_AUX_SLOT64) != 0;
                     const char *bop = binop_x(op);
                     asmbuf_puts(&buf, "    pop rcx\n    pop rax\n");
+                    if (w64) {
+                        if (bop) {
+                            asmbuf_puts(&buf, "    ");
+                            asmbuf_puts(&buf, bop);
+                            asmbuf_puts(&buf, " rax, rcx\n    push rax\n");
+                        } else if (op == (int)TOK_MUL) {
+                            asmbuf_puts(&buf, "    imul rax, rcx\n    push rax\n");
+                        } else if (op == (int)TOK_DIV || op == (int)TOK_MOD) {
+                            asmbuf_puts(&buf, uns ? "    xor edx, edx\n    div rcx\n"
+                                                  : "    cqo\n    idiv rcx\n");
+                            asmbuf_puts(&buf, op == (int)TOK_DIV ? "    push rax\n"
+                                                                 : "    push rdx\n");
+                        } else if (op == (int)TOK_SHL) {
+                            asmbuf_puts(&buf, "    shl rax, cl\n    push rax\n");
+                        } else if (op == (int)TOK_SHR) {
+                            asmbuf_puts(&buf, uns ? "    shr rax, cl\n    push rax\n"
+                                                  : "    sar rax, cl\n    push rax\n");
+                        } else {
+                            const char *cc64 = amd_cc(op, uns);
+                            asmbuf_puts(&buf, "    cmp rax, rcx\n    ");
+                            asmbuf_puts(&buf, cc64);
+                            asmbuf_puts(&buf, " al\n    movzx eax, al\n    push rax\n");
+                        }
+                        break;
+                    }
                     if (bop) {
                         asmbuf_puts(&buf, "    ");
                         asmbuf_puts(&buf, bop);
@@ -2478,7 +3295,21 @@ static int amd64_emit_internal(IrProgram *prog, char *out, int cap) {
                         int retfloat = (int)((I->val >> 53) & 1);
                         if (retvoid) break;
                         if (retfloat) {
-                            asmbuf_puts(&buf, "    movq rax, xmm0\n    mov eax, eax\n    push rax\n");
+                            /* A floating-point result arrives in xmm0, but the
+                             * IR stack convention is unchanged: the stack top is
+                             * the LOW word, and a double occupies two words while
+                             * a float occupies one.  Pushing a single word for a
+                             * double (the old code) left the high word missing, so
+                             * every call whose result was consumed by IR_FADD etc.
+                             * popped the callee's argument half out of the previous
+                             * frame slot -- f_add(9.5,5.5), f_mul, g1, g5 and g8 all
+                             * read 0 on x86_64 after the bit-53 encoding fix made
+                             * this branch reachable for the first time. */
+                            asmbuf_puts(&buf, "    movq rax, xmm0\n");
+                            if (ret2)
+                                amd_push64(&buf, "rax", "eax");
+                            else
+                                asmbuf_puts(&buf, "    mov eax, eax\n    push rax\n");
                         } else if (ret2) {
                             /* A two-word result comes back as one full 64-bit
                              * value in rax (see IR_RETURN: amd_pop64 rebuilds
@@ -3222,14 +4053,18 @@ static int xa_parse_reg(const char **p, int *size) {
     while (xa_is_alnum(**p) && n < (int)sizeof(w) - 1) { w[n++] = **p; (*p)++; }
     w[n] = 0;
     if (n == 0) return -1;
+    /* SSE registers exist in 32-bit mode as well: xmm0..xmm7 (xmm8..xmm15 are
+     * AMD64-only).  Leaving this inside the g_xa64 gate made every i386
+     * floating-point shape unassemblable -- `movq xmm0, [esp]`, the form the
+     * 32-bit float path emits, failed to parse and reported the misleading
+     * "movq needs an xmm operand".  reg_size 16 marks "SSE register". */
+    if (n >= 4 && w[0] == 'x' && w[1] == 'm' && w[2] == 'm') {
+        int i = 3, v = 0, digits = 0;
+        while (i < n && w[i] >= '0' && w[i] <= '9') { v = v * 10 + (w[i] - '0'); i++; digits++; }
+        if (i == n && digits >= 1 && v <= (g_xa64 ? 15 : 7)) { *size = 16; return v; }
+    }
     /* --- AMD64-only register names (gated so i386 output is unchanged) --- */
     if (g_xa64) {
-        /* xmm0 .. xmm15 : reg_size 16 marks "SSE register" for the emitter */
-        if (n >= 4 && w[0] == 'x' && w[1] == 'm' && w[2] == 'm') {
-            int i = 3, v = 0, digits = 0;
-            while (i < n && w[i] >= '0' && w[i] <= '9') { v = v * 10 + (w[i] - '0'); i++; digits++; }
-            if (i == n && digits >= 1 && v <= 15) { *size = 16; return v; }
-        }
         /* r8 .. r15 (with optional d / w / b suffix) */
         if (w[0] == 'r' && n >= 2 && n <= 4) {
             int i = 1, v = 0, digits = 0;
@@ -3865,7 +4700,26 @@ static void xa_shift(X86Asm *a, int ext, X86Operand *d, X86Operand *s) {
     if (!by_cl) xa_emit(a, (unsigned char)(s->imm & 0xFF));
 }
 
-/* Group 3 unary: ext=2 not, 3 neg, 6 div, 7 idiv (F7 /ext). */
+/* Double-precision shifts: shld (0F A4 /r ib, 0F A5 /r) and shrd
+ * (0F AC /r ib, 0F AD /r).  Three operands: destination, source, count. */
+static void xa_shxd(X86Asm *a, int op_imm, int op_cl, X86Operand *d,
+                    X86Operand *s, X86Operand *c) {
+    int w = (xa_opsize(d) == 8) ? 1 : 0;
+    int by_cl = (c->kind == XOP_REG && c->reg_size == 1 && (c->reg & 7) == 1);
+    if (!by_cl && c->kind != XOP_IMM) {
+        a->error_count++;
+        diag_tool(DIAG_SEV_ERROR, "arkcc", "shld/shrd needs cl or an immediate", 0,0,0,0,0,0);
+        return;
+    }
+    xa_rex_rm(a, w, s->reg, d);
+    xa_emit(a, 0x0F);
+    xa_emit(a, (unsigned char)(by_cl ? op_cl : op_imm));
+    if (d->kind == XOP_REG) xa_modrm_reg(a, s->reg, d->reg);
+    else xa_modrm_mem(a, s->reg, d);
+    if (!by_cl) xa_emit(a, (unsigned char)(c->imm & 0xFF));
+}
+
+/* Group 3 unary: ext=2 not, 3 neg, 4 mul, 6 div, 7 idiv (F7 /ext). */
 static void xa_grp3(X86Asm *a, int ext, X86Operand *d) {
     int w = (xa_opsize(d) == 8) ? 1 : 0;
     xa_rex_rm(a, w, ext, d);
@@ -3973,7 +4827,9 @@ static void xa_process_line(X86Asm *a, const char *line) {
     const char *p = line;
     g_xa64 = a->mode64;
     char mn[XA_SYM_MAX];
-    X86Operand ops[2];
+    /* Three operands, not two: shld/shrd take dest, source, count.  A
+     * directive re-parses from opstart, so the extra slot is harmless. */
+    X86Operand ops[3];
     int nop = 0;
 
     xa_skip_space(&p);
@@ -4011,7 +4867,7 @@ static void xa_process_line(X86Asm *a, const char *line) {
     /* Parse operands (up to 2, comma-separated) */
     {
         int i;
-        for (i = 0; i < 2; i++) {
+        for (i = 0; i < 3; i++) {
             ops[i].kind = XOP_NONE;
             if (xa_parse_operand(&p, &ops[i])) {
                 nop++;
@@ -4205,6 +5061,12 @@ static void xa_process_line(X86Asm *a, const char *line) {
             a->error_count++;
             diag_tool(DIAG_SEV_ERROR, "arkcc", "unsupported imul form", 0,0,0,0,0,0);
         }
+    } else if (xa_strieq(mn, "mul")) {
+        xa_grp3(a, 4, &ops[0]);
+    } else if (xa_strieq(mn, "shld")) {
+        xa_shxd(a, 0xA4, 0xA5, &ops[0], &ops[1], &ops[2]);
+    } else if (xa_strieq(mn, "shrd")) {
+        xa_shxd(a, 0xAC, 0xAD, &ops[0], &ops[1], &ops[2]);
     } else if (xa_strieq(mn, "idiv")) {
         xa_grp3(a, 7, &ops[0]);
     } else if (xa_strieq(mn, "div")) {
@@ -4336,6 +5198,34 @@ static void xa_process_line(X86Asm *a, const char *line) {
         xa_sse(a, 0xF2, 0x5E, &ops[0], &ops[1]);
     } else if (xa_strieq(mn, "sqrtsd")) {
         xa_sse(a, 0xF2, 0x51, &ops[0], &ops[1]);
+    } else if (xa_strieq(mn, "addss")) {
+        xa_sse(a, 0xF3, 0x58, &ops[0], &ops[1]);
+    } else if (xa_strieq(mn, "subss")) {
+        xa_sse(a, 0xF3, 0x5C, &ops[0], &ops[1]);
+    } else if (xa_strieq(mn, "mulss")) {
+        xa_sse(a, 0xF3, 0x59, &ops[0], &ops[1]);
+    } else if (xa_strieq(mn, "divss")) {
+        xa_sse(a, 0xF3, 0x5E, &ops[0], &ops[1]);
+    } else if (xa_strieq(mn, "sqrtss")) {
+        xa_sse(a, 0xF3, 0x51, &ops[0], &ops[1]);
+    } else if (xa_strieq(mn, "movss") && nop == 2) {
+        /* F3 0F 10 /r (load) or F3 0F 11 /r (store).  The 32-bit i386
+         * emitter stores a float as one word, so every single-precision
+         * load/store needs this: without it the assembler rejected the
+         * instruction ("unknown instruction \"movss\"") and a float
+         * local, float argument or float return could not be assembled at
+         * all -- f_float, g1 and g2 failed to build while the double forms
+         * worked. */
+        if (ops[0].kind == XOP_MEM) xa_sse(a, 0xF3, 0x11, &ops[1], &ops[0]);
+        else xa_sse(a, 0xF3, 0x10, &ops[0], &ops[1]);
+    } else if (xa_strieq(mn, "ucomiss")) {
+        xa_sse(a, 0, 0x2E, &ops[0], &ops[1]);
+    } else if (xa_strieq(mn, "comiss")) {
+        xa_sse(a, 0, 0x2F, &ops[0], &ops[1]);
+    } else if (xa_strieq(mn, "cvttss2si")) {
+        xa_sse(a, 0xF3, 0x2C, &ops[0], &ops[1]);
+    } else if (xa_strieq(mn, "cvtsi2ss")) {
+        xa_sse(a, 0xF3, 0x2A, &ops[0], &ops[1]);
     } else if (xa_strieq(mn, "ucomisd")) {
         xa_sse(a, 0x66, 0x2E, &ops[0], &ops[1]);
     } else if (xa_strieq(mn, "comisd")) {
