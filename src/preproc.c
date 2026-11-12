@@ -477,6 +477,23 @@ void preproc_add_include_dir(const char *dir) {
     }
 }
 
+/* Target identity. Kept as state on the preprocessor (not read from g_config at
+ * use time) because the board build runs several targets in one process: a
+ * previous ARM compile must not leave __arm__ behind for the next RISC-V one. */
+static int  g_target_id = 0;                 /* 0 = arm (default backend) */
+static const char *g_target_name = "arm";
+
+void preproc_set_target(const char *backend_name) {
+    const char *n = (backend_name && backend_name[0]) ? backend_name : "arm";
+    g_target_name = n;
+    if      (ark_streq(n, "arm"))     g_target_id = 0;
+    else if (ark_streq(n, "x86"))     g_target_id = 1;
+    else if (ark_streq(n, "x86_64"))  g_target_id = 2;
+    else if (ark_streq(n, "riscv32")) g_target_id = 3;
+    else if (ark_streq(n, "c"))       g_target_id = 4;
+    else                              g_target_id = 0;  /* unknown: keep arm */
+}
+
 void preproc_set_main_file(const char *path) {
     int n = ark_strlen(path);
     int i;
@@ -2022,7 +2039,10 @@ char *preproc_process(const char *src) {
     if (!find_macro("__BIG_ENDIAN"))        add_object_macro("__BIG_ENDIAN", "0");
     if (!find_macro("__LITTLE_ENDIAN__"))   add_object_macro("__LITTLE_ENDIAN__", "1");
     if (!find_macro("__sizeof_int"))        add_object_macro("__sizeof_int", "4");
-    if (!find_macro("__sizeof_ptr"))        add_object_macro("__sizeof_ptr", "4");
+    /* Pointer width follows the backend that will emit the code; a constant 4
+     * is a wrong answer for x86_64 (see the target block below). */
+    if (!find_macro("__sizeof_ptr"))
+        add_object_macro("__sizeof_ptr", "4");
     /* C99 conformance: arkcc implements a C99 freestanding subset, so hosted=0
      * even on host builds (we provide our own libc subset for STM32). */
     if (!find_macro("__STDC_VERSION__"))    add_object_macro("__STDC_VERSION__", "199901L");
@@ -2037,6 +2057,48 @@ char *preproc_process(const char *src) {
      * is set for ARM/Thumb interworking support (always enabled in our config). */
     if (!find_macro("__EDG__"))             add_object_macro("__EDG__", "1");
     if (!find_macro("__APCS_INTERWORK"))    add_object_macro("__APCS_INTERWORK", "1");
+    /* Target identity macros: exactly one __ARKCC_TARGET_* is defined so a
+     * header can pick its implementation without guessing, and on a non-ARM
+     * target the armcc compatibility macros added above are withdrawn -- saying
+     * "__CC_ARM is defined" while emitting x86_64 is a wrong answer, and a
+     * stdatomic.h that keyed off __arm__ would emit MRS on RISC-V. */
+    preproc_undef("__ARKCC_TARGET_ARM");
+    preproc_undef("__ARKCC_TARGET_X86");
+    preproc_undef("__ARKCC_TARGET_X86_64");
+    preproc_undef("__ARKCC_TARGET_RISCV32");
+    preproc_undef("__ARKCC_TARGET_C");
+    preproc_undef("__ARKCC_TARGET_NAME");
+    if (g_target_id == 0)      add_object_macro("__ARKCC_TARGET_ARM", "1");
+    else if (g_target_id == 1) add_object_macro("__ARKCC_TARGET_X86", "1");
+    else if (g_target_id == 2) add_object_macro("__ARKCC_TARGET_X86_64", "1");
+    else if (g_target_id == 3) add_object_macro("__ARKCC_TARGET_RISCV32", "1");
+    else                       add_object_macro("__ARKCC_TARGET_C", "1");
+    {
+        /* "arm", "x86", "x86_64", "riscv32" or "c" as a string literal. */
+        static const char *quoted[5] = {
+            "\"arm\"", "\"x86\"", "\"x86_64\"", "\"riscv32\"", "\"c\""
+        };
+        int tid = (g_target_id < 0 || g_target_id > 4) ? 0 : g_target_id;
+        add_object_macro("__ARKCC_TARGET_NAME", quoted[tid]);
+        g_target_name = "arm";
+        (void)g_target_name;
+    }
+    if (g_target_id == 2) preproc_define("__sizeof_ptr", "8");
+    if (g_target_id != 0) {
+        /* -cpu / armcc compatibility macros only describe an ARM target. */
+        preproc_undef("__arm__");
+        preproc_undef("__thumb__");
+        preproc_undef("__arm");
+        preproc_undef("__thumb");
+        preproc_undef("__ARMCC_VERSION");
+        preproc_undef("__CC_ARM");
+        preproc_undef("__TARGET_ARCH_7_M");
+        preproc_undef("__TARGET_ARCH_7E_M");
+        preproc_undef("__TARGET_FPU_VFP");
+        preproc_undef("__EDG__");
+        preproc_undef("__APCS_INTERWORK");
+    }
+
     process(src_ptr, out, &out_len, PP_BUF_SIZE - 1, 1);
     out[out_len] = 0;
     return out;

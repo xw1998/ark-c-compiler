@@ -21,7 +21,7 @@ NULLDEV := /dev/null
 endif
 
 .PHONY: all clean test test-arm test-c test-stdlib test-install test-x86 test-x86-64 \
-        test-riscv test-reloc-text install stm32
+        test-riscv test-reloc-text test-atomic install stm32
 
 all: $(ARKCC)
 
@@ -35,7 +35,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # one target cannot hide behind the others' gates.  The four symbolic targets
 # (stdlib / install / reloc-text / x86-64) execute code; they are what actually
 # say "this works", the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-atomic
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -75,6 +75,15 @@ test-x86: $(ARKCC)
 # only -- that backend's pre-existing 64-bit/FP gaps are reported as SKIP.
 test-x86-64: $(ARKCC)
 	$(PYTHON) tests/run_x86_64_image_tests.py --arkcc ./$(ARKCC)
+
+# _Atomic gate: five targets, four checks.  Each target's identity macro must be
+# exactly one and must name itself; the eleven atomic operations must be a
+# compile error on the four non-ARM targets, must say which operation and what to
+# use instead, and must leave no output file behind; atomic_init must compile
+# everywhere.  The last stage is the one that makes refusals mean something: the
+# same source must NOT be refused on arm, otherwise "refused" has no resolution.
+test-atomic: $(ARKCC)
+	$(PYTHON) tests/run_atomic_tests.py --arkcc ./$(ARKCC)
 
 test-riscv: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target riscv32 -S -o $(NULLDEV)

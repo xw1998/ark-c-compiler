@@ -151,6 +151,7 @@ static Token make_token(TokenKind kind, int line) {
     t.kind = kind; t.value = 0; t.fvalue = 0.0; t.str = 0; t.line = line; t.col = 0;
     t.src_start = 0; t.is_imag = 0; t.is_float = 0;
     t.lit_unsigned = 0; t.lit_long = 0; t.lit_llong = 0;
+    t.lit_dec = 0;
     return t;
 }
 
@@ -256,6 +257,7 @@ static Keyword g_keywords[] = {
      * keyword set turned off (it maps onto the same storage class as
      * __thread, which the backends already handle). */
     {"_Thread_local", TOK_THREAD_LOCAL},
+        {"_Atomic",       TOK_ATOMIC},
 #if ARKCC_FEATURE_ARMCC_KEYWORDS
     /* 0.6.x: armcc 5 specific keywords; map to internal token kinds. */
     {"__value_in_regs", TOK_VALUE_IN_REGS},
@@ -513,6 +515,7 @@ static Token lexer_read_token(Lexer *lex) {
     /* Numeric literal scan. */
     if (is_digit(c) || (c == '.' && is_digit(lex->p[1]))) {
         int is_float = 0;
+        int is_dec = 0;
         long long val = 0;
         double fval = 0.0;
 
@@ -615,6 +618,7 @@ static Token lexer_read_token(Lexer *lex) {
         }
 
         /* Decimal integer literal. */
+        is_dec = 1;
         while (is_digit(*lex->p)) {
             val = val * 10 + (*lex->p - '0');
             lex->p++;
@@ -725,6 +729,7 @@ static Token lexer_read_token(Lexer *lex) {
             scan_int_suffix(lex, &u, &l, &ll);
             t = make_number(val, line);
             t.lit_unsigned = u; t.lit_long = l; t.lit_llong = ll;
+                t.lit_dec = is_dec;
             return t;
         }
     }

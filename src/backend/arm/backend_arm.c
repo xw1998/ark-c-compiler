@@ -4279,7 +4279,9 @@ static char *codegen_arm(IrProgram *prog) {
                         ark_streq(I->name, "__wfe") ||
                         ark_streq(I->name, "__sev") ||
                         ark_streq(I->name, "__clz") ||
-                        ark_streq(I->name, "__rbit"))) {
+                        ark_streq(I->name, "__rbit") ||
+                        ark_streq(I->name, "__arkcc_crit_save") ||
+                        ark_streq(I->name, "__arkcc_crit_restore"))) {
                         int reg_args = (real_args > 4) ? 4 : real_args;
                         int stack_args = (real_args > 4) ? (real_args - 4) : 0;
                         for (k = 0; k < reg_args; k++) {
@@ -4314,6 +4316,21 @@ static char *codegen_arm(IrProgram *prog) {
                          * __CC_ARM branch, so vendor code (HAL_CRYP) calls it
                          * with one argument; the result is uint32_t. */
                         else if (ark_streq(I->name, "__rbit"))  asmbuf_puts(&buf, "    RBIT r0, r0\n");
+                        /* C11 <stdatomic.h> critical section.  The target is a
+                         * single core, so interrupt masking is a real mutual
+                         * exclusion; reading PRIMASK first is what makes the
+                         * pair nestable -- returning to a hardcoded "enabled"
+                         * would unmask interrupts inside an outer critical
+                         * section.  Both are emitted as instructions here, not
+                         * as a runtime helper, so nothing has to be linked and
+                         * no call clobbers r1-r3 (the caller's live values). */
+                        else if (ark_streq(I->name, "__arkcc_crit_save")) {
+                            asmbuf_puts(&buf, "    MRS r0, PRIMASK\n");
+                            asmbuf_puts(&buf, "    CPSID i\n");
+                        }
+                        else if (ark_streq(I->name, "__arkcc_crit_restore")) {
+                            asmbuf_puts(&buf, "    MSR PRIMASK, r0\n");
+                        }
                         emit_push_r0(&buf);
                         break;
                     }
@@ -6176,7 +6193,7 @@ static int ark_asm_extra_name(const char *op) {
         "LSLS", "LSRS", "ASRS", "ADR", "CBZ", "CBNZ",
         "LDM", "LDMIA", "LDMDB", "STM", "STMIA", "STMDB",
         "TBB", "TBH", "LDRD", "STRD",
-        "MLA", "MLS", "SMULL", "SMLAL", "MRS", "MSR"
+        "MLA", "MLS", "SMULL", "SMLAL"
     };
     int i;
     for (i = 0; i < (int)(sizeof(names) / sizeof(names[0])); i++)
@@ -8141,6 +8158,56 @@ static void pass2_a(ArmAsm *a) {
                 out16(a, 0x4100 | ((rm & 7) << 3) | (rd & 7));
             }
         }
+        else if (strieq_a(first, "MRS") || strieq_a(first, "MSR")) {
+            /* MRS Rd, <spec> / MSR <spec>, Rn.
+             * Deliberately NOT gated by --asm-extra, although the extension
+             * list used to carry it: the ARM backend emits `MRS r0, PRIMASK`
+             * and `MSR PRIMASK, r0` itself for the C11 <stdatomic.h> critical
+             * section, so the compiler must be able to assemble its own output
+             * with the option off (same rule as ADDS/SUBS above).
+             * sysm: MSP=8, PSP=9, PRIMASK=16, FAULTMASK=17, BASEPRI=19,
+             *       CONTROL=20.  Only these six are accepted: anything else
+             *       would need a system register the M-profile core may not
+             *       implement, and silently encoding a wrong sysm is worse than
+             *       refusing. */
+            int is_mrs = strieq_a(first, "MRS");
+            char sp1[32], sp2[32];
+            int sysm = -1;
+            int rd, rn;
+            if (is_mrs) {
+                rd = parse_reg_a(&p);
+                eat_comma_a(&p);
+                read_label_name_a(&p, sp1, sizeof(sp1));
+            } else {
+                read_label_name_a(&p, sp2, sizeof(sp2));
+                eat_comma_a(&p);
+                rn = parse_reg_a(&p);
+                rd = rn;
+            }
+            {
+                const char *nm = is_mrs ? sp1 : sp2;
+                if (strieq_a(nm, "MSP"))            sysm = 8;
+                else if (strieq_a(nm, "PSP"))       sysm = 9;
+                else if (strieq_a(nm, "PRIMASK"))   sysm = 16;
+                else if (strieq_a(nm, "FAULTMASK")) sysm = 17;
+                else if (strieq_a(nm, "BASEPRI"))   sysm = 19;
+                else if (strieq_a(nm, "CONTROL"))   sysm = 20;
+            }
+            if (sysm < 0) {
+                diag_tool(DIAG_SEV_ERROR, "arkcc",
+                          "MRS/MSR supports MSP, PSP, PRIMASK, FAULTMASK, "
+                          "BASEPRI and CONTROL only", 0,0,0,0,0,0);
+                a->hard_errors++;
+                sysm = 16;
+            }
+            if (is_mrs) {
+                out16(a, 0xF3EFu);
+                out16(a, 0x8000u | (unsigned)((rd & 0xF) << 8) | (unsigned)sysm);
+            } else {
+                out16(a, 0xF380u | (unsigned)(rd & 0xF));
+                out16(a, 0x8800u | (unsigned)sysm);
+            }
+        }
 #if ARKCC_FEATURE_ASM_EXTRA
         else if (!ark_asm_extra_on() && ark_asm_extra_name(first)) {
             /* --no-asm-extra (or the feature compiled out): these mnemonics must
@@ -8554,51 +8621,6 @@ static void pass2_a(ArmAsm *a) {
             out16(a, (is_smlal ? 0xFBC0u : 0xFB80u) | (unsigned)(rn & 0xF));
             out16(a, ((unsigned)(rdlo & 0xF) << 12) | ((unsigned)(rdhi & 0xF) << 8) |
                      (unsigned)(rm & 0xF));
-        }
-        else if (strieq_a(first, "MRS") || strieq_a(first, "MSR")) {
-            /* --asm-extra: MRS Rd, <spec> / MSR <spec>, Rn.
-             * sysm: MSP=8, PSP=9, PRIMASK=16, FAULTMASK=17, BASEPRI=19,
-             *       CONTROL=20.  Only these six are accepted: anything else
-             *       would need a system register the M-profile core may not
-             *       implement, and silently encoding a wrong sysm is worse than
-             *       refusing. */
-            int is_mrs = strieq_a(first, "MRS");
-            char sp1[32], sp2[32];
-            int sysm = -1;
-            int rd, rn;
-            if (is_mrs) {
-                rd = parse_reg_a(&p);
-                eat_comma_a(&p);
-                read_label_name_a(&p, sp1, sizeof(sp1));
-            } else {
-                read_label_name_a(&p, sp2, sizeof(sp2));
-                eat_comma_a(&p);
-                rn = parse_reg_a(&p);
-                rd = rn;
-            }
-            {
-                const char *nm = is_mrs ? sp1 : sp2;
-                if (strieq_a(nm, "MSP"))            sysm = 8;
-                else if (strieq_a(nm, "PSP"))       sysm = 9;
-                else if (strieq_a(nm, "PRIMASK"))   sysm = 16;
-                else if (strieq_a(nm, "FAULTMASK")) sysm = 17;
-                else if (strieq_a(nm, "BASEPRI"))   sysm = 19;
-                else if (strieq_a(nm, "CONTROL"))   sysm = 20;
-            }
-            if (sysm < 0) {
-                diag_tool(DIAG_SEV_ERROR, "arkcc",
-                          "MRS/MSR supports MSP, PSP, PRIMASK, FAULTMASK, "
-                          "BASEPRI and CONTROL only", 0,0,0,0,0,0);
-                a->hard_errors++;
-                sysm = 16;
-            }
-            if (is_mrs) {
-                out16(a, 0xF3EFu);
-                out16(a, 0x8000u | (unsigned)((rd & 0xF) << 8) | (unsigned)sysm);
-            } else {
-                out16(a, 0xF380u | (unsigned)(rd & 0xF));
-                out16(a, 0x8800u | (unsigned)sysm);
-            }
         }
 #endif
         else if (strieq_a(first, "NEG") || strieq_a(first, "RSB")) {

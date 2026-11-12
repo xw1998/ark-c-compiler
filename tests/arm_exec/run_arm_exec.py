@@ -715,6 +715,167 @@ int main(void)
              "expect_error": "thread-local storage cannot be used on a struct or union member"},
         ],
     },
+    {
+        "name": "atomic_rmw",
+        "why": "C11 <stdatomic.h> on the flat ARM target: load/store, exchange, "
+               "the two compare_exchange paths (success writes the object, failure "
+               "writes the *expected* operand back), atomic_flag, and the five "
+               "read-modify-write ops.  The 32-bit helpers run in a PRIMASK critical "
+               "section, so the compiler needs the MRS/MSR builtins to be reachable "
+               "without --asm-extra",
+        "include": ["stdlib/include"],
+        "files": {
+            "a.c": STARTUP + """\
+#include <stdatomic.h>
+
+atomic_int g_cnt;
+atomic_flag g_lock = ATOMIC_FLAG_INIT;
+
+int main(void)
+{
+    int i, old, ok, expected;
+
+    atomic_init(&g_cnt, 0);
+    for (i = 0; i < 5; i++) {
+        old = atomic_fetch_add(&g_cnt, 3);
+        if (old != i * 3) return 1;
+    }
+    if (atomic_load(&g_cnt) != 15) return 2;
+
+    atomic_store(&g_cnt, 7);
+    if (atomic_exchange(&g_cnt, 9) != 7) return 3;
+    if (atomic_load(&g_cnt) != 9) return 4;
+
+    expected = 9;
+    ok = atomic_compare_exchange_strong(&g_cnt, &expected, 11);
+    if (ok != 1 || atomic_load(&g_cnt) != 11) return 5;
+    expected = 100;
+    ok = atomic_compare_exchange_strong(&g_cnt, &expected, 12);
+    if (ok != 0 || expected != 11 || atomic_load(&g_cnt) != 11) return 6;
+
+    if (atomic_flag_test_and_set(&g_lock) != 0) return 7;
+    if (atomic_flag_test_and_set(&g_lock) != 1) return 8;
+    atomic_flag_clear(&g_lock);
+    if (atomic_flag_test_and_set(&g_lock) != 0) return 9;
+
+    if (atomic_fetch_sub(&g_cnt, 1) != 11) return 10;
+    if (atomic_fetch_or(&g_cnt, 4) != 10) return 11;
+    if (atomic_fetch_and(&g_cnt, 12) != 14) return 12;
+    if (atomic_fetch_xor(&g_cnt, 6) != 12) return 13;
+    if (atomic_load(&g_cnt) != 10) return 14;
+
+    return (int)atomic_load(&g_cnt);
+}
+""",
+        },
+        "build": [(["a.c", "-target", "arm", "-c", "--vector-table", "-o", "a.obj"], None),
+                  (["-link", "a.obj", "--vector-table", "-o", "out.bin"], "out.bin")],
+        "expect": 10,
+    },
+    {
+        "name": "atomic_nested_mask",
+        "why": "the interrupt-mask half of the atomic helpers: __arkcc_crit_save must "
+               "return the *previous* PRIMASK and then disable interrupts, and "
+               "__arkcc_crit_restore must put the saved value back, so nesting "
+               "returns 0,1,1,0 rather than 0,0,0,0 (restore that always clears the "
+               "mask would hand the caller an interrupt it did not ask for)",
+        "files": {
+            "m.c": STARTUP + """\
+int  __arkcc_crit_save(void);
+void __arkcc_crit_restore(int);
+
+int g_dummy;
+
+int main(void)
+{
+    int s0, s1, s2, s3, v;
+    s0 = __arkcc_crit_save();
+    s1 = __arkcc_crit_save();
+    __arkcc_crit_restore(s1);
+    s2 = __arkcc_crit_save();
+    __arkcc_crit_restore(s0);
+    s3 = __arkcc_crit_save();
+    __arkcc_crit_restore(s3);
+    v = (s0 & 1) | ((s1 & 1) << 1) | ((s2 & 1) << 2) | ((s3 & 1) << 3);
+    return v;
+}
+""",
+        },
+        "build": [(["m.c", "-target", "arm", "-c", "--vector-table", "-o", "m.obj"], None),
+                  (["-link", "m.obj", "--vector-table", "-o", "out.bin"], "out.bin")],
+        "expect": 6,
+    },
+    {
+        "name": "atomic_wide",
+        "why": "64-bit atomics cannot be done with one instruction, so atomic_llong / "
+               "atomic_ullong take the critical-section path for load and store too, "
+               "and compare_exchange needs the two-word equality helper instead of "
+               "AEABI vector equality.  The expected value of this case is 12/2 + "
+               "4300000000%2 = 6, i.e. a value only reachable if the failing CAS left "
+               "the object alone and reported failure",
+        "include": ["stdlib/include"],
+        "files": {
+            "w.c": STARTUP + """\
+#include <stdatomic.h>
+
+atomic_llong g_wide;
+atomic_ullong g_uwide;
+
+int main(void)
+{
+    long long old;
+    unsigned long long uold;
+    long long exp;
+
+    atomic_init(&g_wide, 1000000);
+    old = atomic_fetch_add(&g_wide, 500000);
+    if (old != 1000000) return 1;
+    if (atomic_load(&g_wide) != 1500000) return 2;
+
+    atomic_store(&g_wide, 7);
+    if (atomic_exchange(&g_wide, 900000000) != 7) return 3;
+
+    exp = 900000000;
+    if (atomic_compare_exchange_strong(&g_wide, &exp, 12) != 1) return 4;
+    if (atomic_load(&g_wide) != 12) return 5;
+    exp = 99;
+    if (atomic_compare_exchange_strong(&g_wide, &exp, 13) != 0) return 6;
+    if (exp != 12) return 7;
+
+    atomic_init(&g_uwide, 4000000000u);
+    uold = atomic_fetch_add(&g_uwide, 300000000u);
+    if (uold != 4000000000u) return 8;
+    if (atomic_load(&g_uwide) != 4300000000u) return 9;
+
+    return (int)(atomic_load(&g_wide) / 2) + (int)(atomic_load(&g_uwide) % 2);
+}
+""",
+        },
+        "build": link_with_runtime("w.c", "w.obj"),
+        "runtime": True,
+        "expect": 6,
+    },
+    {
+        "name": "atomic_reject",
+        "why": "_Atomic is parsed, not ignored: an array, a function and a struct are "
+               "three separate diagnostics and none may leave an image behind",
+        "include": ["stdlib/include"],
+        "files": {
+            "bad1.c": "_Atomic int arr[3];\nint main(void) { return 0; }\n",
+            "bad2.c": "_Atomic int f(void);\nint main(void) { return 0; }\n",
+            "bad3.c": "struct S { int x; };\n_Atomic struct S s;\n"
+                      "int main(void) { return 0; }\n",
+        },
+        "build": [],
+        "reject": [
+            {"argv": ["bad1.c", "-target", "arm", "--vector-table", "-o", "o1.bin"],
+             "expect_error": "an array type cannot be _Atomic"},
+            {"argv": ["bad2.c", "-target", "arm", "--vector-table", "-o", "o2.bin"],
+             "expect_error": "_Atomic cannot be applied to a function type"},
+            {"argv": ["bad3.c", "-target", "arm", "--vector-table", "-o", "o3.bin"],
+             "expect_error": "atomic struct/union types are not supported"},
+        ],
+    },
 ]
 
 def build_case(arkcc, workdir, case, extra=()):

@@ -263,8 +263,8 @@ M4/M33 只有单精度。传 `-mcpu Cortex-M7` 时，`double`↔`float` 的隐�
 
 ## 4 支持的 C 语言特性
 
-本节以 ISO/IEC 9899:1999（C99）为参照，列出 v0.8.0 编译器实际支持的内容。编译器实现了完整的 C99 集合，并覆盖了 98% 以上的常用 armcc 扩展；另有五个 C11 关键字
-（`_Static_assert` / `_Alignof` / `_Alignas` / `_Generic` / `_Thread_local`）见 4.9。
+本节以 ISO/IEC 9899:1999（C99）为参照，列出 v0.8.0 编译器实际支持的内容。编译器实现了完整的 C99 集合，并覆盖了 98% 以上的常用 armcc 扩展；另有六个 C11 关键字
+（`_Static_assert` / `_Alignof` / `_Alignas` / `_Generic` / `_Thread_local` / `_Atomic`）见 4.9。
 
 ### 4.1 类型系统
 
@@ -304,6 +304,14 @@ M4/M33 只有单精度。传 `-mcpu Cortex-M7` 时，`double`↔`float` 的隐�
 | 浮点 | `1.5 1.5e-3 .5 2.0f` | 是 |
 | 宽字符 / 宽字符串 | `L'a' L"..."` | 是（`--wchar16`/`--wchar32` 切换宽度） |
 
+整数字面量的类型按 C99 6.4.4.1p5 的两张候选表选：**十进制**拼写（`42`、`42L`）不带 `u` 时逐级
+取 `int → long → long long`，永不变成无符号；**八进制/十六进制**（`0xFF`、`0755`）按位模式
+取 `int → unsigned int → long → unsigned long → long long → unsigned long long`。`Token.lit_dec`
+记录拼写形态，选型在 `parser.c` 的 `int_literal_type()` 一处完成。
+
+这条表是补丁级别的关键：没有它，`unsigned` 后缀被一律映射成 `unsigned int`，于是
+`4300000000u` 被静默截成 `0x004CA300 = 5032704`，`x != 4300000000u` 对任何 `x` 都为真。
+
 ### 4.3 运算符
 
 | 分类 | 支持 |
@@ -342,6 +350,16 @@ M4/M33 只有单精度。传 `-mcpu Cortex-M7` 时，`double`↔`float` 的隐�
 | 函数原型与参数个数检查 | 是 |
 | 变参 `...` | 是（四个后端都支持：ARM / RV32I 用 4 字节字槽，C / x86_64 用 8 字节槽位，见 §后端与「变参」条目） |
 | 函数指针调用 | 是 |
+| 间接调用的实参转换 | 是（C99 6.5.2.2p7 对**所有**调用生效，不只是直接调用） |
+
+直接调用一直把实参 `sema_implicit_cast` 到形参类型，间接调用（`fp(x)`、`(*fp)(x)`、`_Generic`
+或条件表达式选出的设计符）曾经**跳过这一步**，于是 `int` 实参只占一个栈字，而后端的
+`IR_SEXT`/`IR_ZEXT` 在机器后端是 no-op（它们只负责把已经是两个字的值在栈上摆对字序），
+callee 读 64 位形参时把旁边的字当作高半——ARM 上直接给出错数字，函数指针臂甚至读野地址。
+修在 sema 而不是后端：`sema_callee_proto()` 先经 `sema_callee_func_sym()` 剥掉前导 `*`、
+看条件表达式两臂、把 `AST_VAR` 查表得到 `Symbol`（函数的返回类型与参数表都在 `Symbol` 上，
+不在表达式类型上），拿不到原型就不动实参。同一族形状的返回类型问题一并修掉：设计符调用
+的返回类型曾被降级成 `int`，`atomic_load()` 返回 `unsigned long long` 时只 push 一个寄存器。
 | `inline` | 是（作为提示） |
 | K&R 风格旧式参数 | 是 |
 | 结构体按值传递/返回 | 是（通过隐藏指针参数） |
@@ -394,9 +412,10 @@ C 后端完整透传内联汇编（含操作数替换）；ARM 后端做文本�
 
 ### 4.9 C11 关键字（子集）
 
-v0.8.0 之后补上五个 C11 关键字，其余 C11 特性（`_Atomic`、`<threads.h>`、匿名结构体之外的写法等）
-不在范围内。入口分别在 lexer（关键字表）、parser（折叠与建节点）、sema
-（`_Generic` 选支）三处；前四个下游完全看不到，`_Thread_local` 只多占一个存储位。
+v0.8.0 之后补上六个 C11 关键字，其余 C11 特性（`<threads.h>` 线程库、`_Atomic` 修饰复合体、
+匿名结构体之外的写法等）不在范围内。入口分别在 lexer（关键字表）、parser（折叠与建节点）、sema
+（`_Generic` 选支）三处；前四个下游完全看不到，`_Thread_local` 只多占一个存储位，`_Atomic`
+落到 `Type::is_atomic`（与 `const`/`volatile` 同构，这样 `typedef _Atomic int atomic_int;` 之后的声明才知道自己是原子对象），并让 `sema` 拒绝一切读-改-写。
 
 | 关键字 | 支持 | 实现要点 |
 | --- | :---: | --- |
@@ -405,8 +424,9 @@ v0.8.0 之后补上五个 C11 关键字，其余 C11 特性（`_Atomic`、`<thre
 | `_Alignas(type-name)` / `_Alignas(const-expr)` | 是 | 非 2 的幂、非常量报错；**不弱化**自然对齐（C11 6.7.5p6）；全局走 `g_attr_align_bytes` 通路（ARM 平铺 SRAM 布局按 `align_bytes` 落位），成员改 `Type::align_override`，块作用域上限 8 字节（见下） |
 | `_Generic(ctrl, T: e, ..., default: e)` | 是 | 控制表达式按 C11 6.5.1.1p2 做左值转换 + 数组退化 + 函数指示符退化；不做整型提升；无匹配无 `default` → 报错；重复 `default` → 报错；选中后 sema 里 `*node = *sel` squash 成普通表达式，irgen 另有防御分支（万一 sema 被跳过会报错而不是吐 0） |
 | `_Thread_local` | 是 | 独立 `TOK_THREAD_LOCAL`（不复用 `TOK_THREAD`，否则丢失"是哪个拼写"）；存储位 `0x10000` = TLS、`0x20000` = 拼写为 `_Thread_local`（C11 约束只对后者生效，armcc 的裸 `__thread` 保持豁免）。约束按更具体优先排序：typedef → 函数 → 需要 `static`/`extern` → 不能与 `auto`/`register` 同用 |
+| `_Atomic` | 是（带边界） | 独立 `TOK_ATOMIC`；`g_decl_is_atomic` 在 `parse_declspec()` 末尾经 `type_atomic()` 落成 `Type::is_atomic`（浅拷贝后打标记，不污染单例），因此原子性**沿 typedef 传播**。它决定三件事：`<stdatomic.h>` 走哪条实现、哪些类型当场拒绝、以及 `sema` 拒绝读-改-写。`x += 1` 与 `x++` 按 C11 6.5.16.2p3 / 6.5.2.4p2 是 read-modify-write，一律报错并点名 `atomic_fetch_add/sub/and/or/xor()`（普通赋值 `x = 5` 不报错，那就是一次原子 store）。`check_atomic_type()` 拒绝数组（C11 6.7.2.4）、函数类型、`struct`/`union`（复合体要锁，拒绝而不是假装能原子访问），并在三处（成员 / 声明符 / 复位）调用。真正的原子性只在 ARM 上：`stdlib/include/stdatomic.h` 用 `__arkcc_crit_save` / `__arkcc_crit_restore`（`MRS PRIMASK` + `CPSID i`，后端内建，不需要 `--asm-extra`）做临界区 |
 
-三条**明写的限制**：
+五条**明写的限制**：
 
 1. **块作用域 `_Alignas(> 8)` 报错**，不静默降级：帧是 `sp -= N; base = sp` 建的，AAPCS 只保证
    `sp` 8 字节对齐；要真支持 16/32/64 得改 prologue/epilogue 并处理变参序列占用 `r5` 存旧 `sp`
@@ -424,6 +444,17 @@ v0.8.0 之后补上五个 C11 关键字，其余 C11 特性（`_Atomic`、`<thre
    它就是普通 `.data`/`.bss`，落在 SRAM 并由 `__arkcc_init_globals()` 清零，单线程裸机上值语义
    正确。C 后端原样输出 `__thread` 交给宿主编译器。执行级证据：`tests/arm_exec/run_arm_exec.py`
    的 `tls_static_init`（8）、`tls_block_static`（6）、`tls_reject`（四条诊断 + 不许留镜像）。
+5. **`_Atomic` 只有 ARM 有真原子路径，其余四个目标一律编译期失败**：这是刻意的——把
+   `atomic_store(p, v)` 展开成 `*p = v` 在单核上"看起来对"，一旦有中断或第二个核就是静默错答案。
+   非 ARM 分支里每个名字都展开成未声明标识符 `__arkcc_atomic_<op>_not_supported_on_this_target_use_a_mutex`，
+   报错文本本身就是说明书。关于 `Type` 要说准：原子性**已经**落在 `Type::is_atomic` 上（否则 `typedef _Atomic int
+   atomic_int;` 之后 `atomic_int x; x += 1;` 拦不住），但"参与类型同一性"仍未实现——本编译器比的是
+   `kind` / 宽度 / `is_const` 等既有标志，`is_atomic` 不参与。另外三条明写的缺口：`int *_Atomic p`
+   （限定符在 `*` 之后）不支持；`*p += 1` 这类经指针的读-改-写不拦（`is_atomic` 不沿解引用传播，
+   请用 `atomic_fetch_add(p, 1)`）；`x86_64` 上的 `lock xadd` / `cmpxchg16b` 未接。内存序一律 `seq_cst`（临界区 + `__memory_changed()` 编译器屏障），
+   **属于单核中断级互斥**，跨核/跨 DMA 可见性不在其内。执行级证据：`atomic_rmw`（10）、
+   `atomic_nested_mask`（6：嵌套保存值必须是 0,1,1,0）、`atomic_wide`（6）、`atomic_reject`（三条诊断 +
+   不许留镜像）；跨目标矩阵见 `tests/run_atomic_tests.py` 与 `docs/ATOMIC.md`。
 
 门禁：`python tests/run_c11_keywords_tests.py --arm-as <bin> [--rv-as <bin>]`，ARM + RV32I 双目标
 共 30 项（11 个运行时用例 × 2 目标 + 8 个诊断用例），另含三条自检（静态断言真/假对照、

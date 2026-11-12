@@ -51,6 +51,14 @@ typedef struct Type {
     int          is_vla;          /* variable-length array flag (B3): runtime allocated */
     int          is_volatile;     /* volatile type qualifier (F2) */
     int          is_const;        /* const type qualifier (F2) */
+    int          is_atomic;       /* C11 _Atomic applied to this type.  Carried in the
+                                   * Type (not just the declaration) so that a typedef
+                                   * keeps it: `atomic_int x;` must be as atomic as
+                                   * `_Atomic int x;`.  Nothing downstream reads it
+                                   * except sema's read-modify-write checks -- the
+                                   * layout is the underlying type's layout, and the
+                                   * atomic operations themselves live in
+                                   * <stdatomic.h>. */
     int          is_func_ptr;     /* pointer created by a `(*name)(params)` declarator:
                                    * the pointee is a function, not a data object. */
     int          bf_break;        /* C99 6.7.2.1: width=0 bitfield forces next bitfield to a new storage unit */
@@ -91,6 +99,7 @@ Type *type_func(Type *ret, Type **params, int pc, int variadic);
 Type *type_wchar(void);                       /* B2: wchar_t */
 Type *type_complex(Type *base);               /* B4: _Complex base (base is float/double) */
 Type *type_qualified(Type *t, int is_volatile, int is_const); /* F2: qualified copy */
+Type *type_atomic(Type *t);   /* C11: atomic-qualified copy (never modifies a singleton) */
 
 void  type_struct_add_field(Type *st, const char *name, Type *ft);
 void  type_struct_add_bitfield(Type *st, const char *name, Type *ft, int width);

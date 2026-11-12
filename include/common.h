@@ -108,6 +108,7 @@ typedef enum {
 
     /* === C11 thread-local storage === */
     TOK_THREAD_LOCAL,     /* _Thread_local (same storage class as armcc's __thread) */
+    TOK_ATOMIC,           /* _Atomic */
 
     /* === 0.6.x additions: armcc 5 compatibility keywords (guarded by ARKCC_FEATURE_ARMCC_KEYWORDS) === */
     TOK_VALUE_IN_REGS,    /* __value_in_regs */

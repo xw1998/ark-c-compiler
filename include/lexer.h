@@ -24,6 +24,11 @@ typedef struct {
     int       lit_unsigned;
     int       lit_long;
     int       lit_llong;
+    /* 1 = decimal spelling, 0 = octal/hexadecimal.  C99 6.4.4.1 gives the
+     * two spellings different candidate lists: a decimal constant may not
+     * become unsigned until an explicit `u` is given, while 0xFFFFFFFF is
+     * unsigned int before it is long. */
+    int       lit_dec;
 } Token;
 
 typedef struct {

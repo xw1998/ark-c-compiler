@@ -49,6 +49,21 @@ static const char *qual_name(const char *kind, const char *name) {
     return buf;
 }
 
+/* C11 6.5.16.2p3 / 6.5.2.4p2: a compound assignment or ++/-- on an _Atomic
+ * object is defined as an atomic read-modify-write.  This compiler has no such
+ * lowering: every backend would emit a plain load, compute, store, which loses
+ * an update whenever the code is interrupted between the two accesses.  That is
+ * a silent wrong answer on the exact hardware this target is used on, so it is
+ * refused with the name of the function that does it correctly. */
+static void err_atomic_rmw(AstNode *node, const char *form, const char *use) {
+    DiagLoc loc = loc_of(node);
+    diag_report_msg(DIAG_SEV_ERROR, &loc,
+                    "%s on an _Atomic object is a read-modify-write (C11), which "
+                    "this compiler does not lower atomically; use %s from <stdatomic.h>",
+                    form, use, 0);
+    g_errors++;
+}
+
 static void err_code(AstNode *node, int code, const char *a0) {
     DiagLoc loc = loc_of(node);
     diag_report(code, DIAG_SEV_ERROR, &loc, a0, 0, 0);
@@ -810,6 +825,75 @@ static int generic_type_match(Type *a, Type *b) {
     return 1;
 }
 
+/* Prototype behind a *callee expression*.
+ *
+ * For a direct call the prototype is the callee Symbol's.  Through a function
+ * pointer it lives on the pointer's type -- but not always visibly:
+ *   - `fp(...)` where fp is a variable  -> the type walk finds it;
+ *   - `_Generic(...)(...)` / `(c ? f : f)(...)` / `(*fp)(...)`: the callee is a
+ *     generic / conditional / dereference node, and a function *designator*
+ *     has no pointer type at all -- the symbol table stores only a function's
+ *     return type, so `sema_expr(AST_VAR f)` answers `int`.
+ * Without this the arguments of every such call kept their own types, which is
+ * a C99 6.5.2.2p7 violation and produced a real wrong answer on ARM: an `int`
+ * argument stayed one stack word, the machine backends' IR_SEXT is a no-op,
+ * and the callee read the neighbouring argument as the high half of its
+ * long long. */
+/* The Symbol of the function a callee *expression* designates, or NULL when
+ * the callee really goes through a pointer value.
+ *
+ * A function designator has no pointer type: the symbol table stores a
+ * function's *return* type, so `sema_expr(AST_VAR f)` answers `int` for
+ * `void f(void)` and `int` for `unsigned long long f(void)` too.  Anywhere the
+ * call has to ask "what does this prototype say" -- the argument conversions
+ * and the result type -- the answer therefore has to come from the Symbol, not
+ * from the expression's type.  This is the callee shape `_Generic(...)(args)`
+ * and `(c ? f : g)(args)` end up in (the parser sees a non-identifier callee,
+ * and the _Generic node is squashed into the selected designator by sema), and
+ * through it a two-word result was being declared one word wide: measured on
+ * ARM as `atomic_load()` on an `unsigned long long` returning r0 only, with the
+ * high half compared away.  `*f` on a designator is a designator again
+ * (C99 6.5.3.2p4), so leading dereferences are peeled first. */
+static Symbol *sema_callee_func_sym(AstNode *callee) {
+    while (callee && callee->kind == AST_UNARY &&
+           callee->u.unary.op == (int)TOK_MUL && callee->u.unary.operand)
+        callee = callee->u.unary.operand;
+    if (callee && callee->kind == AST_TERNARY) {
+        Symbol *a = sema_callee_func_sym(callee->u.ternary.true_expr);
+        return a ? a : sema_callee_func_sym(callee->u.ternary.false_expr);
+    }
+    if (callee && callee->kind == AST_VAR) {
+        Symbol *s = sym_find(callee->u.name);
+        if (s && s->kind == SYM_FUNC) return s;
+    }
+    return 0;
+}
+
+static void sema_callee_proto(AstNode *callee, Type ***out_ptypes, int *out_n) {
+    Type *t;
+    Symbol *fs;
+    if (!callee) return;
+    fs = sema_callee_func_sym(callee);
+    if (fs) {
+        *out_ptypes = fs->param_types;
+        *out_n      = fs->param_count;
+        return;
+    }
+    t = callee->type;
+    while (t && t->kind == TYPE_PTR) {
+        if (t->is_func_ptr && t->params) {
+            *out_ptypes = t->params;
+            *out_n      = t->param_count;
+            return;
+        }
+        t = t->base;
+    }
+    if (t && t->kind == TYPE_FUNC && t->params) {
+        *out_ptypes = t->params;
+        *out_n      = t->param_count;
+    }
+}
+
 static Type *sema_expr(AstNode *node) {
     if (node && node->kind == AST_GENERIC) {
         /* C11 6.5.1.1p2: the controlling expression undergoes lvalue
@@ -961,6 +1045,12 @@ static Type *sema_expr(AstNode *node) {
         }
         case AST_UNARY: {
             Type *t = sema_expr(node->u.unary.operand);
+            if ((node->u.unary.op == (int)TOK_INC ||
+                 node->u.unary.op == (int)TOK_DEC) &&
+                t && t->is_atomic) {
+                err_atomic_rmw(node, "an increment or decrement",
+                               "atomic_fetch_add/sub()");
+            }
             if (node->u.unary.op == (int)TOK_BAND) {
                 node->type = type_pointer(t);
             } else if (node->u.unary.op == (int)TOK_MUL) {
@@ -983,6 +1073,12 @@ static Type *sema_expr(AstNode *node) {
         case AST_ASSIGN:
             sema_expr(node->u.binary.left);
             sema_expr(node->u.binary.right);
+            if (node->u.binary.op != (int)TOK_ASSIGN &&
+                node->u.binary.left && node->u.binary.left->type &&
+                node->u.binary.left->type->is_atomic) {
+                err_atomic_rmw(node, "a compound assignment",
+                               "atomic_fetch_add/sub/and/or/xor()");
+            }
             /* Bug-I1: Apply assignment conversion (C99 6.5.16.1): cast RHS
              * to LHS type when the two differ meaningfully (e.g. int -> double,
              * int -> long long). Same-size int<->int is a no-op cast. */
@@ -1015,8 +1111,14 @@ static Type *sema_expr(AstNode *node) {
                  * Direct calls to unknown functions: just sema the args. */
                 if (node->u.call.callee) {
                     Type *ct = sema_expr(node->u.call.callee);
+                    Symbol *csym = sema_callee_func_sym(node->u.call.callee);
                     /* Use callee's return type if it's a function pointer */
-                    if (ct && ct->kind == TYPE_PTR && ct->base &&
+                    if (csym) {
+                        /* A designator: the Symbol carries the return type,
+                         * which the expression's own type does not (see
+                         * sema_callee_func_sym). */
+                        node->type = csym->type;
+                    } else if (ct && ct->kind == TYPE_PTR && ct->base &&
                         ct->base->kind == TYPE_FUNC) {
                         node->type = ct->base->base;
                     } else if (ct && ct->kind == TYPE_PTR && ct->is_func_ptr) {
@@ -1035,8 +1137,34 @@ static Type *sema_expr(AstNode *node) {
                 } else {
                     node->type = type_int();
                 }
-                for (i = 0; i < node->u.call.arg_count; i++)
-                    sema_expr(node->u.call.args[i]);
+                {
+                    /* C99 6.5.2.2p7: every argument is converted to the type
+                     * of the corresponding parameter.  A *direct* call gets
+                     * that from s->param_types below; through a function
+                     * pointer the prototype lives on the callee's own type,
+                     * and nothing was converting the arguments at all.
+                     * Measured: with `typedef int (*fp_t)(int *, long long);`
+                     * the call `fp(&g, 500000)` left the int argument at one
+                     * stack word, the machine backends' IR_SEXT is a no-op (it
+                     * only ever had to fix the *word order* of a value that was
+                     * already two words), and the callee then read the
+                     * *address* argument as the high half of its long long
+                     * (ARM: g came out 1000000 instead of 1500000; a pure
+                     * `long long (*)(long long *, long long)` function pointer
+                     * walked off into an unmapped address).  Take the widths
+                     * from the prototype here, so every backend sees an
+                     * ordinary already-typed argument -- which is also what
+                     * the C standard says the argument *is*. */
+                    Type **ptypes = 0;
+                    int np = 0;
+                    sema_callee_proto(node->u.call.callee, &ptypes, &np);
+                    for (i = 0; i < node->u.call.arg_count; i++) {
+                        sema_expr(node->u.call.args[i]);
+                        if (ptypes && i < np)
+                            node->u.call.args[i] =
+                                sema_implicit_cast(node->u.call.args[i], ptypes[i]);
+                    }
+                }
                 return node->type;
             }
             for (i = 0; i < node->u.call.arg_count; i++) {

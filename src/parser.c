@@ -80,6 +80,7 @@ static int is_basic_type_token(TokenKind k) {
         case TOK_PACKED_KW:  /* __packed can start a cast/decl qualifier */
         case TOK_COMPLEX:    /* _Complex */
         case TOK_THREAD_LOCAL: /* _Thread_local can start a declaration */
+        case TOK_ATOMIC:       /* _Atomic( T ) / _Atomic T */
         /* armcc fixed-width integer types */
         case TOK_INT8: case TOK_INT16: case TOK_INT32: case TOK_INT64:
         /* armcc function/variable modifier keywords (can appear at declaration start) */
@@ -272,6 +273,7 @@ static int g_attr_is_irq;
 static char *g_attr_section;
 static int   g_decl_is_const;
 static int   g_decl_is_volatile;  /* F2: volatile qualifier seen in declspec */
+static int   g_decl_is_atomic;    /* C11 _Atomic qualifier seen in declspec */
 /* 0.4.0 added attribute / keyword-driven properties.
  *   - used/unused: prevent linker dead code elimination or suppress unused warnings
  *   - alias("target"): function alias (same address)
@@ -976,6 +978,27 @@ static int parse_alignas(Parser *p) {
     return al;
 }
 
+/* C11 6.7.2.4: an array of atomic elements is not a thing, and an atomic
+ * function type cannot exist.  Atomic structs/unions are legal C11 but are only
+ * atomic if every access takes a lock; emitting ordinary field stores would be
+ * a wrong answer, so they are reported as unsupported (with the reason) instead
+ * of being silently accepted.  Called with the *declared* type, i.e. after the
+ * declarator, so `_Atomic(int *)` (a pointer, fine) is distinguished from
+ * `_Atomic(int) *` (pointer to atomic int, also fine) and from
+ * `_Atomic struct S s` (aggregate, refused). */
+static void check_atomic_type(Parser *p, Type *t) {
+    if (!t) return;
+    if (t->kind == TYPE_ARRAY) {
+        perror_at(p, "an array type cannot be _Atomic (C11 6.7.2.4)");
+    } else if (t->kind == TYPE_FUNC) {
+        perror_at(p, "_Atomic cannot be applied to a function type");
+    } else if (t->kind == TYPE_STRUCT || t->kind == TYPE_UNION) {
+        perror_at(p, "atomic struct/union types are not supported (they need a lock; use one explicitly)");
+    }
+}
+
+static Type *type_name_of_token(Parser *p);   /* defined below; used by _Atomic( T ) */
+
 static Type *parse_declspec(Parser *p, int *p_storage, int *p_is_typedef) {
     int sto = 0;
     int is_td = 0;
@@ -1069,6 +1092,39 @@ static Type *parse_declspec(Parser *p, int *p_storage, int *p_is_typedef) {
                 lexer_advance(p->lex);
                 saw_kw = 1;
                 continue;
+            case TOK_ATOMIC: {
+                /* C11 6.7.2.4 / 7.17.6: _Atomic is both a type specifier
+                 * `_Atomic ( type-name )` and a type qualifier.  The qualifier
+                 * is applied to the base type at the end of parse_declspec
+                 * (type_atomic), so it survives a typedef and sema can refuse
+                 * a read-modify-write on an atomic object; everything below the
+                 * semantic layer still sees only an ordinary scalar type -- the
+                 * layout is identical, the operations come from <stdatomic.h>. */
+                Type *inner;
+                int sv_c = g_decl_is_const, sv_v = g_decl_is_volatile;
+                int s2 = 0, t2 = 0;
+                lexer_advance(p->lex);      /* _Atomic */
+                saw_kw = 1;
+                if (lexer_peek(p->lex).kind != TOK_LPAREN) {
+                    g_decl_is_atomic = 1;   /* qualifier form: _Atomic int x; */
+                    continue;
+                }
+                lexer_advance(p->lex);      /* ( */
+                inner = type_name_of_token(p);
+                lexer_expect(p->lex, TOK_RPAREN);
+                /* The nested declspec owns the const/volatile globals; restore
+                 * ours so `_Atomic(int) const *p` keeps meaning what it says. */
+                g_decl_is_const = sv_c;
+                g_decl_is_volatile = sv_v;
+                g_decl_is_atomic = 1;
+                (void)s2; (void)t2;
+                if (inner) {
+                    base = inner;
+                } else {
+                    perror_at(p, "expected a type name inside _Atomic( ... )");
+                }
+                continue;
+            }
 #if ARKCC_FEATURE_ARMCC_KEYWORDS
             case TOK_TYPEDEF_KW:
                 /* __typedef: equivalent to typedef */
@@ -1254,6 +1310,14 @@ done:
     if (g_decl_is_volatile || g_decl_is_const) {
         base = type_qualified(base, g_decl_is_volatile, g_decl_is_const);
     }
+    /* C11 _Atomic rides on the Type for the same reason const/volatile do:
+     * a typedef has to keep it.  Placement matters -- this runs before the
+     * declarator is parsed, so in `_Atomic int *p` the atomic qualifier lands
+     * on `int` (the pointee) and `p` itself is an ordinary pointer, which is
+     * what the standard says. */
+    if (g_decl_is_atomic) {
+        base = type_atomic(base);
+    }
     return base;
 }
 
@@ -1262,6 +1326,7 @@ static AstNode *parse_struct_or_union(Parser *p, int is_union) {
     char *tag = 0;
     Type *t = 0;
     Type *attr_tmp = 0;   /* Temp type to carry leading __attribute__ */
+    int   sv_atomic = 0;  /* enclosing declaration's _Atomic flag, saved across members */
     int   has_attr = 0;
     Token tk;
     int line = lexer_peek(p->lex).line;
@@ -1301,10 +1366,15 @@ static AstNode *parse_struct_or_union(Parser *p, int is_union) {
             if (attr_tmp->align_override) t->align_override = attr_tmp->align_override;
         }
         lexer_advance(p->lex);
+        /* A member's _Atomic belongs to that member, not to the enclosing
+         * `struct S {...}` declaration: save the outer flag, clear it for each
+         * member, and put it back before returning. */
+        sv_atomic = g_decl_is_atomic;
         while (lexer_peek(p->lex).kind != TOK_RBRACE &&
                lexer_peek(p->lex).kind != TOK_EOF) {
             int sto = 0; int td = 0;
             Type *ft_base;
+            g_decl_is_atomic = 0;
             /* C11 6.7.10 allows a static assertion among the members. */
             if (lexer_peek(p->lex).kind == TOK_STATIC_ASSERT) {
                 parse_static_assert(p);
@@ -1325,6 +1395,8 @@ static AstNode *parse_struct_or_union(Parser *p, int is_union) {
                 char *fname = 0;
                 Type *ft = parse_declarator(p, ft_base, &fname);
                 int bit_w = -1;
+                if (g_decl_is_atomic) check_atomic_type(p, ft);
+                g_decl_is_atomic = 0;
                 /* C11 6.7.5: _Alignas on a member raises the field type's
                  * alignment, and type_struct_add_field lays the struct out
                  * with type_align(field type), so this is the whole change.
@@ -1995,6 +2067,7 @@ static AstNode *parse_top_decl(Parser *p) {
     Type *base;
     int line = lexer_peek(p->lex).line;
     int func_mods = 0;            /* __irq/__weak/__naked bitmask: 1/2/4 */
+    int decl_is_atomic = 0;      /* C11 _Atomic on this declaration */
     int decl_is_const = 0;        /* const state of this declaration (captured then reset global) */
     char *decl_section = 0;       /* section name of this declaration (captured then reset global) */
     int   is_asm_fn = 0;          /* __asm void fn(){...} function-body-asm marker */
@@ -2009,7 +2082,7 @@ static AstNode *parse_top_decl(Parser *p) {
     int   func_is_deprecated_kw = 0;
     /* Reset __attribute__-driven function attribute globals to avoid cross-declaration leakage */
     g_attr_is_weak = 0; g_attr_is_naked = 0; g_attr_is_irq = 0;
-    g_attr_section = 0; g_decl_is_const = 0; g_decl_is_volatile = 0;
+    g_attr_section = 0; g_decl_is_const = 0; g_decl_is_volatile = 0; g_decl_is_atomic = 0;
     g_attr_is_used = 0; g_attr_is_unused = 0;
     g_attr_alias_target = 0;
     g_attr_align_bytes = 0; g_decl_align_bytes = 0;
@@ -2067,6 +2140,7 @@ static AstNode *parse_top_decl(Parser *p) {
      * (e.g. `static __inline __asm uint32_t __REV16(...)`). */
     is_asm_fn |= g_decl_is_asm_fn;
     decl_is_const = g_decl_is_const;
+    decl_is_atomic = g_decl_is_atomic;
     decl_section = g_attr_section;
     /* A _Alignas request wins only if it is at least the natural alignment;
      * base's alignment is the conservative bound available before the
@@ -2124,6 +2198,7 @@ static AstNode *parse_top_decl(Parser *p) {
         func_is_deprecated_kw = g_func_is_deprecated_kw;
 #endif
         Type *t = parse_declarator(p, base, &name);
+        if (decl_is_atomic) check_atomic_type(p, t);
         if (!name) {
             perror_at(p, "expected identifier in declaration");
             return 0;
@@ -2149,6 +2224,9 @@ static AstNode *parse_top_decl(Parser *p) {
                 perror_at(p, "thread-local storage cannot be used in a typedef");
             else if ((storage & 0x10000) && decl_is_func)
                 perror_at(p, "thread-local storage applies to objects, not functions");
+            /* C11 6.7.2.4: _Atomic cannot qualify a function type. */
+            if (decl_is_atomic && decl_is_func)
+                perror_at(p, "_Atomic cannot be applied to a function type");
             else if ((storage & 0x30000) == 0x30000 &&
                      !(storage & (STO_STATIC | STO_EXTERN)))
                 perror_at(p, "_Thread_local requires static or extern (C11 6.7.1p4)");
@@ -2580,9 +2658,11 @@ static AstNode *parse_local_var_decl(Parser *p, Type *base, int storage, int is_
     AstNode *blk = 0;
     /* Capture const in declspec; local variable const usually has no section meaning but keep passing */
     int cur_const = g_decl_is_const;
+    int cur_atomic = g_decl_is_atomic;
     for (;;) {
         char *name = 0;
         Type *t = parse_declarator(p, base, &name);
+        if (cur_atomic) check_atomic_type(p, t);
         int decl_name_col = p->name_col;
         AstNode *init = 0;
         char *cur_section = 0;
@@ -2599,6 +2679,9 @@ static AstNode *parse_local_var_decl(Parser *p, Type *base, int storage, int is_
                 perror_at(p, "thread-local storage cannot be used in a typedef");
             else if ((storage & 0x10000) && decl_is_func)
                 perror_at(p, "thread-local storage applies to objects, not functions");
+            /* C11 6.7.2.4: _Atomic cannot qualify a function type. */
+            if (cur_atomic && decl_is_func)
+                perror_at(p, "_Atomic cannot be applied to a function type");
             else if ((storage & 0x30000) == 0x30000 &&
                      !(storage & (STO_STATIC | STO_EXTERN)))
                 perror_at(p, "_Thread_local requires static or extern (C11 6.7.1p4)");
@@ -2814,7 +2897,7 @@ static AstNode *parse_statement(Parser *p) {
         Type *base;
         int local_align = 0;
         /* Reset const/section globals to avoid cross-statement leakage */
-        g_decl_is_const = 0; g_decl_is_volatile = 0; g_attr_section = 0;
+        g_decl_is_const = 0; g_decl_is_volatile = 0; g_decl_is_atomic = 0; g_attr_section = 0;
         g_attr_align_bytes = 0;
         g_attr_is_used = 0; g_attr_is_unused = 0;
         g_decl_packed_ptr = 0;
@@ -2922,7 +3005,7 @@ static AstNode *parse_statement(Parser *p) {
                 if (is_decl_start(p)) {
                     int sto = 0, td = 0;
                     Type *base;
-                    g_decl_is_const = 0; g_decl_is_volatile = 0; g_attr_section = 0;
+                    g_decl_is_const = 0; g_decl_is_volatile = 0; g_decl_is_atomic = 0; g_attr_section = 0;
                     base = parse_declspec(p, &sto, &td);
                     init = parse_local_var_decl(p, base, sto, td);
                     /* parse_local_var_decl already ate ';' */
@@ -3403,6 +3486,47 @@ static AstNode *parse_postfix_expr(Parser *p) {
     return node;
 }
 
+/* C99 6.4.4.1p5: the type of an integer constant is the first of the
+ * candidate list in which its value fits.  The list depends on the suffix AND
+ * on the spelling: a decimal constant only becomes unsigned once it carries
+ * `u`, while an octal/hexadecimal one may take an unsigned type straight away
+ * (0xFFFFFFFF is unsigned int, 0xFFFFFFFFFFFFFFFF is unsigned long long).
+ * `long` is 32 bits on every target this compiler models, so `long` and
+ * `unsigned long` occupy the same fit window as `int` / `unsigned int`.
+ *
+ * Dropping the range check is not cosmetic: with no suffix the parser used to
+ * return `unsigned int` unconditionally for a `u` literal, so `4300000000u`
+ * was truncated to 0x004CA300 (= 5032704) and `x != 4300000000u` was true for
+ * every value of x.  For a decimal constant the value never exceeds LLONG_MAX
+ * (the lexer accumulates into a long long), so the `>= 0` test in fits_ll is
+ * enough; for hex/octal the bit pattern decides, i.e. a negative long long
+ * means bit 63 is set. */
+static Type *int_literal_type(long long v, int uns, int lng, int llng, int dec) {
+    unsigned long long u = (unsigned long long)v;
+    int fits_int  = (u <= 0x7FFFFFFFULL);
+    int fits_uint = (u <= 0xFFFFFFFFULL);
+    int fits_ll   = dec ? (v >= 0) : (u <= 0x7FFFFFFFFFFFFFFFULL);
+    if (llng) {
+        if (uns) return type_ullong();
+        return fits_ll ? type_llong() : type_ullong();
+    }
+    if (lng) {
+        if (uns) return fits_uint ? type_ulong() : type_ullong();
+        if (dec) return fits_int ? type_long() : (fits_ll ? type_llong() : type_ullong());
+        if (fits_int)  return type_long();
+        if (fits_uint) return type_ulong();
+        return fits_ll ? type_llong() : type_ullong();
+    }
+    if (uns) {
+        if (fits_uint) return type_uint();
+        return type_ullong();
+    }
+    if (dec) return fits_int ? type_int() : (fits_ll ? type_llong() : type_ullong());
+    if (fits_int)  return type_int();
+    if (fits_uint) return type_uint();
+    return fits_ll ? type_llong() : type_ullong();
+}
+
 static AstNode *parse_primary_expr(Parser *p) {
     Token t = lexer_peek(p->lex);
     int line = t.line;
@@ -3506,15 +3630,8 @@ static AstNode *parse_primary_expr(Parser *p) {
          * arithmetic for constants such as 0xE000E000UL; the 64-bit
          * path then produced the wrong low word (SCB 0xE000ED24 came
          * out as 0x24, i.e. a wild store -> IMPRECISERR HardFault). */
-        if (t.lit_llong) {
-            if (t.lit_unsigned) n->type = type_ullong();
-            else                n->type = type_llong();
-        } else if (t.lit_long) {
-            if (t.lit_unsigned) n->type = type_ulong();
-            else                n->type = type_long();
-        } else if (t.lit_unsigned) {
-            n->type = type_uint();
-        }
+        n->type = int_literal_type(t.value, t.lit_unsigned, t.lit_long,
+                                   t.lit_llong, t.lit_dec);
         return n;
     }
     if (t.kind == TOK_STR) {

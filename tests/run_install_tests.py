@@ -107,6 +107,11 @@ int cmp(const void *a, const void *b)
 '''
 
 
+# The install manifest is asserted exactly: adding a file to stdlib/include,
+# stdlib/src or stdlib/src/arm must bump this number, so an accidental change
+# to what gets installed cannot pass unnoticed.
+EXPECTED_INSTALL_FILES = 39
+
 class Gate:
     def __init__(self, arkcc, tmp):
         self.arkcc = os.path.abspath(arkcc)
@@ -149,8 +154,9 @@ class Gate:
         n += 1
         pairs.append((None, os.path.join(lib, 'README.md')))
         n += 1
-        if n != 38:
-            self.bad('expected 38 installable files, counted %d' % n)
+        if n != EXPECTED_INSTALL_FILES:
+            self.bad('expected %d installable files, counted %d'
+                     % (EXPECTED_INSTALL_FILES, n))
         for src, dst in pairs:
             if not os.path.isfile(dst):
                 self.bad('missing installed file %s' % dst)
@@ -162,7 +168,8 @@ class Gate:
             if a != b:
                 self.bad('%s differs from its source (%d vs %d bytes)'
                          % (dst, len(b), len(a)))
-        print('ok   install: 38 files present and byte-identical to source')
+        print('ok   install: %d files present and byte-identical to source'
+              % n)
 
     def check_idempotent(self, dest):
         def snap():

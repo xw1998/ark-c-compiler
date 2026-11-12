@@ -19,6 +19,16 @@ void preproc_set_main_file(const char *path);
  * 返回 1 表示接受（格式已校验），0 表示格式不合法。 */
 int preproc_set_build_time(const char *date, const char *time);
 
+/* Which backend the current translation unit is being compiled for.
+ * Must be called before preproc_process(). Defines exactly one
+ * __ARKCC_TARGET_<NAME> (ARM / X86 / X86_64 / RISCV32 / C) plus
+ * __ARKCC_TARGET_NAME, and on a non-ARM target removes the armcc
+ * compatibility macros, so a header cannot take an ARM-only path (MRS/PRIMASK,
+ * CMSIS intrinsics) while the output is x86 or RISC-V.
+ * backend_name is the canonical backend name: "arm", "x86", "x86_64",
+ * "riscv32" or "c"; 0/"" means the default backend (arm). */
+void preproc_set_target(const char *backend_name);
+
 /* Public macro define/undef interface: lets modules like cpu.c inject CPU-related
  * predefined macros before preproc_process. Same-name existing macros are overwritten. */
 void preproc_define(const char *name, const char *body);

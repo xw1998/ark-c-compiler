@@ -2328,6 +2328,15 @@ int ark_compile(const ArkOptions *opts) {
     /* Preprocessing diagnoses against the raw text: that is what the user sees
      * in their editor, and its line numbers are the ones the directives are on. */
     diag_init(opts->input_path, g_src);
+    /* Tell the preprocessor which backend will emit this unit before anything
+     * is expanded: headers (stdatomic.h first among them) need to know whether
+     * the target has the ARM PRIMASK critical section, and the armcc
+     * compatibility macros must not claim an ARM target for x86/RISC-V output. */
+    {
+        const ArkBackend *tbe = opts->target ? ark_backend_find(opts->target)
+                                             : ark_backend_default();
+        preproc_set_target(tbe ? tbe->name : "arm");
+    }
     preprocessed = preproc_process(g_src);
     /* Line numbers in every later diagnostic refer to the *preprocessed*
      * buffer (that is what the lexer counts), so the echo buffer must be the
