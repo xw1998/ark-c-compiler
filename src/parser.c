@@ -79,6 +79,7 @@ static int is_basic_type_token(TokenKind k) {
         case TOK_TYPEDEF:
         case TOK_PACKED_KW:  /* __packed can start a cast/decl qualifier */
         case TOK_COMPLEX:    /* _Complex */
+        case TOK_THREAD_LOCAL: /* _Thread_local can start a declaration */
         /* armcc fixed-width integer types */
         case TOK_INT8: case TOK_INT16: case TOK_INT32: case TOK_INT64:
         /* armcc function/variable modifier keywords (can appear at declaration start) */
@@ -1051,18 +1052,27 @@ static Type *parse_declspec(Parser *p, int *p_storage, int *p_is_typedef) {
             case TOK_SIGNED:   sign = 1; lexer_advance(p->lex); saw_kw = 1; continue;
             case TOK_UNSIGNED: sign = 2; lexer_advance(p->lex); saw_kw = 1; continue;
             case TOK_LONG:     long_count++; lexer_advance(p->lex); saw_kw = 1; continue;
-#if ARKCC_FEATURE_ARMCC_KEYWORDS
-            case TOK_TYPEDEF_KW:
-                /* __typedef: equivalent to typedef */
-                is_td = 1; lexer_advance(p->lex); saw_kw = 1; continue;
+            /* __thread (armcc 5) and _Thread_local (C11 6.7.2.4) are the same
+             * storage class.  Bit 0x10000 marks TLS; bit 0x20000 marks that it
+             * was spelled _Thread_local, which is the spelling C11 constrains
+             * (6.7.1p4: "shall be combined with static or extern").  armcc
+             * accepts a bare file-scope __thread and examples/test_tls.c
+             * relies on that, so the constraint is applied per spelling
+             * instead of retroactively breaking armcc sources. */
             case TOK_THREAD:
-                /* __thread: thread-local storage. Sets storage class flag bit 0x10000,
-                 * read by parse_top_decl/parse_local_var_decl and written to var.is_tls.
-                 * Does not affect type deduction. */
                 sto |= 0x10000;
                 lexer_advance(p->lex);
                 saw_kw = 1;
                 continue;
+            case TOK_THREAD_LOCAL:
+                sto |= 0x30000;
+                lexer_advance(p->lex);
+                saw_kw = 1;
+                continue;
+#if ARKCC_FEATURE_ARMCC_KEYWORDS
+            case TOK_TYPEDEF_KW:
+                /* __typedef: equivalent to typedef */
+                is_td = 1; lexer_advance(p->lex); saw_kw = 1; continue;
             case TOK_INT8:    lexer_advance(p->lex); if (!base) base = type_char();  saw_kw = 1; continue;
             case TOK_INT16:   lexer_advance(p->lex); if (!base) base = type_short(); saw_kw = 1; continue;
             case TOK_INT32:   lexer_advance(p->lex); if (!base) base = type_int();   saw_kw = 1; continue;
@@ -1303,6 +1313,14 @@ static AstNode *parse_struct_or_union(Parser *p, int is_union) {
             g_alignas_bytes = 0;
             ft_base = parse_declspec(p, &sto, &td);
             if (!ft_base) { perror_at(p, "expected field type"); lexer_advance(p->lex); continue; }
+            /* C11 6.7.2.1: the specifier-qualifier-list of a struct-declaration
+             * carries no storage-class specifier, so _Thread_local (and armcc's
+             * __thread) cannot be put on a member.  Dropping it silently would
+             * hide a constraint violation, and honouring it would be meaningless
+             * since a member has no storage duration of its own. */
+            if (sto & 0x30000) {
+                perror_at(p, "thread-local storage cannot be used on a struct or union member");
+            }
             for (;;) {
                 char *fname = 0;
                 Type *ft = parse_declarator(p, ft_base, &fname);
@@ -2061,9 +2079,11 @@ static AstNode *parse_top_decl(Parser *p) {
         g_alignas_bytes = 0;
     }
     if (g_attr_align_bytes && !decl_align) decl_align = g_attr_align_bytes;
-#if ARKCC_FEATURE_ARMCC_KEYWORDS
-    /* __thread sets storage 0x10000 bit in parse_declspec */
+    /* __thread / _Thread_local: storage bit 0x10000, set in parse_declspec.
+     * This is outside the armcc-keyword block because _Thread_local is a
+     * standard C11 keyword. */
     decl_is_tls = (storage & 0x10000) ? 1 : 0;
+#if ARKCC_FEATURE_ARMCC_KEYWORDS
     /* Check __global_reg again after parsing (can appear after type) */
     if (lexer_peek(p->lex).kind == TOK_GLOBAL_REG && global_reg_num < 0) {
         global_reg_num = parse_global_reg(p);
@@ -2111,6 +2131,30 @@ static AstNode *parse_top_decl(Parser *p) {
         /* Where the name itself was: declaration-level diagnostics are anchored
          * to the identifier, so the node has to remember the column. */
         decl_name_col = p->name_col;
+
+        /* C11 6.7.1p4 constraint, checked here because this is the first point
+         * where we know the declaration declares an object (not a typedef, not
+         * a function).  Reported at the declarator name, not at the keyword:
+         * that is the token being looked at when the problem becomes visible.
+         * armcc's own __thread is exempt from the static/extern requirement
+         * (see parse_declspec).
+         *
+         * The three messages are ordered specific-first: `_Thread_local int
+         * f(void);` violates two constraints at once, and "applies to objects,
+         * not functions" says what is actually wrong with it. */
+        {
+            int decl_is_func = (lexer_peek(p->lex).kind == TOK_LPAREN) ||
+                               (t && t->kind == TYPE_FUNC);
+            if ((storage & 0x10000) && is_td)
+                perror_at(p, "thread-local storage cannot be used in a typedef");
+            else if ((storage & 0x10000) && decl_is_func)
+                perror_at(p, "thread-local storage applies to objects, not functions");
+            else if ((storage & 0x30000) == 0x30000 &&
+                     !(storage & (STO_STATIC | STO_EXTERN)))
+                perror_at(p, "_Thread_local requires static or extern (C11 6.7.1p4)");
+        }
+        if ((storage & 0x10000) && (storage & (STO_AUTO | STO_REGISTER)))
+            perror_at(p, "thread-local storage cannot be combined with auto or register");
 
         /* `typedef Ret F(params);` -- a typedef that names a function type.
          * parse_declarator returns before the parameter list for this
@@ -2546,6 +2590,21 @@ static AstNode *parse_local_var_decl(Parser *p, Type *base, int storage, int is_
             perror_at(p, "expected identifier in declaration");
             break;
         }
+        /* Same C11 6.7.1p4 constraints as at file scope, with the same
+         * specific-first ordering. */
+        {
+            int decl_is_func = (lexer_peek(p->lex).kind == TOK_LPAREN) ||
+                               (t && t->kind == TYPE_FUNC);
+            if ((storage & 0x10000) && is_typedef)
+                perror_at(p, "thread-local storage cannot be used in a typedef");
+            else if ((storage & 0x10000) && decl_is_func)
+                perror_at(p, "thread-local storage applies to objects, not functions");
+            else if ((storage & 0x30000) == 0x30000 &&
+                     !(storage & (STO_STATIC | STO_EXTERN)))
+                perror_at(p, "_Thread_local requires static or extern (C11 6.7.1p4)");
+        }
+        if ((storage & 0x10000) && (storage & (STO_AUTO | STO_REGISTER)))
+            perror_at(p, "thread-local storage cannot be combined with auto or register");
         /* Block-scope function declaration: "extern int f(void);", and the
          * same without "extern" (C99 6.2.2p5 gives it external linkage
          * either way).  parse_declarator only knows the (*name)(...)
@@ -2703,10 +2762,10 @@ static AstNode *parse_local_var_decl(Parser *p, Type *base, int storage, int is_
             n->u.var.align_bytes = g_attr_align_bytes;
             n->u.var.is_used    = g_attr_is_used;
             n->u.var.is_unused  = g_attr_is_unused;
-#if ARKCC_FEATURE_ARMCC_KEYWORDS
-            /* __thread local variable (TLS marker, only meaningful for static locals) */
+            /* __thread / _Thread_local (TLS marker; only meaningful for
+             * static locals, and the constraints above have already rejected
+             * the spellings that cannot carry it). */
             n->u.var.is_tls = (storage & 0x10000) ? 1 : 0;
-#endif
 #if ARKCC_FEATURE_VLA
             /* B3: consume VLA size expression recorded by parse_declarator */
             if (g_vla_size_expr && g_config.enable_vla) {

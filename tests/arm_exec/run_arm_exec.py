@@ -642,6 +642,79 @@ int main(void)
              "expect_error": "cannot turn the initialiser"},
         ],
     },
+    {
+        "name": "tls_static_init",
+        "why": "_Thread_local at file scope needs static or extern (C11 6.7.1p4) "
+               "and the storage-class bits must not disturb the initialiser; on "
+               "the flat ARM image TLS lives in ordinary .data/.bss, so the "
+               "value semantics are checked by reading the byte back",
+        "files": {
+            "tls1.c": STARTUP + """\
+static _Thread_local int counter = 7;
+int main(void)
+{
+    counter = counter + 1;
+    return counter;
+}
+""",
+        },
+        "build": [(["tls1.c", "-target", "arm", "--vector-table", "-o", "out.bin"], "out.bin")],
+        "expect": 8,
+    },
+    {
+        "name": "tls_block_static",
+        "why": "block-scope static _Thread_local: one object, initialised once, "
+               "kept across calls (3 -> 4 -> 5 -> 6)",
+        "files": {
+            "tls2.c": STARTUP + """\
+int bump(void)
+{
+    static _Thread_local int n = 3;
+    n = n + 1;
+    return n;
+}
+int main(void)
+{
+    bump();
+    bump();
+    return bump();
+}
+""",
+        },
+        "build": [(["tls2.c", "-target", "arm", "--vector-table", "-o", "out.bin"], "out.bin")],
+        "expect": 6,
+    },
+    {
+        "name": "tls_reject",
+        "why": "_Thread_local is standard C11, so the constraints are enforced "
+               "instead of ignored: bare _Thread_local without static/extern, a "
+               "function, and a typedef are three separate diagnostics and none "
+               "of them may leave an image behind.  armcc's bare __thread stays "
+               "exempt (tests/test_tls.c relies on it).  The fifth one covers a "
+               "member, where C11 6.7.2.1 has no storage-class specifier at all",
+        "files": {
+            "bad1.c": "_Thread_local int counter = 0;\nint main(void) { return 0; }\n",
+            "bad2.c": "_Thread_local int f(void);\nint main(void) { return 0; }\n",
+            "bad3.c": "_Thread_local typedef int myint;\nint main(void) { return 0; }\n",
+            "bad4.c": "int g(void) { _Thread_local int x = 1; return x; }\n"
+                      "int main(void) { return g(); }\n",
+            "bad5.c": "struct S { _Thread_local int x; };\n"
+                      "int main(void) { return (int)sizeof(struct S); }\n",
+        },
+        "build": [],
+        "reject": [
+            {"argv": ["bad1.c", "-target", "arm", "--vector-table", "-o", "o1.bin"],
+             "expect_error": "_Thread_local requires static or extern"},
+            {"argv": ["bad2.c", "-target", "arm", "--vector-table", "-o", "o2.bin"],
+             "expect_error": "thread-local storage applies to objects, not functions"},
+            {"argv": ["bad3.c", "-target", "arm", "--vector-table", "-o", "o3.bin"],
+             "expect_error": "thread-local storage cannot be used in a typedef"},
+            {"argv": ["bad4.c", "-target", "arm", "--vector-table", "-o", "o4.bin"],
+             "expect_error": "_Thread_local requires static or extern"},
+            {"argv": ["bad5.c", "-target", "arm", "--vector-table", "-o", "o5.bin"],
+             "expect_error": "thread-local storage cannot be used on a struct or union member"},
+        ],
+    },
 ]
 
 def build_case(arkcc, workdir, case, extra=()):

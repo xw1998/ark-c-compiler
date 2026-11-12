@@ -106,6 +106,9 @@ typedef enum {
     /* === 0.5.x additions (B4: _Complex keyword) === */
     TOK_COMPLEX,          /* _Complex */
 
+    /* === C11 thread-local storage === */
+    TOK_THREAD_LOCAL,     /* _Thread_local (same storage class as armcc's __thread) */
+
     /* === 0.6.x additions: armcc 5 compatibility keywords (guarded by ARKCC_FEATURE_ARMCC_KEYWORDS) === */
     TOK_VALUE_IN_REGS,    /* __value_in_regs */
     TOK_THREAD,           /* __thread */

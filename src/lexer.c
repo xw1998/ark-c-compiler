@@ -251,6 +251,11 @@ static Keyword g_keywords[] = {
     /* B4: _Complex support (C99) */
     {"_Complex",      TOK_COMPLEX},
     {"__complex__",   TOK_COMPLEX},
+    /* C11 6.7.2.4: thread-local storage.  Unconditional -- this is a standard
+     * keyword, not an armcc extension, so it must work with the armcc
+     * keyword set turned off (it maps onto the same storage class as
+     * __thread, which the backends already handle). */
+    {"_Thread_local", TOK_THREAD_LOCAL},
 #if ARKCC_FEATURE_ARMCC_KEYWORDS
     /* 0.6.x: armcc 5 specific keywords; map to internal token kinds. */
     {"__value_in_regs", TOK_VALUE_IN_REGS},

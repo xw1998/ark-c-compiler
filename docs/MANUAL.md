@@ -263,8 +263,8 @@ M4/M33 只有单精度。传 `-mcpu Cortex-M7` 时，`double`↔`float` 的隐�
 
 ## 4 支持的 C 语言特性
 
-本节以 ISO/IEC 9899:1999（C99）为参照，列出 v0.8.0 编译器实际支持的内容。编译器实现了完整的 C99 集合，并覆盖了 98% 以上的常用 armcc 扩展；另有四个 C11 关键字
-（`_Static_assert` / `_Alignof` / `_Alignas` / `_Generic`）见 4.9。
+本节以 ISO/IEC 9899:1999（C99）为参照，列出 v0.8.0 编译器实际支持的内容。编译器实现了完整的 C99 集合，并覆盖了 98% 以上的常用 armcc 扩展；另有五个 C11 关键字
+（`_Static_assert` / `_Alignof` / `_Alignas` / `_Generic` / `_Thread_local`）见 4.9。
 
 ### 4.1 类型系统
 
@@ -284,7 +284,8 @@ M4/M33 只有单精度。传 `-mcpu Cortex-M7` 时，`double`↔`float` 的隐�
 | 类型限定符 `const` `volatile` `restrict` | 是 | 解析并用于语义分析 |
 | 存储类 `static` `extern` `auto` `register` | 是 | `static/extern` 影响链接；函数内 `static` 具有持久生命周期 |
 | `inline` | 是 | 解析（作为提示） |
-| `__thread`（TLS） | 是 | 线程本地存储，输出 `.tbss`/`.tdata` 段 |
+| `__thread`（TLS） | 是 | 线程本地存储，输出 `.tbss`/`.tdata` 段（散列加载路径） |
+| `_Thread_local`（C11 TLS） | 是 | 与 `__thread` 同一套存储位（`0x10000`），另加 C11 6.7.1p4 的存储类校验；平铺裸镜像里等价于普通 `.data`/`.bss`，语义边界见 4.9 |
 | 强制类型转换 `(type)expr` | 是 | |
 | `sizeof(type)` / `sizeof expr` | 是 | 编译期求值 |
 | VLA 可变长度数组 | 是 | `int a[n]` 运行期 VLA，通过 `IR_ALLOCA` 在栈上分配；向上取整对齐：ARM / x86_64 取 8，RV32I 取 16（psABI 要求每次调用前 sp 16 字节对齐）。RV32I 的函数只要含 `IR_ALLOCA`，尾声就先 `sub sp, s0, frame_size` 把 sp 重建回固定帧底再弹帧，否则 `return` 会从错位处读 `ra`/`s0`。门禁：`tests/run_rv_alloca_tests.py --rv-as <bin>` |
@@ -377,7 +378,7 @@ M4/M33 只有单精度。传 `-mcpu Cortex-M7` 时，`double`↔`float` 的隐�
 | 字符串初始化 `char s[]="hi"` | 是 |
 | 全局非字面量初始化（常量表达式折叠） | 是 |
 | 复合字面量 `(int[]){1,2,3}` / `(struct P){.x=1,.y=2}` | 是 |
-| TLS 初始化（`__thread`） | 是 |
+| TLS 初始化（`__thread` / `_Thread_local`） | 是 |
 
 ### 4.8 内联汇编
 
@@ -393,9 +394,9 @@ C 后端完整透传内联汇编（含操作数替换）；ARM 后端做文本�
 
 ### 4.9 C11 关键字（子集）
 
-v0.8.0 之后补上四个 C11 关键字，其余 C11 特性（`_Atomic`、`<threads.h>`、匿名结构体之外的写法等）
-不在范围内。四个关键字的入口分别在 lexer（关键字表）、parser（折叠与建节点）、sema
-（`_Generic` 选支）三处，下游 irgen / 全局初始化 / 各后端完全看不到它们。
+v0.8.0 之后补上五个 C11 关键字，其余 C11 特性（`_Atomic`、`<threads.h>`、匿名结构体之外的写法等）
+不在范围内。入口分别在 lexer（关键字表）、parser（折叠与建节点）、sema
+（`_Generic` 选支）三处；前四个下游完全看不到，`_Thread_local` 只多占一个存储位。
 
 | 关键字 | 支持 | 实现要点 |
 | --- | :---: | --- |
@@ -403,6 +404,7 @@ v0.8.0 之后补上四个 C11 关键字，其余 C11 特性（`_Atomic`、`<thre
 | `_Alignof(type-name)` | 是 | 从**类型**折叠（`type_align()`），不是从表达式的默认 int；只接受类型名，`_Alignof(expr)` 报错（C11 本来也不允许） |
 | `_Alignas(type-name)` / `_Alignas(const-expr)` | 是 | 非 2 的幂、非常量报错；**不弱化**自然对齐（C11 6.7.5p6）；全局走 `g_attr_align_bytes` 通路（ARM 平铺 SRAM 布局按 `align_bytes` 落位），成员改 `Type::align_override`，块作用域上限 8 字节（见下） |
 | `_Generic(ctrl, T: e, ..., default: e)` | 是 | 控制表达式按 C11 6.5.1.1p2 做左值转换 + 数组退化 + 函数指示符退化；不做整型提升；无匹配无 `default` → 报错；重复 `default` → 报错；选中后 sema 里 `*node = *sel` squash 成普通表达式，irgen 另有防御分支（万一 sema 被跳过会报错而不是吐 0） |
+| `_Thread_local` | 是 | 独立 `TOK_THREAD_LOCAL`（不复用 `TOK_THREAD`，否则丢失"是哪个拼写"）；存储位 `0x10000` = TLS、`0x20000` = 拼写为 `_Thread_local`（C11 约束只对后者生效，armcc 的裸 `__thread` 保持豁免）。约束按更具体优先排序：typedef → 函数 → 需要 `static`/`extern` → 不能与 `auto`/`register` 同用 |
 
 三条**明写的限制**：
 
@@ -417,6 +419,11 @@ v0.8.0 之后补上四个 C11 关键字，其余 C11 特性（`_Atomic`、`<thre
 3. **控制表达式只对"标识符 / 一元 `*` / 一元 `&`"做函数指示符退化**：sema 是浅层解析，
    符号表里函数只存返回类型，所以退化逻辑在 `_Generic` 分支里按符号种类补做；更复杂的
    函数指示符表达式（如条件表达式两支都是函数）不在覆盖范围，会落到普通表达式类型上。
+4. **`_Thread_local` 只做到"存储类是 TLS 且校验按 C11"，没有线程指针重定位**：散列加载路径
+   （`ARKCC_FEATURE_ARMCC_KEYWORDS`）才发射 `.tbss`/`.tdata`；平铺裸镜像（`--vector-table`）里
+   它就是普通 `.data`/`.bss`，落在 SRAM 并由 `__arkcc_init_globals()` 清零，单线程裸机上值语义
+   正确。C 后端原样输出 `__thread` 交给宿主编译器。执行级证据：`tests/arm_exec/run_arm_exec.py`
+   的 `tls_static_init`（8）、`tls_block_static`（6）、`tls_reject`（四条诊断 + 不许留镜像）。
 
 门禁：`python tests/run_c11_keywords_tests.py --arm-as <bin> [--rv-as <bin>]`，ARM + RV32I 双目标
 共 30 项（11 个运行时用例 × 2 目标 + 8 个诊断用例），另含三条自检（静态断言真/假对照、

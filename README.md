@@ -1,6 +1,6 @@
 # Ark C 编译器
 
-一个多目标 C99 编译器（另有 C11 的 `_Static_assert` / `_Alignof` / `_Alignas` / `_Generic`，见[下文](#c11-关键字子集)），可在 Windows / Linux / macOS 上用 gcc 构建运行，
+一个多目标 C99 编译器（另有 C11 的 `_Static_assert` / `_Alignof` / `_Alignas` / `_Generic` / `_Thread_local`，见[下文](#c11-关键字子集)），可在 Windows / Linux / macOS 上用 gcc 构建运行，
 也可**原生自托管**于 STM32（Cortex-M7）：从外部 SPI Flash 读取 `.c` 文件就地编译，
 **并在同一颗芯片上把它跑起来**（2026-11-05 首次端到端跑通，见[里程碑](#里程碑在-stm32-上编译在-stm32-上跑)与
 [`examples/stm32_selfhost_build/`](examples/stm32_selfhost_build/)）。
@@ -74,7 +74,7 @@
 | 宽字符 | 是 | `wchar_t` + `L"..."` 宽字符串 + `L'...'` 宽字符字面量；通过 `--wchar16`/`--wchar32` 切换宽度 |
 | 三字符组 | 是 | 全部 9 个 C99 三字符组（`??=`->`#`、`??(`->`[`、`??/`->`\`、`??)`->`]`、`??'`->`^`、`??<`->`{`、`??>`->`}`、`??!`->`|`、`??-`->`~`） |
 | 限定符 | 是 | `const/volatile/restrict/inline` |
-| 存储类 | 是 | `static/extern/auto/register`；`static` 在函数内持久化；`__thread` 线程局部存储 |
+| 存储类 | 是 | `static/extern/auto/register`；`static` 在函数内持久化；`__thread`（armcc）/ `_Thread_local`（C11）线程局部存储 |
 | 控制流 | 是 | `if/else/while/for/do-while/switch/case/default/break/continue/goto/label/return` |
 | 运算符 | 是 | 全部 C99 运算符（算术/比较/逻辑短路/位运算/移位/复合赋值/三目/逗号/sizeof/强制转换） |
 | 函数 | 是 | 多参数（>4 个走栈；标量、64 位与结构体参数按 AAPCS32 分配：偶数寄存器对、栈上 8 字节对齐、按实际传输字数编号）、原型检查、变参 `...`（四个后端都支持；ARM / RV32I 用 4 字节字槽、C / x86_64 用 8 字节槽位，见 §后端支持与 `examples/run_va_gate.py`）、递归、多文件独立编译+链接 |
@@ -93,8 +93,8 @@
 
 ### C11 关键字（子集）
 
-只实现这四个关键字；C11 的其余部分（`_Atomic`、线程库、匿名结构体成员之外的写法等）不在范围内，
-遇到就是普通语法错误的报错，不会当作"大概能用"放过。
+只实现这五个关键字；C11 的其余部分（`_Atomic`、`<threads.h>` 线程库、匿名结构体成员之外的写法等）
+不在范围内，遇到就是普通语法错误的报错，不会当作"大概能用"放过。
 
 | 关键字 | 支持 | 说明 |
 | --- | :---: | --- |
@@ -102,8 +102,11 @@
 | `_Alignof(type-name)` | 是 | 从**类型**折叠（不是从表达式的"默认 int"，`sizeof` 曾经在这条路上答错）；只接受类型名形式，`_Alignof(expr)` 明确报错而不是猜 |
 | `_Alignas(type-name)` / `_Alignas(const-expr)` | 是 | 文件作用域任意 2 的幂（实测 64 生效，ARM 平铺 SRAM 布局也按 `align_bytes` 落位，不再一律 4 字节对齐）、结构体成员（改 `align_override`，实测 `sizeof` 32 / `align` 16）、块作用域 ≤ 8 字节（实测 8）；**永远不会弱化**自然对齐（C11 6.7.5p6，`_Alignas(2) double` 仍是 8 对齐）；非 2 的幂、非常量报错 |
 | `_Generic(ctrl, type: expr, ..., default: expr)` | 是 | 控制表达式按 C11 6.5.1.1p2 做左值转换 + 数组退化 + **函数指示符退化**（`f`、`&f`、`*f` 三种写法都落到函数指针类型）；**不做整型提升**（`char` 还是 `char`）；无匹配且无 `default` → 报错（给 0 就是伪造答案），重复 `default` → 报错；选中后在 sema 里 squash 成普通表达式，下游（irgen / 全局初始化 / 各后端）完全看不到它 |
+| `_Thread_local` | 是 | 与 `__thread` 同一套存储（bit `0x10000`），但按 C11 6.7.1p4 校验：file scope 必须配 `static`/`extern`，不能修饰函数、不能在 `typedef` 里、不能与 `auto`/`register` 同用；**armcc 的裸 `__thread` 保持豁免**（`examples/test_tls.c` 依赖这一点）。四条诊断按「更具体优先」排序，所以 `_Thread_local int f(void);` 报的是「applies to objects, not functions」而不是笼统的存储类错误 |
 
 块作用域 `_Alignas(16/32/64)` 是**报错**而不是静默降级：栈帧按 `sp -= N; base = sp` 建，AAPCS 只保证 `sp` 8 字节对齐，要真支持 16/32/64 得改 prologue/epilogue 并处理变参序列占用 `r5` 存旧 `sp` 的冲突。这里选择"宁可报错，不给错答案"。
+
+`_Thread_local` 的**语义边界**必须说清：`__thread` 那一套 `.tbss`/`.tdata` 只在 `ARKCC_FEATURE_ARMCC_KEYWORDS` 的散列加载路径上发射，**平铺裸镜像（`--vector-table`）里 TLS 变量就是普通 `.data`/`.bss`**——落在 SRAM、由 `__arkcc_init_globals()` 清零，单线程裸机上值语义正确，但不代表有线程指针重定位；C 后端原样输出 `__thread` 交给宿主 gcc。执行级证据见 `tests/arm_exec/run_arm_exec.py` 的 `tls_static_init` / `tls_block_static` / `tls_reject`。
 
 ### ARM Compiler 5 (armcc) 兼容扩展
 
@@ -738,7 +741,7 @@ python examples/run_va_gate.py --opt-suite --arm-as <bin> --rv-as <bin>  # 变�
 这条路能看见——`run_tests.ps1` 走的是 C 后端，看不到 ARM 编码。没有 unicorn 时
 自报 skipped 并 `exit 0`（编译器本身不依赖 Python 包）。
 
-现在共 11 个用例，每例都跑一遍基线臂和一遍 `--reg-top` 臂：`globals`、`reloc_data`、
+现在共 25 个用例（清单以 `CASES` 为准，随门禁增长），每例都跑一遍基线臂和一遍 `--reg-top` 臂：`globals`、`reloc_data`、
 `reloc_data_off`、`sub_word_access`、`longlong_args`、`shift64`（64 位左/右/算术右移，
 计数取 0/1/8/16/31/32/33/40/47/63，参考值用"反复除以 2 / 乘 2"算，不用移位）、
 `abi_stack_args`（5/6/7/9 个字参数 + 溢出到栈的 64 位参数）、`longlong64`（64 位
@@ -747,8 +750,7 @@ python examples/run_va_gate.py --opt-suite --arm-as <bin> --rv-as <bin>  # 变�
 4095 字节：单条 `SUB sp` 编不下，旧的 `(N/4) & 0x7f` 把 SP 本身算错）、`far_addr`（帧
 偏移 > 4095 的局部变量**取地址**：`ADD Rt, r6, #off` 编不下，改成 `MOVW/MOVT ip` +
 `ADD Rt, r6, ip`；第一版把取地址当成取内容，产出 `ADD r0, [ip]` 汇编不过，第二版共用
-了 `ADD ip, r6, ip` 于是算成 `r6 + (r6 + n)`，写野地址）。后六例都是本轮新增的
-"能编过、跑不了/结果错"回归钉。
+了 `ADD ip, r6, ip` 于是算成 `r6 + (r6 + n)`，写野地址）。`const_fold_float` 钉编译期浮点折叠（镜像里不许留 VFP 指令），`tls_static_init` / `tls_block_static` 钉 `_Thread_local` 的初值与跨调用持久性，`tls_reject` 钉四条约束的诊断文本与"报错就不许留镜像"。这些用例里有相当一部分是"能编过、跑不了/结果错"的回归钉——每条都对应一个真实修掉的缺陷。
 
 `tests/asm_cases/run_asm_cmp.py` 把 `--asm-extra` 的每个助记符用两个独立汇编器
 各编一遍，比较的是 **`objdump` 解码出来的指令文本**而不是字节：同一条指令常有
@@ -807,6 +809,7 @@ CJK 按显示单元计列、tab 原样重放。它不需要 armcc，断言的是
 
 ## 版本历史
 
+- 未发布（master）：真 x86-64 后端（SysV AMD64 ABI，`--list-backends` 共五个后端）、CI 自动化（GitHub Actions + Gitee Go 双配置，见 `docs/CI.md`）、C11 `_Thread_local`（按 6.7.1p4 校验存储类，armcc 的裸 `__thread` 保持豁免；ARM 执行级门禁加 3 个用例，共 25 个）。
 - v0.8.0：ARM 后端对真实工程可用（自举工程 25 个源文件 `failed=0`）。新增：64 位数据通路（`long long` 的 AAPCS 传参与返回、32 位 x86 cdecl 64 位实参）、参数分配表改静态（板端 codegen 栈预算）、结构体按值与结构体返回走 AAPCS、汇编器补齐 LDM/STM 32 位形式、`TBB/TBH`、`LDRD/STRD`、`[Rn, Rm]`/写回寻址、`VLDM/VSTM/VPUSH/VPOP`、`AND/ORR/EOR/BIC/MVN` 的全部四形态（含高寄存器与立即数）、两档寄存器分配（`-fopt-regalloc` 只搬远槽且函数不变大，`-fopt-regalloc-near` 才搬近槽；默认关，默认产物逐字节不变）、块内函数声明（C99 6.2.2p5）、跨对象地址重定位（`LDR rd, =sym` 符号未定义时记 type 10/11，由链接器回填并给函数地址补 Thumb 位）、电脑端容量上限全部解除（镜像缓冲 8 MB、`-D` 表 512、数组维数、sret 表；板端按 profile 裁剪），六处"超限即静默丢弃"改为报错。实测寄存器分配让 12 个文件的栈槽引用减少 1518 处、总体积 −2398 字节（−0.21%）。修掉的静默错答案：结构体返回尾声 `ADD sp, sp, #4256` 被截断、函数地址缺 Thumb 位、"`ORR ip, ip, #1`" 编成 `orrs r4, r4`、pass1 不认识 `PUSH/POP` 导致跨标签分支漂移 4 字节、单高寄存器 `POP {ip}` 编出不可执行编码、普通块内声明被当成 `__smc(0)` 而发 `SMC #0`。门禁：`run_full_test.ps1` PASS=73、`examples/run_tests.ps1` 断言 71 通过、`run_arm_exec.py` 13 个用例在 unicorn 真跑、`run_asm_cmp.py` 12 用例与 GAS 逐字节一致 + 30 条开关 + 15 条拒收、`run_regalloc_tests.py` 4 组三臂、`run_capacity_tests.py` 4 项。
 
 - v0.7.0：armcc 兼容覆盖 98%+，STM32 自托管稳定。新增：armcc 关键字（`__value_in_regs`/`__pure`/`__interwork`/`__thread`/`__global_reg`/`__smc`/`__int64`..`__int8`/`__typedef`/`__args`/`__return`/`__tp_soft`/`__nothrow`/`__deprecated`/`__may_alias`/`__softfp`）、`__attribute__` 属性扩展（`may_alias/nothrow/pure/const/visibility/nonnull/warn_unused_result/sentinel/malloc/fastcall/stdcall/cdecl`）、预定义宏（`__arm`/`__thumb`/`__STDC_VERSION__`/`__STDC_HOSTED__`/`__SIZE_TYPE__`/`__PTRDIFF_TYPE__`/`__WCHAR_TYPE__`/`__EDG__`/`__APCS_INTERWORK`）、完整 DWARF（`.debug_info`/`.debug_abbrev`/`.debug_line`）、TLS（`.tbss`/`.tdata`）、`__packed` 指针非对齐访问、`--split_sections` 每函数一段、scatter 加载描述文件（`include/scatter.h`+`src/scatter.c`）、CPU 选择（`-mcpu`/`--cpu`+`include/cpu.h`+`src/cpu.c`）、命令行扩展（`-MMD`/`--depend`/`-MF`/`--dollar`/`--enum_is_int`/`--fpu`/`--thumb`/`--arm`/`--dwarf2`/`--dwarf3`/`--signed_chars`/`--unsigned_chars`/`--wchar16`/`--wchar32`）、配置项扩展（`enum_is_int`/`dollar_in_identifiers`/`split_sections`/`signed_chars`/`wchar16`/`wchar32`/`dwarf_version`）。全部 62 测试通过。
