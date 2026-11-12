@@ -66,13 +66,14 @@ test-x86: $(ARKCC)
 	./$(ARKCC) examples/arith.c -target x86 -S -o $(NULLDEV)
 	./$(ARKCC) examples/func.c  -target x86 -S -o $(NULLDEV)
 
-# x86-64 gate: sixteen programs are compiled to a flat image and executed on a
+# x86-64 gate: every program is compiled to a flat image and executed on a
 # 64-bit core, each asserting a constant computed outside the program.  The
 # last two stages are the ones that make the passes mean anything: an external
 # symbol the image cannot resolve must be refused (not linked as `call +0`),
 # and the harness re-runs a case with a deliberately wrong expectation and
-# requires it to fail.  The 32-bit `x86` result is printed as a reference arm
-# only -- that backend's pre-existing 64-bit/FP gaps are reported as SKIP.
+# requires it to fail.  Every program is then compiled a second time for the
+# 32-bit `x86` target and run again; an i386 answer that differs from the
+# expectation fails the case -- that backend is a verdict, not a reference arm.
 test-x86-64: $(ARKCC)
 	$(PYTHON) tests/run_x86_64_image_tests.py --arkcc ./$(ARKCC)
 

@@ -1,5 +1,7 @@
 # x86-64 后端（SysV AMD64）
 
+[English](X86_64_BACKEND.en.md) | 中文
+
 `-target x86_64` 在很长一段时间里只是 `x86` 的别名：`backend_x86_64.c` 里只有一份
 i386 cdecl 代码，所以 `long long`、指针、`double` 全被当成 32 位处理。现在它是**真后端**，
 和 i386 共用同一个源文件（`src/backend/x86_64/backend_x86_64.c`）但走两条独立的代码

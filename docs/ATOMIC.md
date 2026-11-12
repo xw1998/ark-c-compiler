@@ -1,5 +1,7 @@
 # C11 `_Atomic` 与 `<stdatomic.h>`
 
+[English](ATOMIC.en.md) | 中文
+
 本文记录本编译器对 C11 原子类型的**实现边界、诊断策略与执行级证据**。要点先摆在前面：
 
 - 有真原子路径的目标**只有一个**：`arm`（Cortex-M，单核 + PRIMASK 临界区）。

@@ -1,5 +1,7 @@
 # arkCC + armcc5 STM32 构建手册
 
+[English](STM32_BUILD.en.md) | 中文
+
 > 目标读者：想在 Windows 上用 ARM Compiler 5（armcc 5.06）把 arkCC 编译成 STM32 固件，并在 STM32H743 板上跑自托管编译器的人
 > 编码：UTF-8（无 BOM）
 

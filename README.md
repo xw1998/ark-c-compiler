@@ -1,5 +1,7 @@
 # Ark C 编译器
 
+[English](README.en.md) | 中文
+
 一个多目标 C99 编译器（另有 C11 的 `_Static_assert` / `_Alignof` / `_Alignas` / `_Generic` / `_Thread_local` / `_Atomic`，见[下文](#c11-关键字子集)），可在 Windows / Linux / macOS 上用 gcc 构建运行，
 也可**原生自托管**于 STM32（Cortex-M7）：从外部 SPI Flash 读取 `.c` 文件就地编译，
 **并在同一颗芯片上把它跑起来**（2026-11-05 首次端到端跑通，见[里程碑](#里程碑在-stm32-上编译在-stm32-上跑)与
@@ -527,9 +529,15 @@ ark c compiler/
 ├── docs/DIAGNOSTICS.md     诊断层：与 armcc 逐字节对齐的排版契约（中文，UTF-8）
 ├── docs/CI.md              持续集成：跑什么、跳过什么、为什么（中文，UTF-8）
 ├── docs/ATOMIC.md          C11 _Atomic：Type 级传播、读-改-写拒绝、stdatomic.h 两支与门禁（中文，UTF-8）
+├── docs/X86_64_BACKEND.md   x86-64（SysV AMD64）后端：寄存器、栈槽、重定位、执行级门禁（中文，UTF-8）
 ├── docs/从零写一个C编译器.md  教材体逐代码教程：19 章，从 30 行到 3 万行（中文，UTF-8）
+├── docs/from-scratch-c-compiler.en.md  上述教材的英文摘要（结构、章目、阅读路线）
 └── README.md               项目简介（UTF-8）
 ```
+
+英文版与中文原件并排存放，文件名形如 `docs/X.en.md`（`docs/X.md` 保持中文）；`README.en.md` 是
+`README.md` 的英文对应版。每一对文件顶部都有一行语言切换。除 8740 行的教材只给英文摘要外，
+其余文档都有完整英文版。
 
 ## 构建
 
@@ -716,7 +724,7 @@ PowerShell 门禁（Windows 专用）、`make stm32`、需要 armcc/臂工具链
 powershell -ExecutionPolicy Bypass -File examples\run_tests.ps1   # 75 个用例（71 断言 + 4 跳过）
 powershell -ExecutionPolicy Bypass -File run_full_test.ps1        # 73 个样例全量回归
 python tests/run_stdlib_tests.py                                  # 标准库门禁（编译→多对象链接→unicorn 真跑）：21 个用例的期望值全是程序自己算出来的数；`strtod` 一例 SKIP 并打印实测理由（宿主 emulator 没有双精度 FPU，不是库的问题）
-python tests/run_x86_64_image_tests.py --arkcc ./arkcc.exe        # x86-64 门禁：33 个程序编成 0x400000 平铺镜像、在 unicorn 64 位核上跑 main，期望值全在程序之外算出；另含「未解析符号必须拒绝且不留镜像」与「期望值 +1 必须被判成 DIFF」两段自检。32 位 x86 只作参考臂，其历史缺陷显式 SKIP
+python tests/run_x86_64_image_tests.py --arkcc ./arkcc.exe        # x86-64 门禁：35 个程序编成 0x400000 平铺镜像、在 unicorn 64 位核上跑 main，期望值全在程序之外算出；另含「未解析符号必须拒绝且不留镜像」与「期望值 +1 必须被判成 DIFF」两段自检。每个程序再编一次 32 位 i386 并再跑一遍，i386 结果与期望不符即判 FAIL（不再当脚注）
 python tests/run_install_tests.py                                 # `make install` 门禁：38 个文件逐字节等于源、第二次跑不改任何 mtime、`--dry-run` 不写盘、绝对 PREFIX + DESTDIR 被拒；最后拿**装出来那棵树**建一个用到 malloc/div/qsort 的程序跑出 181（宿主 gcc 同一份源码算 181，对拍）
 python tests/run_diag_tests.py                                    # 诊断排版门禁（需 armcc）
 python tests/run_diag_boundary.py                                 # 诊断边界契约（长行/上限/CJK/tab，无需 armcc）

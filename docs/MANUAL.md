@@ -1,5 +1,7 @@
 # Ark C Compiler 使用手册
 
+[English](MANUAL.en.md) | 中文
+
 > 版本：v0.8.2
 > 读者：嵌入式开发者、编译原理学习者，以及任何希望在 STM32 上运行"自举 C 编译器"的人
 > 作者：Ark C Compiler 项目组
@@ -735,7 +737,7 @@ RV32I 早先的做法更隐蔽：把**被调方帧里的地址**放进 `a0`。�
 
 ### 5.1 后端接口
 
-文件：[include/backend.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/backend.h)
+文件：[include/backend.h](../include/backend.h)
 
 ```c
 typedef struct ArkBackend {
@@ -756,13 +758,13 @@ typedef struct ArkBackend {
 
 | 后端 | 目录 | 入口符号 | 主要用途 |
 | --- | --- | --- | --- |
-| `arm` | [src/backend/arm/](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/backend/arm) | `ark_backend_arm()` | STM32 Cortex-M3/M4/M7/M33（Thumb-2），完整 DWARF + TLS + Scatter |
-| `x86_64` | [src/backend/x86_64/](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/backend/x86_64) | `ark_backend_amd64()` | SysV AMD64：8 字节指针、`rdi rsi rdx rcx r8 r9` + `xmm0-7` + 8 字节栈槽、0x400000 平铺镜像；自带 64 位编码器。别名 `amd64`/`x86-64` |
-| `x86` | [src/backend/x86_64/](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/backend/x86_64) | `ark_backend_x86_64()` | i386（32 位、cdecl）GAS 汇编；别名 `i386`/`i686`/`x86_64-msvc`/`x86-msvc` |
-| `riscv32` | [src/backend/riscv32/](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/backend/riscv32) | `ark_backend_riscv32()` | 生成 RV32I 汇编（GAS） |
-| `c` | [src/backend/c/](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/backend/c) | `ark_backend_c()` | IR -> 可读 C 源码（主机测试主路径） |
+| `arm` | [src/backend/arm/](../src/backend/arm) | `ark_backend_arm()` | STM32 Cortex-M3/M4/M7/M33（Thumb-2），完整 DWARF + TLS + Scatter |
+| `x86_64` | [src/backend/x86_64/](../src/backend/x86_64) | `ark_backend_amd64()` | SysV AMD64：8 字节指针、`rdi rsi rdx rcx r8 r9` + `xmm0-7` + 8 字节栈槽、0x400000 平铺镜像；自带 64 位编码器。别名 `amd64`/`x86-64` |
+| `x86` | [src/backend/x86_64/](../src/backend/x86_64) | `ark_backend_x86_64()` | i386（32 位、cdecl）GAS 汇编；别名 `i386`/`i686`/`x86_64-msvc`/`x86-msvc` |
+| `riscv32` | [src/backend/riscv32/](../src/backend/riscv32) | `ark_backend_riscv32()` | 生成 RV32I 汇编（GAS） |
+| `c` | [src/backend/c/](../src/backend/c) | `ark_backend_c()` | IR -> 可读 C 源码（主机测试主路径） |
 
-注册表：[src/backend/registry.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/backend/registry.c)。新增后端只需在此增加一行注册。别名（`g_backend_aliases[]`）只在精确匹配失败后回退解析，不额外占用注册位，因此 `--list-backends` 每个后端仍只出现一次，并把该后端的别名打在 `aliases:` 行里。
+注册表：[src/backend/registry.c](../src/backend/registry.c)。新增后端只需在此增加一行注册。别名（`g_backend_aliases[]`）只在精确匹配失败后回退解析，不额外占用注册位，因此 `--list-backends` 每个后端仍只出现一次，并把该后端的别名打在 `aliases:` 行里。
 
 ### 5.3 选择后端
 
@@ -932,7 +934,7 @@ powershell -ExecutionPolicy Bypass -File examples\run_tests.ps1
 | `examples\run_tests.ps1` | 75 个样例的 ARM 发射 + C 后端执行 | 退出码必须等于样例头部 `Expected exit code: N`；skip 与 pass 分开计数 | `asserted pass 71 / failed 0 / skipped 4` |
 | `run_asm_test.ps1` | `.s/.asm` 输入路径 | 产物尺寸 + ARKOBJ2 头 + 与 armasm 黄金字节逐字节相同（含 `BKPT` 与三操作数 `MUL`）+ 未知助记符与三寄存器 `MUL` 都必须失败 | `pass=17 fail=0` |
 | `run_tests_x86.ps1` | `x86` / `x86_64` 后端 | emit 成功、GAS 语法接受、`x86` 的真别名（`i386`/`i686`/`*-msvc`）字节等价、`x86_64` **必须不是** `x86` 的别名且产物含 64 位寄存器、三条负向对照 | `pass=85 fail=0 skip=2`（`gcc` 不在 PATH 时两项 SKIP） |
-| `tests/run_x86_64_image_tests.py` | `x86_64` 执行级 | 33 个用例的 `main` 返回值 == 程序之外算出的常量（含初始化全局数组 / 字符串指针 / 静态函数指针表三个**静态绝对寻址**锚点，以及 `sizeof` 成员数组、`sret` 拷贝、指针数组初始化三个自举期才暴露的锚点）；一个双对象 `-c` + `-link` 跨 TU 用例；未解析符号必须被拒且不留镜像；期望值 +1 必须判 DIFF | `33 passed, 0 failed`（`make test-x86-64`），详见 6.3.1 |
+| `tests/run_x86_64_image_tests.py` | `x86_64` 执行级 | 35 个用例的 `main` 返回值 == 程序之外算出的常量（含初始化全局数组 / 字符串指针 / 静态函数指针表三个**静态绝对寻址**锚点，以及 `sizeof` 成员数组、`sret` 拷贝、指针数组初始化三个自举期才暴露的锚点）；一个双对象 `-c` + `-link` 跨 TU 用例；未解析符号必须被拒且不留镜像；期望值 +1 必须判 DIFF | `35 passed, 0 failed`（`make test-x86-64`），详见 6.3.1 |
 | `tests/run_x86_64_selfhost.py` | `x86_64` **自举** | 编译器把自己 24 个 TU 编成对象、链成平铺镜像、在 unicorn 上跑起来，再编一份 payload，产物必须与宿主对象**逐字节**相同（长度 + fnv-1a）；同一 payload 的汇编文本另行对比，用来把差异定位到代码生成还是汇编器 | `PASS self-host: byte-identical object`（2130 B / `fnv=28c333dc`），`make test-x86-64-selfhost`，详见 [X86_64_BACKEND.md](X86_64_BACKEND.md) §7.1 |
 | `run_link_test.ps1` | `-c` + `-link` 多对象 | ARKOBJ2 头、RAM 描述符、**输出不是原始对象拼接**、镜像长度 == 两对象代码长度之和、重叠必须报错且不留产物 | `pass=17 fail=0` |
 | `run_arm_exec_test.ps1` | ARM **执行级**（编译→链接→QEMU 真跑） | 向量表 SP/reset 向量合法（reset 向量必须带 Thumb 位）、两个不同负载分别返回 8 与 3、负向对照必须被拒；QEMU 缺失时 `exit 2` | `pass=13 fail=0` |
@@ -989,7 +991,7 @@ gcc -m32 -c foo.s -o foo.o    # 只校验 GAS 是否接受（本机 MinGW 没有
 .\arkcc.exe foo.c -target x86_64 -S -o foo.s       # 看 SysV 汇编
 ```
 
-**执行级验证**：`tests/run_x86_64_image_tests.py`（`make test-x86-64`）把 33 个程序编成
+**执行级验证**：`tests/run_x86_64_image_tests.py`（`make test-x86-64`）把 35 个程序编成
 0x400000 的镜像、在 unicorn 的 64 位核上跑 `main`，逐个断言一个**在程序之外算出来的常量**；
 另有两段自检——未定义的外部符号必须被拒绝且不留镜像（否则 `call foo` 退化成 `call +0`，
 镜像自己调自己而 arkcc 退出 0），以及「期望值 +1」必须被判成 DIFF。
@@ -1001,12 +1003,13 @@ gcc -m32 -c foo.s -o foo.o    # 只校验 GAS 是否接受（本机 MinGW 没有
 **不**证明「产出了一个能在真实操作系统上直接执行的编译器二进制」——平铺镜像没有 ELF/PE 头、
 没有系统调用层，`main` 与 libc 都是探针供的。详见 [X86_64_BACKEND.md](X86_64_BACKEND.md) §7.1。
 
-**i386 侧的执行级验证缺口**：MinGW 的 `gcc -m32` 只能汇编不能链接（缺 32 位 crt 与
-`_main`/`_printf` 前缀），所以 i386 只跑到"emit 成功 / GAS 语法接受 / 负向对照"这一层。
-它还有四处历史缺陷（浮点 `movq needs an xmm operand`、64 位算术 `UC_ERR_EXCEPTION`、
->8 字节结构体按值传参结果错、**本地数组下标读到错的元素**——32 位帧映射是 `[ebp-(48+off)]`，
-帧偏移递增对应地址递减，而下标按地址递增），在 x86-64 门禁里作为**参考臂显式 SKIP**，
-既不判 PASS 也不判 FAIL。详见 [X86_64_BACKEND.md](X86_64_BACKEND.md) §5。
+**i386 侧没有本机链接环**：MinGW 的 `gcc -m32` 只能汇编不能链接（缺 32 位 crt 与
+`_main`/`_printf` 前缀），所以 i386 的 emit / GAS 语法 / 负向对照仍由 `run_tests_x86.ps1` 覆盖。
+执行级则在 x86-64 门禁里给每个程序再编一次 32 位、再跑一遍，**用同一套期望值判定**——
+不符即判 FAIL。它曾有四处历史缺陷（浮点 `movq needs an xmm operand`、64 位算术
+`UC_ERR_EXCEPTION`、>8 字节结构体按值传参结果错、**本地数组下标读到错的元素**——32 位帧映射
+原先写成 `[ebp-(48+off)]`，帧偏移递增对应地址递减，而下标按地址递增），v0.8.2 已全部修完。
+详见 [X86_64_BACKEND.md](X86_64_BACKEND.md) §5。
 
 #### 6.3.1 镜像加载基址与对象内的自基址重定位
 
@@ -1067,7 +1070,7 @@ CI 覆盖的是 `make test` 的全部内容：四个后端的 emit 冒烟 + 四�
 
 ## 7 STM32H743 + Keil MDK 工程
 
-工程位于 [mdk/STM32H743_ArkCC/](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/mdk/STM32H743_ArkCC)。
+工程位于 [mdk/STM32H743_ArkCC/](../mdk/STM32H743_ArkCC)。
 
 ### 7.1 工程概览
 
@@ -1075,14 +1078,14 @@ CI 覆盖的是 `make test` 的全部内容：四个后端的 emit 冒烟 + 四�
 | --- | --- |
 | 芯片 | STM32H743VIT6（Cortex-M7，2 MB Flash，1 MB SRAM，480 MHz） |
 | 编译器 | **ARM Compiler 5（armcc 5.06 update 7，build 960）**；亦可使用 armclang |
-| Scatter | [Linker/STM32H743VITx_FLASH.sct](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/mdk/STM32H743_ArkCC/Linker/STM32H743VITx_FLASH.sct) |
-| 启动文件 | [Startup/startup_stm32h743xx.s](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/mdk/STM32H743_ArkCC/Startup/startup_stm32h743xx.s) |
-| 用户程序 | [User/main.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/mdk/STM32H743_ArkCC/User/main.c) |
-| STM32 自举入口 | [port/stm32/main_stm32.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/port/stm32/main_stm32.c) |
+| Scatter | [Linker/STM32H743VITx_FLASH.sct](../mdk/STM32H743_ArkCC/Linker/STM32H743VITx_FLASH.sct) |
+| 启动文件 | [Startup/startup_stm32h743xx.s](../mdk/STM32H743_ArkCC/Startup/startup_stm32h743xx.s) |
+| 用户程序 | [User/main.c](../mdk/STM32H743_ArkCC/User/main.c) |
+| STM32 自举入口 | [port/stm32/main_stm32.c](../port/stm32/main_stm32.c) |
 | Flash 区域 | `0x08000000 0x00200000` |
 | DTCM 区域 | `0x20000000 0x00020000`（128 KB） |
 | AXI SRAM | `0x24000000 0x00080000`（512 KB），用于放置 `.ark_heap` + `.ark_code` + `.ark_buf` |
-| armcc5 构建脚本 | [build_stm32_armcc.ps1](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/build_stm32_armcc.ps1) |
+| armcc5 构建脚本 | [build_stm32_armcc.ps1](../build_stm32_armcc.ps1) |
 | 仅集成 ARM 后端 | 为节省 Flash |
 
 #### 7.1.1 armcc5 命令行关键参数
@@ -1171,7 +1174,7 @@ W25Q128 需要一个极简文件索引表 + 文件数据：
 0x050000   /app/lib.h      ...
 ```
 
-`FileEntry` 结构位于 [port/stm32/flash_fs_stm32.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/port/stm32/flash_fs_stm32.c)。
+`FileEntry` 结构位于 [port/stm32/flash_fs_stm32.c](../port/stm32/flash_fs_stm32.c)。
 
 主机侧极简脚本（Python，可自行扩展）：
 
@@ -1220,9 +1223,9 @@ arkCC 在 STM32 上使用三层内存区域：
   - `backend_arm.c` 用 `g_arm_dump_syms` 全局标志替代 `getenv("ARKCC_DUMP_SYMS")`
 - `system_stm32h7xx.c` 提供 `__user_initial_stackheap` 重定向，将 C 库堆指向 `ark_heap_buffer`
 
-**缓冲区尺寸自适应**：[include/arkcc_config.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/arkcc_config.h) 通过 `ARKCC_PROFILE` 宏区分 `ARKCC_PROFILE_STM32_MIN` 与 `ARKCC_PROFILE_HOST_FULL`，所有大型缓冲区尺寸都按 profile 自动选择。命令行加 `-DARKCC_PROFILE=ARKCC_PROFILE_STM32_MIN` 即启用 STM32 配置。
+**缓冲区尺寸自适应**：[include/arkcc_config.h](../include/arkcc_config.h) 通过 `ARKCC_PROFILE` 宏区分 `ARKCC_PROFILE_STM32_MIN` 与 `ARKCC_PROFILE_HOST_FULL`，所有大型缓冲区尺寸都按 profile 自动选择。命令行加 `-DARKCC_PROFILE=ARKCC_PROFILE_STM32_MIN` 即启用 STM32 配置。
 
-跳转执行前需调用 `SCB_CleanDCache_by_Addr` + `SCB_InvalidateICache`（[User/main.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/mdk/STM32H743_ArkCC/User/main.c) 中有调用模板）。
+跳转执行前需调用 `SCB_CleanDCache_by_Addr` + `SCB_InvalidateICache`（[User/main.c](../mdk/STM32H743_ArkCC/User/main.c) 中有调用模板）。
 
 ### 7.5 调试器与串口
 
@@ -1238,37 +1241,37 @@ arkCC 在 STM32 上使用三层内存区域：
 
 | 路径 | 作用 |
 | --- | --- |
-| [include/common.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/common.h) | TokenKind / AstKind / IrOp 主枚举 |
-| [include/platform.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/platform.h) | `ark_log` / `ark_logf` / `ark_abort` |
-| [include/flash_fs.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/flash_fs.h) | `fs_read_file(path, buf, cap)` |
-| [include/memory.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/memory.h) | Bump 分配器 |
-| [include/lexer.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/lexer.h) | 词法分析 |
-| [include/ast.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/ast.h) | AST 节点 |
-| [include/type.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/type.h) | 类型系统 |
-| [include/symtab.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/symtab.h) | 符号表 |
-| [include/parser.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/parser.h) | 语法分析 |
-| [include/sema.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/sema.h) | 语义分析 |
-| [include/ir.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/ir.h) | IR 数据结构 |
-| [include/irgen.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/irgen.h) | AST -> IR |
-| [include/backend.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/backend.h) | 后端接口 |
-| [include/preproc.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/preproc.h) | 预处理器 |
-| [include/compiler.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/compiler.h) | 顶层入口 `ark_compile` / `ark_compile_and_run` |
-| [include/arkcc_config.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/arkcc_config.h) | 编译期特性开关宏 |
-| [include/config.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/config.h) | 运行时配置结构 |
-| [include/opt.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/opt.h) | 优化 pass 接口 |
-| [include/cpu.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/cpu.h) | CPU 选择（Cortex-M3/M4/M7/M33） |
-| [include/scatter.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/scatter.h) | Scatter 描述文件解析器 |
-| [src/main.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/main.c) | PC 命令行入口 |
-| [src/compiler.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/compiler.c) | 流水线调度 |
-| [src/config.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/config.c) | INI 配置加载 |
-| [src/opt.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/opt.c) | IR 优化 pass（常量折叠 + DCE + 内联） |
-| [src/cpu.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/cpu.c) | CPU 选择实现 |
-| [src/scatter.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/scatter.c) | Scatter 文件解析实现 |
-| [include/diag.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/diag.h) | 诊断层接口（各阶段只 include 这一个头） |
-| [src/diag.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/diag.c) | 诊断排版：风格 / 源码回显 / caret / 汇总 / 抑制 / 上限 |
-| [src/diag_msg_table.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/diag_msg_table.c) | 码 → 消息模板表（**生成物**，见 `tools/gen_diag_table.py`） |
-| [src/backend/registry.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/backend/registry.c) | 后端注册表 |
-| [port/stm32/main_stm32.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/port/stm32/main_stm32.c) | STM32 自举入口（替代 PC 的 `main.c`） |
+| [include/common.h](../include/common.h) | TokenKind / AstKind / IrOp 主枚举 |
+| [include/platform.h](../include/platform.h) | `ark_log` / `ark_logf` / `ark_abort` |
+| [include/flash_fs.h](../include/flash_fs.h) | `fs_read_file(path, buf, cap)` |
+| [include/memory.h](../include/memory.h) | Bump 分配器 |
+| [include/lexer.h](../include/lexer.h) | 词法分析 |
+| [include/ast.h](../include/ast.h) | AST 节点 |
+| [include/type.h](../include/type.h) | 类型系统 |
+| [include/symtab.h](../include/symtab.h) | 符号表 |
+| [include/parser.h](../include/parser.h) | 语法分析 |
+| [include/sema.h](../include/sema.h) | 语义分析 |
+| [include/ir.h](../include/ir.h) | IR 数据结构 |
+| [include/irgen.h](../include/irgen.h) | AST -> IR |
+| [include/backend.h](../include/backend.h) | 后端接口 |
+| [include/preproc.h](../include/preproc.h) | 预处理器 |
+| [include/compiler.h](../include/compiler.h) | 顶层入口 `ark_compile` / `ark_compile_and_run` |
+| [include/arkcc_config.h](../include/arkcc_config.h) | 编译期特性开关宏 |
+| [include/config.h](../include/config.h) | 运行时配置结构 |
+| [include/opt.h](../include/opt.h) | 优化 pass 接口 |
+| [include/cpu.h](../include/cpu.h) | CPU 选择（Cortex-M3/M4/M7/M33） |
+| [include/scatter.h](../include/scatter.h) | Scatter 描述文件解析器 |
+| [src/main.c](../src/main.c) | PC 命令行入口 |
+| [src/compiler.c](../src/compiler.c) | 流水线调度 |
+| [src/config.c](../src/config.c) | INI 配置加载 |
+| [src/opt.c](../src/opt.c) | IR 优化 pass（常量折叠 + DCE + 内联） |
+| [src/cpu.c](../src/cpu.c) | CPU 选择实现 |
+| [src/scatter.c](../src/scatter.c) | Scatter 文件解析实现 |
+| [include/diag.h](../include/diag.h) | 诊断层接口（各阶段只 include 这一个头） |
+| [src/diag.c](../src/diag.c) | 诊断排版：风格 / 源码回显 / caret / 汇总 / 抑制 / 上限 |
+| [src/diag_msg_table.c](../src/diag_msg_table.c) | 码 → 消息模板表（**生成物**，见 `tools/gen_diag_table.py`） |
+| [src/backend/registry.c](../src/backend/registry.c) | 后端注册表 |
+| [port/stm32/main_stm32.c](../port/stm32/main_stm32.c) | STM32 自举入口（替代 PC 的 `main.c`） |
 
 ### 8.2 平台抽象层
 
@@ -1284,7 +1287,7 @@ void ark_abort(const char *msg);
 int fs_read_file(const char *path, char *buf, int cap);
 ```
 
-PC 侧：[port/host/platform_host.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/port/host/platform_host.c) / [port/host/flash_fs_host.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/port/host/flash_fs_host.c)；STM32 侧：[port/stm32/](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/port/stm32)。
+PC 侧：[port/host/platform_host.c](../port/host/platform_host.c) / [port/host/flash_fs_host.c](../port/host/flash_fs_host.c)；STM32 侧：[port/stm32/](../port/stm32)。
 
 ### 8.3 STM32 自举入口
 
@@ -1300,7 +1303,7 @@ PC 侧：[port/host/platform_host.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/a
 
 将编译器移植到 Linux/ESP32/RISC-V 开发板，只需：
 
-1. 复制 [port/host/](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/port/host) 到 `port/<myplat>/`
+1. 复制 [port/host/](../port/host) 到 `port/<myplat>/`
 2. 修改 `platform_<myplat>.c` 中的输出实现，改为目标平台的 UART/syscall
 3. 修改 `flash_fs_<myplat>.c` 中的文件读取实现，改为本地文件系统/SD 卡/网络
 4. 编写 `main_<myplat>.c` 入口（参考 `main_stm32.c`）
@@ -1314,23 +1317,23 @@ PC 侧：[port/host/platform_host.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/a
 
 ### 9.1 增加关键字/Token
 
-文件 [include/common.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/common.h)：
+文件 [include/common.h](../include/common.h)：
 1. 在 `TokenKind` 枚举中增加 `TOK_XXX`。
-2. 在 [src/lexer.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/lexer.c) 的 `check_keyword()` 中把字符串关联到 `TOK_XXX`。
-3. 如有必要，在 [src/parser.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/parser.c) 中处理该 token。
+2. 在 [src/lexer.c](../src/lexer.c) 的 `check_keyword()` 中把字符串关联到 `TOK_XXX`。
+3. 如有必要，在 [src/parser.c](../src/parser.c) 中处理该 token。
 
 ### 9.2 增加 AST 节点
 
-1. 在 [include/common.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/common.h) 中新增 `AST_XXX`。
-2. 在 [include/ast.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/ast.h) 的 `AstNode.u` 联合中新增字段。
-3. 在 [src/ast.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/ast.c) 中实现 `ast_xxx_new(...)` 构造器。
-4. 在 [src/parser.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/parser.c) 的相应产生式中调用构造器。
-5. 在 [src/sema.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/sema.c) 中增加类型检查。
-6. 在 [src/irgen.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/irgen.c) 中翻译为 IR。
+1. 在 [include/common.h](../include/common.h) 中新增 `AST_XXX`。
+2. 在 [include/ast.h](../include/ast.h) 的 `AstNode.u` 联合中新增字段。
+3. 在 [src/ast.c](../src/ast.c) 中实现 `ast_xxx_new(...)` 构造器。
+4. 在 [src/parser.c](../src/parser.c) 的相应产生式中调用构造器。
+5. 在 [src/sema.c](../src/sema.c) 中增加类型检查。
+6. 在 [src/irgen.c](../src/irgen.c) 中翻译为 IR。
 
 ### 9.3 增加 IR 指令
 
-1. 在 [include/common.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/common.h) 中新增 `IR_XXX`。
+1. 在 [include/common.h](../include/common.h) 中新增 `IR_XXX`。
 2. 修改各后端 `emit_asm` 中的 switch case。
 
 ### 9.4 增加后端（以 mips 为例）
@@ -1349,8 +1352,8 @@ PC 侧：[port/host/platform_host.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/a
    };
    const ArkBackend *ark_backend_mips(void) { return &g_mips_backend; }
    ```
-3. 在 [include/backend.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/backend.h) 中声明 `ark_backend_mips()`。
-4. 在 [src/backend/registry.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/backend/registry.c) 中注册。
+3. 在 [include/backend.h](../include/backend.h) 中声明 `ark_backend_mips()`。
+4. 在 [src/backend/registry.c](../src/backend/registry.c) 中注册。
 5. `make` 会自动纳入（Makefile 使用通配符）。
 
 完成后：`arkcc foo.c -target mips -S`。
@@ -1457,7 +1460,7 @@ v0.8.0 覆盖了 armcc 5 常用扩展的 98% 以上。下表列出全部支持�
 
 ## 10 标准库子集
 
-目录：[stdlib/include/](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/stdlib/include)
+目录：[stdlib/include/](../stdlib/include)
 
 | 头文件 | 提供 |
 | --- | --- |
@@ -1501,7 +1504,7 @@ A：会。使用 `--fpu=hard`，或在 `arkcc.cfg` 中设置 `fpu_hw=1`，ARM �
 **双精度的 `double`↔`float` 转换另受 `-mcpu` 控制**（与 `--fpu` 无关）：`-mcpu Cortex-M7` 说明目标有 VFPv5-D16，转换直接发 `VCVT.F64.F32`/`VCVT.F32.F64`；不说明 CPU 时发 `BL __aeabi_f2d`/`BL __aeabi_d2f`，需要运行库提供这两个符号。在没链 libgcc 的裸机小程序上，后者会在链接期报 `unresolved symbol "__aeabi_f2d"`——补 `-mcpu` 而不是补软浮 helper（见 [3.2](#32-目标-cpu-选择)）。
 
 **Q6：编译大文件时报 "out of memory" 怎么办？**
-A：Bump 分配器默认 256 KB。可增大 [include/memory.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/memory.h) 中的 `ARK_POOL_SIZE`；或在 STM32 侧把 `.ark_heap` 段扩大到 128 KB+（注意 H743 AXI SRAM 总容量为 512 KB）。
+A：Bump 分配器默认 256 KB。可增大 [include/memory.h](../include/memory.h) 中的 `ARK_POOL_SIZE`；或在 STM32 侧把 `.ark_heap` 段扩大到 128 KB+（注意 H743 AXI SRAM 总容量为 512 KB）。
 
 **Q7：能像 GCC 一样跨翻译单元链接吗？**
 A：能，只是对象格式是自有 ARKOBJ2，不是 ELF。`-c` 出对象，`-link a.obj b.obj` 做符号合并、跨对象分支回填、`--reloc-text`/`--reloc-data` 的地址改写与多对象 SRAM 重叠检查；RV32I 侧同样有 `-c`/`-link`。仍不支持的是直接喂 ELF `.o`（那要走 `arm-none-eabi-ld`），以及 RV32I 的跨对象分支与跨 TU 函数指针全局初始化器（会明确报错）。详见 5.7 / 5.8 与 [12 已知限制](#12-已知限制)。
@@ -1547,7 +1550,7 @@ v0.8.0 已实现完整的 C99 集合 + 98% 以上的 armcc 常用扩展，仅剩
 
 ### 部分支持
 
-- **必须链运行库（软浮 / 64 位乘除）**：后端**不再自带**`__aeabi_f*`/`__aeabi_d*`、`__aeabi_ldivmod`/`__aeabi_uldivmod`、`__aeabi_llsl` 这些 AEABI 辅助例程（[src/backend/arm/backend_arm.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/src/backend/arm/backend_arm.c) 里有逐条说明：`__aeabi_f2iz`、`__aeabi_fdiv`、`__aeabi_uldivmod`、`__aeabi_ldivmod`、`__aeabi_dadd` 五个自实现版本实测都是静默错值）。它们按 AEABI 的定义属于目标运行库——`arm-none-eabi-gcc` 的 `libgcc.a`、armcc 的 `armlib`。所以：**用到浮点、64 位除法或 64 位↔浮点转换的镜像必须链运行库**，否则链接期以 `undefined reference to __aeabi_...` 失败（刻意如此，把"算错"变成"链不上"）。RV32I 同理，软浮用 `__adddf3`/`__muldf3`/`__divdf3`/`__eqdf2` 一族、64 位乘除用 `__muldi3`/`__divdi3`，同样要链 `libgcc`。仍然自带的是 `__aeabi_memcpy`（结构体赋值/传参/数组初始化都用它，freestanding 目标没有 libc 的 `memcpy`）；64 位**加减**是内联的（ARM `ADDS/ADCS`，RV `sltu` 进位链），不需要库。硬件 FPU 模式（ARM `--fpu=hard`）把软浮换成 `VADD/VMUL/VCVT/VCMP`，那份依赖也就没了。
+- **必须链运行库（软浮 / 64 位乘除）**：后端**不再自带**`__aeabi_f*`/`__aeabi_d*`、`__aeabi_ldivmod`/`__aeabi_uldivmod`、`__aeabi_llsl` 这些 AEABI 辅助例程（[src/backend/arm/backend_arm.c](../src/backend/arm/backend_arm.c) 里有逐条说明：`__aeabi_f2iz`、`__aeabi_fdiv`、`__aeabi_uldivmod`、`__aeabi_ldivmod`、`__aeabi_dadd` 五个自实现版本实测都是静默错值）。它们按 AEABI 的定义属于目标运行库——`arm-none-eabi-gcc` 的 `libgcc.a`、armcc 的 `armlib`。所以：**用到浮点、64 位除法或 64 位↔浮点转换的镜像必须链运行库**，否则链接期以 `undefined reference to __aeabi_...` 失败（刻意如此，把"算错"变成"链不上"）。RV32I 同理，软浮用 `__adddf3`/`__muldf3`/`__divdf3`/`__eqdf2` 一族、64 位乘除用 `__muldi3`/`__divdi3`，同样要链 `libgcc`。仍然自带的是 `__aeabi_memcpy`（结构体赋值/传参/数组初始化都用它，freestanding 目标没有 libc 的 `memcpy`）；64 位**加减**是内联的（ARM `ADDS/ADCS`，RV `sltu` 进位链），不需要库。硬件 FPU 模式（ARM `--fpu=hard`）把软浮换成 `VADD/VMUL/VCVT/VCMP`，那份依赖也就没了。
 - **RV32I 的内联汇编、`__svc`/`__smc` 与打包车道运算**：`asm("...")` 原样输出，扩展形式（`asm("t" : outs : ins : clobbers)`）的 `%0..%3` 换成 `a0..a3`（ARM 是 `r0..r3`）——两个后端都**没有操作数分配器**，outs/ins/clobbers 被丢弃，操作数需要自己在模板里点名。`__svc(n)`/`__smc(n)` 在 RV32I 上都编成 `li a7, n` + `ecall`：RV 基础指令集只有一条 trap 指令，编号按 RISC-V syscall ABI / SBI 的约定进 `a7`，所以二者在 RV 上不可区分（ARM 侧仍是 `SVC #n` / `SMC #n`）。自动向量化产生的 `IR_SIMD_ADD16/SUB16/ADD8/SUB8` 在 RV 上用 SWAR 精确模拟（逐车道有符号回绕，不饱和），代价是每条车道运算要 10 条左右基础指令。门禁：`python tests/run_rv_misc_ir_tests.py --rv-as <bin> [--arm-as <bin> --arm-libgcc <libgcc.a>]`。
 - **自动向量化的两条边界**：只处理"恰好两次 `LOAD_IDX` + 一次 `+`/`-` + 一次 `STORE_IDX`、元素 1 或 2 字节、循环次数是车道数整数倍"的循环；`volatile` 与 `__packed` 的循环**不进**向量化。宿主默认 `-O0` 也开（`ARKCC_FEATURE_OPT_VECTORIZE=1`），板端 profile 置 0，`--vectorize` / `--no_vectorize` 可显式开关。这一段曾经有静默错答案：宽度提升后元素窄化的 `IR_TRUNC` 没撤掉，四个车道只剩 lane 0，`char a[8]+b[8]` 算出 `{2,0,0,0,10,0,0,0}`（exit 0、无警告）。已修——相邻 `IR_TRUNC` 的目标位宽提到 32（即 no-op）。若日后改向量化，务必用 `examples/test_vectorize.c` 之外的形状再验一遍。
 - **跨翻译单元链接（ARKOBJ2，不是 ELF）**：`-c` 产出 arkCC 自有对象容器 ARKOBJ2，`-link` 只认这个格式（`ELF .o` 不支持）。`-link` 做的是符号合并 + 重定位回填 + 多对象 SRAM 重叠检查，数据段默认**不**搬迁——因此每个对象的 `.data/.bss` 必须落在自己的窗口里，两个对象都带全局变量时直接报 SRAM 重叠并不产出，而不是悄悄叠在一起；要搬就给 `--reloc-data`（板端 `cc` 只要出现 `-link` 或 `--scatter` 就默认打开），它把第二个及以后的对象按 8 字节对齐接在前一个之后并就地改写 MOVW/MOVT 站点，各自仍留一条 `.data` 初始化体、镜像末尾拼成调用链。详见 5.7 / 5.8。RV32I 侧同样有 `-c`/`-link`（对象体装的是已汇编好的机器码，不是汇编文本）：对象内部全走 PC 相对量，因此可落在镜像任意偏移，链接器只按 16 字节对齐串联并回填 `RV_RELOC_AUIPC`(13) / `RV_RELOC_ABS32`(14)；导出边界由 `.globl`/`.weak` 决定，跨对象分支与跨 TU 的函数指针全局初始化器仍直接报错（详见 README 的「RV32I 的对象模式」）。
@@ -1555,7 +1558,7 @@ v0.8.0 已实现完整的 C99 集合 + 98% 以上的 armcc 常用扩展，仅剩
 - **IR 生成不完整即失败**：`irgen` 遇到无法降级的赋值目标时会累计 `g_irgen_errors`，驱动看到非 0 就 `return ARK_ERR_IRGEN` 并不产出镜像（原先只打一行日志再 push 一个 0，会得到静默算错的二进制）。
 - **`sizeof(long double)` 为 8**：本编译器采用 LLP64 数据模型（与 armcc 默认一致），`long double` 与 `double` 同为 8 字节，而 32 位 x86 宿主 GCC 上是 12。依赖 `sizeof(long double)` 区分精度的代码不可移植，跨平台比对 `sizeof` 结果时须按目标模型而非宿主模型来判断。
 - **位域宽度上限 32 位**：`IR_LOAD_FLD`/`IR_STORE_FLD` 按 32 位容器读写，`long long x:40` 会读回错值。因此语法分析阶段直接报错（`bit-field width 40 exceeds 32`）、不生成代码，不做静默截断。
-- **聚合初始化器只认能变成字节的东西（两个机器后端共用一份实现）**：全局聚合初始化走 [include/agginit.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/agginit.h) 的 `ark_agg_fill()`，类型驱动地按声明偏移写字节，所以支持整数/字符常量、字符串填充 `char` 数组（含 `char m[2][6] = {"ab","cd"}` 这种按行的）、嵌套 `{}`、`.field=` 与 `[idx]=` 指派器，以及**地址常量元素**（`int (*tab[2])(int,int) = {add,sub};`、`char *cs[2] = {"xy","cd"};`——文本里读不出数字、类型是指针/函数的元素交给后端 hook，按 `IrGlobal.init_refs` 的偏移对账，字符串元素额外在 `.rodata` 里按元素偏移各开一个标签，见「聚合初始化器里的地址元素」一节）。**读不出字节的初值一律显式报错**：聚合里的**浮点字面量**（`struct S{double d;} s = {1.5};` 报
+- **聚合初始化器只认能变成字节的东西（两个机器后端共用一份实现）**：全局聚合初始化走 [include/agginit.h](../include/agginit.h) 的 `ark_agg_fill()`，类型驱动地按声明偏移写字节，所以支持整数/字符常量、字符串填充 `char` 数组（含 `char m[2][6] = {"ab","cd"}` 这种按行的）、嵌套 `{}`、`.field=` 与 `[idx]=` 指派器，以及**地址常量元素**（`int (*tab[2])(int,int) = {add,sub};`、`char *cs[2] = {"xy","cd"};`——文本里读不出数字、类型是指针/函数的元素交给后端 hook，按 `IrGlobal.init_refs` 的偏移对账，字符串元素额外在 `.rodata` 里按元素偏移各开一个标签，见「聚合初始化器里的地址元素」一节）。**读不出字节的初值一律显式报错**：聚合里的**浮点字面量**（`struct S{double d;} s = {1.5};` 报
 `the arm backend cannot turn the initialiser of the global 's' into data ...`）以及不能用字面量表示的初值，
 绝不写零充数。`union` 已支持：按 C99 6.7.8p10 只取**一个**活跃成员（无指派时取第一个，`.f=` 另指，
 多于一个成员仍报错），成员本身既可以是指针（`union U u = { .p = &gv };`）也可以是字符数组
@@ -1669,7 +1672,7 @@ v0.8.0 已实现完整的 C99 集合 + 98% 以上的 armcc 常用扩展，仅剩
 ### 验证边界
 
 - **ARM 执行语义**：已由 `run_arm_exec_test.ps1` 在 `qemu-system-arm -machine mps2-an385` 上验证（编译→链接→真跑→semihosting 退出码，两个不同负载 8/3）；**仍未验**的是"板载产物烧回 Flash 再跳转"这一层（无硬件）。细节见 6.2。
-- **x86-64 执行语义已验证**：16 个用例在 unicorn 64 位核上真跑 `main` 并断言独立算出的常量，见 6.3 与 [X86_64_BACKEND.md](X86_64_BACKEND.md)。
+- **x86-64 执行语义已验证**：35 个用例在 unicorn 64 位核上真跑 `main` 并断言独立算出的常量，见 6.3 与 [X86_64_BACKEND.md](X86_64_BACKEND.md)。
 - **i386 执行语义未验证**：本机 MinGW `gcc -m32` 只能汇编不能链接；i386 只验 emit / GAS 语法 / 负向对照，且其浮点、64 位算术、大结构体按值传参三处仍有历史缺陷，见 6.3。
 - **`__at` / `__global_reg` 在 `c` 后端降级为注释**：这两个是 ARM 特有的放置语义，C 后端只把 `__at(addr)` 输出成一条注释，`__global_reg` 仅做解析（提示性关键字），不改变生成代码。要它们真正生效请用 `-target arm`。
 
@@ -1847,11 +1850,11 @@ powershell -ExecutionPolicy Bypass -File build_stm32_armcc.ps1
 
 **原因**：AXI SRAM（512 KB）溢出。map 文件会显示 RW_AXI Size > 0x80000。
 
-**解决**：减小 [include/arkcc_config.h](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/include/arkcc_config.h) 中的 STM32 profile 缓冲区尺寸：
+**解决**：减小 [include/arkcc_config.h](../include/arkcc_config.h) 中的 STM32 profile 缓冲区尺寸：
 - `ARK_POOL_SIZE`（默认 64K）
 - `PP_INC_BUF` × `PP_MAX_INC_DEPTH`（默认 8K × 4 = 32K）
 - `PP_BUF_SIZE`（默认 32K）
-- `ark_heap_buffer`（[User/main.c](file:///d:/%E5%B7%A5%E4%BD%9C/git_project/ark%20c%20compiler/mdk/STM32H743_ArkCC/User/main.c)，默认 32K）
+- `ark_heap_buffer`（[User/main.c](../mdk/STM32H743_ArkCC/User/main.c)，默认 32K）
 
 #### #268: declaration may not appear after executable statement
 

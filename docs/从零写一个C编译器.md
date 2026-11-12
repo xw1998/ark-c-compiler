@@ -1,5 +1,7 @@
 # 从零写一个 C 编译器
 
+[English summary](from-scratch-c-compiler.en.md) | 中文
+
 ## ——以 arkc 为例，逐段代码讲解一个能自己编译自己的编译器
 
 > 适用版本：arkc 0.8.0
