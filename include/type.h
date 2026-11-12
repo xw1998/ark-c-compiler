@@ -117,6 +117,8 @@ int   type_equal(Type *a, Type *b);
  * because generated code runs on the host where pointers are 8 bytes.
  * Must be called before parsing/sema/irgen so struct layout matches. */
 void  type_set_ptr_size(int bytes);
+/* The pointer size the current backend selected (4 or 8). */
+int   type_ptr_size(void);
 int   type_is_scalar(Type *t);
 int   type_is_integer(Type *t);
 int   type_is_arith(Type *t);

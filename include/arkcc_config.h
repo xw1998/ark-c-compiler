@@ -357,9 +357,26 @@
 # if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
 #   define ARK_POOL_SIZE          (64 * 1024)     /* 64 KB arena for STM32 (was 128K to fit 512KB AXI) */
 # else
-#   define ARK_POOL_SIZE          (64 * 1024 * 1024)  /* 64 MB for host */
+#   define ARK_POOL_SIZE          (256 * 1024 * 1024) /* 256 MB for host: the
+                                                   * -link path carves two
+                                                   * ARK_LINK_BUF_SIZE buffers
+                                                   * out of this arena, so at
+                                                   * 64 MB arena + 64 MB link
+                                                   * buffer the first -link
+                                                   * aborted with "memory pool
+                                                   * exhausted" before reading
+                                                   * a single object */
 # endif
 #endif
+/* The host -link path allocates its two image buffers from the arena:
+ * they are not static arrays, because 2 x ARK_LINK_BUF_SIZE of zeroed .bss is
+ * dead weight in every non-link run.  That makes ARK_LINK_BUF_SIZE a hard
+ * constraint on ARK_POOL_SIZE -- and the failure mode was "memory pool
+ * exhausted" with no hint of which knob to turn, so it is a build error now. */
+#if ARK_POOL_SIZE < 2 * ARK_LINK_BUF_SIZE
+#error "ARK_POOL_SIZE must be at least 2 * ARK_LINK_BUF_SIZE (the -link path allocates both image buffers from the arena)"
+#endif
+
 #ifndef ARK_SRC_BUF_SIZE
 # if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
 #   define ARK_SRC_BUF_SIZE       (16 * 1024)     /* 16 KB source buffer (was 32K to ease 64KB pool pressure) */
@@ -386,10 +403,15 @@
 #   define ARK_LINK_BUF_SIZE     (16 * 1024)      /* 16 KB: holds the largest object read
                                                    * and the linked image on the board */
 # else
-#   define ARK_LINK_BUF_SIZE     (8 * 1024 * 1024) /* 8 MB: a real STM32H743
+#   define ARK_LINK_BUF_SIZE     (64 * 1024 * 1024) /* 64 MB: a real STM32H743
 #                                        * image is 1-2 MB, and this buffer
 #                                        * holds both the largest object and
-#                                        * the linked image (host only) */
+#                                        * the linked image (host only).
+                                        * 64 MB because a self-hosted
+                                        * arkcc link is 15 MB of
+                                        * objects plus a 15 MB image;
+                                        * at 8 MB that link failed on
+                                        * the buffer, not on the code */
 # endif
 #endif
 #ifndef ARK_OBJ_BUF_SIZE

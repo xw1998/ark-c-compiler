@@ -3307,6 +3307,12 @@ static AstNode *parse_unary_expr(Parser *p) {
             {
                 AstNode *e = parse_unary_expr(p);
                 int s = 4;
+                /* Whether `s` came from a type this stage can actually name.
+                 * The cases below cover the operand shapes the parser knows;
+                 * everything else (s.bit, p->field, *p, a+b, ...) has no type
+                 * until sema runs, and folding those to 4 is a fabricated
+                 * answer -- it is what made sizeof(op->sym) report 4. */
+                int s_known = 0;
                 if (e && e->kind == AST_STR) {
                     /* C11 6.5.3.4: a string literal has type char[n+1], so
                      * sizeof "abc" is 4 and sizeof("long...") is its
@@ -3320,11 +3326,13 @@ static AstNode *parse_unary_expr(Parser *p) {
                     int sl = 0;
                     while (e->u.name && e->u.name[sl]) sl++;
                     s = sl + 1;
+                    s_known = 1;
                 } else if (e && e->type) {
                     s = type_size(e->type);
+                    s_known = 1;
                 } else if (e && e->kind == AST_VAR) {
                     Symbol *sym = sym_find(e->u.name);
-                    if (sym && sym->type) s = type_size(sym->type);
+                    if (sym && sym->type) { s = type_size(sym->type); s_known = 1; }
                 } else if (e && e->kind == AST_FUNC_CALL &&
                            e->u.call.name && e->u.call.name[0] != '?') {
                     /* sizeof(call): the parser runs before sema, so the call
@@ -3343,6 +3351,7 @@ static AstNode *parse_unary_expr(Parser *p) {
                             if (ftype->kind == TYPE_FUNC && ftype->base)
                                 s = type_size(ftype->base);
                         }
+                        s_known = 1;
                     }
                 } else if (e && e->kind == AST_ARRAY_ACCESS) {
                     /* sizeof(arr[i]): resolve arr's type from symtab, then
@@ -3354,8 +3363,16 @@ static AstNode *parse_unary_expr(Parser *p) {
                         Symbol *sym = sym_find(arr->u.name);
                         if (sym && sym->type && sym->type->kind == TYPE_ARRAY) {
                             s = type_size(sym->type->base);
+                            s_known = 1;
                         }
                     }
+                }
+                if (!s_known) {
+                    /* Type not available at parse time: defer to sema rather
+                     * than answer 4.  A sizeof that has to be a constant
+                     * here (array bound, case label) now fails loudly instead
+                     * of silently using 4. */
+                    return ast_sizeof_pending(e, line);
                 }
                 if (s <= 0) s = 4;
                 return ast_sizeof_val(s, line);

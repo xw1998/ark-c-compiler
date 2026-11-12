@@ -66,103 +66,56 @@ static void sb_putd(StrBuf *b, long long v) {
     for (i = n - 1; i >= 0; i--) sb_putc(b, tmp[i]);
 }
 static void sb_putf(StrBuf *b, double v) {
-    /* Convert a double to a C floating literal. Scientific notation is used for
-     * very large or very small magnitudes, fixed point otherwise. */
-    /* 自定义 double 转字符串，避免使用 snprintf（STM32 半主机依赖）。
-     * 大数（v >= 1e16）和极小值（v < 1e-4）使用科学记数法，
-     * 正常范围使用定点表示，保证输出为合法 C 浮点字面量。
-     * 并非完全可往返，但二进制值在 init_float 中单独保存用于代码生成。 */
-    char tmp[80];
-    int n = 0;
+    /* Serialise a floating constant so that it round-trips bit for bit.
+     *
+     * For a floating element of an aggregate initialiser this text is the only
+     * source of the bytes (init_float carries a single scalar), so a hand
+     * written decimal dtoa that is merely "close" would put a different double
+     * in the image than the source asked for.  A C99 hexadecimal floating
+     * literal is exact by construction and is still valid C, so -target c
+     * output keeps compiling with any C99 compiler.
+     *
+     * inf / nan have no hexadecimal spelling; they keep their names. */
+    union { double d; unsigned long long u; } bits;
+    static const char hexd[] = "0123456789abcdef";
+    char digits[13];
+    unsigned long long m;
+    int e, i, ndig;
+
+    bits.d = v;
     if (v != v) { sb_puts(b, "nan"); return; }
-    /* 无穷大检测：inf - inf = NaN，NaN != 0.0。
-     * 不能用 v > DBL_MAX 比较，因为 -O2 下 x87 FPU 的 80 位扩展精度
-     * 可能导致误判（DBL_MAX 被误判为 >DBL_MAX）。 */
-    if (v - v != 0.0) { sb_puts(b, "inf"); return; }
-    if (v < 0) { sb_putc(b, '-'); v = -v; }
-    if (v == 0.0) { sb_puts(b, "0.0"); return; }
-    /* 大数或极小值使用科学记数法 */
-    if (v >= 1e16 || v < 1e-4) {
-        int exp = 0;
-        int i, d;
-        /* 规范化到 1 <= v < 10，记录指数。
-         * 用 10 的幂表大步长归一化，减少迭代次数以降低累积舍入误差
-         * （逐次乘除 10 会因 300+ 次迭代累积误差，导致 1e-300 往返失败） */
-        {
-            static const double p10[] = {1e1, 1e2, 1e4, 1e8, 1e16, 1e32, 1e64, 1e128, 1e256};
-            static const int sh[] = {1, 2, 4, 8, 16, 32, 64, 128, 256};
-            int bi;
-            for (bi = 8; bi >= 0; bi--) {
-                while (v >= p10[bi]) { v /= p10[bi]; exp += sh[bi]; }
-            }
-            while (v >= 10.0) { v /= 10.0; exp++; }
-            for (bi = 8; bi >= 0; bi--) {
-                while (v < 1.0 && v * p10[bi] < 10.0) { v *= p10[bi]; exp -= sh[bi]; }
-            }
-            while (v < 1.0) { v *= 10.0; exp--; }
-        }
-        /* 尾数整数部分（1 位） */
-        d = (int)v;
-        if (d > 9) d = 9;
-        tmp[n++] = (char)('0' + d);
-        v -= (double)d;
-        /* 小数点 + 17 位小数 */
-        tmp[n++] = '.';
-        for (i = 0; i < 17; i++) {
-            v *= 10.0;
-            d = (int)v;
-            if (d > 9) d = 9;
-            if (d < 0) d = 0;
-            tmp[n++] = (char)('0' + d);
-            v -= (double)d;
-        }
-        /* 去掉末尾多余的 0，保证至少有一位小数 */
-        while (n > 0 && tmp[n-1] == '0') n--;
-        if (tmp[n-1] == '.') tmp[n++] = '0';
-        /* 指数部分：e+NN 或 e-NN（至少 2 位，不足补 0） */
-        tmp[n++] = 'e';
-        if (exp >= 0) tmp[n++] = '+';
-        else { tmp[n++] = '-'; exp = -exp; }
-        if (exp < 10) { tmp[n++] = '0'; tmp[n++] = (char)('0' + exp); }
-        else {
-            char ebuf[8]; int k = 0;
-            while (exp > 0) { ebuf[k++] = (char)('0' + exp % 10); exp /= 10; }
-            while (k > 0) tmp[n++] = ebuf[--k];
-        }
-        tmp[n] = 0;
-        sb_puts(b, tmp);
+    if (v - v != 0.0) {                 /* infinite: v - v is NaN only for inf */
+        if (bits.u >> 63) sb_putc(b, '-');
+        sb_puts(b, "inf");
         return;
     }
-    /* 定点表示：1e-4 <= v < 1e16，保持原有输出方式 */
-    {
-        long long ip = (long long)v;
-        double frac = v - (double)ip;
-        if (ip == 0) tmp[n++] = '0';
-        else {
-            char ibuf[24]; int k = 0;
-            while (ip > 0) { ibuf[k++] = (char)('0' + (int)(ip % 10)); ip /= 10; }
-            while (k > 0) tmp[n++] = ibuf[--k];
+    if (bits.u >> 63) { sb_putc(b, '-'); bits.u &= 0x7FFFFFFFFFFFFFFFULL; }
+    e = (int)((bits.u >> 52) & 0x7FF);
+    m = bits.u & 0xFFFFFFFFFFFFFULL;
+    if (e == 0 && m == 0) { sb_puts(b, "0x0p+0"); return; }
+    if (e == 0) {
+        /* Subnormal: 0.<mantissa> * 2^-1022. */
+        for (i = 12; i >= 0; i--) digits[12 - i] = hexd[(m >> (4 * i)) & 15];
+        ndig = 13;
+        while (ndig > 0 && digits[ndig - 1] == '0') ndig--;
+        sb_puts(b, "0x0");
+        if (ndig > 0) {
+            sb_putc(b, '.');
+            for (i = 0; i < ndig; i++) sb_putc(b, digits[i]);
         }
-        if (frac > 0) {
-            int i;
-            tmp[n++] = '.';
-            for (i = 0; i < 17 && frac > 0; i++) {
-                int d;
-                frac *= 10.0;
-                d = (int)frac;
-                if (d > 9) d = 9;
-                tmp[n++] = (char)('0' + d);
-                frac -= (double)d;
-            }
-            while (n > 0 && tmp[n-1] == '0') n--;
-            if (tmp[n-1] == '.') tmp[n++] = '0';
-        } else {
-            tmp[n++] = '.';
-            tmp[n++] = '0';
-        }
+        sb_puts(b, "p-1022");
+        return;
     }
-    tmp[n] = 0;
-    sb_puts(b, tmp);
+    for (i = 12; i >= 0; i--) digits[12 - i] = hexd[(m >> (4 * i)) & 15];
+    ndig = 13;
+    while (ndig > 0 && digits[ndig - 1] == '0') ndig--;
+    sb_puts(b, "0x1");
+    if (ndig > 0) {
+        sb_putc(b, '.');
+        for (i = 0; i < ndig; i++) sb_putc(b, digits[i]);
+    }
+    if (e >= 1023) { sb_puts(b, "p+"); sb_putd(b, e - 1023); }
+    else { sb_puts(b, "p-"); sb_putd(b, 1023 - e); }
 }
 static void sb_putstr_lit(StrBuf *b, const char *s) {
     sb_putc(b, '"');
@@ -784,7 +737,13 @@ static void serialize_const_expr(StrBuf *b, AstNode *n) {
     switch (n->kind) {
         case AST_NUM:
             if (n->type && (n->type->kind == TYPE_FLOAT || n->type->kind == TYPE_DOUBLE)) {
-                sb_putf(b, n->fval);
+                /* A float literal is a float: the initialiser of a double is
+                 * (double)0.1f, which is not the same double as 0.1.  The
+                 * lexer keeps every literal in a double, so round it here the
+                 * way the assignment would (C11 6.3.1.5). */
+                double fv = n->fval;
+                if (n->type->kind == TYPE_FLOAT) fv = (double)(float)fv;
+                sb_putf(b, fv);
             } else {
                 sb_putd(b, n->u.num_val);
             }
@@ -1994,8 +1953,21 @@ static void lw_object(LocalAggWalk *w, int off, Type *t) {
     if (!val) return;
     es = type_size(t);
     if (es <= 0) es = 4;
-    irgen_expr(w->g, val);
-    ir_emit(w->g->fn, IR_STORE, off, 0, es);
+    {
+        /* A pointer keeps all 8 of its bytes in ONE stack word on a 64-bit
+         * target (IR_AUX_SLOT64).  Handing the bare width to IR_STORE made it
+         * pop a second word that irgen_expr never pushed: every element of
+         * `const char *builtins[] = {"printf", ...}` then stored the address in
+         * the HIGH half of its slot and shifted the IR stack by one word.
+         * Measured while self-hosting: sema_check's builtins table read back as
+         * 0x81cc6700000000 and sym_add crashed dereferencing it.  The local
+         * variable store path (AST_ASSIGN -> IR_STORE) has carried this same
+         * SLOT64 marking all along; only aggregate initialisers lacked it. */
+        int aux = es;
+        if (g_irgen_slot64_ptrs && t->kind == TYPE_PTR) aux = 8 | IR_AUX_SLOT64;
+        irgen_expr(w->g, val);
+        ir_emit(w->g->fn, IR_STORE, off, 0, aux);
+    }
 }
 
 /* A member of a struct/union at `off`: bit-fields go through IR_STORE_FLD so
@@ -3276,6 +3248,26 @@ static int ptr_elem_size(Type *t) {
     return s > 0 ? s : 1;
 }
 
+/* Push the +/-1 of an increment/decrement in the representation the operand
+ * type uses on this target: one word for int/pointer (an 8-byte pointer is
+ * IR_AUX_SLOT64, i.e. ONE word), two words (low, high) for long long, and a
+ * float constant pool entry for float/double.  A bare IR_PUSH_INT is only
+ * right for the first kind -- for long long it left the 64-bit op one word
+ * short and for float it pushed the integer 1 (bit pattern 0x00000001 =
+ * 1.4e-45) which turned `f++` into "add one ulp". */
+static void irgen_push_step(IrGen *g, Type *vt, int step) {
+    if (vt && (vt->kind == TYPE_FLOAT || vt->kind == TYPE_DOUBLE)) {
+        ir_emit(g->fn, IR_PUSH_FLOAT,
+                ir_program_add_float(g->prog, step > 0 ? 1.0 : -1.0), 0,
+                vt->kind == TYPE_DOUBLE ? 0x200 : 0);
+    } else if (vt && vt->kind == TYPE_LLONG) {
+        ir_emit(g->fn, IR_PUSH_INT, step, 0, 0);              /* low word */
+        ir_emit(g->fn, IR_PUSH_INT, step < 0 ? -1 : 0, 0, 0); /* high word */
+    } else {
+        ir_emit(g->fn, IR_PUSH_INT, step, 0, 0);
+    }
+}
+
 static void irgen_emit_binary_op(IrGen *g, int op, Type *lt, Type *rt) {
     int is_float = 0, is_llong = 0, is_unsigned = 0, is_double = 0;
     int aux_op = op;
@@ -4005,34 +3997,42 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         operand->u.unary.operand->type->is_packed) {
                         packed_aux = 0x400;
                     }
-                    if (node->u.unary.is_postfix) {
-                        /* Postfix: result = old value; store new value as side effect.
-                         * Stack trace: [addr] -> [addr,addr] -> [addr,old] ->
-                         * [old,addr] -> [old,addr,addr] -> [old,addr,val] ->
-                         * [old,addr,val,delta] -> [old,addr,new] -> [old,new] -> [old] */
-                        irgen_lvalue_addr(g, operand);
-                        ir_emit(g->fn, IR_DUP, 0, 0, 0);
-                        ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
-                        irgen_load_idx(g, operand->type, elem_sz, packed_aux);
-                        ir_emit(g->fn, IR_SWAP, 0, 0, 0);
-                        ir_emit(g->fn, IR_DUP, 0, 0, 0);
-                        ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
-                        irgen_load_idx(g, operand->type, elem_sz, packed_aux);
-                        ir_emit(g->fn, IR_PUSH_INT, delta, 0, 0);
-                        ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_PLUS);
-                        ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, packed_aux);
-                        ir_emit(g->fn, IR_POP, 0, 0, 0);
-                    } else {
-                        /* Prefix: result = new value; store new value as side effect.
-                         * Stack trace: [addr] -> [addr,addr] -> [addr,val] ->
-                         * [addr,val,delta] -> [addr,new] -> [new] */
-                        irgen_lvalue_addr(g, operand);
-                        ir_emit(g->fn, IR_DUP, 0, 0, 0);
-                        ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
-                        irgen_load_idx(g, operand->type, elem_sz, packed_aux);
-                        ir_emit(g->fn, IR_PUSH_INT, delta, 0, 0);
-                        ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_PLUS);
-                        ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, packed_aux);
+                    /* The read-modify-write below must agree with the load on
+                     * how many stack words the value occupies: an 8-byte
+                     * pointer on x86-64 is ONE word (IR_AUX_SLOT64), a long
+                     * long is TWO, a float/double is one float word.  The old
+                     * code loaded through irgen_load_idx (which does carry
+                     * IR_AUX_SLOT64 for pointer elements) but stored with the
+                     * raw packed_aux, so `s.p++` popped three words for a
+                     * one-word value and wrote the struct address into s.p.
+                     * Measured: s.p came back as the address of s; in the
+                     * x86-64 self-host image the lexer's cur->p never advanced
+                     * and is_ident_char('0') looped forever.  The step also
+                     * goes through irgen_emit_binary_op now, so long long takes
+                     * the 64-bit op and float takes a floating add instead of
+                     * "add one to the bit pattern". */
+                    {
+                        int idx_aux = irgen_idx_aux(operand->type, packed_aux);
+                        Type *vt = operand->type ? operand->type : type_int();
+                        Type *rt = (vt->kind == TYPE_FLOAT || vt->kind == TYPE_DOUBLE)
+                                   ? vt : type_int();
+                        int step = (op == (int)TOK_INC) ? 1 : -1;
+                        /* Postfix: result = old value, new value stored as a side
+                         * effect.  Prefix: result = new value.  Undoing the step
+                         * on the stored value for the postfix result keeps the
+                         * address evaluation single (no side effects repeated)
+                         * and needs no stack reshape across a multi-word value. */
+                        irgen_lvalue_addr(g, operand);                 /* [addr] */
+                        ir_emit(g->fn, IR_DUP, 0, 0, 0);                /* [addr,addr] */
+                        ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);           /* [addr,addr,0] */
+                        irgen_load_idx(g, vt, elem_sz, packed_aux);     /* [addr,old] */
+                        irgen_push_step(g, vt, step);                   /* [addr,old,step] */
+                        irgen_emit_binary_op(g, (int)TOK_PLUS, vt, rt); /* [addr,new] */
+                        ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, idx_aux); /* [new] */
+                        if (node->u.unary.is_postfix) {
+                            irgen_push_step(g, vt, step);               /* [new,step] */
+                            irgen_emit_binary_op(g, (int)TOK_MINUS, vt, rt); /* [old] */
+                        }
                     }
                 }
             } else {

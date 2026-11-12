@@ -1466,6 +1466,26 @@ int ark_compile(const ArkOptions *opts) {
                     pos += name_len;
                     reloc_off = rd_le32(up + pos); pos += 4;
                     reloc_type = up[pos]; pos += 1;
+                    if (reloc_type == X86_RELOC_SELF_BASE) {
+                        /* The site already holds this object's own offset for
+                         * a label it defines; only the base this object was
+                         * placed at is missing.  It names no symbol, so it is
+                         * settled here and never enters the reloc table. */
+                        int site = base + reloc_off;
+                        if (site < 0 || site + 4 > out_len) {
+                            char b1[12], b2[12];
+                            diag_tool(DIAG_SEV_ERROR, g_ld_image,
+                                      "self-base relocation offset %s is outside the "
+                                      "%s-byte image; the object and its relocation "
+                                      "table disagree, so no image was written",
+                                      diag_num(b1, site), diag_num(b2, out_len),
+                                      0,0,0,0);
+                            return ARK_ERR_LINK;
+                        }
+                        ld_write_word(out_buf, site,
+                                      (unsigned)rd_le32(out_buf + site) + (unsigned)base);
+                        continue;
+                    }
                     ld_add_reloc(reloc_name, base + reloc_off, reloc_type, li);
                 }
             }
@@ -2098,6 +2118,7 @@ int ark_compile(const ArkOptions *opts) {
 #if ARKCC_BACKEND_RISCV32
         g_rv_obj_mode = opts->compile_only ? 1 : 0;
 #endif
+        g_x86_obj_mode = opts->compile_only ? 1 : 0;
         code_size = be2->assemble(asm_text, g_code, ARK_CODE_BUF_SIZE);
         if (code_size < 0) {
             diag_tool(DIAG_SEV_ERROR, opts->input_path, "assembly failed", 0,0,0,0,0,0);
@@ -2257,12 +2278,22 @@ int ark_compile(const ArkOptions *opts) {
         const ArkBackend *vbe = opts->target ? ark_backend_find(opts->target)
                                              : ark_backend_default();
         if (vbe && vbe->name &&
-            (ark_streq(vbe->name, "arm") || ark_streq(vbe->name, "riscv32"))) {
+            (ark_streq(vbe->name, "arm") || ark_streq(vbe->name, "riscv32") ||
+             ark_streq(vbe->name, "x86"))) {
+            /* i386 cdecl belongs here too, and used to be left out: its
+             * va region is the caller's own stack argument block (the backend
+             * answers _ark_va_ptr with ebp+8+4*param_count), i.e. one 4-byte
+             * word per argument with no holes, while <stdarg.h>'s default
+             * branch advanced the cursor by 8 bytes -- so `sum(3,10,20,30)`
+             * read 10, 30 and then past the end and returned 40 instead of 60,
+             * with no diagnostic.  Packed word slots (below) are exactly that
+             * layout. */
             preproc_define("__ARK_VA_WORD_SLOTS", "1");
             /* ...and irgen must not reserve the C backend's 8 KB slot area:
-             * these two backends build the region out of the caller's own
-             * words, so reserving it would only cost stack (8 KB against a
-             * 4 KB mini-app task stack on the board). */
+             * these backends build the region out of the caller's own words
+             * (the registers/stack block, or the cdecl stack block), so
+             * reserving it would only cost stack (8 KB against a 4 KB
+             * mini-app task stack on the board). */
             g_ir_va_slot_region = 0;
             /* ARM Thumb-2 and RV32I can both put a >8-byte composite through
              * `...`: their va region is the caller's own argument words (the
@@ -2280,11 +2311,22 @@ int ark_compile(const ArkOptions *opts) {
         }
         /* ...and whether those word slots carry the AAPCS32 alignment holes
          * (ARM: a 64-bit argument starts on an even register / an 8-byte
-         * aligned stack slot) or are packed (RV32I: this backend numbers
+         * aligned stack slot) or are packed (RV32I and i386 cdecl both number
          * argument words 0,1,2,.. with no gaps).  <stdarg.h> needs to know,
          * because "align ap to 8" is only correct where the holes exist. */
-        if (vbe && vbe->name && ark_streq(vbe->name, "riscv32"))
+        if (vbe && vbe->name &&
+            (ark_streq(vbe->name, "riscv32") || ark_streq(vbe->name, "x86")))
             preproc_define("__ARK_VA_PACKED_WORDS", "1");
+        /* x86-64 is neither: its arguments arrive in registers, so the callee
+         * owns the System V AMD64 register save area (176 bytes) and va_list
+         * is the ABI's four-field cursor over it.  <stdarg.h> spells that
+         * walk in the __ARK_VA_SYSV branch, and irgen must not reserve the
+         * 8 KB slot area -- the registers are the source of the variadic tail
+         * here, not a copy of the whole argument list. */
+        if (vbe && vbe->name && ark_streq(vbe->name, "x86_64")) {
+            preproc_define("__ARK_VA_SYSV", "1");
+            g_ir_va_slot_region = 0;
+        }
     }
 
     /* --split_sections/-ffunction-sections: sync runtime switch to g_config,
@@ -2578,6 +2620,7 @@ int ark_compile(const ArkOptions *opts) {
 #if ARKCC_BACKEND_RISCV32
             g_rv_obj_mode = 1;
 #endif
+            g_x86_obj_mode = 1;
             code_len = be->assemble(g_asm, g_code, ARK_CODE_BUF_SIZE);
             if (code_len < 0) {
                 diag_tool(DIAG_SEV_ERROR, g_ld_image, "assembly failed", 0,0,0,0,0,0);
@@ -2646,6 +2689,7 @@ int ark_compile(const ArkOptions *opts) {
 #if ARKCC_BACKEND_RISCV32
     g_rv_obj_mode = 0;    /* a raw image has no linker: unresolved is fatal */
 #endif
+    g_x86_obj_mode = 0;
     code_size = be->assemble(g_asm, g_code, ARK_CODE_BUF_SIZE);
     if (code_size < 0) {
         diag_tool(DIAG_SEV_ERROR, "arkcc", "assembly failed", 0,0,0,0,0,0);

@@ -399,6 +399,9 @@ int eval_const_expr(AstNode *node, long long *out_value) {
             *out_value = node->u.num_val;
             return 1;
         case AST_SIZEOF:
+            /* Still waiting for sema (the operand's type is not known yet):
+             * u.num_val has not been written, so it is not a constant. */
+            if (node->sizeof_operand) return 0;
             *out_value = node->u.num_val;
             return 1;
         case AST_CAST:
@@ -973,6 +976,24 @@ static Type *sema_expr(AstNode *node) {
             if (!node->type) node->type = type_pointer(type_char());
             return node->type;
         case AST_SIZEOF:
+            if (node->sizeof_operand) {
+                /* The parser deferred this operand because it could not name
+                 * its type (member access, dereference, arithmetic, ...).
+                 * Evaluate it now and take the real size.  `sizeof(op->sym)`
+                 * with `char sym[512]` used to answer 4, which compiled the
+                 * assembler's `k < sizeof(op->sym) - 1` into a bound of 3. */
+                Type *ot = sema_expr(node->sizeof_operand);
+                int sz = ot ? type_size(ot) : 0;
+                if (sz <= 0) {
+                    DiagLoc loc = loc_of(node);
+                    diag_report_msg(DIAG_SEV_ERROR, &loc,
+                        "'sizeof' applied to an incomplete or untyped operand", 0, 0, 0);
+                    g_errors++;
+                    sz = 4;
+                }
+                node->u.num_val = sz;
+                node->sizeof_operand = 0;
+            }
             node->type = type_int();
             return node->type;
         case AST_INIT_LIST: {

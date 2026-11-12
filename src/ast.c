@@ -11,6 +11,7 @@ AstNode *ast_new(AstNodeKind kind, int line) {
     n->line = line;
     n->col = 0;
     n->fval = 0.0;
+    n->sizeof_operand = 0;
     return n;
 }
 
@@ -173,6 +174,21 @@ AstNode *ast_cast(Type *target, AstNode *expr, int line) {
 AstNode *ast_sizeof_val(int bytes, int line) {
     AstNode *n = ast_new(AST_SIZEOF, line);
     n->u.num_val = bytes;
+    n->type = type_int();
+    return n;
+}
+
+/* sizeof(expr) where the parser cannot resolve the operand's type.  Folding to
+ * the generic 4 here was a fabricated answer: `sizeof(op->sym)` with
+ * `char sym[512]` came back as 4, so when arkcc compiled its own assembler the
+ * copy loop `k < sizeof(op->sym) - 1` was emitted with a bound of 3 and every
+ * symbol name longer than three characters was truncated -- the self-hosted
+ * object then carried 17 relocations instead of 3.  sema fills u.num_val from
+ * the operand's real type. */
+AstNode *ast_sizeof_pending(AstNode *operand, int line) {
+    AstNode *n = ast_new(AST_SIZEOF, line);
+    n->u.num_val = 0;
+    n->sizeof_operand = operand;
     n->type = type_int();
     return n;
 }

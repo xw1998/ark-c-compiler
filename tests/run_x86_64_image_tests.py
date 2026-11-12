@@ -31,6 +31,23 @@ xmm operand`, UC_ERR_EXCEPTION, aggregates passed by value), which are recorded
 in docs/ and are *not* regressions of this work; those arms are reported as
 SKIP with the measured reason and never counted as pass or fail.
 
+Static-initialiser anchors (`data_array_init`, `rodata_ptr`, `fptr_table`,
+`globals_two_objs`) exist because three defects used to hide behind a green
+build:  the assembler's operand pre-parse consumed the whole line, so every
+data directive emitted *zero* bytes (labels landed right, their payload did
+not);  `.quad` wrote a zero high half, turning `{1,2,3,4}` into `{1,0,3,0}`;
+and an object's self-base absolutes were never relocated, so a `const char *`
+in an object was 0 after `-link`.  A gate that only compiles would have missed
+all three -- they are only visible by running the bytes.
+
+The variadic cases are the one place where the i386 arm is interesting: that
+target's va region is the caller's own 4-byte-word stack block, so it now walks
+packed word slots like RV32I does.  Before that it took <stdarg.h>'s 8-byte-slot
+default branch (cursor +8 per argument against a 4-byte-word image) and read
+every second argument, e.g. 40 instead of 60 for sum(3,10,20,30) -- a wrong
+answer with no diagnostic.  Its double varargs still refuse at build time
+(`movq needs an xmm operand`), which is why those arms stay SKIP.
+
 Usage (from the repository root):
     python tests/run_x86_64_image_tests.py --arkcc ./arkcc.exe
 """
@@ -163,6 +180,171 @@ long long f(long long a, int b, long long c, int d, long long e, int x, int y, i
 }
 int main(void){ return (int)(f(1000000000000LL, 1, -5LL, 2, 7LL, 3, 4, 5) % 251); }
 """, 22, "int/long long interleave across the 6 integer registers"),
+
+    # --- variadic definitions (SysV register save area + real va_list) --------
+    ("varargs_regs",
+     """
+#include <stdarg.h>
+int sum(int n, ...) { va_list ap; int s = 0; int i;
+  va_start(ap, n); for (i = 0; i < n; i++) s += va_arg(ap, int); va_end(ap);
+  return s; }
+int main(void){ return sum(3, 10, 20, 30) % 251; }
+""", 60, "3 int varargs taken from the gp save area (10+20+30)"),
+
+    ("varargs_stack",
+     """
+#include <stdarg.h>
+int sum(int n, ...) { va_list ap; int s = 0; int i;
+  va_start(ap, n); for (i = 0; i < n; i++) s += va_arg(ap, int); va_end(ap);
+  return s; }
+int main(void){ return sum(9, 1,2,3,4,5,6,7,8,9) % 251; }
+""", 45, "5 gp varargs then 3 read from overflow_arg_area (1+..+9)"),
+
+    ("varargs_double",
+     """
+#include <stdarg.h>
+double dsum(int n, ...) { va_list ap; double s = 0; int i;
+  va_start(ap, n); for (i = 0; i < n; i++) s += va_arg(ap, double); va_end(ap);
+  return s; }
+int main(void){ return (int)dsum(2, 1.5, 2.5); }
+""", 4, "va_arg(double) reads the fp save area, 16-byte slots (1.5+2.5)"),
+
+    ("varargs_fp_overflow",
+     """
+#include <stdarg.h>
+double dsum(int n, ...) { va_list ap; double s = 0; int i;
+  va_start(ap, n); for (i = 0; i < n; i++) s += va_arg(ap, double); va_end(ap);
+  return s; }
+int main(void){ return (int)dsum(9, 1.0,2.0,3.0,4.0,5.0,6.0,7.0,8.0,9.0); }
+""", 45, "8 doubles fill fp_offset to 176, the 9th comes from the stack"),
+
+    ("varargs_mixed",
+     """
+#include <stdarg.h>
+double mix(int n, ...) { va_list ap; double s = 0;
+  va_start(ap, n);
+  s += va_arg(ap, int); s += va_arg(ap, double);
+  s += va_arg(ap, int); s += va_arg(ap, double);
+  va_end(ap); return s; }
+int main(void){ return (int)(mix(4, 7, 1.5, 3, 2.25) * 4.0); }
+""", 55, "gp_offset and fp_offset advance independently (7+1.5+3+2.25=13.75)"),
+
+    ("varargs_ptr",
+     """
+#include <stdarg.h>
+int slen(int n, ...) { va_list ap; int s = 0, i; const char *p;
+  va_start(ap, n);
+  for (i = 0; i < n; i++) { p = va_arg(ap, const char *); while (*p) { s++; p++; } }
+  va_end(ap); return s; }
+int main(void){ return slen(3, "ab", "abcd", "x"); }
+""", 7, "64-bit pointer varargs survive the save area (2+4+1)"),
+
+    ("varargs_many",
+     """
+#include <stdarg.h>
+int sum(int n, ...) { va_list ap; int s = 0; int i;
+  va_start(ap, n); for (i = 0; i < n; i++) s += va_arg(ap, int); va_end(ap);
+  return s; }
+int main(void){ return sum(12, 1,2,3,4,5,6,7,8,9,10,11,12) % 251; }
+""", 78, "12 int varargs: 5 in registers, 7 in the overflow area"),
+
+    ("data_array_init",
+     """
+int g[4] = {1,2,3,4};
+int main(void){ return (g[0]*1 + g[1]*2 + g[2]*3 + g[3]*4) % 251; }
+""", 30, "initialised global array is really in the image (1+4+9+16), not zeros"),
+
+    ("rodata_ptr",
+     """
+const char *msg = "hello";
+int slen(const char *p){ int n=0; while(*p){n++;p++;} return n; }
+int main(void){ return slen(msg)*7; }
+""", 35, "string literal + a global pointer to it (5*7): .asciz and .quad both emitted"),
+
+    ("fptr_table",
+     """
+static int fa(void){return 1;}
+static int fb(void){return 2;}
+static int fc(void){return 3;}
+static int (*tab[3])(void) = {fa, fb, fc};
+int main(void){ return tab[0]() + tab[1]()*2 + tab[2]()*3; }
+""", 14, "static function-pointer table (1+4+9): absolute addresses in .data"),
+
+    ("struct_sret24",
+     """
+typedef struct { int a, b, c; } T3;
+static T3 mk3(int v){ T3 t; t.a = v; t.b = v + 1; t.c = v + 2; return t; }
+int main(void){ T3 x = mk3(5); return (x.a + x.b * 2 + x.c * 3) % 251; }
+""", 38, "24-byte struct returned through the hidden pointer (5+12+21); the callee must copy into *sret"),
+
+    ("struct_sret40",
+     """
+typedef struct { int a; long long b; int c[5]; } T5;
+static T5 mk5(int v){ T5 t; int i; t.a = v; t.b = v * 2; for (i = 0; i < 5; i++) t.c[i] = v + i; return t; }
+int main(void){ T5 x = mk5(3); return (x.a + (int)x.b + x.c[0] + x.c[4]) % 251; }
+""", 19, "mixed 40-byte struct by value (3+6+3+7); >8 bytes so it cannot use the register pair path"),
+
+    ("ptr_array_init",
+     """
+static const char *names[4] = {"x", "yy", "zzz", "wwww"};
+int main(void){
+  const char *tbl[4] = {"a", "bb", "ccc", "dddd"};
+  const char *xyzw = "xyzw";
+  const char *abcd = "abcd";
+  int i;
+  for (i = 0; i < 4; i++) {
+    if (tbl[i][0] != abcd[i]) return 10 + i;
+    if (tbl[i][i] != abcd[i]) return 20 + i;
+    if (names[i][0] != xyzw[i]) return 30 + i;
+    if (names[i][i] != xyzw[i]) return 40 + i;
+  }
+  return 0; }
+""", 0, "pointer elements of a local and a file-scope initialiser list each keep all 8 bytes (tbl[i][i] and names[i][0] must be the right character)"),
+
+    ("sizeof_member_array",
+     """
+struct S { int kind; char sym[512]; };
+int main(void){ struct S s; struct S *p = &s;
+  if ((int)sizeof(s.sym) != 512) return 1;
+  if ((int)sizeof(p->sym) != 512) return 2;
+  if ((int)sizeof(struct S) != 516) return 3;
+  if ((int)sizeof(s.kind) != 4) return 4;
+  return 0; }
+""", 0, "sizeof of a struct-member array is the array size, not the generic 4 (it was 4 while self-hosting)"),
+
+    ("varargs_copy",
+     """
+#include <stdarg.h>
+int sum2(int n, ...) { va_list ap, aq; int s = 0; int i;
+  va_start(ap, n); va_copy(aq, ap);
+  for (i = 0; i < n; i++) s += va_arg(ap, int);
+  for (i = 0; i < n; i++) s += va_arg(aq, int);
+  va_end(aq); va_end(ap); return s; }
+int main(void){ return sum2(4, 1, 2, 3, 4) % 251; }
+""", 20, "va_copy gives an independent cursor (2*(1+2+3+4))"),
+]
+
+
+# stage 3: two objects through -c / -link.  Each object's data is concatenated
+# with its code, so every address it stored for its OWN labels has to be raised
+# by the base the linker placed it at -- otherwise a string pointer stays 0 and
+# a cross-object global lands on the other object's code.
+# name, [(file name, source), ...], expected rax, what it is really about
+LINK_CASES = [
+    ("globals_two_objs",
+     [("d1.c", """
+int g[4] = {1,2,3,4};
+const char *msg = "hello";
+int sumg(void) { int s = 0, i; for (i = 0; i < 4; i++) s += g[i]; return s; }
+"""),
+      ("d2.c", """
+extern int g[4];
+extern const char *msg;
+int sumg(void);
+int slen(const char *p) { int n = 0; while (*p) { n++; p++; } return n; }
+int main(void) { g[1] = 10; return sumg() + slen(msg); }
+""")],
+     23, "object 2 writes object 1's array and reads its string (1+10+3+4 + 5)"),
 ]
 
 # stage 2: must be refused, not silently linked
@@ -194,6 +376,29 @@ def build(arkcc, src_path, target, out_path):
         syms.setdefault(m.group(1), int(m.group(2), 16))
     return proc.returncode, text, syms
 
+
+def obj_header(path):
+    """(code_size, {symbol: offset}) of an ARKOBJ2 object."""
+    import struct
+    with open(path, 'rb') as f:
+        d = f.read()
+    if d[:8] != b'ARKOBJ2\n':
+        raise ValueError('not an ARKOBJ2 object: %s' % path)
+    off = 8
+    code_size = struct.unpack_from('<i', d, off)[0]
+    off += 4 + code_size
+    count = struct.unpack_from('<i', d, off)[0]
+    off += 4
+    syms = {}
+    for _ in range(count):
+        nlen = struct.unpack_from('<i', d, off)[0]
+        off += 4
+        name = d[off:off + nlen].split(b'\0')[0].decode()
+        off += nlen
+        so = struct.unpack_from('<i', d, off)[0]
+        off += 6                      # offset(4) + type(1) + is_weak(1)
+        syms[name] = so
+    return code_size, syms
 
 def run64(code, start):
     """Run a flat image on a 64-bit core; returns (rax, None) or (None, reason)."""
@@ -276,7 +481,12 @@ def main():
         note = ''
         rc2, msg2, syms2 = build(arkcc, src, 'x86', img32)
         if rc2 != 0:
-            note = '| i386 SKIP (build: %s)' % msg2.strip().splitlines()[0][:60]
+            # A crashed or silently-killed arkcc leaves msg2 empty; indexing the
+            # split list directly then raised IndexError and lost every later case
+            # of the run (the real fault was a segfault on bare-label .s input,
+            # fixed in backend_x86_64.c -- this only keeps the report readable).
+            first2 = (msg2.strip().splitlines() or ['(no output; arkcc crashed)'])[0]
+            note = '| i386 SKIP (build: %s)' % first2[:60]
         elif 'main' not in syms2:
             note = '| i386 SKIP (no symbol)'
         else:
@@ -317,6 +527,61 @@ def main():
             failed += 1
         else:
             print('PASS %-16s refused with no image' % name)
+            passed += 1
+
+    print('=== -c / -link (two objects, global data + string) ===')
+    for name, files, expect, about in LINK_CASES:
+        objs = []
+        base = 0
+        main_at = None
+        build_ok = True
+        for fname, text in files:
+            src_path = os.path.join(TMP, fname)
+            obj_path = os.path.join(TMP, fname + '.o')
+            with open(src_path, 'w', encoding='utf-8', newline='\n') as f:
+                f.write(text)
+            proc = subprocess.run([arkcc, '-target', 'x86_64', '-c', src_path,
+                                   '-o', obj_path], capture_output=True)
+            if proc.returncode != 0:
+                msg = (proc.stdout + proc.stderr).decode('utf-8', 'replace')
+                print('FAIL %-16s object %s: %s'
+                      % (name, fname, msg.strip().splitlines()[0][:110]))
+                failed += 1
+                build_ok = False
+                break
+            code_size, syms = obj_header(obj_path)
+            objs.append(obj_path)
+            if 'main' in syms:
+                main_at = base + syms['main']
+            base += code_size
+        if not build_ok:
+            continue
+        if main_at is None:
+            print('FAIL %-16s no main in any object' % name)
+            failed += 1
+            continue
+        img = os.path.join(TMP, 'linked.bin')
+        if os.path.exists(img):
+            os.remove(img)
+        proc = subprocess.run([arkcc, '-target', 'x86_64', '-link'] + objs +
+                              ['-o', img], capture_output=True)
+        if proc.returncode != 0 or not os.path.exists(img):
+            msg = (proc.stdout + proc.stderr).decode('utf-8', 'replace')
+            print('FAIL %-16s link: %s' % (name, msg.strip().splitlines()[0][:110]))
+            failed += 1
+            continue
+        with open(img, 'rb') as f:
+            code = f.read()
+        got, why = run64(code, IMAGE_BASE + main_at)
+        if why:
+            print('FAIL %-16s %s  [%s]' % (name, why, about))
+            failed += 1
+        elif got != expect:
+            print('FAIL %-16s x86_64=%d expect=%d  [%s]'
+                  % (name, got, expect, about))
+            failed += 1
+        else:
+            print('PASS %-16s x86_64=%d  [%s]' % (name, got, about))
             passed += 1
 
     print('=== selfcheck (the harness must be able to fail) ===')

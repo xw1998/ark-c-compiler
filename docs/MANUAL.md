@@ -1,6 +1,6 @@
 # Ark C Compiler 使用手册
 
-> 版本：v0.8.0
+> 版本：v0.8.1
 > 读者：嵌入式开发者、编译原理学习者，以及任何希望在 STM32 上运行"自举 C 编译器"的人
 > 作者：Ark C Compiler 项目组
 
@@ -29,7 +29,7 @@
 
 ## 1 项目概述
 
-**Ark C Compiler**（简称 `arkcc`）是一款用 C99 编写的极简 C 语言编译器。当前版本 v0.8.0 覆盖了 ARM Compiler 5（armcc）常用扩展中的 98% 以上（仅缺 C++ 模式与高级优化）。设计目标：
+**Ark C Compiler**（简称 `arkcc`）是一款用 C99 编写的极简 C 语言编译器。当前版本 v0.8.1 覆盖了 ARM Compiler 5（armcc）常用扩展中的 98% 以上（仅缺 C++ 模式与高级优化）。设计目标：
 
 - **嵌入式自举**：编译器本身能在 STM32H743 等 Cortex-M7 微控制器上 **原生** 运行，从外部 SPI Flash 读取 `.c` 源码，就地生成机器码，然后直接跳转执行。`port/stm32/main_stm32.c` 提供了独立入口，构成"编译-链接-执行"的完整闭环，无需任何 PC 侧工具链。
 - **多后端**：核心前端只产生与目标无关的栈式虚拟机中间代码（IR），后端可以在 `arm` / `x86_64`（SysV AMD64）/ `x86`（i386 cdecl）/ `riscv32` / `c` 之间自由切换。`x86_64` 曾经只是 `x86` 的别名，现在是独立后端（详见 [X86_64_BACKEND.md](X86_64_BACKEND.md)）。
@@ -932,7 +932,8 @@ powershell -ExecutionPolicy Bypass -File examples\run_tests.ps1
 | `examples\run_tests.ps1` | 75 个样例的 ARM 发射 + C 后端执行 | 退出码必须等于样例头部 `Expected exit code: N`；skip 与 pass 分开计数 | `asserted pass 71 / failed 0 / skipped 4` |
 | `run_asm_test.ps1` | `.s/.asm` 输入路径 | 产物尺寸 + ARKOBJ2 头 + 与 armasm 黄金字节逐字节相同（含 `BKPT` 与三操作数 `MUL`）+ 未知助记符与三寄存器 `MUL` 都必须失败 | `pass=17 fail=0` |
 | `run_tests_x86.ps1` | `x86` / `x86_64` 后端 | emit 成功、GAS 语法接受、`x86` 的真别名（`i386`/`i686`/`*-msvc`）字节等价、`x86_64` **必须不是** `x86` 的别名且产物含 64 位寄存器、三条负向对照 | `pass=85 fail=0 skip=2`（`gcc` 不在 PATH 时两项 SKIP） |
-| `tests/run_x86_64_image_tests.py` | `x86_64` 执行级 | 16 个用例的 `main` 返回值 == 程序之外算出的常量；未解析符号必须被拒且不留镜像；期望值 +1 必须判 DIFF | `17 passed, 0 failed`（`make test-x86-64`） |
+| `tests/run_x86_64_image_tests.py` | `x86_64` 执行级 | 33 个用例的 `main` 返回值 == 程序之外算出的常量（含初始化全局数组 / 字符串指针 / 静态函数指针表三个**静态绝对寻址**锚点，以及 `sizeof` 成员数组、`sret` 拷贝、指针数组初始化三个自举期才暴露的锚点）；一个双对象 `-c` + `-link` 跨 TU 用例；未解析符号必须被拒且不留镜像；期望值 +1 必须判 DIFF | `33 passed, 0 failed`（`make test-x86-64`），详见 6.3.1 |
+| `tests/run_x86_64_selfhost.py` | `x86_64` **自举** | 编译器把自己 24 个 TU 编成对象、链成平铺镜像、在 unicorn 上跑起来，再编一份 payload，产物必须与宿主对象**逐字节**相同（长度 + fnv-1a）；同一 payload 的汇编文本另行对比，用来把差异定位到代码生成还是汇编器 | `PASS self-host: byte-identical object`（2130 B / `fnv=28c333dc`），`make test-x86-64-selfhost`，详见 [X86_64_BACKEND.md](X86_64_BACKEND.md) §7.1 |
 | `run_link_test.ps1` | `-c` + `-link` 多对象 | ARKOBJ2 头、RAM 描述符、**输出不是原始对象拼接**、镜像长度 == 两对象代码长度之和、重叠必须报错且不留产物 | `pass=17 fail=0` |
 | `run_arm_exec_test.ps1` | ARM **执行级**（编译→链接→QEMU 真跑） | 向量表 SP/reset 向量合法（reset 向量必须带 Thumb 位）、两个不同负载分别返回 8 与 3、负向对照必须被拒；QEMU 缺失时 `exit 2` | `pass=13 fail=0` |
 
@@ -988,16 +989,55 @@ gcc -m32 -c foo.s -o foo.o    # 只校验 GAS 是否接受（本机 MinGW 没有
 .\arkcc.exe foo.c -target x86_64 -S -o foo.s       # 看 SysV 汇编
 ```
 
-**执行级验证**：`tests/run_x86_64_image_tests.py`（`make test-x86-64`）把 16 个程序编成
+**执行级验证**：`tests/run_x86_64_image_tests.py`（`make test-x86-64`）把 33 个程序编成
 0x400000 的镜像、在 unicorn 的 64 位核上跑 `main`，逐个断言一个**在程序之外算出来的常量**；
 另有两段自检——未定义的外部符号必须被拒绝且不留镜像（否则 `call foo` 退化成 `call +0`，
-镜像自己调自己而 arkcc 退出 0），以及"期望值 +1"必须被判成 DIFF。
+镜像自己调自己而 arkcc 退出 0），以及「期望值 +1」必须被判成 DIFF。
+
+**自举验证**：`tests/run_x86_64_selfhost.py`（`make test-x86-64-selfhost`）用 x86-64 后端把编译器
+自身 24 个源文件编成对象、与探针和 libc stub 链成平铺镜像，在 unicorn 的 64 位核上**跑那份自举编译器**，
+再让它编一份 payload；产出对象必须与宿主 arkcc 的对象**逐字节相同**（当前 2130 字节、
+`fnv=28c333dc`）。它证明的是「后端覆盖了编译器自己用到的全部语言子集/IR/汇编语法」，
+**不**证明「产出了一个能在真实操作系统上直接执行的编译器二进制」——平铺镜像没有 ELF/PE 头、
+没有系统调用层，`main` 与 libc 都是探针供的。详见 [X86_64_BACKEND.md](X86_64_BACKEND.md) §7.1。
 
 **i386 侧的执行级验证缺口**：MinGW 的 `gcc -m32` 只能汇编不能链接（缺 32 位 crt 与
 `_main`/`_printf` 前缀），所以 i386 只跑到"emit 成功 / GAS 语法接受 / 负向对照"这一层。
-它还有三处历史缺陷（浮点 `movq needs an xmm operand`、64 位算术 `UC_ERR_EXCEPTION`、
->8 字节结构体按值传参结果错），在 x86-64 门禁里作为**参考臂显式 SKIP**，既不判 PASS
-也不判 FAIL。详见 [X86_64_BACKEND.md](X86_64_BACKEND.md) §5。
+它还有四处历史缺陷（浮点 `movq needs an xmm operand`、64 位算术 `UC_ERR_EXCEPTION`、
+>8 字节结构体按值传参结果错、**本地数组下标读到错的元素**——32 位帧映射是 `[ebp-(48+off)]`，
+帧偏移递增对应地址递减，而下标按地址递增），在 x86-64 门禁里作为**参考臂显式 SKIP**，
+既不判 PASS 也不判 FAIL。详见 [X86_64_BACKEND.md](X86_64_BACKEND.md) §5。
+
+#### 6.3.1 镜像加载基址与对象内的自基址重定位
+
+平铺镜像（`-target x86_64 -o a.bin`）没有加载器，所以**基址是编译期烘死的**：
+
+| 目标 | 镜像加载基址 | 代码里的全局引用 |
+| --- | --- | --- |
+| `x86`（i386 cdecl） | `0` | 32 位绝对地址（与参考臂把镜像 mem_map 到 0 一致） |
+| `x86_64`（SysV AMD64） | `0x400000` | 代码/数据访问 RIP 相对（与位置无关），但**静态绝对指针**（`const char *msg = "hi";`、静态函数指针表、`&g` 形式的初始化器）写的是 `0x400000 + 偏移` |
+
+i386 保持基址 0 是为了让 32 位参考臂的行为一处不变；x86_64 的 `0x400000` 与
+`tests/run_x86_64_image_tests.py` 的 `IMAGE_BASE` 是同一个常量。ARM 侧同理把
+flash base（`0x08000000`）烘进镜像，语义一致——静态初始化器里的绝对地址**做不到**
+位置无关，把基址写死并写进文档，比留一个"看起来能重定位"的假象更诚实。
+
+**对象模式（`-c` + `-link`）**：对象体在链接时会被拼到某个 base 之后，所以对象里的
+绝对引用不能是"镜像基址 + 对象内偏移"，而必须是"**对象自身 base** + 对象内偏移"。
+实现上这类站点在 `-c` 时按对象相对偏移写好，并标成重定位类型 `X86_RELOC_SELF_BASE`（7）；
+链接器**读入对象时**（此时 base 已知、对象体已在输出缓冲里）直接就地加上 base，
+不进重定位表——所以它不会被判成"未解析符号"，也不需要给局部量取一个全局符号名
+（取名字会污染命名空间，并可能撞出 duplicate strong symbol）。站点越界即
+`ARK_ERR_LINK` 并打印明确诊断，不产出镜像。
+
+这条路径上踩过的三个坑都留在门禁里当防假绿锚点：`data_array_init`
+（`int g[4]={1,2,3,4}`：`.quad` 曾把高半字写成 0 ⇒ `{1,0,3,0}`）、`rodata_ptr`
+（`const char *msg="hello"`：跨对象引用曾留 0）、`fptr_table`（静态函数指针表：
+曾全部指向镜像起点），以及 `globals_two_objs`（跨 TU 全局数据 + 字符串）。前三个的
+共同根因是 x86 内置汇编器**操作数预解析把整行吃掉了**，伪指令
+（`.long/.quad/.byte/.word/.zero/.skip/.space/.asciz`）于是从行尾开始解析 ⇒ 一个字节都不发射，
+标签位置正确但身后 0 字节；`-S` 文本路径走的是 GAS，看不出这类问题，
+只有在 `-o`/`-c` 的字节级产物上跑执行级门禁才会暴露。
 
 ```powershell
 .\arkcc.exe foo.c -target riscv32 -S -o foo.s
@@ -1475,6 +1515,14 @@ A：是的。`__packed` 指针（如 `__packed int *p`）会生成逐字节 load
 **Q10：如何自举验证编译器？**
 A：项目提供 `bootstrap_build.ps1` 自举脚本：用 arkcc 编译自身 24 个源文件为 `.gen.c`，再用 gcc 编译为 `.o` 并链接得到 `arkcc_bootstrap.exe`；随后可继续用 `arkcc_bootstrap.exe` 编译一次自身，形成 bootstrap13/14/15 三代稳定自举。v0.8.0 已通过完整三代自举验证。
 
+x86-64 侧另有一条**执行级**自举门禁：`make test-x86-64-selfhost`（`tests/run_x86_64_selfhost.py`）。
+它不借宿主 C 编译器：arkcc 用 `-target x86_64 -c` 把自身 24 个 TU 编成对象、`-link` 成平铺镜像，
+在 unicorn 的 64 位核上跑那份**自举出来的编译器**，再让它编一份 payload；产物与宿主 arkcc 的对象
+逐字节相同（2130 字节、`fnv=28c333dc`）才算过。它同时把自举编译器生成的汇编文本与宿主 `-S` 逐行对比，
+用来区分"差异在代码生成"还是"差异在汇编器"——2026-11-12 的第 11 条静默错答案（`sizeof` 一个成员数组被折成 4）
+就是靠这条对比从 221 字节差异缩到 3 个字符的符号名上的。边界：镜像没有 ELF/PE 头与系统调用层，
+所以这条门禁证明的是"后端能覆盖编译器自己"，不是"产出了可直接执行的编译器二进制"。
+
 ---
 
 ## 12 已知限制
@@ -1517,12 +1565,20 @@ v0.8.0 已实现完整的 C99 集合 + 98% 以上的 armcc 常用扩展，仅剩
 - **`va_arg` 依赖小端目标**：`stdlib/include/stdarg.h` 的 `va_arg` 按"槽位地址重解释"取值（`*(type *)(...)`），整数/指针/`double` 通吃，但要求目标为小端。ARM Thumb-2 与全部宿主均满足；大端目标需改为按类型分派。
 - **变参的两种镜像形状不能混用**：C/x86_64 每个实参一个 8 字节槽位（`frame+8000` 起，
   序言里把 a0..a7 镜像进去，`irgen` 的 `g_ir_va_slot_region` 负责预留 8064 字节）；
-  ARM / RV32I 用 4 字节字槽，而且**不镜像**：ARM 在序言里把"还可能装变参的寄存器"
+  ARM / RV32I（以及 i386 cdecl）用 4 字节字槽，而且**不镜像**：ARM 在序言里把"还可能装变参的寄存器"
   `r_k..r3` 压栈（`k = NCRN` 向下取偶数），让它们正好落在调用方栈参数块下方
   （区里 word j 接着栈块第 j 字，天然连续），代价随签名是 16 / 8 / 0 字节；
   RV32I 把 a0..a7 落到帧底那 32 字节里（用 `sp_size` 本来就留的余量），地址是
-  `s0 - sp_size + 4*k`。`stdarg.h` 靠 `__ARK_VA_WORD_SLOTS` 选走法，靠
-  `__ARK_VA_PACKED_WORDS` 区分"有对齐空洞（ARM）"与"平铺（RV32I）"。
+  `s0 - sp_size + 4*k`。i386 cdecl（`-target x86`）是第三种：调用点把每个实参按
+  4 字节一个字从右往左压栈，`_ark_va_ptr` 就是 `ebp+8+4*param_count`，即
+  **调用方自己的栈参数块**，同样平铺无空洞。`stdarg.h` 靠 `__ARK_VA_WORD_SLOTS`
+  选走法，靠 `__ARK_VA_PACKED_WORDS` 区分"有对齐空洞（ARM）"与"平铺（RV32I / x86）"。
+  x86 曾被漏在这两处之外，于是它掉进 8 字节槽的默认分支：游标按 8 字节推进，
+  而区里是 4 字节一个字，`sum(3,10,20,30)` 读成 10、30、越界（返回 40 而不是 60），
+  没有任何诊断。现在它与 RV32I 同一档，整数/指针变参实测正确
+  （`tests/run_x86_64_image_tests.py` 的 i386 参考臂从 40/33/4/36/8 变成 60/45/7/78/20）；
+  **double 变参在 i386 上仍然走不下去**，因为它本来就缺 SSE 双精度通路（汇编期
+  `movq needs an xmm operand`），是**报错拒绝**而不是给出错值。
   **这两个后端的变参帧必须保持小**：`irgen` 的 8064 字节预留由驱动按后端关掉
   （`g_ir_va_slot_region`），因为板上的小程序任务栈只有 4 KB——曾经 8 KB 的镜像区
   在宿主上全绿、到板上必然溢出。`examples/run_va_gate.py` 现在为每个用例断言帧大小

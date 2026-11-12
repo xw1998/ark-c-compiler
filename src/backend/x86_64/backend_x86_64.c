@@ -25,6 +25,7 @@
 #include "common.h"
 #include "ir.h"
 #include "diag.h"
+#include "agginit.h"
 /* On host, <stdlib.h> provides getenv() for the ARKCC_DUMP_SYMS symbol map
  * (see x86_assemble_mode); on STM32 getenv() does not exist. */
 #if ARKCC_PROFILE != ARKCC_PROFILE_STM32_MIN
@@ -87,377 +88,172 @@ static const char *binop_x(int op) {
     }
 }
 
-/* === Bug-X5: aggregate initializer parser ===============================
- * Parses the init_aggregate string (C initializer syntax produced by
- * irgen's serialize_init) against the global's type tree, placing each
- * scalar value at its correct byte offset, then emits .byte/.word/.long/
- * .quad directives instead of the old ".quad 0" placeholder.
+/* === Aggregate initialisers ==============================================
+ * The bytes of an aggregate initialiser come from the shared filler in
+ * src/agginit.c -- the same walk the ARM and RISC-V backends use -- so brace
+ * elision, designated elements, string elements and the bit-exact expansion of
+ * floating constants are decided in exactly one place.
  *
- * Handles:
- *   - flat/nested brace lists for arrays and structs/unions
- *   - designators [idx]= and .field=
- *   - scalar constant expressions: decimal/hex numbers, -x, ~x, (a op b)
- *   - string literals (for char arrays)
- *   - identifiers (function/enum names) emitted as symbol relocations
- * Gaps are zero-filled. */
-
-typedef struct {
-    int offset;
-    int size;
-    const char *name;
-    int namelen;
-} AggSymRef;
-
-typedef struct {
-    const char *p;
-    const char *end;
-    AggSymRef refs[32];
-    int ref_count;
-    int error;
-} AggParser;
-
-static int agg_is_ident_start(char c) {
-    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
-}
-static int agg_is_ident(char c) {
-    return agg_is_ident_start(c) || (c >= '0' && c <= '9');
-}
-
-static void agg_skip_ws(AggParser *a) {
-    while (a->p < a->end && (*a->p==' '||*a->p=='\t'||*a->p=='\n'||*a->p=='\r')) a->p++;
-}
-
-static long long agg_parse_expr(AggParser *a);
-
-static long long agg_parse_primary(AggParser *a) {
-    agg_skip_ws(a);
-    if (a->p >= a->end) { a->error = 1; return 0; }
-    char c = *a->p;
-    if (c == '(') {
-        a->p++;
-        { long long v = agg_parse_expr(a);
-          agg_skip_ws(a);
-          if (a->p < a->end && *a->p == ')') a->p++;
-          return v; }
-    }
-    if (c >= '0' && c <= '9') {
-        long long v = 0;
-        if (c == '0' && a->p + 1 < a->end && (a->p[1]=='x'||a->p[1]=='X')) {
-            a->p += 2;
-            while (a->p < a->end) {
-                char d = *a->p; int dv;
-                if (d>='0'&&d<='9') dv = d-'0';
-                else if (d>='a'&&d<='f') dv = d-'a'+10;
-                else if (d>='A'&&d<='F') dv = d-'A'+10;
-                else break;
-                v = v*16 + dv; a->p++;
-            }
-        } else {
-            while (a->p < a->end && *a->p>='0' && *a->p<='9') {
-                v = v*10 + (*a->p - '0'); a->p++;
-            }
-        }
-        while (a->p < a->end && (*a->p=='u'||*a->p=='U'||*a->p=='l'||*a->p=='L')) a->p++;
-        return v;
-    }
-    /* identifier in expression context: cannot evaluate -> 0 */
-    if (agg_is_ident_start(c)) {
-        while (a->p < a->end && agg_is_ident(*a->p)) a->p++;
-        return 0;
-    }
-    a->error = 1;
+ * An element that is an address is not a byte pattern, so the assembler gets
+ * ".quad name" instead: the elements irgen recorded in init_refs split the
+ * byte run.
+ *
+ * The private parser that stood here read only integer constants.  It left the
+ * '.' of "1.0" in the text, the array loop then made no progress at all, and a
+ * floating constant inside an aggregate initialiser stopped the compiler with a
+ * segmentation fault after several billion spins -- and had the loop been
+ * fixed alone, it would have written the integer 1 as the bytes of 1.0. */
+static int x86_agg_addr_hook(void *ud, int off, Type *t) {
+    IrGlobal *g = (IrGlobal *)ud;
+    int i;
+    (void)t;
+    if (!g) return 0;
+    for (i = 0; i < g->init_ref_count; i++)
+        if (g->init_refs[i].offset == off) return 1;
     return 0;
 }
 
-static long long agg_parse_unary(AggParser *a) {
-    agg_skip_ws(a);
-    if (a->p >= a->end) { a->error = 1; return 0; }
-    char c = *a->p;
-    if (c == '-') { a->p++; return -agg_parse_unary(a); }
-    if (c == '+') { a->p++; return agg_parse_unary(a); }
-    if (c == '~') { a->p++; return ~agg_parse_unary(a); }
-    if (c == '!') { a->p++; return !agg_parse_unary(a); }
-    return agg_parse_primary(a);
-}
-
-static long long agg_parse_mul(AggParser *a) {
-    long long l = agg_parse_unary(a);
-    for (;;) {
-        agg_skip_ws(a);
-        if (a->p >= a->end) break;
-        char c = *a->p;
-        if (c == '*') { a->p++; l *= agg_parse_unary(a); }
-        else if (c == '/') { a->p++; { long long r=agg_parse_unary(a); l = r? l/r : 0; } }
-        else if (c == '%') { a->p++; { long long r=agg_parse_unary(a); l = r? l%r : 0; } }
-        else break;
+/* One run of bytes as .byte/.word/.long/.quad, widened first, `off0` being the
+ * byte offset of `p[0]` inside the object so the wide directives stay aligned
+ * with the object rather than with the run. */
+static void x86_emit_byte_run(AsmBuffer *b, const unsigned char *p, int n,
+                              int off0) {
+    int k = 0;
+    while (k < n) {
+        int at = off0 + k;
+        int chunk = 1, i;
+        long long v = 0;
+        if ((at % 8) == 0 && k + 8 <= n) chunk = 8;
+        else if ((at % 4) == 0 && k + 4 <= n) chunk = 4;
+        else if ((at % 2) == 0 && k + 2 <= n) chunk = 2;
+        for (i = 0; i < chunk; i++)
+            v |= (long long)((unsigned long long)p[k + i] << (8 * i));
+        asmbuf_puts(b, "    ");
+        asmbuf_puts(b, chunk <= 1 ? ".byte"
+                         : (chunk <= 2 ? ".word"
+                            : (chunk <= 4 ? ".long" : ".quad")));
+        asmbuf_putc(b, ' ');
+        asmbuf_int(b, v);
+        asmbuf_putc(b, '\n');
+        k += chunk;
     }
-    return l;
 }
 
-static long long agg_parse_add(AggParser *a) {
-    long long l = agg_parse_mul(a);
-    for (;;) {
-        agg_skip_ws(a);
-        if (a->p >= a->end) break;
-        char c = *a->p;
-        if (c == '+') { a->p++; l += agg_parse_mul(a); }
-        else if (c == '-') { a->p++; l -= agg_parse_mul(a); }
-        else break;
+/* The bytes of one object, with every element the caller places itself spelled
+ * as a symbol reference instead of as a numbered byte pattern. */
+static void x86_emit_agg_bytes(AsmBuffer *b, const unsigned char *p, int n,
+                               IrGlobal *g) {
+    int psz = type_ptr_size();
+    int k = 0;
+    if (!g || !g->init_refs || g->init_ref_count <= 0) {
+        x86_emit_byte_run(b, p, n, 0);
+        return;
     }
-    return l;
-}
-
-static long long agg_parse_shift(AggParser *a) {
-    long long l = agg_parse_add(a);
-    for (;;) {
-        agg_skip_ws(a);
-        if (a->p + 1 >= a->end) break;
-        if (a->p[0]=='<' && a->p[1]=='<') { a->p += 2; { long long r=agg_parse_add(a); l <<= (r & 63); } }
-        else if (a->p[0]=='>' && a->p[1]=='>') { a->p += 2; { long long r=agg_parse_add(a); l = (r>=64)? 0 : l>>r; } }
-        else break;
-    }
-    return l;
-}
-
-static long long agg_parse_expr(AggParser *a) {
-    long long l = agg_parse_shift(a);
-    for (;;) {
-        agg_skip_ws(a);
-        if (a->p >= a->end) break;
-        char c = *a->p;
-        if (c == '&') { a->p++; l &= agg_parse_shift(a); }
-        else if (c == '|') { a->p++; l |= agg_parse_shift(a); }
-        else if (c == '^') { a->p++; l ^= agg_parse_shift(a); }
-        else break;
-    }
-    return l;
-}
-
-static void agg_put_val(unsigned char *buf, int bufsz, int off, int sz, long long v) {
-    int i;
-    if (off < 0 || off + sz > bufsz) return;
-    for (i = 0; i < sz; i++)
-        buf[off + i] = (unsigned char)((v >> (8 * i)) & 0xFF);
-}
-
-/* Skip one initializer value (scalar, braced group, or string). */
-static void agg_skip_value(AggParser *a) {
-    agg_skip_ws(a);
-    if (a->p >= a->end) return;
-    if (*a->p == '{') {
-        int depth = 0;
-        while (a->p < a->end) {
-            char c = *a->p;
-            if (c == '{') depth++;
-            else if (c == '}') { depth--; a->p++; if (depth == 0) return; }
-            else if (c == '"') { a->p++; while (a->p<a->end && *a->p!='"'){ if(*a->p=='\\'&&a->p+1<a->end)a->p+=2; else a->p++; } if(a->p<a->end)a->p++; continue; }
-            a->p++;
+    while (k < n) {
+        int i, hit = -1;
+        for (i = 0; i < g->init_ref_count; i++)
+            if (g->init_refs[i].offset == k) { hit = i; break; }
+        if (hit >= 0) {
+            IrSymRef *r = &g->init_refs[hit];
+            asmbuf_puts(b, psz == 8 ? "    .quad " : "    .long ");
+            if (r->str) {
+                asmbuf_puts(b, ".Lgstr_");
+                asmbuf_puts(b, g->name);
+                asmbuf_putc(b, '_');
+                asmbuf_int(b, r->offset);
+            } else {
+                asmbuf_puts(b, r->sym);
+                if (r->add > 0) {
+                    asmbuf_puts(b, " + ");
+                    asmbuf_int(b, (int)r->add);
+                } else if (r->add < 0) {
+                    asmbuf_puts(b, " - ");
+                    asmbuf_int(b, (int)(-r->add));
+                }
+            }
+            asmbuf_putc(b, '\n');
+            k += psz;
+            continue;
         }
-    } else if (*a->p == '"') {
-        a->p++;
-        while (a->p < a->end && *a->p != '"') {
-            if (*a->p=='\\' && a->p+1<a->end) a->p += 2; else a->p++;
-        }
-        if (a->p < a->end) a->p++;
-    } else {
-        int depth = 0;
-        while (a->p < a->end) {
-            char c = *a->p;
-            if (c == '(') depth++;
-            else if (c == ')') { if (depth > 0) depth--; }
-            else if (c == '"') { a->p++; while(a->p<a->end && *a->p!='"'){ if(*a->p=='\\'&&a->p+1<a->end)a->p+=2; else a->p++; } if(a->p<a->end)a->p++; continue; }
-            else if (depth == 0 && (c == ',' || c == '}')) break;
-            a->p++;
+        {
+            int j = k + 1;
+            while (j < n) {
+                int h = 0;
+                for (i = 0; i < g->init_ref_count; i++)
+                    if (g->init_refs[i].offset == j) { h = 1; break; }
+                if (h) break;
+                j++;
+            }
+            x86_emit_byte_run(b, p + k, j - k, k);
+            k = j;
         }
     }
 }
 
-/* Parse a scalar value at byte offset `off` (size `sz`). Bare identifiers
- * become symbol relocations; everything else is evaluated as a constant. */
-static void agg_parse_scalar(AggParser *a, unsigned char *buf, int bufsz,
-                             int off, int sz) {
-    agg_skip_ws(a);
-    if (a->p >= a->end) { a->error = 1; return; }
-    if (agg_is_ident_start(*a->p)) {
-        const char *start = a->p;
-        while (a->p < a->end && agg_is_ident(*a->p)) a->p++;
-        agg_skip_ws(a);
-        if (a->p < a->end && *a->p == '(') {
-            /* function-like expression: evaluate as 0 (cannot fold here) */
-            agg_put_val(buf, bufsz, off, sz, 0);
+/* Emit a global's aggregate initialiser as data.  A shape the filler cannot
+ * place is reported and the storage keeps zeroes: emitting the object without
+ * its initialiser without a word would be a wrong answer, not a missing
+ * feature. */
+static void x86_emit_aggregate_init(AsmBuffer *b, IrGlobal *g) {
+    Type *t = g->type;
+    const char *be = (type_ptr_size() == 8) ? "x86-64" : "x86";
+    int sz = t ? type_size(t) : 4;
+    unsigned char *bytes;
+    int i, bad = 0;
+    if (sz <= 0) sz = 4;
+    bytes = (unsigned char *)mem_pool_alloc(sz);
+    if (!bytes) bad = 1;
+    else {
+        for (i = 0; i < sz; i++) bytes[i] = 0;
+        if (!t || ark_agg_fill_ex(t, g->init_aggregate, bytes, sz,
+                                  x86_agg_addr_hook, (void *)g) != 0)
+            bad = 1;
+    }
+    if (bad) {
+        diag_tool(DIAG_SEV_ERROR, "arkcc",
+                  "the %s backend cannot turn the initialiser of the global "
+                  "'%s' into data; only constants in arrays and structures, a "
+                  "string literal for a char array, and an address constant are "
+                  "implemented",
+                  be, g->name, 0,0,0,0);
+        asmbuf_puts(b, "    .zero ");
+        asmbuf_int(b, sz);
+        asmbuf_putc(b, '\n');
+        return;
+    }
+    x86_emit_agg_bytes(b, bytes, sz, g);
+}
+
+/* `char s[] = "ab";` fills the object, `char *p = "ab";` stores the address of
+ * the literal (which gets a .rodata label of its own, see the data section).
+ * Neither used to reach this backend at all: the object was written as a single
+ * zero word, which is a silent wrong answer. */
+static void x86_emit_string_init(AsmBuffer *b, IrGlobal *g) {
+    Type *t = g->type;
+    int sz = t ? type_size(t) : 0;
+    if (t && t->kind == TYPE_ARRAY && t->base && type_size(t->base) == 1) {
+        unsigned char *bytes;
+        if (sz <= 0) sz = 1;
+        bytes = (unsigned char *)mem_pool_alloc(sz);
+        if (bytes) {
+            ark_agg_fill_cstr(g->init_str, bytes, sz);
+            x86_emit_byte_run(b, bytes, sz, 0);
             return;
         }
-        if (a->ref_count < 32) {
-            a->refs[a->ref_count].offset = off;
-            a->refs[a->ref_count].size = sz;
-            a->refs[a->ref_count].name = start;
-            a->refs[a->ref_count].namelen = (int)(a->p - start);
-            a->ref_count++;
-        }
+    } else if (t && t->kind == TYPE_PTR) {
+        asmbuf_puts(b, type_ptr_size() == 8 ? "    .quad .Lgstr_"
+                                            : "    .long .Lgstr_");
+        asmbuf_puts(b, g->name);
+        asmbuf_putc(b, '\n');
         return;
     }
-    { long long v = agg_parse_expr(a);
-      agg_put_val(buf, bufsz, off, sz, v); }
-}
-
-/* Recursively parse an initializer for type t, writing values into buf at
- * base offset `off`. */
-static void agg_parse_type(AggParser *a, Type *t, unsigned char *buf,
-                           int bufsz, int off) {
-    agg_skip_ws(a);
-    if (a->p >= a->end) return;
-    if (*a->p == '{') {
-        a->p++;
-        if (t && t->kind == TYPE_ARRAY) {
-            int elem_sz = type_size(t->base);
-            int max = t->size;
-            int idx = 0;
-            if (elem_sz <= 0) elem_sz = 1;
-            for (;;) {
-                agg_skip_ws(a);
-                if (a->p >= a->end || *a->p == '}') { if (a->p < a->end) a->p++; break; }
-                if (*a->p == ',') { a->p++; continue; }
-                if (*a->p == '[') {
-                    a->p++;
-                    { long long di = agg_parse_expr(a); idx = (int)di; }
-                    agg_skip_ws(a);
-                    if (a->p < a->end && *a->p == ']') a->p++;
-                    if (a->p < a->end && *a->p == '=') a->p++;
-                }
-                if (idx < max) agg_parse_type(a, t->base, buf, bufsz, off + idx * elem_sz);
-                idx++;
-            }
-        } else if (t && (t->kind == TYPE_STRUCT || t->kind == TYPE_UNION)) {
-            StructField *f = t->fields;
-            for (;;) {
-                agg_skip_ws(a);
-                if (a->p >= a->end || *a->p == '}') { if (a->p < a->end) a->p++; break; }
-                if (*a->p == ',') { a->p++; continue; }
-                if (*a->p == '.') {
-                    char fname[64]; int fn = 0;
-                    a->p++;
-                    while (a->p < a->end && agg_is_ident(*a->p) && fn < 63) fname[fn++] = *a->p++;
-                    fname[fn] = 0;
-                    agg_skip_ws(a);
-                    if (a->p < a->end && *a->p == '=') a->p++;
-                    f = type_find_field(t, fname);
-                }
-                if (f) {
-                    agg_parse_type(a, f->type, buf, bufsz, off + f->offset);
-                    if (t->kind != TYPE_UNION) f = f->next;
-                } else {
-                    agg_skip_value(a);
-                }
-            }
-        } else {
-            /* scalar wrapped in braces: unwrap */
-            agg_parse_type(a, t, buf, bufsz, off);
-            agg_skip_ws(a);
-            if (a->p < a->end && *a->p == '}') a->p++;
-        }
-        return;
-    }
-    if (*a->p == '"') {
-        /* string literal for char/wide array */
-        int elem_sz = (t && t->kind == TYPE_ARRAY && t->base) ? type_size(t->base) : 1;
-        int max_n = (t && t->kind == TYPE_ARRAY) ? t->size : 0;
-        int idx = 0;
-        a->p++;
-        while (a->p < a->end && *a->p != '"') {
-            char c;
-            if (*a->p == '\\' && a->p + 1 < a->end) {
-                a->p++;
-                switch (*a->p) {
-                    case 'n': c = '\n'; break;
-                    case 't': c = '\t'; break;
-                    case 'r': c = '\r'; break;
-                    case '0': c = '\0'; break;
-                    case '\\': c = '\\'; break;
-                    case '\'': c = '\''; break;
-                    case '"': c = '"'; break;
-                    case 'x': {
-                        int hv = 0;
-                        a->p++;
-                        while (a->p < a->end) {
-                            char d = *a->p; int dv;
-                            if (d>='0'&&d<='9') dv = d-'0';
-                            else if (d>='a'&&d<='f') dv = d-'a'+10;
-                            else if (d>='A'&&d<='F') dv = d-'A'+10;
-                            else break;
-                            hv = hv*16 + dv; a->p++;
-                        }
-                        c = (char)hv;
-                        a->p++;
-                        goto put_char;
-                    }
-                    default: c = *a->p; break;
-                }
-                a->p++;
-            } else {
-                c = *a->p++;
-            }
-        put_char:
-            if (max_n <= 0 || idx < max_n)
-                agg_put_val(buf, bufsz, off + idx * elem_sz, elem_sz, (unsigned char)c);
-            idx++;
-        }
-        if (a->p < a->end && *a->p == '"') a->p++;
-        return;
-    }
-    /* scalar */
-    { int sz = type_size(t);
-      if (sz <= 0) sz = 4;
-      agg_parse_scalar(a, buf, bufsz, off, sz); }
-}
-
-/* Emit a parsed aggregate initializer. Falls back to zero-fill on failure. */
-static void emit_aggregate_init(AsmBuffer *out, Type *t, const char *init_str) {
-    int sz = type_size(t);
-    int off, i;
-    unsigned char *bufmem;
-    AggParser a;
-    if (sz <= 0) sz = 4;
-    bufmem = (unsigned char *)mem_pool_alloc(sz);
-    for (i = 0; i < sz; i++) bufmem[i] = 0;
-    a.p = init_str;
-    a.end = init_str + ark_strlen(init_str);
-    a.ref_count = 0;
-    a.error = 0;
-    agg_parse_type(&a, t, bufmem, sz, 0);
-
-    off = 0;
-    while (off < sz) {
-        int ri, found = -1, chunk;
-        const char *dir;
-        for (ri = 0; ri < a.ref_count; ri++) {
-            if (a.refs[ri].offset == off) { found = ri; break; }
-        }
-        if (found >= 0) {
-            chunk = a.refs[found].size; if (chunk <= 0) chunk = 4;
-            dir = (chunk <= 1) ? ".byte" : (chunk <= 2 ? ".word" : (chunk <= 4 ? ".long" : ".quad"));
-            asmbuf_puts(out, "    ");
-            asmbuf_puts(out, dir);
-            asmbuf_puts(out, " ");
-            for (i = 0; i < a.refs[found].namelen; i++)
-                asmbuf_putc(out, a.refs[found].name[i]);
-            asmbuf_putc(out, '\n');
-            a.refs[found].offset = -1;  /* mark consumed */
-        } else {
-            if ((off % 8) == 0 && off + 8 <= sz) chunk = 8;
-            else if ((off % 4) == 0 && off + 4 <= sz) chunk = 4;
-            else if ((off % 2) == 0 && off + 2 <= sz) chunk = 2;
-            else chunk = 1;
-            dir = (chunk <= 1) ? ".byte" : (chunk <= 2 ? ".word" : (chunk <= 4 ? ".long" : ".quad"));
-            { long long v = 0;
-              for (i = 0; i < chunk; i++) v |= ((long long)bufmem[off + i]) << (8 * i);
-              asmbuf_puts(out, "    ");
-              asmbuf_puts(out, dir);
-              asmbuf_puts(out, " ");
-              asmbuf_int(out, v);
-              asmbuf_putc(out, '\n'); }
-        }
-        off += chunk;
-    }
+    diag_tool(DIAG_SEV_ERROR, "arkcc",
+              "the %s backend cannot place the string initialiser of the global "
+              "'%s' in data; only a char array and a pointer take one",
+              type_ptr_size() == 8 ? "x86-64" : "x86", g->name, 0,0,0,0);
+    asmbuf_puts(b, "    .zero ");
+    asmbuf_int(b, sz > 0 ? sz : 4);
+    asmbuf_putc(b, '\n');
 }
 
 /* Set when the emitter produced text it knows is not assemblable. */
@@ -492,18 +288,60 @@ static int x86_global_size(IrProgram *prog, const char *name) {
 /* Emit the read-only (string literal) and data (global object) sections.
  * Shared by the i386 and AMD64 emitters so the two cannot drift apart.
  * The emitted text is unchanged from when this lived inside
- * x86_emit_internal; only the buffer became a parameter. */
+ * x86_emit_internal; only the buffer became a parameter.
+ *
+ * The labels are `.L`-prefixed on purpose.  They used to be `ark_str_<id>`,
+ * which the ARKOBJ2 writer exports (every label not starting with `.L` is
+ * global), so two translation units that each contained a string literal
+ * emitted two strong globals with the same name.  -link then printed
+ * "duplicate strong symbol ark_str_0, using first definition" for every
+ * literal in the image, and the second object's pointers bound to the *first*
+ * object's text.  The self-host link of arkcc's own 25 objects produced
+ * hundreds of those lines; a two-object test never showed it because only one
+ * side had literals.  A literal is per-object state, so its label is local. */
 static void x86_emit_data_sections(AsmBuffer *buf, IrProgram *prog) {
     asmbuf_puts(buf, "    .section .rodata\n");
     {
         int i;
         for (i = 0; i < prog->string_count; i++) {
             IrString *s = prog->strings[i];
-            asmbuf_puts(buf, "ark_str_");
+            asmbuf_puts(buf, ".Lark_str_");
             asmbuf_int(buf, s->id);
             asmbuf_puts(buf, ":\n    .asciz ");
             emit_str_literal_x(buf, s->data, s->len);
             asmbuf_putc(buf, '\n');
+        }
+    }
+    /* A string literal that initialises a pointer, or an element of an
+     * aggregate, has no pool entry of its own: give it one label per object (or
+     * per element) here, so the .data side only ever carries the address. */
+    {
+        int i;
+        for (i = 0; i < prog->global_count; i++) {
+            IrGlobal *g = prog->globals[i];
+            int ri;
+            if (g->is_extern) continue;
+            if (g->has_init && g->init_str && g->type &&
+                g->type->kind != TYPE_ARRAY && g->type->kind != TYPE_STRUCT &&
+                g->type->kind != TYPE_UNION) {
+                asmbuf_puts(buf, ".Lgstr_");
+                asmbuf_puts(buf, g->name);
+                asmbuf_puts(buf, ":\n    .asciz ");
+                emit_str_literal_x(buf, g->init_str, ark_strlen(g->init_str));
+                asmbuf_putc(buf, '\n');
+            }
+            if (!g->init_refs || g->init_ref_count <= 0) continue;
+            for (ri = 0; ri < g->init_ref_count; ri++) {
+                IrSymRef *r = &g->init_refs[ri];
+                if (!r->str) continue;
+                asmbuf_puts(buf, ".Lgstr_");
+                asmbuf_puts(buf, g->name);
+                asmbuf_putc(buf, '_');
+                asmbuf_int(buf, r->offset);
+                asmbuf_puts(buf, ":\n    .asciz ");
+                emit_str_literal_x(buf, r->str, ark_strlen(r->str));
+                asmbuf_putc(buf, '\n');
+            }
         }
     }
     asmbuf_puts(buf, "    .data\n");
@@ -550,14 +388,9 @@ static void x86_emit_data_sections(AsmBuffer *buf, IrProgram *prog) {
                     asmbuf_putc(buf, '\n');
                 }
             } else if (g->init_aggregate && g->has_init) {
-                Type *gt = g->type ? g->type : 0;
-                if (gt) {
-                    emit_aggregate_init(buf, gt, g->init_aggregate);
-                } else {
-                    int sz = 4, k;
-                    for (k = 0; k < sz; k++)
-                        asmbuf_puts(buf, "    .long 0\n");
-                }
+                x86_emit_aggregate_init(buf, g);
+            } else if (g->init_str && g->has_init) {
+                x86_emit_string_init(buf, g);
             } else {
                 /* Scalar init: choose directive by type size. */
                 int tsz = g->type ? type_size(g->type) : 4;
@@ -566,23 +399,31 @@ static void x86_emit_data_sections(AsmBuffer *buf, IrProgram *prog) {
                 else if (tsz <= 2) dir = ".word";
                 else if (tsz <= 4) dir = ".long";
                 else dir = ".quad";
-                asmbuf_puts(buf, "    ");
-                asmbuf_puts(buf, dir);
-                asmbuf_puts(buf, " ");
-                asmbuf_int(buf, g->has_init ? g->init_int : 0);
-                asmbuf_putc(buf, '\n');
-                if (tsz > 8) {
-                    int emitted = 8;
-                    while (emitted < tsz) {
-                        int chunk = (tsz - emitted >= 8) ? 8 : (tsz - emitted);
-                        const char *pdir = ".quad";
-                        if (chunk <= 1) pdir = ".byte";
-                        else if (chunk <= 2) pdir = ".word";
-                        else if (chunk <= 4) pdir = ".long";
-                        asmbuf_puts(buf, "    ");
-                        asmbuf_puts(buf, pdir);
-                        asmbuf_puts(buf, " 0\n");
-                        emitted += chunk;
+                if (!g->has_init && tsz > 8) {
+                    /* A zero-initialised object of any size is one .zero, not
+                     * one directive per eight bytes.  The old per-8-byte fill
+                     * emitted 8.4 million ".quad 0" lines for a 64 MB buffer,
+                     * which consumed the compiler's own 64 MB arena before the
+                     * assembler saw a single line: memory.c in this very tree
+                     * (static unsigned char g_pool[ARK_POOL_SIZE]) could not be
+                     * compiled for x86 or x86_64 at all.  Semantics are
+                     * unchanged -- .data still carries the same zero bytes. */
+                    asmbuf_puts(buf, "    .zero ");
+                    asmbuf_int(buf, tsz);
+                    asmbuf_putc(buf, '\n');
+                } else {
+                    asmbuf_puts(buf, "    ");
+                    asmbuf_puts(buf, dir);
+                    asmbuf_puts(buf, " ");
+                    asmbuf_int(buf, g->has_init ? g->init_int : 0);
+                    asmbuf_putc(buf, '\n');
+                    if (tsz > 8) {
+                        /* Tail of a wide scalar: still zero bytes, still one
+                         * directive (a 16-byte initialized object used to need
+                         * a second ".quad 0" line; now it is ".zero 8"). */
+                        asmbuf_puts(buf, "    .zero ");
+                        asmbuf_int(buf, tsz - 8);
+                        asmbuf_putc(buf, '\n');
                     }
                 }
             }
@@ -698,7 +539,7 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                     asmbuf_putc(&buf, '\n');
                     break;
                 case IR_PUSH_STR:
-                    asmbuf_puts(&buf, "    lea eax, [ark_str_");
+                    asmbuf_puts(&buf, "    lea eax, [.Lark_str_");
                     asmbuf_int(&buf, I->val);
                     asmbuf_puts(&buf, "]\n    push eax\n");
                     break;
@@ -1836,9 +1677,77 @@ static int amd64_emit_internal(IrProgram *prog, char *out, int cap) {
         int sret_used = 0;
         int param_idx = 0;
         int body_ok = 1;
+        /* Register and stack use of the *named* parameters, kept for va_start:
+         * the register save area stores every incoming argument register, and
+         * the first variadic argument is the one just past these. */
+        int int_used = 0, sse_used = 0, stk = 16;
+        int rs_off = 0;
+        /* One result buffer per *call site* that returns a struct/union wider
+         * than 8 bytes (IR_CALL bit 36).  SysV hands such a result back through
+         * a buffer the caller owns, passed as the hidden first integer
+         * argument (rdi); see the pre-scan below. */
+        int sret_off_tab[ARK_MAX_SRET_FUNCS];
+        int sret_sz_tab[ARK_MAX_SRET_FUNCS];
+        int sret_site_n = 0;
+        int sret_site_cur = 0;
+        int sret_pool = 0;
+        int sret_area = 0;
         if (lsz < 16) lsz = 16;
         framelo = 48 + lsz;
-        frame = (framelo + 64 * 8 + 15) & ~15;
+        /* Pre-scan the IR for calls that return a struct/union wider than 8
+         * bytes (IR_CALL bit 36) and reserve one buffer per call site, right
+         * below the 64-word argument spill area.  The size comes from the IR
+         * (bits 37..52), i.e. from the static type of the call expression, so
+         * a callee that is only declared -- or one reached through a function
+         * pointer -- gets exactly the same treatment as one defined in this
+         * file; the name tables the arm backend used to consult could see
+         * neither.  One buffer per *site*, never one shared scratch area: in
+         * `struct S a = f(), b = g();` and in `h(g(), k())` two results are
+         * live at the same time.  Overflow is a hard error, not an overlap.
+         * Every buffer is 8-byte aligned because the callee may store a
+         * double / long long member with a single 8-byte move. */
+        for (i = 0; i < f->code_count; i++) {
+            IrInst *si = &f->code[i];
+            int sz;
+            if (si->op != IR_CALL || !((si->val >> 36) & 1)) continue;
+            sz = (int)((si->val >> 37) & 0xFFFF);
+            sz = (sz + 7) & ~7;
+            if (sz <= 0 || sz > 0xFFFF) {
+                char b1[12];
+                diag_tool(DIAG_SEV_ERROR, "arkcc",
+                          "call site in '%s' returns a composite of %s bytes; "
+                          "the x86_64 backend needs 1..65535",
+                          f->name, diag_num(b1, sz), 0, 0, 0, 0);
+                sz = 8;
+            }
+            if (sret_site_n >= ARK_MAX_SRET_FUNCS) {
+                char b1[12], b2[12];
+                diag_tool(DIAG_SEV_ERROR, "arkcc",
+                          "function '%s' has %s call sites returning a struct "
+                          "wider than 8 bytes; at most %s are supported; raise "
+                          "ARK_MAX_SRET_FUNCS and rebuild arkcc",
+                          f->name, diag_num(b1, sret_site_n + 1),
+                          diag_num(b2, ARK_MAX_SRET_FUNCS), 0, 0, 0);
+                break;
+            }
+            sret_off_tab[sret_site_n] = sret_pool;
+            sret_sz_tab[sret_site_n] = sz;
+            sret_pool += sz;
+            sret_site_n++;
+        }
+        /* The buffers sit below everything else the frame keeps (locals, the
+         * argument spill area, and the variadic register save area), so
+         * framelo and rs_off -- which existing code reads -- are unaffected. */
+        sret_area = framelo + 64 * 8 + (f->is_variadic ? 176 : 0);
+        frame = (sret_area + sret_pool + 15) & ~15;
+        /* A variadic definition also owns the ABI's 176-byte register save
+         * area: the six integer argument registers (48 bytes) followed by the
+         * eight vector ones (16 bytes each).  It sits directly below the
+         * argument spill area.  framelo, 64*8 and 176 are all multiples of 16,
+         * so the base is 16-byte aligned -- which is what the vector half
+         * needs, and it is why the area is allocated at all instead of being
+         * read out of the registers on demand. */
+        rs_off = framelo + 64 * 8 + 176;
 
         if (f->ret_type &&
             (f->ret_type->kind == TYPE_STRUCT || f->ret_type->kind == TYPE_UNION) &&
@@ -1859,12 +1768,24 @@ static int amd64_emit_internal(IrProgram *prog, char *out, int cap) {
             asmbuf_puts(&buf, "    mov qword ptr [rbp-8], rdi\n");
         }
 
-        /* A variadic definition needs a register save area and a va_list that
-         * walks it; that is not implemented, so refuse instead of building a
-         * callee whose va_arg reads the wrong memory. */
+        /* A variadic definition saves every incoming argument register before
+         * the body can reuse one: the six INTEGER registers at the base of the
+         * save area and the eight VECTOR registers 48 bytes in, one 16-byte
+         * slot each (only the low 8 bytes of a double are live).  va_start then
+         * points at this area and at the caller's stack block.  This is the
+         * System V AMD64 convention spelled out in figure 3.34 of the psABI. */
         if (f->is_variadic) {
-            amd_unsupported(&buf, "definition of a variadic function");
-            body_ok = 0;
+            int rj;
+            for (rj = 0; rj < 6; rj++)
+                amd_rd_mem(&buf, "mov", "qword", -rs_off + 8 * rj,
+                           amd_argreg64[rj]);
+            for (rj = 0; rj < 8; rj++) {
+                asmbuf_puts(&buf, "    movups xmmword ptr [rbp-");
+                asmbuf_int(&buf, rs_off - 48 - 16 * rj);
+                asmbuf_puts(&buf, "], xmm");
+                asmbuf_int(&buf, rj);
+                asmbuf_putc(&buf, '\n');
+            }
         }
 
         /* Spill every incoming argument word into its frame slot first, so an
@@ -1872,10 +1793,10 @@ static int amd64_emit_internal(IrProgram *prog, char *out, int cap) {
          * cannot clobber a register a later parameter still needs (the copy
          * uses rdi/rsi/rcx). */
         if (body_ok) {
-            int int_used = sret_used ? 1 : 0;
-            int sse_used = 0;
-            int stk = 16;
             int k = 0, pi = 0, j;
+            int_used = sret_used ? 1 : 0;
+            sse_used = 0;
+            stk = 16;
             for (j = 0; j < f->code_count; j++) {
                 IrInst *I = &f->code[j];
                 Type *pt = 0;
@@ -1972,7 +1893,7 @@ static int amd64_emit_internal(IrProgram *prog, char *out, int cap) {
                     break;
 
                 case IR_PUSH_STR:
-                    asmbuf_puts(&buf, "    lea rax, [ark_str_");
+                    asmbuf_puts(&buf, "    lea rax, [.Lark_str_");
                     asmbuf_int(&buf, I->val);
                     asmbuf_puts(&buf, "]\n    push rax\n");
                     break;
@@ -2012,6 +1933,37 @@ static int amd64_emit_internal(IrProgram *prog, char *out, int cap) {
 
                 case IR_PUSH_GLOBAL: {
                     Type *t = amd_global_type(prog, I->name);
+                    /* <stdarg.h>'s System V mode asks for the four numbers
+                     * va_start cannot compute itself: how many integer and
+                     * vector registers the named parameters used, and the two
+                     * frame addresses.  They are per-call-site constants of the
+                     * function being compiled, so they cannot live in data. */
+                    if (f->is_variadic && I->name) {
+                        if (ark_streq(I->name, "_ark_va__gp_offset")) {
+                            asmbuf_puts(&buf, "    push ");
+                            asmbuf_int(&buf, 8 * int_used);
+                            asmbuf_putc(&buf, '\n');
+                            break;
+                        }
+                        if (ark_streq(I->name, "_ark_va__fp_offset")) {
+                            asmbuf_puts(&buf, "    push ");
+                            asmbuf_int(&buf, 48 + 16 * sse_used);
+                            asmbuf_putc(&buf, '\n');
+                            break;
+                        }
+                        if (ark_streq(I->name, "_ark_va__overflow_area")) {
+                            asmbuf_puts(&buf, "    lea rax, [rbp+");
+                            asmbuf_int(&buf, stk);
+                            asmbuf_puts(&buf, "]\n    push rax\n");
+                            break;
+                        }
+                        if (ark_streq(I->name, "_ark_va__reg_save_area")) {
+                            asmbuf_puts(&buf, "    lea rax, [rbp-");
+                            asmbuf_int(&buf, rs_off);
+                            asmbuf_puts(&buf, "]\n    push rax\n");
+                            break;
+                        }
+                    }
                     int sz = t ? type_size(t) : 4;
                     int uns = t ? t->is_unsigned : 0;
                     if (sz == 16) {
@@ -2357,6 +2309,27 @@ static int amd64_emit_internal(IrProgram *prog, char *out, int cap) {
                     int same[64], cls[64], where[64];
                     int int_used = 0, sse_used = 0, nstk = 0;
                     int k;
+                    /* A struct/union result wider than 8 bytes is returned
+                     * through a buffer this caller owns; the callee receives
+                     * its address as the hidden first integer argument, so the
+                     * real argument 0 moves to rsi and every register number
+                     * shifts by one.  The pre-scan above reserved the buffer,
+                     * in code order, so the cursor walks it in the same order
+                     * this switch does. */
+                    int sret_call = (int)((I->val >> 36) & 1);
+                    int sret_buf = 0;
+                    if (sret_call) {
+                        if (sret_site_cur < sret_site_n) {
+                            sret_buf = sret_area + sret_off_tab[sret_site_cur] +
+                                       sret_sz_tab[sret_site_cur];
+                            sret_site_cur++;
+                        } else {
+                            amd_unsupported(&buf,
+                                "more struct-returning calls than were reserved");
+                            sret_call = 0;
+                        }
+                    }
+                    if (sret_call) int_used = 1;
 
                     if (is_indirect) {
                         asmbuf_puts(&buf, "    pop r11\n");
@@ -2452,11 +2425,30 @@ static int amd64_emit_internal(IrProgram *prog, char *out, int cap) {
                             asmbuf_puts(&buf, ", qword ptr ");
                             amd_addr(&buf, tmp);
                             asmbuf_putc(&buf, '\n');
-                        } else if (b > 4) {
-                            amd_mem_rd(&buf, "mov", amd_argreg64[where[k]], "qword", tmp);
                         } else {
-                            amd_mem_rd(&buf, "mov", amd_argreg32[where[k]], "dword", tmp);
+                            /* Always the 64-bit move.  The frame slot is one
+                             * full word -- the value was popped with "pop rax"
+                             * and stored with a qword move -- so a 4-byte load
+                             * here threw away the top half of an address.
+                             * That only showed up on an indirect call, which
+                             * has no per-argument width table (prog->argbytes
+                             * is filled for named callees), so every pointer
+                             * argument of a callback came in truncated.  SysV
+                             * leaves the upper half of a register unspecified
+                             * for narrower arguments, so widening is legal. */
+                            amd_mem_rd(&buf, "mov", amd_argreg64[where[k]], "qword", tmp);
                         }
+                    }
+                    /* The hidden result buffer goes into rdi last: the
+                     * register-argument loop above has just filled
+                     * rdi/rsi/... from rsi/rdx/... and would clobber an
+                     * earlier write.  rax is free here -- the next use is
+                     * `mov al, sse_used`. */
+                    if (sret_call) {
+                        asmbuf_puts(&buf, "    lea rax, ");
+                        amd_addr(&buf, -sret_buf);
+                        asmbuf_putc(&buf, '\n');
+                        asmbuf_puts(&buf, "    mov rdi, rax\n");
                     }
                     /* al = number of vector registers used (SysV varargs). */
                     asmbuf_puts(&buf, "    mov al, ");
@@ -2470,6 +2462,16 @@ static int amd64_emit_internal(IrProgram *prog, char *out, int cap) {
                         asmbuf_putc(&buf, '\n');
                     }
                     asmbuf_puts(&buf, "    mov rsp, qword ptr [rbp-16]\n");
+                    if (sret_call) {
+                        /* The IR value of a struct-returning call is the
+                         * address of the result, and the front end copies the
+                         * object out of it.  SysV does promise the address
+                         * back in rax, but re-deriving it from the frame costs
+                         * one lea and removes any dependence on the callee. */
+                        asmbuf_puts(&buf, "    lea rax, ");
+                        amd_addr(&buf, -sret_buf);
+                        asmbuf_putc(&buf, '\n');
+                    }
                     {
                         int ret2 = (int)((I->val >> 32) & 1);
                         int retvoid = (int)((I->val >> 33) & 1);
@@ -2500,15 +2502,33 @@ static int amd64_emit_internal(IrProgram *prog, char *out, int cap) {
                     int two = (rt && (rt->kind == TYPE_LLONG || rt->kind == TYPE_DOUBLE)) ||
                               (rt && (rt->kind == TYPE_STRUCT || rt->kind == TYPE_UNION) &&
                                type_size(rt) > 4 && type_size(rt) <= 8);
-                    if (two) {
+                    if (sret_used) {
+                        /* SysV returns a composite wider than 8 bytes through a
+                         * buffer the caller owns.  irgen pushes the *address*
+                         * of the returned object as this IR_RETURN's operand,
+                         * so the copy into that buffer belongs here -- the arm
+                         * and riscv32 backends do the same in their epilogue.
+                         * Without it the callee never wrote the caller's buffer
+                         * and `struct T3 t = mk3(5)` read uninitialised memory in
+                         * every field, while the <= 8-byte register path and the
+                         * 16-byte struct pass-by-value path stayed correct.
+                         * rep movsb clobbers rdi/rsi/rcx: nothing is live in an
+                         * argument register across a statement, and IR_MEMCPY
+                         * already uses exactly these three. */
+                        int rsz = type_size(rt);
+                        if (rsz <= 0) rsz = 8;
+                        asmbuf_puts(&buf, "    pop rsi\n    mov rdi, qword ptr [rbp-8]\n"
+                                          "    mov ecx, ");
+                        asmbuf_int(&buf, rsz);
+                        asmbuf_puts(&buf, "\n    rep movsb\n"
+                                          "    mov rax, qword ptr [rbp-8]\n");
+                    } else if (two) {
                         amd_pop64(&buf, "rax", "eax");
                     } else {
                         asmbuf_puts(&buf, "    pop rax\n    mov eax, eax\n");
                     }
                     if (rt && (rt->kind == TYPE_FLOAT || rt->kind == TYPE_DOUBLE))
                         asmbuf_puts(&buf, "    movq xmm0, rax\n");
-                    if (sret_used)
-                        asmbuf_puts(&buf, "    mov rax, qword ptr [rbp-8]\n");
                     asmbuf_puts(&buf, "    mov rsp, rbp\n    pop rbp\n    ret\n");
                     break;
                 }
@@ -2952,7 +2972,16 @@ static int amd64_emit_sysv(IrProgram *prog, char *out, int cap) {
  *   4 = absolute 32-bit address (R_386_32, same encoding as ARM R_ARM_ABS32)
  *   5 = PC-relative 32-bit disp  (R_386_PC32, for jmp/call/jcc disp32) */
 
-typedef struct { char *name; int addr; int is_weak; } X86AsmLabel;
+/* is_global: the assembly said ".globl <name>" for this label.  Only those
+ * labels are exported to the ARKOBJ2 symbol table.  Before this the exporter
+ * treated "does not start with .L" as "is global", so every `static` function
+ * in a header -- stdarg.h's ark_va__gp / ark_va__fp / ark_va__mem /
+ * ark_va__gp_or_mem are exactly that -- became a strong global in every object
+ * that included it, and a 25-object link printed
+ * "duplicate strong symbol ark_va__gp, using first definition" three times
+ * over and bound every TU's calls to the first object's copy.  The .globl in
+ * the emitted text was already there and was being ignored. */
+typedef struct { char *name; int addr; int is_weak; int is_global; } X86AsmLabel;
 typedef struct { int pc; char *name; int type; } X86AsmRef;
 
 typedef struct {
@@ -2967,8 +2996,13 @@ typedef struct {
     int            error_count;
     int            cur_section;  /* 0=.text, 1=.data, 2=.rodata */
     int            pending_weak;
+    /* Names the assembly declared with .globl/.global.  Kept as its own list so
+     * a .globl that appears before or after the label definition both work. */
+    char         **globals;
+    int            global_count, global_cap;
     int            dry_run;      /* 1=pass1 (count only), 0=pass2 (emit) */
     int            mode64;       /* 1=AMD64 encoding (REX + rip-relative) */
+    int            obj;          /* 1=-c object: own labels get relocated */
 } X86Asm;
 
 /* Set while xa_process_line runs, so the operand parsers can accept the
@@ -2977,6 +3011,17 @@ static int g_xa64 = 0;
 
 /* Operand kinds */
 enum { XOP_NONE, XOP_REG, XOP_IMM, XOP_MEM };
+
+/* Longest label / symbol name this assembler can carry.  It used to be 32 for
+ * the mnemonic buffer and 64 for operand symbols, and both truncations failed
+ * silently: a 32-char label such as `ark_sl_ark_get_date_time_mon_name:` was
+ * cut to 31 chars, the ':' after it was no longer at the cursor, so the line
+ * fell through to the instruction decoder and reported
+ * `unknown instruction "ark_sl_..."`.  Static locals are built as
+ * ark_sl_<function>_<variable>, i.e. exactly the names that get long, and
+ * port/host/platform_host.c and backend_arm.c both hit it.  The line reader
+ * now also refuses a name that does not fit instead of silently continuing. */
+#define XA_SYM_MAX 512
 
 typedef struct {
     int  kind;
@@ -2989,11 +3034,12 @@ typedef struct {
     int  scale;      /* 1,2,4,8 (XOP_MEM) */
     int  disp;       /* displacement (XOP_MEM) */
     int  has_sym;    /* 1 if [symbol] (XOP_MEM) */
-    char sym[64];    /* symbol name (XOP_MEM) */
+    char sym[XA_SYM_MAX];    /* symbol name (XOP_MEM) */
     int  mem_size;   /* 0=auto, 1=byte, 2=word, 4=dword (from size prefix) */
 } X86Operand;
 
 /* --- character / token helpers --- */
+
 static int xa_is_alpha(char c) {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c == '.';
 }
@@ -3029,7 +3075,24 @@ static int xa_read_word(const char **p, char *out, int cap) {
 }
 
 /* --- label / ref management --- */
+static int  xa_is_declared_global(X86Asm *a, const char *name);
+static void xa_declare_global(X86Asm *a, const char *name);
 static void xa_add_label(X86Asm *a, const char *name, int addr) {
+    int i;
+    /* pass1 and pass2 walk the same text, so without a name check every label
+     * is registered twice.  That doubled the object's symbol table, and -link
+     * then reported "duplicate strong symbol <fn>, using first definition" for
+     * every function in every file (and, on a two-object link, for symbols the
+     * other object only *referenced*).  Update the address that pass2 computed
+     * instead of appending. */
+    for (i = 0; i < a->label_count; i++) {
+        if (ark_streq(a->labels[i].name, name)) {
+            a->labels[i].addr = addr;
+            if (a->pending_weak) a->labels[i].is_weak = 1;
+            a->pending_weak = 0;
+            return;
+        }
+    }
     if (a->label_count >= a->label_cap) {
         int nc = a->label_cap == 0 ? 64 : a->label_cap * 2;
         a->labels = (X86AsmLabel *)mem_realloc(a->labels,
@@ -3039,8 +3102,42 @@ static void xa_add_label(X86Asm *a, const char *name, int addr) {
     a->labels[a->label_count].name = mem_strdup(name);
     a->labels[a->label_count].addr = addr;
     a->labels[a->label_count].is_weak = a->pending_weak;
+    a->labels[a->label_count].is_global = xa_is_declared_global(a, name);
     a->pending_weak = 0;
     a->label_count++;
+}
+
+/* Is this name one the assembly exported with .globl?  Exported symbols are
+ * the only ones the linker may bind across objects; everything else (static
+ * functions, string literals, function-scope statics) belongs to this object
+ * alone. */
+static int xa_is_declared_global(X86Asm *a, const char *name) {
+    int i;
+    for (i = 0; i < a->global_count; i++)
+        if (ark_streq(a->globals[i], name)) return 1;
+    return 0;
+}
+
+static void xa_declare_global(X86Asm *a, const char *name) {
+    int i;
+    if (!name || !name[0]) return;
+    for (i = 0; i < a->global_count; i++)
+        if (ark_streq(a->globals[i], name)) return;
+    if (a->global_count >= a->global_cap) {
+        int nc = a->global_cap == 0 ? 64 : a->global_cap * 2;
+        /* mem_realloc takes (ptr, old_size, new_size) -- the old size is what
+         * the bump allocator compares against to extend in place.  Calling it
+         * with two arguments silently passes the new size as old_size, and the
+         * crash landed in the *next* line of assembly: `.globl f` alone
+         * segfaulted the i386 arm of the x86-64 gate. */
+        a->globals = (char **)mem_realloc(a->globals,
+            a->global_cap * (int)sizeof(char *), nc * (int)sizeof(char *));
+        a->global_cap = nc;
+    }
+    a->globals[a->global_count++] = mem_strdup(name);
+    /* The definition may already have gone by (".globl" after the label). */
+    for (i = 0; i < a->label_count; i++)
+        if (ark_streq(a->labels[i].name, name)) a->labels[i].is_global = 1;
 }
 static int xa_find_label(X86Asm *a, const char *name) {
     int i;
@@ -3277,6 +3374,10 @@ static int xa_parse_mem(const char **p, X86Operand *op) {
             *p += 5; xa_skip_space(p);
             if (xa_starts_with(*p, "ptr")) { *p += 3; xa_skip_space(p); op->mem_size = 8; }
             else { *p = save; }
+        } else if (g_xa64 && xa_starts_with(*p, "xmmword")) {
+            *p += 7; xa_skip_space(p);
+            if (xa_starts_with(*p, "ptr")) { *p += 3; xa_skip_space(p); op->mem_size = 16; }
+            else { *p = save; }
         }
     }
     if (**p != '[') return 0;
@@ -3337,7 +3438,7 @@ static int xa_parse_mem(const char **p, X86Operand *op) {
                 }
                 /* Try symbol name */
                 {
-                    char name[64];
+                    char name[XA_SYM_MAX];
                     const char *sv2 = *p;
                     if (xa_read_ident(p, name, (int)sizeof(name)) && name[0]) {
                         /* If this is the first term and no base/index, it's [symbol] */
@@ -3386,7 +3487,8 @@ static int xa_parse_operand(const char **p, X86Operand *op) {
     if (**p == 0 || **p == '\n' || **p == ',') return 0;
     /* Try memory operand (with optional size prefix) */
     if (**p == '[' || xa_starts_with(*p, "dword") || xa_starts_with(*p, "byte") ||
-        xa_starts_with(*p, "word") || (g_xa64 && xa_starts_with(*p, "qword"))) {
+        xa_starts_with(*p, "word") || (g_xa64 && xa_starts_with(*p, "qword")) ||
+        (g_xa64 && xa_starts_with(*p, "xmmword"))) {
         return xa_parse_mem(p, op);
     }
     /* Try register */
@@ -3413,7 +3515,7 @@ static int xa_parse_operand(const char **p, X86Operand *op) {
     }
     /* Try label/symbol (for jmp/call targets) */
     {
-        char name[64];
+        char name[XA_SYM_MAX];
         if (xa_read_ident(p, name, (int)sizeof(name)) && name[0]) {
             op->kind = XOP_MEM;
             op->base = -1;
@@ -3519,6 +3621,17 @@ static int xa_imm_fits32(long long v) {
     return v >= -2147483648LL && v <= 2147483647LL;
 }
 
+/* 0x81/0x83 sign-extend their imm32 only when the operand is 64-bit.  With a
+ * 32-bit operand the field is a raw bit pattern, so 0x80000000..0xFFFFFFFF is
+ * perfectly encodable -- and is what the front end actually emits to flip a
+ * float sign bit (`xor eax, 0x80000000`).  Treating that as "out of range"
+ * made src/lexer.c and src/sema.c impossible to assemble at all, even though
+ * every one of those instructions was valid. */
+static int xa_alu_imm_fits(long long v, int w) {
+    if (w) return xa_imm_fits32(v);
+    return v >= -2147483648LL && v <= 4294967295LL;
+}
+
 static void xa_alu(X86Asm *a, int op_rm_r, int op_r_rm, int op_eax, int sub_op,
                    X86Operand *dst, X86Operand *src) {
     int w = xa_is64(dst, src) ? 1 : 0;
@@ -3528,9 +3641,11 @@ static void xa_alu(X86Asm *a, int op_rm_r, int op_r_rm, int op_eax, int sub_op,
         xa_modrm_reg(a, src->reg, dst->reg);
     } else if (dst->kind == XOP_REG && src->kind == XOP_IMM) {
         long long imm = src->imm;
-        if (!xa_imm_fits32(imm)) {
-            /* 0x81 takes an imm32 that is sign-extended; silently truncating a
-             * wider constant would produce a wrong answer, so refuse. */
+        if (!xa_alu_imm_fits(imm, w)) {
+            /* 0x81 takes an imm32 that is sign-extended when the operand is
+             * 64-bit; silently truncating a wider constant would produce a
+             * wrong answer, so refuse.  A 32-bit operand has no such hazard
+             * (the field is a bit pattern), see xa_alu_imm_fits. */
             a->error_count++;
             diag_tool(DIAG_SEV_ERROR, "arkcc", "immediate out of 32-bit range for alu op", 0,0,0,0,0,0);
             return;
@@ -3560,7 +3675,7 @@ static void xa_alu(X86Asm *a, int op_rm_r, int op_r_rm, int op_eax, int sub_op,
         xa_modrm_mem(a, src->reg, dst);
     } else if (dst->kind == XOP_MEM && src->kind == XOP_IMM) {
         long long imm = src->imm;
-        if (!xa_imm_fits32(imm)) {
+        if (!xa_alu_imm_fits(imm, w)) {
             a->error_count++;
             diag_tool(DIAG_SEV_ERROR, "arkcc", "immediate out of 32-bit range for alu op", 0,0,0,0,0,0);
             return;
@@ -3645,10 +3760,16 @@ static void xa_emit_data(X86Asm *a, const char **p, int size) {
             if (size == 1) xa_emit(a, (unsigned char)(v & 0xFF));
             else if (size == 2) xa_emit16(a, (int)v);
             else if (size == 4) xa_emit32(a, (int)v);
-            else { xa_emit32(a, (int)v); xa_emit32(a, 0); }
+            /* .quad must carry the high half too: writing zero there turned
+             * every 64-bit initialiser whose value did not fit in 32 bits
+             * into its low word plus a hole, so "int g[4] = {1,2,3,4}" -- which
+             * the aggregate emitter packs two ints per .quad -- linked as
+             * {1,0,3,0} and every 64-bit global constant read half-zero. */
+            else { xa_emit32(a, (int)(v & 0xFFFFFFFFLL));
+                   xa_emit32(a, (int)((v >> 32) & 0xFFFFFFFFLL)); }
         } else {
             /* Symbol reference (for .long symbol etc.) */
-            char name[64];
+            char name[XA_SYM_MAX];
             *p = save;
             if (xa_read_ident(p, name, (int)sizeof(name)) && name[0]) {
                 if (size == 4) {
@@ -3716,7 +3837,7 @@ static void xa_emit_movq(X86Asm *a, X86Operand *d, X86Operand *s) {
 static void xa_sse(X86Asm *a, int pfx, int op2, X86Operand *d, X86Operand *s) {
     int w = xa_is64(d, s) ? 1 : 0;
     int regf = (d->kind == XOP_REG) ? d->reg : 0;
-    xa_emit(a, (unsigned char)pfx);
+    if (pfx) xa_emit(a, (unsigned char)pfx);
     xa_rex_rm(a, w, regf, s);
     xa_emit(a, 0x0F);
     xa_emit(a, (unsigned char)op2);
@@ -3851,7 +3972,7 @@ static void xa_emit_mov(X86Asm *a, X86Operand *d, X86Operand *s) {
 static void xa_process_line(X86Asm *a, const char *line) {
     const char *p = line;
     g_xa64 = a->mode64;
-    char mn[32];
+    char mn[XA_SYM_MAX];
     X86Operand ops[2];
     int nop = 0;
 
@@ -3860,6 +3981,15 @@ static void xa_process_line(X86Asm *a, const char *line) {
 
     /* Read mnemonic or directive */
     if (xa_read_word(&p, mn, (int)sizeof(mn)) == 0) return;
+    if (xa_is_alnum(*p)) {
+        /* The word did not fit in mn: report it instead of quietly splitting a
+         * long label into (truncated name) + (garbage instruction). */
+        a->error_count++;
+        diag_tool(DIAG_SEV_ERROR, "arkcc",
+                  "assembly label or instruction name is longer than the %s-character limit",
+                  diag_num((char *)0, XA_SYM_MAX - 1), 0,0,0,0,0);
+        return;
+    }
     xa_skip_space(&p);
 
     /* Label definition: "name:" */
@@ -3894,6 +4024,14 @@ static void xa_process_line(X86Asm *a, const char *line) {
     }
 
     /* --- Directives --- */
+    /* The operand pre-parse above has already consumed the line, so a
+     * directive that reads its own operands (.long / .quad / .byte / .word /
+     * .zero / .asciz ...) used to parse from the END of the directive and
+     * emit nothing at all: 'int g = 7;' got a .data label at the right place
+     * with zero bytes behind it, so every initialised global in an x86 / x86_64
+     * image read as 0 and every later symbol collapsed onto one offset.
+     * Rewind to where the operand text starts. */
+    p = opstart;
     if (mn[0] == '.') {
         if (xa_strieq(mn, ".intel_syntax")) { xa_skip_to_eol(&p); return; }
         if (xa_strieq(mn, ".text"))    { a->cur_section = 0; return; }
@@ -3908,8 +4046,13 @@ static void xa_process_line(X86Asm *a, const char *line) {
             return;
         }
         if (xa_strieq(mn, ".globl") || xa_strieq(mn, ".global")) {
-            /* Mark symbol as global (next label defined). For the ARKOBJ2
-             * format, all non-.L labels are exported, so this is metadata. */
+            /* This is what decides whether the link may bind the symbol from
+             * another object -- see xa_is_declared_global. */
+            char gname[XA_SYM_MAX];
+            xa_skip_space(&p);
+            xa_read_word(&p, gname, (int)sizeof(gname));
+            xa_declare_global(a, gname);
+            xa_skip_to_eol(&p);
             return;
         }
         if (xa_strieq(mn, ".local")) { return; }
@@ -4213,6 +4356,25 @@ static void xa_process_line(X86Asm *a, const char *line) {
         xa_sse(a, 0x66, 0x56, &ops[0], &ops[1]);
     } else if (xa_strieq(mn, "movapd")) {
         xa_sse(a, 0x66, 0x28, &ops[0], &ops[1]);
+    } else if (xa_strieq(mn, "movups") || xa_strieq(mn, "movaps") ||
+               xa_strieq(mn, "movdqu") || xa_strieq(mn, "movdqa")) {
+        /* 128-bit moves: 0F 10/0F 11 (ups), 0F 28/0F 29 (aps),
+         * F3 or 66 0F 6F/0F 7F (dqu/dqa).  The variadic prologue saves
+         * xmm0..xmm7 with "movups [mem], xmm" and this encoder had no
+         * 16-byte form at all, so the flat-image build printed
+         * "unknown instruction" for every save -- and still produced an
+         * image, i.e. the register save area silently held nothing. */
+        int pfx = 0, ld = 0x10, st = 0x11;
+        if (xa_strieq(mn, "movaps")) { ld = 0x28; st = 0x29; }
+        else if (xa_strieq(mn, "movdqu")) { pfx = 0xF3; ld = 0x6F; st = 0x7F; }
+        else if (xa_strieq(mn, "movdqa")) { pfx = 0x66; ld = 0x6F; st = 0x7F; }
+        if (nop != 2) {
+            a->error_count++;
+        } else if (ops[0].kind == XOP_MEM) {
+            xa_sse(a, pfx, st, &ops[1], &ops[0]);
+        } else {
+            xa_sse(a, pfx, ld, &ops[0], &ops[1]);
+        }
     } else if (xa_strieq(mn, "movsd") && nop == 2) {
         /* F2 0F 10 /r (load) or F2 0F 11 /r (store) */
         if (ops[0].kind == XOP_MEM) xa_sse(a, 0xF2, 0x11, &ops[1], &ops[0]);
@@ -4344,13 +4506,29 @@ static void resolve_refs_x(X86Asm *a) {
                 a->out[r->pc + 3] = (unsigned char)((disp >> 24) & 0xFF);
             }
         } else if (r->type == 4) {
-            /* Absolute 32-bit address */
+            /* Absolute 32-bit address.  Inside a -c object every address is
+             * object-relative, and the linker places the object at a base it
+             * chooses later, so the stored value alone is not the answer the
+             * image needs: it must be raised by that object's base.  The value
+             * is still written here (it is the offset the relocation is relative
+             * to), and the reference is re-typed as X86_RELOC_SELF_BASE so
+             * x86_save_relocs exports it instead of dropping it as "resolved".
+             * Measured before this: "const char *msg = \"hello\";" in one
+             * object left the pointer word at 0 in the linked image, i.e. every
+             * string and every address-taken global in every object was wrong
+             * by exactly the object base -- silently, since the link "succeeded". */
+            /* The image is loaded at X86_IMAGE_BASE (0 for i386, 0x400000 for
+             * x86_64: code is RIP-relative and needs no base, but a stored
+             * pointer does).  Inside a -c object the linker adds the base it
+             * placed this object at, so only the image base goes in here. */
+            addr += a->mode64 ? (int)X86_IMAGE_BASE : 0;
             if (!a->dry_run) {
                 a->out[r->pc]     = (unsigned char)(addr & 0xFF);
                 a->out[r->pc + 1] = (unsigned char)((addr >> 8) & 0xFF);
                 a->out[r->pc + 2] = (unsigned char)((addr >> 16) & 0xFF);
                 a->out[r->pc + 3] = (unsigned char)((addr >> 24) & 0xFF);
             }
+            if (a->obj) r->type = X86_RELOC_SELF_BASE;
         }
     }
 }
@@ -4368,7 +4546,10 @@ static void x86_save_syms(X86Asm *a) {
     int i;
     g_x86_sym_count = 0;
     for (i = 0; i < a->label_count && g_x86_sym_count < ARM_MAX_SYMBOLS; i++) {
-        if (a->labels[i].name[0] == '.' && a->labels[i].name[1] == 'L') continue;
+        /* Only .globl names are linker-visible.  Exporting everything else is
+         * what made two TUs with the same static helper (and two TUs with the
+         * same string literal) look like duplicate strong definitions. */
+        if (!a->labels[i].is_global) continue;
         g_x86_syms[g_x86_sym_count].name    = a->labels[i].name;
         g_x86_syms[g_x86_sym_count].offset   = a->labels[i].addr;
         g_x86_syms[g_x86_sym_count].type     = 0;
@@ -4382,7 +4563,10 @@ static void x86_save_relocs(X86Asm *a) {
     g_x86_reloc_count = 0;
     for (i = 0; i < a->ref_count && g_x86_reloc_count < ARM_MAX_RELOCS; i++) {
         X86AsmRef *r = &a->refs[i];
-        if (xa_find_label(a, r->name) < 0) {
+        /* A self-base site names a label this object defines, so the lookup
+         * below would call it resolved and drop it.  Keep it: the linker is
+         * the only side that knows the base it placed this object at. */
+        if (r->type == X86_RELOC_SELF_BASE || xa_find_label(a, r->name) < 0) {
             g_x86_relocs[g_x86_reloc_count].name   = r->name;
             g_x86_relocs[g_x86_reloc_count].offset  = r->pc;
             g_x86_relocs[g_x86_reloc_count].type    = r->type;
@@ -4406,6 +4590,11 @@ int x86_get_reloc_type(int idx) { return g_x86_relocs[idx].type; }
  * Two-pass design: pass1 computes sizes + labels; pass2 emits bytes + refs;
  * resolve_refs patches forward references. All jumps use near (disp32) form
  * so pass1 sizes are fixed. Exports symbol/reloc tables for the ARKOBJ2 linker. */
+/* Set by the driver for -c: intra-object absolute addresses then stay
+ * relocations instead of being frozen at their object-relative offset.  A
+ * flat image has no linker to apply them, so it keeps the old behaviour. */
+int g_x86_obj_mode = 0;
+
 static int x86_assemble_mode(const char *asm_text, unsigned char *out, int cap, int mode64) {
     X86Asm a;
     a.src = asm_text;
@@ -4413,12 +4602,24 @@ static int x86_assemble_mode(const char *asm_text, unsigned char *out, int cap, 
     a.pc = 0;
     a.out_cap = cap;
     a.labels = 0; a.label_count = 0; a.label_cap = 0;
+    /* The globals list is what xa_add_label() consults for every label it
+     * registers, so an uninitialised pointer here is read on the very first
+     * label.  These three fields were simply missing from this reset block,
+     * and the two entry paths hid it from each other: the C front end reaches
+     * the assembler after the pool and the stack have already been touched, so
+     * the stack slot held a zero and the object came out fine, while a plain
+     * .s input (which resets the pool right before assembling) left garbage in
+     * it and segfaulted on `f:` -- with no diagnostic at all, since the crash
+     * beats every error path.  Initialise all three; the arrays are grown
+     * lazily by xa_declare_global(). */
+    a.globals = 0; a.global_count = 0; a.global_cap = 0;
     a.refs = 0; a.ref_count = 0; a.ref_cap = 0;
     a.error_count = 0;
     a.cur_section = 0;
     a.pending_weak = 0;
     a.dry_run = 0;
     a.mode64 = mode64;
+    a.obj = g_x86_obj_mode ? 1 : 0;
     pass1_x(&a);
     pass2_x(&a);
     resolve_refs_x(&a);
@@ -4438,6 +4639,12 @@ static int x86_assemble_mode(const char *asm_text, unsigned char *out, int cap, 
     x86_save_relocs(&a);
     a.mode64 = 0;
     g_xa64 = 0;
+    /* An encoder error used to leave the offending instruction out and still
+     * return a byte count, so the caller wrote an image whose instruction was
+     * a lone nop -- a wrong image out of a build that only printed a
+     * diagnostic.  Every caller already treats a negative return as
+     * "assembly failed", so refuse here instead. */
+    if (a.error_count > 0) return -1;
     return a.pc;
 }
 

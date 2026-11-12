@@ -21,7 +21,7 @@ NULLDEV := /dev/null
 endif
 
 .PHONY: all clean test test-arm test-c test-stdlib test-install test-x86 test-x86-64 \
-        test-riscv test-reloc-text test-atomic install stm32
+        test-x86-64-selfhost test-riscv test-reloc-text test-atomic install stm32
 
 all: $(ARKCC)
 
@@ -75,6 +75,17 @@ test-x86: $(ARKCC)
 # only -- that backend's pre-existing 64-bit/FP gaps are reported as SKIP.
 test-x86-64: $(ARKCC)
 	$(PYTHON) tests/run_x86_64_image_tests.py --arkcc ./$(ARKCC)
+
+# x86-64 self-host gate: arkcc compiles all 24 of its own translation units
+# on the target, the self-compiled compiler is linked into a flat image that
+# runs on unicorn, and it then has to reproduce the HOST object for a payload
+# byte for byte.  Equality of the assembly text alone is not a pass: it only
+# says where a difference is, not that there is none.
+# Kept out of the default `test` aggregate on purpose -- it shells out to the
+# target compiler 26 times (about two minutes) where the other gates take
+# seconds.
+test-x86-64-selfhost: $(ARKCC)
+	$(PYTHON) tests/run_x86_64_selfhost.py --arkcc ./$(ARKCC)
 
 # _Atomic gate: five targets, four checks.  Each target's identity macro must be
 # exactly one and must name itself; the eleven atomic operations must be a

@@ -18,6 +18,12 @@ struct AstNode {
                            * nodes built directly from an identifier token are
                            * stamped by the parser. */
     double      fval;     /* floating value; only for AST_NUM whose type is float/double */
+    /* sizeof(expression) whose operand type the parser could not name yet -- a
+     * member access, a dereference, a sum, anything whose type only the
+     * semantic pass resolves.  The parser hands the operand over instead of
+     * folding to the generic 4 (see ast_sizeof_pending); sema computes
+     * u.num_val and clears this field.  NULL means "already folded". */
+    AstNode    *sizeof_operand;
     union {
         long long num_val;
         char *name;
@@ -125,5 +131,6 @@ AstNode *ast_array_access(AstNode *array, AstNode *index, int line);
 AstNode *ast_member(AstNode *obj, const char *member, int is_arrow, int line);
 AstNode *ast_cast(Type *target, AstNode *expr, int line);
 AstNode *ast_sizeof_val(int bytes, int line);
+AstNode *ast_sizeof_pending(AstNode *operand, int line);
 
 #endif /* ARK_AST_H */

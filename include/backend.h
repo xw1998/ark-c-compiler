@@ -83,6 +83,23 @@ extern int g_arm_fpu_dp;
  * symbol this translation unit does not define becomes a relocation instead of
  * a hard error.  Zero by default, so every flat-image path is byte-identical. */
 extern int g_rv_obj_mode;
+extern int g_x86_obj_mode;
+
+/* x86 / x86_64 -c objects place their own data and code in one blob, and
+ * the linker concatenates those blobs, so a label this object defines is
+ * still not at the address the object stored.  A type-4 (absolute) site
+ * whose target is an own label is therefore kept as this relocation: the
+ * driver adds the base it placed the object at.  It names no symbol, so it
+ * is applied while the object is read and never enters the reloc table. */
+#define X86_RELOC_SELF_BASE 7
+
+/* Where an x86_64 image is assumed to be loaded.  Code references are
+ * RIP-relative (position independent), but a static absolute pointer --
+ * "const char *msg = \"hi\";", a function-pointer table -- has to carry a
+ * real address, and the assembler is the only place that knows which part
+ * of it is fixed.  i386 images are loaded at 0 (that is what the reference
+ * arm does), so this constant only applies to the 64-bit encoder. */
+#define X86_IMAGE_BASE 0x400000u
 
 /* riscv32 cross-object relocation, applied by the -link driver after the
  * objects have been placed.  `off` is the site and `target` the symbol, both as

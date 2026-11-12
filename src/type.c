@@ -315,6 +315,10 @@ void type_set_ptr_size(int bytes) {
     if (bytes == 4 || bytes == 8) g_ptr_size = bytes;
 }
 
+int type_ptr_size(void) {
+    return g_ptr_size;
+}
+
 int type_size(Type *t) {
     if (!t) return 4;
     switch (t->kind) {

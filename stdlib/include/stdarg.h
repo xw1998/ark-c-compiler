@@ -1,18 +1,25 @@
 /* Ark C Compiler stdlib - stdarg.h
- * Varargs support.  Two walking conventions exist because the backends build
- * two different argument images, and they are not interchangeable:
+ * Varargs support.  Three walking conventions exist because the backends
+ * build three different argument images, and they are not interchangeable:
  *
- *   __ARK_VA_WORD_SLOTS   (ARM Thumb-2, RV32I)
- *      One 4-byte word per AAPCS argument word, contiguous: word 0..3 are
- *      r0..r3, word 4+k is word k of the caller's stack argument block.  That
- *      is the caller's real layout, so a 64-bit argument is just two adjacent
- *      words and `va_arg(ap, long long)` is a plain 8-byte read.  A structure
- *      passed through `...` is the same walk: the caller puts the payload
- *      inline, one word per four bytes (`ceil(sizeof/4)` words) -- see the
- *      ARM backend's aapcs_assign(), and note that only that target does it.
- *      The driver defines this macro for those two targets (src/compiler.c).
+ *   __ARK_VA_WORD_SLOTS   (ARM Thumb-2, RV32I, i386 cdecl)
+ *      One 4-byte word per argument word, contiguous: on ARM words 0..3 are
+ *      r0..r3 and word 4+k is word k of the caller's stack argument block; on
+ *      RV32I the first eight words are the spilled a0..a7 frame slots; on
+ *      i386 cdecl the whole image is the caller's own stack block (the backend
+ *      answers _ark_va_ptr with ebp+8+4*param_count).  Everywhere it is the
+ *      caller's real layout, so a 64-bit argument is just two adjacent words
+ *      and `va_arg(ap, long long)` is a plain 8-byte read.  A structure passed
+ *      through `...` is the same walk: the caller puts the payload inline, one
+ *      word per four bytes (`ceil(sizeof/4)` words) -- see the ARM backend's
+ *      aapcs_assign(), and note that only that target does it.
+ *      The driver defines this macro for those three targets (src/compiler.c).
  *
- *   default               (C and x86_64 backends)
+ *   __ARK_VA_SYSV         (x86_64)
+ *      System V AMD64: va_list is the ABI's four-field cursor over the callee's
+ *      176-byte register save area plus the caller's overflow area.
+ *
+ *   default               (C backend)
  *      One 8-byte slot per argument, ordinal-indexed: the backend stores all
  *      eight arguments at frame+8000..+64 and _ark_va_ptr walks them by
  *      sizeof(long long).
@@ -23,8 +30,9 @@
  * double/float bit patterns without a per-type helper -- a plain
  * `(type)(*ap++)` cast would instead numerically convert the raw bit pattern,
  * which is why `va_arg(ap, double)` used to return ~4.6e18.
- * Both conventions require a little-endian target (sub-word reads take the low
- * bytes); ARM Thumb-2, RV32I and every host these backends run on qualify.
+ * All three conventions require a little-endian target (sub-word reads take
+ * the low bytes); ARM Thumb-2, RV32I, x86/x86-64 and every host these backends
+ * run on qualify.
  */
 #ifndef ARK_STDARG_H
 #define ARK_STDARG_H
@@ -76,6 +84,120 @@ extern unsigned int *_ark_va_ptr;
 /* double is read from memory, so no long-long bit-pattern reinterpretation is
  * needed; the helper stays for source compatibility with the other mode. */
 #define ark_va_arg_d(ap)   va_arg(ap, double)
+
+#elif defined(__ARK_VA_SYSV)
+
+/* ---- System V AMD64: the ABI's own va_list ----------------------------
+ *
+ * The x86-64 backend spills the six integer argument registers into a
+ * 48-byte run and the eight vector registers into 128 more, so the callee
+ * owns a 176-byte register save area at a fixed frame address.  va_list is
+ * the ABI's four-field cursor over that area plus the caller's stack block:
+ *
+ *   gp_offset           next free byte in the INTEGER half (0..48)
+ *   fp_offset           next free byte in the VECTOR half (48..176)
+ *   overflow_arg_area   the caller's stack arguments, 8 bytes each
+ *   reg_save_area       the 176-byte save area
+ *
+ * `va_list` is an array of one so that passing it to a function passes its
+ * address, exactly as the ABI specifies; a parameter declared `va_list ap`
+ * is therefore a pointer and `ap[0]` is the cursor.
+ *
+ * The four numbers va_start needs are per-function constants (how many
+ * registers the named parameters took) or frame addresses, which a macro
+ * cannot spell, so they are four magic externs the backend answers the way
+ * the other mode answers _ark_va_ptr.
+ */
+typedef struct __ark_va_sysv {
+    unsigned int gp_offset;
+    unsigned int fp_offset;
+    void *overflow_arg_area;
+    void *reg_save_area;
+} __ark_va_list[1];
+
+typedef __ark_va_list va_list;
+
+extern unsigned int _ark_va__gp_offset;
+extern unsigned int _ark_va__fp_offset;
+extern void *_ark_va__overflow_area;
+extern void *_ark_va__reg_save_area;
+
+#define va_start(ap, last)                                     \
+    ((void)((ap)[0].gp_offset = _ark_va__gp_offset,            \
+            (ap)[0].fp_offset = _ark_va__fp_offset,            \
+            (ap)[0].overflow_arg_area = _ark_va__overflow_area,\
+            (ap)[0].reg_save_area = _ark_va__reg_save_area))
+
+#define va_end(ap) ((void)0)
+
+#define va_copy(d, s)                                          \
+    ((void)((d)[0].gp_offset = (s)[0].gp_offset,               \
+            (d)[0].fp_offset = (s)[0].fp_offset,               \
+            (d)[0].overflow_arg_area = (s)[0].overflow_arg_area,\
+            (d)[0].reg_save_area = (s)[0].reg_save_area))
+
+/* A value the size of an argument, rounded to whole stack slots.  8 is the
+ * floor because every stack argument takes at least one full slot. */
+#define ark_va__round(sz) ((unsigned int)(((sz) + 7u) & ~7u) ? ((unsigned int)(((sz) + 7u) & ~7u)) : 8u)
+
+/* INTEGER class: whole value comes from consecutive integer registers while
+ * they last, otherwise from the caller's stack block.  A 9..16-byte object
+ * is two adjacent registers, which is why the advance is the rounded size
+ * rather than one slot. */
+static void *ark_va__gp(va_list ap, unsigned int sz) {
+    unsigned int need = ark_va__round(sz);
+    void *p;
+    if (ap[0].gp_offset + need <= 48u) {
+        p = (char *)ap[0].reg_save_area + ap[0].gp_offset;
+        ap[0].gp_offset += need;
+        return p;
+    }
+    p = ap[0].overflow_arg_area;
+    ap[0].overflow_arg_area = (char *)ap[0].overflow_arg_area + need;
+    return p;
+}
+
+/* VECTOR class: one 16-byte register slot per argument (only the low 8 bytes
+ * of a double are live), then the stack block. */
+static void *ark_va__fp(va_list ap, unsigned int sz) {
+    void *p;
+    if (ap[0].fp_offset + 16u <= 176u) {
+        p = (char *)ap[0].reg_save_area + ap[0].fp_offset;
+        ap[0].fp_offset += 16u;
+        return p;
+    }
+    p = ap[0].overflow_arg_area;
+    ap[0].overflow_arg_area = (char *)ap[0].overflow_arg_area + ark_va__round(sz);
+    return p;
+}
+
+/* More than 16 bytes: the ABI classifies the object MEMORY, so it never used
+ * a register and its address is the stack block. */
+static void *ark_va__mem(va_list ap, unsigned int sz) {
+    void *p = ap[0].overflow_arg_area;
+    ap[0].overflow_arg_area = (char *)ap[0].overflow_arg_area + ark_va__round(sz);
+    return p;
+}
+
+static void *ark_va__gp_or_mem(va_list ap, unsigned int sz) {
+    if (sz > 16u) return ark_va__mem(ap, sz);
+    return ark_va__gp(ap, sz);
+}
+
+/* The class comes from the type, never from the value: (type *)0 is compared,
+ * so nothing is dereferenced.  A `float` argument arrives promoted to double
+ * and a small integer promoted to int, which is what C11 6.5.2.2p6 requires
+ * the caller to do; asking for the promoted type is the caller's job. */
+#define va_arg(ap, type)                                                  \
+    (*(type *)(_Generic((type *)0,                                        \
+                        float *: ark_va__fp,                              \
+                        double *: ark_va__fp,                             \
+                        default: ark_va__gp_or_mem))                      \
+                   (ap, (unsigned int)sizeof(type)))
+
+/* double is read from memory as a double, so no bit-pattern helper is
+ * needed; the name stays for source compatibility with the other modes. */
+#define ark_va_arg_d(ap) va_arg(ap, double)
 
 #else
 
