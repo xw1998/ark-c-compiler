@@ -27,6 +27,10 @@ static void usage(void) {
         "  -c                 compile only (produce .ark_obj)\n"
         "  -E                 preprocess only, write expanded source\n"
         "  -link a.o b.o      link multiple .ark_obj files (use with -o)\n"
+        "  --ipo a.c b.c      whole-program compile: several sources, one\n"
+        "                     translation-unit-independent program (alias -flto).\n"
+        "                     Statics stay file-local, cross-file calls can be\n"
+        "                     inlined at -O2.  Needs -o; refuses -c/-E/-g/-link.\n"
         "  --vector-table     reserve ARM_VT_SIZE (0x400) at the front of the image and\n"
         "                     emit a Cortex-M vector table there.  Link addresses stay\n"
         "                     valid: nothing is shifted, unlike the implicit table.\n"
@@ -293,6 +297,11 @@ static void reset_opts(ArkOptions *o) {
     o->build_time = 0;
     o->build_epoch = 0;
     o->print_pipeline = 0;
+    /* 0.8.7 --ipo: the source list.  Zeroed here for the same reason every
+     * other field is: a stale count would read --ipo inputs out of stack. */
+    o->ipo_mode = 0;
+    for (i = 0; i < ARK_LINK_MAX_OBJS; i++) o->ipo_inputs[i] = 0;
+    o->ipo_input_count = 0;
 }
 
 /* armcc: the text before '=' must be an identifier; everything after '=' is
@@ -362,6 +371,7 @@ int main(int argc, char **argv) {
     int i;
     int rc;
     int cfg_loaded = 0;
+    int npos = 0;   /* positional arguments seen (--ipo input count) */
     char optbuf[128];
 
     /* Diagnostics are usable from the first option: a bad flag must be able to
@@ -552,6 +562,12 @@ int main(int argc, char **argv) {
         else if (strcmp(a, "--vector-table") == 0) {
             opts.vector_table = 1;
         }
+        else if (strcmp(a, "--ipo") == 0 || strcmp(a, "-flto") == 0) {
+            /* 0.8.7: whole-program compile.  Only marks the mode here; the
+             * source list is the positional arguments, in command-line order,
+             * which the parser records as it goes (see the last branch). */
+            opts.ipo_mode = 1;
+        }
         else if (strcmp(a, "-link") == 0) {
             opts.link_mode = 1;
             /* Collect following non -o/non-option arguments as inputs */
@@ -736,8 +752,24 @@ int main(int argc, char **argv) {
             return 1;
         }
         else {
+            /* 0.8.7 --ipo: every positional argument is remembered in
+             * command-line order, because the whole-program compile cannot
+             * guess the list from one name.  Without --ipo the last one still
+             * wins (historical behaviour), so nothing changes for it. */
+            npos++;
+            if (opts.ipo_input_count < ARK_LINK_MAX_OBJS)
+                opts.ipo_inputs[opts.ipo_input_count++] = a;
             opts.input_path = a;
         }
+    }
+    if (opts.ipo_mode && npos > opts.ipo_input_count) {
+        /* The list was truncated above.  Compiling a prefix of the sources
+         * would produce an image missing code and exit 0 -- refuse. */
+        fprintf(stderr,
+                "Fatal error: C3900U: more than %d source files for --ipo; "
+                "raise ARK_LINK_MAX_OBJS and rebuild arkcc\n",
+                (int)ARK_LINK_MAX_OBJS);
+        return 1;
     }
     /* armcc validates the CPU name at option-processing time and stops with a
      * driver diagnostic:  Fatal error: C3903U: Argument 'x' not permitted for

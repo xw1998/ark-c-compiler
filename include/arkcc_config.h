@@ -257,6 +257,32 @@
 #   define ARKCC_FEATURE_MIR           1
 # endif
 #endif
+/* ARKCC_FEATURE_IPO: --ipo / -flto, whole-program compilation (src/ipo.c).
+ *
+ * One front end run per input file inside one process, all units' IR
+ * accumulated in one program, then a single codegen.  What it buys over
+ * one-object-per-file + -link is the only thing the linker cannot do:
+ * cross-file optimisation.  An ARKOBJ2 object carries machine code, a symbol
+ * table and relocations; the IR is gone by the time -link sees it, so
+ * inlining, unused-static removal and constant propagation have no subject
+ * there.
+ *
+ * Trimmable by construction: the code lives in src/ipo.c behind this switch
+ * and ark_ipo_compile() keeps its symbol (it refuses with C3900U) when the
+ * switch is 0, so a build that cannot do it says so instead of pretending.
+ * OFF in the STM32 profile: whole-program mode needs every unit's IR alive at
+ * once, and the board's arena is 128 KB for one unit already.
+ * -DARKCC_FEATURE_IPO=1 brings it back.
+ *
+ * The runtime switch is separate and defaults to off, so the shipped
+ * behaviour is unchanged even where the code is compiled in. */
+#ifndef ARKCC_FEATURE_IPO
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_IPO           0   /* Trim on the board: pool size */
+# else
+#   define ARKCC_FEATURE_IPO           1
+# endif
+#endif
 /* ARKCC_FEATURE_PIPELINE_DUMP: the strings and the printer behind
  * --print-pipeline.  The stage tables and the execution loop are compiled in
  * unconditionally -- src/pipeline.c is the driver now, not an optional pass --

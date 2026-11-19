@@ -1115,6 +1115,35 @@ err.c:4:9: error: identifier "y" is undefined [#20]
 这是**唯一不要求与 armcc 逐字节一致**的风格。详见 [DIAGNOSTICS.md](DIAGNOSTICS.md) §4.1，
 门禁 `tests/run_modern_diag_tests.py`（`make test-modern`，35 项检查）。
 
+### 5.16 全程序编译（`--ipo` / `-flto`）
+
+一次调用吃多个 `.c`，在**同一个 IR program** 上做跨文件优化，最后只生成一次代码。
+
+```bash
+arkcc --ipo main.c util.c -target arm --cpu Cortex-M7 -O2 --vector-table -o app.bin
+```
+
+| 开关 | 默认 | 说明 |
+| --- | :---: | --- |
+| `--ipo` / `-flto` | 关 | 全程序编译；必须给 `-o` |
+| `ARKCC_FEATURE_IPO`（编译期） | 宿主 `1`、`ARKCC_PROFILE_STM32_MIN` 为 `0` | 不在时 `--ipo` 以"未编入此构建"拒绝 |
+
+规则：
+
+- 每个文件**独立走前端**（`static` 仍是本文件的），IR **追加**进同一个 program；
+- 文件作用域符号改名为 `__ipo<单元>f_/g__<名字>` 并全程序查重（撞了就再加 `_`，
+  加不出来就报错）；
+- 外部名按链接器规则裁定：weak 输给 strong、两个 strong 函数**报错**、
+  `int g;` 两次合并为一个对象、`int g = 1;` 两次报错、`extern` 被定义覆盖；
+- 跑**一次**管线，因此 `-O2` 下跨文件内联直接可用（`ir.inline` 本来就是全程序 scope）；
+- 内联后无引用的 `static` 函数/对象被剪掉；**程序里出现任何内联汇编就整段跳过剪枝**。
+
+拒绝：`-c`（对象里没有 IR）、`-E`（按文件做）、`-g`（一个 program 只有一个
+`source_file`，硬塞会把所有行号挂到第一个文件名下）、`-link`（吃对象）、缺 `-o`、
+输入是 `.s` / `.o`。单文件用 `--ipo` 与普通编译**逐字节相同**。
+
+详见 [IPO_LTO.md](IPO_LTO.md)，门禁 `tests/run_ipo_tests.py`（`make test-ipo`，19 项检查）。
+
 ## 6 在 Windows 上测试
 
 ### 6.1 推荐流程：c 后端

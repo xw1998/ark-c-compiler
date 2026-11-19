@@ -2,6 +2,7 @@
  * Top-level pipeline: preproc -> lex -> parse -> sema -> irgen -> backend(emit/assemble/link).
  */
 #include "compiler.h"
+#include "ipo.h"
 #include "platform.h"
 #include "memory.h"
 #include "flash_fs.h"
@@ -1198,17 +1199,481 @@ static void format_epoch_utc(long long epoch, char *date_out, char *time_out) {
 }
 #endif
 
-int ark_compile(const ArkOptions *opts) {
+/* ------------------------------------------------------------------ */
+/* Front end of one translation unit                                   */
+/* ------------------------------------------------------------------ */
+
+/* Preprocess -> lex -> parse -> sema -> AST lint stage -> irgen -> the IR pass
+ * pipeline, for ONE translation unit.
+ *
+ * This used to be the middle of ark_compile().  It was lifted out unchanged so
+ * that --ipo (src/ipo.c) can drive it once per input file: whole-program
+ * compilation must run the identical front end for every unit, and a second
+ * copy of this setup would drift -- the variadic/va-region macros below are
+ * exactly the kind of thing a copy silently loses, and a wrong va walk is a
+ * wrong answer, not a compile error.
+ *
+ * `shared` non-NULL means "append this unit's IR into that program instead of
+ * a fresh one" (whole-program mode).  On success *out_ir receives the program
+ * (NULL for -E, which has already written its output) and *out_be the selected
+ * backend.  Every other return value is the failure the front end already
+ * diagnosed.
+ *
+ * The caller owns the memory pool: ark_compile() and ark_ipo_compile() each
+ * call mem_pool_reset() once before the first unit, and never between units
+ * when the IR is shared. */
+int ark_frontend_unit(const ArkOptions *opts, IrProgram *shared,
+                      IrProgram **out_ir, const ArkBackend **out_be)
+{
     int src_len;
     Lexer lex;
     AstNode *ast;
     int sema_errs;
-    IrProgram *ir;
+    IrProgram *ir = 0;
+    const ArkBackend *be = 0;
     char *preprocessed;
-    const ArkBackend *be;
-    int asm_len;
-    int code_size;
     int i;
+
+    if (out_ir) *out_ir = 0;
+    if (out_be) *out_be = 0;
+
+    preproc_reset();
+    preproc_set_main_file(opts->input_path);
+
+#if ARKCC_FEATURE_BUILD_TIME
+    /* __DATE__/__TIME__ 的三个来源，优先级从高到低：
+     *   1. --source-date-epoch（可复现构建的标准做法）
+     *   2. --build-date / --build-time（手工钉死）
+     *   3. 平台层（宿主用 localtime，板端可能没有 RTC 于是固定）
+     * 前两种都要经过格式校验：长度不对会让后面的代码读越界。 */
+    if (opts->build_epoch > 0) {
+        char bd[12], bt[9];
+        format_epoch_utc(opts->build_epoch, bd, bt);
+        if (!preproc_set_build_time(bd, bt)) {
+            diag_tool(DIAG_SEV_ERROR, opts->input_path,
+                      "--source-date-epoch produced an unusable timestamp", 0,0,0,0,0,0);
+        }
+    } else if (opts->build_date || opts->build_time) {
+        if (!preproc_set_build_time(opts->build_date, opts->build_time)) {
+            diag_tool(DIAG_SEV_ERROR, opts->input_path,
+                      "--build-date expects \"Mmm dd yyyy\" and --build-time expects \"hh:mm:ss\"",
+                      0,0,0,0,0,0);
+        }
+    }
+#endif
+
+    /* C99 6.10.2: #include "..." searches the directory of the source file
+     * containing the #include directive. We add the main source file's
+     * directory as the highest-priority search path so that paths like
+     * #include "Drivers/.../foo.c" (relative to the .c file) resolve
+     * correctly, matching gcc/armcc5 behavior. This is essential for
+     * --uvprojx builds where the main .c includes HAL .c sources by
+     * project-relative paths. Added FIRST so it has highest search priority. */
+    {
+        const char *src = opts->input_path;
+        int slen = ark_strlen(src);
+        int di;
+        char srcdir[512];
+        for (di = slen - 1; di >= 0; di--) {
+            if (src[di] == '/' || src[di] == '\\') break;
+        }
+        if (di > 0 && di < (int)sizeof(srcdir) - 1) {
+            int j;
+            for (j = 0; j <= di; j++) srcdir[j] = src[j];
+            srcdir[di + 1] = 0;
+            preproc_add_include_dir(srcdir);
+        }
+    }
+
+    /* User-specified -I dirs (added after source dir for lower priority) */
+    for (i = 0; i < opts->include_dir_count; i++) {
+        preproc_add_include_dir(opts->include_dirs[i]);
+    }
+    preproc_add_include_dir("stdlib/include");
+
+    /* --cpu/-mcpu: override default (M7) predefined macros and FPU/DSP switches based on target CPU.
+     * Must be called before preproc_process so later preprocessing sees the correct
+     * __TARGET_ARCH_* / __TARGET_FEATURE_DSP / __TARGET_FPU_VFP macros. */
+    /* 复位为「保守值」（double<->float 走软件 __aeabi_*）。必须在下面的 -cpu 块
+     * **之前**：板端同一个进程里会反复调 ark_compile()，上一次带 -cpu cortex-m7
+     * 留下的 g_arm_fpu_dp=1 不能泄漏到这一次没有 -cpu 的编译里。
+     * 历史缺陷：这一行原来写在下游（预处理/读源之后），把 -cpu 刚算出来的值又
+     * 清回了 0 —— `-cpu cortex-m7` 看着被接受，实际仍发 BL __aeabi_f2d，
+     * 在没有符号解析运行库的小程序侧就是 unresolved symbol。 */
+    g_arm_fpu_dp = 0;
+    if (opts->cpu) {
+        const CpuInfo *cpu = cpu_lookup(opts->cpu);
+        if (!cpu) {
+            diag_tool(DIAG_SEV_ERROR, "arkcc",
+                      "unknown CPU %sq (supported: Cortex-M0/M0+/M1/M3/M4/M7/M23/M33)",
+                      opts->cpu, 0,0,0,0,0);
+            return ARK_ERR_ARG;
+        }
+        cpu_apply_predefines(cpu);
+        /* Which FPU the ARM backend may use for double <-> float conversion:
+         * only the DP variants (Cortex-M7 DP) can encode VCVT.F64.*. */
+        g_arm_fpu_dp = cpu->has_fpu_dp ? 1 : 0;
+        /* CPUs without FPU support automatically disable hardware FPU codegen */
+        if (!cpu->has_fpu) g_config.enable_fpu_hw = 0;
+        if (opts->verbose) {
+            ark_log("[arkcc] cpu=%s arch_m=%d dsp=%d fpu=%d\n",
+                    cpu->name, cpu->arch_m, cpu->has_dsp, cpu->has_fpu);
+        }
+    }
+
+    /* -DNAME[=VALUE]: register command-line macro defines before preprocessing.
+     * Each entry is parsed: optional '=VALUE' suffix becomes the macro body;
+     * without '=', the macro body is "1". */
+    for (i = 0; i < opts->pre_define_count; i++) {
+        const char *e = opts->pre_defines[i];
+        const char *eq = 0;
+        int j;
+        for (j = 0; e[j]; j++) { if (e[j] == '=') { eq = e + j; break; } }
+        if (eq) {
+            /* NAME=VALUE: copy NAME to a temp buffer (not pooled; lives through preproc) */
+            static char name_buf[256];
+            int nl = (int)(eq - e);
+            int k;
+            if (nl >= (int)sizeof(name_buf)) nl = (int)sizeof(name_buf) - 1;
+            for (k = 0; k < nl; k++) name_buf[k] = e[k];
+            name_buf[nl] = 0;
+            preproc_define(name_buf, eq + 1);
+        } else {
+            preproc_define(e, "1");
+        }
+    }
+
+    /* Variadic functions: which va-region convention the target uses.
+     * <stdarg.h> has two ways to walk an argument list and they are not
+     * interchangeable:
+     *   * the C and x86_64 backends keep ONE 8-byte slot per argument
+     *     (ordinal-indexed: irgen asks for frame+8000+8k);
+     *   * the ARM and RV32I backends keep one 4-byte word per AAPCS slot,
+     *     which is the caller's real layout, so a 64-bit argument is just
+     *     two adjacent words (irgen's 8-byte stride is remapped there).
+     * The header cannot see which backend is compiling it, so the driver
+     * says so here and stdarg.h picks one walk.  Deliberately left
+     * undefined for the 8-byte-slot targets: their preprocessed text stays
+     * byte-identical, which is what the C-side tests compare against. */
+    {
+        const ArkBackend *vbe = opts->target ? ark_backend_find(opts->target)
+                                             : ark_backend_default();
+        if (vbe && vbe->name &&
+            (ark_streq(vbe->name, "arm") || ark_streq(vbe->name, "riscv32") ||
+             ark_streq(vbe->name, "x86"))) {
+            /* i386 cdecl belongs here too, and used to be left out: its
+             * va region is the caller's own stack argument block (the backend
+             * answers _ark_va_ptr with ebp+8+4*param_count), i.e. one 4-byte
+             * word per argument with no holes, while <stdarg.h>'s default
+             * branch advanced the cursor by 8 bytes -- so `sum(3,10,20,30)`
+             * read 10, 30 and then past the end and returned 40 instead of 60,
+             * with no diagnostic.  Packed word slots (below) are exactly that
+             * layout. */
+            preproc_define("__ARK_VA_WORD_SLOTS", "1");
+            /* ...and irgen must not reserve the C backend's 8 KB slot area:
+             * these backends build the region out of the caller's own words
+             * (the registers/stack block, or the cdecl stack block), so
+             * reserving it would only cost stack (8 KB against a 4 KB
+             * mini-app task stack on the board). */
+            g_ir_va_slot_region = 0;
+            /* ARM Thumb-2 and RV32I can both put a >8-byte composite through
+             * `...`: their va region is the caller's own argument words (the
+             * four spilled registers plus the caller's stack block on ARM, the
+             * eight spilled registers plus the caller's stack block on RV32I),
+             * so the payload is just a few more words.  RV32I used to be
+             * excluded on the claim that it has "no stack arguments" -- it
+             * does: every word past a0-a7 is one, and <stdarg.h> already walks
+             * those words packed.  The C/x86_64 backends keep the 8-byte slot
+             * image, where irgen's inline words would be misread, so they
+             * still fail the build with a diagnostic. */
+            g_ir_vararg_words =
+                (ark_streq(vbe->name, "arm") || ark_streq(vbe->name, "riscv32"))
+                    ? 1 : 0;
+        }
+        /* ...and whether those word slots carry the AAPCS32 alignment holes
+         * (ARM: a 64-bit argument starts on an even register / an 8-byte
+         * aligned stack slot) or are packed (RV32I and i386 cdecl both number
+         * argument words 0,1,2,.. with no gaps).  <stdarg.h> needs to know,
+         * because "align ap to 8" is only correct where the holes exist. */
+        if (vbe && vbe->name &&
+            (ark_streq(vbe->name, "riscv32") || ark_streq(vbe->name, "x86")))
+            preproc_define("__ARK_VA_PACKED_WORDS", "1");
+        /* x86-64 is neither: its arguments arrive in registers, so the callee
+         * owns the System V AMD64 register save area (176 bytes) and va_list
+         * is the ABI's four-field cursor over it.  <stdarg.h> spells that
+         * walk in the __ARK_VA_SYSV branch, and irgen must not reserve the
+         * 8 KB slot area -- the registers are the source of the variadic tail
+         * here, not a copy of the whole argument list. */
+        if (vbe && vbe->name && ark_streq(vbe->name, "x86_64")) {
+            preproc_define("__ARK_VA_SYSV", "1");
+            g_ir_va_slot_region = 0;
+        }
+    }
+
+    /* --split_sections/-ffunction-sections: sync runtime switch to g_config,
+     * so ARM/C backends emit a separate section before each function. */
+    if (opts->split_sections) g_config.split_sections = 1;
+    /* --vector-table: the ARM backend reserves the table area before assembly
+     * so the image does not have to be shifted afterwards.  Set here (not in
+     * the backend) because it is an option, and the backend sees only opts-free
+     * state.  Zero by default: every existing command line is unchanged. */
+    g_arm_vt_reserve = (opts->vector_table != 0) ? 1 : 0;
+
+    {
+        /* fs_read_file() truncates at ARK_SRC_BUF_SIZE-1 without saying so,
+         * which turns a too-small buffer into a stream of bogus syntax errors
+         * (a real 2 MB CMSIS device header reported "#37 the #endif ... is
+         * missing" because the tail was never read). Report the real cause. */
+        char b1[12], b2[12];
+        int fsz = fs_file_size(opts->input_path);
+        if (fsz >= ARK_SRC_BUF_SIZE) {
+            diag_tool(DIAG_SEV_ERROR, opts->input_path,
+                      "input file is %s bytes, larger than the %s-byte source "
+                      "buffer; rebuild arkcc with a bigger ARK_SRC_BUF_SIZE",
+                      diag_num(b1, fsz), diag_num(b2, ARK_SRC_BUF_SIZE),
+                      0,0,0,0);
+            return ARK_ERR_IO;
+        }
+    }
+    src_len = fs_read_file(opts->input_path, g_src, ARK_SRC_BUF_SIZE);
+    if (src_len < 0) {
+        /* armcc's shape:  "no source": Error:  #5: cannot open source input
+         * file "x": <reason>. The reason comes from the file layer so that it
+         * describes what actually happened instead of a guess. */
+        DiagLoc loc;
+        loc.file = DIAG_NO_SOURCE_TEXT;
+        loc.line = 0;
+        loc.col  = 0;
+        diag_report(5, DIAG_SEV_ERROR, &loc, "source", opts->input_path,
+                    fs_last_error());
+        return ARK_ERR_IO;
+    }
+    /* Preprocessing diagnoses against the raw text: that is what the user sees
+     * in their editor, and its line numbers are the ones the directives are on. */
+    diag_init(opts->input_path, g_src);
+    /* Tell the preprocessor which backend will emit this unit before anything
+     * is expanded: headers (stdatomic.h first among them) need to know whether
+     * the target has the ARM PRIMASK critical section, and the armcc
+     * compatibility macros must not claim an ARM target for x86/RISC-V output. */
+    {
+        const ArkBackend *tbe = opts->target ? ark_backend_find(opts->target)
+                                             : ark_backend_default();
+        preproc_set_target(tbe ? tbe->name : "arm");
+    }
+    preprocessed = preproc_process(g_src);
+    /* Line numbers in every later diagnostic refer to the *preprocessed*
+     * buffer (that is what the lexer counts), so the echo buffer must be the
+     * same text or the caret would point at a different line. */
+    diag_set_source(preprocessed);
+
+    /* -MMD/--depend: generate dependency file (Makefile style, gcc -MMD compatible).
+     * Format: "<output>: <source> <header1> <header2> ...\n"
+     * Output path is given by -MF, otherwise defaults to "<input>.d". */
+    if (opts->gen_depend) {
+        /* 依赖文件能收多少个头文件：宿主与预处理器同源——预处理器记录多少就
+         * 取多少（表按实际条数从池里分配），板端仍用 ARKCC_MAX_INC_FILES 的
+         * 定长表。两处上限必须同源，否则预处理器记全了、写出来的 .d 还是被截。 */
+#if ARKCC_FEATURE_DEP_FILES_DYN
+        int ninc_all = preproc_included_count();
+        const char **incs = (const char **)mem_pool_alloc(
+            (ninc_all > 0 ? ninc_all : 1) * (int)sizeof(*incs));
+        int ninc = preproc_get_included_files(incs, ninc_all);
+#else
+        const char *incs[ARKCC_MAX_INC_FILES];
+        int ninc = preproc_get_included_files(incs, ARKCC_MAX_INC_FILES);
+#endif
+        char dep_path[512];
+        const char *dep_target;
+        /* Derive output target name: prefer -o (strip extension and add .o), otherwise <input>.o */
+        char obj_name[512];
+        if (opts->output_path) {
+            int ol = ark_strlen(opts->output_path);
+            int dot = -1; int k;
+            for (k = ol - 1; k >= 0; k--) {
+                if (opts->output_path[k] == '/' || opts->output_path[k] == '\\') break;
+                if (opts->output_path[k] == '.') { dot = k; break; }
+            }
+            if (dot < 0) dot = ol;
+            for (k = 0; k < dot && k < (int)sizeof(obj_name) - 3; k++) obj_name[k] = opts->output_path[k];
+            obj_name[dot] = 0;
+            /* Default to .o extension (unless -S outputs .s) */
+            if (opts->emit_asm) {
+                obj_name[dot] = '.'; obj_name[dot+1] = 's'; obj_name[dot+2] = 0;
+            } else {
+                obj_name[dot] = '.'; obj_name[dot+1] = 'o'; obj_name[dot+2] = 0;
+            }
+        } else {
+            /* Derive from input_path */
+            int il = ark_strlen(opts->input_path);
+            int dot = -1; int k;
+            for (k = il - 1; k >= 0; k--) {
+                if (opts->input_path[k] == '/' || opts->input_path[k] == '\\') break;
+                if (opts->input_path[k] == '.') { dot = k; break; }
+            }
+            if (dot < 0) dot = il;
+            for (k = 0; k < dot && k < (int)sizeof(obj_name) - 3; k++) obj_name[k] = opts->input_path[k];
+            obj_name[dot] = '.'; obj_name[dot+1] = 'o'; obj_name[dot+2] = 0;
+        }
+        /* Dependency file path: -MF specifies, otherwise <input>.d */
+        if (opts->depend_file) {
+            dep_target = opts->depend_file;
+        } else {
+            int il = ark_strlen(opts->input_path);
+            int dot = -1; int k;
+            for (k = il - 1; k >= 0; k--) {
+                if (opts->input_path[k] == '/' || opts->input_path[k] == '\\') break;
+                if (opts->input_path[k] == '.') { dot = k; break; }
+            }
+            if (dot < 0) dot = il;
+            for (k = 0; k < dot && k < (int)sizeof(dep_path) - 3; k++) dep_path[k] = opts->input_path[k];
+            dep_path[dot] = '.'; dep_path[dot+1] = 'd'; dep_path[dot+2] = 0;
+            dep_target = dep_path;
+        }
+        /* Build dependency file content: "<obj>: <source> <h1> <h2> ...\n" */
+        {
+            /* 8 KB 就够写几十个头文件，于是头文件一多，.d 会被截断而构建系统
+             * 不再察觉某个头文件改过。宿主按实际条数精确分配，板端保留定长。 */
+#if ARKCC_FEATURE_DEP_FILES_DYN
+            int dep_cap = 3;
+            char *dep_buf;
+            {
+                int k;
+                for (k = 0; obj_name[k]; k++) dep_cap++;
+                for (k = 0; opts->input_path[k]; k++) dep_cap++;
+                for (k = 0; k < ninc; k++) {
+                    int j;
+                    for (j = 0; incs[k][j]; j++) dep_cap++;
+                    dep_cap++;
+                }
+            }
+            dep_buf = (char *)mem_pool_alloc(dep_cap + 1);
+#else
+            static char dep_buf_store[8192] __attribute__((section(".ark_buf")));
+            char *dep_buf = dep_buf_store;
+            int dep_cap = (int)sizeof(dep_buf_store);
+#endif
+            int dl = 0;
+            int k;
+            /* Output target */
+            for (k = 0; obj_name[k] && dl < dep_cap - 1; k++) dep_buf[dl++] = obj_name[k];
+            dep_buf[dl++] = ':';
+            dep_buf[dl++] = ' ';
+            /* Source file */
+            for (k = 0; opts->input_path[k] && dl < dep_cap - 1; k++) dep_buf[dl++] = opts->input_path[k];
+            /* Dependent header files */
+            for (k = 0; k < ninc && dl < dep_cap - 2; k++) {
+                dep_buf[dl++] = ' ';
+                {
+                    int j;
+                    for (j = 0; incs[k][j] && dl < dep_cap - 1; j++) dep_buf[dl++] = incs[k][j];
+                }
+            }
+            dep_buf[dl++] = '\n';
+            if (fs_write_file(dep_target, (const unsigned char *)dep_buf, dl) != dl) {
+                diag_tool(DIAG_SEV_WARNING, dep_target,
+                          "cannot write dependency file", 0,0,0,0,0,0);
+                return ARK_ERR_IO;
+            }
+            if (opts->verbose) ark_log("[arkcc] wrote dependency file '%s' (%d includes)\n", dep_target, ninc);
+        }
+    }
+
+    /* -E preprocess only */
+    if (opts->preprocess_only) {
+        const char *target = opts->output_path ? opts->output_path : "-";
+        int e_len = ark_strlen(preprocessed);
+        if (ark_streq(target, "-")) {
+            if (fs_write_file("-", (const unsigned char *)preprocessed, e_len) != e_len)
+                return ARK_ERR_IO;
+            return ARK_OK;
+        }
+        return write_text(target, preprocessed);
+    }
+
+    be = opts->target ? ark_backend_find(opts->target) : ark_backend_default();
+    if (!be) {
+        diag_tool(DIAG_SEV_ERROR, "arkcc", "unknown target %sq",
+                      opts->target ? opts->target : "(null)", 0,0,0,0,0);
+        return ARK_ERR_ARG;
+    }
+    if (opts->verbose) ark_log("[arkcc] target=%s, source=%d bytes\n", be->name, src_len);
+
+    /* Set pointer size for the selected backend BEFORE parsing/sema/irgen so
+     * struct layout and array indexing use the correct pointer width.
+     * The C backend runs on the host (8-byte pointers on 64-bit); ARM/RISC-V32
+     * use 4-byte pointers; x86_64 uses 8-byte pointers. */
+    type_set_ptr_size(be->pointer_size);
+    /* C 后端使用 8 字节 long long 虚拟栈槽，irgen 无需生成 32→64 位
+     * widen/narrow 序列（DUP+PUSH+LT+NEG）或 64 位条件 BOR 合并。 */
+    irgen_set_64bit_slots(ark_streq(be->name, "c"));
+    /* x86-64: a pointer is 8 bytes but occupies a single stack word.  Only
+     * that target needs the IR_AUX_SLOT64 marker; everywhere else the flag
+     * stays 0 and the emitted IR is unchanged. */
+    irgen_set_slot64_ptrs(ark_streq(be->name, "x86_64"));
+    /* The C backend stores a complex value in one 8-byte slot; the machine
+     * backends carry four 32-bit words on the expression stack. */
+    irgen_set_complex_words(ark_streq(be->name, "c") ? 1 : 4);
+    lexer_init(&lex, preprocessed);
+    ast = parse_program(&lex);
+    if (!ast) return ARK_ERR_PARSE;      /* diagnostics were already printed */
+    /* A frontend error means the tree we would hand to sema/codegen is not the
+     * program the user wrote. armcc stops here too; continuing only adds
+     * follow-on messages ("unresolved label", "cannot be lowered") that point
+     * at the symptom instead of the cause. Warnings do not count. */
+    if (diag_errors() > 0) return ARK_ERR_PARSE;
+    sema_errs = sema_check(ast);
+    if (sema_errs > 0) return ARK_ERR_SEMA;
+    if (diag_errors() > 0) return ARK_ERR_SEMA;
+    /* AST stage of the pass pipeline: the lint passes, in the order declared
+     * in src/pipeline.c, each one running only when its own switch asked for
+     * it.  They emit warnings only, so they cannot change the exit code or the
+     * image; with the switches off (the default) not one instruction runs. */
+    pipeline_run_ast(ast);
+    {
+        int diag_before_irgen = diag_errors();
+        ir = shared ? irgen_program_into(ast, shared) : irgen_program(ast);
+        if (!ir) return ARK_ERR_IRGEN;
+        if (g_irgen_errors > diag_before_irgen) {
+            /* IR generation could not lower part of the program; the emitted
+             * code would be silently wrong, so refuse to produce an image.
+             * When irgen already reported a specific diagnostic (e.g. #137) the
+             * generic line adds nothing but noise, so it is only printed for
+             * failures that were otherwise silent. No armcc code covers this
+             * stage, hence no code. */
+            if (g_irgen_errors == diag_before_irgen) {
+                char nb[12];
+                diag_report_msg(DIAG_SEV_ERROR, 0,
+                                "%d construct(s) could not be lowered to IR",
+                                diag_num(nb, g_irgen_errors), 0, 0);
+            }
+            return ARK_ERR_IRGEN;
+        }
+    }
+    ir->source_file = opts->input_path;  /* Used for DWARF .file/.loc */
+
+    /* IR stage of the pass pipeline.  Which passes run is decided by one
+     * table in src/pipeline.c from (-O level, --pipeline profile, each
+     * pass's own switch, the compile-time feature macro); nothing here
+     * enumerates passes.  --print-pipeline prints that table. */
+    /* Whole-program mode (--ipo) deliberately stops here: the pass pipeline
+     * must see every translation unit at once, or "inline" would only ever
+     * inline what one file contained and the merged program would then be
+     * optimised a second time.  The caller (src/ipo.c) runs the pipeline once
+     * over the merged program instead. */
+    if (!shared) {
+        int lvl = opts->opt_level;
+        if (lvl < g_config.opt_level) lvl = g_config.opt_level;
+        pipeline_run_ir(ir, lvl, pipeline_profile());
+    }
+
+    if (out_ir) *out_ir = ir;
+    if (out_be) *out_be = be;
+    return ARK_OK;
+}
+
+int ark_compile(const ArkOptions *opts) {
+    IrProgram *ir;
+    const ArkBackend *be;
 
     if (!opts) return ARK_ERR_ARG;
     if (opts->list_backends) { ark_backend_list(); return ARK_OK; }
@@ -1229,6 +1694,12 @@ int ark_compile(const ArkOptions *opts) {
         }
     }
 #endif
+
+    /* 0.8.7 --ipo: one program built from several translation units.  The
+     * dispatch sits ahead of -link because the two modes read the command
+     * line in different ways (sources vs objects); ark_ipo_compile() refuses
+     * the combination with a diagnostic instead of picking one. */
+    if (opts->ipo_mode) return ark_ipo_compile(opts);
 
     /* -link mode: merge multiple .ark_obj files.
      * ARKOBJ2 binary objects are linked via the binary ARM linker (code merge +
@@ -2176,429 +2647,33 @@ int ark_compile(const ArkOptions *opts) {
      * unavailable under semihosting; flag set via UART there). */
     arm_dump_syms_init();
     mem_pool_reset();
-    preproc_reset();
-    preproc_set_main_file(opts->input_path);
-
-#if ARKCC_FEATURE_BUILD_TIME
-    /* __DATE__/__TIME__ 的三个来源，优先级从高到低：
-     *   1. --source-date-epoch（可复现构建的标准做法）
-     *   2. --build-date / --build-time（手工钉死）
-     *   3. 平台层（宿主用 localtime，板端可能没有 RTC 于是固定）
-     * 前两种都要经过格式校验：长度不对会让后面的代码读越界。 */
-    if (opts->build_epoch > 0) {
-        char bd[12], bt[9];
-        format_epoch_utc(opts->build_epoch, bd, bt);
-        if (!preproc_set_build_time(bd, bt)) {
-            diag_tool(DIAG_SEV_ERROR, opts->input_path,
-                      "--source-date-epoch produced an unusable timestamp", 0,0,0,0,0,0);
-        }
-    } else if (opts->build_date || opts->build_time) {
-        if (!preproc_set_build_time(opts->build_date, opts->build_time)) {
-            diag_tool(DIAG_SEV_ERROR, opts->input_path,
-                      "--build-date expects \"Mmm dd yyyy\" and --build-time expects \"hh:mm:ss\"",
-                      0,0,0,0,0,0);
-        }
-    }
-#endif
-
-    /* C99 6.10.2: #include "..." searches the directory of the source file
-     * containing the #include directive. We add the main source file's
-     * directory as the highest-priority search path so that paths like
-     * #include "Drivers/.../foo.c" (relative to the .c file) resolve
-     * correctly, matching gcc/armcc5 behavior. This is essential for
-     * --uvprojx builds where the main .c includes HAL .c sources by
-     * project-relative paths. Added FIRST so it has highest search priority. */
     {
-        const char *src = opts->input_path;
-        int slen = ark_strlen(src);
-        int di;
-        char srcdir[512];
-        for (di = slen - 1; di >= 0; di--) {
-            if (src[di] == '/' || src[di] == '\\') break;
-        }
-        if (di > 0 && di < (int)sizeof(srcdir) - 1) {
-            int j;
-            for (j = 0; j <= di; j++) srcdir[j] = src[j];
-            srcdir[di + 1] = 0;
-            preproc_add_include_dir(srcdir);
-        }
+        int frc = ark_frontend_unit(opts, 0, &ir, &be);
+        if (frc != ARK_OK) return frc;
+        if (!ir) return ARK_OK;   /* -E / -MMD already wrote their output */
     }
+    return ark_emit_program(opts, ir, be);
+}
 
-    /* User-specified -I dirs (added after source dir for lower priority) */
-    for (i = 0; i < opts->include_dir_count; i++) {
-        preproc_add_include_dir(opts->include_dirs[i]);
-    }
-    preproc_add_include_dir("stdlib/include");
+/* ------------------------------------------------------------------ */
+/* Backend emit + assemble + write                                     */
+/* ------------------------------------------------------------------ */
 
-    /* --cpu/-mcpu: override default (M7) predefined macros and FPU/DSP switches based on target CPU.
-     * Must be called before preproc_process so later preprocessing sees the correct
-     * __TARGET_ARCH_* / __TARGET_FEATURE_DSP / __TARGET_FPU_VFP macros. */
-    /* 复位为「保守值」（double<->float 走软件 __aeabi_*）。必须在下面的 -cpu 块
-     * **之前**：板端同一个进程里会反复调 ark_compile()，上一次带 -cpu cortex-m7
-     * 留下的 g_arm_fpu_dp=1 不能泄漏到这一次没有 -cpu 的编译里。
-     * 历史缺陷：这一行原来写在下游（预处理/读源之后），把 -cpu 刚算出来的值又
-     * 清回了 0 —— `-cpu cortex-m7` 看着被接受，实际仍发 BL __aeabi_f2d，
-     * 在没有符号解析运行库的小程序侧就是 unresolved symbol。 */
-    g_arm_fpu_dp = 0;
-    if (opts->cpu) {
-        const CpuInfo *cpu = cpu_lookup(opts->cpu);
-        if (!cpu) {
-            diag_tool(DIAG_SEV_ERROR, "arkcc",
-                      "unknown CPU %sq (supported: Cortex-M0/M0+/M1/M3/M4/M7/M23/M33)",
-                      opts->cpu, 0,0,0,0,0);
-            return ARK_ERR_ARG;
-        }
-        cpu_apply_predefines(cpu);
-        /* Which FPU the ARM backend may use for double <-> float conversion:
-         * only the DP variants (Cortex-M7 DP) can encode VCVT.F64.*. */
-        g_arm_fpu_dp = cpu->has_fpu_dp ? 1 : 0;
-        /* CPUs without FPU support automatically disable hardware FPU codegen */
-        if (!cpu->has_fpu) g_config.enable_fpu_hw = 0;
-        if (opts->verbose) {
-            ark_log("[arkcc] cpu=%s arch_m=%d dsp=%d fpu=%d\n",
-                    cpu->name, cpu->arch_m, cpu->has_dsp, cpu->has_fpu);
-        }
-    }
-
-    /* -DNAME[=VALUE]: register command-line macro defines before preprocessing.
-     * Each entry is parsed: optional '=VALUE' suffix becomes the macro body;
-     * without '=', the macro body is "1". */
-    for (i = 0; i < opts->pre_define_count; i++) {
-        const char *e = opts->pre_defines[i];
-        const char *eq = 0;
-        int j;
-        for (j = 0; e[j]; j++) { if (e[j] == '=') { eq = e + j; break; } }
-        if (eq) {
-            /* NAME=VALUE: copy NAME to a temp buffer (not pooled; lives through preproc) */
-            static char name_buf[256];
-            int nl = (int)(eq - e);
-            int k;
-            if (nl >= (int)sizeof(name_buf)) nl = (int)sizeof(name_buf) - 1;
-            for (k = 0; k < nl; k++) name_buf[k] = e[k];
-            name_buf[nl] = 0;
-            preproc_define(name_buf, eq + 1);
-        } else {
-            preproc_define(e, "1");
-        }
-    }
-
-    /* Variadic functions: which va-region convention the target uses.
-     * <stdarg.h> has two ways to walk an argument list and they are not
-     * interchangeable:
-     *   * the C and x86_64 backends keep ONE 8-byte slot per argument
-     *     (ordinal-indexed: irgen asks for frame+8000+8k);
-     *   * the ARM and RV32I backends keep one 4-byte word per AAPCS slot,
-     *     which is the caller's real layout, so a 64-bit argument is just
-     *     two adjacent words (irgen's 8-byte stride is remapped there).
-     * The header cannot see which backend is compiling it, so the driver
-     * says so here and stdarg.h picks one walk.  Deliberately left
-     * undefined for the 8-byte-slot targets: their preprocessed text stays
-     * byte-identical, which is what the C-side tests compare against. */
-    {
-        const ArkBackend *vbe = opts->target ? ark_backend_find(opts->target)
-                                             : ark_backend_default();
-        if (vbe && vbe->name &&
-            (ark_streq(vbe->name, "arm") || ark_streq(vbe->name, "riscv32") ||
-             ark_streq(vbe->name, "x86"))) {
-            /* i386 cdecl belongs here too, and used to be left out: its
-             * va region is the caller's own stack argument block (the backend
-             * answers _ark_va_ptr with ebp+8+4*param_count), i.e. one 4-byte
-             * word per argument with no holes, while <stdarg.h>'s default
-             * branch advanced the cursor by 8 bytes -- so `sum(3,10,20,30)`
-             * read 10, 30 and then past the end and returned 40 instead of 60,
-             * with no diagnostic.  Packed word slots (below) are exactly that
-             * layout. */
-            preproc_define("__ARK_VA_WORD_SLOTS", "1");
-            /* ...and irgen must not reserve the C backend's 8 KB slot area:
-             * these backends build the region out of the caller's own words
-             * (the registers/stack block, or the cdecl stack block), so
-             * reserving it would only cost stack (8 KB against a 4 KB
-             * mini-app task stack on the board). */
-            g_ir_va_slot_region = 0;
-            /* ARM Thumb-2 and RV32I can both put a >8-byte composite through
-             * `...`: their va region is the caller's own argument words (the
-             * four spilled registers plus the caller's stack block on ARM, the
-             * eight spilled registers plus the caller's stack block on RV32I),
-             * so the payload is just a few more words.  RV32I used to be
-             * excluded on the claim that it has "no stack arguments" -- it
-             * does: every word past a0-a7 is one, and <stdarg.h> already walks
-             * those words packed.  The C/x86_64 backends keep the 8-byte slot
-             * image, where irgen's inline words would be misread, so they
-             * still fail the build with a diagnostic. */
-            g_ir_vararg_words =
-                (ark_streq(vbe->name, "arm") || ark_streq(vbe->name, "riscv32"))
-                    ? 1 : 0;
-        }
-        /* ...and whether those word slots carry the AAPCS32 alignment holes
-         * (ARM: a 64-bit argument starts on an even register / an 8-byte
-         * aligned stack slot) or are packed (RV32I and i386 cdecl both number
-         * argument words 0,1,2,.. with no gaps).  <stdarg.h> needs to know,
-         * because "align ap to 8" is only correct where the holes exist. */
-        if (vbe && vbe->name &&
-            (ark_streq(vbe->name, "riscv32") || ark_streq(vbe->name, "x86")))
-            preproc_define("__ARK_VA_PACKED_WORDS", "1");
-        /* x86-64 is neither: its arguments arrive in registers, so the callee
-         * owns the System V AMD64 register save area (176 bytes) and va_list
-         * is the ABI's four-field cursor over it.  <stdarg.h> spells that
-         * walk in the __ARK_VA_SYSV branch, and irgen must not reserve the
-         * 8 KB slot area -- the registers are the source of the variadic tail
-         * here, not a copy of the whole argument list. */
-        if (vbe && vbe->name && ark_streq(vbe->name, "x86_64")) {
-            preproc_define("__ARK_VA_SYSV", "1");
-            g_ir_va_slot_region = 0;
-        }
-    }
-
-    /* --split_sections/-ffunction-sections: sync runtime switch to g_config,
-     * so ARM/C backends emit a separate section before each function. */
-    if (opts->split_sections) g_config.split_sections = 1;
-    /* --vector-table: the ARM backend reserves the table area before assembly
-     * so the image does not have to be shifted afterwards.  Set here (not in
-     * the backend) because it is an option, and the backend sees only opts-free
-     * state.  Zero by default: every existing command line is unchanged. */
-    g_arm_vt_reserve = (opts->vector_table != 0) ? 1 : 0;
-
-    {
-        /* fs_read_file() truncates at ARK_SRC_BUF_SIZE-1 without saying so,
-         * which turns a too-small buffer into a stream of bogus syntax errors
-         * (a real 2 MB CMSIS device header reported "#37 the #endif ... is
-         * missing" because the tail was never read). Report the real cause. */
-        char b1[12], b2[12];
-        int fsz = fs_file_size(opts->input_path);
-        if (fsz >= ARK_SRC_BUF_SIZE) {
-            diag_tool(DIAG_SEV_ERROR, opts->input_path,
-                      "input file is %s bytes, larger than the %s-byte source "
-                      "buffer; rebuild arkcc with a bigger ARK_SRC_BUF_SIZE",
-                      diag_num(b1, fsz), diag_num(b2, ARK_SRC_BUF_SIZE),
-                      0,0,0,0);
-            return ARK_ERR_IO;
-        }
-    }
-    src_len = fs_read_file(opts->input_path, g_src, ARK_SRC_BUF_SIZE);
-    if (src_len < 0) {
-        /* armcc's shape:  "no source": Error:  #5: cannot open source input
-         * file "x": <reason>. The reason comes from the file layer so that it
-         * describes what actually happened instead of a guess. */
-        DiagLoc loc;
-        loc.file = DIAG_NO_SOURCE_TEXT;
-        loc.line = 0;
-        loc.col  = 0;
-        diag_report(5, DIAG_SEV_ERROR, &loc, "source", opts->input_path,
-                    fs_last_error());
-        return ARK_ERR_IO;
-    }
-    /* Preprocessing diagnoses against the raw text: that is what the user sees
-     * in their editor, and its line numbers are the ones the directives are on. */
-    diag_init(opts->input_path, g_src);
-    /* Tell the preprocessor which backend will emit this unit before anything
-     * is expanded: headers (stdatomic.h first among them) need to know whether
-     * the target has the ARM PRIMASK critical section, and the armcc
-     * compatibility macros must not claim an ARM target for x86/RISC-V output. */
-    {
-        const ArkBackend *tbe = opts->target ? ark_backend_find(opts->target)
-                                             : ark_backend_default();
-        preproc_set_target(tbe ? tbe->name : "arm");
-    }
-    preprocessed = preproc_process(g_src);
-    /* Line numbers in every later diagnostic refer to the *preprocessed*
-     * buffer (that is what the lexer counts), so the echo buffer must be the
-     * same text or the caret would point at a different line. */
-    diag_set_source(preprocessed);
-
-    /* -MMD/--depend: generate dependency file (Makefile style, gcc -MMD compatible).
-     * Format: "<output>: <source> <header1> <header2> ...\n"
-     * Output path is given by -MF, otherwise defaults to "<input>.d". */
-    if (opts->gen_depend) {
-        /* 依赖文件能收多少个头文件：宿主与预处理器同源——预处理器记录多少就
-         * 取多少（表按实际条数从池里分配），板端仍用 ARKCC_MAX_INC_FILES 的
-         * 定长表。两处上限必须同源，否则预处理器记全了、写出来的 .d 还是被截。 */
-#if ARKCC_FEATURE_DEP_FILES_DYN
-        int ninc_all = preproc_included_count();
-        const char **incs = (const char **)mem_pool_alloc(
-            (ninc_all > 0 ? ninc_all : 1) * (int)sizeof(*incs));
-        int ninc = preproc_get_included_files(incs, ninc_all);
-#else
-        const char *incs[ARKCC_MAX_INC_FILES];
-        int ninc = preproc_get_included_files(incs, ARKCC_MAX_INC_FILES);
-#endif
-        char dep_path[512];
-        const char *dep_target;
-        /* Derive output target name: prefer -o (strip extension and add .o), otherwise <input>.o */
-        char obj_name[512];
-        if (opts->output_path) {
-            int ol = ark_strlen(opts->output_path);
-            int dot = -1; int k;
-            for (k = ol - 1; k >= 0; k--) {
-                if (opts->output_path[k] == '/' || opts->output_path[k] == '\\') break;
-                if (opts->output_path[k] == '.') { dot = k; break; }
-            }
-            if (dot < 0) dot = ol;
-            for (k = 0; k < dot && k < (int)sizeof(obj_name) - 3; k++) obj_name[k] = opts->output_path[k];
-            obj_name[dot] = 0;
-            /* Default to .o extension (unless -S outputs .s) */
-            if (opts->emit_asm) {
-                obj_name[dot] = '.'; obj_name[dot+1] = 's'; obj_name[dot+2] = 0;
-            } else {
-                obj_name[dot] = '.'; obj_name[dot+1] = 'o'; obj_name[dot+2] = 0;
-            }
-        } else {
-            /* Derive from input_path */
-            int il = ark_strlen(opts->input_path);
-            int dot = -1; int k;
-            for (k = il - 1; k >= 0; k--) {
-                if (opts->input_path[k] == '/' || opts->input_path[k] == '\\') break;
-                if (opts->input_path[k] == '.') { dot = k; break; }
-            }
-            if (dot < 0) dot = il;
-            for (k = 0; k < dot && k < (int)sizeof(obj_name) - 3; k++) obj_name[k] = opts->input_path[k];
-            obj_name[dot] = '.'; obj_name[dot+1] = 'o'; obj_name[dot+2] = 0;
-        }
-        /* Dependency file path: -MF specifies, otherwise <input>.d */
-        if (opts->depend_file) {
-            dep_target = opts->depend_file;
-        } else {
-            int il = ark_strlen(opts->input_path);
-            int dot = -1; int k;
-            for (k = il - 1; k >= 0; k--) {
-                if (opts->input_path[k] == '/' || opts->input_path[k] == '\\') break;
-                if (opts->input_path[k] == '.') { dot = k; break; }
-            }
-            if (dot < 0) dot = il;
-            for (k = 0; k < dot && k < (int)sizeof(dep_path) - 3; k++) dep_path[k] = opts->input_path[k];
-            dep_path[dot] = '.'; dep_path[dot+1] = 'd'; dep_path[dot+2] = 0;
-            dep_target = dep_path;
-        }
-        /* Build dependency file content: "<obj>: <source> <h1> <h2> ...\n" */
-        {
-            /* 8 KB 就够写几十个头文件，于是头文件一多，.d 会被截断而构建系统
-             * 不再察觉某个头文件改过。宿主按实际条数精确分配，板端保留定长。 */
-#if ARKCC_FEATURE_DEP_FILES_DYN
-            int dep_cap = 3;
-            char *dep_buf;
-            {
-                int k;
-                for (k = 0; obj_name[k]; k++) dep_cap++;
-                for (k = 0; opts->input_path[k]; k++) dep_cap++;
-                for (k = 0; k < ninc; k++) {
-                    int j;
-                    for (j = 0; incs[k][j]; j++) dep_cap++;
-                    dep_cap++;
-                }
-            }
-            dep_buf = (char *)mem_pool_alloc(dep_cap + 1);
-#else
-            static char dep_buf_store[8192] __attribute__((section(".ark_buf")));
-            char *dep_buf = dep_buf_store;
-            int dep_cap = (int)sizeof(dep_buf_store);
-#endif
-            int dl = 0;
-            int k;
-            /* Output target */
-            for (k = 0; obj_name[k] && dl < dep_cap - 1; k++) dep_buf[dl++] = obj_name[k];
-            dep_buf[dl++] = ':';
-            dep_buf[dl++] = ' ';
-            /* Source file */
-            for (k = 0; opts->input_path[k] && dl < dep_cap - 1; k++) dep_buf[dl++] = opts->input_path[k];
-            /* Dependent header files */
-            for (k = 0; k < ninc && dl < dep_cap - 2; k++) {
-                dep_buf[dl++] = ' ';
-                {
-                    int j;
-                    for (j = 0; incs[k][j] && dl < dep_cap - 1; j++) dep_buf[dl++] = incs[k][j];
-                }
-            }
-            dep_buf[dl++] = '\n';
-            if (fs_write_file(dep_target, (const unsigned char *)dep_buf, dl) != dl) {
-                diag_tool(DIAG_SEV_WARNING, dep_target,
-                          "cannot write dependency file", 0,0,0,0,0,0);
-                return ARK_ERR_IO;
-            }
-            if (opts->verbose) ark_log("[arkcc] wrote dependency file '%s' (%d includes)\n", dep_target, ninc);
-        }
-    }
-
-    /* -E preprocess only */
-    if (opts->preprocess_only) {
-        const char *target = opts->output_path ? opts->output_path : "-";
-        int e_len = ark_strlen(preprocessed);
-        if (ark_streq(target, "-")) {
-            if (fs_write_file("-", (const unsigned char *)preprocessed, e_len) != e_len)
-                return ARK_ERR_IO;
-            return ARK_OK;
-        }
-        return write_text(target, preprocessed);
-    }
-
-    be = opts->target ? ark_backend_find(opts->target) : ark_backend_default();
-    if (!be) {
-        diag_tool(DIAG_SEV_ERROR, "arkcc", "unknown target %sq",
-                      opts->target ? opts->target : "(null)", 0,0,0,0,0);
-        return ARK_ERR_ARG;
-    }
-    if (opts->verbose) ark_log("[arkcc] target=%s, source=%d bytes\n", be->name, src_len);
-
-    /* Set pointer size for the selected backend BEFORE parsing/sema/irgen so
-     * struct layout and array indexing use the correct pointer width.
-     * The C backend runs on the host (8-byte pointers on 64-bit); ARM/RISC-V32
-     * use 4-byte pointers; x86_64 uses 8-byte pointers. */
-    type_set_ptr_size(be->pointer_size);
-    /* C 后端使用 8 字节 long long 虚拟栈槽，irgen 无需生成 32→64 位
-     * widen/narrow 序列（DUP+PUSH+LT+NEG）或 64 位条件 BOR 合并。 */
-    irgen_set_64bit_slots(ark_streq(be->name, "c"));
-    /* x86-64: a pointer is 8 bytes but occupies a single stack word.  Only
-     * that target needs the IR_AUX_SLOT64 marker; everywhere else the flag
-     * stays 0 and the emitted IR is unchanged. */
-    irgen_set_slot64_ptrs(ark_streq(be->name, "x86_64"));
-    /* The C backend stores a complex value in one 8-byte slot; the machine
-     * backends carry four 32-bit words on the expression stack. */
-    irgen_set_complex_words(ark_streq(be->name, "c") ? 1 : 4);
-    lexer_init(&lex, preprocessed);
-    ast = parse_program(&lex);
-    if (!ast) return ARK_ERR_PARSE;      /* diagnostics were already printed */
-    /* A frontend error means the tree we would hand to sema/codegen is not the
-     * program the user wrote. armcc stops here too; continuing only adds
-     * follow-on messages ("unresolved label", "cannot be lowered") that point
-     * at the symptom instead of the cause. Warnings do not count. */
-    if (diag_errors() > 0) return ARK_ERR_PARSE;
-    sema_errs = sema_check(ast);
-    if (sema_errs > 0) return ARK_ERR_SEMA;
-    if (diag_errors() > 0) return ARK_ERR_SEMA;
-    /* AST stage of the pass pipeline: the lint passes, in the order declared
-     * in src/pipeline.c, each one running only when its own switch asked for
-     * it.  They emit warnings only, so they cannot change the exit code or the
-     * image; with the switches off (the default) not one instruction runs. */
-    pipeline_run_ast(ast);
-    {
-        int diag_before_irgen = diag_errors();
-        ir = irgen_program(ast);
-        if (!ir) return ARK_ERR_IRGEN;
-        if (g_irgen_errors > diag_before_irgen) {
-            /* IR generation could not lower part of the program; the emitted
-             * code would be silently wrong, so refuse to produce an image.
-             * When irgen already reported a specific diagnostic (e.g. #137) the
-             * generic line adds nothing but noise, so it is only printed for
-             * failures that were otherwise silent. No armcc code covers this
-             * stage, hence no code. */
-            if (g_irgen_errors == diag_before_irgen) {
-                char nb[12];
-                diag_report_msg(DIAG_SEV_ERROR, 0,
-                                "%d construct(s) could not be lowered to IR",
-                                diag_num(nb, g_irgen_errors), 0, 0);
-            }
-            return ARK_ERR_IRGEN;
-        }
-    }
-    ir->source_file = opts->input_path;  /* Used for DWARF .file/.loc */
-
-    /* IR stage of the pass pipeline.  Which passes run is decided by one
-     * table in src/pipeline.c from (-O level, --pipeline profile, each
-     * pass's own switch, the compile-time feature macro); nothing here
-     * enumerates passes.  --print-pipeline prints that table. */
-    {
-        int lvl = opts->opt_level;
-        if (lvl < g_config.opt_level) lvl = g_config.opt_level;
-        pipeline_run_ir(ir, lvl, pipeline_profile());
-    }
+/* Code generation, assembly and output for a finished IR program.
+ *
+ * Lifted out of ark_compile() unchanged for the same reason
+ * ark_frontend_unit() was: --ipo produces one program from several files and
+ * must then write it out exactly the way a one-file compile does, including
+ * every refusal below (unresolved symbol in a raw image, scatter parse error,
+ * object vs image vs -S).  A second copy of this logic would be a second set
+ * of answers to "what does this build write", and the two would drift.
+ *
+ * `ir` and `be` come from ark_frontend_unit(); the memory pool is untouched
+ * here. */
+int ark_emit_program(const ArkOptions *opts, IrProgram *ir, const ArkBackend *be)
+{
+    int asm_len;
+    int code_size;
 
     /* The ARM backend loads the scatter file lazily, at the start of its own
      * code generation (it only sees g_config, never ArkOptions).  When that
@@ -2816,5 +2891,9 @@ int ark_compile_and_run(const char *path) {
     for (i = 0; i < 64; i++) o.pre_defines[i] = 0;
     o.pre_define_count = 0;
     o.uvprojx = 0;
+    o.print_pipeline = 0;
+    o.ipo_mode = 0;
+    for (i = 0; i < ARK_LINK_MAX_OBJS; i++) o.ipo_inputs[i] = 0;
+    o.ipo_input_count = 0;
     return ark_compile(&o);
 }

@@ -1306,6 +1306,40 @@ This is the **only style that does not promise byte compatibility with armcc**. 
 [DIAGNOSTICS.en.md](DIAGNOSTICS.en.md) section 4.1; the gate is `tests/run_modern_diag_tests.py`
 (`make test-modern`, 35 checks).
 
+### 5.16 Whole-program compilation (`--ipo` / `-flto`)
+
+One invocation takes several `.c` files, optimises across them inside **one IR program**, and generates
+code once.
+
+```bash
+arkcc --ipo main.c util.c -target arm --cpu Cortex-M7 -O2 --vector-table -o app.bin
+```
+
+| Switch | Default | Meaning |
+| --- | :---: | --- |
+| `--ipo` / `-flto` | off | whole-program compile; `-o` is required |
+| `ARKCC_FEATURE_IPO` (compile time) | host `1`, `ARKCC_PROFILE_STM32_MIN` `0` | when absent, `--ipo` is refused as "not compiled into this build" |
+
+Rules:
+
+- each file goes through the **frontend on its own** (a `static` stays that file's), and its IR is
+  **appended** to one program;
+- file-scope symbols are renamed to `__ipo<unit>f_/g__<name>` and checked against the whole program
+  (another `_` if taken, a diagnostic if that fails);
+- external names follow the linker's rules: weak loses to strong, **two strong functions are an error**,
+  two `int g;` merge into one object, two `int g = 1;` are an error, a definition beats an `extern`;
+- the pipeline runs **once**, so cross-file inlining works at `-O2` (`ir.inline` is already
+  whole-program scoped);
+- after inlining, unreferenced `static` functions/objects are pruned; **any inline assembly in the
+  program disables pruning entirely**.
+
+Refused: `-c` (an object carries no IR), `-E` (per file by definition), `-g` (a merged program has one
+`source_file`, so every line would be labelled with the first file's name), `-link` (takes objects), a
+missing `-o`, and `.s` / `.o` inputs. A single file through `--ipo` is **byte-identical** to a plain
+compile.
+
+See [IPO_LTO.en.md](IPO_LTO.en.md); the gate is `tests/run_ipo_tests.py` (`make test-ipo`, 19 checks).
+
 ## 6 Testing on Windows
 
 ### 6.1 Recommended flow: the C backend

@@ -627,6 +627,7 @@ ark c compiler/
 ├── docs/UNUSEDRESULT.md    Discarded return value (--warn-unused-result): rule, spellings, trimming, gate (Chinese, UTF-8)
 ├── docs/MIR_CFG.md         MIR/CFG and the three whole-program checks (unreachable / unused static / recursion): invariants, verdicts, deliberate non-reports, trimming, gate (Chinese, UTF-8)
 ├── docs/LOOPS.md           Loop optimisations (--licm / --unroll): what moves and what does not, zero iterations, the single accepted shape, limits, gate (Chinese, UTF-8)
+├── docs/IPO_LTO.md         Whole-program compilation (--ipo / -flto): why it is not object-level LTO, merge semantics, refused combinations, cropping, gate (Chinese, UTF-8)
 ├── docs/从零写一个C编译器.md  Textbook-style walkthrough: 19 chapters, from 30 lines to 30 000 (Chinese, UTF-8)
 ├── docs/from-scratch-c-compiler.en.md  English summary of that textbook (structure, chapter map, reading routes)
 └── README.md               Project overview (Chinese, UTF-8)
@@ -776,6 +777,11 @@ arkcc <file.c|file.s> [options]
                      --no-licm turns it off)
   --unroll           completely unroll a canonical constant-bound for loop
                      (limit ARK_UNROLL_MAX, default 8); --no-unroll turns it off
+  --ipo / -flto      whole-program compile: several .c files, one IR program, so
+                     optimisation sees across files (cross-file inlining at -O2);
+                     statics are renamed per unit, externals de-duplicated with
+                     the linker's rules, unreferenced statics pruned.  Needs -o;
+                     refuses -c/-E/-g/-link and .s/.o inputs
   --dce-cfg          basic-block reachability DCE (deletes only code that is reachable but never executes)
   --build-date <s>   pin __DATE__ (e.g. "May 28 2026")
   --build-time <s>   pin __TIME__ (e.g. "20:26:40")
@@ -1012,6 +1018,27 @@ See [docs/MANUAL.en.md](docs/MANUAL.en.md) for the full manual.
 
 ## Version history
 
+- v0.8.7: **whole-program compilation** `--ipo` (alias `-flto`, `docs/IPO_LTO.en.md`). One invocation
+  takes several `.c` files; each still runs through the frontend on its own (its `static` stays its
+  own), and the IR is **appended** into one `IrProgram`, after which the pipeline runs **once** and code
+  is generated once. Not object-level LTO because `ARKOBJ2` objects carry no IR: real LTO would add an
+  IR payload section and rebuild the IR at link time (renumbering three pools and running a backend
+  inside the linker), which is a different contract. Three merge rules: (1) file-scope symbols are
+  renamed to `__ipo<unit>f_/g__<name>` and checked against the whole program (another `_` if taken, a
+  diagnostic if that fails); (2) external names follow the linker's rules (weak loses to strong, **two
+  strong functions are an error**, two `int g;` are one object, two `int g = 1;` are an error, a
+  definition beats an `extern`); (3) unreferenced `static`s are pruned after inlining (`used`,
+  constructors/destructors, alias targets, `__at`, `section` are always kept, and **any inline assembly
+  anywhere disables pruning entirely**). The value comes from `ir.inline` already being whole-program
+  scoped: after the merge **cross-file inlining is free** (measured: no `BL one` at `-O2`, present at
+  `-O1`). Refuses `-c`/`-E`/`-g`/`-link`/missing `-o`/`.s`/`.o`, each with a reason; a single file
+  through `--ipo` is **byte-identical** to a plain compile (both `.s` and `.bin` are diffed). Cropping:
+  `ARKCC_FEATURE_IPO` defaults to 0 in the `ARKCC_PROFILE_STM32_MIN` profile (a 128 KB pool cannot hold
+  several units' IR) and then `--ipo` reports "not compiled into this build" rather than an unknown
+  option. Gate `tests/run_ipo_tests.py` (`make test-ipo`, 19 checks): three dynamic cases returning
+  28 / 23 / 4 on the ARM emulator, two duplicate-definition errors that must name the symbol and leave
+  **no image**, one assembly read each for pruning and cross-TU inlining, plus the cropped build's
+  refusal.
 > Entries v0.8.2 and v0.8.1 are translated in full below. Earlier releases (v0.2.0–v0.8.0) are
 > documented only in the Chinese [README.md](README.md) — they are long, and every one of them is
 > covered by the documents under `docs/`.

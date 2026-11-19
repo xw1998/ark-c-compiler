@@ -8,6 +8,11 @@
 #include "ir.h"
 
 IrProgram *irgen_program(AstNode *prog);
+/* 0.8.7 --ipo: append this unit's IR into an existing program instead of
+ * starting a new one (see src/ipo.c).  `out` NULL keeps the single-unit
+ * behaviour exactly.  The pools are index-addressed from the instructions,
+ * so appending is the only merge that needs no renumbering. */
+IrProgram *irgen_program_into(AstNode *prog, IrProgram *out);
 
 /* Number of AST constructs IR generation could not lower. Non-zero means the
  * emitted IR is incomplete, so the driver must fail the compilation instead of

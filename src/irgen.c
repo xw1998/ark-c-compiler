@@ -1188,8 +1188,33 @@ static AstNode *irgen_unwrap_scalar_braces(AstNode *iv, Type *t, const char *nam
     return v0 ? v0 : iv;
 }
 
+static IrProgram *irgen_program_impl(AstNode *prog, IrProgram *out);
+
 IrProgram *irgen_program(AstNode *prog) {
-    IrProgram *out = ir_program_new();
+    return irgen_program_impl(prog, ir_program_new());
+}
+
+/* 0.8.7 --ipo: append ONE translation unit's IR into an existing program.
+ *
+ * Whole-program compilation (src/ipo.c) runs the front end once per input
+ * file and needs every unit's functions, globals, strings and constant-pool
+ * entries to land in one IrProgram, because the pools are addressed by index
+ * from the instructions: merging two finished programs would mean renumbering
+ * IR_PUSH_STR / IR_PUSH_FLOAT operands, rewriting label ids and remapping
+ * every global name.  Appending into a shared program has none of those
+ * problems -- new entries simply take the next index -- so the only new
+ * failure mode is a name collision, and that is handled explicitly by the
+ * merge step in ipo.c (static -> mangled, two strong definitions -> error).
+ *
+ * Everything else is the single-unit path byte for byte: sym_init() still
+ * runs per unit, so each translation unit keeps its own scope and its own
+ * extern declarations, exactly as C requires. */
+IrProgram *irgen_program_into(AstNode *prog, IrProgram *out) {
+    if (!out) return irgen_program(prog);
+    return irgen_program_impl(prog, out);
+}
+
+static IrProgram *irgen_program_impl(AstNode *prog, IrProgram *out) {
     int i;
     g_irgen_errors = 0;
     sym_init();

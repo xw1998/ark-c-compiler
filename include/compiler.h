@@ -50,6 +50,18 @@ typedef struct {
     long long   build_epoch;      /* --source-date-epoch <sec> : 由纪元秒推出上面两个 */
     /* === 0.8.5 === */
     int         print_pipeline;   /* --print-pipeline: 打印 Pass 管线决策表后退出 */
+    /* === 0.8.7 === */
+    /* --ipo / -flto: whole-program compilation.  Instead of one .c -> one
+     * object -> -link, the driver runs the front end once per file in ONE
+     * process and one memory pool, merges the IR (src/ipo.c) and generates
+     * code once.  That is what makes cross-file inlining possible at all:
+     * an ARKOBJ2 object carries machine code and symbols, no IR, so the
+     * linker has nothing higher-level to optimise.
+     *
+     * Off by default; when off, not one byte of the pipeline changes. */
+    int         ipo_mode;                        /* --ipo / -flto */
+    const char *ipo_inputs[ARK_LINK_MAX_OBJS];   /* the .c files, in order */
+    int         ipo_input_count;
 } ArkOptions;
 
 int ark_compile(const ArkOptions *opts);

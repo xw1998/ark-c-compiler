@@ -23,7 +23,7 @@ endif
 .PHONY: all clean test test-arm test-c test-stdlib test-install test-x86 test-x86-64 \
         test-x86-64-selfhost test-riscv test-reloc-text test-memlint \
         test-enumcheck test-pipeline test-unusedresult test-mir \
-        test-loop test-modern test-atomic install stm32
+        test-loop test-modern test-atomic test-ipo install stm32
 
 all: $(ARKCC)
 
@@ -38,7 +38,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -101,6 +101,15 @@ test-loop: $(ARKCC)
 # link, so a missing no-op cannot hide behind the full build.
 test-modern: $(ARKCC)
 	$(PYTHON) tests/run_modern_diag_tests.py ./$(ARKCC)
+
+# Gate for --ipo / -flto: one program built from several sources.  The merge
+# rules are checked where a shortcut would change an answer -- each file keeps
+# its own static of one name, two strong definitions are an error, two
+# tentative ones are one object, an undefined external is still refused -- and
+# the cross-file inline at -O2 is read off the assembly.  A build cropped with
+# -DARKCC_FEATURE_IPO=0 must refuse the option instead of pretending to merge.
+test-ipo: $(ARKCC)
+	$(PYTHON) tests/run_ipo_tests.py ./$(ARKCC)
 
 # Library gate: every stdlib entry point is compiled and run on the ARM
 # emulator, and each case asserts a number the program itself computed.  A
