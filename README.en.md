@@ -1146,6 +1146,34 @@ See [docs/MANUAL.en.md](docs/MANUAL.en.md) for the full manual.
   and it exposed an older defect that is fixed here: IDE style stripped the code's trailing letter, so
   `#1-D` printed as `#1-` — the strip is only true for driver codes (`C3900U` -> `C3900`); frontend
   codes print verbatim.
+  This release also adds the **ARM soft-float AEABI runtime** (`stdlib/src/arm/aeabi_float.c`):
+  30 entry points (`__aeabi_fadd/fsub/fmul/fdiv/f2iz/f2uiz/...`,
+  `__aeabi_dadd/dsub/dmul/ddiv/...`, `__aeabi_i2f`/`__aeabi_f2d`/`__aeabi_d2f` and friends), all
+  integer arithmetic, one rounding site, and not a single call to another AEABI helper. The contract
+  is the same as `aeabi.c` — **optional at link time, never linked implicitly**: "not used, not in
+  the image" is guaranteed by the link contract, so no macro switch is needed. Two gates:
+  (1) the host differential `tests/softfloat_ref.c` (the same case table computed with IEEE double on
+  the x86-64 host and compared bit-for-bit against the runtime; `-msse2 -mfpmath=sse` is mandatory
+  because x87 double rounding judges a correct implementation wrong) ran 122 million checks with 0
+  failures; (2) the ARM execution gate `tests/run_arm_softfloat_tests.py`, which builds the table
+  into a real image and runs it on an ARM core model — 217 entry-point rows plus 17 plain-C
+  expression steps, both of which must pass, and whose self-containment check rejects a runtime that
+  quietly calls some other AEABI helper.
+  That gate caught two silent wrong answers that **only ever show up in real code generation**; both
+  are fixed here:
+  - **The prologue's struct-by-value memcpy clobbers the register parameters behind it**: a
+    struct larger than 16 bytes arrives by pointer under AAPCS and the callee `BL __aeabi_memcpy`s it
+    into its frame, but `__aeabi_memcpy` clobbers `r0-r3`; the prologue homes the remaining formals
+    only afterwards, so every parameter arriving in `r1/r2/r3` was garbage (it showed up as "some
+    double operation returns 0"). The fix pushes/pops `r1-r3` around the copy.
+  - **The Thumb-2 modified immediate used the wrong bit fields**: the rotate count is **five bits**
+    `imm12<11:7>` and the constant is `'1':imm12<6:0>` (seven bits only), and the four byte-fill
+    forms are `imm8*0x00010001` / `imm8*0x01000100` / `imm8*0x01010101` rather than "shift by 8/16".
+    The old encoder wrote the rotate as multiples of eight bits into `imm12<11:8>`, so
+    `EOR r0,r0,#0x80000000` (negating a double) became a legal instruction holding a different
+    constant — invisible in `-S` text, wrong only in the `--object` image. The new code is driven by
+    `thumb_expand_imm_a()`, a decoder **reverse-engineered from all 4096 measured `imm12` values**,
+    and every encoding is decoded back and checked (`decode(encode(v)) == v`) before it is accepted.
 - **v0.8.6**: four directions land together, all **off by default, all trimmable, and every switch left at its default leaves the output byte-identical**.
   1. **`--warn-unused-result` + `__must_check`**: dropping the return value of a function marked for checking is now a warning; the marking travels along the declaration chain (`__must_check` / `__attribute__((warn_unused_result))`) and survives macro expansion.
   2. **MIR/CFG substrate + three cross-function checks** (`docs/MIR_CFG.en.md`): `src/mir.c` builds basic blocks and control-flow edges, and on top of it `--warn-unused-static` (a static function nobody references), `--warn-unreachable` (instructions no path can reach -- reported as "N instruction(s) in 'f' can never run") and `--warn-recursion` (direct or mutual). All three look only at **shapes they can prove**: `goto` into a dead block, function-pointer aliasing and `#pragma arm section` cases stay silent.

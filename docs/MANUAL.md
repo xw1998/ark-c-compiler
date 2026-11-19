@@ -1018,9 +1018,20 @@ void g(void) { f(); (void)f(); }     /* 前一条告警，后一条沉默 */
 ```sh
 ./arkcc -target arm -c stdlib/src/arm/aeabi.c          -o aeabi.obj
 ./arkcc -target arm -c stdlib/src/arm/aeabi_divmod.s   -o aeabi_div.obj
+./arkcc -target arm -c stdlib/src/arm/aeabi_float.c    -o aeabi_float.obj   # 软浮点
 ./arkcc app.c -target arm -c --vector-table -o app.obj
-./arkcc -link app.obj aeabi.obj aeabi_div.obj --vector-table -o app.bin
+./arkcc -link app.obj aeabi.obj aeabi_div.obj aeabi_float.obj \
+        --reloc-data --reloc-text --vector-table -o app.bin
 ```
+
+`stdlib/src/arm/aeabi_float.c` 是软浮点那一半：`__aeabi_f*`/`__aeabi_d*` 共 30 个入口
+（加/减/乘/除、`f2iz`/`f2uiz`/`f2lz`/`f2ulz`、`i2f`/`i2d`、`f2d`/`d2f`、比较与取负），纯整数
+实现、单一舍入点、**不调用任何别的 AEABI helper**（`run_arm_softfloat_tests.py` 会静态检查
+这一点）。它不是编译器的一部分：不链就不进镜像（体积零代价），链了就按 AEABI 语义工作。
+两道门禁都要求通过——主机差分 `tests/softfloat_ref.c`（宿主用 IEEE 双精度当 oracle，
+**必须 `-msse2 -mfpmath=sse`**，x87 的双重舍入会把正确实现判成错的）与 ARM 执行门禁
+`tests/run_arm_softfloat_tests.py`（用例表编成真实镜像在 ARM 核模型上跑，217 行入口 + 17 步
+普通 C 表达式）。
 
 `aeabi_divmod.s` 必须是汇编：`__aeabi_ldivmod`/`__aeabi_uldivmod` 要返回四个寄存器（商 `r0:r1`、余 `r2:r3`），而 `__value_in_regs` 在本编译器里只做解析、不参与 codegen。除零返回 0；移位计数 ≥ 64 返回 0（算术右移按符号填充）——都是显式约定，不会给出随机值。
 
@@ -2089,7 +2100,7 @@ v0.8.0 已实现完整的 C99 集合 + 98% 以上的 armcc 常用扩展，仅剩
 
 ### 部分支持
 
-- **必须链运行库（软浮 / 64 位乘除）**：后端**不再自带**`__aeabi_f*`/`__aeabi_d*`、`__aeabi_ldivmod`/`__aeabi_uldivmod`、`__aeabi_llsl` 这些 AEABI 辅助例程（[src/backend/arm/backend_arm.c](../src/backend/arm/backend_arm.c) 里有逐条说明：`__aeabi_f2iz`、`__aeabi_fdiv`、`__aeabi_uldivmod`、`__aeabi_ldivmod`、`__aeabi_dadd` 五个自实现版本实测都是静默错值）。它们按 AEABI 的定义属于目标运行库——`arm-none-eabi-gcc` 的 `libgcc.a`、armcc 的 `armlib`。所以：**用到浮点、64 位除法或 64 位↔浮点转换的镜像必须链运行库**，否则链接期以 `undefined reference to __aeabi_...` 失败（刻意如此，把"算错"变成"链不上"）。RV32I 同理，软浮用 `__adddf3`/`__muldf3`/`__divdf3`/`__eqdf2` 一族、64 位乘除用 `__muldi3`/`__divdi3`，同样要链 `libgcc`。仍然自带的是 `__aeabi_memcpy`（结构体赋值/传参/数组初始化都用它，freestanding 目标没有 libc 的 `memcpy`）；64 位**加减**是内联的（ARM `ADDS/ADCS`，RV `sltu` 进位链），不需要库。硬件 FPU 模式（ARM `--fpu=hard`）把软浮换成 `VADD/VMUL/VCVT/VCMP`，那份依赖也就没了。
+- **必须链运行库（软浮 / 64 位乘除）**：后端**不再自带**`__aeabi_f*`/`__aeabi_d*`、`__aeabi_ldivmod`/`__aeabi_uldivmod`、`__aeabi_llsl` 这些 AEABI 辅助例程（[src/backend/arm/backend_arm.c](../src/backend/arm/backend_arm.c) 里有逐条说明：`__aeabi_f2iz`、`__aeabi_fdiv`、`__aeabi_uldivmod`、`__aeabi_ldivmod`、`__aeabi_dadd` 五个自实现版本实测都是静默错值）。它们按 AEABI 的定义属于目标运行库——`arm-none-eabi-gcc` 的 `libgcc.a`、armcc 的 `armlib`。所以：**用到浮点、64 位除法或 64 位↔浮点转换的镜像必须链运行库**，否则链接期以 `undefined reference to __aeabi_...` 失败（刻意如此，把"算错"变成"链不上"）。RV32I 同理，软浮用 `__adddf3`/`__muldf3`/`__divdf3`/`__eqdf2` 一族、64 位乘除用 `__muldi3`/`__divdi3`，同样要链 `libgcc`。本仓库自带符合这份契约的软浮实现 `stdlib/src/arm/aeabi_float.c`（30 个入口、纯整数、单一舍入点，见 5.x），要不要链由你决定——**编译器仍然不会替你隐式链接**。仍然自带的是 `__aeabi_memcpy`（结构体赋值/传参/数组初始化都用它，freestanding 目标没有 libc 的 `memcpy`）；64 位**加减**是内联的（ARM `ADDS/ADCS`，RV `sltu` 进位链），不需要库。硬件 FPU 模式（ARM `--fpu=hard`）把软浮换成 `VADD/VMUL/VCVT/VCMP`，那份依赖也就没了。
 - **RV32I 的内联汇编、`__svc`/`__smc` 与打包车道运算**：`asm("...")` 原样输出，扩展形式（`asm("t" : outs : ins : clobbers)`）的 `%0..%3` 换成 `a0..a3`（ARM 是 `r0..r3`）——两个后端都**没有操作数分配器**，outs/ins/clobbers 被丢弃，操作数需要自己在模板里点名。`__svc(n)`/`__smc(n)` 在 RV32I 上都编成 `li a7, n` + `ecall`：RV 基础指令集只有一条 trap 指令，编号按 RISC-V syscall ABI / SBI 的约定进 `a7`，所以二者在 RV 上不可区分（ARM 侧仍是 `SVC #n` / `SMC #n`）。自动向量化产生的 `IR_SIMD_ADD16/SUB16/ADD8/SUB8` 在 RV 上用 SWAR 精确模拟（逐车道有符号回绕，不饱和），代价是每条车道运算要 10 条左右基础指令。门禁：`python tests/run_rv_misc_ir_tests.py --rv-as <bin> [--arm-as <bin> --arm-libgcc <libgcc.a>]`。
 - **自动向量化的两条边界**：只处理"恰好两次 `LOAD_IDX` + 一次 `+`/`-` + 一次 `STORE_IDX`、元素 1 或 2 字节、循环次数是车道数整数倍"的循环；`volatile` 与 `__packed` 的循环**不进**向量化。宿主默认 `-O0` 也开（`ARKCC_FEATURE_OPT_VECTORIZE=1`），板端 profile 置 0，`--vectorize` / `--no_vectorize` 可显式开关。这一段曾经有静默错答案：宽度提升后元素窄化的 `IR_TRUNC` 没撤掉，四个车道只剩 lane 0，`char a[8]+b[8]` 算出 `{2,0,0,0,10,0,0,0}`（exit 0、无警告）。已修——相邻 `IR_TRUNC` 的目标位宽提到 32（即 no-op）。若日后改向量化，务必用 `examples/test_vectorize.c` 之外的形状再验一遍。
 - **跨翻译单元链接（ARKOBJ2，不是 ELF）**：`-c` 产出 arkCC 自有对象容器 ARKOBJ2，`-link` 只认这个格式（`ELF .o` 不支持）。`-link` 做的是符号合并 + 重定位回填 + 多对象 SRAM 重叠检查，数据段默认**不**搬迁——因此每个对象的 `.data/.bss` 必须落在自己的窗口里，两个对象都带全局变量时直接报 SRAM 重叠并不产出，而不是悄悄叠在一起；要搬就给 `--reloc-data`（板端 `cc` 只要出现 `-link` 或 `--scatter` 就默认打开），它把第二个及以后的对象按 8 字节对齐接在前一个之后并就地改写 MOVW/MOVT 站点，各自仍留一条 `.data` 初始化体、镜像末尾拼成调用链。详见 5.7 / 5.8。RV32I 侧同样有 `-c`/`-link`（对象体装的是已汇编好的机器码，不是汇编文本）：对象内部全走 PC 相对量，因此可落在镜像任意偏移，链接器只按 16 字节对齐串联并回填 `RV_RELOC_AUIPC`(13) / `RV_RELOC_ABS32`(14)；导出边界由 `.globl`/`.weak` 决定，跨对象分支与跨 TU 的函数指针全局初始化器仍直接报错（详见 README 的「RV32I 的对象模式」）。

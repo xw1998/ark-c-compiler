@@ -925,6 +925,26 @@ CJK 按显示单元计列、tab 原样重放。它不需要 armcc，断言的是
   IDE 风格 / 头文件 / 两行文件的第 2 行 / 警告与错误共存时的顺序 / `--errors` 落盘 / 四条干净对照：
   尾随 `\n`、尾随 `\r`、CRLF、空文件），并顺手修掉一个被它暴露的老缺陷：IDE 风格会剥掉码尾的
   字母，于是 `#1-D` 被印成 `#1-`——剥后缀只对驱动层码（`C3900U` → `C3900`）成立，前端码原样输出。
+  本版还补上了 **ARM 软浮点 AEABI 运行库**（`stdlib/src/arm/aeabi_float.c`）：30 个入口
+  （`__aeabi_fadd/fsub/fmul/fdiv/f2iz/f2uiz/...` 与 `__aeabi_dadd/dsub/dmul/ddiv/...`、
+  `__aeabi_i2f`/`__aeabi_f2d`/`__aeabi_d2f` 一族），纯整数实现、单一舍入点、不调用任何别的
+  AEABI helper；契约与 `aeabi.c` 相同——**链接期可选，编译器从不隐式链接**，"不用就不进镜像"
+  由链接契约保证，不需要宏开关。两道门禁：① 主机差分 `tests/softfloat_ref.c`（同一张用例表在
+  宿主 x86-64 上按 IEEE 双精度算，再与运行库逐位比对；`-msse2 -mfpmath=sse` 是硬要求，x87 的
+  双重舍入会把正确实现判错）跑了 1.22 亿次判定、0 失败；② ARM 执行门禁
+  `tests/run_arm_softfloat_tests.py`——把用例表编成真实镜像在 ARM 核模型上跑，217 行入口 +
+  17 步普通 C 表达式，两组都必须过（它的自包含检查还会拦下"运行库偷偷调了别的 AEABI"）。
+  这道门禁抓到两个**只在真实代码生成时才现形**的静默错答案，都已在本版修掉：
+  - **序言里 struct-by-value 的 memcpy 踩掉后面的寄存器参数**：>16 字节的结构体按 AAPCS 以指针
+    传入，被调用方 `BL __aeabi_memcpy` 把它拷进本帧，而 `__aeabi_memcpy` 会 clobber `r0-r3`；
+    序言在这之后才 home 后续形参，于是 `r1/r2/r3` 进来的参数全是垃圾（表现为"某个 double 运算
+    返回 0"）。修法是 memcpy 前后各 `PUSH`/`POP {r1,r2,r3}`。
+  - **Thumb-2 改良立即数的位段口径错**：旋转量是**五位** `imm12<11:7>`、常量只取
+    `'1':imm12<6:0>`（因此常量只有七位），四种字节填充也不是"左移 8/16 位"而是
+    `imm8*0x00010001` / `imm8*0x01000100` / `imm8*0x01010101`。旧编码把旋转量当 8 位倍数写进
+    `imm12<11:8>`，于是 `EOR r0,r0,#0x80000000`（double 取负）编成"合法但装着别的常数"的指令；
+    `-S` 看不出来，只有 `--object` 的镜像错。新实现以一张**由全部 4096 个 `imm12` 实测反推**的
+    `thumb_expand_imm_a()` 解码表为准，编码后回解自证（`decode(encode(v)) == v` 才返回成功）。
 - v0.8.6：四个方向一起落地，全部**默认关、可裁减、开关关时逐字节不变**。
   ① **`--warn-unused-result` + `__must_check`**：丢弃一个标注了检查的函数返回值即告警，标注从原型（`__must_check` / `__attribute__((warn_unused_result))`）沿声明链传递，宏展开后仍然有效。
   ② **MIR/CFG 基底 + 三条跨函数检查**（`docs/MIR_CFG.md`）：`src/mir.c` 建基本块与控制流边，在此之上做 `--warn-unused-static`（静态函数无人引用）、`--warn-unreachable`（没有任何路径能到达的指令，报"该函数内 N 条指令永远跑不到"）、`--warn-recursion`（直接/间接递归），三条都只看**能证实的形状**——`goto` 进死块、函数指针别名、`#pragma arm section` 之类的模糊情形一律沉默。

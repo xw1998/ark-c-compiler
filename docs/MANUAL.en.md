@@ -1229,9 +1229,21 @@ image**, so a flat image must link them itself:
 ```sh
 ./arkcc -target arm -c stdlib/src/arm/aeabi.c          -o aeabi.obj
 ./arkcc -target arm -c stdlib/src/arm/aeabi_divmod.s   -o aeabi_div.obj
+./arkcc -target arm -c stdlib/src/arm/aeabi_float.c    -o aeabi_float.obj   # soft float
 ./arkcc app.c -target arm -c --vector-table -o app.obj
-./arkcc -link app.obj aeabi.obj aeabi_div.obj --vector-table -o app.bin
+./arkcc -link app.obj aeabi.obj aeabi_div.obj aeabi_float.obj \
+        --reloc-data --reloc-text --vector-table -o app.bin
 ```
+
+`stdlib/src/arm/aeabi_float.c` is the soft-float half: 30 entry points (`__aeabi_f*`/`__aeabi_d*`
+add/sub/mul/div, `f2iz`/`f2uiz`/`f2lz`/`f2ulz`, `i2f`/`i2d`, `f2d`/`d2f`, compares and negation),
+all integer arithmetic, one rounding site, and **no call to any other AEABI helper** (the gate checks
+that statically). It is not part of the compiler: do not link it and nothing enters the image (zero
+size cost); link it and it behaves per AEABI. Both gates must pass — the host differential
+`tests/softfloat_ref.c` (the host's IEEE double is the oracle; `-msse2 -mfpmath=sse` is mandatory
+because x87 double rounding would judge a correct implementation wrong) and the ARM execution gate
+`tests/run_arm_softfloat_tests.py` (the case table built into a real image and run on an ARM core
+model: 217 entry-point rows plus 17 plain-C expression steps).
 
 `aeabi_divmod.s` must be assembly: `__aeabi_ldivmod`/`__aeabi_uldivmod` must return four registers
 (quotient `r0:r1`, remainder `r2:r3`), and `__value_in_regs` is only parsed by this compiler, not honoured
@@ -2463,7 +2475,10 @@ limitations below remain:
   point, 64-bit division or 64-bit↔float conversion must link the runtime library**, otherwise linking fails
   with `undefined reference to __aeabi_...` (deliberately so, turning "computes it wrong" into "will not
   link"). RV32I is the same: soft float uses the `__adddf3`/`__muldf3`/`__divdf3`/`__eqdf2` family and
-  64-bit multiply-divide uses `__muldi3`/`__divdi3`, and `libgcc` must be linked there too. Still built in:
+  64-bit multiply-divide uses `__muldi3`/`__divdi3`, and `libgcc` must be linked there too. This repository
+  ships a soft-float implementation that honours that contract, `stdlib/src/arm/aeabi_float.c` (30 entry
+  points, all integer, one rounding site; see 5.x) — whether to link it is your call, and **the compiler
+  still never links it implicitly**. Still built in:
   `__aeabi_memcpy` (struct assignment/argument passing/array initialisation all use it, and a freestanding
   target has no libc `memcpy`); 64-bit **add/sub** is inlined (ARM `ADDS/ADCS`, RV `sltu` carry chain) and
   needs no library. Hardware FPU mode (ARM `--fpu=hard`) replaces soft float with

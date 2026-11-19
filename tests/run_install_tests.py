@@ -42,7 +42,8 @@ except ImportError:                                     # pragma: no cover
 
 CPU_OPTS = ['-mcpu', 'cortex-m7', '-ffpu']
 LIB_TUS = ['stdlib.c', 'heap.c', 'errno.c', 'exit.c', 'signal.c', 'math.c']
-AEABI_TUS = [('aeabi', 'arm/aeabi.c'), ('aeabi_div', 'arm/aeabi_divmod.s')]
+AEABI_TUS = [('aeabi', 'arm/aeabi.c'), ('aeabi_div', 'arm/aeabi_divmod.s'),
+             ('aeabi_float', 'arm/aeabi_float.c')]
 
 STARTUP_C = '''\
 void __arkcc_init_globals(void);
@@ -110,7 +111,7 @@ int cmp(const void *a, const void *b)
 # The install manifest is asserted exactly: adding a file to stdlib/include,
 # stdlib/src or stdlib/src/arm must bump this number, so an accidental change
 # to what gets installed cannot pass unnoticed.
-EXPECTED_INSTALL_FILES = 39
+EXPECTED_INSTALL_FILES = 40
 
 class Gate:
     def __init__(self, arkcc, tmp):

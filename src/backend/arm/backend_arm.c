@@ -2877,11 +2877,20 @@ static char *codegen_arm(IrProgram *prog) {
                                 asmbuf_puts(&buf, "]\n");
                             }
                         } else {
-                            asmbuf_puts(&buf, "    ADD r0, r6, #");
+                            /* __aeabi_memcpy clobbers r0-r3, but every argument
+                             * after this one is still sitting in r1-r3: the
+                             * prologue homes arguments in declaration order, so a
+                             * struct placed before them would otherwise wreck
+                             * them.  Save r1-r3 across the call.  lr is saved for
+                             * the same reason, but the epilogue returns through
+                             * the stacked lr into pc, so it is popped into r0 and
+                             * dropped -- the trick this block always used. */
+                            asmbuf_puts(&buf, "    PUSH {r1, r2, r3}\n    ADD r0, r6, #");
                             asmbuf_int(&buf, dst_off);
                             asmbuf_puts(&buf, "\n    MOV r1, r3\n");
                             emit_mov_imm(&buf, 2, st_sz);
-                            asmbuf_puts(&buf, "    PUSH {lr}\n    BL __aeabi_memcpy\n    POP {r0}\n");
+                            asmbuf_puts(&buf, "    PUSH {lr}\n    BL __aeabi_memcpy\n    POP {r0}\n"
+                                             "    POP {r1, r2, r3}\n");
                         }
                     } else if (st_sz == 8) {
                         /* 64-bit scalar (long long / double): read two words from
@@ -7232,29 +7241,92 @@ static int read_label_name_a(const char **p, char *buf, int cap) {
  *     needed a rotation, and made it succeed for values that are NOT
  *     representable (0xFFFFFF80 and its two rotations) -- i.e. the old check
  *     rejected everything legal and accepted four illegal constants.
- *   - rot is four bits (i:imm3), not two, so rotations of 32..120 bits were
- *     never tried.  0x80000000 is ROR(0x80, 8), i.e. rot=1, imm8=0x80. */
+ *   - rot is four bits (i:imm3) and counts *bits*, not bytes: the field
+ *     goes into the instruction unchanged and the core rotates by exactly
+ *     that many bits.  0x80000000 is ROR(0x80, 8), i.e. rot=8, imm8=0x80.
+ *     Treating rot as 8-bit units made 0x8X000000/0x0000XX00 silently wrong. */
+/* ThumbExpandImm_C, verified against *all* 4096 values of imm12 by running
+ * each encoding ("movs.w r0,#imm12") on an ARM core model and comparing the
+ * result.  Two properties the hand-written version got wrong, both of which
+ * silently produced a different constant instead of an error:
+ *
+ *   - the four byte-pattern cases (imm12<11:10> == 00) put the byte at
+ *     positions 0 / 0+2 / 1+3 / 0+1+2+3, i.e. imm8*0x00010001 and
+ *     imm8*0x01000100 -- not "imm8<<8" and "imm8<<16|imm8".
+ *   - in the general form the rotate count is FIVE bits, imm12<11:7>, and the
+ *     constant is built from '1':imm12<6:0>.  So imm12<7> does not belong to
+ *     the constant at all, it rotates it, and the constant only carries seven
+ *     bits.  0x80000000 is rot=8 with imm8=0x00 (armasm: f080 4000), 0xFF00
+ *     is rot=24 with imm8=0x7F (armasm: f440 407f).  The old code wrote the
+ *     rotate into imm12<11:8> and took imm8 as eight bits, so
+ *     "EOR r0,r0,#0x80000000" (double negation) came out as a legal-looking
+ *     instruction holding a completely different constant.  Only --object
+ *     mode reaches this encoder: -S writes text, so the image was wrong while
+ *     the assembly looked right. */
+static unsigned thumb_expand_imm_a(unsigned imm12) {
+    unsigned imm8 = imm12 & 0xFFu;
+
+    if (((imm12 >> 10) & 3u) == 0) {          /* byte pattern forms */
+        switch ((imm12 >> 8) & 3u) {
+        case 0:  return imm8;
+        case 1:  return imm8 * 0x00010001u;
+        case 2:  return imm8 * 0x01000100u;
+        default: return imm8 * 0x01010101u;
+        }
+    }
+    {
+        unsigned v = 0x80u | (imm12 & 0x7Fu);   /* '1':imm12<6:0> */
+        unsigned r = (imm12 >> 7) & 0x1Fu;      /* imm12<11:7> */
+
+        if (r == 0) return v;
+        return ((v >> r) | (v << (32u - r))) & 0xFFFFFFFFu;
+    }
+}
+
 static int thumb_imm12_a(unsigned val, unsigned *out_i, unsigned *out_imm3,
                          unsigned *out_imm8) {
-    unsigned rot;
-    if (val <= 0xFFu) {
-        *out_i = 0; *out_imm3 = 0; *out_imm8 = val;
-        return 1;
+    unsigned imm12 = 0, found = 0, r;
+
+    /* The byte patterns come first: they reach constants (0x0000FF00,
+     * 0x01020300-style spreads) that no rotation of an 8-bit value can. */
+    if ((val & 0xFFFFFF00u) == 0) {
+        imm12 = val;                                        /* pos 0 */
+        found = 1;
+    } else if ((val & 0xFF00FF00u) == 0 &&
+               ((val >> 16) & 0xFFu) == (val & 0xFFu) && (val & 0xFFu) != 0) {
+        imm12 = (1u << 8) | (val & 0xFFu);                   /* pos 1 */
+        found = 1;
+    } else if ((val & 0x00FF00FFu) == 0 &&
+               ((val >> 24) & 0xFFu) == ((val >> 8) & 0xFFu) &&
+               ((val >> 8) & 0xFFu) != 0) {
+        imm12 = (2u << 8) | ((val >> 8) & 0xFFu);            /* pos 2 */
+        found = 1;
+    } else if (val != 0 && (val & 0xFFu) == ((val >> 8) & 0xFFu) &&
+               (val & 0xFFu) == ((val >> 16) & 0xFFu) &&
+               (val & 0xFFu) == ((val >> 24) & 0xFFu)) {
+        imm12 = (3u << 8) | (val & 0xFFu);                   /* pos 3 */
+        found = 1;
     }
-    for (rot = 1; rot < 16; rot++) {
-        unsigned sh = (rot * 8) & 31u;
-        unsigned unrot = sh ? ((val << sh) | (val >> (32u - sh)))  /* ROL by sh */
-                            : val;
-        unsigned imm8;
-        if ((unrot & 0xFFFFFF00u) != 0) continue;   /* must fit in 8 bits */
-        imm8 = unrot & 0xFFu;
-        if ((imm8 & 0x80u) == 0) continue;   /* bit7 must be set here */
-        *out_i = (rot >> 3) & 1u;
-        *out_imm3 = rot & 7u;
-        *out_imm8 = imm8;
-        return 1;
+
+    /* General form: val = ROR('1':imm12<6:0>, imm12<11:7>), so look for the
+     * rotation that brings the constant back into one byte with bit 7 set. */
+    for (r = 1; !found && r < 32; r++) {
+        unsigned unrot = ((val << r) | (val >> (32u - r))) & 0xFFFFFFFFu;
+
+        if ((unrot & 0xFFFFFF00u) != 0) continue;
+        if ((unrot & 0x80u) == 0) continue;
+        imm12 = (((r >> 1) & 0xFu) << 8) | ((r & 1u) << 7) | (unrot & 0x7Fu);
+        found = 1;
     }
-    return 0;
+
+    if (!found) return 0;
+    /* Never emit an encoding that does not decode back to the wanted value. */
+    if (thumb_expand_imm_a(imm12) != (val & 0xFFFFFFFFu)) return 0;
+
+    *out_i = (imm12 >> 11) & 1u;
+    *out_imm3 = (imm12 >> 8) & 7u;
+    *out_imm8 = imm12 & 0xFFu;
+    return 1;
 }
 
 /* ADDW/SUBW (T4): a plain 12-bit immediate, 0000..4095, no rotation and no

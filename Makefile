@@ -14,17 +14,19 @@ ifeq ($(OS),Windows_NT)
 ARKCC := arkcc.exe
 RM    := del /Q
 NULLDEV := nul
+EXE   := .exe
 else
 ARKCC := arkcc
 RM    := rm -f
 NULLDEV := /dev/null
+EXE   :=
 endif
 
 .PHONY: all clean test test-arm test-c test-stdlib test-install test-x86 test-x86-64 \
         test-x86-64-selfhost test-riscv test-reloc-text test-memlint \
         test-enumcheck test-pipeline test-unusedresult test-mir \
         test-loop test-modern test-atomic test-ipo test-constglobal \
-        test-objir test-partiallink test-deadinline \
+        test-objir test-partiallink test-deadinline test-softfloat \
         install stm32
 
 all: $(ARKCC)
@@ -40,7 +42,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-softfloat
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -149,6 +151,20 @@ test-partiallink: $(ARKCC)
 # any unit containing inline asm (the pass backs off entirely).
 test-deadinline: $(ARKCC)
 	$(PYTHON) tests/run_deadinline_tests.py ./$(ARKCC)
+
+# Soft-float runtime gates (stdlib/src/arm/aeabi_float.c).  Two independent
+# oracles, because "the algorithm looks right" is not evidence: the host build
+# compares the runtime against the host's own IEEE double bit for bit, and the
+# ARM gate builds the same table into a real image and executes it on a core
+# model.  -mfpmath=sse is load bearing: an x87 host rounds twice and turns the
+# very first tie (2^52/DBL_MAX) into a wrong answer, which would blame the
+# runtime for a host flag.  Both halves run from one target -- skipping the
+# host half because it "obviously passes" is how a wrong runtime ships.
+test-softfloat: $(ARKCC)
+	$(CC) -std=c99 -O2 -ffp-contract=off -fno-fast-math -msse2 -mfpmath=sse \
+	    tests/softfloat_ref.c stdlib/src/arm/aeabi_float.c -o build_softfloat_tests/sf_ref$(EXE)
+	./build_softfloat_tests/sf_ref$(EXE)
+	$(PYTHON) tests/run_arm_softfloat_tests.py --arkcc ./$(ARKCC)
 # Library gate: every stdlib entry point is compiled and run on the ARM
 # emulator, and each case asserts a number the program itself computed.  A
 # case that needs hardware the emulator does not have (double-precision FPU)
