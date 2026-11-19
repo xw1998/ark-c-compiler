@@ -1,0 +1,2 @@
+eofnewline.c(1,26) : warning  #1-D: last line of file ends without a newline
+armcc : eofnewline.c: 1 warning, 0 errors

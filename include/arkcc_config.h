@@ -464,6 +464,18 @@
 #   define ARKCC_FEATURE_MACRO_REDEF_CHECK 1
 #endif
 
+/* ARKCC_FEATURE_EOF_NL_WARN: armcc's #1-D "last line of file ends without a
+ * newline". Default 1 on every profile: a build that reports a different set
+ * of warnings than armcc on the same sources is not a drop-in replacement, and
+ * this one costs one pass over each file's bytes at read time.
+ *
+ * Set to 0 to get back the 0.8.6 behaviour exactly (no #1-D, warning counts as
+ * before). Both directions are asserted by tests/run_diag_tests.py
+ * (eofnewline*), which fails if the warning is missing or misplaced. */
+#ifndef ARKCC_FEATURE_EOF_NL_WARN
+#   define ARKCC_FEATURE_EOF_NL_WARN      1
+#endif
+
 #ifndef ARKCC_FEATURE_MACRO_BODY_DYN
 #   define ARKCC_FEATURE_MACRO_BODY_DYN    1
 #endif

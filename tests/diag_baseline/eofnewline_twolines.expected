@@ -1,0 +1,4 @@
+"eofnewline_twolines.c", line 2: Warning:  #1-D: last line of file ends without a newline
+  int f(void) { return a; }
+                           ^
+eofnewline_twolines.c: 1 warning, 0 errors

@@ -1,7 +1,7 @@
 /* arkcc - diagnostic message table (generated)
  *
  * DO NOT EDIT: regenerate with `python tools/gen_diag_table.py`.
- * Generated from 37 frontend + 7 driver messages.
+ * Generated from 38 frontend + 7 driver messages.
  */
 #include "diag_msg_table.h"
 
@@ -13,6 +13,7 @@ typedef struct {
 
 /* Sorted by code: lookup below relies on it to stop early. */
 static const MsgEntry k_frontend[] = {
+    { 1, 1, "last line of file ends without a newline" },
     { 4, 0, "out of memory" },
     { 5, 0, "cannot open %s input file %sq2: %s3" },
     { 6, 0, "comment unclosed at end of file" },

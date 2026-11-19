@@ -116,6 +116,35 @@ CASES = [
                                       ["-c", "parse_missing_rbrace.c", "-o", "nul"]),
     ("parse_noexpr", "exact", ["parse_noexpr.c", "-c", "-o", "nul"],
                               ["-c", "parse_noexpr.c", "-o", "nul"]),
+
+    # #1-D "last line of file ends without a newline". Measured shape: the
+    # warning names the file whose last line is unterminated (a header, when a
+    # header is the guilty party), the caret sits one cell past that line's end,
+    # and the -D suffix marks it as a warning. The clean controls below exist so
+    # "reports nothing" cannot pass by accident: a trailing \n, a trailing \r, a
+    # CRLF ending and an empty file must all stay silent.
+    ("eofnewline",       "exact", ["eofnewline.c", "-c", "-o", "nul"],
+                                  ["-c", "eofnewline.c", "-o", "nul"]),
+    ("eofnewline_ide",   "exact", ["eofnewline.c", "-c", "-o", "nul", "--diag_style=ide"],
+                                  ["-c", "eofnewline.c", "-o", "nul", "--diag_style=ide"]),
+    ("eofnewline_inc",   "exact", ["eofnewline_inc.c", "-c", "-o", "nul"],
+                                  ["-c", "eofnewline_inc.c", "-o", "nul"]),
+    # Two lines: the warning lands on line 2, not on line 1 and not "at end of
+    # source" -- the position is the last line itself.
+    ("eofnewline_twolines", "exact", ["eofnewline_twolines.c", "-c", "-o", "nul"],
+                                     ["-c", "eofnewline_twolines.c", "-o", "nul"]),
+    # A warning and an error in the same file: #1-D comes first (reported while
+    # reading, before the front end runs) and the summary counts both.
+    ("eofnewline_werr",  "exact", ["eofnewline_werr.c", "-c", "-o", "nul"],
+                                  ["-c", "eofnewline_werr.c", "-o", "nul"]),
+    ("eofnewline_nl",    "exact", ["eofnewline_nl.c", "-c", "-o", "nul"],
+                                  ["-c", "eofnewline_nl.c", "-o", "nul"]),
+    ("eofnewline_cr",    "exact", ["eofnewline_cr.c", "-c", "-o", "nul"],
+                                  ["-c", "eofnewline_cr.c", "-o", "nul"]),
+    ("eofnewline_crlf",  "exact", ["eofnewline_crlf.c", "-c", "-o", "nul"],
+                                  ["-c", "eofnewline_crlf.c", "-o", "nul"]),
+    ("eofnewline_empty", "exact", ["eofnewline_empty.c", "-c", "-o", "nul"],
+                                  ["-c", "eofnewline_empty.c", "-o", "nul"]),
 ]
 
 # Cases where arkc's recovery differs from armcc's, so only the spelling of
@@ -147,6 +176,9 @@ SHAPE_CASES = [
 # to be on -- the flag then silently did nothing.
 SINK_CASES = [
     ("sink", "undefok.c"),
+    # #1-D must follow --errors like everything else: the sink file is the only
+    # place the warning may appear, byte for byte equal to armcc's file.
+    ("sink_eofnl", "eofnewline.c"),
 ]
 
 

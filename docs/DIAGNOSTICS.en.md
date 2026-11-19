@@ -115,7 +115,7 @@ small handful, so the table is **extracted by reference**:
 
 - `tools/gen_diag_table.py` holds two curated lists: `FRONTEND_CODES`, `DRIVER_CODES`;
 - only codes that arkc actually calls **and** that have been measured against a real armcc enter the
-  table (currently 37 + 7);
+  table (currently 38 + 7);
 - the board firmware is not blown up by 2428 strings;
 - adding a diagnostic = adding one code to the list + re-running the generator.
 
@@ -125,7 +125,7 @@ python tools/gen_diag_table.py --check    # CI: are the generated files consiste
 python tools/gen_diag_table.py --source DIR
 ```
 
-The 37 front-end codes currently in the table (`src/diag_msg_table.c` is the single source of truth;
+The 38 front-end codes currently in the table (`src/diag_msg_table.c` is the single source of truth;
 the `-D` column marks codes where armcc appends `-D`, and measurement shows `--diag_error` changes the
 word but not the suffix):
 
@@ -308,9 +308,44 @@ Measured shape:
 - the caret line is rebuilt by **display width**: ASCII counts 1 column, CJK counts 2, a tab counts 1
   column and is emitted as-is;
 - only the **main file** is echoed. Lines pulled in by `#include` cannot be located in the current
-  buffer, so they are not echoed — **not echoing is more honest than echoing the wrong line**;
+  buffer, so they are not echoed — **not echoing is more honest than echoing the wrong line**.
+  The one exception is `#1-D`: it is a statement about "the last line of *this file*", and the caller
+  hands that line to `diag_report_no_final_newline()` — see §5.4;
 - the echoed text must be the **post-preprocessed** one (lexer line numbers are counted on it), which
   is why `diag_init()` only receives the source after `preproc_process()`.
+
+### 5.4 A file whose last line has no newline (`#1-D`)
+
+Measured on armcc 5.06u7 (byte-exact baselines in `tests/diag_baseline/eofnewline*.expected`):
+
+```
+"eofnewline.c", line 1: Warning:  #1-D: last line of file ends without a newline
+  int f(void) { return 1; }
+                           ^
+eofnewline.c: 1 warning, 0 errors
+```
+
+The rules below are measurements, not inferences:
+
+- the location is **that file's last line** (not `At end of source` and not line 1; the two-line
+  fixture lands on line 2), and the caret sits **one cell past** the end of that line (25 characters
+  ⇒ IDE column 26);
+- a file ending in `\n` or `\r` is clean (a CRLF file ends in `\n`), and **an empty file is clean**
+  (there is no last line to speak of);
+- the translation unit and every header are checked alike: when a header is guilty the message names
+  the **header**, and the main file appears only in the summary line (`eofnewline_inc`);
+- only a **missing** newline is reported; the warning is counted in the summary line
+  (`1 warning, 0 errors`).
+
+The emission point is the preprocessor: `pp_check_final_newline()` is called twice — for the
+translation unit before `process()` (armcc also reports while reading, so `#1-D` precedes that file's
+other diagnostics; `eofnewline_werr` locks that order down), and for a header right after
+`read_include()` succeeds. A header's line text is not in the diag layer's `g.src`, which is why
+`diag_report_no_final_newline()` takes the line from the caller (a one-shot echo override in
+`diag.c`) — and why §5's "only the main file is echoed" has exactly one exception.
+
+One **deliberate** difference: an unguarded header included twice is reported twice by armcc and once
+by arkc (keyed on the path). See §7 item 2.
 
 ### 5.1 Columns are "display units", not bytes
 
@@ -387,10 +422,10 @@ These differences are **intentional** or **have no measured basis** — they are
    (`compiler.c` checks `diag_errors()` after parse and after sema). armcc also stops in the front end,
    but at a different recovery point; the purpose of this gate is to eliminate follow-on messages such
    as "unresolved label" or "could not be lowered" that only exist because of the first error.
-2. **`#1-D: last line of file ends without a newline` is not implemented.** armcc emits that warning
-   (with a `-D` suffix) for a file without a trailing newline; arkc does not. It was left out because
-   it would change warning counts in existing projects and is therefore a behaviour change that needs
-   its own decision.
+2. **`#1-D` is de-duplicated per file.** armcc reports per inclusion: an **unguarded** header
+   included twice is reported twice, while arkc keys on the path and reports once. For guarded headers
+   (every real-world case) the two agree — armcc skips a header it has already seen outright. The
+   difference only affects whether the warning repeats, never its text or its position; see §5.4.
 3. **Implicit function declarations.** In `int f(void){ return nope(1); }` armcc reports
    `#223-D: function "nope" declared implicitly` and **compiles successfully**; arkc does not
    implement implicit declarations and fails when the symbol is unresolved. This is a language-feature

@@ -1,0 +1,4 @@
+"eofnewline.h", line 1: Warning:  #1-D: last line of file ends without a newline
+  int g(void);
+              ^
+eofnewline_inc.c: 1 warning, 0 errors

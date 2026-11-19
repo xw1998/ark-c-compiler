@@ -1129,6 +1129,23 @@ See [docs/MANUAL.en.md](docs/MANUAL.en.md) for the full manual.
 > documented only in the Chinese [README.md](README.md) — they are long, and every one of them is
 > covered by the documents under `docs/`.
 
+  This release also closes the **last written-down gap in the diagnostic layer**: `#1-D: last line of
+  file ends without a newline` (`docs/DIAGNOSTICS.en.md` §5.4). The position is **that file's last
+  line** (when a header is guilty the message names the header and the main file appears only in the
+  summary line), the caret sits one cell past the end of that line, and the `-D` suffix marks it as a
+  warning; files ending in `\n`/`\r` and empty files stay silent. It is emitted where the
+  preprocessor reads a file — the translation unit before `process()` (armcc also reports while
+  reading, so it precedes that file's other diagnostics), a header right after `read_include()`
+  succeeds — because "no trailing newline" is a fact about the file, not a semantic error of some
+  stage; a header's line text is not in the diag layer's `g.src`, so
+  `diag_report_no_final_newline()` takes the line from the caller (a one-shot echo override).
+  Cropping: `ARKCC_FEATURE_EOF_NL_WARN` defaults to 1 on every profile; setting it to 0 compiles both
+  checks away and **restores 0.8.6 behaviour and size**. Gate `tests/run_diag_tests.py` gains 10
+  byte-exact cases (main file / IDE style / header / line 2 of a two-line file / warning-and-error
+  ordering / `--errors` sink / four clean controls: trailing `\n`, trailing `\r`, CRLF, empty file),
+  and it exposed an older defect that is fixed here: IDE style stripped the code's trailing letter, so
+  `#1-D` printed as `#1-` — the strip is only true for driver codes (`C3900U` -> `C3900`); frontend
+  codes print verbatim.
 - **v0.8.6**: four directions land together, all **off by default, all trimmable, and every switch left at its default leaves the output byte-identical**.
   1. **`--warn-unused-result` + `__must_check`**: dropping the return value of a function marked for checking is now a warning; the marking travels along the declaration chain (`__must_check` / `__attribute__((warn_unused_result))`) and survives macro expansion.
   2. **MIR/CFG substrate + three cross-function checks** (`docs/MIR_CFG.en.md`): `src/mir.c` builds basic blocks and control-flow edges, and on top of it `--warn-unused-static` (a static function nobody references), `--warn-unreachable` (instructions no path can reach -- reported as "N instruction(s) in 'f' can never run") and `--warn-recursion` (direct or mutual). All three look only at **shapes they can prove**: `goto` into a dead block, function-pointer aliasing and `#pragma arm section` cases stay silent.

@@ -106,7 +106,7 @@ armcc 前端有 2428 个消息槽、驱动层另有 316 条 `C####`。arkc 只�
 一小撮，所以表是**按引用抽取**的：
 
 - `tools/gen_diag_table.py` 里有两份策展清单：`FRONTEND_CODES`、`DRIVER_CODES`；
-- 只有被 arkc 实际调用、而且**用真实 armcc 量到过**的码才进表（当前 37 + 7 条）；
+- 只有被 arkc 实际调用、而且**用真实 armcc 量到过**的码才进表（当前 38 + 7 条）；
 - 板端固件不会被 2428 条字符串撑爆；
 - 新增一条诊断 = 清单里加一个码 + 重跑生成器。
 
@@ -116,11 +116,12 @@ python tools/gen_diag_table.py --check    # CI：生成物是否与清单一致
 python tools/gen_diag_table.py --source DIR
 ```
 
-当前表里的 37 条前端码（`src/diag_msg_table.c` 是唯一真源；第二列 `-D` 表示
+当前表里的 38 条前端码（`src/diag_msg_table.c` 是唯一真源；第二列 `-D` 表示
 armcc 给这条码加了 `-D` 后缀，实测 `--diag_error` 改词不改后缀）：
 
 | 码 | -D | 消息 |
 | --- | --- | --- |
+| 1 | ✓ | `last line of file ends without a newline` |
 | 4 | | `out of memory` |
 | 5 | | `cannot open %s input file %sq2: %s3` |
 | 6 | | `comment unclosed at end of file` |
@@ -171,6 +172,9 @@ armcc 给这条码加了 `-D` 后缀，实测 `--diag_error` 改词不改后缀�
 | `C4079E` | `%s command with no effect` |
 | `C4486W` | `option '-%c' causes input file '%s' to be ignored` |
 
+`#1` 与其它条目不同：它不是某一阶段的语义错误，而是"这个文件少了最后的换行"
+这件事本身，所以发射点在预处理器读文件的地方（见 §5.4）。
+
 本轮新加进表的六条（17 / 18 / 67 / 137 / 140 / 165）与 `C3901U`，全部先用真实
 armcc 量过：`#137` 对 `(a+1) = 2` 与 `(a+1) += 2` 都是它；`#140`/`#165` 按参数
 多/少分派；`#67` 只在"文件结尾缺 `}`"时出现，走 §5.3 的 At end of source 形态。
@@ -178,7 +182,7 @@ armcc 量过：`#137` 对 `(a+1) = 2` 与 `(a+1) += 2` 都是它；`#140`/`#165`
 `gen_diag_table.py --check` 的期望输出：
 
 ```
-up to date (37 frontend, 7 driver)
+up to date (38 frontend, 7 driver)
 ```
 
 占位符规则（`check_placeholders()`）：只接受 arkc 能正确渲染的
@@ -286,7 +290,9 @@ err.c:4:9: error: identifier "y" is undefined [#20]
 - gutter 固定 2 个空格，源码原样输出（**tab 保持 tab**）；
 - caret 行按**显示宽度**重放：ASCII 记 1 列、CJK 记 2 列、tab 记 1 列且原样输出；
 - 只对**主文件**回显。`#include` 进来的行无法在当前缓冲里定位，
-  此时不回显——**不回显比回显错行诚实**；
+  此时不回显——**不回显比回显错行诚实**。唯一例外是 `#1-D`：它说的是
+  "这个文件的最后一行"，行文本由调用方交给 `diag_report_no_final_newline()`，
+  见 §5.4；
 - 回显用的文本必须是**预处理之后**的那份（lexer 的行号就是在它上面数出来的），
   所以 `diag_init()` 在 `preproc_process()` 之后才拿到源码。
 
@@ -328,6 +334,37 @@ err.c:4:9: error: identifier "y" is undefined [#20]
 - 位置后加 ` At end of source:` 标记，**不回显、不画 caret**（没有字符可指）；
 - 非 EOF 情况下缺失的 `)` `]` `}` `;` 分别对应 18 / 17 / 67 / 65。
 
+### 5.4 文件末行缺换行（`#1-D`）
+
+armcc 5.06u7 实测（逐字节基线在 `tests/diag_baseline/eofnewline*.expected`）：
+
+```
+"eofnewline.c", line 1: Warning:  #1-D: last line of file ends without a newline
+  int f(void) { return 1; }
+                           ^
+eofnewline.c: 1 warning, 0 errors
+```
+
+四条规则全部来自实测，不是推断：
+
+- 位置是**该文件的最后一行**（不是 `At end of source`，也不是第一行；两行文件的
+  用例落在第 2 行），caret 在最后一行末尾**再往右一格**（25 个字符 ⇒ IDE 列号 26）；
+- 文件以 `\n` 或 `\r` 结尾即干净（CRLF 文件以 `\n` 结尾），**空文件干净**
+  （没有"最后一行"可说）；
+- 翻译单元与每个头文件都检查：头文件缺换行时消息里的文件名是**头文件**，
+  主文件名只出现在汇总行（`eofnewline_inc`）；
+- 只有**缺**换行才报，不报其它文件级问题；警告计数进汇总行（`1 warning, 0 errors`）。
+
+落点在预处理器：`pp_check_final_newline()` 两处调用——主文件在 `process()` 之前
+（armcc 也是读完就报，所以同一文件里 `#1-D` 排在它的其它诊断前面，
+`eofnewline_werr` 锁住这个顺序），头文件在 `read_include()` 读成功之后。
+头文件的行文本不在诊断层的 `g.src` 里，所以 `diag_report_no_final_newline()`
+让调用方把那一行交进来（`diag.c` 里的一次性回显覆盖），这也是 §5 那条
+"只回显主文件"的唯一例外。
+
+一个**刻意**的差：同一个**没有保护宏**的头被 include 两次，armcc 报两次，
+arkc 按路径只报一次（见 §7 第 2 条）。
+
 ---
 
 ## 6. 命令行上的诊断策略选项（逐项实测）
@@ -361,9 +398,10 @@ err.c:4:9: error: identifier "y" is undefined [#20]
    （`compiler.c` 在 parse 与 sema 之后各查一次 `diag_errors()`）。
    armcc 也停在前端，但恢复点不同；这条闸门的作用是消灭
    "unresolved label"、"could not be lowered" 这类只在第一条错误之后才成立的连带消息。
-2. **`#1-D: last line of file ends without a newline` 未实现**。armcc 会为没有
-   尾随换行的文件打这条警告（`-D` 后缀），arkc 没有。没做是因为它会改变
-   既有工程的告警计数，属于要单独决策的行为变更。
+2. **`#1-D` 按文件去重**。armcc 在读取时按"这一次 include"报：同一个
+   **没有保护宏**的头被 include 两次就报两次；arkc 按路径去重，只报一次。
+   带保护宏的头（现实里的全部情况）两边一致——armcc 干脆跳过被判为已读的头。
+   这条差异只影响"是否重复"，不影响消息内容与位置；口径见 §5.4。
 3. **隐式函数声明**。`int f(void){ return nope(1); }` 里 armcc 打
    `#223-D: function "nope" declared implicitly` 并**编译通过**；
    arkc 不实现隐式声明，会在符号未解析时失败。这是语言特性缺口，不是排版差异。
@@ -427,6 +465,11 @@ err.c:4:9: error: identifier "y" is undefined [#20]
   而独立实现更容易看出正确性；码表（`diag_msg_table.c`）保留，
   因为文案是数据不是排版。
   `ARKCC_FEATURE_DIAG=0` 时 `ARKCC_FEATURE_DIAG_SINK` 被强制为 0。
+- **`ARKCC_FEATURE_EOF_NL_WARN`**（`#1-D`，默认 1，全 profile 一致）。
+  置 0 时 `preproc.c` 里的两处检查被整段编掉，**行为与体积都回到 0.8.6**：
+  不报 `#1-D`、告警计数不变。默认 1 的理由很简单——同一个工程在两个编译器上
+  报出不同的告警条数，就不是 drop-in 替代。两个方向都由
+  `tests/run_diag_tests.py` 的 `eofnewline*` 用例锁住（缺报、多报、位置错都 FAIL）。
 - **`ARKCC_FEATURE_DIAG_SINK`**（`--errors <file>` 与输出目标切换）。
   `STM32_MIN` 档为 0（省 flash），此时 `diag_open_sink()` 恒失败，
   诊断只走 `ark_log`。

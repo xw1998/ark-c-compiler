@@ -131,6 +131,23 @@ void diag_report(int code, DiagSeverity sev, const DiagLoc *loc,
  * no source echo. `loc->line` should be that last token's line. */
 void diag_report_at_eof(int code, DiagSeverity sev, const DiagLoc *loc);
 
+/* A file whose last line has no trailing newline (armcc #1-D). armcc anchors
+ * this at that file's last line and echoes the line with the caret one cell
+ * past its end:
+ *   "f.c", line 1: Warning:  #1-D: last line of file ends without a newline
+ *     int f(void) { return 1; }
+ *                              ^
+ * The line cannot always be looked up here: an #included header is not the
+ * translation unit whose text this layer holds. So the caller hands the line
+ * over. It only has to stay valid for the duration of the call.
+ *   file      name to print; NULL means the translation unit's main file
+ *   line      1-based line number of that last line
+ *   last_line the text of that line, without its terminator
+ * Suppression, --diag_error and the --errors sink apply exactly as they do to
+ * any other warning. */
+void diag_report_no_final_newline(int code, const char *file, int line,
+                                  const char *last_line);
+
 /* arkc-specific diagnostic: no code, caller supplies the text. `msg` may
  * contain the same placeholders as a table template. Use this when no armcc
  * code has been measured for the condition. */

@@ -450,15 +450,28 @@ static void echo_pad_modern(Line *l) {
     line_puts(l, " | ");
 }
 
+/* One-shot echo override.
+ *
+ * A diagnostic can be about a file whose text this layer does not hold: #1-D
+ * says "the last line of *that* file has no newline", and that file may be an
+ * #included header (g.src is the translation unit). The caller therefore hands
+ * over the exact line to echo. Set immediately before report(), cleared
+ * immediately after -- one diagnostic, one line, no state carried over. */
+static const char *g_echo_line;
+
 static void echo_source(const DiagLoc *loc) {
     const char *start, *end, *p;
     Line l;
 
-    if (g.echo_disabled || !g.src || !loc || loc->line <= 0) return;
-    if (loc->file && !str_eq(loc->file, g.main_file)) return;
-
-    start = find_line(g.src, loc->line);
-    if (!start) return;
+    if (!loc || loc->line <= 0) return;
+    if (g_echo_line) {
+        start = g_echo_line;
+    } else {
+        if (g.echo_disabled || !g.src) return;
+        if (loc->file && !str_eq(loc->file, g.main_file)) return;
+        start = find_line(g.src, loc->line);
+        if (!start) return;
+    }
     end = start;
     while (*end && *end != '\n' && *end != '\r') end++;
 
@@ -536,12 +549,19 @@ static int admit(DiagSeverity sev, int code) {
 
 /* Render a C####x code in IDE form: the trailing severity letter is dropped
  * (C3900U -> C3900), other codes pass through. */
-static void put_code_ide(Line *l, const char *code) {
+/* IDE style drops the driver code's severity letter (C3900U -> C3900) but
+ * keeps everything else verbatim: a frontend code that carries the -D suffix
+ * is printed as "#1-D", not "#1-" (measured 2026-11-19 against
+ * tests/diag_baseline/eofnewline_ide.expected). So the strip is a property of
+ * where the code came from, not of "the last letter happens to be alphabetic". */
+static void put_code_ide(Line *l, const char *code, int strip_severity_letter) {
     int n = 0, i, last_alpha = -1;
     while (code[n]) n++;
-    for (i = 0; i < n; i++) {
-        char c = code[i];
-        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) last_alpha = i;
+    if (strip_severity_letter) {
+        for (i = 0; i < n; i++) {
+            char c = code[i];
+            if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) last_alpha = i;
+        }
     }
     for (i = 0; i < n; i++) {
         if (i == last_alpha && i == n - 1) continue;
@@ -593,15 +613,15 @@ static void emit_diag(DiagSeverity sev, const DiagLoc *loc,
         if (code_str) {
             if (shape == DIAG_SHAPE_DRIVER) {
                 line_putc(&l, ' ');
-                put_code_ide(&l, code_str);     /* suffix stripped: C3900 */
+                put_code_ide(&l, code_str, 1);  /* suffix stripped: C3900 */
                 line_puts(&l, ":  ");
             } else if (shape == DIAG_SHAPE_CMDLINE) {
                 line_puts(&l, " command-line:  ");
-                put_code_ide(&l, code_str);
+                put_code_ide(&l, code_str, 0);
                 line_puts(&l, ": ");
             } else {
                 line_puts(&l, "  ");
-                put_code_ide(&l, code_str);
+                put_code_ide(&l, code_str, 0);
                 line_puts(&l, ": ");
             }
         } else {
@@ -730,6 +750,40 @@ void diag_report_at_eof(int code, DiagSeverity sev, const DiagLoc *loc) {
     }
     report(override_severity(code, sev), code, loc, code_str, tpl, 0, 0,
            DIAG_SHAPE_EOF);
+}
+
+void diag_report_no_final_newline(int code, const char *file, int line,
+                                  const char *last_line) {
+    char code_str[16];
+    const char *tpl = diag_msg_lookup(code);
+    DiagLoc loc;
+    int col = 1;
+
+    if (!tpl) {
+        /* Never invent wording for a code the table does not carry. */
+        diag_report_msg(DIAG_SEV_WARNING, 0, "last line of file ends without a newline",
+                        0, 0, 0);
+        return;
+    }
+    /* One cell past the end of the line, counted in display cells -- the same
+     * unit the caret replay uses, so a wide character still lines up.
+     * Measured: armcc prints (1,26) for a 25-character line. */
+    if (last_line) {
+        const char *p = last_line;
+        while (*p && *p != '\n' && *p != '\r') {
+            int w;
+            p = utf8_step(p, &w);
+            col += w;
+        }
+    }
+    loc.file = file;
+    loc.line = line;
+    loc.col  = col;
+    code_to_str(code, DIAG_SEV_WARNING, code_str);
+    g_echo_line = last_line;
+    report(override_severity(code, DIAG_SEV_WARNING), code, &loc, code_str,
+           tpl, 0, 0, DIAG_SHAPE_FILE);
+    g_echo_line = 0;
 }
 
 void diag_set_main_file(const char *main_file) {
@@ -999,6 +1053,16 @@ void diag_report_at_eof(int code, DiagSeverity sev, const DiagLoc *loc) {
     /* Minimal fallback: same contract, no shape machinery to honour. */
     (void)loc;
     diag_report(code, sev, loc, 0, 0, 0);
+}
+void diag_report_no_final_newline(int code, const char *file, int line,
+                                  const char *last_line) {
+    /* Minimal fallback: same count, no echo machinery to honour. */
+    DiagLoc loc;
+    (void)last_line;
+    loc.file = file;
+    loc.line = line;
+    loc.col  = 0;
+    diag_report(code, DIAG_SEV_WARNING, &loc, 0, 0, 0);
 }
 void diag_set_main_file(const char *main_file) { (void)main_file; }
 void diag_set_source(const char *source_text)   { (void)source_text; }

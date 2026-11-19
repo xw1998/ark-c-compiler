@@ -575,6 +575,46 @@ static void pp_report_scratch_exhausted(void) {
                 diag_num(cap_s, PP_RESCAN_MAX_SLOTS), 0);
 }
 
+/* === #1-D: the last line of a file ends without a newline =================
+ *
+ * Measured on armcc 5.06u7 against the fixtures in tests/diag_baseline/
+ * (eofnewline*.c): the location is that file's last line, the caret sits one
+ * cell past its end, and the message carries the -D suffix because it is a
+ * warning. The rules below are the measurements, not an interpretation:
+ *   - a file ending in '\n' or '\r' is clean (a CRLF file ends in '\n');
+ *   - an empty file is clean (there is no last line to end);
+ *   - the translation unit and every header are checked alike, each once:
+ *     armcc skips a guarded header outright, so a header reached twice in one
+ *     translation unit is reported once (we key on the path we already read).
+ *
+ * `file` is the name to attribute the warning to (NULL: the translation unit).
+ * `text` is NUL-terminated: the file layer and the include reader both
+ * terminate what they hand over.
+ */
+static void pp_check_final_newline(const char *text, const char *file) {
+    const char *p = text;
+    const char *last = text;
+    int line = 1;
+
+    if (!text || !*text) return;
+    while (*p) {
+        if (*p == '\n') { line++; last = p + 1; }
+        p++;
+    }
+    if (p[-1] == '\n' || p[-1] == '\r') return;
+    diag_report_no_final_newline(1, file, line, last);
+}
+
+/* Has this exact path already been read in this translation unit? Used only to
+ * keep #1-D to one report per file (see pp_check_final_newline). */
+static int pp_file_already_read(const char *path) {
+    int i;
+    for (i = 0; i < g_inc_file_count; i++) {
+        if (ark_streq(g_inc_files[i], path)) return 1;
+    }
+    return 0;
+}
+
 /* Point the caret machinery at the expression about to be evaluated.
  * `start` is where expression text begins on the source line; `spliced` records
  * that the text was joined from several lines, which makes a text offset unable
@@ -1336,6 +1376,14 @@ static void process(const char *src, char *out, int *out_len, int out_cap,
                             pp_diag(g_pp_line, pp_col(q), 5, DIAG_SEV_ERROR,
                                     "source", path, fs_last_error());
                         } else {
+                            /* #1-D belongs to the file, not to this
+                             * inclusion: a header read twice in one
+                             * translation unit is reported once (measured:
+                             * a guarded header is reported once by armcc). */
+#if ARKCC_FEATURE_EOF_NL_WARN
+                            if (!pp_file_already_read(path))
+                                pp_check_final_newline(inc_buf, path);
+#endif
                             /* Record include for -MMD dependency output. The
                              * path is mem_strdup'ed because the buffer goes out
                              * of scope after this block exits. */
@@ -2099,6 +2147,13 @@ char *preproc_process(const char *src) {
         preproc_undef("__APCS_INTERWORK");
     }
 
+#if ARKCC_FEATURE_EOF_NL_WARN
+    /* The translation unit's own last line, before anything is expanded:
+     * armcc reports #1-D while reading, ahead of every other diagnostic of the
+     * file (measured: a file that both lacks a final newline and has an
+     * undefined identifier reports #1-D first). */
+    pp_check_final_newline(src_ptr, 0);
+#endif
     process(src_ptr, out, &out_len, PP_BUF_SIZE - 1, 1);
     out[out_len] = 0;
     return out;

@@ -1,0 +1,7 @@
+"eofnewline_werr.c", line 1: Warning:  #1-D: last line of file ends without a newline
+  int f(void) { return undefined_thing; }
+                                         ^
+"eofnewline_werr.c", line 1: Error:  #20: identifier "undefined_thing" is undefined
+  int f(void) { return undefined_thing; }
+                       ^
+eofnewline_werr.c: 1 warning, 1 error

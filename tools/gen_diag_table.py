@@ -56,6 +56,7 @@ import sys
 # A flag is only ever set from a measurement (see the fixture named next to the
 # entry); it is never inferred from the message text.
 FRONTEND_CODES = {
+    1:    {'d': 1},     # last line of file ends without a newline (warning)
     4:    {},           # out of memory
     5:    {},           # cannot open %s input file %sq2: %s3  (numbered args)
     6:    {},           # comment unclosed at end of file
