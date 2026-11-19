@@ -171,6 +171,27 @@
 # endif
 #endif
 
+/* ARKCC_FEATURE_MEMLINT: the --warn-mem pass (return of an automatic address,
+ * double free, use after free). See include/memlint.h and docs/MEMLINT.md.
+ *
+ * Trimmable by construction: it is a self-contained source file with no table
+ * and no dynamic allocation (one ~900-byte stack frame per function analysed),
+ * so "off" removes the whole thing from the image and "on" is affordable on a
+ * target with a few KB of stack. It is off in the STM32 profile by default
+ * because Flash is the scarce resource there (measured delta in docs/MEMLINT.md),
+ * not because the pass needs memory; -DARKCC_FEATURE_MEMLINT=1 turns it back on
+ * for an on-board build at the cost of that Flash.
+ *
+ * The runtime switch is separate and defaults to off on every profile, so the
+ * shipped behaviour is unchanged even where the code is compiled in. */
+#ifndef ARKCC_FEATURE_MEMLINT
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_MEMLINT       0   /* Trim on the board: costs Flash */
+# else
+#   define ARKCC_FEATURE_MEMLINT       1
+# endif
+#endif
+
 /* ===========================================================================
  * 6. ARMCC 5 compatibility
  *

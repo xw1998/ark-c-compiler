@@ -8,6 +8,7 @@
 #include "lexer.h"
 #include "parser.h"
 #include "sema.h"
+#include "memlint.h"
 #include "irgen.h"
 #include "ir.h"
 #include "preproc.h"
@@ -2543,6 +2544,12 @@ int ark_compile(const ArkOptions *opts) {
     sema_errs = sema_check(ast);
     if (sema_errs > 0) return ARK_ERR_SEMA;
     if (diag_errors() > 0) return ARK_ERR_SEMA;
+#if ARKCC_FEATURE_MEMLINT
+    /* --warn-mem: an intra-procedural lint over the tree sema has typed. It
+     * only emits warnings, so it cannot change the exit code or the image;
+     * with the switch off (the default) not one instruction of it runs. */
+    if (g_config.enable_memlint) memlint_run(ast);
+#endif
     {
         int diag_before_irgen = diag_errors();
         ir = irgen_program(ast);

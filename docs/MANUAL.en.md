@@ -2,7 +2,7 @@
 
 [中文](MANUAL.md) | English
 
-> Version: v0.8.2
+> Version: v0.8.3
 > Audience: embedded developers, compiler-construction students, and anyone who wants to run a
 > "self-hosting C compiler" on an STM32
 > Author: the Ark C Compiler project
@@ -32,7 +32,7 @@
 
 ## 1 Project overview
 
-**Ark C Compiler** (abbreviated `arkcc`) is a minimal C compiler written in C99. Version v0.8.2 covers
+**Ark C Compiler** (abbreviated `arkcc`) is a minimal C compiler written in C99. Version v0.8.3 covers
 more than 98 % of the ARM Compiler 5 (armcc) extensions in common use (only C++ mode and advanced
 optimisation are missing). Design goals:
 
@@ -1041,6 +1041,33 @@ RAM** (when both do, the overlap check already fails first), which is precisely 
 The default values of the on-board `cc` follow the command line: whenever `-link` or `--scatter` appears,
 `--reloc-data` / `--reloc-text` are **on** by default; `--no-reloc-data` / `--no-reloc-text` revert to the
 old output.
+
+### 5.9 Intra-procedural memory lint (`--warn-mem`)
+
+One pass over the AST after semantic analysis. It reports exactly two things:
+
+- **returning the address of an automatic object**: `return &x;`, `return local_array;`,
+  `return &local.field;`, `return (T){...};`;
+- **double free / use-after-free inside one function**: only for a pointer that came directly from
+  `malloc`/`calloc`/`realloc`/`strdup`, never escaped and never reassigned.
+
+Neighbouring shapes stay silent (`realloc` revival, `free(p + 1)`, a single-sided `if (c) free(p)`,
+ownership handed to another function, any function containing `goto`/`asm`, any function whose
+tracking table overflowed). **What is reported can be proven; what is not reported is not thereby
+safe** — ownership is not in C's type system, so this pass gives no Rust-style guarantee. See
+[MEMLINT.en.md](MEMLINT.en.md) for the full boundary.
+
+| Switch | Default | Meaning |
+| --- | :---: | --- |
+| `--warn-mem` / `--no-warn-mem` | off | the last one on the command line wins |
+| `warn_mem=1` under `[features]` | off | the config-file spelling; the command line wins |
+| `ARKCC_FEATURE_MEMLINT` (compile time) | host `1`, `ARKCC_PROFILE_STM32_MIN` `0` | at `0` the pass is not compiled in at all, and both `--warn-mem` and `warn_mem=1` are refused with `C3900U` instead of pretending the check ran |
+
+The diagnostics carry **no armcc code** (codes are used only for measured armcc behaviour), so
+`--diag_suppress` cannot target them; turning them off means turning `--warn-mem` off. Measured
+cost: `+5,424 B` text at `-O2` and `+4,436 B` at `-Os` on host x86-64, zero `data`/`bss`; with the
+pass off the 12 target objects are byte-identical to the previous release. Gate:
+`tests/run_memlint_tests.py` (`make test-memlint`).
 
 ### 5.x Flat images must link their own 64-bit/AEABI runtime
 

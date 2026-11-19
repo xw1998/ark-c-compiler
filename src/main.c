@@ -33,6 +33,12 @@ static void usage(void) {
         "                     link time (string literals and other in-section labels).\n"
         "                     Off by default; required for multi-object images whose\n"
         "                     objects were compiled against a different base.\n"
+#if ARKCC_FEATURE_MEMLINT
+        "  --warn-mem         warn about the address of an automatic object returned\n"
+        "                     from a function, about free() on an already freed\n"
+        "                     pointer, and about dereferencing one (intra-procedural;\n"
+        "                     off by default, silent about escaped pointers).\n"
+#endif
         "  -v                 verbose\n"
         "  -target <name>     select backend (arm|x86|x86_64|riscv32|c)\n"
         "  -I <dir>           additional include path\n"
@@ -557,6 +563,22 @@ int main(int argc, char **argv) {
         else if (strcmp(a, "--no-rt-lazy") == 0)    g_config.enable_rt_lazy = 0;
         else if (strcmp(a, "--asm-extra") == 0)     g_config.enable_asm_extra = 1;
         else if (strcmp(a, "--no-asm-extra") == 0)  g_config.enable_asm_extra = 0;
+#if ARKCC_FEATURE_MEMLINT
+        else if (strcmp(a, "--warn-mem") == 0)      g_config.enable_memlint = 1;
+        else if (strcmp(a, "--no-warn-mem") == 0)   g_config.enable_memlint = 0;
+#else
+        /* Refusing beats ignoring: a build without the pass must not accept the
+         * option and then behave as if memory had been checked. */
+        else if (strcmp(a, "--warn-mem") == 0) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: --warn-mem is not compiled into this "
+                    "build (rebuild with -DARKCC_FEATURE_MEMLINT=1)\n");
+            return 1;
+        }
+        /* Safe direction, no pass needed: asking for the default is not a
+         * request to check anything. */
+        else if (strcmp(a, "--no-warn-mem") == 0)   g_config.enable_memlint = 0;
+#endif
         else if (strcmp(a, "--list-backends") == 0) opts.list_backends = 1;
         else if (strcmp(a, "-h") == 0 || strcmp(a, "--help") == 0) {
             usage();
@@ -607,6 +629,18 @@ int main(int argc, char **argv) {
         diag_shutdown();
         return 1;
     }
+
+#if !ARKCC_FEATURE_MEMLINT
+    /* The pass can also be switched on from arkcc.cfg (warn_mem=1).  A build
+     * without it must refuse that too, for the same reason the command-line
+     * form is refused: accepting it would claim a check that never ran. */
+    if (g_config.enable_memlint) {
+        fprintf(stderr,
+                "Fatal error: C3900U: --warn-mem is not compiled into this "
+                "build (rebuild with -DARKCC_FEATURE_MEMLINT=1)\n");
+        return 1;
+    }
+#endif
 
     if (opts.verbose) config_print();
     if (!opts.list_backends && !opts.input_path && !opts.link_mode) {

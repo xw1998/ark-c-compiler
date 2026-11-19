@@ -77,7 +77,7 @@ pool budget, unstable timing). The project-description layer comes from
 — an image is only allowed one way of being produced, otherwise "what was verified on the board"
 and "what make emits" will diverge sooner or later.
 
-## Features (v0.8.2)
+## Features (v0.8.3)
 
 ### C99 language features
 
@@ -621,6 +621,7 @@ ark c compiler/
 ├── docs/CI.md              Continuous integration: what runs, what is skipped, and why (Chinese, UTF-8)
 ├── docs/ATOMIC.md          C11 _Atomic: type-level propagation, read-modify-write rejection, the two <stdatomic.h> branches and their gate (Chinese, UTF-8)
 ├── docs/X86_64_BACKEND.md  x86-64 (SysV AMD64) backend: registers, stack slots, relocations, execution-level gate (Chinese, UTF-8)
+├── docs/MEMLINT.md         Intra-procedural memory lint (--warn-mem): boundary, trim switch, measured cost (Chinese, UTF-8)
 ├── docs/从零写一个C编译器.md  Textbook-style walkthrough: 19 chapters, from 30 lines to 30 000 (Chinese, UTF-8)
 ├── docs/from-scratch-c-compiler.en.md  English summary of that textbook (structure, chapter map, reading routes)
 └── README.md               Project overview (Chinese, UTF-8)
@@ -747,6 +748,8 @@ arkcc <file.c|file.s> [options]
   --rt-lazy          emit runtime helpers on demand (only reachable blocks)
   --reg-top          keep the IR stack top resident in r0
   --asm-extra        assembler extended instruction set; --no-asm-extra turns it off explicitly
+  --warn-mem         intra-procedural memory lint (address of an automatic
+                     object / double free / use-after-free); --no-warn-mem turns it off
   --dce-cfg          basic-block reachability DCE (deletes only code that is reachable but never executes)
   --build-date <s>   pin __DATE__ (e.g. "May 28 2026")
   --build-time <s>   pin __TIME__ (e.g. "20:26:40")
@@ -987,6 +990,25 @@ See [docs/MANUAL.en.md](docs/MANUAL.en.md) for the full manual.
 > documented only in the Chinese [README.md](README.md) — they are long, and every one of them is
 > covered by the documents under `docs/`.
 
+- **v0.8.3**: adds the intra-procedural memory lint `--warn-mem` (`docs/MEMLINT.en.md`). Two
+  diagnostics -- **returning the address of an automatic object** (`return &x;` /
+  `return local_array;` / `return &local.field;` / `return (T){...};`) and **double free /
+  use-after-free inside one function** -- and only for shapes that can be proven: `realloc`
+  revival, `free(p + 1)`, a single-sided `if (c) free(p)`, ownership handed to another function,
+  any function containing `goto`/`asm`, and any function whose tracking table (8 pointers /
+  32 local names) overflowed all stay silent. Missing a defect is preferred over guessing. With
+  the pass off the output is **byte-identical to v0.8.2** (3 programs x arm/x86/riscv32/x86-64 =
+  12 `.o` files, all `cmp`-identical). Trimmable: `ARKCC_FEATURE_MEMLINT` defaults to 0 in the
+  `ARKCC_PROFILE_STM32_MIN` profile, and where the pass is not compiled in, both `--warn-mem` and
+  `warn_mem=1` from a config file are refused with `C3900U` plus the rebuild hint instead of
+  pretending the check ran. Measured cost on host x86-64: `+5,424 B` text at `-O2`, `+4,436 B` at
+  `-Os`, zero `data`/`bss`, about a 900-byte stack frame per analysed function. Gate
+  `tests/run_memlint_tests.py` (`make test-memlint`, 22 assertions): each positive case checked
+  line by line and text by text, all 12 negative shapes silent in one file, the 8 legal twins of
+  the defects silent, the three-way switch (`--warn-mem` / `--no-warn-mem` / config file), and a
+  build made on the spot with `-DARKCC_FEATURE_MEMLINT=0` that must refuse. These diagnostics
+  carry **no armcc code** (codes are used only for measured armcc behaviour), so
+  `--diag_suppress` cannot target them.
 - **v0.8.2**: every historical debt of the 32-bit x86 backend is cleared, and the gate no longer
   leaves it a loophole. (1) Local array indexing: the frame mapping became `[ebp - framelo + off]`,
   structurally identical to x86-64. (2) Structs passed and returned by value: the hidden return

@@ -62,7 +62,7 @@
 迟早分家。
 
 
-## 功能特性 (v0.8.2)
+## 功能特性 (v0.8.3)
 
 ### C99 标准语言特性
 
@@ -530,6 +530,7 @@ ark c compiler/
 ├── docs/CI.md              持续集成：跑什么、跳过什么、为什么（中文，UTF-8）
 ├── docs/ATOMIC.md          C11 _Atomic：Type 级传播、读-改-写拒绝、stdatomic.h 两支与门禁（中文，UTF-8）
 ├── docs/X86_64_BACKEND.md   x86-64（SysV AMD64）后端：寄存器、栈槽、重定位、执行级门禁（中文，UTF-8）
+├── docs/MEMLINT.md         函数内内存 lint（--warn-mem）：判据、裁剪开关与实测代价（中文，UTF-8）
 ├── docs/从零写一个C编译器.md  教材体逐代码教程：19 章，从 30 行到 3 万行（中文，UTF-8）
 ├── docs/from-scratch-c-compiler.en.md  上述教材的英文摘要（结构、章目、阅读路线）
 └── README.md               项目简介（UTF-8）
@@ -647,6 +648,8 @@ arkcc <file.c|file.s> [选项]
   --rt-lazy          运行库按需发射（只发可达块）
   --reg-top          IR 栈顶值驻留 r0
   --asm-extra        汇编器扩展指令集；--no-asm-extra 显式关掉
+  --warn-mem         函数内内存 lint（返回自动对象地址 / double free /
+                     use-after-free）；--no-warn-mem 显式关掉
   --dce-cfg          基本块级可达性 DCE（只删"能到但永不执行"的代码）
   --build-date <s>   固定 __DATE__（如 "May 28 2026"）
   --build-time <s>   固定 __TIME__（如 "20:26:40"）
@@ -822,6 +825,7 @@ CJK 按显示单元计列、tab 原样重放。它不需要 armcc，断言的是
 
 ## 版本历史
 
+- v0.8.3：新增函数内内存 lint `--warn-mem`（`docs/MEMLINT.md`）。两类诊断——**返回自动存储期对象的地址**（`return &x;` / `return local_array;` / `return &local.field;` / `return (T){...};`）与**同一函数内的 double free / use-after-free**——只认能证实的形状：`realloc` 复活、`free(p + 1)`、`if (c) free(p)` 单侧释放、所有权传给别的函数、含 `goto`/`asm` 的函数、跟踪表（8 指针 / 32 局部名）溢出的函数一律沉默，选择漏报而不是猜。默认关时产物与 v0.8.2 **逐字节相同**（3 个程序 × arm/x86/riscv32/x86-64 共 12 个 `.o` 全部 `cmp` 一致）。可裁减：`ARKCC_FEATURE_MEMLINT` 在 `ARKCC_PROFILE_STM32_MIN` 档默认 0，特性不在时命令行 `--warn-mem` 与配置文件 `warn_mem=1` 都以 `C3900U` 拒绝并给出重建方法，不会假装检查过；实测代价（宿主 x86-64）`-O2` `+5,424 B` / `-Os` `+4,436 B` text、`data`/`bss` 为零、每个被分析函数约 900 B 栈帧。门禁 `tests/run_memlint_tests.py`（`make test-memlint`，22 条断言）：正例逐行逐文案、反例 12 种整份文件零输出、8 个缺陷的合法孪生版本零输出、开关三位一体（`--warn-mem` / `--no-warn-mem` / 配置文件）、以及现场用 `-DARKCC_FEATURE_MEMLINT=0` 重建后必须拒绝。这批诊断**不带 armcc 编号**（只对实测过的 armcc 行为用编号），所以 `--diag_suppress` 无法定向关闭。
 - v0.8.2：32 位 x86 后端的历史欠账全部清零，且门禁不再给它留缝。（1）本地数组下标：帧映射改成与 x86-64 同构的 `[ebp - framelo + off]`；（2）结构体按值传参与返回：隐藏返回缓冲指针（sret）在 `[ebp+8]`、真实参数从 `[ebp+12]` 起，`struct_sret40` 曾因 callee 把 sret 也算成一个参数宽度而读 `[ebp+16]`、拿回全零；（3）浮点：`x86_pair_swap_at` 在偏移 0 上退化成空操作，`(int)7.9` 给 0；（4）64 位整数：`IR_UNARY` 忽略 `I->val`、`|a|` 掩码写成 `sar 31`、除法移位用 `add ecx,ecx`。另有 C 档三条错值同轮修完：float/double 局部 `++/--` 按整数加、8 字节指针的 `IR_BINARY` 只做 32 位运算、指针 ↔ `long long` 转换是 no-op（指针 1 个栈字、`long long` 2 个，高半必须在 irgen 层拆/合，接到 cast／声明初始化／赋值／`return`／调用实参五处）。x86-64 镜像门禁 33 → **35 个程序**，并且**同一个程序再编一次 32 位跑一遍**、i386 结果与期望不符即判 FAIL（原口径只把它写成脚注 ⇒ 「32 位已知差距」长期不红）；自举门禁仍逐字节一致（2130 字节、`fnv=28c333dc`、877 行汇编相同）。详见 `docs/X86_64_BACKEND.md` §5。
 - v0.8.1：真 x86-64 后端（SysV AMD64 ABI，`--list-backends` 共五个后端）、CI 自动化（GitHub Actions + Gitee Go 双配置，见 `docs/CI.md`）、C11 `_Thread_local`（按 6.7.1p4 校验存储类，armcc 的裸 `__thread` 保持豁免）、C11 `_Atomic` + `<stdatomic.h>`（ARM 上真临界区实现，其余四个目标编译期拒绝；`Type::is_atomic` 使原子性沿 typedef 传播，`x += 1` / `x++` 一律报错；ARM 执行级门禁加 7 个用例，共 29 个；细节见 `docs/ATOMIC.md`）。另有 x86-64 执行级**自举门禁**（`tests/run_x86_64_selfhost.py`，`make test-x86-64-selfhost`）：用宿主 arkcc 编译自身 24 个翻译单元、把镜像在 unicorn 里跑起来、再由镜像内那份 arkcc 编译探针，产物与宿主 arkcc **逐字节相同**（2130 字节、`fnv=28c333dc`、汇编文本 877 行一致、libc stub 命中 0）；x86-64 用例从 26 增到 33，并修掉 §3.5 那条「`sizeof` 一个成员数组被静默答 4」的前端根因（parser 阶段求值 `AST_MEMBER` 时兜底 `s = 4`⇒ 改由 sema 求值，`sizeof(char sym[512])` 从 4 变 512，自举对象从 2351 字节回到 2130 字节）。
 - v0.8.0：ARM 后端对真实工程可用（自举工程 25 个源文件 `failed=0`）。新增：64 位数据通路（`long long` 的 AAPCS 传参与返回、32 位 x86 cdecl 64 位实参）、参数分配表改静态（板端 codegen 栈预算）、结构体按值与结构体返回走 AAPCS、汇编器补齐 LDM/STM 32 位形式、`TBB/TBH`、`LDRD/STRD`、`[Rn, Rm]`/写回寻址、`VLDM/VSTM/VPUSH/VPOP`、`AND/ORR/EOR/BIC/MVN` 的全部四形态（含高寄存器与立即数）、两档寄存器分配（`-fopt-regalloc` 只搬远槽且函数不变大，`-fopt-regalloc-near` 才搬近槽；默认关，默认产物逐字节不变）、块内函数声明（C99 6.2.2p5）、跨对象地址重定位（`LDR rd, =sym` 符号未定义时记 type 10/11，由链接器回填并给函数地址补 Thumb 位）、电脑端容量上限全部解除（镜像缓冲 8 MB、`-D` 表 512、数组维数、sret 表；板端按 profile 裁剪），六处"超限即静默丢弃"改为报错。实测寄存器分配让 12 个文件的栈槽引用减少 1518 处、总体积 −2398 字节（−0.21%）。修掉的静默错答案：结构体返回尾声 `ADD sp, sp, #4256` 被截断、函数地址缺 Thumb 位、"`ORR ip, ip, #1`" 编成 `orrs r4, r4`、pass1 不认识 `PUSH/POP` 导致跨标签分支漂移 4 字节、单高寄存器 `POP {ip}` 编出不可执行编码、普通块内声明被当成 `__smc(0)` 而发 `SMC #0`。门禁：`run_full_test.ps1` PASS=73、`examples/run_tests.ps1` 断言 71 通过、`run_arm_exec.py` 13 个用例在 unicorn 真跑、`run_asm_cmp.py` 12 用例与 GAS 逐字节一致 + 30 条开关 + 15 条拒收、`run_regalloc_tests.py` 4 组三臂、`run_capacity_tests.py` 4 项。

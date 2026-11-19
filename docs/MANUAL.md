@@ -2,7 +2,7 @@
 
 [English](MANUAL.en.md) | 中文
 
-> 版本：v0.8.2
+> 版本：v0.8.3
 > 读者：嵌入式开发者、编译原理学习者，以及任何希望在 STM32 上运行"自举 C 编译器"的人
 > 作者：Ark C Compiler 项目组
 
@@ -31,7 +31,7 @@
 
 ## 1 项目概述
 
-**Ark C Compiler**（简称 `arkcc`）是一款用 C99 编写的极简 C 语言编译器。当前版本 v0.8.2 覆盖了 ARM Compiler 5（armcc）常用扩展中的 98% 以上（仅缺 C++ 模式与高级优化）。设计目标：
+**Ark C Compiler**（简称 `arkcc`）是一款用 C99 编写的极简 C 语言编译器。当前版本 v0.8.3 覆盖了 ARM Compiler 5（armcc）常用扩展中的 98% 以上（仅缺 C++ 模式与高级优化）。设计目标：
 
 - **嵌入式自举**：编译器本身能在 STM32H743 等 Cortex-M7 微控制器上 **原生** 运行，从外部 SPI Flash 读取 `.c` 源码，就地生成机器码，然后直接跳转执行。`port/stm32/main_stm32.c` 提供了独立入口，构成"编译-链接-执行"的完整闭环，无需任何 PC 侧工具链。
 - **多后端**：核心前端只产生与目标无关的栈式虚拟机中间代码（IR），后端可以在 `arm` / `x86_64`（SysV AMD64）/ `x86`（i386 cdecl）/ `riscv32` / `c` 之间自由切换。`x86_64` 曾经只是 `x86` 的别名，现在是独立后端（详见 [X86_64_BACKEND.md](X86_64_BACKEND.md)）。
@@ -889,6 +889,30 @@ object #0 puts .data/.bss at 0x20000000 but the scatter file puts RW at 0x240720
 
 板端 `cc` 的默认值跟着命令行走：只要出现 `-link` 或 `--scatter`，`--reloc-data` /
 `--reloc-text` 默认**打开**；`--no-reloc-data` / `--no-reloc-text` 退回旧输出。
+
+### 5.9 函数内内存 lint（`--warn-mem`）
+
+语义分析通过之后在 AST 上跑的一遍检查，只报两类：
+
+- **返回自动存储期对象的地址**：`return &x;`、`return local_array;`、`return &local.field;`、
+  `return (T){...};`；
+- **同一函数内的 double free / use-after-free**：对象必须是直接来自
+  `malloc`/`calloc`/`realloc`/`strdup`、从未逃逸、从未重赋值的裸指针。
+
+邻居形状一律沉默（`realloc` 复活、`free(p + 1)`、`if (c) free(p)` 单侧释放、所有权传给别的函数、
+含 `goto`/`asm` 的整个函数、跟踪表满的整个函数）。**报出来的都是能证实的，没报的不代表安全**
+——C 里所有权不在类型系统内，这一遍不会给你 Rust 式保证。详见 [MEMLINT.md](MEMLINT.md)。
+
+| 开关 | 默认 | 说明 |
+| --- | :---: | --- |
+| `--warn-mem` / `--no-warn-mem` | 关 | 后出现的那个生效 |
+| `[features]` 节 `warn_mem=1` | 关 | 配置文件等效写法，命令行优先 |
+| `ARKCC_FEATURE_MEMLINT`（编译期） | 宿主 `1`、`ARKCC_PROFILE_STM32_MIN` `0` | 为 `0` 时整个 pass 不编进来；此时 `--warn-mem` 与 `warn_mem=1` 都以 `C3900U` 拒绝，不会假装检查过 |
+
+诊断**不带 armcc 编号**（只对实测过的 armcc 行为用编号），所以 `--diag_suppress` 无法定向关闭；
+要关就整体关掉 `--warn-mem`。代价实测：宿主 x86-64 上 `-O2` `+5,424 B` text、`-Os` `+4,436 B`，
+`data`/`bss` 为零；默认关时 12 个目标产物与旧版逐字节相同。门禁 `tests/run_memlint_tests.py`
+（`make test-memlint`）。
 
 ### 5.x 平铺镜像的 64 位/AEABI 运行时要自己链
 

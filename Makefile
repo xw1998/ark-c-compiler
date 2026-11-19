@@ -21,7 +21,8 @@ NULLDEV := /dev/null
 endif
 
 .PHONY: all clean test test-arm test-c test-stdlib test-install test-x86 test-x86-64 \
-        test-x86-64-selfhost test-riscv test-reloc-text test-atomic install stm32
+        test-x86-64-selfhost test-riscv test-reloc-text test-memlint \
+        test-atomic install stm32
 
 all: $(ARKCC)
 
@@ -32,10 +33,11 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 	$(CC) $(CFLAGS) $(SRC) -o $(ARKCC) $(LDFLAGS)
 
 # Every backend gets at least an emit smoke test here, so a change that breaks
-# one target cannot hide behind the others' gates.  The four symbolic targets
-# (stdlib / install / reloc-text / x86-64) execute code; they are what actually
-# say "this works", the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-atomic
+# one target cannot hide behind the others' gates.  The symbolic targets
+# (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
+# diagnostics the compiler prints; those are what actually say "this works",
+# the rest only say "this still compiles".
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-atomic
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -53,6 +55,12 @@ test-c: $(ARKCC)
 # object is the point: a global delta passes object #0 and fails object #1.
 test-reloc-text: $(ARKCC)
 	$(PYTHON) tests/run_reloc_text_tests.py ./$(ARKCC)
+
+# Gate for --warn-mem: the two shapes the pass claims to see must be reported on
+# the right line, the legal twin of each must be silent, and a build with
+# -DARKCC_FEATURE_MEMLINT=0 must refuse the option instead of ignoring it.
+test-memlint: $(ARKCC)
+	$(PYTHON) tests/run_memlint_tests.py ./$(ARKCC)
 
 # Library gate: every stdlib entry point is compiled and run on the ARM
 # emulator, and each case asserts a number the program itself computed.  A
