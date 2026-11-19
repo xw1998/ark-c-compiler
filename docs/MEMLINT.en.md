@@ -2,14 +2,18 @@
 
 [中文](MEMLINT.md) | English
 
-`--warn-mem` is one pass over the AST that runs after semantic analysis. It does **two
-things**:
+`--warn-mem` is one pass over the AST that runs after semantic analysis. Since v0.8.4 it
+does **four things**:
 
 1. **returning the address of an automatic object** — `return &x;`, `return local_array;`,
    `return &local.field;`, `return (T){...};`
 2. **double free / use-after-free inside one function** — the object must be a pointer that
    came directly from `malloc`/`calloc`/`realloc`/`strdup`, never escaped and never
    reassigned.
+3. **storing the address of an automatic object into an object with static storage duration**
+   — `g = &x;`, `g = local_array;` (new in v0.8.4)
+4. **a constant subscript outside a known array bound** — `int a[4]; a[4];`, `a[-1];`
+   (new in v0.8.4)
 
 The conclusion up front: **passing this lint does not mean the program is memory-safe.**
 In C, "this pointer owns that block" is not part of the type system, so no analysis can turn
@@ -17,7 +21,7 @@ these two checks into a guarantee. Rust can, because it changed the language fir
 aliasing, ownership in the types). The goal here is to **report only what can be proven**:
 missing a defect is the accepted failure mode, a wrong report is not.
 
-Gate: `tests/run_memlint_tests.py` (`make test-memlint`, part of `make test`); 22 assertions,
+Gate: `tests/run_memlint_tests.py` (`make test-memlint`, part of `make test`); 27 assertions,
 all passing.
 
 ## 1. Check A: returning the address of an automatic object
@@ -83,7 +87,44 @@ UNKNOWN.
 So the reading is: **what is reported is real (in the no-false-positive sense); what is not
 reported is not thereby safe.**
 
-## 3. Switches and trimming
+## 3. Check C: an automatic object's address stored into static storage
+
+Check A is about handing the address back to the caller; check C is about leaving it inside an
+object that outlives the block. The test: in an assignment (only `=`, since a compound
+assignment does not carry an address), the **root object of the left-hand side** — after
+walking back through `a.b` / `a[i]` — is *not* in this function's automatic scope (that is, it
+is a file-scope variable or a `static` local), and the right-hand side is one of:
+
+| Form | Reported | Note |
+| --- | --- | --- |
+| `g = &x;` where `x` is block scope | yes | reported as `automatic object "x"` |
+| `g = (char *)&x;` | yes | casts are peeled first |
+| `g = local_array;` where the array is block scope | yes | the array decays to a pointer to itself |
+| `g = tab8[i];` where `tab8` is a global array holding a local address | yes | the root object has static duration, which is enough |
+| `g = (T){...};` | yes | a compound literal is automatic storage too |
+| `g = "abc";` / `g = 0;` | no | literals are static; a null pointer names no object |
+| `p = local_array;` where `p` is a local pointer | no | both die together, nothing dangles |
+| `*out = &x;` / `f(&x)` | no | the address goes somewhere this pass cannot name |
+
+## 4. Check D: a constant subscript outside a known array bound
+
+For `int a[4]; a[4] = 1;` the bound is in the type and the subscript folds to a constant, so
+the defect is decidable. Every one of these must hold, otherwise the pass stays silent:
+
+| Condition | Note |
+| --- | --- |
+| the operand is a named object (`a`, `s.a`, `m[i].a`) | pointers are excluded: `p[8]` has no bound in its type |
+| the operand's type is an array | the bound `size` is in `Type` |
+| not a VLA, `size > 0` | a VLA or a flexible member has no compile-time bound |
+| the subscript folds via `eval_const_expr` | the same evaluator the code generator uses for array bounds |
+| the subscript is `< 0` or `>= size` | that is the defect |
+
+Text: `subscript 4 is outside the bounds of this array of 4 element(s)`. `a[3]`, `a[i]` (not a
+constant), `p[8]` (a pointer) and `"ab"[5]` (literals are out of scope here) stay silent.
+`&a[4]` is legal C because it does not dereference; this check reports the subscript access
+itself, which always does.
+
+## 5. Switches and trimming
 
 Three layers, all off by default; with them off neither size nor behaviour changes:
 
@@ -113,18 +154,18 @@ same diagnostic. `--no-warn-mem` is accepted by every build (it only asks for th
 
 | Metric | Reading | Caliber |
 | --- | --- | --- |
-| code size cost | `-O2`: `+5,424 B` text; `-Os`: `+4,436 B` text | host x86-64 gcc, same sources, only `-DARKCC_FEATURE_MEMLINT=0/1` differs, `size`'s `text` column; **not** Cortex-M7 bytes — Thumb-2 ratios differ, the magnitude is the same |
+| code size cost | `-O2`: `+6,584 B` text; `-Os`: `+5,516 B` text (all four checks) | host x86-64 gcc, same sources, only `-DARKCC_FEATURE_MEMLINT=0/1` differs (with `-DARKCC_FEATURE_ENUMCHECK=0` pinned to isolate it), `size`'s `text` column; **not** Cortex-M7 bytes — Thumb-2 ratios differ, the magnitude is the same |
 | data/BSS cost | `0` | same measurement: `data` and `bss` columns are identical; no global table, no allocation |
 | stack | about `900 B` fixed frame per analysed function | `MlPtr p[8]` + `MlLocal loc[32]`, released when the function returns |
 | default output | **byte-identical** | 12 `.o` files: `examples/{hello,arith,func}.c` × `arm`/`x86`/`riscv32`/`x86-64`, all `cmp`-identical against an `arkcc` rebuilt from `5350048` with the same gcc command |
 
-## 4. Relation to `--diag_suppress`
+## 6. Relation to `--diag_suppress`
 
 Neither diagnostic carries an armcc code (project rule: codes are used only for measured
 armcc behaviour), so `--diag_suppress <code>` cannot target them. Turning them off means
 turning `--warn-mem` off.
 
-## 5. What the gate actually checks
+## 7. What the gate actually checks
 
 `tests/run_memlint_tests.py` embeds three source files, none of which `#include` anything
 (after preprocessing arkc reports line numbers in the preprocessed buffer — existing
@@ -142,7 +183,7 @@ lines are located by `ANCHOR:` comments rather than hard-coded numbers.
 The rebuild step needs a host C compiler (`CC`, default `gcc`). Without one that group prints
 `SKIP` with the reason instead of passing silently.
 
-## 6. Known limits
+## 8. Known limits
 
 - Cross-function ownership (`char *f(void)` returning heap, `void g(char *p)` taking
   ownership) is **not** modelled.
@@ -154,7 +195,7 @@ The rebuild step needs a host C compiler (`CC`, default `gcc`). Without one that
   switch changes its output.
 - Not a sanitizer: it does not instrument anything and adds nothing at run time.
 
-## 7. Where this sits in the project
+## 9. Where this sits in the project
 
 arkcc's diagnostic rule is "rather an error than a wrong answer". `--warn-mem` extends that
 rule to **static analysis**: report only what can be proven, stay silent otherwise, and write

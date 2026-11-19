@@ -892,12 +892,16 @@ object #0 puts .data/.bss at 0x20000000 but the scatter file puts RW at 0x240720
 
 ### 5.9 函数内内存 lint（`--warn-mem`）
 
-语义分析通过之后在 AST 上跑的一遍检查，只报两类：
+语义分析通过之后在 AST 上跑的一遍检查，报四类：
 
 - **返回自动存储期对象的地址**：`return &x;`、`return local_array;`、`return &local.field;`、
   `return (T){...};`；
 - **同一函数内的 double free / use-after-free**：对象必须是直接来自
-  `malloc`/`calloc`/`realloc`/`strdup`、从未逃逸、从未重赋值的裸指针。
+  `malloc`/`calloc`/`realloc`/`strdup`、从未逃逸、从未重赋值的裸指针；
+- **自动对象的地址存进静态存储期对象**：`g = &x;`、`g = local_array;`、`g = (T){...};`
+  （v0.8.4 新增；`g = "abc"`、`g = 0`、局部指针指局部数组沉默）；
+- **常量下标越界**：`int a[4]; a[4];`、`a[-1];`（v0.8.4 新增；只判具名数组对象，
+  `p[8]`、`a[i]`、`"ab"[5]` 沉默）。
 
 邻居形状一律沉默（`realloc` 复活、`free(p + 1)`、`if (c) free(p)` 单侧释放、所有权传给别的函数、
 含 `goto`/`asm` 的整个函数、跟踪表满的整个函数）。**报出来的都是能证实的，没报的不代表安全**
@@ -910,9 +914,39 @@ object #0 puts .data/.bss at 0x20000000 but the scatter file puts RW at 0x240720
 | `ARKCC_FEATURE_MEMLINT`（编译期） | 宿主 `1`、`ARKCC_PROFILE_STM32_MIN` `0` | 为 `0` 时整个 pass 不编进来；此时 `--warn-mem` 与 `warn_mem=1` 都以 `C3900U` 拒绝，不会假装检查过 |
 
 诊断**不带 armcc 编号**（只对实测过的 armcc 行为用编号），所以 `--diag_suppress` 无法定向关闭；
-要关就整体关掉 `--warn-mem`。代价实测：宿主 x86-64 上 `-O2` `+5,424 B` text、`-Os` `+4,436 B`，
+要关就整体关掉 `--warn-mem`。代价实测：宿主 x86-64 上 `-O2` `+6,584 B` text、`-Os` `+5,516 B`（v0.8.4 四类检查一起量，`ARKCC_FEATURE_ENUMCHECK=0` 隔离），
 `data`/`bss` 为零；默认关时 12 个目标产物与旧版逐字节相同。门禁 `tests/run_memlint_tests.py`
 （`make test-memlint`）。
+
+### 5.10 `switch` 漏掉枚举值（`--warn-enum`）
+
+语义分析通过之后在 AST 上跑的另一遍检查，只做一件事：**控制表达式的类型是枚举、这个
+`switch` 没有 `default:`、而 `case` 标签没有覆盖该枚举的全部枚举值时告警。**
+
+```c
+enum Color { RED, GREEN, BLUE };
+switch (c) { case RED: break; case BLUE: break; }   /* Warning: ... missing: GREEN */
+```
+
+- **按值比对不按名**：`case 0:` 与 `case RED:` 覆盖同一个枚举值；两个枚举值相同时一个
+  `case` 覆盖两个 —— 与运行期语义一致。
+- **只看类型是枚举的 `switch`**：`switch (int_var)` 即使标签是枚举常量也不查（类型才是
+  "这个值来自那个集合"的凭据）。
+- **嵌套 `switch` 各自独立判定**：收集 `case` 时不下潜内层。
+- **超过 64 个枚举值或 64 个 `case` 整条沉默**：截断比较会把"表外的值"说成"没写"。
+
+**这是 lint，不是"switch 处理了所有取值"的保证**：C 里枚举变量可以合法持有枚举值之外的
+值（`int` 强转），这一遍只回答"源码自己声明的枚举值是不是都写了名字"。详见
+[ENUMCHECK.md](ENUMCHECK.md)。
+
+| 开关 | 默认 | 说明 |
+| --- | :---: | --- |
+| `--warn-enum` / `--no-warn-enum` | 关 | 后出现的那个生效 |
+| `[features]` 节 `warn_enum=1` | 关 | 配置文件等效写法，命令行优先 |
+| `ARKCC_FEATURE_ENUMCHECK`（编译期） | 宿主 `1`、`ARKCC_PROFILE_STM32_MIN` `0` | 为 `0` 时整个 pass 不编进来；此时 `--warn-enum` 与 `warn_enum=1` 都以 `C3900U` 拒绝 |
+
+代价实测：宿主 x86-64 上 `-O2` `+1,852 B` text、`-Os` `+1,548 B`，`data`/`bss` 为零。
+门禁 `tests/run_enumcheck_tests.py`（`make test-enumcheck`）。
 
 ### 5.x 平铺镜像的 64 位/AEABI 运行时要自己链
 

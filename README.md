@@ -531,6 +531,7 @@ ark c compiler/
 ├── docs/ATOMIC.md          C11 _Atomic：Type 级传播、读-改-写拒绝、stdatomic.h 两支与门禁（中文，UTF-8）
 ├── docs/X86_64_BACKEND.md   x86-64（SysV AMD64）后端：寄存器、栈槽、重定位、执行级门禁（中文，UTF-8）
 ├── docs/MEMLINT.md         函数内内存 lint（--warn-mem）：判据、裁剪开关与实测代价（中文，UTF-8）
+├── docs/ENUMCHECK.md       switch 漏掉枚举值（--warn-enum）：判据、裁剪开关与实测代价（中文，UTF-8）
 ├── docs/从零写一个C编译器.md  教材体逐代码教程：19 章，从 30 行到 3 万行（中文，UTF-8）
 ├── docs/from-scratch-c-compiler.en.md  上述教材的英文摘要（结构、章目、阅读路线）
 └── README.md               项目简介（UTF-8）
@@ -649,7 +650,10 @@ arkcc <file.c|file.s> [选项]
   --reg-top          IR 栈顶值驻留 r0
   --asm-extra        汇编器扩展指令集；--no-asm-extra 显式关掉
   --warn-mem         函数内内存 lint（返回自动对象地址 / double free /
-                     use-after-free）；--no-warn-mem 显式关掉
+                     use-after-free / 自动对象地址存进全局 / 常量下标越界）；
+                     --no-warn-mem 显式关掉
+  --warn-enum        switch 的控制表达式是枚举且没有 default 时，检查是否漏了
+                     枚举值；--no-warn-enum 显式关掉
   --dce-cfg          基本块级可达性 DCE（只删"能到但永不执行"的代码）
   --build-date <s>   固定 __DATE__（如 "May 28 2026"）
   --build-time <s>   固定 __TIME__（如 "20:26:40"）
@@ -825,6 +829,7 @@ CJK 按显示单元计列、tab 原样重放。它不需要 armcc，断言的是
 
 ## 版本历史
 
+- v0.8.4：`--warn-mem` 补齐两个缺口、新增 `--warn-enum`（`docs/ENUMCHECK.md`）。`--warn-mem` 从两类诊断扩到四类：新增**自动对象地址存进静态存储期对象**（`g = &x;` / `g = local_array;` / `g = (T){...};`，根对象穿过 `a.b`/`a[i]` 判定，`g = "abc"`、`g = 0`、局部指针指局部数组一律沉默）与**常量下标越界**（`int a[4]; a[4]` / `a[-1]`，只对具名数组对象、非 VLA、下标可被 `eval_const_expr` 折成常量的情形判定；`p[8]`、`a[i]`、`"ab"[5]` 沉默）。`--warn-enum` 是独立的一遍检查：`switch` 类型是 enum、没有 `default:`、且 `case` 没覆盖该枚举全部枚举值时告警；**按值比对不按名**（`case 0:` 等价 `case RED:`）、嵌套 `switch` 各自独立判定、枚举值或 `case` 超过 64 条即整条沉默（截断比较会把"表外的值"说成"没写"）。两条检查都默认关、都有 `ARKCC_FEATURE_*` 编译期开关（`ARKCC_PROFILE_STM32_MIN` 档默认 0）与 INI 写法（`warn_mem`/`warn_enum`），特性不在时命令行与配置文件都以 `C3900U` 拒绝。实测代价（宿主 x86-64，互相隔离测量）：`--warn-mem` `-O2` `+6,584 B` / `-Os` `+5,516 B` text，`--warn-enum` `-O2` `+1,852 B` / `-Os` `+1,548 B` text，两者 `data`/`bss` 均为零；默认关时产物与 v0.8.3 逐字节相同。门禁：`tests/run_memlint_tests.py` 27 条断言（12 正例 / 16 反例 / 12 合法孪生）、`tests/run_enumcheck_tests.py` 19 条断言（5 正例 / 6 合法孪生 / 2 负例），均已并入 `make test`；`make test` 129 PASS / 0 FAIL / 1 SKIP，x86-64 自举 26 个翻译单元逐字节一致（6,349,223 B、`fnv=28c333dc`）。
 - v0.8.3：新增函数内内存 lint `--warn-mem`（`docs/MEMLINT.md`）。两类诊断——**返回自动存储期对象的地址**（`return &x;` / `return local_array;` / `return &local.field;` / `return (T){...};`）与**同一函数内的 double free / use-after-free**——只认能证实的形状：`realloc` 复活、`free(p + 1)`、`if (c) free(p)` 单侧释放、所有权传给别的函数、含 `goto`/`asm` 的函数、跟踪表（8 指针 / 32 局部名）溢出的函数一律沉默，选择漏报而不是猜。默认关时产物与 v0.8.2 **逐字节相同**（3 个程序 × arm/x86/riscv32/x86-64 共 12 个 `.o` 全部 `cmp` 一致）。可裁减：`ARKCC_FEATURE_MEMLINT` 在 `ARKCC_PROFILE_STM32_MIN` 档默认 0，特性不在时命令行 `--warn-mem` 与配置文件 `warn_mem=1` 都以 `C3900U` 拒绝并给出重建方法，不会假装检查过；实测代价（宿主 x86-64）`-O2` `+5,424 B` / `-Os` `+4,436 B` text、`data`/`bss` 为零、每个被分析函数约 900 B 栈帧。门禁 `tests/run_memlint_tests.py`（`make test-memlint`，22 条断言）：正例逐行逐文案、反例 12 种整份文件零输出、8 个缺陷的合法孪生版本零输出、开关三位一体（`--warn-mem` / `--no-warn-mem` / 配置文件）、以及现场用 `-DARKCC_FEATURE_MEMLINT=0` 重建后必须拒绝。这批诊断**不带 armcc 编号**（只对实测过的 armcc 行为用编号），所以 `--diag_suppress` 无法定向关闭。
 - v0.8.2：32 位 x86 后端的历史欠账全部清零，且门禁不再给它留缝。（1）本地数组下标：帧映射改成与 x86-64 同构的 `[ebp - framelo + off]`；（2）结构体按值传参与返回：隐藏返回缓冲指针（sret）在 `[ebp+8]`、真实参数从 `[ebp+12]` 起，`struct_sret40` 曾因 callee 把 sret 也算成一个参数宽度而读 `[ebp+16]`、拿回全零；（3）浮点：`x86_pair_swap_at` 在偏移 0 上退化成空操作，`(int)7.9` 给 0；（4）64 位整数：`IR_UNARY` 忽略 `I->val`、`|a|` 掩码写成 `sar 31`、除法移位用 `add ecx,ecx`。另有 C 档三条错值同轮修完：float/double 局部 `++/--` 按整数加、8 字节指针的 `IR_BINARY` 只做 32 位运算、指针 ↔ `long long` 转换是 no-op（指针 1 个栈字、`long long` 2 个，高半必须在 irgen 层拆/合，接到 cast／声明初始化／赋值／`return`／调用实参五处）。x86-64 镜像门禁 33 → **35 个程序**，并且**同一个程序再编一次 32 位跑一遍**、i386 结果与期望不符即判 FAIL（原口径只把它写成脚注 ⇒ 「32 位已知差距」长期不红）；自举门禁仍逐字节一致（2130 字节、`fnv=28c333dc`、877 行汇编相同）。详见 `docs/X86_64_BACKEND.md` §5。
 - v0.8.1：真 x86-64 后端（SysV AMD64 ABI，`--list-backends` 共五个后端）、CI 自动化（GitHub Actions + Gitee Go 双配置，见 `docs/CI.md`）、C11 `_Thread_local`（按 6.7.1p4 校验存储类，armcc 的裸 `__thread` 保持豁免）、C11 `_Atomic` + `<stdatomic.h>`（ARM 上真临界区实现，其余四个目标编译期拒绝；`Type::is_atomic` 使原子性沿 typedef 传播，`x += 1` / `x++` 一律报错；ARM 执行级门禁加 7 个用例，共 29 个；细节见 `docs/ATOMIC.md`）。另有 x86-64 执行级**自举门禁**（`tests/run_x86_64_selfhost.py`，`make test-x86-64-selfhost`）：用宿主 arkcc 编译自身 24 个翻译单元、把镜像在 unicorn 里跑起来、再由镜像内那份 arkcc 编译探针，产物与宿主 arkcc **逐字节相同**（2130 字节、`fnv=28c333dc`、汇编文本 877 行一致、libc stub 命中 0）；x86-64 用例从 26 增到 33，并修掉 §3.5 那条「`sizeof` 一个成员数组被静默答 4」的前端根因（parser 阶段求值 `AST_MEMBER` 时兜底 `s = 4`⇒ 改由 sema 求值，`sizeof(char sym[512])` 从 4 变 512，自举对象从 2351 字节回到 2130 字节）。

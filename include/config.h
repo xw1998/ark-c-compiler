@@ -44,6 +44,7 @@ typedef struct {
     int enable_rt_lazy;       /* --rt-lazy: 只发射被用到的 __aeabi_* 运行库 */
     int enable_asm_extra;     /* --asm-extra: 汇编器扩展指令集 */
     int enable_memlint;       /* --warn-mem: 返回局部地址 / double free / UAF 检查 */
+    int enable_enumcheck;     /* --warn-enum: switch on an enum that misses an enumerator */
 } ArkccConfig;
 
 extern ArkccConfig g_config;

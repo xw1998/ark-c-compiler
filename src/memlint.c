@@ -22,6 +22,7 @@
 
 #include "config.h"
 #include "diag.h"
+#include "sema.h"      /* eval_const_expr: the same folder the backend uses */
 
 /* Sizes are part of the trim story: raising them costs stack, not heap.
  * A function that exceeds either limit is abandoned whole (f->bail) rather than
@@ -75,6 +76,19 @@ static void ml_report(MlFn *f, int line, int col, const char *msg,
     loc.line = line;
     loc.col  = col;
     diag_report_msg(DIAG_SEV_WARNING, &loc, msg, a0, 0, 0);
+    f->warnings++;
+}
+
+/* Same, for the two messages that name an object on both sides of the
+ * assignment (the storage and the pointer that outlives it). */
+static void ml_report2(MlFn *f, int line, int col, const char *msg,
+                       const char *a0, const char *a1)
+{
+    DiagLoc loc;
+    loc.file = 0;
+    loc.line = line;
+    loc.col  = col;
+    diag_report_msg(DIAG_SEV_WARNING, &loc, msg, a0, a1, 0);
     f->warnings++;
 }
 
@@ -217,6 +231,114 @@ static void ml_check_return(MlFn *f, AstNode *val)
 }
 
 /* ---------------------------------------------------------------------------
+ * Check 3: the address of an automatic object escaping into an object that
+ * outlives the block
+ * ------------------------------------------------------------------------- */
+
+/* The object whose storage is being taken: `&a`, `&a.b`, `&a[i]` -> a. */
+static AstNode *ml_addressed_object(AstNode *v)
+{
+    if (v && v->kind == AST_UNARY && v->u.unary.op == TOK_BAND)
+        return ml_root_object(v->u.unary.operand);
+    return 0;
+}
+
+/* `g = &local;` / `g = local_array;` / `static_ptr = (void *)&local;`
+ *
+ * The store target is a static-duration object -- a file-scope variable or a
+ * `static` local: any name that is not in this function's automatic scope. The
+ * value stored is the address of something that dies with the block, so the
+ * pointer outlives what it points at.
+ *
+ * `*out = &local;` and `f(&local)` store it somewhere this walk cannot name
+ * (the callee could copy it to a local, or nowhere), so they stay silent.
+ * `tab[i] = &local;` is reported when `tab` itself has static duration: the
+ * element lives inside an object that outlives the block, so the address in it
+ * still dangles.  The defect this check exists for -- static storage holding a
+ * pointer into a dead stack frame -- is always spelled as a store into a
+ * static-duration object.
+ */
+static void ml_check_escape(MlFn *f, AstNode *lhs, AstNode *rhs)
+{
+    AstNode *target = ml_root_object(lhs);
+    AstNode *e = rhs;
+    AstNode *obj;
+
+    if (!target || target->kind != AST_VAR) return;
+    if (ml_is_auto(f, target->u.name)) return;      /* target dies too: fine */
+
+    while (e && e->kind == AST_CAST) e = e->u.unary.operand;
+    if (!e) return;
+
+    obj = ml_addressed_object(e);
+    if (obj && obj->kind == AST_VAR && ml_is_auto(f, obj->u.name)) {
+        ml_report2(f, obj->line, obj->col,
+                   "storing the address of the automatic object %sq into %sq; "
+                   "the target outlives the block, so the pointer dangles once "
+                   "this function returns",
+                   obj->u.name, target->u.name);
+        return;
+    }
+
+    /* `g = local_array;` -- the array decays to a pointer to itself. */
+    if (e->kind == AST_VAR && ml_is_auto(f, e->u.name)) {
+        Type *t = ml_local_type(f, e->u.name);
+        if (t && t->kind == TYPE_ARRAY)
+            ml_report2(f, e->line, e->col,
+                       "storing the address of the automatic array %sq into "
+                       "%sq; the target outlives the block, so the pointer "
+                       "dangles once this function returns",
+                       e->u.name, target->u.name);
+        return;
+    }
+
+    if (e->kind == AST_COMPOUND_LITERAL)
+        ml_report(f, e->line, e->col,
+                  "storing the address of a compound literal with automatic "
+                  "storage into %sq; it ceases to exist when this function "
+                  "returns", target->u.name);
+}
+
+/* ---------------------------------------------------------------------------
+ * Check 4: a constant subscript outside a known array bound
+ * ------------------------------------------------------------------------- */
+
+/* `int a[4]; a[4]` / `a[-1]` -- the subscript is a constant and the array's
+ * bound is in its type, so the out-of-range access is decidable at compile
+ * time.  Narrow on purpose:
+ *   - the operand must be an array, not a pointer: a pointer's bound is
+ *     whatever it was set to, which this pass does not track;
+ *   - the bound must be static (no VLA) and positive (no flexible member);
+ *   - the subscript must fold to a constant (eval_const_expr, the same
+ *     evaluator the code generator uses for array bounds and case labels);
+ *   - the operand must be a named object.  `"abc"[4]` is excluded because the
+ *     array bound of a string literal is the one size this pass would have to
+ *     take on faith from another stage.
+ * Note that `a[4]` is well formed as an *expression* (&a[4] is legal); it is
+ * only the dereference that is undefined, which is what a subscript is. */
+static void ml_check_bounds(MlFn *f, AstNode *e)
+{
+    AstNode   *base = e->u.array_access.array;
+    AstNode   *idx  = e->u.array_access.index;
+    Type      *t;
+    long long  v;
+    char       nb[16], sb[16];
+
+    if (!base || !idx) return;
+    if (base->kind != AST_VAR && base->kind != AST_MEMBER &&
+        base->kind != AST_ARRAY_ACCESS) return;
+    t = base->type;
+    if (!t || t->kind != TYPE_ARRAY) return;
+    if (t->is_vla || t->size <= 0) return;
+    if (!eval_const_expr(idx, &v)) return;
+    if (v >= 0 && v < (long long)t->size) return;
+    ml_report2(f, base->line, base->col,
+               "subscript %s is outside the bounds of this array of %s "
+               "element(s)",
+               diag_num(nb, (int)v), diag_num(sb, t->size));
+}
+
+/* ---------------------------------------------------------------------------
  * Check 2: double free / use after free (expression walk)
  * ------------------------------------------------------------------------- */
 
@@ -288,6 +410,7 @@ static void ml_expr(MlFn *f, AstNode *e)
         return;
 
     case AST_ARRAY_ACCESS:
+        ml_check_bounds(f, e);
         if (e->u.array_access.array && e->u.array_access.array->kind == AST_VAR) {
             ml_deref(f, e->u.array_access.array->u.name,
                      e->u.array_access.array->line,
@@ -314,6 +437,7 @@ static void ml_expr(MlFn *f, AstNode *e)
             const char *nm = e->u.binary.left->u.name;
             ml_expr(f, e->u.binary.right);          /* evaluate the source */
             if (e->u.binary.op == TOK_ASSIGN) {
+                ml_check_escape(f, e->u.binary.left, e->u.binary.right);
                 if (ml_is_alloc_call(e->u.binary.right)) ml_track(f, nm, ML_ALIVE);
                 else                                     ml_untrack(f, nm);
             } else {

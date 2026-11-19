@@ -192,6 +192,25 @@
 # endif
 #endif
 
+/* ARKCC_FEATURE_ENUMCHECK: the --warn-enum pass (a switch over an enum that
+ * does not name every enumerator). See include/enumcheck.h and docs/ENUMCHECK.md.
+ *
+ * Trimmable by construction: one self-contained source file, no table, no
+ * dynamic allocation -- two small arrays on the stack per switch analysed.
+ * Off in the STM32 profile because Flash is the scarce resource there, not
+ * because the check needs RAM; -DARKCC_FEATURE_ENUMCHECK=1 brings it back.
+ *
+ * The runtime switch (--warn-enum) is separate and defaults to off on every
+ * profile, so the shipped behaviour is unchanged even where the code is
+ * compiled in. */
+#ifndef ARKCC_FEATURE_ENUMCHECK
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_ENUMCHECK     0   /* Trim on the board: costs Flash */
+# else
+#   define ARKCC_FEATURE_ENUMCHECK     1
+# endif
+#endif
+
 /* ===========================================================================
  * 6. ARMCC 5 compatibility
  *

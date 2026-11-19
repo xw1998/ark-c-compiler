@@ -36,6 +36,21 @@ typedef struct StructField {
     struct StructField *next;
 } StructField;
 
+/* One enumerator of an enum type, recorded by the parser.
+ *
+ * C has no way to enumerate an enum's identifiers after the fact: the symbol
+ * table keeps each constant (SYM_ENUM_CONST) with its value but nothing links it
+ * back to the enum type it belongs to.  Without this list a pass cannot answer
+ * "which values does this enum have?", which is what an exhaustiveness check
+ * needs.  The list is built once, at the definition (`enum E { ... }`), and hangs
+ * off the defining Type; references to a tagged enum carry only the tag, see
+ * type_enum_definition(). */
+typedef struct EnumConst {
+    char              *name;
+    long long          value;
+    struct EnumConst  *next;
+} EnumConst;
+
 typedef struct Type {
     ValueType    kind;
     struct Type *base;       /* PTR/ARRAY element type; FUNC return type; COMPLEX real type */
@@ -62,6 +77,12 @@ typedef struct Type {
     int          is_func_ptr;     /* pointer created by a `(*name)(params)` declarator:
                                    * the pointee is a function, not a data object. */
     int          bf_break;        /* C99 6.7.2.1: width=0 bitfield forces next bitfield to a new storage unit */
+    /* TYPE_ENUM only: the enumerator list of the *definition*.  Non-NULL on the
+     * Type built by `enum E { A, B }`, NULL on a bare reference (`enum E x;`),
+     * which is a fresh Type carrying just the tag.  Appended at the end of the
+     * struct so the positional initialisers in type.c keep their meaning. */
+    EnumConst   *enumerators;
+    int          enumerator_count;
 } Type;
 
 /* ARK_IS_CX(t): does `t` name a _Complex type?  Spelled as a literal 0 in a
@@ -95,6 +116,15 @@ Type *type_pointer(Type *base);
 Type *type_array(Type *base, int size);
 Type *type_struct(const char *tag, int is_union);
 Type *type_enum(const char *tag);
+/* Append one enumerator to an enum *definition* Type (the one built at
+ * `enum E { ... }`).  Also registers the type under its tag so that later
+ * references, which are different Types with the same tag, can find the list. */
+void  type_enum_add_const(Type *t, const char *name, long long value);
+/* The defining Type of an enum, or NULL when there is nothing to enumerate.
+ * Anonymous enums are their own definition; tagged ones are looked up by tag
+ * (the lookup is generation-checked: a pointer left over from a previous
+ * translation unit is never returned, the arena behind it is gone). */
+Type *type_enum_definition(Type *t);
 Type *type_func(Type *ret, Type **params, int pc, int variadic);
 Type *type_wchar(void);                       /* B2: wchar_t */
 Type *type_complex(Type *base);               /* B4: _Complex base (base is float/double) */

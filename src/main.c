@@ -39,6 +39,10 @@ static void usage(void) {
         "                     pointer, and about dereferencing one (intra-procedural;\n"
         "                     off by default, silent about escaped pointers).\n"
 #endif
+#if ARKCC_FEATURE_ENUMCHECK
+        "  --warn-enum        warn about a switch over an enum that has no case for\n"
+        "                     every enumerator and no default label (off by default).\n"
+#endif
         "  -v                 verbose\n"
         "  -target <name>     select backend (arm|x86|x86_64|riscv32|c)\n"
         "  -I <dir>           additional include path\n"
@@ -563,6 +567,20 @@ int main(int argc, char **argv) {
         else if (strcmp(a, "--no-rt-lazy") == 0)    g_config.enable_rt_lazy = 0;
         else if (strcmp(a, "--asm-extra") == 0)     g_config.enable_asm_extra = 1;
         else if (strcmp(a, "--no-asm-extra") == 0)  g_config.enable_asm_extra = 0;
+#if ARKCC_FEATURE_ENUMCHECK
+        else if (strcmp(a, "--warn-enum") == 0)     g_config.enable_enumcheck = 1;
+        else if (strcmp(a, "--no-warn-enum") == 0)  g_config.enable_enumcheck = 0;
+#else
+        /* Same rule as --warn-mem below: refusing beats accepting an option that
+         * would claim a check this build cannot run. */
+        else if (strcmp(a, "--warn-enum") == 0) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: --warn-enum is not compiled into this "
+                    "build (rebuild with -DARKCC_FEATURE_ENUMCHECK=1)\n");
+            return 1;
+        }
+        else if (strcmp(a, "--no-warn-enum") == 0)  g_config.enable_enumcheck = 0;
+#endif
 #if ARKCC_FEATURE_MEMLINT
         else if (strcmp(a, "--warn-mem") == 0)      g_config.enable_memlint = 1;
         else if (strcmp(a, "--no-warn-mem") == 0)   g_config.enable_memlint = 0;
@@ -638,6 +656,17 @@ int main(int argc, char **argv) {
         fprintf(stderr,
                 "Fatal error: C3900U: --warn-mem is not compiled into this "
                 "build (rebuild with -DARKCC_FEATURE_MEMLINT=1)\n");
+        return 1;
+    }
+#endif
+
+#if !ARKCC_FEATURE_ENUMCHECK
+    /* Same for the ini entry (warn_enum=1 in [features]).  The CPU check above
+     * has already run, so this is the last chance to refuse it. */
+    if (g_config.enable_enumcheck) {
+        fprintf(stderr,
+                "Fatal error: C3900U: --warn-enum is not compiled into this "
+                "build (rebuild with -DARKCC_FEATURE_ENUMCHECK=1)\n");
         return 1;
     }
 #endif

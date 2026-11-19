@@ -7,22 +7,22 @@
 /* Note: <stdio.h> intentionally NOT included - no stdio functions used in
  * type.c, and we want to avoid pulling in semihosting on STM32. */
 
-static Type ty_void   = { TYPE_VOID, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_char   = { TYPE_CHAR, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_short  = { TYPE_SHORT, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_int    = { TYPE_INT, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_long   = { TYPE_LONG, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_llong  = { TYPE_LLONG, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_bool   = { TYPE_BOOL, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_float  = { TYPE_FLOAT, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_double = { TYPE_DOUBLE, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_uchar  = { TYPE_CHAR, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_ushort = { TYPE_SHORT, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_uint   = { TYPE_INT, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_ulong  = { TYPE_LONG, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_ullong = { TYPE_LLONG, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_void   = { TYPE_VOID, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_char   = { TYPE_CHAR, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_short  = { TYPE_SHORT, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_int    = { TYPE_INT, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_long   = { TYPE_LONG, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_llong  = { TYPE_LLONG, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_bool   = { TYPE_BOOL, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_float  = { TYPE_FLOAT, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_double = { TYPE_DOUBLE, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_uchar  = { TYPE_CHAR, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_ushort = { TYPE_SHORT, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_uint   = { TYPE_INT, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_ulong  = { TYPE_LONG, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_ullong = { TYPE_LLONG, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 /* B2: wchar_t - passed through to gcc by host/C backend, treated as 4-byte unsigned integer */
-static Type ty_wchar  = { TYPE_WCHAR, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_wchar  = { TYPE_WCHAR, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
 Type *type_void(void)   { return &ty_void;  }
 Type *type_char(void)   { return &ty_char;  }
@@ -94,6 +94,74 @@ Type *type_enum(const char *tag) {
     t->kind = TYPE_ENUM;
     if (tag) t->tag = mem_strdup(tag);
     return t;
+}
+
+/* ---------------------------------------------------------------------------
+ * Enum definitions: tag -> defining Type.
+ *
+ * The list lives in the arena, so it dies with the translation unit that
+ * created it.  g_enum_gen remembers which arena generation it belongs to and
+ * is compared on every entry point: after mem_pool_reset() the old head would
+ * still be a valid pointer into the pool but no longer own anything, and
+ * following it would read another TU's data.  Dropping it is the only correct
+ * answer -- a stale registry would silently enumerate the wrong enum.
+ * ------------------------------------------------------------------------- */
+typedef struct EnumDef {
+    char           *tag;
+    Type           *type;
+    struct EnumDef *next;
+} EnumDef;
+
+static EnumDef *g_enum_defs;
+static int      g_enum_gen = -1;
+
+static void enum_registry_sync(void)
+{
+    int gen = mem_pool_generation();
+    if (gen != g_enum_gen) { g_enum_defs = 0; g_enum_gen = gen; }
+}
+
+void type_enum_add_const(Type *t, const char *name, long long value)
+{
+    EnumConst *c, *p;
+
+    if (!t || t->kind != TYPE_ENUM) return;
+    enum_registry_sync();
+
+    c = (EnumConst *)mem_pool_alloc(sizeof(EnumConst));
+    c->name  = name ? mem_strdup(name) : 0;
+    c->value = value;
+    c->next  = 0;
+    if (!t->enumerators) t->enumerators = c;
+    else { for (p = t->enumerators; p->next; p = p->next) ; p->next = c; }
+    t->enumerator_count++;
+
+    /* First definition of a tag wins.  C99 6.7.2.3p3 forbids defining the
+     * same enum twice in one scope, so a second one is already a diagnosed
+     * error; keeping the first makes the answer well defined regardless. */
+    if (t->tag) {
+        EnumDef *d;
+        for (d = g_enum_defs; d; d = d->next)
+            if (ark_streq(d->tag, t->tag)) return;
+        d = (EnumDef *)mem_pool_alloc(sizeof(EnumDef));
+        d->tag  = t->tag;
+        d->type = t;
+        d->next = g_enum_defs;
+        g_enum_defs = d;
+    }
+}
+
+Type *type_enum_definition(Type *t)
+{
+    EnumDef *d;
+
+    if (!t || t->kind != TYPE_ENUM) return 0;
+    if (t->enumerators) return t;        /* anonymous, or the definition itself */
+    if (!t->tag) return 0;
+    enum_registry_sync();
+    for (d = g_enum_defs; d; d = d->next)
+        if (ark_streq(d->tag, t->tag)) return d->type;
+    return 0;
 }
 
 Type *type_func(Type *ret, Type **params, int pc, int variadic) {

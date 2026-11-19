@@ -1044,12 +1044,17 @@ old output.
 
 ### 5.9 Intra-procedural memory lint (`--warn-mem`)
 
-One pass over the AST after semantic analysis. It reports exactly two things:
+One pass over the AST after semantic analysis. It reports four things:
 
 - **returning the address of an automatic object**: `return &x;`, `return local_array;`,
   `return &local.field;`, `return (T){...};`;
 - **double free / use-after-free inside one function**: only for a pointer that came directly from
-  `malloc`/`calloc`/`realloc`/`strdup`, never escaped and never reassigned.
+  `malloc`/`calloc`/`realloc`/`strdup`, never escaped and never reassigned;
+- **an automatic object's address stored into static storage**: `g = &x;`, `g = local_array;`,
+  `g = (T){...};` (new in v0.8.4; `g = "abc"`, `g = 0`, and a local pointer to a local array stay
+  silent);
+- **a constant subscript outside a known array bound**: `int a[4]; a[4];`, `a[-1];` (new in
+  v0.8.4; only named array objects -- `p[8]`, `a[i]` and `"ab"[5]` stay silent).
 
 Neighbouring shapes stay silent (`realloc` revival, `free(p + 1)`, a single-sided `if (c) free(p)`,
 ownership handed to another function, any function containing `goto`/`asm`, any function whose
@@ -1065,9 +1070,44 @@ safe** — ownership is not in C's type system, so this pass gives no Rust-style
 
 The diagnostics carry **no armcc code** (codes are used only for measured armcc behaviour), so
 `--diag_suppress` cannot target them; turning them off means turning `--warn-mem` off. Measured
-cost: `+5,424 B` text at `-O2` and `+4,436 B` at `-Os` on host x86-64, zero `data`/`bss`; with the
+cost: `+6,584 B` text at `-O2` and `+5,516 B` at `-Os` on host x86-64 (all four checks, measured
+with `ARKCC_FEATURE_ENUMCHECK=0` to isolate), zero `data`/`bss`; with the
 pass off the 12 target objects are byte-identical to the previous release. Gate:
 `tests/run_memlint_tests.py` (`make test-memlint`).
+
+### 5.10 A `switch` that misses an enumerator (`--warn-enum`)
+
+A separate pass over the AST after semantic analysis. It does one thing: **when the controlling
+expression has enum type, the `switch` has no `default:` label, and its `case` labels do not cover
+every enumerator of that enum, issue one warning.**
+
+```c
+enum Color { RED, GREEN, BLUE };
+switch (c) { case RED: break; case BLUE: break; }   /* Warning: ... missing: GREEN */
+```
+
+- **Values decide coverage, not names**: `case 0:` and `case RED:` cover the same enumerator, and
+  two enumerators sharing a value are covered together -- matching the runtime `switch`.
+- **Only `switch` on an enum type**: `switch (int_var)` over enum constants is not checked (the
+  type is what says "this value comes from that set").
+- **Nested switches are judged independently**: collecting `case` labels never descends into an
+  inner `switch`.
+- **More than 64 enumerators or 64 case labels: skipped entirely** -- a truncated comparison could
+  claim a value is missing when it is merely beyond the table.
+
+**This is a lint, not a guarantee that the switch handles every value**: in C an enum variable may
+legally hold a value no enumerator names (an `int` converted to the enum type). It only answers
+whether every enumerator the source itself declared is named here. See
+[ENUMCHECK.en.md](ENUMCHECK.en.md).
+
+| Switch | Default | Meaning |
+| --- | :---: | --- |
+| `--warn-enum` / `--no-warn-enum` | off | the last one on the command line wins |
+| `warn_enum=1` under `[features]` | off | the config-file spelling; the command line wins |
+| `ARKCC_FEATURE_ENUMCHECK` (compile time) | host `1`, `ARKCC_PROFILE_STM32_MIN` `0` | at `0` the pass is not compiled in, and both `--warn-enum` and `warn_enum=1` are refused with `C3900U` |
+
+Measured cost: `+1,852 B` text at `-O2` and `+1,548 B` at `-Os` on host x86-64, zero
+`data`/`bss`. Gate: `tests/run_enumcheck_tests.py` (`make test-enumcheck`).
 
 ### 5.x Flat images must link their own 64-bit/AEABI runtime
 

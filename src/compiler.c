@@ -9,6 +9,7 @@
 #include "parser.h"
 #include "sema.h"
 #include "memlint.h"
+#include "enumcheck.h"
 #include "irgen.h"
 #include "ir.h"
 #include "preproc.h"
@@ -2549,6 +2550,12 @@ int ark_compile(const ArkOptions *opts) {
      * only emits warnings, so it cannot change the exit code or the image;
      * with the switch off (the default) not one instruction of it runs. */
     if (g_config.enable_memlint) memlint_run(ast);
+#endif
+#if ARKCC_FEATURE_ENUMCHECK
+    /* --warn-enum: a set comparison over `switch` statements on enum types.
+     * Warnings only, so the exit code and the image are unaffected; with the
+     * switch off (the default) not one instruction of it runs. */
+    if (g_config.enable_enumcheck) enumcheck_run(ast);
 #endif
     {
         int diag_before_irgen = diag_errors();

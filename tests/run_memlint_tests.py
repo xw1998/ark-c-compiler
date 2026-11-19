@@ -54,6 +54,7 @@ extern void free(void *);
 
 int g_cnt;
 static int s_cnt;
+char *g_esc;                    /* file-scope pointer: outlives every frame */
 
 struct S { int a; int b; };
 
@@ -117,6 +118,35 @@ void uaf_deref(void)
     free(p);
     *p = 0;                     /* ANCHOR:uaf_deref */
 }
+
+void esc_array(void);
+void esc_array(void)
+{
+    char b[8];
+    b[0] = 0;
+    g_esc = b;                  /* ANCHOR:esc_array */
+}
+
+void esc_object(void);
+void esc_object(void)
+{
+    int x = 1;
+    g_esc = (char *)&x;         /* ANCHOR:esc_object */
+}
+
+void oob_high(void);
+void oob_high(void)
+{
+    int a[4];
+    a[4] = 1;                   /* ANCHOR:oob_high */
+}
+
+void oob_neg(void);
+void oob_neg(void)
+{
+    int a[4];
+    a[-1] = 1;                  /* ANCHOR:oob_neg */
+}
 '''
 
 POS_EXPECT = [
@@ -129,6 +159,10 @@ POS_EXPECT = [
     ('uaf_index',   'use of "p" after it was freed'),
     ('uaf_arrow',   'use of "p" after it was freed'),
     ('uaf_deref',   'use of "p" after it was freed'),
+    ('esc_array',   'address of the automatic array "b" into "g_esc"'),
+    ('esc_object',  'address of the automatic object "x" into "g_esc"'),
+    ('oob_high',    'subscript 4 is outside the bounds of this array of 4'),
+    ('oob_neg',     'subscript -1 is outside the bounds of this array of 4'),
 ]
 
 # The same defects, written correctly.  Every function here is the legal twin of
@@ -139,6 +173,7 @@ extern void free(void *);
 
 int g_cnt;
 static int s_cnt;
+char *g_esc;
 
 struct S { int a; int b; };
 
@@ -214,6 +249,7 @@ extern void sink(void *p);
 
 int g_cnt;
 static int s_cnt;
+char *g_esc;
 
 struct S { int a; int b; };
 
@@ -313,6 +349,61 @@ void n_plain(void)
 {
     char *p = malloc(8);
     free(p);
+}
+
+void fx_esc_static(void);
+void fx_esc_static(void)
+{
+    static char b[8];
+    g_esc = b;                  /* static storage lives as long as the pointer */
+}
+
+void fx_esc_local(void);
+void fx_esc_local(void)
+{
+    char b[8];
+    char *p = b;                /* the pointer dies with the block too */
+    b[0] = 0;
+    p[0] = b[0];
+}
+
+void fx_oob_ok(void);
+void fx_oob_ok(void)
+{
+    int a[4];
+    a[3] = 1;
+    a[0] = a[3];
+}
+
+void fx_oob_dyn(void);
+void fx_oob_dyn(int i)
+{
+    int a[4];
+    a[i] = 1;                   /* the bound is not a constant: not decided */
+}
+
+void n_esc_literal(void);
+void n_esc_literal(void)
+{
+    g_esc = "abc";              /* a string literal is static storage */
+}
+
+void n_esc_null(void);
+void n_esc_null(void)
+{
+    g_esc = 0;                  /* no object is escaped */
+}
+
+int n_oob_ptr(int *p);
+int n_oob_ptr(int *p)
+{
+    return p[8];                /* the extent is not in the pointer's type */
+}
+
+int n_oob_str(void);
+int n_oob_str(void)
+{
+    return "ab"[5];             /* string literals are out of this pass's scope */
 }
 '''
 

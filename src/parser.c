@@ -1521,6 +1521,10 @@ static AstNode *parse_enum(Parser *p) {
             {
                 Symbol *s = sym_add(SYM_ENUM_CONST, nt.str, type_int(), 0);
                 s->enum_value = next_val;
+                /* The symbol table keeps the value, not the set: record the
+                 * enumerator on the defining Type so a later pass can ask which
+                 * values this enum has (--warn-enum). */
+                type_enum_add_const(t, nt.str, (long long)next_val);
             }
             next_val++;
             if (lexer_peek(p->lex).kind == TOK_COMMA) lexer_advance(p->lex);

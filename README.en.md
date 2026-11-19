@@ -622,6 +622,7 @@ ark c compiler/
 ├── docs/ATOMIC.md          C11 _Atomic: type-level propagation, read-modify-write rejection, the two <stdatomic.h> branches and their gate (Chinese, UTF-8)
 ├── docs/X86_64_BACKEND.md  x86-64 (SysV AMD64) backend: registers, stack slots, relocations, execution-level gate (Chinese, UTF-8)
 ├── docs/MEMLINT.md         Intra-procedural memory lint (--warn-mem): boundary, trim switch, measured cost (Chinese, UTF-8)
+├── docs/ENUMCHECK.md       Switch missing an enumerator (--warn-enum): criteria, trim switch, measured cost (Chinese, UTF-8)
 ├── docs/从零写一个C编译器.md  Textbook-style walkthrough: 19 chapters, from 30 lines to 30 000 (Chinese, UTF-8)
 ├── docs/from-scratch-c-compiler.en.md  English summary of that textbook (structure, chapter map, reading routes)
 └── README.md               Project overview (Chinese, UTF-8)
@@ -749,7 +750,11 @@ arkcc <file.c|file.s> [options]
   --reg-top          keep the IR stack top resident in r0
   --asm-extra        assembler extended instruction set; --no-asm-extra turns it off explicitly
   --warn-mem         intra-procedural memory lint (address of an automatic
-                     object / double free / use-after-free); --no-warn-mem turns it off
+                     object / double free / use-after-free / address stored into
+                     static storage / constant subscript out of bounds);
+                     --no-warn-mem turns it off
+  --warn-enum        when a switch controls on an enum and has no default, check
+                     that every enumerator is named; --no-warn-enum turns it off
   --dce-cfg          basic-block reachability DCE (deletes only code that is reachable but never executes)
   --build-date <s>   pin __DATE__ (e.g. "May 28 2026")
   --build-time <s>   pin __TIME__ (e.g. "20:26:40")
@@ -990,6 +995,28 @@ See [docs/MANUAL.en.md](docs/MANUAL.en.md) for the full manual.
 > documented only in the Chinese [README.md](README.md) — they are long, and every one of them is
 > covered by the documents under `docs/`.
 
+- **v0.8.4**: `--warn-mem` closes two gaps and a new `--warn-enum` arrives (`docs/ENUMCHECK.en.md`).
+  `--warn-mem` goes from two diagnostics to four: it now also reports **storing the address of an
+  automatic object into an object with static storage duration** (`g = &x;`, `g = local_array;`,
+  `g = (T){...};` -- the root object is resolved through `a.b`/`a[i]`, while `g = "abc"`, `g = 0`
+  and a local pointer to a local array stay silent) and **a constant subscript outside a known
+  array bound** (`int a[4]; a[4]`, `a[-1]`; only named array objects, no VLA, and only when
+  `eval_const_expr` folds the subscript -- `p[8]`, `a[i]` and `"ab"[5]` stay silent). `--warn-enum`
+  is a separate pass: a `switch` whose controlling expression has enum type, that has no `default:`
+  label, and whose `case` labels do not cover every enumerator gets one warning. **Values decide
+  coverage, not names** (`case 0:` covers `case RED:`), nested switches are judged independently,
+  and a set larger than 64 enumerators or 64 case labels is skipped entirely -- a truncated
+  comparison could claim a value is missing when it is merely beyond the table. Both checks are off
+  by default, both have a compile-time `ARKCC_FEATURE_*` switch (0 in `ARKCC_PROFILE_STM32_MIN`)
+  and an INI spelling (`warn_mem` / `warn_enum`), and where the feature is compiled out both the
+  command line and the config file are refused with `C3900U`. Measured cost (host x86-64, each
+  measured in isolation): `--warn-mem` `+6,584 B` text at `-O2` / `+5,516 B` at `-Os`;
+  `--warn-enum` `+1,852 B` / `+1,548 B`; zero `data`/`bss` for both. With everything off the
+  output is byte-identical to v0.8.3. Gates: 27 assertions in `tests/run_memlint_tests.py`
+  (12 positive / 16 negative / 12 legal twins) and 19 in `tests/run_enumcheck_tests.py`
+  (5 positive / 6 legal twins / 2 negative), both part of `make test`, which is now
+  129 PASS / 0 FAIL / 1 SKIP; the x86-64 self-host gate compiles 26 translation units and the
+  object is byte-identical (6,349,223 B image, `fnv=28c333dc`).
 - **v0.8.3**: adds the intra-procedural memory lint `--warn-mem` (`docs/MEMLINT.en.md`). Two
   diagnostics -- **returning the address of an automatic object** (`return &x;` /
   `return local_array;` / `return &local.field;` / `return (T){...};`) and **double free /
