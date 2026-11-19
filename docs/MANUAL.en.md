@@ -1881,6 +1881,99 @@ call template is in [User/main.c](../mdk/STM32H743_ArkCC/User/main.c)).
 
 ---
 
+### 7.6 The ark_test project on a NUCLEO-F401RE: execution-level parity with armcc
+
+[examples/ark_test](../examples/ark_test) targets a NUCLEO-F401RE (STM32F401RE, 512 KB flash / 96 KB RAM).
+It folds every HAL source it needs, `Core/Src/main.c`, `arkcc_stubs.c` and its own `ark_startup.c`
+into a **single translation unit** `ark_test_all.c` (24 `#include` lines), so there is no link-time library
+resolution to worry about: one object in, one flat image out.
+`main()` does exactly four things - `HAL_Init()`, `SystemClock_Config()` (HSI 16 MHz, no PLL),
+`MX_GPIO_Init()`, then toggles PC13 forever: the **user LED blinks at 1 Hz**.
+
+| image | how it is produced | size |
+| --- | --- | --- |
+| arkcc | run `examples/ark_test/build_ark_test_fw.ps1` from the repo root -> `examples/ark_test/ark_test_fw.bin` | 153 064 B |
+| armcc | Keil `examples/ark_test/MDK-ARM/ark_test.uvprojx` (AC5 5.06u7, `-O0`) -> `MDK-ARM/ark_test/ark_test.hex` | 3 564 B |
+
+The ~43x size gap is **expected**: arkcc still emits the whole TU (no section GC / function-level pruning),
+while armlink drops unused sections by default.
+
+#### 7.6.1 Why "execution-level" parity
+
+"It looks similar in assembly" is not evidence of equivalence. What is compared here is the
+**observable side effects after both images boot from the reset vector**: each one runs the real
+reset path (`__main` / `ark_startup` doing the `.data` copy and `.bss` clear), and then we compare
+the peripheral write sequence, the number of `HAL_Delay` polls, and the behaviour of the SysTick
+vector entry, item by item. Only a full match is called equivalent; the first difference is printed
+otherwise.
+
+#### 7.6.2 The tool
+
+```powershell
+# needs unicorn; the armcc side can be read straight from .hex (or fromelf --bin first)
+python tools/compare_ark_test_armcc.py --self-check
+```
+
+Measured output (2026-11-19):
+
+```
+== boot from reset ==
+  arkcc SP=0x20018000 reset=0x080254AB writes=38 bsrr=6 ticks=2009 stopped
+  armcc SP=0x20000670 reset=0x08000235 writes=38 bsrr=6 ticks=2009 stopped
+
+== equivalence ==
+  PASS  peripheral write sequence    38 entries
+  PASS  GPIO BSRR count              6
+  PASS  uwTick poll count            2009
+  PASS  stopped cleanly              True
+
+== SysTick vector entry ==
+  PASS  arkcc handler=0x08024AF7 uwTick 2009 -> 2010
+  PASS  armcc handler=0x08000CAD uwTick 2009 -> 2010
+
+RESULT: EQUIVALENT
+```
+
+Criteria (all must hold):
+
+1. **The peripheral + PPB write sequence matches value by value** (38 writes): FPU enable `0xE000ED88`,
+   three `FLASH_ACR` steps, `AIRCR/VTOR`, SysTick `LOAD/VAL/CTRL` and priority, six intermediate
+   `RCC_CR`/`RCC_CFGR` values, five GPIOC configuration writes, and the alternating
+   `BSRR = 0x20000000 / 0x00002000`.
+2. **BSRR count = 6** (three complete blink periods).
+3. **Identical `uwTick` poll count** (2009): both sides wait the same number of iterations in
+   `HAL_Delay(500)`, i.e. the delay logic and the generated code agree.
+4. **Both stop exactly at the 6th BSRR write** (not on the instruction budget).
+5. **Calling the SysTick vector entry (`vector[15]`) bumps `uwTick` by exactly 1**, on both sides.
+6. Self-check (`--self-check`): a pair that *must* differ has to be reported as FAIL, and the two
+   images must not be the same build (different SP and size) - otherwise "equal" means nothing.
+
+Regenerate the armcc oracle with `UV4 -r examples/ark_test/MDK-ARM/ark_test.uvprojx`; the product is
+`MDK-ARM/ark_test/ark_test.hex` (`fromelf --text -c` shows the scatter table: `.data` 16 B @0x20000000,
+ZI 1632 B @0x20000010, consistent with `RW_IRAM1 0x20000000 0x00018000` in the `.sct`).
+
+#### 7.6.3 Two traps (both look like "the compiler is broken")
+
+- **unicorn 2.1.4 corrupts `STM`/`LDM` when a global write hook is installed**: a `UC_HOOK_MEM_WRITE`
+  hook **without** a `begin`/`end` range (even a callback body of `pass`) makes the Keil image's
+  `__scatterload_zeroinit` count down with a garbage `r2` and zero RAM until it walks off the mapped
+  region (symptom: "it writes exactly as far as you mapped" + `Invalid memory write`). That is a hook
+  artefact, not an image defect. **Always range-limit hooks**; this tool does, and
+  [tests/arm_exec/run_arm_exec.py](../tests/arm_exec/run_arm_exec.py) only installs a fetch-unmapped
+  hook so it is unaffected.
+- **`uwTick` is incremented by a *read* hook**: the emulator has no SysTick hardware, so every read of
+  `uwTick` bumps the counter (which is what lets `HAL_Delay` return). Both sides get the same treatment,
+  so the poll counts stay comparable; but the injection must be switched off before calling the SysTick
+  ISR directly, otherwise the read-modify-write inside the handler is recorded as +2.
+
+#### 7.6.4 What the emulator cannot see
+
+There is no SysTick counting hardware and no real pin: **that the interrupt is actually taken** and
+**that PC13 really blinks** can only be observed on a board. Hardware steps: flash
+`examples/ark_test/ark_test_fw.bin` at `0x08000000` (ST-Link / `UV4 -f`); PC13 should blink at 1 Hz,
+and a live read of `uwTick` should increase (proving the SysTick ISR runs). Flash `ark_test.hex` the same
+way as the armcc reference. (This round only reached emulator-level parity; hardware has not been run yet.)
+
 ## 8 Code organisation and porting guide
 
 ### 8.1 File list

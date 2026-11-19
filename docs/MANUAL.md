@@ -1608,6 +1608,89 @@ arkCC 在 STM32 上使用三层内存区域：
 
 ---
 
+### 7.6 F401 NUCLEO 的 ark_test 工程：与 armcc 的执行级对拍
+
+[examples/ark_test](../examples/ark_test) 是 NUCLEO-F401RE（STM32F401RE，512 KB Flash / 96 KB RAM）工程。
+它把全部用到的 HAL 源、`Core/Src/main.c`、`arkcc_stubs.c` 和自带的 `ark_startup.c` 合并成**单 TU** `ark_test_all.c`
+（24 行 `#include`），因此不依赖链接期的库解析：一个对象、一张平铺镜像就够。
+`main()` 只有四步——`HAL_Init()` → `SystemClock_Config()`（HSI 16 MHz，无 PLL）→ `MX_GPIO_Init()` → 死循环翻转 PC13，
+也就是**用户 LED 1 Hz 闪烁**。
+
+| 镜像 | 生成方式 | 体积 |
+| --- | --- | --- |
+| arkcc | 仓库根执行 `examples/ark_test/build_ark_test_fw.ps1` → `examples/ark_test/ark_test_fw.bin` | 153 064 B |
+| armcc | Keil `examples/ark_test/MDK-ARM/ark_test.uvprojx`（AC5 5.06u7，`-O0`）→ `MDK-ARM/ark_test/ark_test.hex` | 3 564 B |
+
+体积差约 43 倍属于**预期**：arkcc 目前整 TU 全量发射（没有 section GC / 函数级裁剪），armcc 侧 armlink 默认删未用段。
+
+#### 7.6.1 为什么要做"执行级"对拍
+
+"汇编看起来差不多"不能当等价证据。这里比对的是**从复位向量启动之后的可观测副作用**：
+两条镜像各自跑一遍真实的复位路径（`__main`/`ark_startup` 的 `.data` 拷贝与 `.bss` 清零），
+然后逐条比较外设写序列、`HAL_Delay` 的轮询次数、以及 SysTick 向量入口的行为。
+只有全部一致才判等价；任一条不等即判 MISMATCH 并打印第一处差异。
+
+#### 7.6.2 工具
+
+```powershell
+# 依赖 unicorn；armcc 侧可以直接读 .hex（也可先 fromelf --bin 出 .bin）
+python tools/compare_ark_test_armcc.py --self-check
+```
+
+实测输出（2026-11-19，HEAD 之上）：
+
+```
+== boot from reset ==
+  arkcc SP=0x20018000 reset=0x080254AB writes=38 bsrr=6 ticks=2009 stopped
+  armcc SP=0x20000670 reset=0x08000235 writes=38 bsrr=6 ticks=2009 stopped
+
+== equivalence ==
+  PASS  peripheral write sequence    38 entries
+  PASS  GPIO BSRR count              6
+  PASS  uwTick poll count            2009
+  PASS  stopped cleanly              True
+
+== SysTick vector entry ==
+  PASS  arkcc handler=0x08024AF7 uwTick 2009 -> 2010
+  PASS  armcc handler=0x08000CAD uwTick 2009 -> 2010
+
+RESULT: EQUIVALENT
+```
+
+判据（全部成立才算等价）：
+
+1. **外设 + PPB 写序列逐条逐值一致**（38 条）：FPU 使能 `0xE000ED88`、`FLASH_ACR` 三档、
+   `AIRCR/VTOR`、SysTick `LOAD/VAL/CTRL` 与优先级、`RCC_CR`/`RCC_CFGR` 六个中间值、
+   GPIOC 五条配置、以及交替的 `BSRR = 0x20000000 / 0x00002000`。
+2. **BSRR 计数 = 6**（3 个完整闪烁周期）。
+3. **`uwTick` 轮询次数一致**（2009）：两边 `HAL_Delay(500)` 的等待循环次数相同 ⇒ 延时逻辑与代码生成等价。
+4. **都恰好在第 6 次 BSRR 处停下**（不是撞预算上限）。
+5. **SysTick 向量项（`vector[15]`）直接调用后 `uwTick` 恰好 +1**，两侧都通过。
+6. 自检（`--self-check`）：故意喂一对"应当不等"的值，检测器必须报 FAIL；
+   同时要求两侧镜像不是同一个构建（SP 与体积不同），否则"相等"没有意义。
+
+重新生成 armcc 侧 oracle：`UV4 -r examples/ark_test/MDK-ARM/ark_test.uvprojx`，
+产物 `MDK-ARM/ark_test/ark_test.hex`（`fromelf --text -c` 可核对 scatter 表：`.data` 16 B @0x20000000、
+ZI 1632 B @0x20000010，与 `.sct` 的 `RW_IRAM1 0x20000000 0x00018000` 一致）。
+
+#### 7.6.3 两个坑（都会给出"看起来像编译器坏了"的假象）
+
+- **unicorn 2.1.4 的全局写钩子会破坏 `STM`/`LDM`**：只要装一个**不限定地址范围**的
+  `UC_HOOK_MEM_WRITE`（哪怕回调体是 `pass`），Keil 镜像的 `__scatterload_zeroinit` 就会拿一个垃圾 `r2`
+  把 RAM 一路清零到映射末端（现象是"映射多大就写到多大" + `Invalid memory write`）。
+  这不是镜像的问题，而是钩子实现的问题。**所有钩子一律用 `begin`/`end` 限定范围**，本工具已如此；
+  仓库内 [tests/arm_exec/run_arm_exec.py](../tests/arm_exec/run_arm_exec.py) 只挂 fetch-unmapped 钩子，不受影响。
+- **`uwTick` 由"读钩子"自增**：模拟器没有 SysTick 硬件，所以每次读 `uwTick` 就让计数器 +1（让 `HAL_Delay` 能返回）。
+  两侧施加同等待遇，因此**轮询次数可比**；但在直接调用 SysTick ISR 之前必须先关掉这个注入，
+  否则处理函数内部那次 read-modify-write 会被记成 +2。
+
+#### 7.6.4 模拟器测不到的部分
+
+模拟器没有 SysTick 计数硬件，也没有真实引脚：**中断真被硬件触发**以及**PC13 真的在闪**只能在板子上看。
+真机验证步骤：把 `examples/ark_test/ark_test_fw.bin` 烧到 `0x08000000`（ST-Link / `UV4 -f`），
+PC13 应 1 Hz 闪烁；在线读 `uwTick` 递增即为 SysTick ISR 在跑。armcc 侧同理烧 `ark_test.hex` 作为对照。
+（本轮只做到模拟器层面等价，尚未在硬件上执行。）
+
 ## 8 代码组织与移植指南
 
 ### 8.1 文件清单
