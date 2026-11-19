@@ -30,7 +30,10 @@ code generation again.  This project's object format is `ARKOBJ2`:
 "ARKOBJ2\n" | u32 code size | code bytes | symbol table | relocations (4=abs, 5=pc-rel)
 ```
 
-**There is no IR in an object.**  Real LTO would mean adding an optional IR
+**There is no IR in an object** (0.8.7 filled that gap, see
+[OBJ_IR.en.md](OBJ_IR.en.md): `-c --obj-ir` writes the payload and `-link --lto`
+reads it back and emits again; `--ipo` stays the source-level whole-program path
+and the two produce byte-identical output).  Real LTO would mean adding an optional IR
 payload section, rebuilding N copies of the IR at link time, renumbering the
 string / float / label pools, and re-running the backend inside the linker --
 a different contract (object format, linker, debug info, version compatibility),
@@ -305,9 +308,13 @@ of 9.
 
 1. **Global-value theorem**: constant-ness of non-`const` globals first needs an
    answer to "can an external object or assembly text write it", see §8.4.
-2. **Preconditions for real object-level LTO**: an optional IR payload section in
+2. ~~**Preconditions for real object-level LTO**: an optional IR payload section in
    `ARKOBJ2`; rebuilding IR at link time (renumbering three pools); a version
-   compatibility policy.  All three need "a backend runs inside the linker"
-   demonstrated on the board first.
-3. **Partial link (`-r`)**: several `--ipo` units producing an intermediate
-   object, linked at the end -- again blocked on "objects carry no IR".
+   compatibility policy.~~ **Done**: see [OBJ_IR.en.md](OBJ_IR.en.md)
+   (`-c --obj-ir` writes the payload, `-link --lto` reads it back and emits again;
+   the gate requires byte-identical output to `--ipo`).  The version policy is strict
+   equality, with no forward compatibility.
+3. **Partial link (`-r`)**: several `--ipo` units producing an intermediate object,
+   linked at the end -- the payload makes this possible in principle, but "does the
+   machine code or the IR in the intermediate object win" has to be decided first,
+   so it is out of scope here.

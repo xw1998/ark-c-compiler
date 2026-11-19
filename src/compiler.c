@@ -21,6 +21,7 @@
 #include "opt.h"
 #include "pipeline.h"
 #include "scatter.h"
+#include "irser.h"
 #include "diag.h"
 /* Note: <stdio.h> intentionally NOT included - all file I/O goes through
  * fs_read_file/fs_write_file (flash_fs abstraction) to avoid pulling in
@@ -884,7 +885,8 @@ static int obj_put_sym(unsigned char *buf, int ol, const char *nm,
  * code at the image layout its own -link path expects.
  */
 static int write_ark_obj(const ArkBackend *be, const ArkOptions *opts,
-                         int asm_len, int bin_len) {
+                         int asm_len, int bin_len,
+                         const unsigned char *payload, int payload_len) {
     char outpath[512];
     const char *target;
     static unsigned char obj_buf[ARK_OBJ_BUF_SIZE] __attribute__((section(".ark_buf")));
@@ -1128,6 +1130,23 @@ static int write_ark_obj(const ArkBackend *be, const ArkOptions *opts,
         }
     }
 
+    /* --obj-ir: the unit's serialised IR, appended after the relocation table.
+     * Everything above is exactly the 0.8.6 layout, so a reader that stops at
+     * the end of the relocation table (every link tool before this one) sees
+     * the object it always saw.  See include/irser.h for the payload format. */
+    if (payload && payload_len > 0) {
+        if (ol + payload_len > (int)sizeof(obj_buf)) {
+            diag_tool(DIAG_SEV_ERROR, target,
+                      "the IR payload does not fit the object buffer "
+                      "(raise ARK_OBJ_BUF_SIZE and rebuild arkcc)", 0,0,0,0,0,0);
+            return ARK_ERR_IO;
+        }
+        {
+            int k;
+            for (k = 0; k < payload_len; k++) obj_buf[ol++] = payload[k];
+        }
+    }
+
     if (fs_write_file(target, obj_buf, ol) != ol)
         return ARK_ERR_IO;
     {
@@ -1239,6 +1258,14 @@ int ark_frontend_unit(const ArkOptions *opts, IrProgram *shared,
 
     preproc_reset();
     preproc_set_main_file(opts->input_path);
+    /* g_ir_cur_line is set by irgen from each AST node and read by ir_emit.
+     * Nothing used to clear it, so a unit compiled after another one inherited
+     * the previous unit's last line: --ipo let unit 2's prologue STORE carry
+     * unit 1's line number, and `cc --pack` (several compiles in one process)
+     * had the same leak.  Clearing it here is what makes `-c --obj-ir` +
+     * `-link --lto` reproduce `--ipo` byte for byte, and it is right on its
+     * own terms: a translation unit starts with no line. */
+    g_ir_cur_line = 0;
 
 #if ARKCC_FEATURE_BUILD_TIME
     /* __DATE__/__TIME__ 的三个来源，优先级从高到低：
@@ -1660,6 +1687,16 @@ int ark_frontend_unit(const ArkOptions *opts, IrProgram *shared,
      * inline what one file contained and the merged program would then be
      * optimised a second time.  The caller (src/ipo.c) runs the pipeline once
      * over the merged program instead. */
+#if ARKCC_FEATURE_OBJ_IR
+    /* --obj-ir: write the unit's IR down *here*, before the pipeline mutates
+     * it in place.  What travels in the object is the program the front end
+     * produced, which is exactly what --ipo hands to its own single pipeline
+     * run over the merged program -- that is what makes `-link --lto` and
+     * `--ipo` produce the same code from the same sources.  Serialising after
+     * the pipeline instead would optimise each unit twice, and the second
+     * pass would then depend on how the units happened to be split. */
+    if (!shared && opts->obj_ir) ir_stash_payload(ir, opts->input_path);
+#endif
     if (!shared) {
         int lvl = opts->opt_level;
         if (lvl < g_config.opt_level) lvl = g_config.opt_level;
@@ -1706,6 +1743,13 @@ int ark_compile(const ArkOptions *opts) {
      * symbol resolution with weak-symbol precedence + relocation patching).
      * Legacy text objects are concatenated (C backend). */
     if (opts->link_mode) {
+#if ARKCC_FEATURE_OBJ_IR
+        /* -link --lto: recompile the merged IR instead of concatenating code.
+         * It is a different job with a different input contract (every object
+         * must carry a payload), so it does not share code with the machine
+         * code linker below; see ark_lto_link() in src/ipo.c. */
+        if (opts->lto_link) return ark_lto_link(opts);
+#endif
         /* Sized like the output buffer, not 64 KB: an object bigger than the
          * read buffer used to be truncated silently and the linker then copied
          * the code size it had read from the header out of whatever followed
@@ -2619,7 +2663,16 @@ int ark_compile(const ArkOptions *opts) {
          * produced a flat .bin, so the flag changed nothing. Emit a real
          * ARKOBJ2 object now, using the same writer as the C front end. */
         if (opts->compile_only) {
-            return write_ark_obj(be2, opts, asm_len, code_size);
+            /* An assembly input has no IR to carry, so --obj-ir is refused
+             * rather than silently producing an object that claims a payload
+             * it cannot have (and --lto would then reject it, far from here). */
+            if (opts->obj_ir) {
+                diag_tool(DIAG_SEV_ERROR, opts->input_path,
+                          "--obj-ir needs a C source: an assembly input has no IR",
+                          0,0,0,0,0,0);
+                return ARK_ERR_ARG;
+            }
+            return write_ark_obj(be2, opts, asm_len, code_size, 0, 0);
         }
         if (be2->link) {
             int rc = be2->link(g_code, code_size, 0);
@@ -2675,6 +2728,15 @@ int ark_emit_program(const ArkOptions *opts, IrProgram *ir, const ArkBackend *be
     int asm_len;
     int code_size;
 
+    /* --vector-table is a property of code generation, and this function is
+     * the one place every path to code generation passes through: a single
+     * file, --ipo, and -link --lto.  ark_frontend_unit() also sets it (the
+     * scatter validation there needs it), but --lto never runs a front-end
+     * unit, so without this line the option was silently dropped on that
+     * path: the image started with code where the vector table belonged, and
+     * the emulator answered "reset vector has no Thumb bit". */
+    g_arm_vt_reserve = (opts->vector_table != 0) ? 1 : 0;
+
     /* The ARM backend loads the scatter file lazily, at the start of its own
      * code generation (it only sees g_config, never ArkOptions).  When that
      * parse fails it used to leave every base at the built-in
@@ -2709,6 +2771,20 @@ int ark_emit_program(const ArkOptions *opts, IrProgram *ir, const ArkBackend *be
 
     /* -c mode: write an ARKOBJ2 object instead of a flat binary. */
     if (opts->compile_only) {
+        /* --obj-ir appends the unit's IR after the symbol and relocation
+         * tables, so it only means something for a backend that writes those
+         * tables at all.  The c backend's "object" is the generated C text
+         * with an empty table: -link --lto could never use it, and appending
+         * a payload would just make an already unlinkable file bigger. */
+        if (opts->obj_ir && !ark_streq(be->name, "arm") &&
+            !ark_streq(be->name, "x86") && !ark_streq(be->name, "x86_64") &&
+            !ark_streq(be->name, "riscv32")) {
+            diag_tool(DIAG_SEV_ERROR, opts->input_path,
+                      "--obj-ir needs an object backend (arm/x86/x86_64/riscv32): "
+                      "the '%s' backend writes text, not a linkable object",
+                      be->name, 0, 0, 0, 0, 0);
+            return ARK_ERR_ARG;
+        }
         int code_len = asm_len;
         if (ark_streq(be->name, "arm") || ark_streq(be->name, "x86") ||
             ark_streq(be->name, "x86_64") ||
@@ -2727,7 +2803,21 @@ int ark_emit_program(const ArkOptions *opts, IrProgram *ir, const ArkBackend *be
                 return ARK_ERR_ASM;
             }
         }
-        return write_ark_obj(be, opts, asm_len, code_len);
+        {
+            /* The payload was serialised before the pipeline ran (see
+             * ark_frontend_unit); here it is only copied out. */
+            int plen = 0;
+            const unsigned char *pdata = opts->obj_ir ? ir_stashed_payload(&plen) : 0;
+#if ARKCC_FEATURE_OBJ_IR
+            if (opts->obj_ir && !pdata) {
+                diag_tool(DIAG_SEV_ERROR, opts->input_path,
+                          "--obj-ir was requested but no IR payload was produced",
+                          0,0,0,0,0,0);
+                return ARK_ERR_IO;
+            }
+#endif
+            return write_ark_obj(be, opts, asm_len, code_len, pdata, plen);
+        }
     }
 
     if (opts->emit_asm) {
@@ -2895,5 +2985,7 @@ int ark_compile_and_run(const char *path) {
     o.ipo_mode = 0;
     for (i = 0; i < ARK_LINK_MAX_OBJS; i++) o.ipo_inputs[i] = 0;
     o.ipo_input_count = 0;
+    o.obj_ir = 0;
+    o.lto_link = 0;
     return ark_compile(&o);
 }

@@ -62,6 +62,17 @@ typedef struct {
     int         ipo_mode;                        /* --ipo / -flto */
     const char *ipo_inputs[ARK_LINK_MAX_OBJS];   /* the .c files, in order */
     int         ipo_input_count;
+    /* --obj-ir: write this unit's IR into the object (after the relocation
+     * table, behind an "ARKIR1\n" header) so that a later -link --lto can
+     * re-compile it.  Only meaningful with -c and a machine-code backend.
+     * The payload is the IR *before* the pass pipeline: --lto runs the
+     * pipeline over the merged program, and running it twice would make the
+     * result depend on how the units happened to be split. */
+    int         obj_ir;                          /* --obj-ir */
+    /* -link --lto: instead of concatenating code, deserialise every object's
+     * IR, merge the units the way --ipo does, run the pipeline and emit once.
+     * An object without a payload is refused, never mixed in. */
+    int         lto_link;                        /* -link --lto */
 } ArkOptions;
 
 int ark_compile(const ArkOptions *opts);

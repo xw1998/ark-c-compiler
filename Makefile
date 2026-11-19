@@ -24,6 +24,7 @@ endif
         test-x86-64-selfhost test-riscv test-reloc-text test-memlint \
         test-enumcheck test-pipeline test-unusedresult test-mir \
         test-loop test-modern test-atomic test-ipo test-constglobal \
+        test-objir \
         install stm32
 
 all: $(ARKCC)
@@ -39,7 +40,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -120,6 +121,14 @@ test-ipo: $(ARKCC)
 # build cropped with -DARKCC_FEATURE_CONST_GLOBAL=0 must refuse the option.
 test-constglobal: $(ARKCC)
 	$(PYTHON) tests/run_constglobal_tests.py ./$(ARKCC)
+
+# Object-IR gate: -c --obj-ir appends the pre-pipeline IR to the ARKOBJ2 file
+# and -link --lto replays it, so the linked program must be byte-identical to
+# --ipo (same pools, same inlining, same constant folding).  The gate also
+# corrupts the payload four ways and requires a named error with no output
+# file, and a build cropped with -DARKCC_FEATURE_OBJ_IR=0 must refuse both.
+test-objir: $(ARKCC)
+	$(PYTHON) tests/run_objir_tests.py ./$(ARKCC)
 
 # Library gate: every stdlib entry point is compiled and run on the ARM
 # emulator, and each case asserts a number the program itself computed.  A

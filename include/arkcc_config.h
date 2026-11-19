@@ -290,6 +290,32 @@
  * makes --print-pipeline refuse with C3900U instead of printing an empty
  * table, which is the only honest behaviour for a query this build cannot
  * answer. */
+/* ARKCC_FEATURE_OBJ_IR: the IR payload in an ARKOBJ2 object (`-c --obj-ir`)
+ * and link-time optimisation over those payloads (`-link --lto`).
+ *
+ * What it is: an object normally carries machine code, symbols and
+ * relocations, and the IR is consumed by codegen and thrown away.  That is
+ * why the linker can only concatenate and patch -- cross-file inlining and
+ * constant propagation have no subject there.  --ipo solves it by compiling
+ * every file in one process, which requires all the sources at once.  --obj-ir
+ * solves the same problem on the object path: the serialised IR rides along
+ * in the object (after the relocation table, so older readers are unaffected),
+ * and `-link --lto` re-compiles the merged IR instead of patching code.
+ *
+ * OFF in the STM32 profile: the payload needs a per-unit IR-sized buffer and
+ * a whole-program merge, and the board's arena holds one unit already.
+ * -DARKCC_FEATURE_OBJ_IR=1 brings it back.
+ *
+ * Both runtime switches default to off, so a build with the feature compiled
+ * in behaves exactly as before unless asked. */
+#ifndef ARKCC_FEATURE_OBJ_IR
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_OBJ_IR         0
+# else
+#   define ARKCC_FEATURE_OBJ_IR         1
+# endif
+#endif
+
 #ifndef ARKCC_FEATURE_PIPELINE_DUMP
 # if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
 #   define ARKCC_FEATURE_PIPELINE_DUMP 0

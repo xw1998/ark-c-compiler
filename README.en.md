@@ -628,6 +628,7 @@ ark c compiler/
 ├── docs/MIR_CFG.md         MIR/CFG and the three whole-program checks (unreachable / unused static / recursion): invariants, verdicts, deliberate non-reports, trimming, gate (Chinese, UTF-8)
 ├── docs/LOOPS.md           Loop optimisations (--licm / --unroll): what moves and what does not, zero iterations, the single accepted shape, limits, gate (Chinese, UTF-8)
 ├── docs/IPO_LTO.md         Whole-program compilation (--ipo / -flto) and cross-TU constant propagation (--const-global): why it is not object-level LTO, merge semantics, refused combinations, cropping, gates (Chinese, UTF-8)
+├── docs/OBJ_IR.md         An IR payload in the object and link-time recompilation (--obj-ir / -link --lto): payload format, pool remapping on merge, byte equivalence, refusals and diagnostics, cropping, gate (Chinese, UTF-8)
 ├── docs/从零写一个C编译器.md  Textbook-style walkthrough: 19 chapters, from 30 lines to 30 000 (Chinese, UTF-8)
 ├── docs/from-scratch-c-compiler.en.md  English summary of that textbook (structure, chapter map, reading routes)
 └── README.md               Project overview (Chinese, UTF-8)
@@ -787,6 +788,14 @@ arkcc <file.c|file.s> [options]
                      initialiser + never written + address never escapes + not
                      volatile/array/aggregate/long long + no __at/section/__thread"
                      folds; anything else keeps its load.  --no-const-global off
+  --obj-ir           with -c: serialise the pre-pipeline IR and append it to the
+                     ARKOBJ2 object so that -link --lto can replay it;
+                     --no-obj-ir turns it off.  Refuses assembly input and text
+                     backends (-target c)
+  --lto              with -link: read the IR back out of the objects, merge, run
+                     the pipeline once and emit again -- byte-identical to --ipo.
+                     Must be written before -link; refuses -c/-E/-g, a missing
+                     -o and an empty input list
   --dce-cfg          basic-block reachability DCE (deletes only code that is reachable but never executes)
   --build-date <s>   pin __DATE__ (e.g. "May 28 2026")
   --build-time <s>   pin __TIME__ (e.g. "20:26:40")
@@ -1063,6 +1072,28 @@ See [docs/MANUAL.en.md](docs/MANUAL.en.md) for the full manual.
   `volatile` 6, array 3, `long long`), `-O0` does not fold, `--print-pipeline` reports `run`/`off`,
   the cropped build refuses the option, and with the switch off a full build and a cropped build emit
   **byte-identical** `.s`.
+  This release also adds **an IR payload in the object and link-time recompilation**
+  (`docs/OBJ_IR.md`): `-c --obj-ir` serialises the whole pre-pipeline program (type table, three
+  constant pools, argument-length table, globals, functions and their instruction streams) and
+  **appends it after `ARKOBJ2`'s relocation table**; `-link --lto` reads it back, appends the four
+  pools in command-line order with index remapping (`IR_PUSH_STR.val` / `IR_PUSH_FLOAT.val` /
+  `IR_CALL.aux2`), reuses `--ipo`'s unit renaming and external-name arbitration, runs the pipeline
+  **once** and emits again.  Because the payload is the **unoptimised** IR (the hook sits before
+  `pipeline_run_ir()`), `--lto` and `--ipo` hold the same IR at the pipeline entry, so the result is
+  **byte-identical in both directions** (`-S` and `-o bin`); same-named statics come back as
+  `__ipo1f_helper`/`__ipo2f_helper`, and units without a `main` merge the same way.  An old reader
+  stops at the relocation table, so a payload-carrying object still links under plain `-link` and
+  produces the same image.  A missing or corrupt payload (truncated, bad magic, version 99, body
+  length mismatch) is always a **named error with no output file** -- dropping a unit is a wrong
+  answer, far more dangerous than a failed link.  Version compatibility is strict equality with no
+  forward compatibility, and there is no `-r` partial link.  Cropping: `ARKCC_FEATURE_OBJ_IR`
+  defaults to 0 in `ARKCC_PROFILE_STM32_MIN`, and then both options report "not compiled into this
+  build".  Gate `tests/run_objir_tests.py` (`make test-objir`, 26 checks): payload written with the
+  prefix unchanged, a `--ipo` reference that really inlines and folds (otherwise the later
+  "identical" is an empty equality), the two byte-for-byte comparisons, two emulator readings (102
+  and 79), both same-named statics still named, four kinds of damage, a payload-free object refused
+  by name, plain `-link` undisturbed, six option refusals, the cropped build's refusals, and with
+  the switch off a full build and a cropped build emit **byte-identical** `-c` objects.
 > Entries v0.8.2 and v0.8.1 are translated in full below. Earlier releases (v0.2.0–v0.8.0) are
 > documented only in the Chinese [README.md](README.md) — they are long, and every one of them is
 > covered by the documents under `docs/`.

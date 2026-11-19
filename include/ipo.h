@@ -32,4 +32,14 @@ int ark_emit_program(const ArkOptions *opts, IrProgram *ir, const ArkBackend *be
  * cannot silently accept the option. */
 int ark_ipo_compile(const ArkOptions *opts);
 
+/* -link --lto driver: read every object's IR payload (written by
+ * `-c --obj-ir`), merge the units exactly as --ipo does, run the pass pipeline
+ * over the merged program and emit a fresh image from that IR -- i.e. real
+ * code generation at link time rather than the linker's concatenate-and-patch.
+ * Defined in src/ipo.c.  Enabled only when ARKCC_FEATURE_IPO and
+ * ARKCC_FEATURE_OBJ_IR are both on; a build without them still exports the
+ * symbol so --lto is refused with a diagnostic instead of "unrecognized
+ * option". */
+int ark_lto_link(const ArkOptions *opts);
+
 #endif /* ARK_IPO_H */

@@ -1169,6 +1169,42 @@ arkcc --ipo main.c util.c -target arm --cpu Cortex-M7 -O2 --vector-table -o app.
 详见 [IPO_LTO.md](IPO_LTO.md) §8，门禁 `tests/run_constglobal_tests.py`
 （`make test-constglobal`，15 项检查）。
 
+### 5.18 对象里的 IR 载荷与链接期重编（`--obj-ir` / `-link --lto`）
+
+`-c --obj-ir` 把"管线之前"的整个程序序列化后追加在 `ARKOBJ2` 对象末尾；
+`-link --lto` 读回来、合并、跑一遍管线、重新出码。结果与 `--ipo` **逐字节相同**
+（同一条管线、同一份 IR、同一套池布局）。
+
+```bash
+arkcc -c --obj-ir -O2 -target arm main.c -o main.o
+arkcc -c --obj-ir -O2 -target arm util.c -o util.o
+arkcc --lto -link main.o util.o -O2 -target arm --vector-table -o app.bin
+```
+
+| 开关 | 默认 | 说明 |
+| --- | :---: | --- |
+| `--obj-ir` / `--no-obj-ir` | 关 | 只在 `-c` 下有效；汇编输入与文本后端（`-target c`）拒绝 |
+| `--lto` | 关 | 只在 `-link` 下有效；**必须写在 `-link` 之前**，否则会被当成对象名截断收集 |
+| `ARKCC_FEATURE_OBJ_IR`（编译期） | 宿主 `1`、`ARKCC_PROFILE_STM32_MIN` 为 `0` | 不在时两选项以"未编入此构建"拒绝 |
+
+规则：
+
+- 载荷是**未优化**的 IR：钩子在 `pipeline_run_ir()` 之前，所以 `--lto` 与 `--ipo`
+  走的是同一条管线、同一份输入，这是"逐字节相同"的来源；
+- 载荷**追加在重定位表之后**：老读者读到表就停，因此带载荷对象照样能被 plain
+  `-link` 链接，产出与不带载荷**同一镜像**；
+- 合并按命令行顺序追加四个池并 remap 索引（`IR_PUSH_STR.val` / `IR_PUSH_FLOAT.val`
+  / `IR_CALL.aux2`），池不去重——这正是 `--ipo` 的布局，所以机器码能复现；
+- 同名 `static` 经往返仍是 `__ipo<单元>f_/g__<名字>`，两个单元不会互相并掉；
+- 载荷缺失 / 损坏 / 版本不符一律**具名报错且不写输出文件**（少合并一个单元等于
+  错答案，比链接失败危险得多）。
+
+拒绝：`--lto` 与 `-c` / `-E` / `-g` / 缺 `-o` / 无输入；`--obj-ir` 与汇编输入、
+文本后端。版本兼容取硬相等，不向前兼容。
+
+详见 [OBJ_IR.md](OBJ_IR.md)，门禁 `tests/run_objir_tests.py`（`make test-objir`，
+26 项检查）。
+
 ## 6 在 Windows 上测试
 
 ### 6.1 推荐流程：c 后端

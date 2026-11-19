@@ -283,6 +283,10 @@ int        ir_program_add_string(IrProgram *prog, const char *data, int len);
 int        ir_program_add_float(IrProgram *prog, double v);
 int        ir_program_add_complex(IrProgram *prog, double re, double im);
 IrGlobal  *ir_program_add_global(IrProgram *prog, const char *name, Type *t);
+/* Append an already-built IrGlobal (used by the IR deserialiser, which
+ * cannot go through ir_program_add_global: that one allocates and
+ * initialises fields the payload already carries). */
+void       ir_program_add_global_ptr(IrProgram *prog, IrGlobal *g);
 IrGlobal  *ir_program_find_global(IrProgram *prog, const char *name);
 const char *ir_op_name(IrOp op);
 

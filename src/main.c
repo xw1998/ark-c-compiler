@@ -302,6 +302,8 @@ static void reset_opts(ArkOptions *o) {
     o->ipo_mode = 0;
     for (i = 0; i < ARK_LINK_MAX_OBJS; i++) o->ipo_inputs[i] = 0;
     o->ipo_input_count = 0;
+    o->obj_ir = 0;
+    o->lto_link = 0;
 }
 
 /* armcc: the text before '=' must be an identifier; everything after '=' is
@@ -568,6 +570,19 @@ int main(int argc, char **argv) {
              * which the parser records as it goes (see the last branch). */
             opts.ipo_mode = 1;
         }
+#if ARKCC_FEATURE_OBJ_IR
+        else if (strcmp(a, "--obj-ir") == 0)   opts.obj_ir = 1;
+        else if (strcmp(a, "--no-obj-ir") == 0) opts.obj_ir = 0;
+        else if (strcmp(a, "--lto") == 0)      opts.lto_link = 1;
+#else
+        else if (strcmp(a, "--obj-ir") == 0 || strcmp(a, "--lto") == 0) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: %s is not compiled into this build "
+                    "(rebuild with -DARKCC_FEATURE_OBJ_IR=1)\n", a);
+            return 1;
+        }
+        else if (strcmp(a, "--no-obj-ir") == 0) opts.obj_ir = 0;
+#endif
         else if (strcmp(a, "-link") == 0) {
             opts.link_mode = 1;
             /* Collect following non -o/non-option arguments as inputs */

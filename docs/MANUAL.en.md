@@ -1367,6 +1367,48 @@ With the flag off, **size and emitted code are byte-identical**.
 See [IPO_LTO.en.md](IPO_LTO.en.md) §8; the gate is `tests/run_constglobal_tests.py`
 (`make test-constglobal`, 15 checks).
 
+### 5.18 An IR payload in the object, and link-time recompilation (`--obj-ir` / `-link --lto`)
+
+`-c --obj-ir` serialises the whole pre-pipeline program and appends it to the
+`ARKOBJ2` object; `-link --lto` reads it back, merges, runs the pipeline once and emits
+again.  The result is **byte-identical** to `--ipo` (same pipeline, same IR, same pool
+layout).
+
+```bash
+arkcc -c --obj-ir -O2 -target arm main.c -o main.o
+arkcc -c --obj-ir -O2 -target arm util.c -o util.o
+arkcc --lto -link main.o util.o -O2 -target arm --vector-table -o app.bin
+```
+
+| Switch | Default | Meaning |
+| --- | :---: | --- |
+| `--obj-ir` / `--no-obj-ir` | off | only under `-c`; an assembly input or a text backend (`-target c`) is refused |
+| `--lto` | off | only under `-link`; **must be written before `-link`**, otherwise it truncates the object collection |
+| `ARKCC_FEATURE_OBJ_IR` (compile time) | host `1`, `ARKCC_PROFILE_STM32_MIN` `0` | when absent both options are refused as "not compiled into this build" |
+
+Rules:
+
+- the payload is **unoptimised** IR: the hook sits before `pipeline_run_ir()`, so
+  `--lto` and `--ipo` feed the same pipeline the same input -- that is where
+  "byte-identical" comes from;
+- the payload is **appended after the relocation table**: an old reader stops at the
+  table, so a payload-carrying object still links under plain `-link` and gives the
+  **same image** as a payload-free one;
+- the merge appends the four pools in command-line order and remaps the indices
+  (`IR_PUSH_STR.val` / `IR_PUSH_FLOAT.val` / `IR_CALL.aux2`); pools are not
+  deduplicated -- that is exactly `--ipo`'s layout, so the machine code reproduces;
+- a same-named `static` is still `__ipo<unit>f_/g__<name>` after the round trip, so
+  two units never merge into one;
+- a missing / corrupt / mis-versioned payload is always a **named error with no output
+  file** (dropping a unit is a wrong answer, far more dangerous than a failed link).
+
+Refused: `--lto` with `-c` / `-E` / `-g` / no `-o` / no inputs; `--obj-ir` with an
+assembly input or a text backend.  Version compatibility is strict equality, with no
+forward compatibility.
+
+See [OBJ_IR.en.md](OBJ_IR.en.md); the gate is `tests/run_objir_tests.py`
+(`make test-objir`, 26 checks).
+
 ## 6 Testing on Windows
 
 ### 6.1 Recommended flow: the C backend

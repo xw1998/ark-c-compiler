@@ -45,9 +45,12 @@
 #include "ipo.h"
 #include "platform.h"
 #include "memory.h"
+#include "flash_fs.h"
+#include "type.h"
 #include "config.h"
 #include "diag.h"
 #include "pipeline.h"
+#include "irser.h"
 
 #if ARKCC_FEATURE_IPO
 
@@ -490,6 +493,188 @@ int ark_ipo_compile(const ArkOptions *opts)
     return ark_emit_program(opts, prog, be);
 }
 
+/* ------------------------------------------------------------------ */
+/* Link-time code generation: -link --lto                              */
+/* ------------------------------------------------------------------ */
+
+#if ARKCC_FEATURE_OBJ_IR
+
+/* Same shape as ipo_refuse(), different verb: the reader is running the
+ * linker, not the whole-program compiler, and the message should say so. */
+static int lto_refuse(const ArkOptions *opts, const char *what, const char *why)
+{
+    (void)opts;
+    diag_tool(DIAG_SEV_ERROR, "arkcc",
+              "--lto cannot be combined with %s: %s", what, why,
+              0, 0, 0, 0);
+    return ARK_ERR_ARG;
+}
+
+/* Read `path` into buf (ARK_LINK_BUF_SIZE bytes) and return the payload it
+ * carries.  Everything that can go wrong here has a name: unreadable file,
+ * file larger than the buffer, truncated read, not an ARKOBJ2 object,
+ * malformed tables, an object built without --obj-ir.  In every case a
+ * diagnostic is printed and -1 is returned; there is no "carry on with what we
+ * have", because a link that silently drops a unit's code is a wrong answer. */
+static int lto_read_payload(const char *path, unsigned char *buf,
+                            IrProgram **out)
+{
+    const unsigned char *pl = 0;
+    int plen = 0;
+    int fsz, got, pr;
+
+    *out = 0;
+    fsz = fs_file_size(path);
+    if (fsz < 0) {
+        diag_tool(DIAG_SEV_ERROR, path,
+                  "cannot stat object: %s", fs_last_error(),
+                  0, 0, 0, 0, 0);
+        return -1;
+    }
+    if (fsz > ARK_LINK_BUF_SIZE) {
+        char b1[12], b2[12];
+        diag_tool(DIAG_SEV_ERROR, path,
+                  "object is %s bytes but this arkcc reads at most %s; "
+                  "raise ARK_LINK_BUF_SIZE and rebuild arkcc",
+                  diag_num(b1, fsz), diag_num(b2, ARK_LINK_BUF_SIZE),
+                  0, 0, 0, 0);
+        return -1;
+    }
+    /* fs_read_file() may truncate silently or refuse outright depending on the
+     * port; comparing what it reports with what stat said turns both
+     * behaviours into one honest diagnostic. */
+    got = fs_read_file(path, (char *)buf, ARK_LINK_BUF_SIZE);
+    if (got < 0) {
+        diag_tool(DIAG_SEV_ERROR, path,
+                  "cannot read object: %s", fs_last_error(),
+                  0, 0, 0, 0, 0);
+        return -1;
+    }
+    if (got < fsz) {
+        char b1[12], b2[12];
+        diag_tool(DIAG_SEV_ERROR, path,
+                  "only %s of %s bytes could be read; raise "
+                  "ARK_LINK_BUF_SIZE and rebuild arkcc",
+                  diag_num(b1, got), diag_num(b2, fsz), 0, 0, 0, 0);
+        return -1;
+    }
+    /* The magic check is explicit rather than trusting the payload search: an
+     * object from another tool must be named as such, not reported as a
+     * corrupt payload. */
+    if (got < 8 || buf[0] != 'A' || buf[1] != 'R' || buf[2] != 'K' ||
+        buf[3] != 'O' || buf[4] != 'B' || buf[5] != 'J' ||
+        buf[6] != '2' || buf[7] != '\n') {
+        diag_tool(DIAG_SEV_ERROR, path,
+                  "not an ARKOBJ2 object; --lto reads the objects produced by "
+                  "`-c --obj-ir`", 0, 0, 0, 0, 0, 0);
+        return -1;
+    }
+    /* want_payload = 1: an object without an IR payload is the one thing -link
+     * --lto cannot work with, and mixing it in would produce an image missing
+     * that unit. Refuse, naming the file. */
+    pr = ir_obj_find_payload(buf, got, 1, &pl, &plen, path);
+    if (pr <= 0) return -1;
+    *out = ir_deserialize(pl, plen, path);
+    return *out ? 0 : -1;
+}
+
+int ark_lto_link(const ArkOptions *opts)
+{
+    IrProgram *prog;
+    const ArkBackend *be;
+    unsigned char *buf;
+    const char *first_src = 0;
+    int n, i, rc;
+
+    if (!opts) return ARK_ERR_ARG;
+    n = opts->link_input_count;
+    if (n <= 0) {
+        diag_tool(DIAG_SEV_ERROR, "arkcc",
+                  "--lto needs at least one object file",
+                  0, 0, 0, 0, 0, 0);
+        return ARK_ERR_ARG;
+    }
+    /* -c under -link --lto would ask for an object built from objects.  The IR
+     * could in principle be re-serialised, but nothing asks for that yet and a
+     * silent "it worked" would carry a merged symbol table nobody validates. */
+    if (opts->compile_only)
+        return lto_refuse(opts, "-c",
+                          "--lto generates code from IR and writes a program");
+    if (opts->preprocess_only)
+        return lto_refuse(opts, "-E", "an object is already preprocessed");
+    if (opts->debug_info)
+        return lto_refuse(opts, "-g",
+                          "a merged program has one source_file, so every "
+                          "unit's lines would be labelled with the first "
+                          "object's name");
+    if (!opts->output_path)
+        return lto_refuse(opts, "no -o",
+                          "with several objects there is no single name to "
+                          "derive the output from");
+
+    be = opts->target ? ark_backend_find(opts->target) : ark_backend_default();
+    if (!be) {
+        diag_tool(DIAG_SEV_ERROR, "arkcc",
+                  "unknown target '%s' for --lto", opts->target,
+                  0, 0, 0, 0, 0);
+        return ARK_ERR_ARG;
+    }
+
+    /* One arena for the whole link, exactly as --ipo: types deserialised for
+     * unit N must outlive the merge of unit N+1. */
+    mem_pool_reset();
+    buf = (unsigned char *)mem_pool_alloc(ARK_LINK_BUF_SIZE);
+    if (!buf) {
+        diag_tool(DIAG_SEV_ERROR, "arkcc",
+                  "out of memory: cannot allocate the object buffer",
+                  0, 0, 0, 0, 0, 0);
+        return ARK_ERR_OOM;
+    }
+    type_set_ptr_size(be->pointer_size);
+    prog = ir_program_new();
+
+    for (i = 0; i < n; i++) {
+        const char *path = opts->link_inputs[i];
+        IrProgram *u = 0;
+        int f0, g0;
+
+        if (lto_read_payload(path, buf, &u) != 0) return ARK_ERR_LINK;
+        /* The image has one source_file slot; like --ipo, use the first unit's
+         * name and refuse -g above rather than mislabel the others. */
+        if (i == 0) first_src = u->source_file;
+        f0 = prog->func_count;
+        g0 = prog->global_count;
+        ir_program_append_unit(prog, u, i, path);
+        /* Same per-unit mangling --ipo applies: two objects may each carry a
+         * file-static `helper`, and after merging they must stay distinct. */
+        rc = ipo_mangle_unit(prog, i, f0, prog->func_count, g0, prog->global_count);
+        if (rc != ARK_OK) return rc;
+    }
+
+    rc = ipo_dedupe_funcs(prog);
+    if (rc != ARK_OK) return rc;
+    rc = ipo_dedupe_globals(prog);
+    if (rc != ARK_OK) return rc;
+
+    /* The point of --lto: the pass pipeline runs over the merged program, so
+     * ir.inline sees callees from other objects and cross-TU constant
+     * propagation sees definitions from other objects. */
+    {
+        int lvl = opts->opt_level;
+        if (lvl < g_config.opt_level) lvl = g_config.opt_level;
+        pipeline_run_ir(prog, lvl, pipeline_profile());
+    }
+    ipo_prune_statics(prog);
+
+    prog->source_file = first_src;
+
+    return ark_emit_program(opts, prog, be);
+}
+
+#else /* !ARKCC_FEATURE_OBJ_IR -- the stub after the IPO block refuses */
+
+#endif /* ARKCC_FEATURE_OBJ_IR */
+
 #else /* !ARKCC_FEATURE_IPO */
 
 /* A build without the feature still exports the symbol, so --ipo is refused
@@ -505,3 +690,22 @@ int ark_ipo_compile(const ArkOptions *opts)
 }
 
 #endif /* ARKCC_FEATURE_IPO */
+
+#if !ARKCC_FEATURE_IPO || !ARKCC_FEATURE_OBJ_IR
+
+/* -link --lto needs both halves: --ipo's merge machinery and the IR payload
+ * reader/writer.  A build missing either still exports the symbol, so the
+ * option is refused with a diagnostic that names the build choice instead of
+ * dying with "unrecognized option" -- which would send the reader looking for
+ * a typo. */
+int ark_lto_link(const ArkOptions *opts)
+{
+    (void)opts;
+    diag_tool(DIAG_SEV_ERROR, "arkcc",
+              "--lto is not compiled into this build "
+              "(rebuild with -DARKCC_FEATURE_IPO=1 -DARKCC_FEATURE_OBJ_IR=1)",
+              0, 0, 0, 0, 0, 0);
+    return ARK_ERR_ARG;
+}
+
+#endif /* !ARKCC_FEATURE_IPO || !ARKCC_FEATURE_OBJ_IR */

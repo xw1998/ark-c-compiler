@@ -537,6 +537,7 @@ ark c compiler/
 ├── docs/MIR_CFG.md         MIR/CFG 与三条跨函数检查（不可达 / 未用 static / 递归）：图不变量、判据、刻意不报的形态、裁剪与门禁（中文，UTF-8）
 ├── docs/LOOPS.md           循环优化（--licm / --unroll）：搬什么不搬什么、零次迭代、唯一接受形状、上限与门禁（中文，UTF-8）
 ├── docs/IPO_LTO.md         全程序编译（--ipo / -flto）与跨 TU 常量传播（--const-global）：为什么不是对象级 LTO、合并语义、拒绝的组合、裁剪与两条门禁（中文，UTF-8）
+├── docs/OBJ_IR.md          对象里的 IR 载荷与链接期重编（--obj-ir / -link --lto）：载荷格式、合并的池 remap、逐字节等价、拒绝与诊断、裁剪与门禁（中文，UTF-8）
 ├── docs/从零写一个C编译器.md  教材体逐代码教程：19 章，从 30 行到 3 万行（中文，UTF-8）
 ├── docs/from-scratch-c-compiler.en.md  上述教材的英文摘要（结构、章目、阅读路线）
 └── README.md               项目简介（UTF-8）
@@ -679,6 +680,12 @@ arkcc <file.c|file.s> [选项]
                      只认「const + 标量整型初值 + 从不被写 + 地址从不外泄 + 非
                      volatile/数组/聚合/long long + 无 __at/section/__thread」，
                      任一不满足就保留 load；--no-const-global 显式关掉
+  --obj-ir           配合 -c：把管线之前的 IR 序列化后追加进 ARKOBJ2 对象，
+                     供 -link --lto 读回重编；--no-obj-ir 显式关掉。
+                     拒绝汇编输入与文本后端（-target c）
+  --lto              配合 -link：从对象里读回 IR、合并、跑一遍管线、重新出码，
+                     结果与 --ipo 逐字节相同。必须写在 -link 之前，
+                     拒绝 -c/-E/-g/缺 -o/无输入
   --dce-cfg          基本块级可达性 DCE（只删"能到但永不执行"的代码）
   --build-date <s>   固定 __DATE__（如 "May 28 2026"）
   --build-time <s>   固定 __TIME__（如 "20:26:40"）
@@ -868,6 +875,21 @@ CJK 按显示单元计列、tab 原样重放。它不需要 armcc，断言的是
   （`make test-constglobal`，15 项）：折/不折两个镜像都返回 103、五种保守情形（取址 6、经取址写 9、
   `volatile` 6、数组 3、`long long`）各自保留 load、`-O0` 不折、`--print-pipeline` 报 `run`/`off`、
   裁剪构建拒绝，以及**开关关时全量构建与裁剪构建的 `.s` 逐字节相同**。
+  本版还加了**对象里的 IR 载荷与链接期重编**（`docs/OBJ_IR.md`）：`-c --obj-ir` 把"管线之前"
+  的整个程序（类型表、三个常量池、参数长度表、全局表、函数表与指令流）序列化后**追加在
+  `ARKOBJ2` 的重定位表之后**，`-link --lto` 读回来、按命令行顺序把四个池追加并 remap 索引
+  （`IR_PUSH_STR.val`/`IR_PUSH_FLOAT.val`/`IR_CALL.aux2`）、复用 `--ipo` 的单元改名与外部名裁定、
+  跑**一遍**管线再重新出码。因为载荷是**未优化**的 IR（钩子挂在 `pipeline_run_ir()` 之前），
+  `--lto` 与 `--ipo` 在管线入口握着同一份 IR，所以结果是 **`-S` 与 `-o bin` 双向逐字节相同**
+  （同名 `static` 经往返仍是 `__ipo1f_helper`/`__ipo2f_helper`，没有 `main` 的单元也一样合并）。
+  老读者读到重定位表就停，因此带载荷对象照样能被 plain `-link` 链接、产出同一镜像。载荷缺失/
+  损坏（截断、错魔数、版本 99、正文长度不符）一律**具名报错且不写输出文件**——少合并一个单元
+  等于错答案，比链接失败危险得多。版本兼容取硬相等，不做向前兼容；不做 `-r` 部分链接。
+  可裁减：`ARKCC_FEATURE_OBJ_IR` 在 `ARKCC_PROFILE_STM32_MIN` 档默认 0，关掉时两选项报
+  "未编入此构建"。门禁 `tests/run_objir_tests.py`（`make test-objir`，26 项）：载荷写入与前缀
+  不变、`--ipo` 参考系真的内联+折常量（否则后面的"相同"是空相等）、两条逐字节对拍、两条模拟器
+  动态读数（102 与 79）、两份同名 static 仍具名、四种损坏、无载荷对象具名拒绝、不干扰 plain
+  `-link`、六种选项拒绝、裁剪构建拒绝，以及**开关关时全量构建与裁剪构建的 `-c` 对象逐字节相同**。
 - v0.8.6：四个方向一起落地，全部**默认关、可裁减、开关关时逐字节不变**。
   ① **`--warn-unused-result` + `__must_check`**：丢弃一个标注了检查的函数返回值即告警，标注从原型（`__must_check` / `__attribute__((warn_unused_result))`）沿声明链传递，宏展开后仍然有效。
   ② **MIR/CFG 基底 + 三条跨函数检查**（`docs/MIR_CFG.md`）：`src/mir.c` 建基本块与控制流边，在此之上做 `--warn-unused-static`（静态函数无人引用）、`--warn-unreachable`（没有任何路径能到达的指令，报"该函数内 N 条指令永远跑不到"）、`--warn-recursion`（直接/间接递归），三条都只看**能证实的形状**——`goto` 进死块、函数指针别名、`#pragma arm section` 之类的模糊情形一律沉默。

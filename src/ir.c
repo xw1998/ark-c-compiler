@@ -181,8 +181,23 @@ int ir_program_add_string(IrProgram *prog, const char *data, int len) {
     return n;
 }
 
-IrGlobal *ir_program_add_global(IrProgram *prog, const char *name, Type *t) {
+/* Append an object that is already fully initialised.  Split out of
+ * ir_program_add_global so the IR deserialiser can reuse the array growth
+ * rules without the field initialisation (the payload carries every field). */
+void ir_program_add_global_ptr(IrProgram *prog, IrGlobal *g) {
     int n = prog->global_count;
+    if (n >= prog->global_capacity) {
+        int nc = prog->global_capacity == 0 ? 8 : prog->global_capacity * 2;
+        prog->globals = (IrGlobal **)mem_realloc(prog->globals,
+            prog->global_capacity * (int)sizeof(IrGlobal *),
+            nc * (int)sizeof(IrGlobal *));
+        prog->global_capacity = nc;
+    }
+    prog->globals[n] = g;
+    prog->global_count = n + 1;
+}
+
+IrGlobal *ir_program_add_global(IrProgram *prog, const char *name, Type *t) {
     IrGlobal *g = (IrGlobal *)mem_pool_alloc(sizeof(IrGlobal));
     g->name = mem_strdup(name);
     g->type = t;
@@ -211,15 +226,7 @@ IrGlobal *ir_program_add_global(IrProgram *prog, const char *name, Type *t) {
     /* 0.6.x: TLS / register-variable attributes */
     g->is_tls = 0;
     g->global_reg = -1;
-    if (n >= prog->global_capacity) {
-        int nc = prog->global_capacity == 0 ? 8 : prog->global_capacity * 2;
-        prog->globals = (IrGlobal **)mem_realloc(prog->globals,
-            prog->global_capacity * (int)sizeof(IrGlobal *),
-            nc * (int)sizeof(IrGlobal *));
-        prog->global_capacity = nc;
-    }
-    prog->globals[n] = g;
-    prog->global_count = n + 1;
+    ir_program_add_global_ptr(prog, g);
     return g;
 }
 
