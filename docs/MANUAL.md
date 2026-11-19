@@ -980,6 +980,37 @@ switch (c) { case RED: break; case BLUE: break; }   /* Warning: ... missing: GRE
 详见 [PASS_PIPELINE.md](PASS_PIPELINE.md)，门禁 `tests/run_pipeline_tests.py`
 （`make test-pipeline`，27 条断言）。
 
+### 5.12 丢弃返回值（`--warn-unused-result`）
+
+如果一个函数用 `__attribute__((warn_unused_result))`（或 glibc 的
+`__warn_unused_result__`、内核 `__must_check` 宏展开出的 `__must_check__`）声明，
+并且返回类型不是 `void`，那么把它的调用当成整条语句、值被丢掉时告警：
+
+```c
+extern int __attribute__((warn_unused_result)) f(void);
+void g(void) { f(); (void)f(); }     /* 前一条告警，后一条沉默 */
+```
+
+| 开关 | 默认 | 说明 |
+| --- | :---: | --- |
+| `--warn-unused-result` | 关 | 打开检查；`--no-warn-unused-result` 显式关 |
+| `[features]` 节 `warn_unused_result=1` | `0` | 配置文件等效写法 |
+| `ARKCC_FEATURE_UNUSEDRESULT`（编译期） | 宿主 `1`、`ARKCC_PROFILE_STM32_MIN` `0` | 特性不在时命令行与配置文件都以 `C3900U` 拒绝并给出重建方法 |
+
+边界：
+
+- `(void)f();` 是唯一被认可的显式丢弃写法（GNU / clang 同义）；
+- 通过函数指针调用没有说话的对象（属性不在任何声明上），沉默；
+- `void` 返回的被标注函数沉默（没有值可丢）；
+- 属性按函数名粘住：头文件里声明带属性、定义不带，仍然告警；
+- 一个翻译单元里超过 256 个被标注函数时，报一条 warning 说明检查不完整，
+  不静默只查前 256 个；
+- 本诊断**不带 armcc 编号**，因此不受 `--diag_suppress` 控制。
+
+它在管线里是 `ast.unusedresult`（`lite` 剖面，无 `-O` 门），`--print-pipeline`
+会把它打出来。详见 [UNUSEDRESULT.md](UNUSEDRESULT.md)，门禁
+`tests/run_unusedresult_tests.py`（`make test-unusedresult`，19 条断言）。
+
 ### 5.x 平铺镜像的 64 位/AEABI 运行时要自己链
 
 后端把 64 位加/减内联成 `ADDS`/`ADC`、`SUBS`/`SBC`（不依赖运行库），其余 64 位运算（`*`、`/`、`%`、`<<`、`>>`、比较）发射标准 AEABI 符号（`__aeabi_lmul`、`__aeabi_ldivmod`、`__aeabi_uldivmod`、`__aeabi_llsl`、`__aeabi_llsr`、`__aeabi_lasr`、`__aeabi_lcmp`、`__aeabi_ulcmp`）。**编译器不会隐式把这些实现塞进镜像**，平铺镜像要自己链：

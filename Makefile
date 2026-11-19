@@ -22,7 +22,7 @@ endif
 
 .PHONY: all clean test test-arm test-c test-stdlib test-install test-x86 test-x86-64 \
         test-x86-64-selfhost test-riscv test-reloc-text test-memlint \
-        test-enumcheck test-pipeline \
+        test-enumcheck test-pipeline test-unusedresult \
         test-atomic install stm32
 
 all: $(ARKCC)
@@ -38,7 +38,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-atomic
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-atomic
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -68,6 +68,13 @@ test-enumcheck: $(ARKCC)
 
 test-pipeline: $(ARKCC)
 	$(PYTHON) tests/run_pipeline_tests.py --arkcc ./$(ARKCC)
+
+# Gate for --warn-unused-result: an annotated call used as a statement warns on
+# the call's line, the (void) cast and every value-consuming shape stay silent,
+# a call through a pointer is silent, and a build without the feature refuses
+# the option instead of pretending to check.
+test-unusedresult: $(ARKCC)
+	$(PYTHON) tests/run_unusedresult_tests.py ./$(ARKCC)
 
 # Library gate: every stdlib entry point is compiled and run on the ARM
 # emulator, and each case asserts a number the program itself computed.  A

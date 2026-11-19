@@ -44,6 +44,11 @@ static void usage(void) {
         "  --warn-enum        warn about a switch over an enum that has no case for\n"
         "                     every enumerator and no default label (off by default).\n"
 #endif
+#if ARKCC_FEATURE_UNUSEDRESULT
+        "  --warn-unused-result  warn when the value of a call is discarded although\n"
+        "                     the callee is declared warn_unused_result / __must_check\n"
+        "                     ((void) cast silences it; off by default).\n"
+#endif
         "  -v                 verbose\n"
         "  -target <name>     select backend (arm|x86|x86_64|riscv32|c)\n"
         "  -I <dir>           additional include path\n"
@@ -620,6 +625,19 @@ int main(int argc, char **argv) {
          * request to check anything. */
         else if (strcmp(a, "--no-warn-mem") == 0)   g_config.enable_memlint = 0;
 #endif
+#if ARKCC_FEATURE_UNUSEDRESULT
+        else if (strcmp(a, "--warn-unused-result") == 0)    g_config.enable_unused_result = 1;
+        else if (strcmp(a, "--no-warn-unused-result") == 0) g_config.enable_unused_result = 0;
+#else
+        else if (strcmp(a, "--warn-unused-result") == 0) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: --warn-unused-result is not compiled "
+                    "into this build (rebuild with "
+                    "-DARKCC_FEATURE_UNUSEDRESULT=1)\n");
+            return 1;
+        }
+        else if (strcmp(a, "--no-warn-unused-result") == 0) g_config.enable_unused_result = 0;
+#endif
         else if (strcmp(a, "--list-backends") == 0) opts.list_backends = 1;
         else if (strcmp(a, "-h") == 0 || strcmp(a, "--help") == 0) {
             usage();
@@ -690,6 +708,16 @@ int main(int argc, char **argv) {
         fprintf(stderr,
                 "Fatal error: C3900U: --warn-enum is not compiled into this "
                 "build (rebuild with -DARKCC_FEATURE_ENUMCHECK=1)\n");
+        return 1;
+    }
+#endif
+
+#if !ARKCC_FEATURE_UNUSEDRESULT
+    /* Same rule again for warn_unused_result=1 in the ini file. */
+    if (g_config.enable_unused_result) {
+        fprintf(stderr,
+                "Fatal error: C3900U: --warn-unused-result is not compiled into "
+                "this build (rebuild with -DARKCC_FEATURE_UNUSEDRESULT=1)\n");
         return 1;
     }
 #endif

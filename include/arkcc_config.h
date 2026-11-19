@@ -210,6 +210,26 @@
 #   define ARKCC_FEATURE_ENUMCHECK     1
 # endif
 #endif
+
+/* ARKCC_FEATURE_UNUSEDRESULT: the --warn-unused-result pass (a discarded
+ * return value of a function declared warn_unused_result / __must_check).
+ * See include/unusedresult.h and docs/UNUSEDRESULT.md.
+ *
+ * Trimmable by construction: one self-contained source file, no heap, one
+ * pointer table (256 entries) on the stack. Off in the STM32 profile because
+ * Flash is the scarce resource there, not because the check needs RAM;
+ * -DARKCC_FEATURE_UNUSEDRESULT=1 brings it back.
+ *
+ * The runtime switch (--warn-unused-result) is separate and defaults to off on
+ * every profile, so the shipped behaviour is unchanged even where the code is
+ * compiled in. */
+#ifndef ARKCC_FEATURE_UNUSEDRESULT
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_UNUSEDRESULT 0   /* Trim on the board: costs Flash */
+# else
+#   define ARKCC_FEATURE_UNUSEDRESULT 1
+# endif
+#endif
 /* ARKCC_FEATURE_PIPELINE_DUMP: the strings and the printer behind
  * --print-pipeline.  The stage tables and the execution loop are compiled in
  * unconditionally -- src/pipeline.c is the driver now, not an optional pass --

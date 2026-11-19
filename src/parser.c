@@ -334,6 +334,9 @@ static int g_func_is_pure;
 static int g_func_is_const_attr;
 static int g_func_is_interwork;
 static int g_func_is_deprecated_kw;
+/* 0.8.6: __attribute__((warn_unused_result)) / __must_check.  This used to be
+ * in the "silently ignored" list; --warn-unused-result now gives it meaning. */
+static int g_attr_is_unused_result;
 /* Accumulator for function modifier bitmask (irq/weak/naked/softfp/forceinline) collected
  * inside parse_declspec when these keywords appear between storage class and base type
  * (e.g. `static __forceinline int func()`). Read and ORed into func_mods by parse_top_decl. */
@@ -477,11 +480,16 @@ static void parse_attribute(Parser *p, Type *attach_type) {
                 }
                 /* Silently ignored attributes: may_alias/nothrow/visibility/nonnull/
                  * warn_unused_result/sentinel/malloc/fastcall/stdcall/cdecl */
+                /* 0.8.6: no longer thrown away -- see src/unusedresult.c.
+                 * __must_check is the kernel's spelling of the same thing. */
+                if (ark_streq(nm, "warn_unused_result") || ark_streq(nm, "__warn_unused_result__") ||
+                    ark_streq(nm, "must_check") || ark_streq(nm, "__must_check__")) {
+                    g_attr_is_unused_result = 1;
+                }
                 if (ark_streq(nm, "may_alias") || ark_streq(nm, "__may_alias__") ||
                     ark_streq(nm, "nothrow") || ark_streq(nm, "__nothrow__") ||
                     ark_streq(nm, "visibility") || ark_streq(nm, "__visibility__") ||
                     ark_streq(nm, "nonnull") || ark_streq(nm, "__nonnull__") ||
-                    ark_streq(nm, "warn_unused_result") || ark_streq(nm, "__warn_unused_result__") ||
                     ark_streq(nm, "sentinel") || ark_streq(nm, "__sentinel__") ||
                     ark_streq(nm, "malloc") || ark_streq(nm, "__malloc__") ||
                     ark_streq(nm, "fastcall") || ark_streq(nm, "__fastcall__") ||
@@ -2093,6 +2101,7 @@ static AstNode *parse_top_decl(Parser *p) {
     g_attr_is_softfp = 0; g_attr_is_forceinline = 0;
     g_attr_has_at = 0; g_attr_at_addr = 0;
     g_attr_is_constructor = 0; g_attr_is_destructor = 0; g_attr_is_deprecated = 0;
+    g_attr_is_unused_result = 0;
     g_decl_packed_ptr = 0;  /* __packed pointer flag: reset at each declaration start */
     g_vla_size_expr = 0;  /* B3: file scope does not allow VLA, reset to prevent leakage */
     /* 0.6.x: reset armcc 5 compatible function modifier globals */
@@ -2363,6 +2372,7 @@ static AstNode *parse_top_decl(Parser *p) {
                 n->u.func.is_constructor = g_attr_is_constructor;
                 n->u.func.is_destructor  = g_attr_is_destructor;
                 n->u.func.is_deprecated  = g_attr_is_deprecated;
+                n->u.func.is_unused_result = g_attr_is_unused_result;
 #if ARKCC_FEATURE_ARMCC_KEYWORDS
                 n->u.func.is_value_in_regs = func_is_value_in_regs;
                 n->u.func.is_pure          = func_is_pure;
@@ -2433,6 +2443,7 @@ static AstNode *parse_top_decl(Parser *p) {
                 n->u.func.is_constructor = g_attr_is_constructor;
                 n->u.func.is_destructor  = g_attr_is_destructor;
                 n->u.func.is_deprecated  = g_attr_is_deprecated;
+                n->u.func.is_unused_result = g_attr_is_unused_result;
 #if ARKCC_FEATURE_ARMCC_KEYWORDS
                 n->u.func.is_value_in_regs = func_is_value_in_regs;
                 n->u.func.is_pure          = func_is_pure;
@@ -2464,6 +2475,7 @@ static AstNode *parse_top_decl(Parser *p) {
                 n->u.func.is_constructor = g_attr_is_constructor;
                 n->u.func.is_destructor  = g_attr_is_destructor;
                 n->u.func.is_deprecated  = g_attr_is_deprecated;
+                n->u.func.is_unused_result = g_attr_is_unused_result;
 #if ARKCC_FEATURE_ARMCC_KEYWORDS
                 n->u.func.is_value_in_regs = func_is_value_in_regs;
                 n->u.func.is_pure          = func_is_pure;

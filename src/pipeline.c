@@ -24,6 +24,7 @@
 #include "opt.h"
 #include "memlint.h"
 #include "enumcheck.h"
+#include "unusedresult.h"
 
 /* Names cost Flash on the board and nothing there ever prints them, so the
  * whole dump path (names included) is behind one switch. With it off the
@@ -53,6 +54,9 @@ static int ast_wanted_memlint(void)   { return g_config.enable_memlint; }
 #if ARKCC_FEATURE_ENUMCHECK
 static int ast_wanted_enumcheck(void) { return g_config.enable_enumcheck; }
 #endif
+#if ARKCC_FEATURE_UNUSEDRESULT
+static int ast_wanted_unusedresult(void) { return g_config.enable_unused_result; }
+#endif
 
 /* Lint stages are not optimizations, so they carry no -O gate: --warn-mem at
  * -O0 means what it says. They are marked LITE because they are the cheap
@@ -67,6 +71,12 @@ static const AstStage g_ast_stages[] = {
     { PIPE_NAME("ast.enumcheck"), ARK_PROFILE_LITE, 1, ast_wanted_enumcheck, PIPE_NAME("off (--warn-enum)"), enumcheck_run },
 #else
     { PIPE_NAME("ast.enumcheck"), ARK_PROFILE_LITE, 0, 0,                   0,             0             },
+#endif
+#if ARKCC_FEATURE_UNUSEDRESULT
+    { PIPE_NAME("ast.unusedresult"), ARK_PROFILE_LITE, 1, ast_wanted_unusedresult,
+      PIPE_NAME("off (--warn-unused-result)"), unusedresult_run },
+#else
+    { PIPE_NAME("ast.unusedresult"), ARK_PROFILE_LITE, 0, 0,                0,             0             },
 #endif
 };
 #define AST_STAGE_COUNT ((int)(sizeof(g_ast_stages) / sizeof(g_ast_stages[0])))

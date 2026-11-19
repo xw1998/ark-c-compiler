@@ -45,6 +45,7 @@ typedef struct {
     int enable_asm_extra;     /* --asm-extra: 汇编器扩展指令集 */
     int enable_memlint;       /* --warn-mem: 返回局部地址 / double free / UAF 检查 */
     int enable_enumcheck;     /* --warn-enum: switch on an enum that misses an enumerator */
+    int enable_unused_result; /* 0.8.6 --warn-unused-result: discarded value of an annotated call */
     /* 0.8.5: 可配置 Pass 管线（见 include/pipeline.h）。取 ARK_PROFILE_FULL 时
      * 每个 pass 仍由自己的开关与 -O 级别决定，即历史行为、产物逐字节不变；
      * 取 ARK_PROFILE_LITE 时只允许 min_profile 为 lite 的阶段跑，其余阶段

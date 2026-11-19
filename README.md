@@ -533,6 +533,7 @@ ark c compiler/
 ├── docs/MEMLINT.md         函数内内存 lint（--warn-mem）：判据、裁剪开关与实测代价（中文，UTF-8）
 ├── docs/ENUMCHECK.md       switch 漏掉枚举值（--warn-enum）：判据、裁剪开关与实测代价（中文，UTF-8）
 ├── docs/PASS_PIPELINE.md   可配置 Pass 管线（--pipeline / --print-pipeline）：阶段表、两剖面、裁剪与实测代价（中文，UTF-8）
+├── docs/UNUSEDRESULT.md    丢弃返回值（--warn-unused-result）：判据、别名、裁剪与门禁（中文，UTF-8）
 ├── docs/从零写一个C编译器.md  教材体逐代码教程：19 章，从 30 行到 3 万行（中文，UTF-8）
 ├── docs/from-scratch-c-compiler.en.md  上述教材的英文摘要（结构、章目、阅读路线）
 └── README.md               项目简介（UTF-8）
@@ -658,6 +659,8 @@ arkcc <file.c|file.s> [选项]
   --pipeline=<p>     优化管线剖面：full（默认，各阶段仍由自身开关与 -O 决定）
                      或 lite（只留便宜阶段，跳过 dce-cfg / inline / vectorize）
   --print-pipeline   逐行打印每个阶段的决策：run 或 skip + 跳过理由
+  --warn-unused-result  调用被声明为 warn_unused_result / __must_check 的函数
+                     却丢掉返回值（f();）时告警；(void)f(); 是显式丢弃，不告警
   --dce-cfg          基本块级可达性 DCE（只删"能到但永不执行"的代码）
   --build-date <s>   固定 __DATE__（如 "May 28 2026"）
   --build-time <s>   固定 __TIME__（如 "20:26:40"）

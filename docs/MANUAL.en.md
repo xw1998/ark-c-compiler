@@ -1145,6 +1145,42 @@ behaviour; changing it would move `-O0` output), and `lite` is a stage ceiling r
 -- `--pipeline=lite -O2` still runs folding and DCE. See [PASS_PIPELINE.en.md](PASS_PIPELINE.en.md);
 gate: `tests/run_pipeline_tests.py` (`make test-pipeline`, 27 assertions).
 
+### 5.12 Discarded return value (`--warn-unused-result`)
+
+If a function is declared `__attribute__((warn_unused_result))` (or glibc's
+`__warn_unused_result__`, or the `__must_check__` that the kernel's
+`__must_check` macro expands to) and does not return `void`, then using its call
+as a whole statement -- discarding the value -- is reported:
+
+```c
+extern int __attribute__((warn_unused_result)) f(void);
+void g(void) { f(); (void)f(); }     /* the first warns, the second is silent */
+```
+
+| Switch | Default | Meaning |
+| --- | :---: | --- |
+| `--warn-unused-result` | off | turn the check on; `--no-warn-unused-result` turns it off |
+| `warn_unused_result=1` in `[features]` | `0` | the config-file spelling |
+| `ARKCC_FEATURE_UNUSEDRESULT` (compile time) | `1` on the host, `0` in `ARKCC_PROFILE_STM32_MIN` | where the feature is absent both the command line and the config file are refused with `C3900U` plus the rebuild hint |
+
+Boundary:
+
+- `(void)f();` is the one recognised explicit discard (same as GNU / clang);
+- a call through a function pointer has no declaration to read, so it is silent;
+- an annotated function returning `void` is silent (there is no value to lose);
+- the attribute sticks by name: declared with it in a header, defined without it
+  elsewhere, still warns;
+- more than 256 annotated functions in one translation unit produces one warning
+  saying the check is incomplete instead of quietly checking 256;
+- the diagnostic carries **no armcc code**, so `--diag_suppress` cannot target it.
+
+In the pipeline it is `ast.unusedresult` (a `lite` stage, no `-O` gate) and
+`--print-pipeline` prints it. See [UNUSEDRESULT.en.md](UNUSEDRESULT.en.md); the
+gate is `tests/run_unusedresult_tests.py` (`make test-unusedresult`, 19
+assertions).
+
+---
+
 ### 5.x Flat images must link their own 64-bit/AEABI runtime
 
 The backend inlines 64-bit add/sub as `ADDS`/`ADC` and `SUBS`/`SBC` (no runtime dependency); the remaining

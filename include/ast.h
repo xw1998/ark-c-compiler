@@ -61,6 +61,7 @@ struct AstNode {
             /* 0.6.x: ARM Compiler 5 attributes carried over for compatibility */
             int      is_value_in_regs; /* __value_in_regs */
             int      is_pure;          /* __pure / __attribute__((pure)) */
+            int      is_unused_result; /* 0.8.6: warn_unused_result / __must_check; read by --warn-unused-result */
             int      is_const_attr;    /* __attribute__((const)) */
             int      is_interwork;     /* __interwork (ARM/Thumb interworking) */
             int      smc_num;          /* __smc(n) number; -1 = not an SMC */
