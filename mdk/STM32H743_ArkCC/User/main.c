@@ -186,9 +186,12 @@ static void cmd_cat(const char *path) {
     shell_puts("\r\n--- end ---\r\n");
 }
 
-static void cmd_compile(const char *path, int run) {
+/* Defined further down, next to the other option helpers; cmd_compile() runs
+ * before it in the file, so the prototype has to come first. */
+static void opts_reset(ArkOptions *o);
+
+static void cmd_compile(const char *path) {
     ArkOptions opts;
-    int i;
     int rc;
     if (!path || !*path) {
         shell_puts("Usage: compile <file.c>\r\n");
@@ -198,29 +201,13 @@ static void cmd_compile(const char *path, int run) {
     shell_puts(path);
     shell_puts("...\r\n");
 
-    /* Reset options (same as ark_compile_and_run but with target=arm for STM32) */
+    /* Reset options through opts_reset(): the hand-written field list that
+     * used to live here had already drifted behind ArkOptions (it knew nothing
+     * about the 0.8.7 fields), and this local struct is stack memory -- a stale
+     * ipo_mode made the compiler refuse with "--ipo is not compiled into this
+     * build" before reading a single line. */
+    opts_reset(&opts);
     opts.input_path = path;
-    opts.output_path = 0;
-    opts.emit_asm = 0;
-    opts.verbose = 1;
-    opts.target = "arm";
-    opts.cpu = "Cortex-M7";
-    for (i = 0; i < 16; i++) opts.include_dirs[i] = 0;
-    opts.include_dir_count = 0;
-    opts.list_backends = 0;
-    opts.compile_only = 0;
-    opts.preprocess_only = 0;
-    opts.link_mode = 0;
-    for (i = 0; i < 32; i++) opts.link_inputs[i] = 0;
-    opts.link_input_count = 0;
-    opts.opt_level = 0;
-    opts.debug_info = 0;
-    opts.no_unused_warn = 1;
-    opts.gen_depend = 0;
-    opts.depend_file = 0;
-    opts.split_sections = 0;
-    opts.scatter_file = 0;
-    opts.linker_script = 0;
 
     rc = ark_compile(&opts);
 
@@ -248,14 +235,6 @@ static void cmd_compile(const char *path, int run) {
         shell_puts(msg);
     }
 
-    if (run && rc == 0) {
-        shell_puts("[arkcc] Binary ready in code buffer.\r\n");
-        /* On STM32, ark_compile with target=arm places the binary in g_code
-         * which is linked to ark_code_buffer. To execute it, cast the buffer
-         * as a function pointer and call. NOTE: requires proper stack/VTOR
-         * setup; this is a demonstration skeleton. */
-        shell_puts("[arkcc] (execution would start here on real hardware)\r\n");
-    }
 }
 
 static void cmd_version(void) {
@@ -363,6 +342,14 @@ void arkcc_on_output(const unsigned char *data, int len) {
 
 static void opts_reset(ArkOptions *o) {
     int i;
+    /* Zero the whole struct before assigning anything.  ArkOptions grows every
+     * release, and a field this function forgets is not "default 0" on the
+     * board: `ArkOptions o;` lives on the calling stack, so the field takes
+     * whatever the stack held.  0.8.7's ipo_mode came up non-zero that way and
+     * `build` died with "--ipo is not compiled into this build" before it had
+     * compiled a single line.  The explicit assignments below stay: memset
+     * makes them redundant, it does not make them wrong. */
+    memset(o, 0, sizeof(*o));
     o->input_path = 0;
     o->output_path = 0;
     o->emit_asm = 0;
@@ -401,14 +388,27 @@ static void opts_reset(ArkOptions *o) {
     o->build_epoch = 0;
 }
 
-/* -c <src> -o <obj>, captured into the RAM file slot called <obj>. */
-static int build_object(const char *src, const char *obj) {
+/* -c <src> -o <obj>, captured into the RAM file slot called <obj>.
+ *
+ * The object is compiled against the SAME scatter file the link will use.  An
+ * object baked against the default 0x20000000 data window cannot be moved by a
+ * later link (every .data/.bss address is already inside its instruction
+ * stream), so the link refuses it -- and it is right to: the image would fault
+ * on the first global write.  Compiling with app.sct here is what makes the
+ * object's baked base match the region it will actually run in. */
+static int build_object(const char *src, const char *obj, int first) {
     ArkOptions o;
     int rc;
     opts_reset(&o);
     o.input_path = src;
     o.output_path = obj;
     o.compile_only = 1;
+    o.scatter_file = "app.sct";
+    /* Only the FIRST object of the image reserves the vector-table hole (that
+     * is the shape the host tests pin: hello.c with --vector-table, crt.c
+     * without).  Reserving 0x400 in both would leave a hole in the middle of
+     * the code stream. */
+    o.vector_table = first ? 1 : 0;
     g_cap_mode = CAP_RAM;
     g_cap_name = obj;
     rc = ark_compile(&o);
@@ -417,13 +417,13 @@ static int build_object(const char *src, const char *obj) {
 }
 
 /* -link <objs> -o app.bin --scatter app.sct, loaded at APP_BASE. */
-static int link_app(void) {
+static int link_app(const char *obj0, const char *obj1) {
     ArkOptions o;
     int rc;
     opts_reset(&o);
     o.link_mode = 1;
-    o.link_inputs[0] = "hello.o";
-    o.link_inputs[1] = "crt.o";
+    o.link_inputs[0] = obj0;
+    o.link_inputs[1] = obj1;
     o.link_input_count = 2;
     o.output_path = "app.bin";
     o.scatter_file = "app.sct";
@@ -489,10 +489,20 @@ static const char SRC_SCT[] =
     "; app.sct -- a linked-on-board program runs from AXI SRAM.\r\n"
     "; flash_base is what arkcc encodes into every address, so the image must\r\n"
     "; be loaded here; the vector table it prepends starts at the same address.\r\n"
+    ";\r\n"
+    "; RW gets its own region that STOPS short of 0x2407F000.  With one region\r\n"
+    "; covering the whole 60 KB window, the vector table's initial SP came out as\r\n"
+    "; 0x2407F000 -- the address of the firmware's console trampoline -- so a\r\n"
+    "; program that did switch stacks would put the stack on top of code.  The\r\n"
+    "; split region makes the SP a real free-RAM address (0x2407C000) and leaves\r\n"
+    "; the trampoline untouched.\r\n"
     "LR_APP 0x24070000 0x0000F000 {\r\n"
-    "    ER_APP 0x24070000 0x0000F000 {\r\n"
+    "    ER_APP 0x24070000 0x0000B000 {\r\n"
     "        *(InRoot$$Sections)\r\n"
+    "        *.o (RESET, +First)\r\n"
     "        .ANY (+RO)\r\n"
+    "    }\r\n"
+    "    ER_IRAM1 0x2407B000 0x00001000 {\r\n"
     "        .ANY (+RW +ZI)\r\n"
     "    }\r\n"
     "}\r\n";
@@ -533,46 +543,27 @@ static void put_int_dec(int v) {
     }
 }
 
-static void cmd_build(void) {
-    int rc;
+/* Is a RAM file slot with this name present?  `build`/`run` need the runtime
+ * (crt.c) and the layout (app.sct); a missing one is reported here instead of
+ * surfacing later as a compiler "cannot open input" line. */
+static int ram_has(const char *name) {
+    int i;
+    for (i = 0; i < fs_ram_count(); i++) {
+        const char *n = fs_ram_name_at(i);
+        if (n && strcmp(n, name) == 0) return 1;
+    }
+    return 0;
+}
+
+/* Call the image the linker just produced.  It starts with a 256-entry vector
+ * table: [0] initial SP, [1] reset handler (bit 0 set, Thumb).  We call the
+ * handler as a normal function -- it returns to us when main() returns, so the
+ * shell survives. */
+static void exec_image(void) {
     unsigned entry;
     int (*fn)(void);
+    int rc;
 
-    if (fs_ram_size_at(0) < 0) {
-        shell_puts("Error: no sources in RAM; type 'demo' first\r\n");
-        return;
-    }
-
-    /* 0.8.0 --reloc-text：板上这个链接一定是"多对象 + 位移"（镜像装在
-     * 0x24070000，而两个对象都是按默认基址 0x08000000 编出来的），所以
-     * 字符串字面量那种段内绝对地址必须由链接器纠正，否则第二个 write()
-     * 会去读 0x08000400 那块 Flash。开关开在这里而不是启动时全局设，
-     * 是为了让 cc -S / 单对象这类老用法不受影响。 */
-    g_config.enable_reloc_text = 1;
-
-    shell_puts("\r\n[arkcc] cc -c hello.c -o hello.o\r\n");
-    rc = build_object("hello.c", "hello.o");
-    if (rc != 0) { shell_puts("[arkcc] compile hello.c failed: "); put_int_dec(rc); shell_puts("\r\n"); return; }
-
-    shell_puts("[arkcc] cc -c crt.c -o crt.o\r\n");
-    rc = build_object("crt.c", "crt.o");
-    if (rc != 0) { shell_puts("[arkcc] compile crt.c failed: "); put_int_dec(rc); shell_puts("\r\n"); return; }
-
-    shell_puts("[arkcc] cc -link hello.o crt.o -o app.bin --scatter app.sct\r\n");
-    rc = link_app();
-    if (rc != 0 || g_img_len < 0) {
-        shell_puts("[arkcc] link failed: ");
-        put_int_dec(rc);
-        shell_puts("\r\n");
-        return;
-    }
-    shell_puts("[arkcc] image loaded at 24070000, ");
-    put_int_dec(g_img_len);
-    shell_puts(" bytes\r\n");
-
-    /* The linker prepends a 256-entry vector table: [0] initial SP, [1] reset
-     * handler (bit 0 set, Thumb).  We call the handler as a normal function --
-     * it returns to us when main() returns, so the shell survives. */
     entry = ((const volatile unsigned *)APP_BASE)[1];
     if ((entry & 1u) == 0u || (entry & ~1u) < APP_BASE || (entry & ~1u) >= APP_BASE + (unsigned)APP_LIMIT) {
         shell_puts("[arkcc] vector table looks wrong (reset entry ");
@@ -591,6 +582,88 @@ static void cmd_build(void) {
     shell_puts("[arkcc] program returned ");
     put_int_dec(rc);
     shell_puts("\r\n");
+}
+
+static void cmd_build(void) {
+    int rc;
+
+    if (fs_ram_size_at(0) < 0) {
+        shell_puts("Error: no sources in RAM; type 'demo' first\r\n");
+        return;
+    }
+
+    /* 0.8.0 --reloc-text：板上这个链接一定是"多对象 + 位移"（镜像装在
+     * 0x24070000，而两个对象都是按默认基址 0x08000000 编出来的），所以
+     * 字符串字面量那种段内绝对地址必须由链接器纠正，否则第二个 write()
+     * 会去读 0x08000400 那块 Flash。开关开在这里而不是启动时全局设，
+     * 是为了让 cc -S / 单对象这类老用法不受影响。 */
+    g_config.enable_reloc_text = 1;
+
+    shell_puts("\r\n[arkcc] cc -c hello.c -o hello.o\r\n");
+    rc = build_object("hello.c", "hello.o", 1);
+    if (rc != 0) { shell_puts("[arkcc] compile hello.c failed: "); put_int_dec(rc); shell_puts("\r\n"); return; }
+
+    shell_puts("[arkcc] cc -c crt.c -o crt.o\r\n");
+    rc = build_object("crt.c", "crt.o", 0);
+    if (rc != 0) { shell_puts("[arkcc] compile crt.c failed: "); put_int_dec(rc); shell_puts("\r\n"); return; }
+
+    shell_puts("[arkcc] cc -link hello.o crt.o -o app.bin --scatter app.sct\r\n");
+    rc = link_app("hello.o", "crt.o");
+    if (rc != 0 || g_img_len < 0) {
+        shell_puts("[arkcc] link failed: ");
+        put_int_dec(rc);
+        shell_puts("\r\n");
+        return;
+    }
+    shell_puts("[arkcc] image loaded at 24070000, ");
+    put_int_dec(g_img_len);
+    shell_puts(" bytes\r\n");
+
+    exec_image();
+}
+
+/* run <file>: the same closed loop as `build`, but with <file> as the program
+ * source.  The runtime (crt.c) and the layout (app.sct) come from `demo`.
+ * Until now `run` only printed "execution would start here on real hardware"
+ * -- it compiled and never ran anything, while `help` advertised execution. */
+static void cmd_run(const char *src) {
+    int rc;
+
+    if (!ram_has(src)) {
+        shell_puts("Error: no such file '");
+        shell_puts(src);
+        shell_puts("' in RAM\r\n");
+        return;
+    }
+    if (!ram_has("crt.c") || !ram_has("app.sct")) {
+        shell_puts("Error: crt.c / app.sct are not installed; type 'demo' first\r\n");
+        return;
+    }
+
+    g_config.enable_reloc_text = 1;
+
+    shell_puts("\r\n[arkcc] cc -c ");
+    shell_puts(src);
+    shell_puts(" -o run.o\r\n");
+    rc = build_object(src, "run.o", 1);
+    if (rc != 0) { shell_puts("[arkcc] compile failed: "); put_int_dec(rc); shell_puts("\r\n"); return; }
+
+    rc = build_object("crt.c", "crt.o", 0);
+    if (rc != 0) { shell_puts("[arkcc] compile crt.c failed: "); put_int_dec(rc); shell_puts("\r\n"); return; }
+
+    shell_puts("[arkcc] cc -link run.o crt.o -o app.bin --scatter app.sct\r\n");
+    rc = link_app("run.o", "crt.o");
+    if (rc != 0 || g_img_len < 0) {
+        shell_puts("[arkcc] link failed: ");
+        put_int_dec(rc);
+        shell_puts("\r\n");
+        return;
+    }
+    shell_puts("[arkcc] image loaded at 24070000, ");
+    put_int_dec(g_img_len);
+    shell_puts(" bytes\r\n");
+
+    exec_image();
 }
 
 /* FMC SDRAM bring-up: init, then prove the whole 32 MB reads back what was
@@ -692,10 +765,10 @@ static void shell_loop(void) {
             cmd_cat(argv[1]);
         }
         else if (strcmp(argv[0], "compile") == 0 && argc >= 2) {
-            cmd_compile(argv[1], 0);
+            cmd_compile(argv[1]);
         }
         else if (strcmp(argv[0], "run") == 0 && argc >= 2) {
-            cmd_compile(argv[1], 1);
+            cmd_run(argv[1]);
         }
         else if (strcmp(argv[0], "echo") == 0 && argc >= 2) {
             shell_puts(argv[1]);

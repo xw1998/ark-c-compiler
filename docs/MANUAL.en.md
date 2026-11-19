@@ -1990,6 +1990,89 @@ i.e. STM32F401xD/E).
 
 (Restore the original firmware with `pyocd flash -t stm32f401re --base-address 0x08000000 <backup.bin>`.)
 
+### 7.7 The self-hosted loop on the H743: compile, link, load, execute (on hardware)
+
+In the USART1 shell of `mdk/STM32H743_ArkCC`, `build` and `run <file>` are no
+longer "print a placeholder": they perform four real steps **on the chip** --
+compile the sources into `ARKOBJ2` objects, link them with the `app.sct`
+layout, load the image into AXI SRAM at `0x24070000` and call its reset vector.
+Captured on USART1 (PA9/PA10, 115200 8N1):
+
+```
+arkcc> build
+[arkcc] cc -c hello.c -o hello.o
+[arkcc] wrote object 'hello.o' (1290 bytes code, 3 syms, 3 relocs)
+[arkcc] cc -c crt.c -o crt.o
+[arkcc] wrote object 'crt.o' (146 bytes code, 3 syms, 2 relocs)
+[arkcc] cc -link hello.o crt.o -o app.bin --scatter app.sct
+[link] object 0: base 0x0, 1290 bytes
+[link] object 1: base 0x50A, 146 bytes
+[link] vector table written into the 1024-byte hole the first object reserved (SP=0x2407C000, entry=0x24070560)
+[arkcc] linked 2 objects -> app.bin (1436 bytes, 5 syms, 5 relocs)
+[arkcc] image loaded at 24070000, 1436 bytes
+
+--- program output -------------------------------------------
+hello, world
+written by arkcc running on the STM32H743 itself
+
+--------------------------------------------------------------
+[arkcc] program returned 0
+```
+
+`run hello.c` goes through the same three stages (`run.o` + `crt.o`) and prints
+the same two lines, so `returned 0` is a real `main()` return value. Four
+defects had to be fixed for that chain to hold; each of them looked like "the
+compiler is broken":
+
+1. **Uninitialised struct fields.** `ArkOptions` grew fields in 0.8.7
+   (`ipo_mode`, `ipo_inputs[]`, `object_ir`, `lto_link`, `partial_link`, ...)
+   while the shell's `opts_reset()` still listed the fields by hand and missed
+   the new ones. The struct lives on the stack, so a leftover non-zero
+   `ipo_mode` made `build` answer `--ipo is not compiled into this build`.
+   `opts_reset()` now starts with `memset(o, 0, sizeof(*o))` (host
+   `reset_opts()` likewise), and `cmd_compile()` calls `opts_reset()` instead of
+   carrying its own copy of the field list.
+2. **Objects compiled without the layout.** `build_object()` did not pass
+   `--scatter app.sct`, so the objects baked in the default data window
+   (`0x20000000`) and the linker rejected them. Each object is now compiled with
+   the same scatter file it is later linked with, and only the *first* object
+   gets `--vector-table` -- the 1 KB hole belongs to the image, not to every
+   translation unit.
+3. **No RESET selector in the embedded scatter text.** `--vector-table` is
+   refused when the layout defines no `RESET` section (`scatter_validate()` ->
+   `er_holds_reset()`); the demo text had none. It now carries
+   `*.o (RESET, +First)`, the canonical shape used by
+   `tests/run_reloc_text_tests.py`.
+4. **Initial SP pointed at executable memory.** With a single region
+   (`ER_APP 0x24070000 0x0000F000 ... +RW +ZI`) the linker derived
+   `initial_sp = 0x2407F000` -- the address of the console trampoline -- so the
+   image started with SP pointing at code. The text is now split into
+   `ER_APP 0x24070000 0x0000B000 (+RO)` and
+   `ER_IRAM1 0x2407B000 0x00001000 (+RW +ZI)`, giving `SP = 0x2407C000`.
+
+**Flashing channel** (both findings look like firmware bugs but are tool
+behaviour): `pyocd` cannot drive this part -- CoreSight ROM-table discovery
+fails before any flash access (`no cores found`) for every clock/connect mode
+tried. `UV4 -f -j0 <project>` does flash correctly (`Erase Done.Programming
+Done.Verify OK`; vector table reads back `0x08000000 = 0x20020000`,
+`0x08000004 = 0x08000085`, `CFSR = HFSR = 0`) but leaves the core halted and
+USART1 silent. The reliable sequence is `UV4 -d <project> -j0` with an init file
+whose only command is `EXIT` (MCP side:
+`batch_debug_script(commands=["EXIT"])`): download, verify, leave debug mode,
+and only then does the target actually run.
+
+**One layout per call.** `g_config` outlives a single `ark_compile()`, and the
+shell compiles several images per power cycle. The `--scatter`/`-T` bridge used
+to install a layout only when `g_config.scatter_file` was still empty, so `build`
+followed by `compile hello.c` parsed `app.sct` for a request that never
+mentioned it (a stray `[scatter] parsed app.sct` line). The bridge is now
+re-evaluated on every call and remembers by pointer which value it installed
+itself: a caller writing `g_config` directly still works, while a value
+installed by an earlier call is dropped. Verified on the board -- after `build`
+and `run hello.c`, `compile hello.c` / `compile crt.c` print no scatter line and
+still report the expected
+`2 reference(s) cannot be resolved in a single-file image`.
+
 ## 8 Code organisation and porting guide
 
 ### 8.1 File list

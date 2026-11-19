@@ -2124,6 +2124,14 @@ int ark_frontend_unit(const ArkOptions *opts, IrProgram *shared,
     return ARK_OK;
 }
 
+#if ARKCC_FEATURE_SCATTER
+/* Pointers the scatter/-T bridge installed into g_config on the previous call.
+ * Non-NULL means "this value is ours, not the embedding's": the next call that
+ * asks for no layout is allowed to clear it. */
+static const char *g_scatter_owned = 0;
+static const char *g_ldscript_owned = 0;
+#endif
+
 int ark_compile(const ArkOptions *opts) {
     IrProgram *ir;
     const ArkBackend *be;
@@ -2140,11 +2148,34 @@ int ark_compile(const ArkOptions *opts) {
      * -link branch returns: with it placed next to the compile-stage handling
      * the linker never saw it, and `cc -link ... --scatter x.sct` on the H743
      * produced a vector table saying SP=0x20020000 / entry=0x08001250 while
-     * the shell had printed the scatter name. */
+     * the shell had printed the scatter name.
+     *
+     * The bridge is re-evaluated on *every* call, because g_config outlives a
+     * single ark_compile(): an embedding that compiles several images in one
+     * session (the H743 shell does) otherwise kept the previous layout forever
+     * once it had been installed -- `build` followed by `compile hello.c`
+     * parsed app.sct for a request that never mentioned it.  Ownership is
+     * tracked by pointer, so a caller that writes g_config.scatter_file
+     * directly still works: only a value this bridge installed itself is
+     * cleared when the next call asks for no layout. */
     if ((opts->scatter_file != 0) && (opts->scatter_file[0] != 0)) {
-        if ((g_config.scatter_file == 0) || (g_config.scatter_file[0] == 0)) {
-            g_config.scatter_file = opts->scatter_file;
-        }
+        g_config.scatter_file = opts->scatter_file;
+        g_scatter_owned = opts->scatter_file;
+    } else if ((g_scatter_owned != 0) &&
+               (g_config.scatter_file == g_scatter_owned)) {
+        g_config.scatter_file = 0;   /* drop last call's layout, keep a caller's */
+        g_scatter_owned = 0;
+    }
+    /* Same bridge for -T: the linker reads g_config.linker_script as well, so
+     * an embedding that only fills ArkOptions::linker_script had the script
+     * silently ignored.  Ownership is tracked the same way. */
+    if ((opts->linker_script != 0) && (opts->linker_script[0] != 0)) {
+        g_config.linker_script = opts->linker_script;
+        g_ldscript_owned = opts->linker_script;
+    } else if ((g_ldscript_owned != 0) &&
+               (g_config.linker_script == g_ldscript_owned)) {
+        g_config.linker_script = 0;
+        g_ldscript_owned = 0;
     }
 #endif
 
@@ -3430,5 +3461,15 @@ int ark_compile_and_run(const char *path) {
     o.ipo_input_count = 0;
     o.obj_ir = 0;
     o.lto_link = 0;
+    /* Fields added after this function was written.  `ArkOptions o;` is stack
+     * memory: leaving one out is not "default 0", it is "whatever the caller
+     * left there".  partial_link/vector_table/build_* were missed in exactly
+     * that way; a stale vector_table flips whether the image carries a vector
+     * table, and a stale partial_link turns a plain link into a -r merge. */
+    o.partial_link = 0;
+    o.vector_table = 0;
+    o.build_date = 0;
+    o.build_time = 0;
+    o.build_epoch = 0;
     return ark_compile(&o);
 }

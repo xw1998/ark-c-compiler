@@ -1705,6 +1705,75 @@ ZI 1632 B @0x20000010，与 `.sct` 的 `RW_IRAM1 0x20000000 0x00018000` 一致�
 
 （恢复原固件：`pyocd flash -t stm32f401re --base-address 0x08000000 <backup.bin>`。）
 
+### 7.7 H743 上的自举闭环：编译、链接、装载、执行（真机）
+
+`mdk/STM32H743_ArkCC` 的 USART1 shell 里，`build` 与 `run <file>` 已经从
+"print 一段占位文字" 变成真正在芯片上完成的四步：编译源文件得到 `ARKOBJ2`
+对象、按 `app.sct` 布局链接、把镜像装到 AXI SRAM `0x24070000`、调用它的
+复位向量。串口（PA9/PA10，115200 8N1）实测输出：
+
+```
+arkcc> build
+[arkcc] cc -c hello.c -o hello.o
+[arkcc] wrote object 'hello.o' (1290 bytes code, 3 syms, 3 relocs)
+[arkcc] cc -c crt.c -o crt.o
+[arkcc] wrote object 'crt.o' (146 bytes code, 3 syms, 2 relocs)
+[arkcc] cc -link hello.o crt.o -o app.bin --scatter app.sct
+[link] object 0: base 0x0, 1290 bytes
+[link] object 1: base 0x50A, 146 bytes
+[link] vector table written into the 1024-byte hole the first object reserved (SP=0x2407C000, entry=0x24070560)
+[arkcc] linked 2 objects -> app.bin (1436 bytes, 5 syms, 5 relocs)
+[arkcc] image loaded at 24070000, 1436 bytes
+
+--- program output -------------------------------------------
+hello, world
+written by arkcc running on the STM32H743 itself
+
+--------------------------------------------------------------
+[arkcc] program returned 0
+```
+
+`run hello.c` 走同一三段（`run.o` + `crt.o`），输出相同，`returned 0` 是
+真的 `main()` 返回值。要让这条链成立，修掉了四个缺陷，它们原本都只给出
+"看起来像编译器坏了" 的假象：
+
+1. **结构体字段未初始化**：`ArkOptions` 在 0.8.7 新增了 `ipo_mode`、
+   `ipo_inputs[]`、`object_ir`、`lto_link`、`partial_link` 等字段，而板上
+   `opts_reset()` 是手写清单，漏了新字段；结构体在栈上，残留值非 0 时
+   `build` 直接答 `--ipo is not compiled into this build`。现在 `opts_reset()`
+   开头 `memset(o, 0, sizeof(*o))`（宿主 `reset_opts()` 同改），`cmd_compile()`
+   也改为调用 `opts_reset()` 而不再自带一份字段清单。
+2. **对象编译没带布局**：`build_object()` 没传 `--scatter app.sct`，对象把默认
+   数据窗口 `0x20000000` 烘进指令流，链接期被拒。现在对象与链接用同一份
+   scatter 编译，且只有**第一个**对象拿 `--vector-table`（那 1 KB 洞属于镜像，
+   不属于每个编译单元）。
+3. **内嵌 scatter 文本缺 RESET 选择器**：`--vector-table` 要求布局里有
+   `RESET` 段（`scatter_validate()` → `er_holds_reset()`），demo 文本没有。
+   现在带 `*.o (RESET, +First)`，与 `tests/run_reloc_text_tests.py` 的
+   canonical 形状一致。
+4. **初始 SP 落在可执行内存上**：单区 `ER_APP 0x24070000 0x0000F000 … +RW +ZI`
+   使链接器推出 `initial_sp = 0x2407F000`，那正是控制台 trampoline 的地址——
+   镜像一开始 SP 就指向代码。现在拆成 `ER_APP 0x24070000 0x0000B000 (+RO)` 与
+   `ER_IRAM1 0x2407B000 0x00001000 (+RW +ZI)`，`SP = 0x2407C000`。
+
+**烧写通道**（两条都像是固件 bug，其实是工具行为）：`pyocd` 在 H743 上
+CoreSight ROM 表发现失败（各时钟/连接模式都试过，Flash 操作之前就报
+`no cores found`），不可用；`UV4 -f -j0 <工程>` 能烧成功
+（`Erase Done.Programming Done.Verify OK`，向量表回读
+`0x08000000 = 0x20020000`、`0x08000004 = 0x08000085`、`CFSR = HFSR = 0`），
+但烧完核心停在 halt、串口静默。可靠做法是 `UV4 -d <工程> -j0` 配一个内容
+只有 `EXIT` 的初始化文件（MCP 侧即 `batch_debug_script(commands=["EXIT"])`）：
+下载、校验、退出调试，目标才真的开始跑。
+
+**一次调用一份布局**：`g_config` 活过一次 `ark_compile()`，板上一个上电周期
+里会编译多个镜像。`--scatter`/`-T` 的桥接原本"只在为空时才赋值"，于是
+`build` 之后再 `compile hello.c` 会莫名解析 `app.sct`（日志里凭空出现
+`[scatter] parsed app.sct`）。现在桥接每次调用都重算，并按指针记住"这个值
+是自己装的"——调用方直接写 `g_config` 仍然有效，而上一次装的布局会被清掉。
+板上实测：`build`、`run hello.c` 之后再 `compile hello.c` / `compile crt.c`，
+日志里不再出现 scatter 行，且仍按预期报
+`2 reference(s) cannot be resolved in a single-file image`。
+
 ## 8 代码组织与移植指南
 
 ### 8.1 文件清单

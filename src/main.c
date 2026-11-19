@@ -264,6 +264,12 @@ static void parse_uvprojx(const char *uvprojx_path, ArkOptions *opts) {
 
 static void reset_opts(ArkOptions *o) {
     int i;
+    /* Same reason as the board's opts_reset(): this struct grows every
+     * release and `ArkOptions opts;` in main() is stack memory.  Zeroing the
+     * whole thing first means a newly added field is 0 even if nobody
+     * remembered to list it here.  The assignments below are kept so this
+     * function still reads as the authoritative default table. */
+    memset(o, 0, sizeof(*o));
     o->input_path = 0;
     o->output_path = 0;
     o->emit_asm = 0;
