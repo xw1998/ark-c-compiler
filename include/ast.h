@@ -52,6 +52,7 @@ struct AstNode {
             int      is_unused;   /* __attribute__((unused)) */
             int      is_asm_func; /* __asm function body */
             int      forceinline; /* __forceinline */
+            int      is_inline;   /* 0.8.6: plain inline/__inline keyword seen; suppress unused-static */
             int      is_softfp;   /* __softfp */
             int      is_constructor; /* __attribute__((constructor)) */
             int      is_destructor;  /* __attribute__((destructor)) */

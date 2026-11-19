@@ -30,6 +30,7 @@ IrFunc *ir_func_new(const char *name) {
     f->is_unused = 0;
     f->is_asm_func = 0;
     f->forceinline = 0;
+    f->is_inline = 0;
     f->is_constructor = 0;
     f->is_destructor = 0;
     f->is_deprecated = 0;

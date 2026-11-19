@@ -272,6 +272,7 @@ static int g_attr_is_irq;
  * and reset. const is used for .rodata section selection; section for custom sections. */
 static char *g_attr_section;
 static int   g_decl_is_const;
+static int   g_decl_is_inline;     /* 0.8.6: inline / __inline seen in a declaration specifier */
 static int   g_decl_is_volatile;  /* F2: volatile qualifier seen in declspec */
 static int   g_decl_is_atomic;    /* C11 _Atomic qualifier seen in declspec */
 /* 0.4.0 added attribute / keyword-driven properties.
@@ -1037,6 +1038,7 @@ static Type *parse_declspec(Parser *p, int *p_storage, int *p_is_typedef) {
             case TOK_CONST: case TOK_VOLATILE: case TOK_RESTRICT: case TOK_INLINE:
                 if (tok.kind == TOK_CONST) g_decl_is_const = 1;
                 if (tok.kind == TOK_VOLATILE) g_decl_is_volatile = 1;
+                if (tok.kind == TOK_INLINE) g_decl_is_inline = 1;
                 lexer_advance(p->lex);
                 saw_kw = 1;
                 continue;
@@ -2081,6 +2083,7 @@ static AstNode *parse_top_decl(Parser *p) {
     int func_mods = 0;            /* __irq/__weak/__naked bitmask: 1/2/4 */
     int decl_is_atomic = 0;      /* C11 _Atomic on this declaration */
     int decl_is_const = 0;        /* const state of this declaration (captured then reset global) */
+    int decl_is_inline = 0;       /* 0.8.6: inline/__inline state of this declaration */
     char *decl_section = 0;       /* section name of this declaration (captured then reset global) */
     int   is_asm_fn = 0;          /* __asm void fn(){...} function-body-asm marker */
     int   decl_align = 0;         /* __align(n) parse result */
@@ -2095,6 +2098,7 @@ static AstNode *parse_top_decl(Parser *p) {
     /* Reset __attribute__-driven function attribute globals to avoid cross-declaration leakage */
     g_attr_is_weak = 0; g_attr_is_naked = 0; g_attr_is_irq = 0;
     g_attr_section = 0; g_decl_is_const = 0; g_decl_is_volatile = 0; g_decl_is_atomic = 0;
+    g_decl_is_inline = 0;
     g_attr_is_used = 0; g_attr_is_unused = 0;
     g_attr_alias_target = 0;
     g_attr_align_bytes = 0; g_decl_align_bytes = 0;
@@ -2153,6 +2157,7 @@ static AstNode *parse_top_decl(Parser *p) {
      * (e.g. `static __inline __asm uint32_t __REV16(...)`). */
     is_asm_fn |= g_decl_is_asm_fn;
     decl_is_const = g_decl_is_const;
+    decl_is_inline = g_decl_is_inline;
     decl_is_atomic = g_decl_is_atomic;
     decl_section = g_attr_section;
     /* A _Alignas request wins only if it is at least the natural alignment;
@@ -2366,6 +2371,7 @@ static AstNode *parse_top_decl(Parser *p) {
                 n->u.func.is_naked = (func_mods & 4) ? 1 : 0;
                 n->u.func.is_softfp     = ((func_mods & 8) || g_attr_is_softfp) ? 1 : 0;
                 n->u.func.forceinline   = ((func_mods & 16) || g_attr_is_forceinline) ? 1 : 0;
+                n->u.func.is_inline     = decl_is_inline;
                 n->u.func.is_used       = g_attr_is_used;
                 n->u.func.is_unused     = g_attr_is_unused;
                 n->u.func.alias_target  = g_attr_alias_target;
@@ -2469,6 +2475,7 @@ static AstNode *parse_top_decl(Parser *p) {
                 n->u.func.is_naked = (func_mods & 4) ? 1 : 0;
                 n->u.func.is_softfp     = ((func_mods & 8) || g_attr_is_softfp) ? 1 : 0;
                 n->u.func.forceinline   = ((func_mods & 16) || g_attr_is_forceinline) ? 1 : 0;
+                n->u.func.is_inline     = decl_is_inline;
                 n->u.func.is_used       = g_attr_is_used;
                 n->u.func.is_unused     = g_attr_is_unused;
                 n->u.func.alias_target  = g_attr_alias_target;
@@ -2914,6 +2921,7 @@ static AstNode *parse_statement(Parser *p) {
         int local_align = 0;
         /* Reset const/section globals to avoid cross-statement leakage */
         g_decl_is_const = 0; g_decl_is_volatile = 0; g_decl_is_atomic = 0; g_attr_section = 0;
+        g_decl_is_inline = 0;
         g_attr_align_bytes = 0;
         g_attr_is_used = 0; g_attr_is_unused = 0;
         g_decl_packed_ptr = 0;
@@ -3022,6 +3030,7 @@ static AstNode *parse_statement(Parser *p) {
                     int sto = 0, td = 0;
                     Type *base;
                     g_decl_is_const = 0; g_decl_is_volatile = 0; g_decl_is_atomic = 0; g_attr_section = 0;
+                    g_decl_is_inline = 0;
                     base = parse_declspec(p, &sto, &td);
                     init = parse_local_var_decl(p, base, sto, td);
                     /* parse_local_var_decl already ate ';' */

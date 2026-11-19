@@ -144,7 +144,7 @@ extern void *_ark_va__reg_save_area;
  * they last, otherwise from the caller's stack block.  A 9..16-byte object
  * is two adjacent registers, which is why the advance is the rounded size
  * rather than one slot. */
-static void *ark_va__gp(va_list ap, unsigned int sz) {
+static inline void *ark_va__gp(va_list ap, unsigned int sz) {
     unsigned int need = ark_va__round(sz);
     void *p;
     if (ap[0].gp_offset + need <= 48u) {
@@ -159,7 +159,7 @@ static void *ark_va__gp(va_list ap, unsigned int sz) {
 
 /* VECTOR class: one 16-byte register slot per argument (only the low 8 bytes
  * of a double are live), then the stack block. */
-static void *ark_va__fp(va_list ap, unsigned int sz) {
+static inline void *ark_va__fp(va_list ap, unsigned int sz) {
     void *p;
     if (ap[0].fp_offset + 16u <= 176u) {
         p = (char *)ap[0].reg_save_area + ap[0].fp_offset;
@@ -173,13 +173,13 @@ static void *ark_va__fp(va_list ap, unsigned int sz) {
 
 /* More than 16 bytes: the ABI classifies the object MEMORY, so it never used
  * a register and its address is the stack block. */
-static void *ark_va__mem(va_list ap, unsigned int sz) {
+static inline void *ark_va__mem(va_list ap, unsigned int sz) {
     void *p = ap[0].overflow_arg_area;
     ap[0].overflow_arg_area = (char *)ap[0].overflow_arg_area + ark_va__round(sz);
     return p;
 }
 
-static void *ark_va__gp_or_mem(va_list ap, unsigned int sz) {
+static inline void *ark_va__gp_or_mem(va_list ap, unsigned int sz) {
     if (sz > 16u) return ark_va__mem(ap, sz);
     return ark_va__gp(ap, sz);
 }

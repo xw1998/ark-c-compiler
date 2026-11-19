@@ -102,6 +102,8 @@ typedef struct IrFunc {
     int      is_unused;    /* __attribute__((unused)) */
     int      is_asm_func;  /* __asm function body */
     int      forceinline;  /* __forceinline */
+    int      is_inline;    /* 0.8.6: plain `inline` / `__inline` seen in declspec; read by --warn-unused-static
+                            *        (GCC -Wunused-function does not warn about unused static inline) */
     int      is_constructor; /* __attribute__((constructor)) */
     int      is_destructor;  /* __attribute__((destructor)) */
     int      is_deprecated;  /* __attribute__((deprecated)) */

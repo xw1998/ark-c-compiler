@@ -78,6 +78,9 @@ void config_init(void) {
     /* --warn-enum: 同样两层开关，运行期默认关；不开时产物与 0.8.3 逐字节相同。 */
     g_config.enable_enumcheck     = 0;
     g_config.enable_unused_result = 0;
+    g_config.enable_warn_unreachable   = 0;
+    g_config.enable_warn_unused_static = 0;
+    g_config.enable_warn_recursion     = 0;
     /* --pipeline: 默认 FULL = 历史行为（每个 pass 自己的开关/级别决定），
      * 因此不写这个选项时产物与 0.8.4 逐字节相同。 */
     g_config.pipeline_profile     = ARK_PROFILE_FULL;
@@ -122,6 +125,9 @@ static void apply_kv(const char *section, const char *key, const char *val) {
         else if (ark_streq(key, "warn_mem"))      g_config.enable_memlint = parse_bool(val);
         else if (ark_streq(key, "warn_enum"))     g_config.enable_enumcheck = parse_bool(val);
         else if (ark_streq(key, "warn_unused_result")) g_config.enable_unused_result = parse_bool(val);
+        else if (ark_streq(key, "warn_unreachable"))   g_config.enable_warn_unreachable = parse_bool(val);
+        else if (ark_streq(key, "warn_unused_static")) g_config.enable_warn_unused_static = parse_bool(val);
+        else if (ark_streq(key, "warn_recursion"))     g_config.enable_warn_recursion = parse_bool(val);
         else if (ark_streq(key, "pipeline")) {
             /* An unknown spelling is reported rather than ignored: a config
              * file that says "pipeline = lti" and is silently treated as
@@ -443,6 +449,9 @@ void config_print(void) {
     ark_log("  warn_mem=%d\n", g_config.enable_memlint);
     ark_log("  warn_enum=%d\n", g_config.enable_enumcheck);
     ark_log("  warn_unused_result=%d\n", g_config.enable_unused_result);
+    ark_log("  warn_unreachable=%d\n", g_config.enable_warn_unreachable);
+    ark_log("  warn_unused_static=%d\n", g_config.enable_warn_unused_static);
+    ark_log("  warn_recursion=%d\n", g_config.enable_warn_recursion);
     ark_log("  pipeline=%s\n", pipeline_profile_name(g_config.pipeline_profile));
     ark_log("  opt_level=%d debug_info=%d split_sections=%d\n",
             g_config.opt_level, g_config.debug_info, g_config.split_sections);

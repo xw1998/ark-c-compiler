@@ -1605,6 +1605,7 @@ IrProgram *irgen_program(AstNode *prog) {
             fn->param_count = d->u.func.param_count;
             fn->is_static = d->u.func.is_static;
             fn->is_asm_func = 1;
+            fn->is_inline = d->u.func.is_inline;
             fn->asm_body = d->u.func.asm_body;
             fn->is_used = d->u.func.is_used;
             fn->is_unused = d->u.func.is_unused;
@@ -1631,6 +1632,7 @@ IrProgram *irgen_program(AstNode *prog) {
                 fn->ret_type = d->u.func.ret_type;
                 fn->param_count = d->u.func.param_count;
                 fn->is_static = d->u.func.is_static;
+                fn->is_inline = d->u.func.is_inline;
                 fn->is_used = d->u.func.is_used;
                 fn->is_unused = d->u.func.is_unused;
                 fn->is_weak = d->u.func.is_weak;
@@ -1720,6 +1722,7 @@ IrProgram *irgen_program(AstNode *prog) {
             g.fn->is_used  = d->u.func.is_used;
             g.fn->is_unused= d->u.func.is_unused;
             g.fn->forceinline = d->u.func.forceinline;
+            g.fn->is_inline = d->u.func.is_inline;
             g.fn->alias_target = d->u.func.alias_target;
             g.fn->is_constructor = d->u.func.is_constructor;
             g.fn->is_destructor  = d->u.func.is_destructor;

@@ -22,7 +22,7 @@ endif
 
 .PHONY: all clean test test-arm test-c test-stdlib test-install test-x86 test-x86-64 \
         test-x86-64-selfhost test-riscv test-reloc-text test-memlint \
-        test-enumcheck test-pipeline test-unusedresult \
+        test-enumcheck test-pipeline test-unusedresult test-mir \
         test-atomic install stm32
 
 all: $(ARKCC)
@@ -38,7 +38,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-atomic
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-atomic
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -75,6 +75,15 @@ test-pipeline: $(ARKCC)
 # the option instead of pretending to check.
 test-unusedresult: $(ARKCC)
 	$(PYTHON) tests/run_unusedresult_tests.py ./$(ARKCC)
+
+# Gate for the MIR checks (--warn-unreachable / --warn-unused-static /
+# --warn-recursion): every reported shape is located by anchor, every legal
+# twin is silent, the image is byte-identical with the checks on and off
+# (they are lint, not optimisation), the graph builder re-verifies its own
+# invariants on the case sources, and a build without the feature refuses the
+# options instead of pretending to analyse control flow.
+test-mir: $(ARKCC)
+	$(PYTHON) tests/run_mir_tests.py ./$(ARKCC)
 
 # Library gate: every stdlib entry point is compiled and run on the ARM
 # emulator, and each case asserts a number the program itself computed.  A

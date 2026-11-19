@@ -7,6 +7,9 @@
  *     fixed order keeps the diagnostic sequence reproducible (the gates
  *     compare text, and two runs that emit the same warnings in a different
  *     order would look like a regression).
+ *   - the three MIR checks come first, before any optimisation touches the
+ *     IR: they are lint, they must describe the source, and a fold that turns
+ *     `if (0)` into a jump would otherwise decide what they say.
  *   - constfold before dce: dce removes instructions a fold made unreachable
  *     (e.g. the dead half of `if (0)`, or the arithmetic behind a constant
  *     comparison), so the other order leaves work behind.
@@ -25,6 +28,7 @@
 #include "memlint.h"
 #include "enumcheck.h"
 #include "unusedresult.h"
+#include "mirpass.h"
 
 /* Names cost Flash on the board and nothing there ever prints them, so the
  * whole dump path (names included) is behind one switch. With it off the
@@ -106,6 +110,12 @@ typedef struct {
     void (*fn_prog)(IrProgram *);
 } IrStage;
 
+/* The MIR checks are lint, not optimisation: they carry no -O gate (min_level 0)
+ * and they run first, on the IR exactly as irgen produced it, so their report
+ * describes the program the user wrote and does not move when -O moves. */
+static int ir_wanted_unreachable(void)   { return g_config.enable_warn_unreachable; }
+static int ir_wanted_unused_static(void) { return g_config.enable_warn_unused_static; }
+static int ir_wanted_recursion(void)     { return g_config.enable_warn_recursion; }
 static int ir_wanted_constfold(void)  { return g_config.enable_opt_constfold; }
 static int ir_wanted_dce(void)        { return g_config.enable_opt_dce; }
 static int ir_wanted_dce_cfg(void)    { return g_config.enable_dce_cfg; }
@@ -126,6 +136,18 @@ static const IrStage g_ir_stages[] = {
     /* <name>            <min_profile>     <lvl> <gate>                <built_in>
      *                   <wanted>            <flag name>                     <scope> <cleanup>
      *                   <fn_func>          <fn_prog> */
+#if ARKCC_FEATURE_MIR
+    { PIPE_NAME("ir.unreachable"),   ARK_PROFILE_LITE, 0, GATE_FLAG_AND_LEVEL, 1,
+      ir_wanted_unreachable,   PIPE_NAME("off (--warn-unreachable)"),   0, 0, mirpass_unreachable,   0 },
+    { PIPE_NAME("ir.unused-static"), ARK_PROFILE_LITE, 0, GATE_FLAG_AND_LEVEL, 1,
+      ir_wanted_unused_static, PIPE_NAME("off (--warn-unused-static)"), 1, 0, 0, mirpass_unused_static },
+    { PIPE_NAME("ir.recursion"),     ARK_PROFILE_LITE, 0, GATE_FLAG_AND_LEVEL, 1,
+      ir_wanted_recursion,     PIPE_NAME("off (--warn-recursion)"),     1, 0, 0, mirpass_recursion },
+#else
+    { PIPE_NAME("ir.unreachable"),   ARK_PROFILE_LITE, 0, GATE_FLAG_AND_LEVEL, 0, 0, 0, 0, 0, 0, 0 },
+    { PIPE_NAME("ir.unused-static"), ARK_PROFILE_LITE, 0, GATE_FLAG_AND_LEVEL, 0, 0, 0, 1, 0, 0, 0 },
+    { PIPE_NAME("ir.recursion"),     ARK_PROFILE_LITE, 0, GATE_FLAG_AND_LEVEL, 0, 0, 0, 1, 0, 0, 0 },
+#endif
     { PIPE_NAME("ir.constfold"), ARK_PROFILE_LITE, 1, GATE_FLAG_AND_LEVEL, ARKCC_FEATURE_OPT_CONSTFOLD,
       ir_wanted_constfold, PIPE_NAME("off (-fno-opt-constfold)"), 0, 0, opt_constfold_func, 0 },
     { PIPE_NAME("ir.dce"),       ARK_PROFILE_LITE, 1, GATE_FLAG_AND_LEVEL, ARKCC_FEATURE_OPT_DCE,

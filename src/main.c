@@ -49,6 +49,16 @@ static void usage(void) {
         "                     the callee is declared warn_unused_result / __must_check\n"
         "                     ((void) cast silences it; off by default).\n"
 #endif
+#if ARKCC_FEATURE_MIR
+        "  --warn-unreachable  warn about basic blocks no path from the entry can\n"
+        "                     reach, with the number of dead instructions\n"
+        "                     (off by default).\n"
+        "  --warn-unused-static  warn about a static function in this file that\n"
+        "                     nothing calls and whose address never escapes\n"
+        "                     (off by default; silent if the file has inline asm).\n"
+        "  --warn-recursion   warn about a call cycle among this file's functions:\n"
+        "                     its stack depth is decided by the input (off by default).\n"
+#endif
         "  -v                 verbose\n"
         "  -target <name>     select backend (arm|x86|x86_64|riscv32|c)\n"
         "  -I <dir>           additional include path\n"
@@ -638,6 +648,28 @@ int main(int argc, char **argv) {
         }
         else if (strcmp(a, "--no-warn-unused-result") == 0) g_config.enable_unused_result = 0;
 #endif
+#if ARKCC_FEATURE_MIR
+        else if (strcmp(a, "--warn-unreachable") == 0)       g_config.enable_warn_unreachable = 1;
+        else if (strcmp(a, "--no-warn-unreachable") == 0)    g_config.enable_warn_unreachable = 0;
+        else if (strcmp(a, "--warn-unused-static") == 0)     g_config.enable_warn_unused_static = 1;
+        else if (strcmp(a, "--no-warn-unused-static") == 0)  g_config.enable_warn_unused_static = 0;
+        else if (strcmp(a, "--warn-recursion") == 0)         g_config.enable_warn_recursion = 1;
+        else if (strcmp(a, "--no-warn-recursion") == 0)      g_config.enable_warn_recursion = 0;
+#else
+        /* Refusing beats ignoring: a build without the checks must not accept
+         * the option and then behave as if control flow had been analysed. */
+        else if (strcmp(a, "--warn-unreachable") == 0 ||
+                 strcmp(a, "--warn-unused-static") == 0 ||
+                 strcmp(a, "--warn-recursion") == 0) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: %s is not compiled into this build "
+                    "(rebuild with -DARKCC_FEATURE_MIR=1)\n", a);
+            return 1;
+        }
+        else if (strcmp(a, "--no-warn-unreachable") == 0)    g_config.enable_warn_unreachable = 0;
+        else if (strcmp(a, "--no-warn-unused-static") == 0)  g_config.enable_warn_unused_static = 0;
+        else if (strcmp(a, "--no-warn-recursion") == 0)      g_config.enable_warn_recursion = 0;
+#endif
         else if (strcmp(a, "--list-backends") == 0) opts.list_backends = 1;
         else if (strcmp(a, "-h") == 0 || strcmp(a, "--help") == 0) {
             usage();
@@ -718,6 +750,28 @@ int main(int argc, char **argv) {
         fprintf(stderr,
                 "Fatal error: C3900U: --warn-unused-result is not compiled into "
                 "this build (rebuild with -DARKCC_FEATURE_UNUSEDRESULT=1)\n");
+        return 1;
+    }
+#endif
+
+#if !ARKCC_FEATURE_MIR
+    /* Same rule again for the three MIR checks in the ini file. */
+    if (g_config.enable_warn_unreachable) {
+        fprintf(stderr,
+                "Fatal error: C3900U: --warn-unreachable is not compiled into "
+                "this build (rebuild with -DARKCC_FEATURE_MIR=1)\n");
+        return 1;
+    }
+    if (g_config.enable_warn_unused_static) {
+        fprintf(stderr,
+                "Fatal error: C3900U: --warn-unused-static is not compiled into "
+                "this build (rebuild with -DARKCC_FEATURE_MIR=1)\n");
+        return 1;
+    }
+    if (g_config.enable_warn_recursion) {
+        fprintf(stderr,
+                "Fatal error: C3900U: --warn-recursion is not compiled into "
+                "this build (rebuild with -DARKCC_FEATURE_MIR=1)\n");
         return 1;
     }
 #endif

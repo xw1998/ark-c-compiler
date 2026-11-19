@@ -1181,6 +1181,43 @@ assertions).
 
 ---
 
+### 5.13 The three middle-end checks (`--warn-unreachable` / `--warn-unused-static` / `--warn-recursion`)
+
+The three checks that need a **graph** share one substrate (`src/mir.c` builds
+the basic-block graph and the call graph). They only read the IR and modify no
+instruction, so the object file is byte-identical with them on or off. All are
+**off** by default:
+
+| Switch | Default | Meaning |
+| --- | :---: | --- |
+| `--warn-unreachable` | off | unreachable code: each maximal run of unreachable blocks is reported once |
+| `--warn-unused-static` | off | a `static` function with no caller and no taken address |
+| `--warn-recursion` | off | one report per cyclic SCC of the call graph (self recursion included) |
+| `warn_unreachable` / `warn_unused_static` / `warn_recursion` in `[features]` | `0` | the config-file spelling |
+| `ARKCC_FEATURE_MIR` (compile time) | `1` on the host, `0` in `ARKCC_PROFILE_STM32_MIN` | where absent, all three options and keys are refused with `C3900U` |
+
+Boundaries (deliberate trade-offs, not missing code):
+
+- "phantom" blocks made only of pushes / `JMP` / `RETURN` / labels are never
+  reported -- irgen writes them itself after every `if` arm and at the end of
+  every function, so reporting them would fire in every function; a lone
+  `return 2;` is the accepted miss (asserted in the gate as `registered miss`);
+- `inline` / `__forceinline` statics are silent, matching GCC's
+  `-Wunused-function` (the `_Generic` helpers in `<stdarg.h>` have that shape);
+- a unit containing inline asm silences `unused-static` entirely: symbols inside
+  asm text are invisible to the graph;
+- function-pointer calls can only hide an edge, so they cause misses, never
+  false positives;
+- all three run **first** in the IR stage table, before `constfold`: a lint must
+  describe the source, and what is unreachable after folding is the optimiser's
+  product.
+
+In the pipeline they are `ir.unreachable` / `ir.unused-static` / `ir.recursion`
+(all `lite`, no `-O` gate). See [MIR_CFG.en.md](MIR_CFG.en.md); the gate is
+`tests/run_mir_tests.py` (`make test-mir`).
+
+---
+
 ### 5.x Flat images must link their own 64-bit/AEABI runtime
 
 The backend inlines 64-bit add/sub as `ADDS`/`ADC` and `SUBS`/`SBC` (no runtime dependency); the remaining

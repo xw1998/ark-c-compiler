@@ -230,6 +230,33 @@
 #   define ARKCC_FEATURE_UNUSEDRESULT 1
 # endif
 #endif
+
+/* ARKCC_FEATURE_MIR: the MIR checks -- --warn-unreachable,
+ * --warn-unused-static and --warn-recursion. See include/mir.h,
+ * include/mirpass.h and docs/MIR_CFG.md.
+ *
+ * One switch for three checks because they share src/mir.c: the graph
+ * builders and the three readers are one module. Splitting the switch would
+ * let a build carry a graph builder for a check it cannot run, which is the
+ * false-alive shape this project keeps refusing.
+ *
+ * Trimmable by construction: two arrays on the arena per function analysed
+ * (a block per leader plus one slot per instruction), no realloc, and the
+ * Tarjan pass has an explicit frame stack so deep call graphs cannot blow a
+ * 4 KB task stack. Off in the STM32 profile because Flash is the scarce
+ * resource there, not because the checks need RAM;
+ * -DARKCC_FEATURE_MIR=1 brings all three back.
+ *
+ * The runtime switches (--warn-unreachable, --warn-unused-static,
+ * --warn-recursion) are separate and each defaults to off on every profile,
+ * so the shipped behaviour is unchanged even where the code is compiled in. */
+#ifndef ARKCC_FEATURE_MIR
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_MIR           0   /* Trim on the board: costs Flash */
+# else
+#   define ARKCC_FEATURE_MIR           1
+# endif
+#endif
 /* ARKCC_FEATURE_PIPELINE_DUMP: the strings and the printer behind
  * --print-pipeline.  The stage tables and the execution loop are compiled in
  * unconditionally -- src/pipeline.c is the driver now, not an optional pass --

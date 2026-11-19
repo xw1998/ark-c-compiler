@@ -46,6 +46,11 @@ typedef struct {
     int enable_memlint;       /* --warn-mem: 返回局部地址 / double free / UAF 检查 */
     int enable_enumcheck;     /* --warn-enum: switch on an enum that misses an enumerator */
     int enable_unused_result; /* 0.8.6 --warn-unused-result: discarded value of an annotated call */
+    /* 0.8.6 MIR checks (include/mir.h). All three read the same two graphs and
+     * only print warnings; enabling them cannot change the image. */
+    int enable_warn_unreachable;   /* --warn-unreachable: block with no path from the entry */
+    int enable_warn_unused_static; /* --warn-unused-static: static function nothing can reach */
+    int enable_warn_recursion;     /* --warn-recursion: call cycle among the unit's functions */
     /* 0.8.5: 可配置 Pass 管线（见 include/pipeline.h）。取 ARK_PROFILE_FULL 时
      * 每个 pass 仍由自己的开关与 -O 级别决定，即历史行为、产物逐字节不变；
      * 取 ARK_PROFILE_LITE 时只允许 min_profile 为 lite 的阶段跑，其余阶段

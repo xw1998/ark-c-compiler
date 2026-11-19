@@ -1028,6 +1028,35 @@ void g(void) { f(); (void)f(); }     /* 前一条告警，后一条沉默 */
 
 ---
 
+### 5.13 中端三检查（`--warn-unreachable` / `--warn-unused-static` / `--warn-recursion`）
+
+三条需要**图**的检查共用一份中端基底（`src/mir.c` 建基本块图与调用图），
+只读 IR、不改一条指令，所以开与不开产出的 `.o` 逐字节相同。默认全关：
+
+| 开关 | 默认 | 说明 |
+| --- | :---: | --- |
+| `--warn-unreachable` | 关 | 不可达代码：无路径可达的极大连续块段报一次 |
+| `--warn-unused-static` | 关 | `static` 函数无人调用、地址未被取时报一次 |
+| `--warn-recursion` | 关 | 调用图每个成环 SCC 报一次（含自递归） |
+| `[features]` 节 `warn_unreachable` / `warn_unused_static` / `warn_recursion` | `0` | 配置文件等效写法 |
+| `ARKCC_FEATURE_MIR`（编译期） | 宿主 `1`、`ARKCC_PROFILE_STM32_MIN` `0` | 特性不在时三个正选项与 INI key 都以 `C3900U` 拒绝 |
+
+边界（都是刻意的取舍，不是漏实现）：
+
+- 只含 push / `JMP` / `RETURN` / 标签的"phantom 块"不报——irgen 自己在每个
+  `if` 分支后和每个函数末尾都会写这种块，报它会让检查在每个函数都响；
+  代价是孤立的 `return 2;` 不报（门禁里作为 `registered miss` 断言）；
+- `inline` / `__forceinline` 的 static 函数不报（对齐 GCC 的 `-Wunused-function`，
+  `<stdarg.h>` 的 `_Generic` 助手就是这种形态）；
+- 整份 TU 出现 inline asm 时 `unused-static` 整体沉默：asm 文本里的符号对图不可见；
+- 函数指针调用只让环"少看见一条边"，因此只漏报、不误报；
+- 三条都排在管线 IR 表**最前**（`constfold` 之前）：lint 必须描述源码，
+  折叠之后看到的"不可达"是优化器的产物。
+
+它们在管线里是 `ir.unreachable` / `ir.unused-static` / `ir.recursion`
+（都是 `lite` 剖面，无 `-O` 门）。详见 [MIR_CFG.md](MIR_CFG.md)，门禁
+`tests/run_mir_tests.py`（`make test-mir`）。
+
 ## 6 在 Windows 上测试
 
 ### 6.1 推荐流程：c 后端
