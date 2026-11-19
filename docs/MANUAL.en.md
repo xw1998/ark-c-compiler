@@ -1966,13 +1966,29 @@ ZI 1632 B @0x20000010, consistent with `RW_IRAM1 0x20000000 0x00018000` in the `
   so the poll counts stay comparable; but the injection must be switched off before calling the SysTick
   ISR directly, otherwise the read-modify-write inside the handler is recorded as +2.
 
-#### 7.6.4 What the emulator cannot see
+#### 7.6.4 On-hardware measurement (NUCLEO-F401RE + CMSIS-DAP)
 
-There is no SysTick counting hardware and no real pin: **that the interrupt is actually taken** and
-**that PC13 really blinks** can only be observed on a board. Hardware steps: flash
-`examples/ark_test/ark_test_fw.bin` at `0x08000000` (ST-Link / `UV4 -f`); PC13 should blink at 1 Hz,
-and a live read of `uwTick` should increase (proving the SysTick ISR runs). Flash `ark_test.hex` the same
-way as the armcc reference. (This round only reached emulator-level parity; hardware has not been run yet.)
+The emulator has neither SysTick counting hardware nor a real pin: **that the interrupt is really taken**
+and **that PC13 really blinks** can only be observed on a board. This section records what was measured on
+real silicon (probe `Arm DAPLink CMSIS-DAP`, Unique ID `D9763DF4...`; the chip reports DEV_ID `0x10016433`,
+i.e. STM32F401xD/E).
+
+- **Back up first**: pull the whole 512 KB Flash back with `savemem 0x08000000 0x80000 backup.bin`
+  (driven by `pyocd cmd -t stm32f401re -x save.txt`), and confirm the file is complete before flashing.
+- **Flash**: `pyocd flash -t stm32f401re --base-address 0x08000000 examples/ark_test/ark_test_fw.bin`;
+  for the armcc reference flash `examples/ark_test/MDK-ARM/ark_test/ark_test.hex` without `--base-address`.
+- **Vector table read back**: arkcc gives `0x08000000 = 0x20018000`, `0x08000004 = 0x080254AB`; armcc gives
+  `0x20000670 / 0x08000235` - bit for bit the `SP/reset` values compared in §7.6.2, so the images on the
+  chip are exactly the ones that were compared.
+- **SysTick really runs**: two reads of `uwTick` (`0x2000004C` for arkcc, `0x20000008` for armcc) 2000 ms
+  apart grow by 2009/2010 (arkcc) and 2009/1998 (armcc), i.e. a 1 kHz tick.
+- **PC13 really blinks**: sampling bit 13 of `GPIOC->ODR` (`0x40020814`) every 100 ms shows a square wave
+  with a half period of about 480-510 ms on both images, i.e. 1 Hz.
+- **Conclusion**: the emulator-side parity (38 peripheral writes / 6 BSRR pulses / 2009 `uwTick` polls /
+  clean stop) reproduces on the board as "1 Hz blink + 1 kHz tick" on both images, so the `ark_test`
+  project built by arkcc runs normally.
+
+(Restore the original firmware with `pyocd flash -t stm32f401re --base-address 0x08000000 <backup.bin>`.)
 
 ## 8 Code organisation and porting guide
 

@@ -1684,12 +1684,26 @@ ZI 1632 B @0x20000010，与 `.sct` 的 `RW_IRAM1 0x20000000 0x00018000` 一致�
   两侧施加同等待遇，因此**轮询次数可比**；但在直接调用 SysTick ISR 之前必须先关掉这个注入，
   否则处理函数内部那次 read-modify-write 会被记成 +2。
 
-#### 7.6.4 模拟器测不到的部分
+#### 7.6.4 真机实测（NUCLEO-F401RE + CMSIS-DAP）
 
 模拟器没有 SysTick 计数硬件，也没有真实引脚：**中断真被硬件触发**以及**PC13 真的在闪**只能在板子上看。
-真机验证步骤：把 `examples/ark_test/ark_test_fw.bin` 烧到 `0x08000000`（ST-Link / `UV4 -f`），
-PC13 应 1 Hz 闪烁；在线读 `uwTick` 递增即为 SysTick ISR 在跑。armcc 侧同理烧 `ark_test.hex` 作为对照。
-（本轮只做到模拟器层面等价，尚未在硬件上执行。）
+下面是真板上的实测读数（探针 `Arm DAPLink CMSIS-DAP`，Unique ID `D9763DF4…`；芯片实读 DEV_ID `0x10016433`，
+即 STM32F401xD/E）。
+
+- **先备份**：用 `savemem 0x08000000 0x80000 backup.bin`（由 `pyocd cmd -t stm32f401re -x save.txt` 驱动）
+  把整片 512 KB Flash 读回保存，确认文件完整后再烧。
+- **烧录**：`pyocd flash -t stm32f401re --base-address 0x08000000 examples/ark_test/ark_test_fw.bin`；
+  armcc 对照侧烧 `examples/ark_test/MDK-ARM/ark_test/ark_test.hex`（不给 `--base-address`）。
+- **向量表实读**：arkcc 侧 `0x08000000 = 0x20018000`、`0x08000004 = 0x080254AB`；armcc 侧
+  `0x20000670 / 0x08000235` —— 与 §7.6.2 的 `SP/reset` 逐位一致，说明板上跑的就是被对拍的那两个镜像。
+- **SysTick 真在跑**：间隔 2000 ms 两次读 `uwTick`（arkcc `0x2000004C`、armcc `0x20000008`），
+  增量分别为 2009/2010（arkcc）与 2009/1998（armcc），即 1 kHz 节拍。
+- **PC13 真在闪**：每 100 ms 采样 `GPIOC->ODR`（`0x40020814`）位 13，两侧都出现半周期约 480–510 ms
+  的方波，即 1 Hz。
+- **结论**：模拟器层面的等价（38 条外设写 / 6 次 BSRR / 2009 次 `uwTick` 轮询 / 干净停机）在真板上
+  复现为「1 Hz 闪烁 + 1 kHz 节拍」，两侧一致 ⇒ arkcc 产出的 `ark_test` 工程可以正常运行。
+
+（恢复原固件：`pyocd flash -t stm32f401re --base-address 0x08000000 <backup.bin>`。）
 
 ## 8 代码组织与移植指南
 
