@@ -792,4 +792,27 @@
 #   define ARKCC_FEATURE_CONST_GLOBAL   1
 # endif
 #endif
+/* -------------------------------------------------------------------------
+ * ARKCC_FEATURE_PARTIAL_LINK: `-r` -- merge objects into one object.
+ *
+ * -link concatenates code and writes an image, which is a one-way trip: the
+ * symbol table is resolved and thrown away.  -r is the same merge one step
+ * earlier -- code, symbols and relocations are combined into a new ARKOBJ2
+ * object that still names every external reference, so a later -link (with
+ * more objects) can finish the job, or another -r can merge again.
+ *
+ * OFF in the STM32 profile: it is a host-side build-management feature and
+ * costs two more passes over the object set.  -DARKCC_FEATURE_PARTIAL_LINK=1
+ * brings it back; a build without it refuses -r with C3900U rather than
+ * accepting an option it cannot honour.
+ *
+ * Runtime switch defaults to off: without -r nothing changes.
+ * ---------------------------------------------------------------------- */
+#ifndef ARKCC_FEATURE_PARTIAL_LINK
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_PARTIAL_LINK   0
+# else
+#   define ARKCC_FEATURE_PARTIAL_LINK   1
+# endif
+#endif
 #endif /* ARKCC_CONFIG_H */

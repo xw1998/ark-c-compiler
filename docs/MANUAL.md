@@ -1205,6 +1205,43 @@ arkcc --lto -link main.o util.o -O2 -target arm --vector-table -o app.bin
 详见 [OBJ_IR.md](OBJ_IR.md)，门禁 `tests/run_objir_tests.py`（`make test-objir`，
 26 项检查）。
 
+### 5.19 部分链接（`-r`）：合并多个对象
+
+`-r` 是 `-link` 的修饰符：读 N 个 `ARKOBJ2` 对象，把机器码、符号表、重定位表各合并
+一份，写出一个**新的 `ARKOBJ2` 对象**（不是镜像）。它必须是一个"可替换"的中间步骤
+——`-link` 一个 `-r` 产物与直接 `-link` 那 N 个对象**逐字节相同**。
+
+```bash
+arkcc -c -O2 -target arm a.c -o a.o
+arkcc -c -O2 -target arm b.c -o b.o
+arkcc -r -link a.o b.o -o ab.o
+arkcc -link ab.o --vector-table -o app.bin
+```
+
+| 开关 | 默认 | 说明 |
+| --- | :---: | --- |
+| `-r` | 关 | 必须与 `-link` 同时出现，写在 `-link` 前后都可以；必须给 `-o` |
+| `ARKCC_FEATURE_PARTIAL_LINK`（编译期） | 宿主 `1`、`ARKCC_PROFILE_STM32_MIN` 为 `0` | 不在时 `-r` 以 `C3900U` 拒绝 |
+
+规则：
+
+- **机器码作准**：合并的是机器码而非 IR 载荷，因此**带 `--obj-ir` 载荷的对象被具名
+  拒绝**（并提示改用 `-link --lto`）——静默丢载荷会让"之后还能 LTO"变成假话；
+- 代码按命令行顺序首尾相接，符号 `offset += base`；`riscv32` 对象在已见过 ISA 标签
+  之后按 16 字节对齐（与 `-link` 一致）；
+- 全局对象（`OBJ_SYM_TYPE_DATA`）的**绝对地址不变**，数据段不搬；
+  `X86_RELOC_SELF_BASE` 就地加 base 后丢弃，与 `-link` 逐字一致；
+- `__arkcc_ram_start/end` 描述符原样保留，因此**一次 `-r` 最多合并一个拥有 RAM 的对象**；
+- 混用 riscv32 与非 riscv32、非对象文件、表被截断、表后有多余字节、同名强定义地址
+  不同、`--reloc-text` 基址不一致，一律**具名报错且不写输出文件**；
+- 不裁剪符号、不生成向量表、不做 ISA 转换；被引用但未定义的名字允许留到最终 `-link`。
+
+拒绝：`-r` 缺 `-link` / 与 `--lto` 同用 / 与 `-c`、`-S`、`-E`、`-MMD` 同用 /
+缺 `-o` / `-link` 后没有对象。
+
+详见 [PARTIAL_LINK.md](PARTIAL_LINK.md)，门禁 `tests/run_partiallink_tests.py`
+（`make test-partiallink`，27 项检查）。
+
 ## 6 在 Windows 上测试
 
 ### 6.1 推荐流程：c 后端

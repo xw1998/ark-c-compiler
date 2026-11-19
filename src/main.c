@@ -304,6 +304,7 @@ static void reset_opts(ArkOptions *o) {
     o->ipo_input_count = 0;
     o->obj_ir = 0;
     o->lto_link = 0;
+    o->partial_link = 0;
 }
 
 /* armcc: the text before '=' must be an identifier; everything after '=' is
@@ -583,6 +584,20 @@ int main(int argc, char **argv) {
         }
         else if (strcmp(a, "--no-obj-ir") == 0) opts.obj_ir = 0;
 #endif
+        else if (strcmp(a, "-r") == 0) {
+#if ARKCC_FEATURE_PARTIAL_LINK
+            /* Partial link: a modifier on -link, validated after the whole
+             * command line is known (it needs -o and at least one object).
+             * Accepted here so that `-r -link a.o b.o -o x.o` and
+             * `-link a.o b.o -r -o x.o` mean the same thing. */
+            opts.partial_link = 1;
+#else
+            fprintf(stderr,
+                    "Fatal error: C3900U: -r is not compiled into this "
+                    "build (rebuild with -DARKCC_FEATURE_PARTIAL_LINK=1)\n");
+            return 1;
+#endif
+        }
         else if (strcmp(a, "-link") == 0) {
             opts.link_mode = 1;
             /* Collect following non -o/non-option arguments as inputs */
@@ -787,6 +802,44 @@ int main(int argc, char **argv) {
             if (opts.ipo_input_count < ARK_LINK_MAX_OBJS)
                 opts.ipo_inputs[opts.ipo_input_count++] = a;
             opts.input_path = a;
+        }
+    }
+    if (opts.partial_link) {
+        /* -r produces an object, not an image.  Each refusal below is a way
+         * to get an answer that looks fine and is not: an image written under
+         * the name of an object, a recompiled --lto merge, or lower-stage
+         * flags silently ignored. */
+        if (!opts.link_mode) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: -r needs -link (a partial link takes "
+                    "objects: arkcc -r -link a.o b.o -o out.ark_obj)\n");
+            return 1;
+        }
+        if (opts.lto_link) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: -r and --lto are two different "
+                    "links: -r merges machine code, --lto recompiles IR; pick "
+                    "one\n");
+            return 1;
+        }
+        if (opts.compile_only || opts.emit_asm || opts.preprocess_only ||
+            opts.gen_depend) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: -r writes a linked object, so it "
+                    "cannot be combined with -c, -S, -E or -MMD\n");
+            return 1;
+        }
+        if (!opts.output_path || !opts.output_path[0]) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: -r needs -o <object> (the merged "
+                    "object is not an image, so it has no default name)\n");
+            return 1;
+        }
+        if (opts.link_input_count == 0) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: -r needs at least one object "
+                    "after -link\n");
+            return 1;
         }
     }
     if (opts.ipo_mode && npos > opts.ipo_input_count) {

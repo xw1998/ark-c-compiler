@@ -629,6 +629,7 @@ ark c compiler/
 ├── docs/LOOPS.md           Loop optimisations (--licm / --unroll): what moves and what does not, zero iterations, the single accepted shape, limits, gate (Chinese, UTF-8)
 ├── docs/IPO_LTO.md         Whole-program compilation (--ipo / -flto) and cross-TU constant propagation (--const-global): why it is not object-level LTO, merge semantics, refused combinations, cropping, gates (Chinese, UTF-8)
 ├── docs/OBJ_IR.md         An IR payload in the object and link-time recompilation (--obj-ir / -link --lto): payload format, pool remapping on merge, byte equivalence, refusals and diagnostics, cropping, gate (Chinese, UTF-8)
+├── docs/PARTIAL_LINK.md   Partial link (-r): machine code wins, symbol/relocation rebasing, data never moved, three refusals, substitutability and idempotence, cropping, gate (Chinese, UTF-8)
 ├── docs/从零写一个C编译器.md  Textbook-style walkthrough: 19 chapters, from 30 lines to 30 000 (Chinese, UTF-8)
 ├── docs/from-scratch-c-compiler.en.md  English summary of that textbook (structure, chapter map, reading routes)
 └── README.md               Project overview (Chinese, UTF-8)
@@ -796,6 +797,11 @@ arkcc <file.c|file.s> [options]
                      the pipeline once and emit again -- byte-identical to --ipo.
                      Must be written before -link; refuses -c/-E/-g, a missing
                      -o and an empty input list
+  -r                 with -link: merge N ARKOBJ2 objects into one new object
+                     (machine code, symbol table, relocation table), not an
+                     image.  -o is required; refuses --lto/-c/-S/-E/-MMD, an
+                     object carrying an IR payload, two RAM owners, and
+                     riscv32 mixed with non-riscv32
   --dce-cfg          basic-block reachability DCE (deletes only code that is reachable but never executes)
   --build-date <s>   pin __DATE__ (e.g. "May 28 2026")
   --build-time <s>   pin __TIME__ (e.g. "20:26:40")
@@ -1086,7 +1092,7 @@ See [docs/MANUAL.en.md](docs/MANUAL.en.md) for the full manual.
   produces the same image.  A missing or corrupt payload (truncated, bad magic, version 99, body
   length mismatch) is always a **named error with no output file** -- dropping a unit is a wrong
   answer, far more dangerous than a failed link.  Version compatibility is strict equality with no
-  forward compatibility, and there is no `-r` partial link.  Cropping: `ARKCC_FEATURE_OBJ_IR`
+  forward compatibility.  Cropping: `ARKCC_FEATURE_OBJ_IR`
   defaults to 0 in `ARKCC_PROFILE_STM32_MIN`, and then both options report "not compiled into this
   build".  Gate `tests/run_objir_tests.py` (`make test-objir`, 26 checks): payload written with the
   prefix unchanged, a `--ipo` reference that really inlines and folds (otherwise the later
@@ -1094,6 +1100,31 @@ See [docs/MANUAL.en.md](docs/MANUAL.en.md) for the full manual.
   and 79), both same-named statics still named, four kinds of damage, a payload-free object refused
   by name, plain `-link` undisturbed, six option refusals, the cropped build's refusals, and with
   the switch off a full build and a cropped build emit **byte-identical** `-c` objects.
+  This release also adds **partial link `-r`** (`docs/PARTIAL_LINK.md`): `-r -link a.o b.o -o ab.o`
+  reads N `ARKOBJ2` objects, concatenates machine code in command-line order, rebases symbols with
+  `offset += base` and relocation sites with the same shift, and writes a **new `ARKOBJ2` object**.
+  One semantic rule: **machine code wins** -- the merge takes machine code, not the IR payload, so an
+  object carrying `--obj-ir` is **refused by name** and pointed at `-link --lto` (silently dropping
+  the payload would make "LTO still works later" a lie).  A global object (`OBJ_SYM_TYPE_DATA`)
+  keeps its **absolute address** and data is never moved; `X86_RELOC_SELF_BASE` is resolved in
+  place and dropped (byte-for-byte what `-link` does); the `__arkcc_ram_start/end` descriptor is
+  kept as-is, hence **one `-r` merges at most one RAM-owning object**; a `riscv32` object is padded
+  to 16 bytes once an ISA tag has been seen.  Mixing riscv32 with non-riscv32, a non-object file, a
+  truncated table, stray bytes after the tables, the same strong symbol at different addresses and
+  disagreeing `--reloc-text` bases are all **named errors with no output file written** (the object
+  *is* the deliverable, so "error plus half a file" is worse than either).  Four properties must
+  hold: **substitutable** (linking one `-r` product equals linking those N objects byte for byte),
+  **idempotent**, **inputs untouched**, and **a referenced-but-undefined name is not invented** (left
+  for the final `-link`).  Option-level refusals: `-r` without `-link`, with `--lto`, with
+  `-c`/`-S`/`-E`/`-MMD`, without `-o`, or with no objects after `-link`.  Cropping:
+  `ARKCC_FEATURE_PARTIAL_LINK` is separate from `ARKCC_FEATURE_OBJ_IR` and defaults to 0 in
+  `ARKCC_PROFILE_STM32_MIN`; a cropped build refuses `-r` at option parsing with `C3900U`.  Gate
+  `tests/run_partiallink_tests.py` (`make test-partiallink`, 27 checks): the merge and its three
+  rebases, `g_init`'s absolute address unchanged, the RAM descriptor preserved, merged-vs-direct
+  link byte identity, the emulator answering 13, idempotence, inputs unmodified, merging without
+  `main`, same-named file statics keeping their own values, a definition arriving later (41), five
+  kinds of damaged input all "non-zero exit and no file written", five option checks, and a cropped
+  build whose `-c`/`-link` products stay byte-identical to the full build.
 > Entries v0.8.2 and v0.8.1 are translated in full below. Earlier releases (v0.2.0–v0.8.0) are
 > documented only in the Chinese [README.md](README.md) — they are long, and every one of them is
 > covered by the documents under `docs/`.

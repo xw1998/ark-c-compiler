@@ -1166,6 +1166,415 @@ static int write_ark_obj(const ArkBackend *be, const ArkOptions *opts,
  * 只用整数算术，任何平台结果一致 —— 这正是可复现构建要的性质。
  * 注意 __DATE__ 的格式是 "Mmm dd yyyy"，日不足两位时用空格补（C99 6.10.8.1），
  * 所以 "Nov  6 2026" 里有两个空格。 */
+#if ARKCC_FEATURE_PARTIAL_LINK
+/* Append one little-endian 32-bit field to an object buffer, returning the
+ * new length.  The object writer above inlines the same four stores; this one
+ * is used by the -r emitter below, which builds a variable-length table. */
+static int obj_put_u32(unsigned char *b, int ol, unsigned v) {
+    b[ol++] = (unsigned char)(v & 0xFF);
+    b[ol++] = (unsigned char)((v >> 8) & 0xFF);
+    b[ol++] = (unsigned char)((v >> 16) & 0xFF);
+    b[ol++] = (unsigned char)((v >> 24) & 0xFF);
+    return ol;
+}
+
+/* === -r: partial link -- merge objects into one object ===
+ *
+ * -link concatenates code and writes an image: symbols are resolved,
+ * relocations are patched and the table is thrown away.  -r stops one step
+ * earlier and produces a NEW ARKOBJ2 object -- code concatenated, symbols
+ * merged with the same strong/weak policy, every relocation re-emitted with
+ * its offset shifted by the object base.  The result still names its external
+ * references, so `-link merged.o more.o` or a second `-r` can finish the job.
+ *
+ * Three things it deliberately refuses rather than guessing.  Each one would
+ * otherwise produce a file that looks right and is not:
+ *
+ *   - an input carrying an IR payload (--obj-ir).  The payload is the unit's
+ *     pre-pipeline IR, and the merged object is machine code: there is no way
+ *     to express "these two IRs" in it.  Concatenating payloads would invent a
+ *     third format, and dropping them would silently destroy the ability to
+ *     recompile later -- the worst outcome, because the loss only shows up
+ *     much later.  The message names -link --lto instead;
+ *   - more than one input that places .data/.bss.  Their absolute addresses
+ *     are baked into their code, so two objects keep the same addresses; the
+ *     image linker refuses exactly that (SRAM overlap) unless --reloc-data is
+ *     on, and merging them into one object here would hide it from the later
+ *     link;
+ *   - a mix of riscv32 and other objects.  The ARM and riscv32 relocation
+ *     numbers share one table and mean different things (see
+ *     OBJ_ISA_RV32_SYM).
+ *
+ * Returns ARK_OK only after the object has been written. */
+static int ld_partial_link(const ArkOptions *opts, char *read_buf,
+                          unsigned char *code_buf, int buf_size) {
+    const char *out_path = opts->output_path;
+    unsigned char *up = (unsigned char *)read_buf;
+    unsigned char *ob;
+    int out_len = 0;
+    int li;
+    int isa_rv32 = 0;      /* pad following objects to 16 bytes (riscv32) */
+    int rv_tagged = 0;     /* how many inputs carried the riscv32 tag */
+    int ram_objs = 0;      /* inputs that place .data/.bss */
+    unsigned ram_start = 0, ram_end = 0;
+    unsigned text_base = 0;
+    int have_text_base = 0;
+    int text_conflict = 0;
+    int err0 = diag_errors();
+
+    if (!out_path || !out_path[0]) {
+        diag_tool(DIAG_SEV_ERROR, "<link>",
+                  "-r needs -o <object>: the merged object is not an image, so "
+                  "it has no default name", 0,0,0,0,0,0);
+        return ARK_ERR_ARG;
+    }
+    g_ld_image = out_path;
+    diag_set_main_file(out_path);
+
+    g_ld_sym_count = 0;
+    g_ld_reloc_count = 0;
+    g_ld_dsym_count = 0;
+    ld_table_overflow = 0;
+
+    for (li = 0; li < opts->link_input_count; li++) {
+        int n = fs_read_file(opts->link_inputs[li], read_buf, buf_size);
+        int pos = 8;
+        int base, code_sz, sym_cnt, si, reloc_cnt, ri, fsz;
+        int obj_rv_tag = 0;
+        int obj_ram_start_have = 0, obj_ram_end_have = 0;
+        unsigned obj_ram_start = 0, obj_ram_end = 0;
+        char tb1[12], tb2[12];
+
+        if (n < 0) {
+            diag_tool(DIAG_SEV_ERROR, opts->link_inputs[li],
+                      "cannot read partial-link input: %s", fs_last_error(),
+                      0,0,0,0,0);
+            return ARK_ERR_IO;
+        }
+        fsz = fs_file_size(opts->link_inputs[li]);
+        if (fsz < 0 || fsz > n) {
+            char b1[12], b2[12];
+            diag_tool(DIAG_SEV_ERROR, opts->link_inputs[li],
+                      "object file is %s bytes but only %s could be read; raise "
+                      "ARK_LINK_BUF_SIZE and relink",
+                      diag_num(b1, fsz), diag_num(b2, n), 0,0,0,0);
+            return ARK_ERR_IO;
+        }
+        if (n < 12 || up[0] != 'A' || up[1] != 'R' || up[2] != 'K' ||
+            up[3] != 'O' || up[4] != 'B' || up[5] != 'J' ||
+            up[6] != '2' || up[7] != '\n') {
+            diag_tool(DIAG_SEV_ERROR, opts->link_inputs[li],
+                      "-r merges ARKOBJ2 objects, and this input is not one",
+                      0,0,0,0,0,0);
+            return ARK_ERR_LINK;
+        }
+        /* Same placement rule as the image linker: a riscv32 object is
+         * PC-relative and may be placed anywhere, but keeping 16-byte
+         * alignment preserves the section alignment the assembler assumed.
+         * ARM objects stay back-to-back. */
+        if (isa_rv32) {
+            while ((out_len & 15) && out_len < buf_size) code_buf[out_len++] = 0;
+        }
+        base = out_len;
+        if (pos + 4 > n) { goto truncated; }
+        code_sz = rd_le32(up + pos); pos += 4;
+        if (code_sz < 0 || out_len + code_sz > buf_size ||
+            pos + code_sz > n) {
+            char b1[12], b2[12], b3[12];
+            diag_tool(DIAG_SEV_ERROR, g_ld_image,
+                      "partial-link output too large or the object is truncated: "
+                      "%s bytes placed + %s from the object, %s-byte buffer",
+                      diag_num(b1, out_len), diag_num(b2, code_sz),
+                      diag_num(b3, buf_size), 0,0,0);
+            return ARK_ERR_IO;
+        }
+        { int k; for (k = 0; k < code_sz; k++) code_buf[out_len++] = up[pos + k]; }
+        pos += code_sz;
+        if (opts->verbose)
+            ark_log("[r] object %d: base 0x%X, %d bytes\n", li, base, code_sz);
+
+        if (pos + 4 > n) { goto truncated; }
+        sym_cnt = rd_le32(up + pos); pos += 4;
+        for (si = 0; si < sym_cnt; si++) {
+            char nm[128];
+            int nl, sym_off, sym_weak, sym_type, k;
+            if (pos + 4 > n) { goto truncated; }
+            nl = rd_le32(up + pos); pos += 4;
+            if (nl <= 0 || pos + nl + 6 > n) { goto truncated; }
+            for (k = 0; k < nl && k < (int)sizeof(nm) - 1; k++)
+                nm[k] = (char)up[pos + k];
+            nm[k] = 0;
+            pos += nl;
+            sym_off = rd_le32(up + pos); pos += 4;
+            sym_type = up[pos]; pos += 1;
+            sym_weak = up[pos]; pos += 1;
+            switch (sym_type) {
+            case OBJ_SYM_TYPE_DATA:
+                /* A global object, absolute address.  Preserved as-is: -r does
+                 * not move data, and two objects cannot both own RAM (checked
+                 * after the loop).  A genuine double definition is caught here
+                 * rather than in ld_add_dsym, because that one reports the
+                 * error and keeps going, and an object written after an error
+                 * is exactly what this refuses to do. */
+                {
+                    int di = ld_find_dsym(nm);
+                    if (di >= 0 && !g_ld_dsyms[di].is_weak && !sym_weak &&
+                        g_ld_dsyms[di].addr != (unsigned)sym_off) {
+                        char b1[12], b2[12];
+                        diag_tool(DIAG_SEV_ERROR, g_ld_image,
+                                  "global variable %sq is defined twice with "
+                                  "different addresses (%s and %s); no object "
+                                  "was written",
+                                  nm, ld_hex(b1, g_ld_dsyms[di].addr),
+                                  ld_hex(b2, (unsigned)sym_off), 0,0,0);
+                        return ARK_ERR_LINK;
+                    }
+                    ld_add_dsym(nm, (unsigned)sym_off, li, sym_weak);
+                }
+                break;
+            case OBJ_SYM_TYPE_TEXT:
+                /* --reloc-text: the base every absolute address in that object
+                 * was computed against.  One merged object can carry one base,
+                 * so inputs built against different bases are refused below. */
+                if (!have_text_base) {
+                    text_base = (unsigned)sym_off;
+                    have_text_base = 1;
+                } else if (text_base != (unsigned)sym_off) {
+                    text_conflict = 1;
+                }
+                break;
+            case OBJ_SYM_TYPE_ISA:
+                if (ark_streq(nm, OBJ_ISA_RV32_SYM)) obj_rv_tag = 1;
+                break;
+            case OBJ_SYM_TYPE_RAM:
+                /* RAM footprint descriptors: absolute addresses, not labels. */
+                if (ark_streq(nm, OBJ_RAM_START_SYM)) {
+                    obj_ram_start = (unsigned)sym_off;
+                    obj_ram_start_have = 1;
+                } else if (ark_streq(nm, OBJ_RAM_END_SYM)) {
+                    obj_ram_end = (unsigned)sym_off;
+                    obj_ram_end_have = 1;
+                }
+                break;
+            default:
+                if (sym_type != 0) {
+                    char b1[12];
+                    diag_tool(DIAG_SEV_ERROR, opts->link_inputs[li],
+                              "symbol '%s' has type %s, which -r does not know; "
+                              "no object was written",
+                              nm, diag_num(b1, sym_type), 0,0,0,0);
+                    return ARK_ERR_LINK;
+                }
+                ld_add_sym(nm, base + sym_off, sym_weak);
+                break;
+            }
+        }
+        if (obj_rv_tag) { rv_tagged++; isa_rv32 = 1; }
+        if (obj_ram_start_have && obj_ram_end_have &&
+            obj_ram_end > obj_ram_start) {
+            ram_objs++;
+            if (ram_objs == 1) { ram_start = obj_ram_start; ram_end = obj_ram_end; }
+        }
+
+        if (pos + 4 > n) { goto truncated; }
+        reloc_cnt = rd_le32(up + pos); pos += 4;
+        for (ri = 0; ri < reloc_cnt; ri++) {
+            char rn[128];
+            int nl, roff, rtype, k;
+            if (pos + 4 > n) { goto truncated; }
+            nl = rd_le32(up + pos); pos += 4;
+            if (nl <= 0 || pos + nl + 5 > n) { goto truncated; }
+            for (k = 0; k < nl && k < (int)sizeof(rn) - 1; k++)
+                rn[k] = (char)up[pos + k];
+            rn[k] = 0;
+            pos += nl;
+            roff = rd_le32(up + pos); pos += 4;
+            rtype = up[pos]; pos += 1;
+            if (rtype == X86_RELOC_SELF_BASE) {
+                /* The site already holds the object's own offset for a label it
+                 * defines; only the base is missing, and it is known right here.
+                 * Exactly what -link does, so the merged object carries the same
+                 * bytes the image linker would have produced. */
+                int site = base + roff;
+                if (site < 0 || site + 4 > out_len) {
+                    char b1[12], b2[12];
+                    diag_tool(DIAG_SEV_ERROR, g_ld_image,
+                              "self-base relocation offset %s is outside the "
+                              "%s-byte merged code; the object and its relocation "
+                              "table disagree, so no object was written",
+                              diag_num(b1, site), diag_num(b2, out_len),
+                              0,0,0,0);
+                    return ARK_ERR_LINK;
+                }
+                ld_write_word(code_buf, site,
+                              (unsigned)rd_le32(code_buf + site) + (unsigned)base);
+                continue;
+            }
+            ld_add_reloc(rn, base + roff, rtype, li);
+        }
+
+        /* Anything after the relocation table is either the --obj-ir payload
+         * or damage; both are refused by name instead of being copied into the
+         * merged object as if they meant something. */
+        if (pos < n) {
+            if (n - pos >= 8 && up[pos] == 'A' && up[pos+1] == 'R' &&
+                up[pos+2] == 'K' && up[pos+3] == 'I' && up[pos+4] == 'R' &&
+                up[pos+5] == '1' && up[pos+6] == '\n') {
+                diag_tool(DIAG_SEV_ERROR, opts->link_inputs[li],
+                          "-r merges machine code and cannot carry the IR payload "
+                          "this object holds; use -link --lto to recompile the "
+                          "units, or rebuild the object without --obj-ir",
+                          0,0,0,0,0,0);
+            } else {
+                char b1[12];
+                diag_tool(DIAG_SEV_ERROR, opts->link_inputs[li],
+                          "object has %s trailing byte(s) after its relocation "
+                          "table that are not an IR payload; the object is "
+                          "damaged, so no object was written",
+                          diag_num(b1, n - pos), 0,0,0,0,0);
+            }
+            return ARK_ERR_LINK;
+        }
+        continue;
+
+    truncated:
+        diag_tool(DIAG_SEV_ERROR, opts->link_inputs[li],
+                  "object ends in the middle of its symbol or relocation table "
+                  "(read %s of %s bytes); no object was written",
+                  diag_num(tb1, pos), diag_num(tb2, n), 0,0,0,0);
+        return ARK_ERR_LINK;
+    }
+
+    {
+        char b1[12], b2[12];
+        if (rv_tagged != 0 && rv_tagged != opts->link_input_count) {
+            diag_tool(DIAG_SEV_ERROR, g_ld_image,
+                      "%s of %s objects carry the %s descriptor: -r does not "
+                      "merge riscv32 and non-riscv32 objects (their relocation "
+                      "numbers mean different things), so no object was written",
+                      diag_num(b1, rv_tagged),
+                      diag_num(b2, opts->link_input_count),
+                      OBJ_ISA_RV32_SYM, 0,0,0);
+            return ARK_ERR_LINK;
+        }
+        if (ram_objs > 1) {
+            diag_tool(DIAG_SEV_ERROR, g_ld_image,
+                      "%s input objects place .data/.bss and -r does not relocate "
+                      "data: their globals would keep the same absolute addresses "
+                      "and the later -link could no longer tell them apart. Merge "
+                      "the translation units, or keep one RAM-owning object per "
+                      "partial link",
+                      diag_num(b1, ram_objs), 0,0,0,0,0);
+            return ARK_ERR_LINK;
+        }
+        if (text_conflict) {
+            diag_tool(DIAG_SEV_ERROR, g_ld_image,
+                      "--reloc-text: the inputs were compiled against different "
+                      "text bases (one was %s); a merged object carries one base, "
+                      "so no object was written",
+                      ld_hex(b1, text_base), 0,0,0,0,0);
+            return ARK_ERR_LINK;
+        }
+        if (ld_table_overflow > 0) {
+            diag_tool(DIAG_SEV_ERROR, g_ld_image,
+                      "%s symbol/relocation entries did not fit (limit %s); no "
+                      "object was written - raise ARK_LINK_MAX_SYMS / "
+                      "ARK_LINK_MAX_RELOCS and relink",
+                      diag_num(b1, ld_table_overflow),
+                      diag_num(b2, ARK_LINK_MAX_SYMS), 0,0,0,0);
+            return ARK_ERR_LINK;
+        }
+    }
+    /* Anything the merge itself reported (a duplicate .data/.bss symbol, the
+     * linker's own warnings turned errors) must not leave a written object
+     * behind: the object is the deliverable, so "error plus output" is worse
+     * than either alone. */
+    if (diag_errors() != err0) return ARK_ERR_LINK;
+
+    /* Emit the merged object.  read_buf is free again -- every input has been
+     * parsed -- so it is the staging buffer: a third image-sized allocation
+     * would not fit the arena (ARK_POOL_SIZE is sized for two). */
+    ob = up;
+    {
+        int sym_total;
+        int total = 8 + 4 + out_len + 4 + 4;
+        int k, ol = 0;
+        for (k = 0; k < g_ld_sym_count; k++)
+            total += ark_strlen(g_ld_syms[k].name) + 11;
+        for (k = 0; k < g_ld_dsym_count; k++)
+            total += ark_strlen(g_ld_dsyms[k].name) + 11;
+        if (ram_objs == 1)
+            total += 2 * (ark_strlen(OBJ_RAM_START_SYM) + 11);
+        if (have_text_base) total += ark_strlen(OBJ_TEXT_BASE_SYM) + 11;
+        if (isa_rv32) total += ark_strlen(OBJ_ISA_RV32_SYM) + 11;
+        for (k = 0; k < g_ld_reloc_count; k++)
+            total += ark_strlen(g_ld_relocs[k].name) + 9;
+        if (total > buf_size) {
+            char b1[12], b2[12];
+            diag_tool(DIAG_SEV_ERROR, g_ld_image,
+                      "the merged object would be %s bytes and the buffer holds "
+                      "%s; raise ARK_LINK_BUF_SIZE and relink",
+                      diag_num(b1, total), diag_num(b2, buf_size), 0,0,0,0);
+            return ARK_ERR_IO;
+        }
+
+        {
+            const char *hdr = "ARKOBJ2\n";
+            for (k = 0; hdr[k]; k++) ob[ol++] = (unsigned char)hdr[k];
+        }
+        ol = obj_put_u32(ob, ol, (unsigned)out_len);
+        for (k = 0; k < out_len; k++) ob[ol++] = code_buf[k];
+
+        sym_total = g_ld_sym_count + g_ld_dsym_count;
+        if (ram_objs == 1) sym_total += 2;
+        if (have_text_base) sym_total += 1;
+        if (isa_rv32) sym_total += 1;
+        ol = obj_put_u32(ob, ol, (unsigned)sym_total);
+        for (k = 0; k < g_ld_sym_count; k++)
+            ol = obj_put_sym(ob, ol, g_ld_syms[k].name,
+                             (unsigned)g_ld_syms[k].offset, 0,
+                             g_ld_syms[k].is_weak);
+        for (k = 0; k < g_ld_dsym_count; k++)
+            ol = obj_put_sym(ob, ol, g_ld_dsyms[k].name, g_ld_dsyms[k].addr,
+                             OBJ_SYM_TYPE_DATA, g_ld_dsyms[k].is_weak);
+        if (ram_objs == 1) {
+            ol = obj_put_sym(ob, ol, OBJ_RAM_START_SYM, ram_start,
+                             OBJ_SYM_TYPE_RAM, 0);
+            ol = obj_put_sym(ob, ol, OBJ_RAM_END_SYM, ram_end,
+                             OBJ_SYM_TYPE_RAM, 0);
+        }
+        if (have_text_base)
+            ol = obj_put_sym(ob, ol, OBJ_TEXT_BASE_SYM, (int)text_base,
+                             OBJ_SYM_TYPE_TEXT, 0);
+        if (isa_rv32)
+            ol = obj_put_sym(ob, ol, OBJ_ISA_RV32_SYM, 0,
+                             OBJ_SYM_TYPE_ISA, 0);
+
+        ol = obj_put_u32(ob, ol, (unsigned)g_ld_reloc_count);
+        for (k = 0; k < g_ld_reloc_count; k++) {
+            const char *rn = g_ld_relocs[k].name;
+            int nl = ark_strlen(rn) + 1;
+            int j;
+            ol = obj_put_u32(ob, ol, (unsigned)nl);
+            for (j = 0; j < nl; j++) ob[ol++] = (unsigned char)rn[j];
+            ol = obj_put_u32(ob, ol, (unsigned)g_ld_relocs[k].offset);
+            ob[ol++] = (unsigned char)g_ld_relocs[k].type;
+        }
+
+        if (fs_write_file(out_path, ob, ol) != ol) {
+            diag_tool(DIAG_SEV_ERROR, out_path,
+                      "cannot write partial-link output object", 0,0,0,0,0,0);
+            return ARK_ERR_IO;
+        }
+        if (opts->verbose)
+            ark_log("[arkcc] -r merged %d objects -> %s (%d bytes code, %d syms, "
+                    "%d relocs)\n",
+                    opts->link_input_count, out_path, out_len,
+                    g_ld_sym_count, g_ld_reloc_count);
+    }
+    return ARK_OK;
+}
+#endif /* ARKCC_FEATURE_PARTIAL_LINK */
 static void format_epoch_utc(long long epoch, char *date_out, char *time_out) {
     static const char *mon[12] = { "Jan","Feb","Mar","Apr","May","Jun",
                                    "Jul","Aug","Sep","Oct","Nov","Dec" };
@@ -1809,6 +2218,14 @@ int ark_compile(const ArkOptions *opts) {
          * from the board. */
         mem_pool_reset();
 
+#if ARKCC_FEATURE_PARTIAL_LINK
+        /* -r: merge the objects into one object instead of writing an image.
+         * It runs before the format probe because it reads every input itself
+         * (and refuses a non-object by name); the probe would read the first
+         * one twice. */
+        if (opts->partial_link)
+            return ld_partial_link(opts, buf, out_buf, LD_BUF_SIZE);
+#endif
         /* Detect ARKOBJ2 binary format from the first input.
          * The probe reads through `buf` -- the same buffer the linker uses for
          * every object -- instead of a small header buffer. fs_read_file() is

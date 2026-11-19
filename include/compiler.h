@@ -73,6 +73,12 @@ typedef struct {
      * IR, merge the units the way --ipo does, run the pipeline and emit once.
      * An object without a payload is refused, never mixed in. */
     int         lto_link;                        /* -link --lto */
+    /* -r: partial link.  With -link, merge the input objects into one
+     * ARKOBJ2 object (code + symbols + relocations) instead of writing an
+     * image.  The output still names its external references, so it can be
+     * linked again later -- that is the whole point: merge several objects
+     * into one without resolving anything yet. */
+    int         partial_link;                    /* -r (with -link) */
 } ArkOptions;
 
 int ark_compile(const ArkOptions *opts);

@@ -1409,6 +1409,49 @@ forward compatibility.
 See [OBJ_IR.en.md](OBJ_IR.en.md); the gate is `tests/run_objir_tests.py`
 (`make test-objir`, 26 checks).
 
+### 5.19 Partial link (`-r`): merging objects
+
+`-r` is a modifier for `-link`: it reads N `ARKOBJ2` objects and merges machine code,
+symbol table and relocation table into a **new `ARKOBJ2` object** (not an image).  It
+must be a substitutable middle step -- linking an `-r` product gives the **same bytes**
+as linking those N objects directly.
+
+```bash
+arkcc -c -O2 -target arm a.c -o a.o
+arkcc -c -O2 -target arm b.c -o b.o
+arkcc -r -link a.o b.o -o ab.o
+arkcc -link ab.o --vector-table -o app.bin
+```
+
+| Switch | Default | Meaning |
+| --- | :---: | --- |
+| `-r` | off | must accompany `-link` (before or after it); `-o` is required |
+| `ARKCC_FEATURE_PARTIAL_LINK` (compile time) | host `1`, `ARKCC_PROFILE_STM32_MIN` `0` | when absent `-r` is refused with `C3900U` |
+
+Rules:
+
+- **machine code wins**: the merge takes machine code, not the IR payload, so an object
+  carrying `--obj-ir` is **refused by name** (and pointed at `-link --lto`) -- silently
+  dropping the payload would make "LTO still works later" a lie;
+- code is concatenated in command-line order and symbols get `offset += base`; a
+  `riscv32` object is padded to 16 bytes once an ISA tag has been seen (same as `-link`);
+- a global object (`OBJ_SYM_TYPE_DATA`) keeps its **absolute address** and data is never
+  moved; `X86_RELOC_SELF_BASE` is resolved in place and dropped, byte-for-byte what
+  `-link` does;
+- the `__arkcc_ram_start/end` descriptor is kept as-is, hence **one `-r` merges at most
+  one RAM-owning object**;
+- mixing riscv32 with non-riscv32, a non-object file, a truncated table, stray bytes
+  after the tables, the same strong symbol at different addresses, disagreeing
+  `--reloc-text` bases -- all are **named errors with no output file written**;
+- no symbol pruning, no vector table, no ISA conversion; a referenced-but-undefined name
+  may be left for the final `-link`.
+
+Refused: `-r` without `-link` / with `--lto` / with `-c`, `-S`, `-E`, `-MMD` / without
+`-o` / with no objects after `-link`.
+
+See [PARTIAL_LINK.en.md](PARTIAL_LINK.en.md); the gate is
+`tests/run_partiallink_tests.py` (`make test-partiallink`, 27 checks).
+
 ## 6 Testing on Windows
 
 ### 6.1 Recommended flow: the C backend

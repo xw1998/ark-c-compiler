@@ -314,7 +314,8 @@ of 9.
    (`-c --obj-ir` writes the payload, `-link --lto` reads it back and emits again;
    the gate requires byte-identical output to `--ipo`).  The version policy is strict
    equality, with no forward compatibility.
-3. **Partial link (`-r`)**: several `--ipo` units producing an intermediate object,
-   linked at the end -- the payload makes this possible in principle, but "does the
-   machine code or the IR in the intermediate object win" has to be decided first,
-   so it is out of scope here.
+3. ~~**Partial link (`-r`)**: several `--ipo` units producing an intermediate object,
+   linked at the end.~~ **Done**: see [PARTIAL_LINK.en.md](PARTIAL_LINK.en.md) (`-r`
+   merges machine code, symbol table and relocation table into a new `ARKOBJ2` object;
+   "machine code wins" is decided, and objects carrying an IR payload are refused by
+   name and pointed at `-link --lto`).

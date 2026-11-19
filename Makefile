@@ -24,7 +24,7 @@ endif
         test-x86-64-selfhost test-riscv test-reloc-text test-memlint \
         test-enumcheck test-pipeline test-unusedresult test-mir \
         test-loop test-modern test-atomic test-ipo test-constglobal \
-        test-objir \
+        test-objir test-partiallink \
         install stm32
 
 all: $(ARKCC)
@@ -40,7 +40,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -130,6 +130,15 @@ test-constglobal: $(ARKCC)
 test-objir: $(ARKCC)
 	$(PYTHON) tests/run_objir_tests.py ./$(ARKCC)
 
+# Partial-link gate: -r merges ARKOBJ2 objects into one object (code, symbols,
+# relocations) instead of writing an image, so `-link` of the merged object must
+# reproduce the direct link byte for byte and answer the same number.  The gate
+# also requires every refusal it advertises -- an IR payload, two objects that
+# place .data/.bss, a foreign ISA, a damaged object -- to exit non-zero and
+# write nothing, and a build cropped with -DARKCC_FEATURE_PARTIAL_LINK=0 to
+# refuse -r while producing byte-identical objects.
+test-partiallink: $(ARKCC)
+	$(PYTHON) tests/run_partiallink_tests.py ./$(ARKCC)
 # Library gate: every stdlib entry point is compiled and run on the ARM
 # emulator, and each case asserts a number the program itself computed.  A
 # case that needs hardware the emulator does not have (double-precision FPU)

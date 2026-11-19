@@ -538,6 +538,7 @@ ark c compiler/
 ├── docs/LOOPS.md           循环优化（--licm / --unroll）：搬什么不搬什么、零次迭代、唯一接受形状、上限与门禁（中文，UTF-8）
 ├── docs/IPO_LTO.md         全程序编译（--ipo / -flto）与跨 TU 常量传播（--const-global）：为什么不是对象级 LTO、合并语义、拒绝的组合、裁剪与两条门禁（中文，UTF-8）
 ├── docs/OBJ_IR.md          对象里的 IR 载荷与链接期重编（--obj-ir / -link --lto）：载荷格式、合并的池 remap、逐字节等价、拒绝与诊断、裁剪与门禁（中文，UTF-8）
+├── docs/PARTIAL_LINK.md    部分链接（-r）：机器码作准、符号/重定位 rebase、数据段不搬、三类拒绝、可替换性与幂等、裁剪与门禁（中文，UTF-8）
 ├── docs/从零写一个C编译器.md  教材体逐代码教程：19 章，从 30 行到 3 万行（中文，UTF-8）
 ├── docs/from-scratch-c-compiler.en.md  上述教材的英文摘要（结构、章目、阅读路线）
 └── README.md               项目简介（UTF-8）
@@ -686,6 +687,10 @@ arkcc <file.c|file.s> [选项]
   --lto              配合 -link：从对象里读回 IR、合并、跑一遍管线、重新出码，
                      结果与 --ipo 逐字节相同。必须写在 -link 之前，
                      拒绝 -c/-E/-g/缺 -o/无输入
+  -r                 配合 -link：把 N 个 ARKOBJ2 对象合并成一个新对象（机器码、
+                     符号表、重定位表各合成一份），不是镜像。必须给 -o；
+                     拒绝 --lto/-c/-S/-E/-MMD、带 IR 载荷的对象、两个 RAM 拥有者、
+                     混用 riscv32 与非 riscv32
   --dce-cfg          基本块级可达性 DCE（只删"能到但永不执行"的代码）
   --build-date <s>   固定 __DATE__（如 "May 28 2026"）
   --build-time <s>   固定 __TIME__（如 "20:26:40"）
@@ -884,12 +889,30 @@ CJK 按显示单元计列、tab 原样重放。它不需要 armcc，断言的是
   （同名 `static` 经往返仍是 `__ipo1f_helper`/`__ipo2f_helper`，没有 `main` 的单元也一样合并）。
   老读者读到重定位表就停，因此带载荷对象照样能被 plain `-link` 链接、产出同一镜像。载荷缺失/
   损坏（截断、错魔数、版本 99、正文长度不符）一律**具名报错且不写输出文件**——少合并一个单元
-  等于错答案，比链接失败危险得多。版本兼容取硬相等，不做向前兼容；不做 `-r` 部分链接。
+  等于错答案，比链接失败危险得多。版本兼容取硬相等，不做向前兼容。
   可裁减：`ARKCC_FEATURE_OBJ_IR` 在 `ARKCC_PROFILE_STM32_MIN` 档默认 0，关掉时两选项报
   "未编入此构建"。门禁 `tests/run_objir_tests.py`（`make test-objir`，26 项）：载荷写入与前缀
   不变、`--ipo` 参考系真的内联+折常量（否则后面的"相同"是空相等）、两条逐字节对拍、两条模拟器
   动态读数（102 与 79）、两份同名 static 仍具名、四种损坏、无载荷对象具名拒绝、不干扰 plain
   `-link`、六种选项拒绝、裁剪构建拒绝，以及**开关关时全量构建与裁剪构建的 `-c` 对象逐字节相同**。
+  本版还加了**部分链接 `-r`**（`docs/PARTIAL_LINK.md`）：`-r -link a.o b.o -o ab.o` 读 N 个
+  `ARKOBJ2` 对象，把机器码按命令行顺序首尾相接、符号 `offset += base`、重定位站点 rebase，
+  写出一个**新的 `ARKOBJ2` 对象**。语义只有一条：**机器码作准**——合并的是机器码不是 IR 载荷，
+  所以带 `--obj-ir` 载荷的对象被**具名拒绝**并提示 `-link --lto`（静默丢载荷会让"之后还能 LTO"
+  变成假话）。全局对象（`OBJ_SYM_TYPE_DATA`）的绝对地址**不变**、数据段不搬，`X86_RELOC_SELF_BASE`
+  就地加 base 后丢弃（与 `-link` 逐字一致）；`__arkcc_ram_start/end` 描述符原样保留，因此**一次
+  `-r` 最多合并一个拥有 RAM 的对象**；`riscv32` 对象在已见过 ISA 标签后按 16 字节对齐。混用
+  riscv32 与非 riscv32、非对象文件、表被截断、表后多余字节、同名强定义地址不同、`--reloc-text`
+  基址不一致，一律**具名报错且不写输出文件**（对象就是交付物，"报错 + 半个文件"比两者都糟）。
+  必须成立的四条性质：**可替换**（`-link` 一个 `-r` 产物与直接 `-link` 那 N 个对象逐字节相同）、
+  **幂等**、**输入不被改写**、**被引用未定义的名字不被凭空定义**（留给最终 `-link`）。选项层面拒绝
+  `-r` 缺 `-link`、与 `--lto` 同用、与 `-c`/`-S`/`-E`/`-MMD` 同用、缺 `-o`、`-link` 后没有对象。
+  可裁减：`ARKCC_FEATURE_PARTIAL_LINK` 独立于 `ARKCC_FEATURE_OBJ_IR`，在 `ARKCC_PROFILE_STM32_MIN`
+  档默认 0，关掉时 `-r` 在参数解析期报 `C3900U`。门禁 `tests/run_partiallink_tests.py`
+  （`make test-partiallink`，27 项）：合并与三类 rebase、`g_init` 绝对地址不变、RAM 描述符保留、
+  合并对象与直接链接逐字节相同、模拟器实答 13、幂等、输入未被改写、无 `main` 可合并、同名
+  file-static 各答其值、跨对象后补定义（答 41）、五种坏输入"非零退出且不写文件"、五条选项校验，
+  以及**裁剪构建下 `-c`/`-link` 产物与全量构建逐字节相同**。
 - v0.8.6：四个方向一起落地，全部**默认关、可裁减、开关关时逐字节不变**。
   ① **`--warn-unused-result` + `__must_check`**：丢弃一个标注了检查的函数返回值即告警，标注从原型（`__must_check` / `__attribute__((warn_unused_result))`）沿声明链传递，宏展开后仍然有效。
   ② **MIR/CFG 基底 + 三条跨函数检查**（`docs/MIR_CFG.md`）：`src/mir.c` 建基本块与控制流边，在此之上做 `--warn-unused-static`（静态函数无人引用）、`--warn-unreachable`（没有任何路径能到达的指令，报"该函数内 N 条指令永远跑不到"）、`--warn-recursion`（直接/间接递归），三条都只看**能证实的形状**——`goto` 进死块、函数指针别名、`#pragma arm section` 之类的模糊情形一律沉默。
