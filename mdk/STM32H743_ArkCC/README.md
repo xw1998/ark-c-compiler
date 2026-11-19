@@ -186,6 +186,54 @@ __attribute__((section(".ark_code"))) unsigned char ark_code_buffer[32 * 1024];
   just confirm it.
 - Requirements: Keil MDK 5.36+ / ARM Compiler 6.16+.
 
+## 4.1 Build Status (verified 2026-11-19)
+
+`UV4.exe -b ArkCC.uvprojx` was run from a clean tree and now finishes with
+**0 errors** (11 warnings, all benign: unused statics in the trimmed profile and
+two files without a trailing newline).
+
+```
+Program Size: Code=174296  RO-data=21144  RW-data=695404  ZI-data=102720
+```
+
+What had to be fixed for that to be true, in case you are diffing against an
+older checkout:
+
+- **Link-time tables moved into `.ark_buf`.** `g_ld_syms` / `g_ld_relocs` /
+  `g_ld_dsyms` are 512 entries of 136/140 bytes each at the `STM32_MIN`
+  profile, i.e. ~213 KB of plain `.bss`. Together with the rest of `.data/.bss`
+  that overflowed the 288 KB SRAM1-3 region (`L6407E: Sections of aggregate size
+  0x8ecc bytes could not fit`). They now carry
+  `__attribute__((section(".ark_buf")))` like every other large buffer, so the
+  scatter file puts them in SDRAM/AXI. Both counters are reset at the start of
+  every link, so this costs nothing at runtime.
+  Note that `.ark_buf` is emitted as *initialised* data by ARMCC, which is why
+  `RW-data` is 695 KB: the image carries zeros and `__main` copies them. Flash
+  still fits (code + RO + RW = ~870 KB of 2 MB).
+  The fallback layout (`STM32H743VITx_FLASH_sram.sct`, AXI only, 512 KB) can no
+  longer hold the whole `.ark_buf`; if you switch to it, also build with
+  `-DARK_LINK_MAX_SYMS=256 -DARK_LINK_MAX_RELOCS=256`.
+- **`opt_dce_cfg_func` was named unconditionally** in `src/pipeline.c` while
+  `ARKCC_FEATURE_OPT_DCE_CFG` is 0 at `STM32_MIN`, so the trimmed build failed
+  with "Undefined symbol opt_dce_cfg_func". The row is now inside `#if`, like
+  the LICM/unroll rows.
+- **`g_x86_obj_mode` was written unconditionally** in `src/compiler.c` while the
+  x86_64 backend is trimmed at `STM32_MIN`. The three assignments are now
+  inside `#if ARKCC_BACKEND_X86_64`.
+- **`src/ipo.c` and `src/irser.c` were missing from the project.** Both keep
+  their exported symbols (`ark_ipo_compile`, `ir_stashed_payload`) in a trimmed
+  build on purpose -- they are the "refuse with a diagnostic instead of
+  disappearing" stubs -- so they must always be compiled. Added to the
+  `ArkCC/Core` group.
+
+The host build is unaffected: with the full profile the two `#if` blocks compile
+the same tokens as before, and `make test` reports the same 344 PASS / 0 FAIL /
+1 SKIP.
+
+One discrepancy worth knowing: `ArkCC.uvprojx` has `<uAC6>0</uAC6>`, so the
+project builds with **ARM Compiler 5.06 update 7** (ARMCC) even though step 4
+above says to select ARM Compiler 6. The verified build above used V5.06.
+
 ## 5. Compiler Invocation Interface
 
 The shell in `User/main.c` uses `ark_compile()` directly with `target=arm`

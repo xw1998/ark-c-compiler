@@ -161,8 +161,15 @@ static const IrStage g_ir_stages[] = {
       ir_wanted_constfold, PIPE_NAME("off (-fno-opt-constfold)"), 0, 0, opt_constfold_func, 0 },
     { PIPE_NAME("ir.dce"),       ARK_PROFILE_LITE, 1, GATE_FLAG_AND_LEVEL, ARKCC_FEATURE_OPT_DCE,
       ir_wanted_dce,       PIPE_NAME("off (-fno-opt-dce)"),       0, 0, opt_dce_func,       0 },
-    { PIPE_NAME("ir.dce-cfg"),   ARK_PROFILE_FULL, 1, GATE_FLAG_AND_LEVEL, ARKCC_FEATURE_OPT_DCE_CFG,
+#if ARKCC_FEATURE_OPT_DCE_CFG
+    { PIPE_NAME("ir.dce-cfg"),   ARK_PROFILE_FULL, 1, GATE_FLAG_AND_LEVEL, 1,
       ir_wanted_dce_cfg,   PIPE_NAME("off (--dce-cfg)"),          0, 0, opt_dce_cfg_func,   0 },
+#else
+    /* Not compiled in: the row must not name the function, or a trimmed build
+     * (STM32_MIN) links with "Undefined symbol opt_dce_cfg_func".  The row is
+     * kept so the pass list and its numbering are the same in every build. */
+    { PIPE_NAME("ir.dce-cfg"),   ARK_PROFILE_FULL, 1, GATE_FLAG_AND_LEVEL, 0, 0, 0, 0, 0, 0, 0 },
+#endif
     /* 循环优化放在 dce 之后、dce-cfg 之前：LICM 只搬东西不造死代码，展开会把
      * 循环头尾整个换掉，两者都与线性 DCE 无冲突；放在 dce-cfg 之前让后者顺手
      * 清掉展开后可能留下的不可达尾巴。两者都需要 -O1 以上（min_level 1），

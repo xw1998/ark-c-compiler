@@ -205,12 +205,19 @@ static int      ld_rt_dup_count = 0;
  * link refuses to write output when this is non-zero. */
 static int      ld_table_overflow = 0;
 
-static LdSym    g_ld_syms[LD_MAX_SYMS];
+/* The three tables are the biggest single block of link-time memory: at the
+ * STM32 profile (512 entries of 136/140 bytes) they are ~213 KB, which does not
+ * fit in the H743's 288 KB SRAM1-3 region together with the rest of .data/.bss
+ * (measured: link failed with "Sections of aggregate size 0x8ecc bytes could
+ * not fit").  They go into .ark_buf like every other large buffer, i.e. the
+ * SDRAM/AXI work area; both counts are reset at the start of each link, so the
+ * placement costs nothing at runtime and nothing when -link is not running. */
+static LdSym    g_ld_syms[LD_MAX_SYMS]     __attribute__((section(".ark_buf")));
 static int      g_ld_sym_count = 0;
-static LdReloc  g_ld_relocs[LD_MAX_RELOCS];
+static LdReloc  g_ld_relocs[LD_MAX_RELOCS] __attribute__((section(".ark_buf")));
 static int      g_ld_reloc_count = 0;
 /* Globals exported by the loaded objects (--reloc-data, cross-object). */
-static LdDataSym g_ld_dsyms[LD_MAX_SYMS];
+static LdDataSym g_ld_dsyms[LD_MAX_SYMS]   __attribute__((section(".ark_buf")));
 static int       g_ld_dsym_count = 0;
 
 static int rd_le32(const unsigned char *p) {
@@ -3070,7 +3077,9 @@ int ark_compile(const ArkOptions *opts) {
 #if ARKCC_BACKEND_RISCV32
         g_rv_obj_mode = opts->compile_only ? 1 : 0;
 #endif
+#if ARKCC_BACKEND_X86_64
         g_x86_obj_mode = opts->compile_only ? 1 : 0;
+#endif
         code_size = be2->assemble(asm_text, g_code, ARK_CODE_BUF_SIZE);
         if (code_size < 0) {
             diag_tool(DIAG_SEV_ERROR, opts->input_path, "assembly failed", 0,0,0,0,0,0);
@@ -3213,7 +3222,9 @@ int ark_emit_program(const ArkOptions *opts, IrProgram *ir, const ArkBackend *be
 #if ARKCC_BACKEND_RISCV32
             g_rv_obj_mode = 1;
 #endif
+#if ARKCC_BACKEND_X86_64
             g_x86_obj_mode = 1;
+#endif
             code_len = be->assemble(g_asm, g_code, ARK_CODE_BUF_SIZE);
             if (code_len < 0) {
                 diag_tool(DIAG_SEV_ERROR, g_ld_image, "assembly failed", 0,0,0,0,0,0);
@@ -3296,7 +3307,9 @@ int ark_emit_program(const ArkOptions *opts, IrProgram *ir, const ArkBackend *be
 #if ARKCC_BACKEND_RISCV32
     g_rv_obj_mode = 0;    /* a raw image has no linker: unresolved is fatal */
 #endif
+#if ARKCC_BACKEND_X86_64
     g_x86_obj_mode = 0;
+#endif
     code_size = be->assemble(g_asm, g_code, ARK_CODE_BUF_SIZE);
     if (code_size < 0) {
         diag_tool(DIAG_SEV_ERROR, "arkcc", "assembly failed", 0,0,0,0,0,0);

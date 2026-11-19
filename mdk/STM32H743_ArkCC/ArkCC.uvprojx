@@ -525,6 +525,16 @@
               <FilePath>..\..\src\pipeline.c</FilePath>
             </File>
             <File>
+              <FileName>ipo.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\src\ipo.c</FilePath>
+            </File>
+            <File>
+              <FileName>irser.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\src\irser.c</FilePath>
+            </File>
+            <File>
               <FileName>scatter.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\..\src\scatter.c</FilePath>
