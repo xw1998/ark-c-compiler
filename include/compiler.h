@@ -48,6 +48,8 @@ typedef struct {
     const char *build_date;       /* --build-date "Mmm dd yyyy" : 覆盖 __DATE__ */
     const char *build_time;       /* --build-time "hh:mm:ss"   : 覆盖 __TIME__ */
     long long   build_epoch;      /* --source-date-epoch <sec> : 由纪元秒推出上面两个 */
+    /* === 0.8.5 === */
+    int         print_pipeline;   /* --print-pipeline: 打印 Pass 管线决策表后退出 */
 } ArkOptions;
 
 int ark_compile(const ArkOptions *opts);

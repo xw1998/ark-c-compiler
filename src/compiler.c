@@ -18,6 +18,7 @@
 #include "config.h"
 #include "arkcc_config.h"
 #include "opt.h"
+#include "pipeline.h"
 #include "scatter.h"
 #include "diag.h"
 /* Note: <stdio.h> intentionally NOT included - all file I/O goes through
@@ -1269,6 +1270,14 @@ int ark_compile(const ArkOptions *opts) {
         const ArkBackend *link_be = opts->target ? ark_backend_find(opts->target) : 0;
         int is_rv_link = (link_be && ark_streq(link_be->name, "riscv32")) ? 1 : 0;
         int ld_isa_rv32 = 0;
+        /* x86_64 absolute addresses carry a load base the assembler baked in
+         * (see X86_IMAGE_BASE).  A reference to a symbol this object does not
+         * define is resolved here instead of there, so this side has to add
+         * the same base -- measured on the self-host image: a cross-object
+         * function-pointer table linked at 0x3F571F instead of 0x7F571F and
+         * the image died on the first indirect call.  i386 loads at 0, so the
+         * flag is false for it. */
+        int is_x64_link = (link_be && ark_streq(link_be->name, "x86_64")) ? 1 : 0;
 
         /* The link phase allocates its symbol table, relocation table and
          * image buffer from the same bump pool the compiler uses, and this
@@ -1977,9 +1986,18 @@ int ark_compile(const ArkOptions *opts) {
                                   g_ld_relocs[ri].name, 0,0,0,0);
                         unresolved++;
 #endif /* ARKCC_BACKEND_RISCV32 */
-                    } else if (idx >= 0)
+                    } else if (idx >= 0) {
+                        int target = g_ld_syms[idx].offset;
+                        /* Type 6/12/15 are image offsets already mapped by
+                         * ld_relocate_data, type 5 is a displacement (the base
+                         * cancels), and the ARM/Thumb branch types are all
+                         * relative.  Only a stored 32-bit address needs the
+                         * base added back. */
+                        if (is_x64_link && g_ld_relocs[ri].type == 4)
+                            target += (int)X86_IMAGE_BASE;
                         ld_patch_ref(out_buf, out_len, g_ld_relocs[ri].offset,
-                                     g_ld_syms[idx].offset, g_ld_relocs[ri].type);
+                                     target, g_ld_relocs[ri].type);
+                    }
                     else {
                         diag_tool(DIAG_SEV_ERROR, g_ld_image,
                                   "unresolved symbol %sq", g_ld_relocs[ri].name,
@@ -2545,18 +2563,11 @@ int ark_compile(const ArkOptions *opts) {
     sema_errs = sema_check(ast);
     if (sema_errs > 0) return ARK_ERR_SEMA;
     if (diag_errors() > 0) return ARK_ERR_SEMA;
-#if ARKCC_FEATURE_MEMLINT
-    /* --warn-mem: an intra-procedural lint over the tree sema has typed. It
-     * only emits warnings, so it cannot change the exit code or the image;
-     * with the switch off (the default) not one instruction of it runs. */
-    if (g_config.enable_memlint) memlint_run(ast);
-#endif
-#if ARKCC_FEATURE_ENUMCHECK
-    /* --warn-enum: a set comparison over `switch` statements on enum types.
-     * Warnings only, so the exit code and the image are unaffected; with the
-     * switch off (the default) not one instruction of it runs. */
-    if (g_config.enable_enumcheck) enumcheck_run(ast);
-#endif
+    /* AST stage of the pass pipeline: the lint passes, in the order declared
+     * in src/pipeline.c, each one running only when its own switch asked for
+     * it.  They emit warnings only, so they cannot change the exit code or the
+     * image; with the switches off (the default) not one instruction runs. */
+    pipeline_run_ast(ast);
     {
         int diag_before_irgen = diag_errors();
         ir = irgen_program(ast);
@@ -2579,15 +2590,15 @@ int ark_compile(const ArkOptions *opts) {
     }
     ir->source_file = opts->input_path;  /* Used for DWARF .file/.loc */
 
-    /* IR-level optimization: constant folding + dead code elimination.
-     * Compile-time guarded by ARKCC_FEATURE_OPT_*, runtime guarded by g_config / opt_level. */
-#if ARKCC_FEATURE_OPT_CONSTFOLD || ARKCC_FEATURE_OPT_DCE
+    /* IR stage of the pass pipeline.  Which passes run is decided by one
+     * table in src/pipeline.c from (-O level, --pipeline profile, each
+     * pass's own switch, the compile-time feature macro); nothing here
+     * enumerates passes.  --print-pipeline prints that table. */
     {
         int lvl = opts->opt_level;
         if (lvl < g_config.opt_level) lvl = g_config.opt_level;
-        opt_run(ir, lvl);
+        pipeline_run_ir(ir, lvl, pipeline_profile());
     }
-#endif
 
     /* The ARM backend loads the scatter file lazily, at the start of its own
      * code generation (it only sees g_config, never ArkOptions).  When that

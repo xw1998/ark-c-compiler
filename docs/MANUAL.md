@@ -948,6 +948,38 @@ switch (c) { case RED: break; case BLUE: break; }   /* Warning: ... missing: GRE
 代价实测：宿主 x86-64 上 `-O2` `+1,852 B` text、`-Os` `+1,548 B`，`data`/`bss` 为零。
 门禁 `tests/run_enumcheck_tests.py`（`make test-enumcheck`）。
 
+### 5.11 可配置 Pass 管线（`--pipeline` / `--print-pipeline`）
+
+优化与 lint 阶段不再散在 `opt_run()` 的 `#if`/`if` 阶梯和各个调用点里，而是**在一张表里
+声明一次、由一个循环执行**（`src/pipeline.c`）。表里的每一行是：阶段名、允许的剖面、`-O`
+门槛的形状、自己的开关、以及"没跑时怎么解释"。
+
+| 开关 | 默认 | 说明 |
+| --- | :---: | --- |
+| `--pipeline=full` | 是 | 每个阶段仍由自己的开关与 `-O` 级别决定，即历史行为；**与不写该选项逐字节相同** |
+| `--pipeline=lite` | || 只有 `ast.memlint`、`ast.enumcheck`、`ir.constfold`、`ir.dce` 允许跑，`ir.dce-cfg`/`ir.inline`/`ir.vectorize` 被跳过并留下理由 |
+| `--print-pipeline` | || 打印解析后的阶段表（`run`/`skip` + 理由）后继续编译 |
+| `[opt]` 节 `pipeline=lite` | `full` | 配置文件等效写法；**非法值报 warning 并保留原值**，不回退 |
+| `ARKCC_FEATURE_PIPELINE_DUMP`（编译期） | 宿主 `1`、`ARKCC_PROFILE_STM32_MIN` `0` | 只裁掉阶段名与理由字符串；为 `0` 时 `--print-pipeline` 以 `C3900U` 拒绝（空表会被读成"什么都不跑"） |
+
+三条口径：
+
+- **跳过的阶段必须说明理由**，理由必须是实际失败的那一条门槛（`off (-fno-opt-dce)` 不会
+  写成 `needs a higher -O level`）；被裁掉的阶段写成 `not compiled into this build`，
+  与"用户关了它"分开报。
+- **没有 `none` 剖面**：全部关掉就是 `-O0` 且不开 lint 开关，再造一个拼写等于给同一个
+  镜像两条生成路径。
+- **这一层不改变语义**：`--pipeline=full`（默认）下 80 个 examples 源 × `-O0/-O1/-O2` ×
+  `arm/x86-64` 共 480 份 `-S` 产物与 0.8.4 逐字节相同，x86-64 自举的对象哈希基准不变。
+
+顺带修掉的缺陷：`-fno-opt-constfold` / `-fno-opt-dce` 在 0.8.4 及之前**被接受但完全无效**
+（旧 `opt_run()` 只看 `-O` 级别），现在由 `GATE_FLAG_AND_LEVEL` 真正生效。
+
+已知局限：`ir.vectorize` 用的是 OR 门，所以宿主 `-O0` 也会跑（历史行为，改它会动 `-O0`
+产物）；`lite` 是"阶段上界"而不是 `-O0`，`--pipeline=lite -O2` 仍然跑折叠与 DCE。
+详见 [PASS_PIPELINE.md](PASS_PIPELINE.md)，门禁 `tests/run_pipeline_tests.py`
+（`make test-pipeline`，27 条断言）。
+
 ### 5.x 平铺镜像的 64 位/AEABI 运行时要自己链
 
 后端把 64 位加/减内联成 `ADDS`/`ADC`、`SUBS`/`SBC`（不依赖运行库），其余 64 位运算（`*`、`/`、`%`、`<<`、`>>`、比较）发射标准 AEABI 符号（`__aeabi_lmul`、`__aeabi_ldivmod`、`__aeabi_uldivmod`、`__aeabi_llsl`、`__aeabi_llsr`、`__aeabi_lasr`、`__aeabi_lcmp`、`__aeabi_ulcmp`）。**编译器不会隐式把这些实现塞进镜像**，平铺镜像要自己链：

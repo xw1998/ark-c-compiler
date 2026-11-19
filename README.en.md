@@ -623,6 +623,7 @@ ark c compiler/
 ├── docs/X86_64_BACKEND.md  x86-64 (SysV AMD64) backend: registers, stack slots, relocations, execution-level gate (Chinese, UTF-8)
 ├── docs/MEMLINT.md         Intra-procedural memory lint (--warn-mem): boundary, trim switch, measured cost (Chinese, UTF-8)
 ├── docs/ENUMCHECK.md       Switch missing an enumerator (--warn-enum): criteria, trim switch, measured cost (Chinese, UTF-8)
+├── docs/PASS_PIPELINE.md   Configurable pass pipeline (--pipeline / --print-pipeline): stage table, two profiles, trimming, measured cost (Chinese, UTF-8)
 ├── docs/从零写一个C编译器.md  Textbook-style walkthrough: 19 chapters, from 30 lines to 30 000 (Chinese, UTF-8)
 ├── docs/from-scratch-c-compiler.en.md  English summary of that textbook (structure, chapter map, reading routes)
 └── README.md               Project overview (Chinese, UTF-8)
@@ -755,6 +756,10 @@ arkcc <file.c|file.s> [options]
                      --no-warn-mem turns it off
   --warn-enum        when a switch controls on an enum and has no default, check
                      that every enumerator is named; --no-warn-enum turns it off
+  --pipeline=<p>     pipeline profile: full (default; every stage still decides
+                     with its own flag and -O level) or lite (drops dce-cfg /
+                     inline / vectorize and says so)
+  --print-pipeline   print each stage's decision: run, or skip plus the reason
   --dce-cfg          basic-block reachability DCE (deletes only code that is reachable but never executes)
   --build-date <s>   pin __DATE__ (e.g. "May 28 2026")
   --build-time <s>   pin __TIME__ (e.g. "20:26:40")
@@ -995,6 +1000,43 @@ See [docs/MANUAL.en.md](docs/MANUAL.en.md) for the full manual.
 > documented only in the Chinese [README.md](README.md) — they are long, and every one of them is
 > covered by the documents under `docs/`.
 
+- **v0.8.5**: a configurable pass pipeline (`docs/PASS_PIPELINE.md`), plus one x86-64
+  linker defect that the pipeline was the first thing to expose. `src/pipeline.c` replaces the
+  `#if` / `if` ladder that used to live in `opt_run()` with **one stage table and one loop**: two
+  AST stages (`ast.memlint` behind `--warn-mem`, `ast.enumcheck` behind `--warn-enum`; neither has
+  an `-O` gate) and five IR stages (`ir.constfold` -> `ir.dce` -> `ir.dce-cfg` -> `ir.inline` ->
+  `ir.vectorize`, **table order is execution order**), each with one of three gates (flag only /
+  level and flag / level or flag) and a **reason** string. `--pipeline=full` is the default and is
+  **byte-identical to not passing the option at all** -- a profile is an upper bound, it never
+  replaces a stage's own gate. `--pipeline=lite` drops only the three expensive stages
+  (`dce-cfg` / `inline` / `vectorize`) and records why. An invalid value is refused with `C3900U`
+  on the command line; in an INI file it is a warning that **keeps the previous value**, because
+  there is no previous value to fall back to on the command line and guessing would decide for the
+  user. `--print-pipeline` prints one line per stage (`run <name>` / `skip <name> <reason>`):
+  **a skipped stage must name the gate that stopped it** -- no output is not a measurement. Two
+  switches that were previously accepted but did nothing are now real: `-fno-opt-constfold` and
+  `-fno-opt-dce` were ignored because the old `opt_run()` only looked at the `-O` level; the table
+  honours them and the output is unchanged because both default to 1. Trimmable:
+  `ARKCC_FEATURE_PIPELINE_DUMP` (0 in `ARKCC_PROFILE_STM32_MIN`) strips only the name strings --
+  the table and the loop are always compiled in. Measured (ARM, `-c --reloc-data`): 8,342 B
+  default, 7,096 B with the dump strings off, 7,830 B with both lints off as well, 6,616 B with all
+  three trimmed; host x86-64 default 9,135 B. Zero-change reading: **480/480 byte-identical**
+  against the v0.8.4 binary (80 `examples/` sources x 3 `-O` levels x 2 targets, exit codes
+  included); the self-host gate still compiles 27 self-source TUs into a flat image, runs the
+  compiler under unicorn and compares object bytes, PASS (6,357,774 B, `fnv=28c333dc`). The linker
+  defect fixed in the same round: an **absolute** relocation that refers to a symbol defined in
+  *another* object was written as `object base + symbol offset`, **missing the image base**
+  `X86_IMAGE_BASE` (0x400000). Evidence: the self-host image faulted at `0x3F571F`, a value that
+  occurs exactly once in the 6.3 MB image, at the relocation slot of `pipeline.o`'s
+  `.quad opt_vectorize` (image offset 0x424c8a = object base 0x42491A + 880); subtracting the
+  symbol offset of `opt_vectorize` inside `opt.o` leaves exactly `opt.o`'s object base -- i.e.
+  0x400000 short. Fix: at link time, add `X86_IMAGE_BASE` for type 4 (4-byte absolute) only; type 5
+  (PC-relative disp32) and the types already settled by `ld_relocate_data` are untouched. New
+  regression `fptr_across_objs` (`e1.c` defines `f1()`/`f2()`, `e2.c` builds
+  `int (*tab[2])(void) = {f1, f2};` and returns `tab[0]() + tab[1]() * 2`; expected 50; it faulted
+  with `UC_ERR_FETCH_UNMAPPED` before the fix), x86-64 object gate now **36 passed**. New
+  `tests/run_pipeline_tests.py`, 27 assertions (`make test-pipeline`), covering the text output,
+  the actual effect of each stage, the refusal paths and the INI key.
 - **v0.8.4**: `--warn-mem` closes two gaps and a new `--warn-enum` arrives (`docs/ENUMCHECK.en.md`).
   `--warn-mem` goes from two diagnostics to four: it now also reports **storing the address of an
   automatic object into an object with static storage duration** (`g = &x;`, `g = local_array;`,

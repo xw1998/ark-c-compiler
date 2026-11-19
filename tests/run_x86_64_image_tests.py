@@ -369,6 +369,27 @@ int slen(const char *p) { int n = 0; while (*p) { n++; p++; } return n; }
 int main(void) { g[1] = 10; return sumg() + slen(msg); }
 """)],
      23, "object 2 writes object 1's array and reads its string (1+10+3+4 + 5)"),
+
+    # The absolute-address half of the same rule.  An object's own label keeps
+    # X86_IMAGE_BASE from the assembler and only needs the object base; a label
+    # defined in *another* object is never seen by that assembler, so the link
+    # step is the only side that can supply the load base.  It used to add just
+    # the object base, which put the pointer 0x400000 below the image: the
+    # self-host gate died on the first indirect call through a stage table at
+    # 0x3F571F.  Measured on this case before the fix: UC_ERR_FETCH_UNMAPPED.
+    ("fptr_across_objs",
+     [("e1.c", """
+int f1(void) { return 10; }
+int f2(void) { return 20; }
+"""),
+      ("e2.c", """
+int f1(void);
+int f2(void);
+int (*tab[2])(void) = {f1, f2};
+int main(void) { return tab[0]() + tab[1]() * 2; }
+""")],
+     50, "a stored function pointer to another object's code (10 + 2*20); "
+         "the linker must add the load base, not only the object base"),
 ]
 
 # stage 2: must be refused, not silently linked

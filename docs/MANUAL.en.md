@@ -1109,6 +1109,42 @@ whether every enumerator the source itself declared is named here. See
 Measured cost: `+1,852 B` text at `-O2` and `+1,548 B` at `-Os` on host x86-64, zero
 `data`/`bss`. Gate: `tests/run_enumcheck_tests.py` (`make test-enumcheck`).
 
+### 5.11 The configurable pass pipeline (`--pipeline` / `--print-pipeline`)
+
+The optimization and lint stages no longer live in `opt_run()`'s `#if`/`if` ladders and in every
+call site; they are **declared once in a table and executed by one loop** (`src/pipeline.c`).
+Each row says: the stage name, the profile it belongs to, the shape of its `-O` gate, its own
+switch, and how to explain a skip.
+
+| Switch | Default | Meaning |
+| --- | :---: | --- |
+| `--pipeline=full` | yes | every stage still follows its own switch and `-O` level, i.e. the historical behaviour; **byte-identical to not writing the option** |
+| `--pipeline=lite` | | only `ast.memlint`, `ast.enumcheck`, `ir.constfold`, `ir.dce` may run; `ir.dce-cfg`/`ir.inline`/`ir.vectorize` are skipped with a recorded reason |
+| `--print-pipeline` | | print the resolved stage table (`run`/`skip` plus reason) and then compile |
+| `pipeline=lite` under `[opt]` | `full` | the config-file spelling; **an unknown value warns and keeps the previous value**, it never falls back |
+| `ARKCC_FEATURE_PIPELINE_DUMP` (compile time) | host `1`, `ARKCC_PROFILE_STM32_MIN` `0` | trims only the stage names and reason strings; at `0` `--print-pipeline` refuses with `C3900U` (an empty table would read as "nothing runs") |
+
+Three rules:
+
+- **A skipped stage must say why**, and the reason is the gate that actually failed
+  (`off (-fno-opt-dce)` is never reported as `needs a higher -O level`); a stage that was trimmed
+  out of the build says `not compiled into this build`, which is reported separately from
+  "the user turned it off".
+- **There is no `none` profile**: turning everything off is already spelled `-O0` with no lint
+  flags, and a second spelling would give one image two generation paths.
+- **This layer does not change semantics**: under the default `--pipeline=full`, all 480 `-S`
+  outputs (80 example sources × `-O0/-O1/-O2` × `arm/x86-64`) are byte-identical to 0.8.4, and
+  the x86-64 self-host object digest is unchanged.
+
+A defect fixed on the way: `-fno-opt-constfold` / `-fno-opt-dce` were **accepted but did
+nothing** up to 0.8.4 (the old `opt_run()` only looked at the `-O` level); `GATE_FLAG_AND_LEVEL`
+makes them work.
+
+Known limit: `ir.vectorize` uses the OR gate, so it also runs at host `-O0` (historical
+behaviour; changing it would move `-O0` output), and `lite` is a stage ceiling rather than `-O0`
+-- `--pipeline=lite -O2` still runs folding and DCE. See [PASS_PIPELINE.en.md](PASS_PIPELINE.en.md);
+gate: `tests/run_pipeline_tests.py` (`make test-pipeline`, 27 assertions).
+
 ### 5.x Flat images must link their own 64-bit/AEABI runtime
 
 The backend inlines 64-bit add/sub as `ADDS`/`ADC` and `SUBS`/`SBC` (no runtime dependency); the remaining

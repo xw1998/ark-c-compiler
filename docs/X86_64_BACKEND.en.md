@@ -338,11 +338,17 @@ Plus three further stages that make those PASSes mean something:
   functions) is split into two source files, each compiled with `-c` and then joined with `-link` and
   run, expecting 23. It also pins `X86_RELOC_SELF_BASE`(7): an absolute reference inside an object must
   be settled against **the object's own base**, which is not known yet when `-c` writes the object.
+  The other half of that rule is pinned by `fptr_across_objs`: when the symbol an absolute reference
+  names is defined in *another* object, this object's assembler has never seen that label, so
+  `X86_IMAGE_BASE` can only come from the linker (expects 50). Before 0.8.5 the linker added only the
+  object base, so such a table stored `0x3F571F` -- 0x400000 below the image -- and the image died on
+  the first indirect call with `UC_ERR_FETCH_UNMAPPED`. That is exactly the defect the self-host gate
+  exposed once `pipeline.c` joined the link set.
 - **refusals**: referencing an undefined external function must fail the build and leave no image
 - **selfcheck**: one case is re-run with an "expectation + 1" and must be judged DIFF. A harness that
   cannot detect a wrong answer proves nothing about any pass
 
-Current measurement: `35 passed, 0 failed, 0 skipped`.
+Current measurement: `36 passed, 0 failed, 0 skipped`.
 
 ### 7.1 The self-host gate: turning "it runs once" into "it reproduces the host object byte for byte"
 

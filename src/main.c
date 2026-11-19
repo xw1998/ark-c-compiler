@@ -12,6 +12,7 @@
 #include "arkcc_config.h"
 #include "diag.h"
 #include "cpu.h"
+#include "pipeline.h"
 #include "memory.h"
 #include <stdio.h>
 #include <string.h>
@@ -48,6 +49,13 @@ static void usage(void) {
         "  -I <dir>           additional include path\n"
         "  -O0/-O1/-O2        optimisation level: IR constant folding + dead code\n"
         "                     elimination; -O2 also enables inline/vectorise\n"
+        "  --pipeline=lite|full  which stages of the pass pipeline may run.  full\n"
+        "                     (the default) lets every stage follow its own switch\n"
+        "                     and -O level, i.e. the historical behaviour; lite\n"
+        "                     keeps only the cheap stages and records why the rest\n"
+        "                     were skipped\n"
+        "  --print-pipeline   print the resolved stage table (run/skip + reason)\n"
+        "                     and exit\n"
         "  -g                 emit DWARF debug sections (implies --dwarf2;\n"
         "                     use --dwarf3 for DWARF 3)\n"
         "  -Wno-unused        suppress unused warnings\n"
@@ -269,6 +277,7 @@ static void reset_opts(ArkOptions *o) {
     o->build_date = 0;
     o->build_time = 0;
     o->build_epoch = 0;
+    o->print_pipeline = 0;
 }
 
 /* armcc: the text before '=' must be an identifier; everything after '=' is
@@ -555,6 +564,20 @@ int main(int argc, char **argv) {
             while (*p >= '0' && *p <= '9') { v = v * 10 + (*p - '0'); p++; }
             opts.build_epoch = v;
         }
+        else if (strncmp(a, "--pipeline=", 11) == 0) {
+            /* Refusing beats guessing: an unknown profile must not fall back
+             * to "full", because the caller would then believe trimming
+             * happened when it did not. */
+            int prof = pipeline_profile_parse(a + 11);
+            if (prof < 0) {
+                fprintf(stderr,
+                        "Fatal error: C3900U: unknown pipeline \"%s\" "
+                        "(expected lite or full)\n", a + 11);
+                return 1;
+            }
+            g_config.pipeline_profile = prof;
+        }
+        else if (strcmp(a, "--print-pipeline") == 0) opts.print_pipeline = 1;
         else if (strcmp(a, "--dce-cfg") == 0)       g_config.enable_dce_cfg = 1;
         else if (strcmp(a, "--no-dce-cfg") == 0)    g_config.enable_dce_cfg = 0;
         else if (strcmp(a, "--reloc-data") == 0)    g_config.enable_reloc_data = 1;
@@ -671,6 +694,22 @@ int main(int argc, char **argv) {
     }
 #endif
 
+    if (opts.print_pipeline) {
+#if ARKCC_FEATURE_PIPELINE_DUMP
+        int lvl = opts.opt_level;
+        if (lvl < g_config.opt_level) lvl = g_config.opt_level;
+        pipeline_dump(lvl, pipeline_profile());
+        diag_shutdown();
+        return 0;
+#else
+        /* Same rule as --warn-mem: a build that cannot answer the query must
+         * say so, not print an empty table that reads like "nothing runs". */
+        fprintf(stderr,
+                "Fatal error: C3900U: --print-pipeline is not compiled into this "
+                "build (rebuild with -DARKCC_FEATURE_PIPELINE_DUMP=1)\n");
+        return 1;
+#endif
+    }
     if (opts.verbose) config_print();
     if (!opts.list_backends && !opts.input_path && !opts.link_mode) {
         usage();

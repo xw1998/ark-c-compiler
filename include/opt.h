@@ -11,10 +11,10 @@
 
 #include "ir.h"
 
-/* Run optimizations over the entire IR program.
- * level: 0=none, 1=basic (constfold + DCE), 2=aggressive (currently same as 1).
- * Each pass additionally guards on g_config.enable_opt_xxx. */
-void opt_run(IrProgram *prog, int level);
+/* Where the passes are scheduled.  Since 0.8.5 the "does this pass run at
+ * this -O level under this profile" decision lives in one table in
+ * src/pipeline.c; this header only declares the passes themselves.  Call
+ * pipeline_run_ir() (include/pipeline.h), not a list of opt_* in sequence. */
 
 /* Per-function constant folding: folds PUSH_INT + PUSH_INT + BINARY patterns. */
 void opt_constfold_func(IrFunc *f);

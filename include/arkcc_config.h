@@ -210,6 +210,21 @@
 #   define ARKCC_FEATURE_ENUMCHECK     1
 # endif
 #endif
+/* ARKCC_FEATURE_PIPELINE_DUMP: the strings and the printer behind
+ * --print-pipeline.  The stage tables and the execution loop are compiled in
+ * unconditionally -- src/pipeline.c is the driver now, not an optional pass --
+ * so only the human-readable half is trimmed on the board.  Turning this off
+ * makes --print-pipeline refuse with C3900U instead of printing an empty
+ * table, which is the only honest behaviour for a query this build cannot
+ * answer. */
+#ifndef ARKCC_FEATURE_PIPELINE_DUMP
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_PIPELINE_DUMP 0
+# else
+#   define ARKCC_FEATURE_PIPELINE_DUMP 1
+# endif
+#endif
+
 
 /* ===========================================================================
  * 6. ARMCC 5 compatibility

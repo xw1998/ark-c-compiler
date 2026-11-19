@@ -311,11 +311,16 @@ unicorn 的 32 位核上跑**，`i386` 列与期望不符即判 FAIL（早期只
   源文件各自 `-c`，再用 `-link` 拼起来跑，期望 23。它同时钉住
   `X86_RELOC_SELF_BASE`(7)：对象里的绝对引用必须按**对象自身 base** 结算，
   而 `-c` 出对象时还不知道那个 base。
+  同一条规则的另一半由 `fptr_across_objs` 钉住：**绝对引用指向的符号定义在别的对象里**时，
+  本对象的汇编器从没见过那个标签，`X86_IMAGE_BASE` 只能由链接器补上（期望 50）。
+  0.8.5 之前链接器只加了对象 base，于是这张表把函数指针写成 `0x3F571F`（比镜像低
+  0x400000），镜像在第一次间接调用就死在 `UC_ERR_FETCH_UNMAPPED`——它正是自举门禁
+  引入 `pipeline.c` 之后暴露出来的那个缺陷。
 - **refusals**：引用未定义外部函数必须构建失败、且不留镜像
 - **selfcheck**：用「期望值 +1」重跑一个用例，必须被判成 DIFF。判不出错的 harness
   证明不了任何通过
 
-当前实测：`35 passed, 0 failed, 0 skipped`。
+当前实测：`36 passed, 0 failed, 0 skipped`。
 
 ### 7.1 自举门禁：把"能跑一次"变成"逐字节复现宿主对象"
 
@@ -326,7 +331,7 @@ python tests/run_x86_64_selfhost.py --arkcc ./arkcc.exe
 
 这条门禁走的是四步，每一步都能独立失败：
 
-1. **自编译**：x86-64 臂用 `-c` 把 **24 个自源 TU**（`src/*.c` 去掉 `main.c`/`registry.c`
+1. **自编译**：x86-64 臂用 `-c` 把 **27 个自源 TU**（`src/*.c` 去掉 `main.c`/`registry.c`
    再加四个后端与 `registry.c`）编成对象；任何一份编不过就 FAIL，不降级。
 2. **链接镜像**：24 个对象 + `tests/selfhost/selfprobe.c`（顶替 `port/host/*`）+ 
    `tests/selfhost/libcstub.c`（顶替 libc 的内存/字符串/`vsnprintf` 入口；任何真正的

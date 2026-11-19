@@ -270,68 +270,6 @@ void opt_dce_cfg_func(IrFunc *f) {
 }
 #endif /* ARKCC_FEATURE_OPT_DCE_CFG */
 
-void opt_run(IrProgram *prog, int level) {
-    int i;
-    if (!prog) return;
-#if ARKCC_FEATURE_OPT_CONSTFOLD
-    /* Bug-I8 FIX: Constant folding must NOT run at -O0. Previously the
-     * condition was `g_config.enable_opt_constfold || level >= 1`, and
-     * since enable_opt_constfold defaults to 1 (ARKCC_FEATURE_OPT_CONSTFOLD),
-     * constfold ran even at -O0. This altered -O0 codegen expectations
-     * (folding 1+2 into 3, eliminating dead constant computations) and
-     * could also fold UB expressions (e.g. 1/0, 1<<40) to wrong values.
-     * Now constfold only runs when the user explicitly requests -O1 or
-     * above via `level >= 1`. */
-    if (level >= 1) {
-        for (i = 0; i < prog->func_count; i++) {
-            opt_constfold_func(prog->funcs[i]);
-        }
-    }
-#else
-    (void)level;
-#endif
-#if ARKCC_FEATURE_OPT_DCE
-    /* Bug-I8 FIX: DCE also must only run at -O1 or above, matching the
-     * constfold gating. At -O0 the user expects all code (even unreachable
-     * after return) to be preserved. */
-    if (level >= 1) {
-        for (i = 0; i < prog->func_count; i++) {
-            opt_dce_func(prog->funcs[i]);
-        }
-    }
-#endif
-#if ARKCC_FEATURE_OPT_DCE_CFG
-    /* 基本块级 DCE：只在用户显式 --dce-cfg 且优化级别 >= 1 时运行。
-     * 放在线性 DCE 之后，先由简单规则清一遍，再由可达性分析处理带标签的死块。 */
-    if (g_config.enable_dce_cfg && level >= 1) {
-        for (i = 0; i < prog->func_count; i++) {
-            opt_dce_cfg_func(prog->funcs[i]);
-        }
-    }
-#endif
-#if ARKCC_FEATURE_OPT_INLINE
-    /* N4 FIX: opt_inline must only run at -O2 or above. Previously it ran
-     * whenever g_config.enable_opt_inline was true (which defaults to 1
-     * at host compile time), causing inline expansion even at -O0. This
-     * changes -O0 codegen expectations and is unsafe for the ARM backend
-     * where inline expansion assumes stack-slot parameters (not r0-r3). */
-    if (level >= 2 && g_config.enable_opt_inline) {
-        opt_inline(prog);
-        /* Inlining may leave unreachable code; run DCE so dead instructions become NOP and get compacted. */
-        if (level >= 1) {
-            for (i = 0; i < prog->func_count; i++) {
-                opt_dce_func(prog->funcs[i]);
-            }
-        }
-    }
-#endif
-#if ARKCC_FEATURE_OPT_VECTORIZE
-    if (g_config.enable_opt_vectorize || level >= 2) {
-        opt_vectorize(prog);
-    }
-#endif
-}
-
 /* =====================================================================
  * Function inlining (--autoinline / -O2)
  * =====================================================================

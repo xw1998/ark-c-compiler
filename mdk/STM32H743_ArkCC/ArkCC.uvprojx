@@ -520,6 +520,11 @@
               <FilePath>..\..\src\opt.c</FilePath>
             </File>
             <File>
+              <FileName>pipeline.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\src\pipeline.c</FilePath>
+            </File>
+            <File>
               <FileName>scatter.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\..\src\scatter.c</FilePath>

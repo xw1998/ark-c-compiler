@@ -11,6 +11,7 @@
 #include "platform.h"
 #include "flash_fs.h"
 #include "diag.h"
+#include "pipeline.h"
 
 ArkccConfig g_config;
 
@@ -76,6 +77,9 @@ void config_init(void) {
     g_config.enable_memlint       = 0;
     /* --warn-enum: 同样两层开关，运行期默认关；不开时产物与 0.8.3 逐字节相同。 */
     g_config.enable_enumcheck     = 0;
+    /* --pipeline: 默认 FULL = 历史行为（每个 pass 自己的开关/级别决定），
+     * 因此不写这个选项时产物与 0.8.4 逐字节相同。 */
+    g_config.pipeline_profile     = ARK_PROFILE_FULL;
     g_config.opt_level            = 0;
     g_config.debug_info           = 0;
     g_config.split_sections       = 0;
@@ -116,6 +120,19 @@ static void apply_kv(const char *section, const char *key, const char *val) {
         else if (ark_streq(key, "asm_extra"))     g_config.enable_asm_extra = parse_bool(val);
         else if (ark_streq(key, "warn_mem"))      g_config.enable_memlint = parse_bool(val);
         else if (ark_streq(key, "warn_enum"))     g_config.enable_enumcheck = parse_bool(val);
+        else if (ark_streq(key, "pipeline")) {
+            /* An unknown spelling is reported rather than ignored: a config
+             * file that says "pipeline = lti" and is silently treated as
+             * "full" is the kind of answer this project refuses to give. */
+            int prof = pipeline_profile_parse(val);
+            if (prof < 0) {
+                diag_tool(DIAG_SEV_WARNING, g_config.config_file,
+                          "unknown pipeline \"%s\" (expected lite or full); "
+                          "the value is ignored", val, 0,0,0,0,0);
+            } else {
+                g_config.pipeline_profile = prof;
+            }
+        }
     } else if (ark_streq(section, "general")) {
         if (ark_streq(key, "opt_level")) {
             int v = 0;
@@ -423,6 +440,7 @@ void config_print(void) {
     ark_log("  reloc_text=%d\n", g_config.enable_reloc_text);
     ark_log("  warn_mem=%d\n", g_config.enable_memlint);
     ark_log("  warn_enum=%d\n", g_config.enable_enumcheck);
+    ark_log("  pipeline=%s\n", pipeline_profile_name(g_config.pipeline_profile));
     ark_log("  opt_level=%d debug_info=%d split_sections=%d\n",
             g_config.opt_level, g_config.debug_info, g_config.split_sections);
     ark_log("  config_file=%s\n",
