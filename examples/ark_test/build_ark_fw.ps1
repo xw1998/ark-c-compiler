@@ -49,8 +49,11 @@ $vt = New-Object byte[] $vtSizePadded
 [Array]::Copy([BitConverter]::GetBytes([uint32]$spTop), 0, $vt, 0, 4)
 
 function HandlerAddr($offset) {
-    # Thumb bit set: address | 1
-    return [uint32]($flashBase + $vtSizePadded + $offset + 1)
+    # Thumb bit set: address | 1.  The object is compiled with --vector-table, so
+    # every symbol offset is already measured from the flash base with the
+    # reserved table area in front of it -- adding $vtSizePadded here (as this
+    # script used to) pointed every handler 448 bytes too low.
+    return [uint32]($flashBase + $offset + 1)
 }
 
 function GetSym($name) {
@@ -93,16 +96,30 @@ for ($i = 16; $i -lt $vtEntries; $i++) {
     [Array]::Copy([BitConverter]::GetBytes([uint32]$defaultAddr), 0, $vt, $i * 4, 4)
 }
 
-# Combine vector table + code, with 8-byte padding on code end so the
-# resulting firmware file is a multiple of 8 bytes (AAPCS alignment).
-$codeLenPadded = ($codeBytes.Length + 7) -band (-bnot 7)  # round up to 8
-$codePadded = New-Object byte[] $codeLenPadded
-[Array]::Copy($codeBytes, 0, $codePadded, 0, $codeBytes.Length)
+# The object must have been compiled with --vector-table: that is what claims and
+# zeroes the table area at the front of the image, so the code after it is placed
+# at the address its own symbols assume.  Prepending a table to an object built
+# without the flag shifts every code byte by 448 while every absolute reference
+# in the code still points at the unshifted address -- the image loads and then
+# runs into data.  So the reservation is checked, not assumed.
+if ($codeBytes.Length -lt $vtSizePadded) {
+    Write-Host "ERROR: object is $($codeBytes.Length) bytes, shorter than the $vtSizePadded-byte vector table;" -ForegroundColor Red
+    Write-Host "       compile it with -c --vector-table." -ForegroundColor Red
+    exit 1
+}
+for ($i = 0; $i -lt $vtSizePadded; $i++) {
+    if ($codeBytes[$i] -ne 0) {
+        Write-Host "ERROR: the first $vtSizePadded bytes of the object are not the zeroed vector-table" -ForegroundColor Red
+        Write-Host "       reservation (byte $i = 0x$('{0:X2}' -f $codeBytes[$i])); compile with -c --vector-table." -ForegroundColor Red
+        exit 1
+    }
+}
 
-$fwLen = $vt.Length + $codePadded.Length
-$fw = New-Object byte[] $fwLen
+# Write the table into the reservation, then pad the end to 8 bytes (AAPCS).
+$codeLenPadded = ($codeBytes.Length + 7) -band (-bnot 7)  # round up to 8
+$fw = New-Object byte[] $codeLenPadded
+[Array]::Copy($codeBytes, 0, $fw, 0, $codeBytes.Length)
 $vt.CopyTo($fw, 0)
-[Array]::Copy($codePadded, 0, $fw, $vt.Length, $codePadded.Length)
 
 [System.IO.File]::WriteAllBytes($OutBin, $fw)
 Write-Host ""

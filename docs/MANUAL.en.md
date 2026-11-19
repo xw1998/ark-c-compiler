@@ -1452,6 +1452,40 @@ Refused: `-r` without `-link` / with `--lto` / with `-c`, `-S`, `-E`, `-MMD` / w
 See [PARTIAL_LINK.en.md](PARTIAL_LINK.en.md); the gate is
 `tests/run_partiallink_tests.py` (`make test-partiallink`, 27 checks).
 
+### 5.20 An unreferenced `static inline` is no longer emitted
+
+A `static inline` function only has to exist when it is used (C11 6.7.4p7: a static inline
+definition does not produce an externally visible definition). ARK used to emit code for
+**every** function body, so the most common shape -- "the header is included but the helper is
+never called" -- dragged dead code along; and once that dead code referenced an external object
+it only declares (the classic case: CMSIS's `ITM_SendChar()` reading the debugger-provided
+`ITM_RxBuffer`), the object writer refused:
+
+```
+Error: reference to the global 'ITM_RxBuffer', which this translation unit only declares; ...
+```
+
+`ir_drop_unused_inline()` now removes unreachable `static inline` / `static __forceinline`
+functions at the IR level. It hangs off `ark_emit_program()`, the single choke point, so the
+single-file path, `--ipo`, `-link --lto` and `-S` all take the same route.
+
+- **Liveness**: reachability from every kept function (`IR_CALL` and an `IR_PUSH_FUNC` that
+  takes a function's address are both edges), plus any symbol named by a global initializer
+  (`init_sym` / `init_refs`) and any `alias` target;
+- **Never dropped**: `__attribute__((used))`, `unused`, `weak`, `constructor`, `destructor`,
+  `interrupt`, `naked`, `alias` targets, and `main`;
+- **Plain `static` (no `inline`) is never dropped**: it is a symbol the author wrote, and
+  `--warn-unused-static` is how you hear about it -- so a dead non-inline `static` that
+  references an external object still produces the error above;
+- a translation unit containing inline asm makes the pass **back off entirely** (symbols named
+  by asm text are invisible to the control-flow graph);
+- on by default, no switch, effective at `-O0` too (this is a correctness fix, not an
+  optimisation); `--verbose` prints how many functions were dropped.
+
+The gate is `tests/run_deadinline_tests.py` (`make test-deadinline`, 19 checks): the shape that
+is dropped, every shape that must be kept, "the same helper without `inline` still fails" (which
+proves this step is what fixes the build), `-S` agreeing with `-c`, and the inline-asm back-off.
+
 ## 6 Testing on Windows
 
 ### 6.1 Recommended flow: the C backend
@@ -1479,7 +1513,7 @@ are measured values from 2026-11-02):
 | --- | --- | --- | --- |
 | `run_full_test.ps1` | 73 samples: ARM emit + C-backend execution | the exit code of each sample must not be negative (a crash), plus an IR-generation gate self-check; a sample that by design cannot be emitted as one object must be recorded as `EXPECTED-FAIL` with the reason written out | `PASS=73 FAIL=0 CRASH=0` (the ARM side of `c99_armcc5_compat_test.c` is `EXPECTED-FAIL`: `errno`'s storage is defined in `stdlib/src/errno.c`, and a single-object image has no channel that carries another compilation unit's data address), `SELFCHECK irgen-gate: OK` |
 | `examples\run_tests.ps1` | 75 samples: ARM emit + C-backend execution | the exit code must equal the sample's header `Expected exit code: N`; skips and passes are counted separately | `asserted pass 71 / failed 0 / skipped 4` |
-| `run_asm_test.ps1` | the `.s/.asm` input path | artefact size + ARKOBJ2 header + byte-for-byte identity with the armasm golden bytes (including `BKPT` and three-operand `MUL`) + an unknown mnemonic and a three-register `MUL` must both fail | `pass=17 fail=0` |
+| `run_asm_test.ps1` | the `.s/.asm` input path | artefact size + ARKOBJ2 header + byte-for-byte identity with the armasm golden bytes (28 instructions, including `BKPT`, three-operand `MUL` and six **low-register** extend forms) + an unknown mnemonic and a three-register `MUL` must both fail | `pass=18 fail=0` |
 | `run_tests_x86.ps1` | the `x86` / `x86_64` backends | emit succeeds, GAS accepts the syntax, the real aliases of `x86` (`i386`/`i686`/`*-msvc`) are byte-equivalent, `x86_64` **must not** be an alias of `x86` and its output must contain 64-bit registers, plus three negative controls | `pass=85 fail=0 skip=2` (the two SKIPs when `gcc` is not on PATH) |
 | `tests/run_x86_64_image_tests.py` | `x86_64` execution level | the `main` return value of 35 programs equals a constant computed outside the program (including the three **static absolute addressing** anchors — initialised global arrays / string pointers / static function pointer table — and three anchors only exposed during self-hosting: `sizeof` of a member array, an `sret` copy, and pointer-array initialisation); one two-object `-c` + `-link` cross-TU case; an unresolved symbol must be refused with no image left behind; an expected value of +1 must be judged DIFF | `35 passed, 0 failed` (`make test-x86-64`), see 6.3.1 for details |
 | `tests/run_x86_64_selfhost.py` | `x86_64` **self-hosting** | the compiler compiles its own 24 TUs into objects, links them into a flat image, runs it under unicorn, has it compile one more payload, and the artefact must be **byte-identical** to the host object (length + fnv-1a); the assembly text of the same payload is compared separately, to attribute any difference to code generation versus the assembler | `PASS self-host: byte-identical object` (2130 B / `fnv=28c333dc`), `make test-x86-64-selfhost`, see [X86_64_BACKEND.md](X86_64_BACKEND.md) §7.1 |
@@ -1495,9 +1529,9 @@ all of which are re-runnable gates inside the repository:
 1. **Assembly-level smoke test**: `examples/run_tests.ps1` runs `-target arm -S` on every sample, and any
    sample the backend cannot emit assembly for counts as a failure.
 2. **Byte-exact evidence for the assembly encoding**: `run_asm_test.ps1` embeds a **golden byte string**
-   obtained from armcc5 `armasm` for 22 instructions (TST/CLZ/SXTB/SXTH/UXTB/UXTH/SVC/MOVS/SADD16/BKPT/MUL,
-   including high-register forms) and requires arkCC's binary output to match it byte for byte. How the
-   evidence was obtained (reproducible):
+   obtained from armcc5 `armasm` for 28 instructions (TST/CLZ/SXTB/SXTH/UXTB/UXTH/SVC/MOVS/SADD16/BKPT/MUL,
+   including high-register forms and six low-register extend forms whose `Rm` is not `r6`) and requires
+   arkCC's binary output to match it byte for byte. How the evidence was obtained (reproducible):
 
 ```powershell
 # Keil is installed in D:\Keil_v5 (not C:\Keil_v5); do not write the THUMB attribute on the AREA line,
@@ -1509,6 +1543,15 @@ all of which are re-runnable gates inside the repository:
    The hex column of the `fromelf -c` disassembly listing is the golden byte (little-endian halfword order).
    The check **does not depend** on whether Keil is installed on the machine, because the golden bytes are
    baked into the script.
+
+   **Why the low-register extend forms have to be listed separately**: the 16-bit T1 base of `UXTH` is
+   `0xB280`. It once said `0xB2B0`, and `0xB2B0 = 0xB280 | (6 << 3)`, which pins `Rm` to `r6`. The old
+   golden sample only had `UXTH r5, r6` -- `Rm` really was `r6`, so both bases produce the same byte and
+   the gate stayed green while `UXTH r0, r0` was silently assembled as `UXTH r0, r6` (measured effect:
+   `(uint16_t)0x2000` became `sp & 0xFFFF`, so `GPIOC->BSRR` was written with `0x0FC00000`). The sample
+   now contains `UXTH r0,r0`(0xB280), `UXTH r1,r2`(0xB291), `UXTH r7,r7`(0xB2BF), `SXTH r0,r0`(0xB200),
+   `SXTB r3,r4`(0xB263) and `UXTB r0,r1`(0xB2C8); all seven extend bytes were measured against
+   `armasm 5.06` (and a future regression to `0xB2B0` fails the gate, because `Rm` is no longer `r6`).
 3. **Assembly-input gate**: `run_asm_test.ps1` also verifies the artefact size for `.s` inputs, the
    ARKOBJ2 header, and that "an unknown mnemonic must fail loudly" (a negative control).
 4. **Execution-level verification**: `run_arm_exec_test.ps1` compiles three objects (C start-up code / an

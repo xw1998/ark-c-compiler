@@ -3162,6 +3162,19 @@ int ark_emit_program(const ArkOptions *opts, IrProgram *ir, const ArkBackend *be
      * path: the image started with code where the vector table belonged, and
      * the emulator answered "reset vector has no Thumb bit". */
     g_arm_vt_reserve = (opts->vector_table != 0) ? 1 : 0;
+    /* Unused static inline functions are not part of this unit's program (C99
+     * 6.7.4p6), so they are removed before any code generation sees them: a
+     * header helper nothing calls must not be able to fail the compile just
+     * because its body names an object this unit only declares.  Every path to
+     * code generation goes through here, so -S, -c, --ipo and -link --lto all
+     * get the same program. */
+    {
+        int dropped = ir_drop_unused_inline(ir);
+        if (dropped > 0 && opts->verbose) {
+            ark_log("[arkcc] dropped %d unused static inline function(s)\n", dropped);
+        }
+    }
+
 
     /* The ARM backend loads the scatter file lazily, at the start of its own
      * code generation (it only sees g_config, never ArkOptions).  When that

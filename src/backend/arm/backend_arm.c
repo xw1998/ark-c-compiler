@@ -9407,7 +9407,7 @@ static void pass2_a(ArmAsm *a) {
         }
         else if (strieq_a(first, "SXTB") || strieq_a(first, "SXTH") ||
                  strieq_a(first, "UXTB") || strieq_a(first, "UXTH")) {
-            /* Sign/zero extend: 16-bit T1 (0xB240/0xB200/0xB2C0/0xB2B0)
+            /* Sign/zero extend: 16-bit T1 (0xB240/0xB200/0xB2C0/0xB280)
              * for low registers, 32-bit T2 (0xFA4F/0xFA0F/0xFA5F/0xFA1F
              * F080 | Rd<<8 | Rm) otherwise.
              * Verified: SXTB r7,r5 = 0xB26F, SXTH r6,r3 = 0xB21E,
@@ -9419,7 +9419,7 @@ static void pass2_a(ArmAsm *a) {
             unsigned hi_base = 0xFA0Fu;
             if (strieq_a(first, "SXTB")) { lo_base = 0xB240u; hi_base = 0xFA4Fu; }
             else if (strieq_a(first, "UXTB")) { lo_base = 0xB2C0u; hi_base = 0xFA5Fu; }
-            else if (strieq_a(first, "UXTH")) { lo_base = 0xB2B0u; hi_base = 0xFA1Fu; }
+            else if (strieq_a(first, "UXTH")) { lo_base = 0xB280u; hi_base = 0xFA1Fu; }
             eat_comma_a(&p);
             rm = parse_reg_a(&p);
             if (rd >= 0 && rd <= 7 && rm >= 0 && rm <= 7) {

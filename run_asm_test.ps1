@@ -112,6 +112,17 @@ try {
         '    SXTH r1, r2'
         '    UXTB r3, r4'
         '    UXTH r5, r6'
+        # Low-register extend forms.  UXTH's 16-bit base is 0xB280; writing
+        # 0xB2B0 there (which is 0xB280 | (6 << 3)) silently turns every
+        # `UXTH rD, rM` into `UXTH rD, r6`.  `UXTH r5, r6` above cannot see
+        # that bug because Rm really is r6, so the two bases agree.  The
+        # cases below use Rm != r6 and would have caught it.
+        '    UXTH r0, r0'
+        '    UXTH r1, r2'
+        '    UXTH r7, r7'
+        '    SXTH r0, r0'
+        '    SXTB r3, r4'
+        '    UXTB r0, r1'
         '    SVC #18'
         '    MOVS r0, #42'
         '    SADD16 r0, r0, r1'
@@ -134,12 +145,20 @@ try {
     & .\arkcc.exe $encSrc -target arm -o $encBin 2>&1 | Out-Null
     $rc = $LASTEXITCODE
     Check "encoding sample assembles (exit=$rc)" ($rc -eq 0) "arkcc returned $rc"
-    # Golden: 0x420c 0xfab0f280 0xb240 0xb211 0xb2e3 0xb2b5 0xdf12 0x202a
-    #         0xfa90f001 0xea180f09 0xfabbfc8b 0xfa4ff088 0xfa1ff983 0x0008
-    #         0xea5f0c03 0xfa9af90b 0x20c8 0xdfff  (little-endian halfwords)
+    # Golden: 0x420c 0xfab0f280 0xb240 0xb211 0xb2e3 0xb2b5
+    #         0xb280 0xb291 0xb2bf 0xb200 0xb263 0xb2c8   (extend forms:
+    #         UXTH = 0xB280, SXTH = 0xB200, SXTB = 0xB240, UXTB = 0xB2C0)
+    #         0xdf12 0x202a 0xfa90f001 0xea180f09 0xfabbfc8b 0xfa4ff088
+    #         0xfa1ff983 0x0008 0xea5f0c03 0xfa9af90b 0x20c8 0xdfff
+    #         (little-endian halfwords)
     #   BKPT 0xAB -> 0xbeab, BKPT #0x12 -> 0xbe12 (semihosting trap),
     #   MUL r2, r2, r1 -> 0x434a, MUL r0, r1 -> 0x4348 (two-operand form).
-    $goldenHex = '0c42b0fa80f240b211b2e3b2b5b212df2a2090fa01f018ea090fbbfa8bfc4ffa88f01ffa83f908005fea030c9afa0bf9c820ffdfabbe12be4a434843'
+    #   Every extend byte above was cross-checked against armasm 5.06.
+    $goldenHex = '0c42b0fa80f240b211b2e3b2b5b2' +
+                 '80b291b2bfb200b263b2c8b2' +
+                 '12df2a2090fa01f018ea090fbbfa8bfc4ffa88f01ffa83f908005fea030c9afa0bf9c820ffdfabbe12be4a434843'
+    Check 'golden byte string is well formed (even hex digits)' `
+          (($goldenHex.Length % 2) -eq 0 -and $goldenHex -match '^[0-9a-f]+$')
     $golden = New-Object 'byte[]' ($goldenHex.Length / 2)
     for ($i = 0; $i -lt $golden.Length; $i++) {
         $golden[$i] = [Convert]::ToByte($goldenHex.Substring($i * 2, 2), 16)

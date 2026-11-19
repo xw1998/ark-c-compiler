@@ -309,3 +309,111 @@ const char *ir_op_name(IrOp op) {
         default:              return "NOP";
     }
 }
+
+/* ------------------------------------------------------------------ */
+/* Unused static inline functions                                      */
+/* ------------------------------------------------------------------ */
+
+/* Dead code must not be able to fail the compile.  See include/ir.h for what
+ * is dropped and why; the rules are deliberately the narrow ones that make the
+ * removal a no-op on any program that a C implementation is free to change. */
+static int ir_name_is(const char *a, const char *b) {
+    int i;
+    if (!a || !b) return 0;
+    for (i = 0; ; i++) {
+        if (a[i] != b[i]) return 0;
+        if (a[i] == 0) return 1;
+    }
+}
+
+/* Would this function be dropped if nothing referenced it? */
+static int ir_is_droppable_inline(const IrFunc *f) {
+    if (!f) return 0;
+    if (!f->is_static) return 0;
+    if (!(f->is_inline || f->forceinline)) return 0;
+    /* Every attribute below is the author telling the toolchain that the
+     * symbol itself matters: keep it, whatever the call graph says. */
+    if (f->is_used || f->is_unused) return 0;
+    if (f->is_weak) return 0;
+    if (f->is_constructor || f->is_destructor) return 0;
+    if (f->is_irq || f->is_naked) return 0;
+    if (f->is_asm_func || f->alias_target) return 0;
+    if (ir_name_is(f->name, "main")) return 0;
+    return 1;
+}
+
+int ir_drop_unused_inline(IrProgram *prog) {
+    int n, i, k, c, n_cand = 0, dropped = 0, changed;
+    int *cand;
+    unsigned char *keep;
+
+    if (!prog || prog->func_count <= 0) return 0;
+    n = prog->func_count;
+    cand = (int *)mem_pool_alloc(n * (int)sizeof(int));
+    keep = (unsigned char *)mem_pool_alloc(n);
+    if (!cand || !keep) return 0;
+
+    for (i = 0; i < n; i++) {
+        keep[i] = 1;
+        if (ir_is_droppable_inline(prog->funcs[i])) {
+            keep[i] = 0;               /* needs one live reference to survive */
+            cand[n_cand++] = i;
+        }
+    }
+    if (n_cand == 0) return 0;
+
+    /* A global initialiser is a live reference: `int (*tab[])(void) = { h };` */
+    for (i = 0; i < prog->global_count; i++) {
+        const IrGlobal *G = prog->globals[i];
+        if (G->init_sym) {
+            for (c = 0; c < n_cand; c++)
+                if (ir_name_is(prog->funcs[cand[c]]->name, G->init_sym)) keep[cand[c]] = 1;
+        }
+        if (G->init_refs) {
+            int r;
+            for (r = 0; r < G->init_ref_count; r++)
+                for (c = 0; c < n_cand; c++)
+                    if (ir_name_is(prog->funcs[cand[c]]->name, G->init_refs[r].sym))
+                        keep[cand[c]] = 1;
+        }
+    }
+
+    /* Reachability from the functions that are kept for their own sake.  A
+     * fixed point, because one unreached helper may be the only caller of
+     * another; a cycle of them disappears together. */
+    do {
+        changed = 0;
+        for (i = 0; i < n; i++) {
+            const IrFunc *F = prog->funcs[i];
+            if (!keep[i]) continue;
+            if (F->alias_target) {
+                for (c = 0; c < n_cand; c++)
+                    if (!keep[cand[c]] && ir_name_is(prog->funcs[cand[c]]->name, F->alias_target)) {
+                        keep[cand[c]] = 1;
+                        changed = 1;
+                    }
+            }
+            for (k = 0; k < F->code_count; k++) {
+                const IrInst *I = &F->code[k];
+                if (I->op == IR_ASM) return 0;   /* unreadable string: keep all */
+                if (I->op != IR_CALL && I->op != IR_PUSH_FUNC) continue;
+                if (!I->name) continue;
+                for (c = 0; c < n_cand; c++) {
+                    if (keep[cand[c]]) continue;
+                    if (ir_name_is(prog->funcs[cand[c]]->name, I->name)) {
+                        keep[cand[c]] = 1;
+                        changed = 1;
+                    }
+                }
+            }
+        }
+    } while (changed);
+
+    k = 0;
+    for (i = 0; i < n; i++) {
+        if (keep[i]) prog->funcs[k++] = prog->funcs[i];
+        else dropped++;
+    }
+    prog->func_count = k;
+    return dropped;
+}

@@ -1242,6 +1242,35 @@ arkcc -link ab.o --vector-table -o app.bin
 详见 [PARTIAL_LINK.md](PARTIAL_LINK.md)，门禁 `tests/run_partiallink_tests.py`
 （`make test-partiallink`，27 项检查）。
 
+### 5.20 未被引用的 `static inline` 不再发射
+
+`static inline` 只有在被用到时才需要存在（C11 6.7.4p7：静态 inline 定义不产生外部可见定义）。
+ARK 过去对**每个**函数体都发射代码，于是「包含了头文件但没调用」这种最常见的形态会带出
+死代码；一旦这段死代码引用了「只声明未定义」的外部对象（典型例子：CMSIS 的
+`ITM_SendChar()` 引用调试器提供 RAM 的 `ITM_RxBuffer`），对象写出阶段就会拒绝：
+
+```
+Error: reference to the global 'ITM_RxBuffer', which this translation unit only declares; ...
+```
+
+现在 `ir_drop_unused_inline()` 在 IR 层删掉不可达的 `static inline` / `static __forceinline`。
+它挂在 `ark_emit_program()` 这个唯一收口处，所以单文件、`--ipo`、`-link --lto`、`-S`
+走的是同一条路径。
+
+- **存活判据**：从被保留的函数出发（`IR_CALL` 与 `IR_PUSH_FUNC` 的函数地址被取用都算一条边），
+  再加上全局初始器里出现的符号（`init_sym` / `init_refs`），以及 `alias` 目标；
+- **不删**：`__attribute__((used))`、`unused`、`weak`、`constructor`、`destructor`、
+  `interrupt`、`naked`、`alias` 目标、`main`；
+- **不删普通 `static`（非 inline）**：那是作者写下的符号，要听 `--warn-unused-static`；
+  所以「死的 `static` 引用外部对象」仍会报上面那条错；
+- 整份 TU 出现 inline asm 时**整体放弃**（asm 文本里的符号对控制流图不可见）；
+- 默认生效、无开关，`-O0` 同样生效（这是正确性修复，不是优化）；`--verbose` 时打印
+  删掉了几个函数。
+
+门禁 `tests/run_deadinline_tests.py`（`make test-deadinline`，19 项检查）：删掉的形态、
+每一种"必须保留"的形态、"同一个 helper 去掉 inline 仍然报错"（证明是这一步修好的）、
+`-S` 与 `-c` 行为一致，以及含 inline asm 时整体放弃。
+
 ## 6 在 Windows 上测试
 
 ### 6.1 推荐流程：c 后端
@@ -1267,7 +1296,7 @@ powershell -ExecutionPolicy Bypass -File examples\run_tests.ps1
 | --- | --- | --- | --- |
 | `run_full_test.ps1` | 73 个样例 ARM 发射 + C 后端执行 | 每个样例的退出码不得为负（崩溃），并自检 IR 生成门；某样例若按设计无法单对象 emit，必须记成 `EXPECTED-FAIL` 并写清理由 | `PASS=73 FAIL=0 CRASH=0`（`c99_armcc5_compat_test.c` 的 ARM 侧记 `EXPECTED-FAIL`：`errno` 的存储定义在 `stdlib/src/errno.c`，单对象镜像没有通道带另一个编译单元的数据地址），`SELFCHECK irgen-gate: OK` |
 | `examples\run_tests.ps1` | 75 个样例的 ARM 发射 + C 后端执行 | 退出码必须等于样例头部 `Expected exit code: N`；skip 与 pass 分开计数 | `asserted pass 71 / failed 0 / skipped 4` |
-| `run_asm_test.ps1` | `.s/.asm` 输入路径 | 产物尺寸 + ARKOBJ2 头 + 与 armasm 黄金字节逐字节相同（含 `BKPT` 与三操作数 `MUL`）+ 未知助记符与三寄存器 `MUL` 都必须失败 | `pass=17 fail=0` |
+| `run_asm_test.ps1` | `.s/.asm` 输入路径 | 产物尺寸 + ARKOBJ2 头 + 与 armasm 黄金字节逐字节相同（28 条指令，含 `BKPT`、三操作数 `MUL`、6 条**低寄存器** extend 形式）+ 未知助记符与三寄存器 `MUL` 都必须失败 | `pass=18 fail=0` |
 | `run_tests_x86.ps1` | `x86` / `x86_64` 后端 | emit 成功、GAS 语法接受、`x86` 的真别名（`i386`/`i686`/`*-msvc`）字节等价、`x86_64` **必须不是** `x86` 的别名且产物含 64 位寄存器、三条负向对照 | `pass=85 fail=0 skip=2`（`gcc` 不在 PATH 时两项 SKIP） |
 | `tests/run_x86_64_image_tests.py` | `x86_64` 执行级 | 35 个用例的 `main` 返回值 == 程序之外算出的常量（含初始化全局数组 / 字符串指针 / 静态函数指针表三个**静态绝对寻址**锚点，以及 `sizeof` 成员数组、`sret` 拷贝、指针数组初始化三个自举期才暴露的锚点）；一个双对象 `-c` + `-link` 跨 TU 用例；未解析符号必须被拒且不留镜像；期望值 +1 必须判 DIFF | `35 passed, 0 failed`（`make test-x86-64`），详见 6.3.1 |
 | `tests/run_x86_64_selfhost.py` | `x86_64` **自举** | 编译器把自己 24 个 TU 编成对象、链成平铺镜像、在 unicorn 上跑起来，再编一份 payload，产物必须与宿主对象**逐字节**相同（长度 + fnv-1a）；同一 payload 的汇编文本另行对比，用来把差异定位到代码生成还是汇编器 | `PASS self-host: byte-identical object`（2130 B / `fnv=28c333dc`），`make test-x86-64-selfhost`，详见 [X86_64_BACKEND.md](X86_64_BACKEND.md) §7.1 |
@@ -1279,7 +1308,7 @@ powershell -ExecutionPolicy Bypass -File examples\run_tests.ps1
 **本机可用的验证手段**（开发机上没有 `arm-none-eabi-*`，WSL 也被禁用；QEMU 需另行安装，见第 4 层），所以 ARM 侧靠以下四层，全部是仓库内可重跑的门禁：
 
 1. **汇编层冒烟**：`examples/run_tests.ps1` 对每个样例跑 `-target arm -S`，只要后端发不出汇编就算失败。
-2. **汇编码逐字节取证**：`run_asm_test.ps1` 里内置一段 22 条指令（TST/CLZ/SXTB/SXTH/UXTB/UXTH/SVC/MOVS/SADD16/BKPT/MUL，含高寄存器形式）在 armcc5 `armasm` 上取到的**黄金字节串**，要求 arkCC 的二进制输出与之逐字节相同。取证方法（可复现）：
+2. **汇编码逐字节取证**：`run_asm_test.ps1` 里内置一段 28 条指令（TST/CLZ/SXTB/SXTH/UXTB/UXTH/SVC/MOVS/SADD16/BKPT/MUL，含高寄存器形式，以及 6 条 `Rm != r6` 的低寄存器 extend 形式）在 armcc5 `armasm` 上取到的**黄金字节串**，要求 arkCC 的二进制输出与之逐字节相同。取证方法（可复现）：
 
 ```powershell
 # Keil 装在 D:\Keil_v5（不是 C:\Keil_v5）；AREA 行不要写 THUMB 属性，
@@ -1289,6 +1318,15 @@ powershell -ExecutionPolicy Bypass -File examples\run_tests.ps1
 ```
 
    `fromelf -c` 反汇编清单的 hex 列就是黄金字节（小端半字序）。该校验**不依赖**本机是否装 Keil，因为黄金字节已固化在脚本里。
+
+   **为什么低寄存器 extend 形式必须单独列出**：`UXTH` 的 16 位 T1 基址是 `0xB280`，
+   早期写成了 `0xB2B0`，而 `0xB2B0 = 0xB280 | (6 << 3)`，等于把 `Rm` 恒置成 `r6`。
+   原来的黄金样例只有 `UXTH r5, r6`——`Rm` 正好是 `r6`，两种基址给出同一字节，
+   所以门禁全绿而 `UXTH r0, r0` 被静默编成 `UXTH r0, r6`（实测后果：
+   `(uint16_t)0x2000` 变成 `sp & 0xFFFF`，`GPIOC->BSRR` 被写成 `0x0FC00000`）。
+   现在样例里有 `UXTH r0,r0`(0xB280)、`UXTH r1,r2`(0xB291)、`UXTH r7,r7`(0xB2BF)、
+   `SXTH r0,r0`(0xB200)、`SXTB r3,r4`(0xB263)、`UXTB r0,r1`(0xB2C8)，
+   七条 extend 字节都与 `armasm 5.06` 实测一致。
 3. **汇编输入门禁**：`run_asm_test.ps1` 同时验证 `.s` 输入的产物尺寸、ARKOBJ2 头、以及"未知助记符必须大声失败"（负向对照）。
 4. **执行级验证**：`run_arm_exec_test.ps1` 把三个对象（C 启动代码 / 汇编 semihosting 陷门 / C 工作负载）用 `-c` 编译、`-link --scatter` 链接成裸镜像，再交给 `qemu-system-arm` **真的跑起来**，工作负载结果由 semihosting 退出码取回。判据是向量表合法（SP=0x20040000、reset 向量带 Thumb 位）加两个**不同**负载分别返回 8 与 3（常数或忽略退出码都过不了），外加一条负向对照（拿 9 去比必须被判失败）。QEMU 缺失时脚本 `exit 2` 并打印 `SKIP cannot verify`，不会静默变绿。
 
@@ -1552,10 +1590,10 @@ arkCC 在 STM32 上使用三层内存区域：
 
 **关键设计：semihosting 消除**
 - arkCC 源码中所有 `fopen/fread/fclose/vsnprintf/snprintf/getenv` 等 semihosting 依赖均已被移除或重定向：
-  - `scatter.c` 使用 `fs_read_file()` 抽象层替代 `fopen/fread`
-  - `irgen.c` 自定义 `sb_putf` 替代 `snprintf("%.17g")`
-  - `scatter.c` 自定义 `put_fmt` 替代 `vsnprintf`
-  - `backend_arm.c` 用 `g_arm_dump_syms` 全局标志替代 `getenv("ARKCC_DUMP_SYMS")`
+   - `scatter.c` 使用 `fs_read_file()` 抽象层替代 `fopen/fread`
+   - `irgen.c` 自定义 `sb_putf` 替代 `snprintf("%.17g")`
+   - `scatter.c` 自定义 `put_fmt` 替代 `vsnprintf`
+   - `backend_arm.c` 用 `g_arm_dump_syms` 全局标志替代 `getenv("ARKCC_DUMP_SYMS")`
 - `system_stm32h7xx.c` 提供 `__user_initial_stackheap` 重定向，将 C 库堆指向 `ark_heap_buffer`
 
 **缓冲区尺寸自适应**：[include/arkcc_config.h](../include/arkcc_config.h) 通过 `ARKCC_PROFILE` 宏区分 `ARKCC_PROFILE_STM32_MIN` 与 `ARKCC_PROFILE_HOST_FULL`，所有大型缓冲区尺寸都按 profile 自动选择。命令行加 `-DARKCC_PROFILE=ARKCC_PROFILE_STM32_MIN` 即启用 STM32 配置。
@@ -1870,10 +1908,10 @@ v0.8.0 已实现完整的 C99 集合 + 98% 以上的 armcc 常用扩展，仅剩
 ### 完全不支持
 
 - **C++ 模式**（`--cpp`）：本项目是 C99 编译器，不解析 `class`/模板/异常等 C++ 语法。这个开关只负责把
-  `C++ (--cpp) is not supported` 当**错误**报出来并让退出码非零——"告诉你没做"然后退 0，正是本项目的
-  诊断层要消灭的那种静默错答案。
+   `C++ (--cpp) is not supported` 当**错误**报出来并让退出码非零——"告诉你没做"然后退 0，正是本项目的
+   诊断层要消灭的那种静默错答案。
 - **ELF `.o` 作为链接输入**：`-c` 产出的是自有 ARKOBJ2，`-link` 只认这个格式（要喂 ELF 得走
-  `arm-none-eabi-ld`）。
+   `arm-none-eabi-ld`）。
 
 > 自动向量化**不在这张表里**：它在 `--vectorize` / `--no_vectorize` 控制下真的实现了（宿主默认开、
 > 板端 profile 关），只是只覆盖一种循环形状，见下面「部分支持」的「自动向量化的两条边界」。
@@ -1899,108 +1937,108 @@ v0.8.0 已实现完整的 C99 集合 + 98% 以上的 armcc 常用扩展，仅剩
 多于一个成员仍报错），成员本身既可以是指针（`union U u = { .p = &gv };`）也可以是字符数组
 （`union U u = { .b = "abc" };`）；位域也支持（`struct B{int a:3; int b:5;} b = {1,2};` 按位落，位域数组同理）。两个后端调同一份实现，所以 ARM 与 RV32I 在这里给出的是同一组字节——曾经 ARM 自己那份"按逗号走"的解析器把字符串元素跳过存 0，`struct Q gq = {3, "abcd", 9}` 的成员全成了 NUL。
 - **块作用域 `_Alignas` 上限 8 字节**：16/32/64 一律报错（`block-scope _Alignas above 8 bytes is not supported`），
-  因为帧只保证 `sp` 8 字节对齐；文件作用域与结构体成员没有这个限制。
+   因为帧只保证 `sp` 8 字节对齐；文件作用域与结构体成员没有这个限制。
 - **`va_arg` 依赖小端目标**：`stdlib/include/stdarg.h` 的 `va_arg` 按"槽位地址重解释"取值（`*(type *)(...)`），整数/指针/`double` 通吃，但要求目标为小端。ARM Thumb-2 与全部宿主均满足；大端目标需改为按类型分派。
 - **变参的两种镜像形状不能混用**：C/x86_64 每个实参一个 8 字节槽位（`frame+8000` 起，
-  序言里把 a0..a7 镜像进去，`irgen` 的 `g_ir_va_slot_region` 负责预留 8064 字节）；
-  ARM / RV32I（以及 i386 cdecl）用 4 字节字槽，而且**不镜像**：ARM 在序言里把"还可能装变参的寄存器"
-  `r_k..r3` 压栈（`k = NCRN` 向下取偶数），让它们正好落在调用方栈参数块下方
-  （区里 word j 接着栈块第 j 字，天然连续），代价随签名是 16 / 8 / 0 字节；
-  RV32I 把 a0..a7 落到帧底那 32 字节里（用 `sp_size` 本来就留的余量），地址是
-  `s0 - sp_size + 4*k`。i386 cdecl（`-target x86`）是第三种：调用点把每个实参按
-  4 字节一个字从右往左压栈，`_ark_va_ptr` 就是 `ebp+8+4*param_count`，即
-  **调用方自己的栈参数块**，同样平铺无空洞。`stdarg.h` 靠 `__ARK_VA_WORD_SLOTS`
-  选走法，靠 `__ARK_VA_PACKED_WORDS` 区分"有对齐空洞（ARM）"与"平铺（RV32I / x86）"。
-  x86 曾被漏在这两处之外，于是它掉进 8 字节槽的默认分支：游标按 8 字节推进，
-  而区里是 4 字节一个字，`sum(3,10,20,30)` 读成 10、30、越界（返回 40 而不是 60），
-  没有任何诊断。现在它与 RV32I 同一档，整数/指针变参实测正确
-  （`tests/run_x86_64_image_tests.py` 的 i386 参考臂从 40/33/4/36/8 变成 60/45/7/78/20）；
-  **double 变参在 i386 上仍然走不下去**，因为它本来就缺 SSE 双精度通路（汇编期
-  `movq needs an xmm operand`），是**报错拒绝**而不是给出错值。
-  **这两个后端的变参帧必须保持小**：`irgen` 的 8064 字节预留由驱动按后端关掉
-  （`g_ir_va_slot_region`），因为板上的小程序任务栈只有 4 KB——曾经 8 KB 的镜像区
-  在宿主上全绿、到板上必然溢出。`examples/run_va_gate.py` 现在为每个用例断言帧大小
-  （`FRAME_CAP = 1024`），并把同一份源码分别交给 gcc 和 arkcc→as→unicorn，比的是
-  **运行结果**而不是"有没有报错"。
+   序言里把 a0..a7 镜像进去，`irgen` 的 `g_ir_va_slot_region` 负责预留 8064 字节）；
+   ARM / RV32I（以及 i386 cdecl）用 4 字节字槽，而且**不镜像**：ARM 在序言里把"还可能装变参的寄存器"
+   `r_k..r3` 压栈（`k = NCRN` 向下取偶数），让它们正好落在调用方栈参数块下方
+   （区里 word j 接着栈块第 j 字，天然连续），代价随签名是 16 / 8 / 0 字节；
+   RV32I 把 a0..a7 落到帧底那 32 字节里（用 `sp_size` 本来就留的余量），地址是
+   `s0 - sp_size + 4*k`。i386 cdecl（`-target x86`）是第三种：调用点把每个实参按
+   4 字节一个字从右往左压栈，`_ark_va_ptr` 就是 `ebp+8+4*param_count`，即
+   **调用方自己的栈参数块**，同样平铺无空洞。`stdarg.h` 靠 `__ARK_VA_WORD_SLOTS`
+   选走法，靠 `__ARK_VA_PACKED_WORDS` 区分"有对齐空洞（ARM）"与"平铺（RV32I / x86）"。
+   x86 曾被漏在这两处之外，于是它掉进 8 字节槽的默认分支：游标按 8 字节推进，
+   而区里是 4 字节一个字，`sum(3,10,20,30)` 读成 10、30、越界（返回 40 而不是 60），
+   没有任何诊断。现在它与 RV32I 同一档，整数/指针变参实测正确
+   （`tests/run_x86_64_image_tests.py` 的 i386 参考臂从 40/33/4/36/8 变成 60/45/7/78/20）；
+   **double 变参在 i386 上仍然走不下去**，因为它本来就缺 SSE 双精度通路（汇编期
+   `movq needs an xmm operand`），是**报错拒绝**而不是给出错值。
+   **这两个后端的变参帧必须保持小**：`irgen` 的 8064 字节预留由驱动按后端关掉
+   （`g_ir_va_slot_region`），因为板上的小程序任务栈只有 4 KB——曾经 8 KB 的镜像区
+   在宿主上全绿、到板上必然溢出。`examples/run_va_gate.py` 现在为每个用例断言帧大小
+   （`FRAME_CAP = 1024`），并把同一份源码分别交给 gcc 和 arkcc→as→unicorn，比的是
+   **运行结果**而不是"有没有报错"。
 - **`_ark_va_ptr` 只在变参函数里有意义**：两个后端在非变参函数里引用它时直接报错
-  （过去会从地址 0 取指针，静默给出错答案）。
+   （过去会从地址 0 取指针，静默给出错答案）。
 - **ARM 的栈参数没有条数上限**：va 区就是调用方自己的参数镜像，`va_arg` 顺着栈参数往
-  上走即可，不需要"够不够 28 个字"这类检查。代价按签名分档：一个命名参数字压 4 个字
-  （16 B，返回前多一条 `ADD sp, sp, #16`）、两个或三个压 `{r2,r3}`（8 B）、四个命名字
-  压 0 字节（尾声回到普通 `POP {..,pc}`）。非零档位要用 `POP {r5,r6,r7,lr}` 之后
-  `BX lr`，因为 `POP {.., pc}` 后面没法再调栈。`run_va_gate.py` 里 `arm/many_stack`
-  用 34 个参数字（30 个在栈上）钉住"没有上限"，`asm/region` 四条钉住"压哪几个寄存器"，
-  `arm/s2_ll` / `arm/s3_ll` / `arm/s4_int` 钉住瘦身后的区里 64 位与 32 位读都对。
+   上走即可，不需要"够不够 28 个字"这类检查。代价按签名分档：一个命名参数字压 4 个字
+   （16 B，返回前多一条 `ADD sp, sp, #16`）、两个或三个压 `{r2,r3}`（8 B）、四个命名字
+   压 0 字节（尾声回到普通 `POP {..,pc}`）。非零档位要用 `POP {r5,r6,r7,lr}` 之后
+   `BX lr`，因为 `POP {.., pc}` 后面没法再调栈。`run_va_gate.py` 里 `arm/many_stack`
+   用 34 个参数字（30 个在栈上）钉住"没有上限"，`asm/region` 四条钉住"压哪几个寄存器"，
+   `arm/s2_ll` / `arm/s3_ll` / `arm/s4_int` 钉住瘦身后的区里 64 位与 32 位读都对。
 - **`k` 为什么必须取偶数**：压栈字节数要是 8 的倍数，否则帧顶变成 4 mod 8，8 字节局部量
-  或 GCC 编译的被调方可能出错。注意"奇数 k 会让区遍历错"是**不成立**的——区里 word j 在
-  `base+4j`，8 对齐当且仅当 `(j-k)` 为偶，正是 AAPCS 的"参数字为偶"，对任何 k 都成立。
-  门禁的 `frame_align_problems` 把这条做成静态断言（序言的 PUSH+SUB 合计必须是 8 的倍数）。
+   或 GCC 编译的被调方可能出错。注意"奇数 k 会让区遍历错"是**不成立**的——区里 word j 在
+   `base+4j`，8 对齐当且仅当 `(j-k)` 为偶，正是 AAPCS 的"参数字为偶"，对任何 k 都成立。
+   门禁的 `frame_align_problems` 把这条做成静态断言（序言的 PUSH+SUB 合计必须是 8 的倍数）。
 - **float 实参会被提升成 double**（C99 6.5.2.2p6，`irgen` 发 `IR_F2F`），所以变参调用的
-  形参宽度按 8 字节算；`argmask` 的 8 字节位由 `irgen` 一并置上。
+   形参宽度按 8 字节算；`argmask` 的 8 字节位由 `irgen` 一并置上。
 - **RV32I 自己的边界**：只从 a0-a7 传参、没有两字值模型，所以超过 8 个参数字的调用与
-  64 位实参都被明确拒绝，而不是留下错值。
+   64 位实参都被明确拒绝，而不是留下错值。
 - **穿过 `...` 的结构体按字内联**：命名形参里超过 8 字节的结构体压的是**地址字**
-  （被调方 `IR_GETARG` 按 `aux` 高位的尺寸 memcpy），但变参不同——被调方没有类型，
-  `va_arg` 只按连续参数字走，所以载荷必须在线上。调用点按 `ceil(size/4)` 个字压栈
-  （word 0 在最上面），`aapcs_assign()` 对超过两个字的实参逐字分配（装得下进剩余寄存器，
-  其余进栈）；地址用 `IR_DUP`/`IR_SWAP` 只算一次，最后 `IR_POP` 丢掉。
-  5..8 字节的结构体仍是原来的两字规则。**只有 ARM 实现**，另外三个后端由 `irgen`
-  报错拒绝（`passing a N-byte structure through '...' is implemented for the arm
-  target only`）。
+   （被调方 `IR_GETARG` 按 `aux` 高位的尺寸 memcpy），但变参不同——被调方没有类型，
+   `va_arg` 只按连续参数字走，所以载荷必须在线上。调用点按 `ceil(size/4)` 个字压栈
+   （word 0 在最上面），`aapcs_assign()` 对超过两个字的实参逐字分配（装得下进剩余寄存器，
+   其余进栈）；地址用 `IR_DUP`/`IR_SWAP` 只算一次，最后 `IR_POP` 丢掉。
+   5..8 字节的结构体仍是原来的两字规则。**只有 ARM 实现**，另外三个后端由 `irgen`
+   报错拒绝（`passing a N-byte structure through '...' is implemented for the arm
+   target only`）。
 - **穿过 `...` 的复合体按 *alignment* 取偶，8 字节 align-4 复合体可拆分**：AAPCS32 的 NCRN
-  取偶条件是实参**类型的 8 字节对齐**，不是 size。实测 `arm-none-eabi-gcc 12.3` 给出决定性
-  证据：`struct A8{long long v;}`（8 B/align 8）从 r2:r3 起、`struct A4{int a,b;}`（8 B/align 4）
-  从 r1:r2 起不取偶、`struct B8{double;int;}`（16 B/align 8）取偶、`struct B4{4×int}`
-  （16 B/align 4）不取偶、`_Complex float`（8 B/align 4）不取偶。因此 `irgen` 在 `wires[i]`
-  里额外置 **bit 16** 表示"该实参需 8 字节对齐"（低 16 位仍是字节数）；变参 `float` 已被
-  提升成 `double`，所以这里按 8 判而不是按 `float` 的 4 判。`aapcs_assign()` 吃的是调用方与
-  被调方共用的对齐数组 `aligns[]`，取偶只由它决定（不传该数组时退回旧的 `size == 8` 语义）。
-  8 字节 align-4 复合体在只剩一个寄存器时**会拆分**（word 0 → 该寄存器、word 1 → 栈），
-  不是 all-or-nothing：调用方用 `POP {r7}; POP {r<reg>}; PUSH {r7}` 把 word 0 从栈顶抽走、
-  word 1 留在栈顶，块拷贝再按 `asplit[]` 只搬 word 1 到栈槽。
-  `stdarg.h` 的 `ark_va__take` 因此改用 **`_Alignof(type) >= 8`** 判"这个槽是否落在 8 对齐
-  位置"（旧代码用 `sizeof(type) == 8`，遇 A4 这种 8 B/align 4 的类型会多跳一格，与 gcc
-  被调方混用时整体错位）。互操作由 `tests/run_arm_abi_mix_tests.py` 钉住：arkcc 与
-  `arm-none-eabi-gcc` 各持一侧、unicorn 跑同一镜像，16 例（`a8/a4/b4/b8` × 三字内的奇偶、
-  `a4_split` 拆分、`b8_hole` 寄存器/栈之间的空位）双向全通，并带 `SELFCHECK`——故意把期望值
-  写错必须报错，否则判 harness 看不见差异。`_Complex` 穿 `...` 仍然拒绝（见下一条），
-  所以这一族没有对应用例。
+   取偶条件是实参**类型的 8 字节对齐**，不是 size。实测 `arm-none-eabi-gcc 12.3` 给出决定性
+   证据：`struct A8{long long v;}`（8 B/align 8）从 r2:r3 起、`struct A4{int a,b;}`（8 B/align 4）
+   从 r1:r2 起不取偶、`struct B8{double;int;}`（16 B/align 8）取偶、`struct B4{4×int}`
+   （16 B/align 4）不取偶、`_Complex float`（8 B/align 4）不取偶。因此 `irgen` 在 `wires[i]`
+   里额外置 **bit 16** 表示"该实参需 8 字节对齐"（低 16 位仍是字节数）；变参 `float` 已被
+   提升成 `double`，所以这里按 8 判而不是按 `float` 的 4 判。`aapcs_assign()` 吃的是调用方与
+   被调方共用的对齐数组 `aligns[]`，取偶只由它决定（不传该数组时退回旧的 `size == 8` 语义）。
+   8 字节 align-4 复合体在只剩一个寄存器时**会拆分**（word 0 → 该寄存器、word 1 → 栈），
+   不是 all-or-nothing：调用方用 `POP {r7}; POP {r<reg>}; PUSH {r7}` 把 word 0 从栈顶抽走、
+   word 1 留在栈顶，块拷贝再按 `asplit[]` 只搬 word 1 到栈槽。
+   `stdarg.h` 的 `ark_va__take` 因此改用 **`_Alignof(type) >= 8`** 判"这个槽是否落在 8 对齐
+   位置"（旧代码用 `sizeof(type) == 8`，遇 A4 这种 8 B/align 4 的类型会多跳一格，与 gcc
+   被调方混用时整体错位）。互操作由 `tests/run_arm_abi_mix_tests.py` 钉住：arkcc 与
+   `arm-none-eabi-gcc` 各持一侧、unicorn 跑同一镜像，16 例（`a8/a4/b4/b8` × 三字内的奇偶、
+   `a4_split` 拆分、`b8_hole` 寄存器/栈之间的空位）双向全通，并带 `SELFCHECK`——故意把期望值
+   写错必须报错，否则判 harness 看不见差异。`_Complex` 穿 `...` 仍然拒绝（见下一条），
+   所以这一族没有对应用例。
 - **复数不走 sret、也不许穿过 `...`**：16 字节的 `_Complex double` 用返回值寄存器（ARM `r0-r3`、
-  RV32I `a0-a3`），sret 只留给 size > 8 的 struct/union；穿过 `...` 传复数在调用点直接报错，
-  因为 `va_arg` 只能按连续参数字走、被调方没有类型信息。完整矩阵见 4.10。
+   RV32I `a0-a3`），sret 只留给 size > 8 的 struct/union；穿过 `...` 传复数在调用点直接报错，
+   因为 `va_arg` 只能按连续参数字走、被调方没有类型信息。完整矩阵见 4.10。
 - **`_Complex` 现在是真的可以裁掉的**（`ARKCC_FEATURE_COMPLEX=0`）：
-  早先 `+15 560 B` 的板端增量里，机器后端的四字值通路是无条件编入的，只有一个位标
-  `IR_AUX_COMPLEX` 在标记它；那个位现在按档拼接——闸门关时 `IR_AUX_COMPLEX` 展开成
-  常量 `0`，于是每一处 `I->aux & IR_AUX_COMPLEX` 都折成 `if (0)`，整块连同它调用的
-  `arm_cplx_*` 静态辅助函数一起被丢弃。同理 `ARK_IS_CX(t)` 在闸门关时展开成常量 `0`，
-  把 1700 行的 `irgen_expr` 与 3500 行的 `codegen_arm` 里 `kind == TYPE_COMPLEX` 的比较
-  折掉，不必插 40 处 `#if`。剩下的 value 驱动路径（复数常量池、复数返回形状 `cplx_ret`、
-  复数全局初值、`eval_const_cexpr`、`irgen_try_complex_init`）用 `#if` 直接包裹。
-  闸门关时 parser 对 `_Complex` **硬报错**（`is not available in this build: it was
-  configured out`），所以"闸门关时不可能出现 TYPE_COMPLEX"是闭合的，被折掉的块本来
-  就不可达。
-  - 实测（H743 固件，`ARKRTOS_TEST`，`-DARKCC_FEATURE_COMPLEX=0` 走 `OPTFLAGS`，
+   早先 `+15 560 B` 的板端增量里，机器后端的四字值通路是无条件编入的，只有一个位标
+   `IR_AUX_COMPLEX` 在标记它；那个位现在按档拼接——闸门关时 `IR_AUX_COMPLEX` 展开成
+   常量 `0`，于是每一处 `I->aux & IR_AUX_COMPLEX` 都折成 `if (0)`，整块连同它调用的
+   `arm_cplx_*` 静态辅助函数一起被丢弃。同理 `ARK_IS_CX(t)` 在闸门关时展开成常量 `0`，
+   把 1700 行的 `irgen_expr` 与 3500 行的 `codegen_arm` 里 `kind == TYPE_COMPLEX` 的比较
+   折掉，不必插 40 处 `#if`。剩下的 value 驱动路径（复数常量池、复数返回形状 `cplx_ret`、
+   复数全局初值、`eval_const_cexpr`、`irgen_try_complex_init`）用 `#if` 直接包裹。
+   闸门关时 parser 对 `_Complex` **硬报错**（`is not available in this build: it was
+   configured out`），所以"闸门关时不可能出现 TYPE_COMPLEX"是闭合的，被折掉的块本来
+   就不可达。
+   - 实测（H743 固件，`ARKRTOS_TEST`，`-DARKCC_FEATURE_COMPLEX=0` 走 `OPTFLAGS`，
     其余编译选项逐字不变）：`text 438 812 → 424 988`（**−13 824 B**，FLASH 84.13% → 81.49%），
     `data 2 260`/`bss 463 532` 均不变。
-  - 宿主 x86-64（四个后端全编）：`text 556 740 → 535 484`（−21 256 B）。
-  - ARM 目标集（与固件同一套 `STM32_CFLAGS`，逐文件 `-c` 后 `size` 求和）：
+   - 宿主 x86-64（四个后端全编）：`text 556 740 → 535 484`（−21 256 B）。
+   - ARM 目标集（与固件同一套 `STM32_CFLAGS`，逐文件 `-c` 后 `size` 求和）：
     `246 554 → 232 926`（−13 628 B）；逐目标 `backend_arm.o −8 664`、`irgen.o −4 264`、
     `sema.o −608`、`parser.o −92`。
-  - 与历史 `+15 560 B` 的差额（约 1.7 KB）是**共用的双精度通路与常量序列化**——
+   - 与历史 `+15 560 B` 的差额（约 1.7 KB）是**共用的双精度通路与常量序列化**——
     它们同时服务 `double`，闸门关不掉；再加上 `init_is_complex` 字段的接线、
     以及本轮新增的运行期诊断（见下一条，+88 B）。这里不把"−13 824"说成"−15 560"。
-  - **行为变化**：运行期 `-fno-complex` 以前是**忽略** `_Complex` 关键字，
+   - **行为变化**：运行期 `-fno-complex` 以前是**忽略** `_Complex` 关键字，
     `double _Complex z` 静默变成 `double z`（错答案）；现在报
     `` `_Complex` is switched off by the run-time configuration (complex=0) ``。
     这 +88 B 是本轮有意新增的。
-  - 默认值仍是 **1**（宿主 / 交叉 / 板端一致）。翻转默认属于行为变更，
+   - 默认值仍是 **1**（宿主 / 交叉 / 板端一致）。翻转默认属于行为变更，
     要与实测体积一起发布，所以这里只提供开关、不改默认。
-  - 门禁：`tests/run_complex_gate.py --arkcc <全量> --arkcc-off <裁剪>` 同时钉住
+   - 门禁：`tests/run_complex_gate.py --arkcc <全量> --arkcc-off <裁剪>` 同时钉住
     五件事——全量接受 `_Complex`、裁剪档**带原因地**拒绝、裁剪档照收普通 C、
     不含 `_Complex` 的源在两档下汇编文本**逐字节相同**、`-fno-complex` 报错而非忽略
     （另带一条"自检的自检"：普通源不得出现裁剪档的那句文案）。
 - **一次调用的实参上限 64 个**：各后端的实参表停在 64，第 65 个起过去是静默丢弃，
-  现在 `irgen` 直接报错；ARM 的总参数字上限 192（超过由后端报错，不截断）。
+   现在 `irgen` 直接报错；ARM 的总参数字上限 192（超过由后端报错，不截断）。
 
 ### 兼容性说明
 
@@ -2099,13 +2137,13 @@ source .c
 - 由于纯 ASCII 是 GB2312 与 UTF-8 的公共子集，此约定同时满足两种编辑器视图。
 - **禁止在源代码中出现任何非 ASCII 字节**（含中文标点、全角空格、UTF-8 BOM、以及乱码遗留字节）。
 - 所有源码注释必须使用**纯英文**。可用工具校验：
-  ```powershell
-  $files = Get-ChildItem -Recurse -Include *.c,*.h -Path src,include,port
-  foreach ($f in $files) {
+   ```powershell
+   $files = Get-ChildItem -Recurse -Include *.c,*.h -Path src,include,port
+   foreach ($f in $files) {
       $bytes = [System.IO.File]::ReadAllBytes($f.FullName)
       foreach ($b in $bytes) { if ($b -gt 127) { Write-Host "Non-ASCII in $($f.FullName)"; break } }
-  }
-  ```
+   }
+   ```
 
 ### C.3 为什么这样规定
 
@@ -2213,20 +2251,20 @@ armcc5 路径下的典型 `.sct` 示例：
 
 ```text
 LR_IROM1 0x08000000 0x00200000  {
-  ER_IROM1 0x08000000 0x00200000 {        /* Flash: 代码 + 只读数据 */
+   ER_IROM1 0x08000000 0x00200000 {        /* Flash: 代码 + 只读数据 */
     *.o (RESET, +First)
     *(InRoot$$Sections)
     .ANY (+RO)
     .ANY (+XO)
-  }
-  RW_IRAM1 0x20000000 0x00020000 {        /* DTCM 128K: 全局变量 */
+   }
+   RW_IRAM1 0x20000000 0x00020000 {        /* DTCM 128K: 全局变量 */
     .ANY (+RW +ZI)
-  }
-  RW_AXI 0x24000000 0x00080000 {          /* AXI SRAM 512K: 大缓冲区 */
+   }
+   RW_AXI 0x24000000 0x00080000 {          /* AXI SRAM 512K: 大缓冲区 */
     *(.ark_heap)
     *(.ark_code)
     *(.ark_buf)
-  }
+   }
 }
 ```
 

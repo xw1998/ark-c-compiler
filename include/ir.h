@@ -277,6 +277,28 @@ int ir_program_add_argbytes(IrProgram *prog, const int *vals, int n);
  * code that would read the wrong words. */
 extern int g_ir_vararg_words;
 
+/* Remove the static inline functions this unit cannot reach, in place.
+ *
+ * A `static inline` definition (CMSIS' __STATIC_INLINE is `static __inline`)
+ * is the normal shape of a helper a translation unit may or may not exercise.
+ * C99 6.7.4p6 makes such a definition an internal matter of the unit: it is
+ * part of the program only when something uses it.  Emitting an unreachable
+ * one was harmless until its body named an object this unit only declares --
+ * the single-object backends then refuse the reference ("a single-object image
+ * carries no channel for another unit's data address"), so merely including
+ * core_cm4.h failed a build that never called ITM_ReceiveChar().
+ *
+ * What is removed: a function that is `static` and (inline / __forceinline),
+ * that carries none of used / unused / weak / constructor / destructor / alias /
+ * __irq, that is not `main`, and that no surviving code calls or takes the
+ * address of.  A plain `static` function is kept (it is a symbol the author
+ * wrote, and --warn-unused-static reports it).  A unit containing inline asm is
+ * left untouched: the asm body is a string this pass cannot read.
+ *
+ * Returns the number of functions removed (0 when nothing changed, including
+ * every refusal above). */
+int ir_drop_unused_inline(IrProgram *prog);
+
 IrProgram *ir_program_new(void);
 void       ir_program_add(IrProgram *prog, IrFunc *func);
 int        ir_program_add_string(IrProgram *prog, const char *data, int len);

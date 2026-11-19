@@ -24,7 +24,7 @@ endif
         test-x86-64-selfhost test-riscv test-reloc-text test-memlint \
         test-enumcheck test-pipeline test-unusedresult test-mir \
         test-loop test-modern test-atomic test-ipo test-constglobal \
-        test-objir test-partiallink \
+        test-objir test-partiallink test-deadinline \
         install stm32
 
 all: $(ARKCC)
@@ -40,7 +40,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -139,6 +139,16 @@ test-objir: $(ARKCC)
 # refuse -r while producing byte-identical objects.
 test-partiallink: $(ARKCC)
 	$(PYTHON) tests/run_partiallink_tests.py ./$(ARKCC)
+
+# Dead-inline gate: an unreferenced `static inline` function no longer reaches
+# code generation, so a unit that includes a CMSIS-style header but never calls
+# its helper compiles even though that helper references an external object.
+# The gate asserts the drop and, equally, every shape that must NOT drop: a
+# called inline, `__attribute__((used))`, an address taken by a global
+# initializer, main, plain `static` (still reported, not silently removed) and
+# any unit containing inline asm (the pass backs off entirely).
+test-deadinline: $(ARKCC)
+	$(PYTHON) tests/run_deadinline_tests.py ./$(ARKCC)
 # Library gate: every stdlib entry point is compiled and run on the ARM
 # emulator, and each case asserts a number the program itself computed.  A
 # case that needs hardware the emulator does not have (double-precision FPU)
