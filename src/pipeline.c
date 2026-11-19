@@ -121,6 +121,8 @@ static int ir_wanted_dce(void)        { return g_config.enable_opt_dce; }
 static int ir_wanted_dce_cfg(void)    { return g_config.enable_dce_cfg; }
 static int ir_wanted_inline(void)     { return g_config.enable_opt_inline; }
 static int ir_wanted_vectorize(void)  { return g_config.enable_opt_vectorize; }
+static int ir_wanted_licm(void)       { return g_config.enable_licm; }
+static int ir_wanted_unroll(void)     { return g_config.enable_unroll; }
 
 /* The two min_level values of 1 and 2 are not free choices:
  *   - constfold / dce at -O0: folding changes -O0 codegen expectations
@@ -154,6 +156,22 @@ static const IrStage g_ir_stages[] = {
       ir_wanted_dce,       PIPE_NAME("off (-fno-opt-dce)"),       0, 0, opt_dce_func,       0 },
     { PIPE_NAME("ir.dce-cfg"),   ARK_PROFILE_FULL, 1, GATE_FLAG_AND_LEVEL, ARKCC_FEATURE_OPT_DCE_CFG,
       ir_wanted_dce_cfg,   PIPE_NAME("off (--dce-cfg)"),          0, 0, opt_dce_cfg_func,   0 },
+    /* 循环优化放在 dce 之后、dce-cfg 之前：LICM 只搬东西不造死代码，展开会把
+     * 循环头尾整个换掉，两者都与线性 DCE 无冲突；放在 dce-cfg 之前让后者顺手
+     * 清掉展开后可能留下的不可达尾巴。两者都需要 -O1 以上（min_level 1），
+     * 单给开关不给 -O 时在 dump 里明确写 "needs a higher -O level"。 */
+#if ARKCC_FEATURE_LICM
+    { PIPE_NAME("ir.licm"),      ARK_PROFILE_FULL, 1, GATE_FLAG_AND_LEVEL, 1,
+      ir_wanted_licm,      PIPE_NAME("off (--licm)"),             0, 0, opt_licm_func,      0 },
+#else
+    { PIPE_NAME("ir.licm"),      ARK_PROFILE_FULL, 1, GATE_FLAG_AND_LEVEL, 0, 0, 0, 0, 0, 0, 0 },
+#endif
+#if ARKCC_FEATURE_UNROLL
+    { PIPE_NAME("ir.unroll"),    ARK_PROFILE_FULL, 1, GATE_FLAG_AND_LEVEL, 1,
+      ir_wanted_unroll,    PIPE_NAME("off (--unroll)"),           0, 0, opt_unroll_func,    0 },
+#else
+    { PIPE_NAME("ir.unroll"),    ARK_PROFILE_FULL, 1, GATE_FLAG_AND_LEVEL, 0, 0, 0, 0, 0, 0, 0 },
+#endif
     { PIPE_NAME("ir.inline"),    ARK_PROFILE_FULL, 2, GATE_FLAG_AND_LEVEL, ARKCC_FEATURE_OPT_INLINE,
       ir_wanted_inline,    PIPE_NAME("off (--autoinline / -O2)"), 1, 1, 0,                  opt_inline },
     { PIPE_NAME("ir.vectorize"), ARK_PROFILE_FULL, 2, GATE_FLAG_OR_LEVEL,  ARKCC_FEATURE_OPT_VECTORIZE,

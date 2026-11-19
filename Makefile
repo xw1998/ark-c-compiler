@@ -23,7 +23,7 @@ endif
 .PHONY: all clean test test-arm test-c test-stdlib test-install test-x86 test-x86-64 \
         test-x86-64-selfhost test-riscv test-reloc-text test-memlint \
         test-enumcheck test-pipeline test-unusedresult test-mir \
-        test-atomic install stm32
+        test-loop test-atomic install stm32
 
 all: $(ARKCC)
 
@@ -38,7 +38,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-atomic
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-atomic
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -84,6 +84,14 @@ test-unusedresult: $(ARKCC)
 # options instead of pretending to analyse control flow.
 test-mir: $(ARKCC)
 	$(PYTHON) tests/run_mir_tests.py ./$(ARKCC)
+
+# Gate for --licm / --unroll: the invariant really moves out of the loop and
+# the counted loop really disappears, both programs still compute the same
+# answer on the ARM emulator, both switches off are byte-identical to a build
+# without the passes, and a build with the features cropped refuses the
+# options instead of pretending to optimise.
+test-loop: $(ARKCC)
+	$(PYTHON) tests/run_loop_tests.py ./$(ARKCC)
 
 # Library gate: every stdlib entry point is compiled and run on the ARM
 # emulator, and each case asserts a number the program itself computed.  A

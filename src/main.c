@@ -670,6 +670,32 @@ int main(int argc, char **argv) {
         else if (strcmp(a, "--no-warn-unused-static") == 0)  g_config.enable_warn_unused_static = 0;
         else if (strcmp(a, "--no-warn-recursion") == 0)      g_config.enable_warn_recursion = 0;
 #endif
+#if ARKCC_FEATURE_LICM
+        else if (strcmp(a, "--licm") == 0)          g_config.enable_licm = 1;
+        else if (strcmp(a, "--no-licm") == 0)       g_config.enable_licm = 0;
+#else
+        /* 与 --warn-mem 同一条规矩：没有这个 pass 的构建不能接受选项，
+         * 否则用户会以为自己打开了循环不变量外提。 */
+        else if (strcmp(a, "--licm") == 0) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: --licm is not compiled into this "
+                    "build (rebuild with -DARKCC_FEATURE_LICM=1)\n");
+            return 1;
+        }
+        else if (strcmp(a, "--no-licm") == 0)       g_config.enable_licm = 0;
+#endif
+#if ARKCC_FEATURE_UNROLL
+        else if (strcmp(a, "--unroll") == 0)        g_config.enable_unroll = 1;
+        else if (strcmp(a, "--no-unroll") == 0)     g_config.enable_unroll = 0;
+#else
+        else if (strcmp(a, "--unroll") == 0) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: --unroll is not compiled into this "
+                    "build (rebuild with -DARKCC_FEATURE_UNROLL=1)\n");
+            return 1;
+        }
+        else if (strcmp(a, "--no-unroll") == 0)     g_config.enable_unroll = 0;
+#endif
         else if (strcmp(a, "--list-backends") == 0) opts.list_backends = 1;
         else if (strcmp(a, "-h") == 0 || strcmp(a, "--help") == 0) {
             usage();
@@ -750,6 +776,24 @@ int main(int argc, char **argv) {
         fprintf(stderr,
                 "Fatal error: C3900U: --warn-unused-result is not compiled into "
                 "this build (rebuild with -DARKCC_FEATURE_UNUSEDRESULT=1)\n");
+        return 1;
+    }
+#endif
+
+#if !ARKCC_FEATURE_LICM
+    /* Same rule for licm=1 in the ini file. */
+    if (g_config.enable_licm) {
+        fprintf(stderr,
+                "Fatal error: C3900U: --licm is not compiled into this build "
+                "(rebuild with -DARKCC_FEATURE_LICM=1)\n");
+        return 1;
+    }
+#endif
+#if !ARKCC_FEATURE_UNROLL
+    if (g_config.enable_unroll) {
+        fprintf(stderr,
+                "Fatal error: C3900U: --unroll is not compiled into this build "
+                "(rebuild with -DARKCC_FEATURE_UNROLL=1)\n");
         return 1;
     }
 #endif

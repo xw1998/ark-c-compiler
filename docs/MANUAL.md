@@ -1057,6 +1057,30 @@ void g(void) { f(); (void)f(); }     /* 前一条告警，后一条沉默 */
 （都是 `lite` 剖面，无 `-O` 门）。详见 [MIR_CFG.md](MIR_CFG.md)，门禁
 `tests/run_mir_tests.py`（`make test-mir`）。
 
+---
+
+### 5.14 循环优化（`--licm` / `--unroll`）
+
+两个循环级变换，都默认关、都要求 `-O1` 以上、都不在 MCU 最小剖面里：
+
+| 开关 | 默认 | 说明 |
+| --- | :---: | --- |
+| `--licm` / `--no-licm` | 关 | 循环不变量外提：把计算搬进帧临时量，store 留在原地 |
+| `--unroll` / `--no-unroll` | 关 | 常量边界的规范 `for` 完全展开（上限 `ARK_UNROLL_MAX`，默认 8） |
+| `[features]` 节 `licm` / `unroll` | `0` | 配置文件等效写法 |
+| `ARKCC_FEATURE_LICM` / `ARKCC_FEATURE_UNROLL`（编译期） | 宿主 `1`、`ARKCC_PROFILE_STM32_MIN` 与 `ARKCC_FEATURE_MIR=0` 为 `0` | 特性不在时正选项以 `C3900U` 拒绝 |
+
+取舍：
+
+- LICM **只搬计算不搬 store**，所以"零次迭代"的循环不会被写入原本不写的变量；
+- 白名单只认 32 位字形状的算术，排除 `/` `%`（可陷入）、volatile / complex / 64 位、
+  以及一切指针访存（无别名分析）；
+- `--unroll` 只接受常量起止、步长 1、直线 body 的单层 `for`；
+  `break`/`continue`/`goto`/非规范形状一律不动；
+- 两者都排在 `ir.dce` 之后、`ir.dce-cfg` 之前（`ir.licm` / `ir.unroll`）。
+
+详见 [LOOPS.md](LOOPS.md)，门禁 `tests/run_loop_tests.py`（`make test-loop`）。
+
 ## 6 在 Windows 上测试
 
 ### 6.1 推荐流程：c 后端

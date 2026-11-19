@@ -1244,6 +1244,30 @@ choice, not a defect; where performance matters, avoid 64-bit division in inner 
 
 ---
 
+### 5.14 Loop optimisations (`--licm` / `--unroll`)
+
+Two loop-level transforms. Both default off, both need `-O1` or higher, and neither is part of the MCU
+minimal profile:
+
+| Switch | Default | Meaning |
+| --- | :---: | --- |
+| `--licm` / `--no-licm` | off | hoist loop-invariant computation into a frame temporary; the store stays where it is |
+| `--unroll` / `--no-unroll` | off | completely unroll a canonical constant-bound `for` (limit `ARK_UNROLL_MAX`, default 8) |
+| `licm` / `unroll` in `[features]` | `0` | the config-file spelling |
+| `ARKCC_FEATURE_LICM` / `ARKCC_FEATURE_UNROLL` (compile time) | `1` on the host, `0` under `ARKCC_PROFILE_STM32_MIN` and `ARKCC_FEATURE_MIR=0` | where absent the positive option is refused with `C3900U` |
+
+Trade-offs:
+
+- LICM moves **only the computation, never the store**, so a loop that runs zero times never writes a
+  variable the unoptimised program never wrote;
+- the whitelist is 32-bit word-shaped arithmetic only: `/` and `%` are out (they can trap), as are
+  volatile / complex / 64-bit forms and every access through a pointer (no alias analysis);
+- `--unroll` accepts only a single-level `for` with constant start/end, step 1 and a straight-line body;
+  `break` / `continue` / `goto` and any non-canonical shape are left untouched;
+- both run after `ir.dce` and before `ir.dce-cfg` (`ir.licm` / `ir.unroll`).
+
+See [LOOPS.en.md](LOOPS.en.md); the gate is `tests/run_loop_tests.py` (`make test-loop`).
+
 ## 6 Testing on Windows
 
 ### 6.1 Recommended flow: the C backend

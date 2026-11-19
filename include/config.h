@@ -51,6 +51,8 @@ typedef struct {
     int enable_warn_unreachable;   /* --warn-unreachable: block with no path from the entry */
     int enable_warn_unused_static; /* --warn-unused-static: static function nothing can reach */
     int enable_warn_recursion;     /* --warn-recursion: call cycle among the unit's functions */
+    int enable_licm;               /* --licm: move loop-invariant computations out of the loop */
+    int enable_unroll;             /* --unroll: completely unroll a counted for-loop */
     /* 0.8.5: 可配置 Pass 管线（见 include/pipeline.h）。取 ARK_PROFILE_FULL 时
      * 每个 pass 仍由自己的开关与 -O 级别决定，即历史行为、产物逐字节不变；
      * 取 ARK_PROFILE_LITE 时只允许 min_profile 为 lite 的阶段跑，其余阶段

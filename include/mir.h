@@ -134,4 +134,37 @@ int  mir_callgraph_build(const IrProgram *prog, MirCallGraph *out);
  * "is this a cycle?" question needs. */
 int  mir_scc(const MirCallGraph *g, int *scc_of);
 
+/* ---------------------------------------------------------------- */
+/* Natural loops of one function                                     */
+/* ---------------------------------------------------------------- */
+
+/* A natural loop: a back edge u -> h where h dominates u, plus every block
+ * that can reach u without going through h. The header is included.
+ *
+ * `preheader` is the block that runs exactly once before the loop: the only
+ * predecessor of the header from outside the loop, and it has exactly one
+ * successor (the header). -1 means the loop has no such block (several
+ * entries, or a conditional entry), which is what the loop passes must refuse
+ * to transform rather than guess about. */
+typedef struct MirLoop {
+    int            header;
+    int            preheader;
+    int            nblocks;   /* blocks in the loop, header included */
+    unsigned char *in_loop;   /* MirFunc.blk_count bytes; 1 = in the loop */
+} MirLoop;
+
+/* Collect the natural loops of one function into `out` (at most `max`).
+ * Returns the number of loops found; when there are more than `max`, only the
+ * first `max` are filled and the count is still the true one. Nested loops are
+ * reported separately (inner and outer are two entries); two back edges to the
+ * same header are reported once, under the first one. */
+int  mir_loops(const MirFunc *m, MirLoop *out, int max);
+
+/* Does block `a` dominate block `b`? (Every path from the entry to `b` passes
+ * through `a`.) An out-of-range or unreachable block answers 0 rather than
+ * being guessed at: a loop pass that treats "unknown" as "dominates" would
+ * hoist past an entry edge. */
+int  mir_dominates(const MirFunc *m, int a, int b);
+
+
 #endif /* ARK_MIR_H */

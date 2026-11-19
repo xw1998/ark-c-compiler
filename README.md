@@ -535,6 +535,7 @@ ark c compiler/
 ├── docs/PASS_PIPELINE.md   可配置 Pass 管线（--pipeline / --print-pipeline）：阶段表、两剖面、裁剪与实测代价（中文，UTF-8）
 ├── docs/UNUSEDRESULT.md    丢弃返回值（--warn-unused-result）：判据、别名、裁剪与门禁（中文，UTF-8）
 ├── docs/MIR_CFG.md         MIR/CFG 与三条跨函数检查（不可达 / 未用 static / 递归）：图不变量、判据、刻意不报的形态、裁剪与门禁（中文，UTF-8）
+├── docs/LOOPS.md           循环优化（--licm / --unroll）：搬什么不搬什么、零次迭代、唯一接受形状、上限与门禁（中文，UTF-8）
 ├── docs/从零写一个C编译器.md  教材体逐代码教程：19 章，从 30 行到 3 万行（中文，UTF-8）
 ├── docs/from-scratch-c-compiler.en.md  上述教材的英文摘要（结构、章目、阅读路线）
 └── README.md               项目简介（UTF-8）
@@ -665,6 +666,10 @@ arkcc <file.c|file.s> [选项]
   --warn-unreachable 控制流上任何路径都到不了的代码块（--no-warn-unreachable 关）
   --warn-unused-static  static 函数无人调用且地址未被取（--no-warn-unused-static 关）
   --warn-recursion   调用图里的调用环，含自递归（--no-warn-recursion 关）
+  --licm             循环不变量外提：把计算搬进帧临时量、store 留在原地
+                     （需要 -O1 以上；--no-licm 显式关掉）
+  --unroll           常量边界的规范 for 循环完全展开（上限 ARK_UNROLL_MAX，
+                     默认 8）；--no-unroll 显式关掉
   --dce-cfg          基本块级可达性 DCE（只删"能到但永不执行"的代码）
   --build-date <s>   固定 __DATE__（如 "May 28 2026"）
   --build-time <s>   固定 __TIME__（如 "20:26:40"）

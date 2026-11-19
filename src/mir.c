@@ -474,4 +474,147 @@ int mir_scc(const MirCallGraph *g, int *scc_of) {
     return ncomp;
 }
 
+/* ---------------------------------------------------------------- */
+/* Natural loops                                                     */
+/* ---------------------------------------------------------------- */
+
+/* Dominator sets, one bitset per block. A function of a few hundred blocks
+ * uses a few kilobytes; anything much larger is beyond what this middle end
+ * is meant for (and the loop passes are host-side anyway). */
+static int mir_dom_words(int n) { return (n + 63) / 64; }
+
+static int mir_dw_test(const unsigned long long *w, int i) {
+    return (int)((w[i >> 6] >> (i & 63)) & 1ULL);
+}
+
+/* Iterative dominators: the classic fixpoint over the block list. Block order
+ * is instruction order, which is the "nearly topological" order the iteration
+ * wants, so structured code converges in a couple of sweeps. */
+static void mir_dominators(const MirFunc *m, unsigned long long *dom) {
+    int n = m->blk_count, w = mir_dom_words(n);
+    unsigned long long *tmp;
+    int b, k, changed = 1;
+
+    if (n <= 0) return;
+    tmp = (unsigned long long *)mem_pool_alloc(w * (int)sizeof(unsigned long long));
+    for (b = 0; b < n; b++) {
+        unsigned long long *d = dom + b * w;
+        if (b == 0) {
+            for (k = 0; k < w; k++) d[k] = 0;
+            d[0] = 1ULL;
+        } else {
+            for (k = 0; k < w; k++) d[k] = ~0ULL;
+        }
+    }
+    while (changed) {
+        changed = 0;
+        for (b = 1; b < n; b++) {
+            const MirBlock *B = &m->blk[b];
+            unsigned long long *d = dom + b * w;
+            int p, first = 1, diff = 0;
+            if (B->pred_count <= 0) continue;   /* unreachable: keep the top set */
+            for (p = 0; p < B->pred_count; p++) {
+                const unsigned long long *pd =
+                    dom + m->pred_list[B->pred_start + p] * w;
+                if (first) { for (k = 0; k < w; k++) tmp[k] = pd[k]; first = 0; }
+                else       { for (k = 0; k < w; k++) tmp[k] &= pd[k]; }
+            }
+            tmp[b >> 6] |= 1ULL << (b & 63);    /* a block dominates itself */
+            for (k = 0; k < w; k++) if (tmp[k] != d[k]) { diff = 1; break; }
+            if (diff) { for (k = 0; k < w; k++) d[k] = tmp[k]; changed = 1; }
+        }
+    }
+}
+
+int mir_loops(const MirFunc *m, MirLoop *out, int max) {
+    int n, w, u, i, found = 0;
+    unsigned long long *dom;
+    unsigned char *reach;
+    int *headers, *work;
+
+    if (!m || m->blk_count <= 0) return 0;
+    n = m->blk_count;
+    w = mir_dom_words(n);
+    dom = (unsigned long long *)mem_pool_alloc(
+        n * w * (int)sizeof(unsigned long long));
+    mir_dominators(m, dom);
+    reach = (unsigned char *)mem_pool_alloc(n);
+    mir_reachable(m, reach);
+    headers = (int *)mem_pool_alloc(n * (int)sizeof(int));
+    work    = (int *)mem_pool_alloc(n * (int)sizeof(int));
+
+    for (u = 0; u < n; u++) {
+        int s;
+        if (!reach[u]) continue;
+        for (s = 0; s < m->blk[u].succ_count; s++) {
+            int v = m->blk[u].succ[s];
+            unsigned char *in;
+            int h, sp, count = 0, pre = -1, outside = 0, k;
+
+            if (v < 0 || v >= n || !reach[v]) continue;
+            if (!mir_dw_test(dom + u * w, v)) continue;   /* not a back edge */
+            for (h = 0; h < found; h++) if (headers[h] == v) break;
+            if (h < found) continue;                      /* same header twice */
+
+            /* Natural loop: start at the header and the back-edge tail, then
+             * pull in predecessors until closed. The header's own
+             * predecessors are never expanded, which is exactly what keeps the
+             * entry edge (the preheader) outside the loop. */
+            in = (unsigned char *)mem_pool_alloc(n);
+            in[v] = 1;
+            if (u != v) in[u] = 1;
+            sp = 0;
+            work[sp++] = u;
+            while (sp > 0) {
+                int x = work[--sp];
+                const MirBlock *XB = &m->blk[x];
+                for (k = 0; k < XB->pred_count; k++) {
+                    int pb = m->pred_list[XB->pred_start + k];
+                    if (!in[pb]) { in[pb] = 1; work[sp++] = pb; }
+                }
+            }
+            for (i = 0; i < n; i++) if (in[i]) count++;
+            /* Preheader: the single outside predecessor of the header, which
+             * must jump to the header unconditionally. */
+            for (k = 0; k < m->blk[v].pred_count; k++) {
+                int pb = m->pred_list[m->blk[v].pred_start + k];
+                if (in[pb]) continue;
+                outside++;
+                if (m->blk[pb].succ_count == 1 && m->blk[pb].succ[0] == v)
+                    pre = pb;
+            }
+            if (outside != 1) pre = -1;
+
+            headers[found] = v;
+            if (found < max) {
+                out[found].header    = v;
+                out[found].preheader = pre;
+                out[found].nblocks   = count;
+                out[found].in_loop   = in;
+            }
+            found++;
+        }
+    }
+    return found;
+}
+
+int mir_dominates(const MirFunc *m, int a, int b) {
+    unsigned char *reach;
+    unsigned long long *dom;
+    int n, w, r;
+
+    if (!m || a < 0 || b < 0 || a >= m->blk_count || b >= m->blk_count) return 0;
+    if (a == b) return 1;
+    n = m->blk_count;
+    w = mir_dom_words(n);
+    reach = (unsigned char *)mem_pool_alloc(n);
+    r = mir_reachable(m, reach);
+    (void)r;
+    if (!reach[a] || !reach[b]) return 0;
+    dom = (unsigned long long *)mem_pool_alloc(
+        n * w * (int)sizeof(unsigned long long));
+    mir_dominators(m, dom);
+    return mir_dw_test(dom + b * w, a);
+}
+
 #endif /* ARKCC_FEATURE_MIR */

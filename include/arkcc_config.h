@@ -679,6 +679,38 @@
 #   define ARK_SYM_HASH_SIZE     4096
 # endif
 #endif
+/* ---------------------------------------------------------------------------
+ * 0.8.6 循环优化：LICM 与完全展开
+ *
+ * 两者都靠 MIR 的自然循环检测，所以 MIR 被裁掉时它们也必须跟着裁掉——
+ * 没有 CFG 就没有环路可言，留着只会编出一个“开关能开、但永远不动”的假选项。
+ *
+ * 运行时默认一律关（见 config.c）：不开 --licm / --unroll 时产出的镜像与
+ * 不含这个文件的构建逐字节相同。
+ * ------------------------------------------------------------------------- */
+#ifndef ARKCC_FEATURE_LICM
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN || !ARKCC_FEATURE_MIR
+#   define ARKCC_FEATURE_LICM          0   /* 板端/无 MIR：裁掉省 Flash */
+# else
+#   define ARKCC_FEATURE_LICM          1
+# endif
+#endif
+#ifndef ARKCC_FEATURE_UNROLL
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN || !ARKCC_FEATURE_MIR
+#   define ARKCC_FEATURE_UNROLL        0
+# else
+#   define ARKCC_FEATURE_UNROLL        1
+# endif
+#endif
+/* 完全展开的规模上限：展开份数、以及被复制的循环体指令数。超过任何一条
+ * 都不展开——宁可保留循环，也不把函数膨胀成看不懂的样子。 */
+#ifndef ARK_UNROLL_MAX
+#   define ARK_UNROLL_MAX             8
+#endif
+#ifndef ARK_UNROLL_MAX_BODY
+#   define ARK_UNROLL_MAX_BODY        64
+#endif
+
 /* -MMD 依赖表的文件名数组：宿主按需翻倍扩容（没有人为条数上限），板端用
  * ARKCC_MAX_INC_FILES 的定长表并在越界时告警一次。 */
 #ifndef ARKCC_FEATURE_DEP_FILES_DYN

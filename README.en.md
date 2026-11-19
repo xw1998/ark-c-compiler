@@ -626,6 +626,7 @@ ark c compiler/
 ├── docs/PASS_PIPELINE.md   Configurable pass pipeline (--pipeline / --print-pipeline): stage table, two profiles, trimming, measured cost (Chinese, UTF-8)
 ├── docs/UNUSEDRESULT.md    Discarded return value (--warn-unused-result): rule, spellings, trimming, gate (Chinese, UTF-8)
 ├── docs/MIR_CFG.md         MIR/CFG and the three whole-program checks (unreachable / unused static / recursion): invariants, verdicts, deliberate non-reports, trimming, gate (Chinese, UTF-8)
+├── docs/LOOPS.md           Loop optimisations (--licm / --unroll): what moves and what does not, zero iterations, the single accepted shape, limits, gate (Chinese, UTF-8)
 ├── docs/从零写一个C编译器.md  Textbook-style walkthrough: 19 chapters, from 30 lines to 30 000 (Chinese, UTF-8)
 ├── docs/from-scratch-c-compiler.en.md  English summary of that textbook (structure, chapter map, reading routes)
 └── README.md               Project overview (Chinese, UTF-8)
@@ -770,6 +771,11 @@ arkcc <file.c|file.s> [options]
                      (--no-warn-unused-static turns it off)
   --warn-recursion   a call cycle in the call graph, self recursion included
                      (--no-warn-recursion turns it off)
+  --licm             hoist loop-invariant computation into a frame temporary and
+                     leave the store in place (needs -O1 or higher;
+                     --no-licm turns it off)
+  --unroll           completely unroll a canonical constant-bound for loop
+                     (limit ARK_UNROLL_MAX, default 8); --no-unroll turns it off
   --dce-cfg          basic-block reachability DCE (deletes only code that is reachable but never executes)
   --build-date <s>   pin __DATE__ (e.g. "May 28 2026")
   --build-time <s>   pin __TIME__ (e.g. "20:26:40")

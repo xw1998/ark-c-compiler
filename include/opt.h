@@ -30,6 +30,15 @@ void opt_dce_cfg_func(IrFunc *f);
  * Excludes: recursion, variadic, irq, naked, asm_func, >4 params. */
 void opt_inline(IrProgram *prog);
 
+/* Loop-invariant code motion (--licm). See src/opt_loop.c for the exact
+ * whitelist and the invariance rules; anything not proved safe is left alone. */
+void opt_licm_func(IrFunc *f);
+
+/* Complete unrolling of a counted `for` loop (--unroll). Only the canonical
+ * `for (i = c; i < N; i++)` shape with constant c/N and a straight-line body
+ * is transformed; every other loop is left as it was. */
+void opt_unroll_func(IrFunc *f);
+
 /* Auto vectorization: recognizes simple counted loops (a[i]=b[i] +/- c[i])
  * and parallelizes them with SIMD instructions.
  * Only truly accelerates on the ARM backend; C backend falls back to scalar. */
