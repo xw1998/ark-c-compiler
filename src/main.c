@@ -713,6 +713,18 @@ int main(int argc, char **argv) {
         }
         else if (strcmp(a, "--no-unroll") == 0)     g_config.enable_unroll = 0;
 #endif
+#if ARKCC_FEATURE_CONST_GLOBAL
+        else if (strcmp(a, "--const-global") == 0)    g_config.enable_const_global = 1;
+        else if (strcmp(a, "--no-const-global") == 0) g_config.enable_const_global = 0;
+#else
+        else if (strcmp(a, "--const-global") == 0) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: --const-global is not compiled into "
+                    "this build (rebuild with -DARKCC_FEATURE_CONST_GLOBAL=1)\n");
+            return 1;
+        }
+        else if (strcmp(a, "--no-const-global") == 0) g_config.enable_const_global = 0;
+#endif
         else if (strcmp(a, "--list-backends") == 0) opts.list_backends = 1;
         else if (strcmp(a, "-h") == 0 || strcmp(a, "--help") == 0) {
             usage();
@@ -828,6 +840,14 @@ int main(int argc, char **argv) {
         fprintf(stderr,
                 "Fatal error: C3900U: --unroll is not compiled into this build "
                 "(rebuild with -DARKCC_FEATURE_UNROLL=1)\n");
+        return 1;
+    }
+#endif
+#if !ARKCC_FEATURE_CONST_GLOBAL
+    if (g_config.enable_const_global) {
+        fprintf(stderr,
+                "Fatal error: C3900U: --const-global is not compiled into this "
+                "build (rebuild with -DARKCC_FEATURE_CONST_GLOBAL=1)\n");
         return 1;
     }
 #endif

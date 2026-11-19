@@ -627,7 +627,7 @@ ark c compiler/
 ├── docs/UNUSEDRESULT.md    Discarded return value (--warn-unused-result): rule, spellings, trimming, gate (Chinese, UTF-8)
 ├── docs/MIR_CFG.md         MIR/CFG and the three whole-program checks (unreachable / unused static / recursion): invariants, verdicts, deliberate non-reports, trimming, gate (Chinese, UTF-8)
 ├── docs/LOOPS.md           Loop optimisations (--licm / --unroll): what moves and what does not, zero iterations, the single accepted shape, limits, gate (Chinese, UTF-8)
-├── docs/IPO_LTO.md         Whole-program compilation (--ipo / -flto): why it is not object-level LTO, merge semantics, refused combinations, cropping, gate (Chinese, UTF-8)
+├── docs/IPO_LTO.md         Whole-program compilation (--ipo / -flto) and cross-TU constant propagation (--const-global): why it is not object-level LTO, merge semantics, refused combinations, cropping, gates (Chinese, UTF-8)
 ├── docs/从零写一个C编译器.md  Textbook-style walkthrough: 19 chapters, from 30 lines to 30 000 (Chinese, UTF-8)
 ├── docs/from-scratch-c-compiler.en.md  English summary of that textbook (structure, chapter map, reading routes)
 └── README.md               Project overview (Chinese, UTF-8)
@@ -782,6 +782,11 @@ arkcc <file.c|file.s> [options]
                      statics are renamed per unit, externals de-duplicated with
                      the linker's rules, unreferenced statics pruned.  Needs -o;
                      refuses -c/-E/-g/-link and .s/.o inputs
+  --const-global     cross-TU constant propagation: folds loads of constant objects
+                     into immediates (needs -O1+).  Only "const + scalar integer
+                     initialiser + never written + address never escapes + not
+                     volatile/array/aggregate/long long + no __at/section/__thread"
+                     folds; anything else keeps its load.  --no-const-global off
   --dce-cfg          basic-block reachability DCE (deletes only code that is reachable but never executes)
   --build-date <s>   pin __DATE__ (e.g. "May 28 2026")
   --build-time <s>   pin __TIME__ (e.g. "20:26:40")
@@ -1039,6 +1044,25 @@ See [docs/MANUAL.en.md](docs/MANUAL.en.md) for the full manual.
   28 / 23 / 4 on the ARM emulator, two duplicate-definition errors that must name the symbol and leave
   **no image**, one assembly read each for pruning and cross-TU inlining, plus the cropped build's
   refusal.
+  This release also adds **cross-TU constant propagation** `--const-global` (`docs/IPO_LTO.en.md` §8):
+  once merged, "is this `const` really a constant" is answerable in full, so a constant object's load
+  becomes an immediate (`const int LIMIT = 100` read from another unit turns into `MOV r0, #100`
+  instead of `MOVW/MOVT + LDR`).  The test errs on the conservative side: only "`const` + scalar
+  integer initialiser + not `extern` + nobody in the program writes it + address never escapes (never
+  taken, never in another object's `init_sym`/`init_refs`) + not `volatile`/array/aggregate/function +
+  `type_size==4` + no `__at`/section/`__thread`/`__global_reg`" folds; anything else keeps its load,
+  because a missed fold only costs one `LDR` while a wrong fold is a wrong answer.  It sits after
+  `ir.inline` (inlining puts reader and definition in one view) and, since the pipeline does not
+  iterate, re-runs constant folding itself so a cascade converges in the same round.  It does not do a
+  global-value theorem (a non-`const` global never folds even if the whole program never writes it)
+  and does not delete the folded `const` object (it still needs a definition for `-link`).  A `static
+  const` in a single file folds too.  Cropping: `ARKCC_FEATURE_CONST_GLOBAL` defaults to 0 in
+  `ARKCC_PROFILE_STM32_MIN`, and then the option reports "not compiled into this build".  Gate
+  `tests/run_constglobal_tests.py` (`make test-constglobal`, 15 checks): folded and unfolded images
+  both return 103, five conservative cases keep their load (address taken 6, store through it 9,
+  `volatile` 6, array 3, `long long`), `-O0` does not fold, `--print-pipeline` reports `run`/`off`,
+  the cropped build refuses the option, and with the switch off a full build and a cropped build emit
+  **byte-identical** `.s`.
 > Entries v0.8.2 and v0.8.1 are translated in full below. Earlier releases (v0.2.0–v0.8.0) are
 > documented only in the Chinese [README.md](README.md) — they are long, and every one of them is
 > covered by the documents under `docs/`.

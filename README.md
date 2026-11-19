@@ -536,7 +536,7 @@ ark c compiler/
 ├── docs/UNUSEDRESULT.md    丢弃返回值（--warn-unused-result）：判据、别名、裁剪与门禁（中文，UTF-8）
 ├── docs/MIR_CFG.md         MIR/CFG 与三条跨函数检查（不可达 / 未用 static / 递归）：图不变量、判据、刻意不报的形态、裁剪与门禁（中文，UTF-8）
 ├── docs/LOOPS.md           循环优化（--licm / --unroll）：搬什么不搬什么、零次迭代、唯一接受形状、上限与门禁（中文，UTF-8）
-├── docs/IPO_LTO.md         全程序编译（--ipo / -flto）：为什么不是对象级 LTO、合并语义、拒绝的组合、裁剪与门禁（中文，UTF-8）
+├── docs/IPO_LTO.md         全程序编译（--ipo / -flto）与跨 TU 常量传播（--const-global）：为什么不是对象级 LTO、合并语义、拒绝的组合、裁剪与两条门禁（中文，UTF-8）
 ├── docs/从零写一个C编译器.md  教材体逐代码教程：19 章，从 30 行到 3 万行（中文，UTF-8）
 ├── docs/from-scratch-c-compiler.en.md  上述教材的英文摘要（结构、章目、阅读路线）
 └── README.md               项目简介（UTF-8）
@@ -675,6 +675,10 @@ arkcc <file.c|file.s> [选项]
                      优化（-O2 下跨文件内联），static 按单元改名、外部名按链接器
                      规则去重、无引用的 static 剪掉；必须给 -o，
                      拒绝 -c/-E/-g/-link 与 .s/.o 输入
+  --const-global     跨 TU 常量传播：把 const 对象的读取折成立即数（需 -O1 以上）。
+                     只认「const + 标量整型初值 + 从不被写 + 地址从不外泄 + 非
+                     volatile/数组/聚合/long long + 无 __at/section/__thread」，
+                     任一不满足就保留 load；--no-const-global 显式关掉
   --dce-cfg          基本块级可达性 DCE（只删"能到但永不执行"的代码）
   --build-date <s>   固定 __DATE__（如 "May 28 2026"）
   --build-time <s>   固定 __TIME__（如 "20:26:40"）
@@ -851,6 +855,19 @@ CJK 按显示单元计列、tab 原样重放。它不需要 armcc，断言的是
 ## 版本历史
 
 - v0.8.7：新增**全程序编译** `--ipo`（别名 `-flto`，`docs/IPO_LTO.md`）。一次调用吃多个 `.c`，每个文件仍然独立走前端（`static` 还是本文件的），IR **追加**进同一个 `IrProgram`，然后跑**一次**管线、生成一次代码。之所以不是对象级 LTO：`ARKOBJ2` 对象里没有 IR，真 LTO 要给对象加 IR 载荷段并在链接期重建（重编号三个池 + 在链接器里跑后端），那是另一套契约。三条合并规则——① 文件作用域符号改名为 `__ipo<单元>f_/g__<名字>` 并全程序查重（撞了再加 `_`，加不出来就报错），② 外部名按链接器规则裁定（weak 输给 strong、**两个 strong 函数报错**、两个 `int g;` 合成一个对象、两个 `int g = 1;` 报错、`extern` 被定义覆盖），③ 内联后无引用的 `static` 剪枝（`used`/构造析构/alias/`__at`/section 一律保留，**程序里出现任何内联汇编就整段跳过**）。价值的来源是 `ir.inline` 本来就是全程序 scope：合并后**跨文件内联免费**（实测 `-O2` 无 `BL one`、`-O1` 有）。拒绝 `-c`/`-E`/`-g`/`-link`/缺 `-o`/`.s`/`.o`，各给理由；单文件走 `--ipo` 与普通编译**逐字节相同**（`.s` 与 `.bin` 都对拍）。可裁减：`ARKCC_FEATURE_IPO` 在 `ARKCC_PROFILE_STM32_MIN` 档默认 0（128 KB 池装不下多 TU 的 IR），关掉时 `--ipo` 报"未编入此构建"而不是未知选项。门禁 `tests/run_ipo_tests.py`（`make test-ipo`，19 项）：三条动态用例在 ARM 模拟器上返回 28 / 23 / 4，两条去重报错必须点名符号且**不留镜像**，剪枝与跨 TU 内联各读一次汇编，外加裁剪构建拒绝。
+  本版还加了**跨 TU 常量传播** `--const-global`（`docs/IPO_LTO.md` §8）：合并之后"这个 `const`
+  到底是不是常量"第一次能看全，于是把常量对象的 `load` 折成立即数（`const int LIMIT = 100` 跨文件读
+  变成 `MOV r0, #100`，不再 `MOVW/MOVT + LDR`）。判定取"过于保守"的一侧——只认「`const` + 标量整型
+  初值 + 不是 `extern` + 全程序没人写它 + 地址没外泄（没有取址、也没进别人的 `init_sym`/`init_refs`）
+  + 非 `volatile`/数组/聚合/函数 + `type_size==4` + 无 `__at`/section/`__thread`/`__global_reg`」，
+  任一不满足就保留 load：漏折只少省一条 `LDR`，错折是错答案。排在 `ir.inline` 之后（跨文件内联把
+  读者与定义放进同一视野），且因为管线不迭代，pass 自己重跑一次常量折叠让级联在一个轮次内收敛。
+  不做全局变量定理（非 `const` 全局即便全程序从不写也不折）、不删被折掉的 `const` 对象（`-link`
+  时仍需要定义）。单文件 `static const` 同样折。可裁减：`ARKCC_FEATURE_CONST_GLOBAL` 在
+  `ARKCC_PROFILE_STM32_MIN` 档默认 0，关掉时选项报"未编入此构建"。门禁 `tests/run_constglobal_tests.py`
+  （`make test-constglobal`，15 项）：折/不折两个镜像都返回 103、五种保守情形（取址 6、经取址写 9、
+  `volatile` 6、数组 3、`long long`）各自保留 load、`-O0` 不折、`--print-pipeline` 报 `run`/`off`、
+  裁剪构建拒绝，以及**开关关时全量构建与裁剪构建的 `.s` 逐字节相同**。
 - v0.8.6：四个方向一起落地，全部**默认关、可裁减、开关关时逐字节不变**。
   ① **`--warn-unused-result` + `__must_check`**：丢弃一个标注了检查的函数返回值即告警，标注从原型（`__must_check` / `__attribute__((warn_unused_result))`）沿声明链传递，宏展开后仍然有效。
   ② **MIR/CFG 基底 + 三条跨函数检查**（`docs/MIR_CFG.md`）：`src/mir.c` 建基本块与控制流边，在此之上做 `--warn-unused-static`（静态函数无人引用）、`--warn-unreachable`（没有任何路径能到达的指令，报"该函数内 N 条指令永远跑不到"）、`--warn-recursion`（直接/间接递归），三条都只看**能证实的形状**——`goto` 进死块、函数指针别名、`#pragma arm section` 之类的模糊情形一律沉默。

@@ -747,4 +747,23 @@
 # endif
 #endif
 
+/* ---------------------------------------------------------------------------
+ * 0.8.7 全程序常量传播（--const-global）
+ *
+ * 一个文件作用域的 const 对象在 C 语义下就是常量：任何地方读它都得到初始化
+ * 表达式写下的那个值，因为写它是未定义行为。irgen 仍然发 IR_PUSH_GLOBAL
+ * （按地址取值），因为它在生成那一刻并不知道定义是否落在本翻译单元里；
+ * 等 inlining 之后（--ipo 时则是合并成单一程序之后）答案已知，这次读取可以
+ * 直接变成立即数。
+ *
+ * 代码很小（一次线性扫描），但板端的规矩是「不用的特性不驻留」，所以
+ * STM32_MIN 档裁掉它；运行期默认也关，不开 --const-global 时产物逐字节不变。
+ * ------------------------------------------------------------------------- */
+#ifndef ARKCC_FEATURE_CONST_GLOBAL
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_CONST_GLOBAL   0
+# else
+#   define ARKCC_FEATURE_CONST_GLOBAL   1
+# endif
+#endif
 #endif /* ARKCC_CONFIG_H */

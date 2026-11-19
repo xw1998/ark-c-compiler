@@ -85,6 +85,7 @@ void config_init(void) {
      * 不打开时产物与 0.8.5 逐字节相同。 */
     g_config.enable_licm               = 0;
     g_config.enable_unroll             = 0;
+    g_config.enable_const_global       = 0;
     /* --pipeline: 默认 FULL = 历史行为（每个 pass 自己的开关/级别决定），
      * 因此不写这个选项时产物与 0.8.4 逐字节相同。 */
     g_config.pipeline_profile     = ARK_PROFILE_FULL;
@@ -134,6 +135,8 @@ static void apply_kv(const char *section, const char *key, const char *val) {
         else if (ark_streq(key, "warn_recursion"))     g_config.enable_warn_recursion = parse_bool(val);
         else if (ark_streq(key, "licm"))               g_config.enable_licm = parse_bool(val);
         else if (ark_streq(key, "unroll"))             g_config.enable_unroll = parse_bool(val);
+        else if (ark_streq(key, "const_global") || ark_streq(key, "const-global"))
+            g_config.enable_const_global = parse_bool(val);
         else if (ark_streq(key, "pipeline")) {
             /* An unknown spelling is reported rather than ignored: a config
              * file that says "pipeline = lti" and is silently treated as
@@ -460,6 +463,7 @@ void config_print(void) {
     ark_log("  warn_recursion=%d\n", g_config.enable_warn_recursion);
     ark_log("  licm=%d unroll=%d\n",
             g_config.enable_licm, g_config.enable_unroll);
+    ark_log("  const_global=%d\n", g_config.enable_const_global);
     ark_log("  pipeline=%s\n", pipeline_profile_name(g_config.pipeline_profile));
     ark_log("  opt_level=%d debug_info=%d split_sections=%d\n",
             g_config.opt_level, g_config.debug_info, g_config.split_sections);

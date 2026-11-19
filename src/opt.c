@@ -820,3 +820,130 @@ void opt_vectorize(IrProgram *prog) {
         }
     }
 }
+/* ------------------------------------------------------------------ */
+/* Whole-program constant propagation (--const-global)                 */
+/* ------------------------------------------------------------------ */
+#if ARKCC_FEATURE_CONST_GLOBAL
+
+/* A file-scope `const` object is a constant in the sense C gives it: every
+ * read of it, in every translation unit, is the value its initialiser spells
+ * out, because writing it is undefined behaviour.  irgen still emits
+ * IR_PUSH_GLOBAL for such a read -- a load through the object's address --
+ * because at the moment it generates the instruction it does not know whether
+ * the definition even lives in this translation unit.  After inlining (and,
+ * under --ipo, after every unit has been appended into one program) the answer
+ * is known, and that load can become an immediate.
+ *
+ * What has to be proved, and what each condition rules out:
+ *   const, defined here, scalar initialiser
+ *       -- an object with no initialiser has no value to propagate; an
+ *          aggregate, a string or an address constant needs a different
+ *          rewrite than "push one word".
+ *   never stored to, address never taken
+ *       (IR_STORE_GLOBAL / IR_PUSH_GLOBAL_ADDR / named by an initialiser)
+ *       -- C declares writes to a const object UB, but a program that does it
+ *          is still compiled: once the address escapes we cannot see who
+ *          writes through it, so the load has to stay.
+ *   the load itself is not volatile
+ *       -- IR_AUX_VOLATILE means "read this every time"; folding it would be
+ *          a wrong answer, not an optimisation.
+ *   4-byte non-floating type
+ *       -- IR_PUSH_INT pushes exactly one word.  A `long long` or a double
+ *          travels as two, and a narrower object would need the extension
+ *          decided here; those keep the load, which is correct, just slower.
+ *   no __at() / section() / __thread / __global_reg
+ *       -- placement attributes and register variables exist so that
+ *          something outside the C program can look at the object.
+ *
+ * Returns the number of loads replaced; 0 means nothing was proved and the
+ * program is byte-for-byte untouched.
+ */
+int opt_const_global(IrProgram *p) {
+    typedef struct { const char *name; long long value; int blocked; } CgCand;
+    CgCand *cand;
+    int ncand = 0, hits = 0, i, k, j;
+
+    if (!p || p->global_count <= 0) return 0;
+    cand = (CgCand *)mem_pool_alloc((int)sizeof(CgCand) * p->global_count);
+    if (!cand) return 0;
+
+    /* Step 1: which objects are even candidates. */
+    for (i = 0; i < p->global_count; i++) {
+        IrGlobal *g = p->globals[i];
+        if (!g->is_const || g->is_extern || !g->has_init) continue;
+        if (g->is_float || g->init_is_complex) continue;
+        if (g->init_str || g->init_aggregate || g->init_sym) continue;
+        if (g->init_ref_count > 0) continue;
+        if (g->section || g->has_at || g->is_tls || g->global_reg >= 0) continue;
+        if (!g->type || g->type->is_volatile) continue;
+        switch (g->type->kind) {
+        case TYPE_VOID: case TYPE_ARRAY: case TYPE_STRUCT:
+        case TYPE_UNION: case TYPE_FUNC:
+            continue;
+        default:
+            break;
+        }
+        if (type_size(g->type) != 4) continue;
+        cand[ncand].name    = g->name;
+        cand[ncand].value   = g->init_int;
+        cand[ncand].blocked = 0;
+        ncand++;
+    }
+    if (ncand == 0) return 0;
+
+    /* Step 2: disqualify any object whose address escapes.  A write through a
+     * pointer, or a read by code that is not in this program, both start with
+     * the address being taken. */
+    for (i = 0; i < p->func_count; i++) {
+        IrFunc *f = p->funcs[i];
+        for (k = 0; k < f->code_count; k++) {
+            IrInst *I = &f->code[k];
+            if (I->op != IR_PUSH_GLOBAL_ADDR && I->op != IR_STORE_GLOBAL) continue;
+            if (!I->name) continue;
+            for (j = 0; j < ncand; j++)
+                if (ark_streq(cand[j].name, I->name)) { cand[j].blocked = 1; break; }
+        }
+    }
+    for (i = 0; i < p->global_count; i++) {
+        IrGlobal *g = p->globals[i];
+        if (g->init_sym) {
+            for (j = 0; j < ncand; j++)
+                if (ark_streq(cand[j].name, g->init_sym)) { cand[j].blocked = 1; break; }
+        }
+        for (k = 0; k < g->init_ref_count; k++) {
+            if (!g->init_refs[k].sym) continue;
+            for (j = 0; j < ncand; j++)
+                if (ark_streq(cand[j].name, g->init_refs[k].sym)) { cand[j].blocked = 1; break; }
+        }
+    }
+
+    /* Step 3: replace the surviving loads with the value, then re-fold so the
+     * constant cascades through the arithmetic that consumed it.  Only
+     * functions that actually changed are re-folded: running the folder over
+     * every function would change -O output for programs this pass did not
+     * touch. */
+    for (i = 0; i < p->func_count; i++) {
+        IrFunc *f = p->funcs[i];
+        int changed = 0;
+        for (k = 0; k < f->code_count; k++) {
+            IrInst *I = &f->code[k];
+            if (I->op != IR_PUSH_GLOBAL || !I->name) continue;
+            if (I->aux & (IR_AUX_VOLATILE | IR_AUX_SLOT64 | IR_AUX_COMPLEX)) continue;
+            for (j = 0; j < ncand; j++) {
+                if (cand[j].blocked) continue;
+                if (!ark_streq(cand[j].name, I->name)) continue;
+                I->op   = IR_PUSH_INT;
+                I->val  = cand[j].value;
+                I->name = 0;
+                I->aux  = 0;
+                I->aux2 = 0;
+                hits++;
+                changed = 1;
+                break;
+            }
+        }
+        if (changed) opt_constfold_func(f);
+    }
+    return hits;
+}
+#endif /* ARKCC_FEATURE_CONST_GLOBAL */

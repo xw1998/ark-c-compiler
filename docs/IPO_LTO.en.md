@@ -12,6 +12,8 @@ listed item by item in §6 instead of being papered over as "LTO-like".
 | --- | :---: | --- | --- |
 | `--ipo` / `-flto` | off | `full` (not in the MCU minimal profile) | `-o` is required |
 | `ARKCC_FEATURE_IPO` | host `1`, `ARKCC_PROFILE_STM32_MIN` `0` | crop switch | overridable with `-DARKCC_FEATURE_IPO=0/1` |
+| `--const-global` (§8) | off | `full` | `-O1` and above, see §8 |
+| `ARKCC_FEATURE_CONST_GLOBAL` | host `1`, `ARKCC_PROFILE_STM32_MIN` `0` | crop switch | overridable with `-DARKCC_FEATURE_CONST_GLOBAL=0/1` |
 
 `--ipo` **changes the analysis scope, not the meaning of `-O`**: cross-file
 inlining still needs `-O2` (or `--autoinline`), exactly as with a single file.
@@ -166,8 +168,10 @@ Refusing beats shipping something that only looks like it works:
 
 - **Not object-level LTO**: no cross-boundary optimisation of third-party
   `.ark_obj` / `.a`; source is required.
-- **No cross-TU constant propagation / global-value numbering**: merging only lets
-  existing passes see more code; no new "cross-TU-only" transform was written.
+- **Cross-TU constant propagation needs `--const-global` explicitly** (§8): merging
+  only makes it *possible*; by default not a single byte of code shape changes (the
+  gate compares byte for byte). **No global-value theorem**: non-`const` globals
+  never participate, even if the whole program never writes them.
 - **`-g` unsupported** (§5): debug info still comes from per-file compiles.
 - **`-MMD` output name**: each unit writes the same dependency file and the last
   one wins; ask for per-file dependencies with `-MMD -MF` per file.
@@ -203,10 +207,104 @@ same-named strong definitions and the static case would go red with a duplicate
 definition.  In other words, one check exists so that the failure of another is
 visible.
 
-## 8. Later (not done -- listed so it is not read as "supported")
+## 8. Cross-TU constant propagation (`--const-global`)
 
-1. **Cross-TU constant propagation / global-value numbering**: the merge already
-   gathers the information; the pass is missing.
+Once `--ipo` has appended several TUs into one `IrProgram`, "is this `const` object
+really a constant" becomes answerable **in full** for the first time: the definition
+lives in `a.c`, the reader in `b.c`, and both are now in the same program.
+`--const-global` turns that into instructions -- the load of a constant object
+becomes an immediate.
+
+The switches are `--const-global` / `--no-const-global` (the latter to turn it back
+off when an ini enables it by default); they require `-O1` or above and do **not**
+require `--ipo` -- a `static const` in a single file folds too (§8.5 has a check for
+exactly that).  A cropped build uses `ARKCC_FEATURE_CONST_GLOBAL=0`, and then the
+option reports "not compiled into this build".
+
+```bash
+arkcc --ipo main.c limits.c -target arm --cpu Cortex-M7 -O1 --const-global -o app.bin
+```
+
+### 8.1 What counts as a constant
+
+An object folds only if **every** condition below holds; any one of them failing
+keeps the load (correct but slow):
+
+- declared `const` **and** carrying a scalar integer initialiser (`has_init`, not
+  `init_str` / aggregate / symbol address);
+- **not** `extern` -- the definition must be visible in this unit, otherwise
+  "somewhere else it could be `int`" cannot be ruled out;
+- never written: no `IR_STORE_GLOBAL` anywhere in the program names it;
+- address never escapes: no `IR_PUSH_GLOBAL_ADDR` names it, and it does not appear
+  in another object's `init_sym` / `init_refs[]`.  **Once the address is out, who
+  writes through the pointer can no longer be proven**;
+- not `volatile`; not an array / `struct` / `union` / function; `type_size == 4`
+  (`IR_PUSH_INT` pushes one word; `long long` / `double` take two);
+- no `__at`, no `section`, not `__thread`, not `__global_reg`.
+
+Erring on the conservative side is deliberate: a missed fold saves one `LDR` less,
+a wrong fold is a wrong answer.
+
+### 8.2 Why it sits after `ir.inline`
+
+Only after cross-file inlining has moved the callee body in do the "read this
+`const`" instructions and the evidence for whether it is constant share one view.
+And because the `--ipo` pipeline **runs once and does not iterate** (§4), this pass
+calls `opt_constfold_func()` itself after each modified function so that `LIMIT*2+1`
+collapses within the same round instead of waiting for a next constant-folding round.
+
+### 8.3 What the fold looks like
+
+```
+/* limits.c */  const int LIMIT = 100;
+/* main.c   */  int limit(void) { return LIMIT; }
+
+# with --const-global            # without
+limit:                          limit:
+    MOV r0, #100                    MOVW r0, #...
+                                    MOVT r0, #...
+                                    LDR  r0, [r0]
+```
+
+`--print-pipeline` (needs `ARKCC_FEATURE_PIPELINE_DUMP`) prints
+`run   ir.const-global`; with the flag off it prints
+`skip  ir.const-global  off (--const-global)`.
+
+### 8.4 What it does not do
+
+- **It does not delete the folded `const` object**: an externally-linked `const`
+  still needs a definition when the image is `-link`ed with other objects; `static`
+  ones are handled by the pruning in §3.3.
+- **No global-value theorem**: a non-`const` global may still be written through
+  assembly, an external object or a signal path even if the whole program never
+  writes it.  Only the provable `const` path is taken here.
+- **No cross-width expansion**: `long long` / `double` occupy two words; widening is
+  a separate job, so the load stays.
+
+### 8.5 Gate (`tests/run_constglobal_tests.py`)
+
+`make test-constglobal`.  Fifteen checks:
+
+| Group | Check | Why this one can fail |
+| --- | --- | --- |
+| fold happened | a `const` read from another unit becomes `MOV r0, #100`, no `LDR` in the body | the pass is not wired, or the candidate test was widened to "looks constant" |
+| anti-false-green | **without the flag** the same source still has a `LDR` | proves the shape change comes from the switch, not another optimisation |
+| dynamic (ARM emulator) | both the folded and the unfolded image return 103 | a wrong fold (address as value) goes red |
+| static | `-O0 --const-global` still loads | the pass has `min_level` 1 |
+| static | `--print-pipeline` reports `run ir.const-global` and `off (--const-global)` | the switch and the stage table drifted apart |
+| conservative ×5 | address taken (6), store through it (9), `volatile` (6), array (3), `long long` | each maps to one condition in §8.1; widening any one goes red |
+| single file | `static const int P = 7; P*2+1` has no `LDR`, returns 15 | folding without re-running constant folding stops the cascade halfway |
+| refuse | a `-DARKCC_FEATURE_CONST_GLOBAL=0` cropped build rejects the option | cropping does not hide an empty implementation |
+| anti-false-green | with the switch off, a full build and a cropped build emit **byte-identical** `.s` for `examples/*.c` × `{-O1,-O2}` | default-off must change nothing (compared=10, diff=0) |
+
+The "store through the address" row is also the guard for the §8.1 address-escape
+condition: if address-taken detection broke, that check would go red with 5 instead
+of 9.
+
+## 9. Later (not done -- listed so it is not read as "supported")
+
+1. **Global-value theorem**: constant-ness of non-`const` globals first needs an
+   answer to "can an external object or assembly text write it", see §8.4.
 2. **Preconditions for real object-level LTO**: an optional IR payload section in
    `ARKOBJ2`; rebuilding IR at link time (renumbering three pools); a version
    compatibility policy.  All three need "a backend runs inside the linker"

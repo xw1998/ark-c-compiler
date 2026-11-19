@@ -43,5 +43,14 @@ void opt_unroll_func(IrFunc *f);
  * and parallelizes them with SIMD instructions.
  * Only truly accelerates on the ARM backend; C backend falls back to scalar. */
 void opt_vectorize(IrProgram *prog);
+/* Whole-program constant propagation (--const-global): replaces a load of a
+ * `const` object that is provably never written and whose address is never
+ * taken with the immediate its initialiser spells out, then re-runs constant
+ * folding so the newly visible constant cascades.  Returns the number of loads
+ * replaced (0 when nothing was proved). See the comment on the definition in
+ * src/opt.c for what each precondition rules out. */
+#if ARKCC_FEATURE_CONST_GLOBAL
+int  opt_const_global(IrProgram *prog);
+#endif
 
 #endif /* ARK_OPT_H */

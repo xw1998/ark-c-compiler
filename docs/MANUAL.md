@@ -1144,6 +1144,31 @@ arkcc --ipo main.c util.c -target arm --cpu Cortex-M7 -O2 --vector-table -o app.
 
 详见 [IPO_LTO.md](IPO_LTO.md)，门禁 `tests/run_ipo_tests.py`（`make test-ipo`，19 项检查）。
 
+### 5.17 跨 TU 常量传播（`--const-global`）
+
+把"读一个 `const` 对象"折成立即数。`--ipo` 让跨文件的定义与读者处在同一个 program 里，
+这条 pass 才有信息可用；但**单文件里的 `static const` 同样折**。
+
+| 开关 | 默认 | 说明 |
+| --- | :---: | --- |
+| `--const-global` / `--no-const-global` | 关 | `-O1` 及以上；`--no-` 用于 ini 里默认打开时按次关掉 |
+| `ARKCC_FEATURE_CONST_GLOBAL`（编译期） | 宿主 `1`、`ARKCC_PROFILE_STM32_MIN` 为 `0` | 不在时选项以"未编入此构建"拒绝 |
+
+只有同时满足下列条件的对象才折，任何一条不满足就保留 load：
+
+- `const` 且有标量整型初值、**不是** `extern`；
+- 全程序 IR 里没有任何 `IR_STORE_GLOBAL` / `IR_PUSH_GLOBAL_ADDR` 命中它，也没有出现在
+  别的对象的 `init_sym` / `init_refs[]` 里（地址外泄就无法证明谁经指针写它）；
+- 不是 `volatile`、不是数组 / `struct` / `union` / 函数、`type_size == 4`
+  （`long long` / `double` 占两个字，`IR_PUSH_INT` 只压一个字）；
+- 没有 `__at`、没有 `section`、不是 `__thread`、不是 `__global_reg`。
+
+`--print-pipeline` 会打出 `run   ir.const-global`（关时 `skip ... off (--const-global)`）。
+默认关时**体积与代码逐字节不变**。
+
+详见 [IPO_LTO.md](IPO_LTO.md) §8，门禁 `tests/run_constglobal_tests.py`
+（`make test-constglobal`，15 项检查）。
+
 ## 6 在 Windows 上测试
 
 ### 6.1 推荐流程：c 后端

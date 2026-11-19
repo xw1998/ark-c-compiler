@@ -123,6 +123,13 @@ static int ir_wanted_inline(void)     { return g_config.enable_opt_inline; }
 static int ir_wanted_vectorize(void)  { return g_config.enable_opt_vectorize; }
 static int ir_wanted_licm(void)       { return g_config.enable_licm; }
 static int ir_wanted_unroll(void)     { return g_config.enable_unroll; }
+#if ARKCC_FEATURE_CONST_GLOBAL
+static int ir_wanted_const_global(void) { return g_config.enable_const_global; }
+/* opt_const_global reports how many loads it replaced; the table wants a void
+ * entry point.  A file-static wrapper keeps that count off the program image
+ * instead of parking it in a writable global nothing reads. */
+static void ir_const_global_run(IrProgram *prog) { (void)opt_const_global(prog); }
+#endif
 
 /* The two min_level values of 1 and 2 are not free choices:
  *   - constfold / dce at -O0: folding changes -O0 codegen expectations
@@ -174,6 +181,16 @@ static const IrStage g_ir_stages[] = {
 #endif
     { PIPE_NAME("ir.inline"),    ARK_PROFILE_FULL, 2, GATE_FLAG_AND_LEVEL, ARKCC_FEATURE_OPT_INLINE,
       ir_wanted_inline,    PIPE_NAME("off (--autoinline / -O2)"), 1, 1, 0,                  opt_inline },
+    /* 常量传播放在 inline 之后：跨文件内联把被调函数的函数体搬进来以后，里面
+     * 那些「读某个 const 全局」的指令才第一次和定义待在同一个程序里。它自己
+     * 重跑一次折叠（opt_constfold_func），所以不必等下一轮 constfold——
+     * 管线每个阶段只走一遍，不靠迭代收敛。 */
+#if ARKCC_FEATURE_CONST_GLOBAL
+    { PIPE_NAME("ir.const-global"), ARK_PROFILE_FULL, 1, GATE_FLAG_AND_LEVEL, 1,
+      ir_wanted_const_global, PIPE_NAME("off (--const-global)"), 1, 0, 0, ir_const_global_run },
+#else
+    { PIPE_NAME("ir.const-global"), ARK_PROFILE_FULL, 1, GATE_FLAG_AND_LEVEL, 0, 0, 0, 1, 0, 0, 0 },
+#endif
     { PIPE_NAME("ir.vectorize"), ARK_PROFILE_FULL, 2, GATE_FLAG_OR_LEVEL,  ARKCC_FEATURE_OPT_VECTORIZE,
       ir_wanted_vectorize, PIPE_NAME("off (--vectorize / -O2)"),  1, 0, 0,                  opt_vectorize },
 };

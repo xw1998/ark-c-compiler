@@ -11,6 +11,8 @@
 | --- | :---: | --- | --- |
 | `--ipo` / `-flto` | 关 | `full`（MCU 最小剖面不含） | 必须给 `-o` |
 | `ARKCC_FEATURE_IPO` | 宿主 `1`，`ARKCC_PROFILE_STM32_MIN` 为 `0` | 裁剪开关 | 可在命令行 `-DARKCC_FEATURE_IPO=0/1` 覆盖 |
+| `--const-global`（§8） | 关 | `full` | `-O1` 及以上，见 §8 |
+| `ARKCC_FEATURE_CONST_GLOBAL` | 宿主 `1`，`ARKCC_PROFILE_STM32_MIN` 为 `0` | 裁剪开关 | 可在命令行 `-DARKCC_FEATURE_CONST_GLOBAL=0/1` 覆盖 |
 
 `--ipo` **只改变分析范围，不改变 `-O` 语义**：想拿到跨文件内联，仍然要给 `-O2`
 （或 `--autoinline`），和单文件时一模一样。
@@ -149,8 +151,9 @@ static int table[4];         ->  __ipo1g_table       (第 1 个文件的对象)
 
 - **不是对象级 LTO**：不能对第三方提供的 `.ark_obj` / `.a` 做跨边界优化；要优化
   就必须拿到源码。
-- **没有跨 TU 常量传播 / 全局变量定理**：合并只让已有的 pass 看见更多代码，
-  这一版没有新写任何"跨 TU 专属"变换。
+- **跨 TU 常量传播要显式开 `--const-global`**（§8）：合并只是让它**可做**，默认
+  不改变一个字节的代码形状（门禁里有逐字节对拍）。**不做全局变量定理**：非
+  `const` 全局不参与，哪怕全程序从未写它。
 - **`-g` 不支持**（§5）：调试信息仍按单文件编译获得。
 - **`-MMD` 输出名**：合并时各单元写同一份依赖文件，后写的赢；多文件生成依赖请
   对每个文件分别 `-MMD -MF`。
@@ -183,9 +186,92 @@ static int table[4];         ->  __ipo1g_table       (第 1 个文件的对象)
 失效，两个 `static step` 会变成同名 strong 定义，于是静态那项会以"重复定义"变红。
 换句话说，门禁里有一条检查专门负责让另一条检查失效时能被看见。
 
-## 8. 后续（未做，写在这里避免被读成"已支持"）
+## 8. 跨 TU 常量传播（`--const-global`）
 
-1. **跨 TU 常量传播 / 全局变量定理**：合并已经把信息集中了，缺的是 pass。
+`--ipo` 把多个 TU 追加进同一个 `IrProgram` 之后，"这个 `const` 对象到底是不是常量"
+第一次可以**看全**：定义在 A 文件、读者在 B 文件，两侧此时在同一个程序里。
+`--const-global` 把这件事变成指令——把常量对象的 `load` 折成立即数。
+
+开关是 `--const-global` / `--no-const-global`（后者用于 ini 里默认打开时按次关掉），
+要求 `-O1` 及以上；`--ipo` 不是必需的，**单文件里 `static const` 同样有效**（§8.5
+有一条专门检查）。裁剪构建用 `ARKCC_FEATURE_CONST_GLOBAL=0`，此时选项会报
+"not compiled into this build"。
+
+```bash
+arkcc --ipo main.c limits.c -target arm --cpu Cortex-M7 -O1 --const-global -o app.bin
+```
+
+### 8.1 什么才算"常量"
+
+只有同时满足下面全部条件的对象才会被折；任何一条不满足就**保留 load**（正确但慢）：
+
+- 声明为 `const`，**且有标量整型初值**（`has_init`，不是 `init_str` / 聚合 /
+  符号地址）；
+- **不是** `extern`——本单元必须看得见定义，否则"别处可能是 `int`"无法排除；
+- 从不被写：全程序 IR 里没有任何 `IR_STORE_GLOBAL` 命中它；
+- 地址从不外泄：没有 `IR_PUSH_GLOBAL_ADDR` 命中它，它也没出现在别的对象的
+  `init_sym` / `init_refs[]` 里。**一旦地址出去，谁经指针写它就无法证明**；
+- 不是 `volatile`；不是数组 / `struct` / `union` / 函数；`type_size == 4`
+  （`IR_PUSH_INT` 只压一个字，`long long` / `double` 占两个）；
+- 没有 `__at`、没有 `section`、不是 `__thread`、不是 `__global_reg`。
+
+判据取"过于保守"的一侧是刻意的：漏折只是少省一条 `LDR`，错折是错答案。
+
+### 8.2 为什么放在 `ir.inline` 之后
+
+跨文件内联把被调函数体搬进来之后，"读某个 `const`"的指令才第一次与"它是不是常量"
+的证据处在同一视野里。而且 `--ipo` 的流水线**只跑一遍、不迭代**（§4），所以这条
+pass 在对每个改动过的函数后面自己调一次 `opt_constfold_func()`，让 `LIMIT*2+1`
+这种级联在一轮内收敛，而不是指望下一轮常量折叠。
+
+### 8.3 折叠长什么样
+
+```
+/* limits.c */  const int LIMIT = 100;
+/* main.c   */  int limit(void) { return LIMIT; }
+
+# 带 --const-global                # 不带
+limit:                             limit:
+    MOV r0, #100                       MOVW r0, #...
+                                       MOVT r0, #...
+                                       LDR  r0, [r0]
+```
+
+`--print-pipeline`（需 `ARKCC_FEATURE_PIPELINE_DUMP`）打一行
+`run   ir.const-global`；关掉时是 `skip  ir.const-global  off (--const-global)`。
+
+### 8.4 不做的事
+
+- **不删被折叠掉的 `const` 对象**：外部链接的 `const` 在与别的对象 `-link` 时
+  仍然需要定义；`static` 的交给 §3.3 的剪枝。
+- **不做"全局变量定理"**：非 `const` 全局即便全程序从未被写，也仍可能经汇编、
+  外部对象或信号路径被改。本轮只走 `const` 这一条可证路径。
+- **不做跨字宽的展开**：`long long` / `double` 是两个字的槽，扩展是另一件事，
+  留着 load。
+
+### 8.5 门禁（`tests/run_constglobal_tests.py`）
+
+`make test-constglobal`。十五项检查：
+
+| 组 | 检查 | 为什么这一项能失败 |
+| --- | --- | --- |
+| 折叠生效 | 另一单元的 `const` 读变成 `MOV r0, #100`，函数体里没有 `LDR` | pass 没接线、或候选判据放宽到"看起来像常量" |
+| 反假通过 | **不带开关**的同一份源仍然有 `LDR` | 证明代码形状的差异来自开关，不是别的优化 |
+| 动态（ARM 模拟器） | 折与不折两个镜像都返回 103 | 错折（把地址当值）会变红 |
+| 静态 | `-O0 --const-global` 仍然 `LDR` | pass 的 `min_level` 是 1 |
+| 静态 | `--print-pipeline` 分别报 `run ir.const-global` 与 `off (--const-global)` | 开关与阶段表脱节 |
+| 保守情形 ×5 | 取址（6）、经取址写（9）、`volatile`（6）、数组（3）、`long long` | 五条各自对应一条判据，任一放宽就变红 |
+| 单文件 | `static const int P = 7; P*2+1` 无 `LDR`、返回 15 | 折了却不跑常量折叠，级联停在中途 |
+| 拒绝 | `-DARKCC_FEATURE_CONST_GLOBAL=0` 的裁剪构建拒绝该选项 | 裁剪没有藏起一个空实现 |
+| 反假通过 | 开关关时，全量构建与裁剪构建对 `examples/*.c` × `{-O1,-O2}` 的 `.s` **逐字节相同** | 默认关必须零变化（compared=10, diff=0） |
+
+"经取址写"这条同时是 §8.1 "地址外泄"判据的守卫：如果取址检测失效，这条会以
+返回 5 而不是 9 变红。
+
+## 9. 后续（未做，写在这里避免被读成"已支持"）
+
+1. **全局变量定理**：非 `const` 全局的常量性需要先回答"外部对象与汇编文本能否写它"，
+   见 §8.4。
 2. **真对象级 LTO 的前置条件**：给 `ARKOBJ2` 增加可选的 IR 载荷段；链接期重建
    IR（需要重编号三个池）；版本兼容策略。这三件都要先在板上验证"链接器里能跑后端"。
 3. **部分链接（`-r`）**：多个 `--ipo` 单元产出中间对象，最后再链接——同样卡在

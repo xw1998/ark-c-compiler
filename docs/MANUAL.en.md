@@ -1340,6 +1340,33 @@ compile.
 
 See [IPO_LTO.en.md](IPO_LTO.en.md); the gate is `tests/run_ipo_tests.py` (`make test-ipo`, 19 checks).
 
+### 5.17 Cross-TU constant propagation (`--const-global`)
+
+Folds a load of a `const` object into an immediate.  `--ipo` puts cross-file
+definitions and readers in one program so the pass has information to work with;
+but a `static const` in a **single file folds too**.
+
+| Switch | Default | Meaning |
+| --- | :---: | --- |
+| `--const-global` / `--no-const-global` | off | `-O1` and above; `--no-` turns it back off when an ini enables it by default |
+| `ARKCC_FEATURE_CONST_GLOBAL` (compile time) | host `1`, `ARKCC_PROFILE_STM32_MIN` `0` | when absent the option is refused as "not compiled into this build" |
+
+An object folds only when all of the following hold; otherwise the load stays:
+
+- `const` with a scalar integer initialiser, and **not** `extern`;
+- no `IR_STORE_GLOBAL` / `IR_PUSH_GLOBAL_ADDR` in the whole program names it, and it does not
+  appear in another object's `init_sym` / `init_refs[]` (once the address escapes, who writes
+  through the pointer cannot be proven);
+- not `volatile`, not an array / `struct` / `union` / function, `type_size == 4`
+  (`long long` / `double` take two words and `IR_PUSH_INT` pushes one);
+- no `__at`, no `section`, not `__thread`, not `__global_reg`.
+
+`--print-pipeline` prints `run   ir.const-global` (`skip ... off (--const-global)` when off).
+With the flag off, **size and emitted code are byte-identical**.
+
+See [IPO_LTO.en.md](IPO_LTO.en.md) §8; the gate is `tests/run_constglobal_tests.py`
+(`make test-constglobal`, 15 checks).
+
 ## 6 Testing on Windows
 
 ### 6.1 Recommended flow: the C backend

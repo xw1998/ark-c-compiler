@@ -23,7 +23,8 @@ endif
 .PHONY: all clean test test-arm test-c test-stdlib test-install test-x86 test-x86-64 \
         test-x86-64-selfhost test-riscv test-reloc-text test-memlint \
         test-enumcheck test-pipeline test-unusedresult test-mir \
-        test-loop test-modern test-atomic test-ipo install stm32
+        test-loop test-modern test-atomic test-ipo test-constglobal \
+        install stm32
 
 all: $(ARKCC)
 
@@ -38,7 +39,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -110,6 +111,15 @@ test-modern: $(ARKCC)
 # -DARKCC_FEATURE_IPO=0 must refuse the option instead of pretending to merge.
 test-ipo: $(ARKCC)
 	$(PYTHON) tests/run_ipo_tests.py ./$(ARKCC)
+
+# Constant-object gate: a const global with a scalar initialiser is a constant
+# even when the reader sits in another translation unit, so after the IPO
+# merge a pass may replace its load with an immediate.  The gate asserts both
+# directions (folded / still a load) and every conservative case that must NOT
+# fold: address taken, store through a cast, volatile, array, long long.  A
+# build cropped with -DARKCC_FEATURE_CONST_GLOBAL=0 must refuse the option.
+test-constglobal: $(ARKCC)
+	$(PYTHON) tests/run_constglobal_tests.py ./$(ARKCC)
 
 # Library gate: every stdlib entry point is compiled and run on the ARM
 # emulator, and each case asserts a number the program itself computed.  A
