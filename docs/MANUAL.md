@@ -186,7 +186,7 @@ arkcc <file.c|file.s> [options]
 | `-f<feature>` / `-fno-<feature>` | 启用/关闭特性（vla/complex/wchar/trigraph/fpu/dwarf/opt-inline/opt-dce/opt-constfold/...） |
 | `-Wno-unused` | 抑制未使用警告 |
 | `--list-backends` | 列出所有可用后端 |
-| `--diag_style <arm\|ide>` | 诊断排版：`arm`（默认，同 armcc 默认）或 `ide`（uVision 的 `文件(行,列) : error 码: 消息` 风格） |
+| `--diag_style <arm\|gnu\|ide\|modern>` | 诊断排版：`arm`（默认，同 armcc 默认）、`gnu`、`ide`（uVision 的 `文件(行,列) : error 码: 消息` 风格）或 `modern`（clang 形状，别名 `clang`） |
 | `--diag_suppress=<n>[,<n>]` | 抑制指定码的诊断（同 armcc：非数字或越界码静默忽略；无值时报 `C3901U`） |
 | `--diag_remark=<n>[,<n>]` | 与 `--diag_suppress` 不可区分（实测 armcc 亦然），复用同一套抑制位 |
 | `--diag_error=<n>[,<n>]` | 把指定码升级为 error；`-D` 后缀仍按该码的内在类别保留 |
@@ -1080,6 +1080,40 @@ void g(void) { f(); (void)f(); }     /* 前一条告警，后一条沉默 */
 - 两者都排在 `ir.dce` 之后、`ir.dce-cfg` 之前（`ir.licm` / `ir.unroll`）。
 
 详见 [LOOPS.md](LOOPS.md)，门禁 `tests/run_loop_tests.py`（`make test-loop`）。
+
+### 5.15 现代化诊断风格（`--diag_style=modern`）
+
+第三种排版，**纯表现层**：判定、计数、错误上限、退出码一律不变，只有字节形状变了。
+
+```
+$ arkcc -c err.c --diag_style=modern
+err.c:4:9: error: identifier "y" is undefined [#20]
+    4 | 	return y + x;
+      | 	       ^
+1 error generated.
+```
+
+| 形状 | MODERN |
+| --- | --- |
+| 前端诊断 | `f.c:4:9: error: <消息> [#20]` |
+| 只有文件/行 | `f.c:4: error: <消息> [#67]` |
+| 无源文件 | `no source: error: <消息> [#5]` |
+| 命令行 | `no source: error: command-line: <消息> [#992]` |
+| 驱动 / 致命 | `arkcc: fatal error: <消息> [C3900U]`（后面可跟一行 `note:`） |
+| 汇总 | `1 error generated.` / `1 warning and 2 errors generated.`（0 的项不写出来） |
+
+取舍：
+
+- **armcc 码保留**，但放到消息之后 `[#20]`，因为它是查表依据；去掉它就把可检索性丢了。
+- 回显块用**右对齐 5 列行号 + ` | `**，caret 行同宽；列号口径与 arm 风格完全相同
+  （tab 记 1 列、CJK 记 2 列）。
+- 不打 `At end of source:`（行号已经在头行里了）。
+- `note:` 行只有 modern 有；目前只用在"未知选项"两处提示 `arkcc --help`。
+- `--diag_style=clang` 是同一个风格的别名；`arm` / `gnu` / `ide` 的输出**逐字节不变**。
+- 裁剪构建（`-DARKCC_FEATURE_DIAG=0`）里 `diag_note()` 是空实现，链接不受影响。
+
+这是**唯一不要求与 armcc 逐字节一致**的风格。详见 [DIAGNOSTICS.md](DIAGNOSTICS.md) §4.1，
+门禁 `tests/run_modern_diag_tests.py`（`make test-modern`，35 项检查）。
 
 ## 6 在 Windows 上测试
 

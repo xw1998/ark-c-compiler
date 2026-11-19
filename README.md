@@ -615,7 +615,7 @@ arkcc <file.c|file.s> [选项]
   --list-backends    列出后端
 
   诊断输出
-  --diag_style <s>   arm（默认）| ide；ide 为 uVision 的 File(line,col) 风格
+  --diag_style <s>   arm（默认）| gnu | ide | modern；modern 为 clang 形状（别名 clang）
   --errors <file>    把整条诊断流写入文件（同 armcc）
 
   目标 CPU 选择

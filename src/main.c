@@ -88,7 +88,7 @@ static void usage(void) {
         "  -profile <name>    select build profile (host_full/stm32_min/cross_compile)\n"
         "  -D<name>[=<val>]   define macro (e.g. -DFOO=1 or -D FOO)\n"
         "  --list-backends    print available backends and exit\n"
-        "  --diag_style <s>   diagnostic layout: arm (default) | ide\n"
+        "  --diag_style <s>   diagnostic layout: arm (default) | gnu | ide | modern\n"
         "  --diag_suppress=<n>[,<n>]  hide diagnostic code(s)\n"
         "  --diag_remark=<n>[,<n>]    same visible effect as --diag_suppress\n"
         "  --diag_error=<n>[,<n>]     report diagnostic code(s) as errors\n"
@@ -443,6 +443,7 @@ int main(int argc, char **argv) {
             strncpy(optbuf + 1, a + 2, sizeof(optbuf) - 2);
             optbuf[sizeof(optbuf) - 1] = 0;
             diag_driver("C3900U", optbuf, "");
+            diag_note("run arkcc --help for the options this build understands");
             diag_shutdown();
             return 1;
         }
@@ -730,6 +731,7 @@ int main(int argc, char **argv) {
              * means a typo ("-targt arm") compiles with the wrong settings and
              * the user never learns. */
             diag_driver("C3900U", a, "");
+            diag_note("run arkcc --help for the options this build understands");
             diag_shutdown();
             return 1;
         }

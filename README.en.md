@@ -712,7 +712,7 @@ arkcc <file.c|file.s> [options]
   --list-backends    list backends
 
   Diagnostics
-  --diag_style <s>   arm (default) | ide; ide is uVision's File(line,col) style
+  --diag_style <s>   arm (default) | gnu | ide | modern; modern is the clang shape (alias: clang)
   --errors <file>    write the whole diagnostic stream to a file (same as armcc)
 
   Target CPU selection

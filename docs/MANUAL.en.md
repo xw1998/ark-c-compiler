@@ -209,7 +209,7 @@ arkcc <file.c|file.s> [options]
 | `-f<feature>` / `-fno-<feature>` | enable/disable a feature (vla/complex/wchar/trigraph/fpu/dwarf/opt-inline/opt-dce/opt-constfold/...) |
 | `-Wno-unused` | suppress unused warnings |
 | `--list-backends` | list every available backend |
-| `--diag_style <arm\|ide>` | diagnostic layout: `arm` (default, same as armcc's default) or `ide` (uVision's `file(line,col) : error code: message` style) |
+| `--diag_style <arm\|gnu\|ide\|modern>` | diagnostic layout: `arm` (default, same as armcc's default), `gnu`, `ide` (uVision's `file(line,col) : error code: message` style) or `modern` (the clang shape, alias `clang`) |
 | `--diag_suppress=<n>[,<n>]` | suppress the given codes (as armcc: non-numeric or out-of-range codes are silently ignored; no value reports `C3901U`) |
 | `--diag_remark=<n>[,<n>]` | indistinguishable from `--diag_suppress` (measured to be the same in armcc); reuses the same suppression bits |
 | `--diag_error=<n>[,<n>]` | promote the given codes to error; the `-D` suffix is still kept according to the code's intrinsic category |
@@ -1267,6 +1267,44 @@ Trade-offs:
 - both run after `ir.dce` and before `ir.dce-cfg` (`ir.licm` / `ir.unroll`).
 
 See [LOOPS.en.md](LOOPS.en.md); the gate is `tests/run_loop_tests.py` (`make test-loop`).
+
+### 5.15 The modern diagnostic style (`--diag_style=modern`)
+
+A third layout, and **presentation only**: no decision, count, error limit or exit code changes -- only
+the bytes do.
+
+```
+$ arkcc -c err.c --diag_style=modern
+err.c:4:9: error: identifier "y" is undefined [#20]
+    4 | 	return y + x;
+      | 	       ^
+1 error generated.
+```
+
+| Shape | MODERN |
+| --- | --- |
+| frontend diagnostic | `f.c:4:9: error: <message> [#20]` |
+| file and line only | `f.c:4: error: <message> [#67]` |
+| no source | `no source: error: <message> [#5]` |
+| command line | `no source: error: command-line: <message> [#992]` |
+| driver / fatal | `arkcc: fatal error: <message> [C3900U]` (optionally followed by one `note:` line) |
+| summary | `1 error generated.` / `1 warning and 2 errors generated.` (a zero count is never spelled out) |
+
+Trade-offs:
+
+- **the armcc code is kept**, but moved after the message as `[#20]`, because it is the lookup key;
+  dropping it would lose the ability to search the manual;
+- the echo block is a **right-aligned 5-column line number plus ` | `**, and the caret line repeats the
+  same width; the column convention is exactly the arm style's (tab is 1 column, CJK is 2);
+- armcc's `At end of source:` is not printed (the line number is already in the header);
+- the `note:` line exists only in modern; today it is used in the two "unknown option" paths to point at
+  `arkcc --help`;
+- `--diag_style=clang` is an alias; `arm` / `gnu` / `ide` output is **byte-identical** to before;
+- in a cropped build (`-DARKCC_FEATURE_DIAG=0`) `diag_note()` is a no-op, so linking is unaffected.
+
+This is the **only style that does not promise byte compatibility with armcc**. See
+[DIAGNOSTICS.en.md](DIAGNOSTICS.en.md) section 4.1; the gate is `tests/run_modern_diag_tests.py`
+(`make test-modern`, 35 checks).
 
 ## 6 Testing on Windows
 

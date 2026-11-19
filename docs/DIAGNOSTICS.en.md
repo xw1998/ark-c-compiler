@@ -246,6 +246,54 @@ Three more behaviour rules:
 
 ---
 
+### 4.1 The third style: `--diag_style=modern` (alias `clang`)
+
+The first two styles are **byte-for-byte reproductions of armcc** (`tests/diag_baseline/*.expected`
+is the comparison baseline). The third is different: it is a human-readable clang shape that
+**promises a stable form, not byte equality with any external tool**. Decisions, counts, the error
+limit and the exit code are all identical to the other two styles -- only the bytes change.
+
+| Situation | MODERN |
+| --- | --- |
+| frontend diagnostic | `f.c:4:9: error: identifier "c" is undefined [#20]` |
+| line known, column unknown | `f.c:4: error: 6 instruction(s) in 'main' can never run: ...` |
+| missing token at EOF | `f.c:3: error: expected a "}" [#67]` (**no** `At end of source`) |
+| file known, line unknown | `f.c: error: expected a ";" [#65]` |
+| no source | `no source: error: cannot open source input file "x": ... [#5]` |
+| command line | `no source: error: command-line: invalid macro definition: x [#992]` |
+| tool stage | `out.bin: error: SRAM overlap between objects #0 and #1: ...` |
+| driver / fatal | `arkcc: fatal error: Unrecognized option '-x'. [C3900U]` |
+| summary | `1 error generated.` / `1 warning and 2 errors generated.` (zero counts are omitted) |
+
+The echo block becomes framed; the column convention is exactly the arm style's (tab is 1 column,
+CJK is 2):
+
+```
+err.c:4:9: error: identifier "y" is undefined [#20]
+    4 | 	return y + x;
+      | 	       ^
+1 error generated.
+```
+
+Rules:
+
+- **the armcc code is kept**, but moved after the message as `[#20]` -- it is the lookup key, and
+  dropping it would lose the ability to search;
+- the line number is right-aligned in 5 columns followed by ` | `, and the caret line repeats that
+  width in spaces plus ` | `; numbers wider than 5 are not truncated;
+- the `note:` line exists **only in modern** (`diag_note()` is a no-op elsewhere); today it points at
+  `arkcc --help` in the two "unknown option" paths;
+- the summary follows clang and **prints only the non-zero counts**, ending with `generated.`;
+- `--diag_style=clang` is an alias; an invalid value is still `C3903U`;
+- when `--diag_style` appears more than once, **the last one wins** (the pre-scan applies them in order);
+- in a cropped build (`-DARKCC_FEATURE_DIAG=0`) `diag_note()` is a no-op, so linking is unaffected.
+
+The gate is `tests/run_modern_diag_tests.py` (`make test-modern`, 35 checks): header shape, framed
+echo, caret column (tabs and CJK, measured in display width), the same shape through the `--errors`
+sink, `note:` appearing in modern only, arm/ide staying byte-identical, and a cropped build still
+linking and still refusing a bad option. It carries its own anti-false-green probe: with the
+`[#code]` tail deliberately broken, four checks must fail (measured).
+
 ## 5. Source echo and the caret
 
 Measured shape:

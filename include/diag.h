@@ -58,7 +58,8 @@ typedef enum {
 typedef enum {
     DIAG_STYLE_ARM = 0,   /* armcc default */
     DIAG_STYLE_GNU,       /* same as ARM except unquoted "no source" */
-    DIAG_STYLE_IDE        /* uVision / Visual Studio style, with column */
+    DIAG_STYLE_IDE,       /* uVision / Visual Studio style, with column */
+    DIAG_STYLE_MODERN     /* file:line:col: severity: msg [code] + framed source */
 } DiagStyle;
 
 /* No armcc code: print the message without a code. */
@@ -180,8 +181,28 @@ int diag_warnings(void);
 int diag_at_limit(void);
 
 /* Presentation style. diag_set_style_name accepts "arm", "gnu", "ide",
- * "devstudio" (alias of ide) and returns 0 on success, -1 otherwise. */
+ * "devstudio" (alias of ide), "modern" (alias "clang") and returns 0 on
+ * success, -1 otherwise.
+ *
+ * "modern" is presentation only: it changes no decision, no count and no exit
+ * code, and it is the only style whose text is not required to match armcc
+ * byte for byte:
+ *
+ *   f.c:4:9: error: identifier "c" is undefined [#20]
+ *       4 |     int b = c + ;
+ *         |             ^
+ *   note: ...
+ *
+ * The `[#20]` suffix keeps armcc's code, so a reader can still look the
+ * message up; the framed echo uses "N | " and a caret aligned by display
+ * width, which stays correct for tabs and CJK text. */
 int diag_set_style_name(const char *name);
+
+/* Print "note: <msg>" after the diagnostic just reported. Notes are a
+ * modern-style-only affordance: in every other style this is a no-op, which is
+ * what keeps the armcc-compatible styles byte-identical. Call it immediately
+ * after the diag_report*() it belongs to. */
+void diag_note(const char *msg);
 
 /* "#pragma diag_suppress <n>" / "#pragma diag_default <n>" and
  * "--diag_suppress=<n>[,<n>...]" / "--diag_remark=<n>[,<n>...]".

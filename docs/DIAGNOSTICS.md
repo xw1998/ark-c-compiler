@@ -230,6 +230,49 @@ up to date (37 frontend, 7 driver)
 
 ---
 
+### 4.1 第三种风格：`--diag_style=modern`（别名 `clang`）
+
+前两种风格是**逐字节复刻 armcc**（`tests/diag_baseline/*.expected` 就是它的对拍基线）。
+第三种不同：它是给人读的 clang 形状，**只保证形态稳定，不承诺与任何外部工具逐字节一致**。
+判定、计数、错误上限、退出码全都与另外两种相同，只有字节形状变了。
+
+| 情况 | MODERN |
+| --- | --- |
+| 前端诊断 | `f.c:4:9: error: identifier "c" is undefined [#20]` |
+| 行已知列未知 | `f.c:4: error: 6 instruction(s) in 'main' can never run: ...` |
+| 结尾缺 token | `f.c:3: error: expected a "}" [#67]`（**不打** `At end of source`） |
+| 文件已知行未知 | `f.c: error: expected a ";" [#65]` |
+| 无源文件 | `no source: error: cannot open source input file "x": ... [#5]` |
+| 命令行 | `no source: error: command-line: invalid macro definition: x [#992]` |
+| 工具阶段 | `out.bin: error: SRAM overlap between objects #0 and #1: ...` |
+| 驱动 / 致命 | `arkcc: fatal error: Unrecognized option '-x'. [C3900U]` |
+| 汇总 | `1 error generated.` / `1 warning and 2 errors generated.`（0 的项不写出） |
+
+回显块换成带框的形式，列号口径与 arm 风格完全相同（tab 记 1 列、CJK 记 2 列）：
+
+```
+err.c:4:9: error: identifier "y" is undefined [#20]
+    4 | 	return y + x;
+      | 	       ^
+1 error generated.
+```
+
+规则：
+
+- **armcc 码保留**，但放到消息之后 `[#20]`——它是查表依据，丢掉就失去可检索性；
+- 行号右对齐 5 列 + ` | `，caret 行用同宽空格 + ` | `；超过 5 位的行号不截断；
+- `note:` 行**只有 modern 有**（`diag_note()` 在其它风格是 no-op）；目前只用在
+  "未知选项"两处提示 `arkcc --help`；
+- 汇总行按 clang 口径**只写非零项**，并在末尾加 `generated.`；
+- `--diag_style=clang` 是同一风格的别名；非法值仍然是 `C3903U`；
+- 命令行上多次给 `--diag_style` 时**最后一个生效**（预扫描按顺序应用）；
+- 裁剪构建（`-DARKCC_FEATURE_DIAG=0`）里 `diag_note()` 是空实现，链接不受影响。
+
+门禁 `tests/run_modern_diag_tests.py`（`make test-modern`，35 项）：头行形状、
+回显框、caret 列（含 tab 与 CJK，按显示宽度算）、`--errors` sink 里的同形状、
+`note:` 只在 modern 出现、arm/ide 逐字节不变、裁剪构建仍能链接并仍拒绝坏选项。
+它自带防假通过自检：把 `[#code]` 那段改坏后，门禁必须有 4 项失败（已实测）。
+
 ## 5. 源码回显与 caret
 
 实测形态：

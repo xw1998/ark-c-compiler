@@ -262,6 +262,18 @@ static const char *sev_word_arm(DiagSeverity s) {
     }
 }
 
+/* Modern style: clang's spelling. "note" is the remark word because a remark
+ * and a note read the same, and the armcc table has no "#1-D" notes. */
+static const char *sev_word_modern(DiagSeverity s) {
+    switch (s) {
+        case DIAG_SEV_FATAL:   return "fatal error";
+        case DIAG_SEV_ERROR:   return "error";
+        case DIAG_SEV_WARNING: return "warning";
+        case DIAG_SEV_INFO:    return "info";
+        default:               return "note";
+    }
+}
+
 /* IDE style lowercases everything except "Fatal error" (measured), and drops
  * the trailing colon. */
 static const char *sev_word_ide(DiagSeverity s) {
@@ -389,6 +401,55 @@ static const char *find_line(const char *src, int line) {
     return (cur == line) ? p : 0;
 }
 
+/* MODERN: f.c:4:22: / f.c:4: / f.c: / no source: / <object>:
+ * The column is always printed when it is known, because the framed echo below
+ * positions its caret from it; a machine reader gets the same numbers clang
+ * prints. */
+static void put_location_modern(Line *l, const DiagLoc *loc, DiagShape shape) {
+    const char *f;
+    int have_line;
+
+    if (shape == DIAG_SHAPE_PLAIN || shape == DIAG_SHAPE_DRIVER) return;
+    if (shape == DIAG_SHAPE_NOSOURCE || shape == DIAG_SHAPE_CMDLINE)
+        f = DIAG_NO_SOURCE_TEXT;
+    else
+        f = (loc && loc->file) ? loc->file
+                               : (g.main_file ? g.main_file : DIAG_NO_SOURCE_TEXT);
+
+    have_line = loc && loc->line > 0;
+    line_puts(l, f);
+    if (have_line) {
+        line_putc(l, ':');
+        line_putuint(l, (unsigned)loc->line);
+        if (loc->col > 0) {
+            line_putc(l, ':');
+            line_putuint(l, (unsigned)loc->col);
+        }
+    }
+    line_puts(l, ": ");
+}
+
+/* MODERN framed echo: right-aligned 5-column line number, then " | ". The
+ * caret line repeats the same width in spaces so the two line up. */
+#define DIAG_MODERN_NUMW 5
+
+static void echo_prefix_modern(Line *l, int line) {
+    char tmp[12];
+    int n = 0, i;
+    unsigned v = (unsigned)line;
+    if (v == 0) tmp[n++] = '0';
+    while (v) { tmp[n++] = (char)('0' + (v % 10)); v /= 10; }
+    for (i = n; i < DIAG_MODERN_NUMW; i++) line_putc(l, ' ');
+    while (n) line_putc(l, tmp[--n]);
+    line_puts(l, " | ");
+}
+
+static void echo_pad_modern(Line *l) {
+    int i;
+    for (i = 0; i < DIAG_MODERN_NUMW; i++) line_putc(l, ' ');
+    line_puts(l, " | ");
+}
+
 static void echo_source(const DiagLoc *loc) {
     const char *start, *end, *p;
     Line l;
@@ -402,7 +463,8 @@ static void echo_source(const DiagLoc *loc) {
     while (*end && *end != '\n' && *end != '\r') end++;
 
     line_reset(&l);
-    line_puts(&l, DIAG_GUTTER);
+    if (g.style == DIAG_STYLE_MODERN) echo_prefix_modern(&l, loc->line);
+    else                              line_puts(&l, DIAG_GUTTER);
     p = start;
     while (p < end) line_putc(&l, *p++);
     emit_line(&l);
@@ -410,7 +472,8 @@ static void echo_source(const DiagLoc *loc) {
     if (loc->col <= 0) return;
 
     line_reset(&l);
-    line_puts(&l, DIAG_GUTTER);
+    if (g.style == DIAG_STYLE_MODERN) echo_pad_modern(&l);
+    else                              line_puts(&l, DIAG_GUTTER);
     {
         int width = 0;
         p = start;
@@ -514,7 +577,16 @@ static void emit_diag(DiagSeverity sev, const DiagLoc *loc,
 
     line_reset(&l);
 
-    if (g.style == DIAG_STYLE_IDE) {
+    if (g.style == DIAG_STYLE_MODERN) {
+        /* clang-shaped: "f.c:4:22: error: message [#20]". The tool name is
+         * kept on driver diagnostics so a build log still says which program
+         * complained; the code trails the message (see below). */
+        if (shape == DIAG_SHAPE_DRIVER) line_puts(&l, "arkcc: ");
+        put_location_modern(&l, loc, shape);
+        line_puts(&l, sev_word_modern(sev));
+        line_puts(&l, ": ");
+        if (shape == DIAG_SHAPE_CMDLINE) line_puts(&l, "command-line: ");
+    } else if (g.style == DIAG_STYLE_IDE) {
         if (shape == DIAG_SHAPE_DRIVER) line_puts(&l, "armcc : ");
         put_location(&l, loc, g.style, shape);
         line_puts(&l, sev_word_ide(sev));       /* "error", no colon */
@@ -555,6 +627,14 @@ static void emit_diag(DiagSeverity sev, const DiagLoc *loc,
     }
 
     line_puts(&l, msg);
+    /* MODERN keeps armcc's numeric code (it is the lookup key for the manual)
+     * but trails it after the text, the way clang prints [-Wflag]. No other
+     * style is touched. */
+    if (g.style == DIAG_STYLE_MODERN && code_str) {
+        line_puts(&l, " [");
+        line_puts(&l, code_str);
+        line_putc(&l, ']');
+    }
     emit_line(&l);
 
     if (ends_line) out_eol();    /* the message carried its own newline */
@@ -699,6 +779,18 @@ void diag_report_msg(DiagSeverity sev, const DiagLoc *loc, const char *msg,
     report(sev, DIAG_NO_CODE, loc, 0, msg, args, 3, shape_of(loc));
 }
 
+/* A note is pure presentation: it never counts, never changes an exit code,
+ * and it is silent in every style but MODERN (the armcc styles are matched
+ * byte for byte and have no such line). */
+void diag_note(const char *msg) {
+    Line l;
+    if (g.style != DIAG_STYLE_MODERN || !msg) return;
+    line_reset(&l);
+    line_puts(&l, "note: ");
+    line_puts(&l, msg);
+    emit_line(&l);
+}
+
 void diag_tool(DiagSeverity sev, const char *object, const char *msg,
                const char *a0, const char *a1, const char *a2,
                const char *a3, const char *a4, const char *a5) {
@@ -786,6 +878,10 @@ int diag_set_style_name(const char *name) {
     if (str_eq(name, "arm"))       { g.style = DIAG_STYLE_ARM; return 0; }
     if (str_eq(name, "gnu"))       { g.style = DIAG_STYLE_GNU; return 0; }
     if (str_eq(name, "ide"))       { g.style = DIAG_STYLE_IDE; return 0; }
+    /* "clang" is an alias: the shape is the same, and nobody should have to
+     * guess which spelling this compiler picked. */
+    if (str_eq(name, "modern"))    { g.style = DIAG_STYLE_MODERN; return 0; }
+    if (str_eq(name, "clang"))     { g.style = DIAG_STYLE_MODERN; return 0; }
     if (str_eq(name, "devstudio")) { g.style = DIAG_STYLE_IDE; return 0; }
     /* armcc's --diag_style=list leaves everything in IDE shape (measured
      * quirk); reproduce rather than reject the value. */
@@ -822,6 +918,26 @@ void diag_summary(void) {
      * diagnostic (measured: C3900U / C3903U print exactly one line). */
     if (w == 0 && e == 0) return;
     if (g.counts[DIAG_SEV_FATAL] > 0) return;
+
+    if (g.style == DIAG_STYLE_MODERN) {
+        /* clang counts what it printed: "1 error generated." A zero count is
+         * never spelled out, which is why this cannot reuse the armcc line. */
+        line_reset(&l);
+        if (w > 0) {
+            line_putuint(&l, (unsigned)w);
+            line_putc(&l, ' ');
+            line_puts(&l, w == 1 ? "warning" : "warnings");
+            if (e > 0) line_puts(&l, " and ");
+        }
+        if (e > 0) {
+            line_putuint(&l, (unsigned)e);
+            line_putc(&l, ' ');
+            line_puts(&l, e == 1 ? "error" : "errors");
+        }
+        line_puts(&l, " generated.");
+        emit_line(&l);
+        return;
+    }
 
     line_reset(&l);
     if (g.style == DIAG_STYLE_IDE) line_puts(&l, "armcc : ");
@@ -1001,6 +1117,7 @@ int diag_warnings(void) { return g_min_warn; }
 int diag_at_limit(void) { return 0; }
 
 int diag_set_style_name(const char *name) { (void)name; return 0; }
+void diag_note(const char *msg) { (void)msg; }
 void diag_suppress(int code)   { (void)code; }
 void diag_default(int code)    { (void)code; }
 int  diag_is_suppressed(int code) { (void)code; return 0; }

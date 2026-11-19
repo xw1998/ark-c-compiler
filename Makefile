@@ -23,7 +23,7 @@ endif
 .PHONY: all clean test test-arm test-c test-stdlib test-install test-x86 test-x86-64 \
         test-x86-64-selfhost test-riscv test-reloc-text test-memlint \
         test-enumcheck test-pipeline test-unusedresult test-mir \
-        test-loop test-atomic install stm32
+        test-loop test-modern test-atomic install stm32
 
 all: $(ARKCC)
 
@@ -38,7 +38,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-atomic
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -92,6 +92,15 @@ test-mir: $(ARKCC)
 # options instead of pretending to optimise.
 test-loop: $(ARKCC)
 	$(PYTHON) tests/run_loop_tests.py ./$(ARKCC)
+
+# Gate for --diag_style=modern: the header, the framed echo and the caret
+# column are checked against the token they point at (by display width, so a
+# tab counts one column and a CJK character two), the arm and ide styles must
+# stay byte-identical, and the note line must exist in modern only.  The last
+# stage builds a cropped compiler (-DARKCC_FEATURE_DIAG=0) and requires it to
+# link, so a missing no-op cannot hide behind the full build.
+test-modern: $(ARKCC)
+	$(PYTHON) tests/run_modern_diag_tests.py ./$(ARKCC)
 
 # Library gate: every stdlib entry point is compiled and run on the ARM
 # emulator, and each case asserts a number the program itself computed.  A
