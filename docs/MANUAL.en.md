@@ -367,6 +367,35 @@ printed.
   -86 instead of 170 and `(unsigned short)c` answered -86 instead of 65450.  A change of signedness now
   goes through the same narrowing/re-extension instruction.
 
+### 4.1.2 Compound literals, reversed subscripts and casts that change the stride
+
+`tests/run_complit_tests.py` (`make test-complit`, 8 cases and 11 checks, three of them replaying a
+deliberately wrong expectation so the gate is proven able to fail) pins the five rules below.  Every
+case runs on the ARM emulator and returns a number the program itself computed.
+
+- **A compound literal has its own type**: `((struct S){5, 6}).b` used to read the value at offset 0
+  (`.a` = 5).  `sema_expr` had no `AST_COMPOUND_LITERAL` case, so the node fell into `default` and was
+  retyped as `int`: looking `.b` up in an `int` found no member and loaded offset 0.  The same wrong
+  type also decided array strides and cast behaviour for everything hanging off a literal.
+- **`(int[]){1, 2, 3}` takes its length from the initialiser** (C99 6.5.2.5p1), so
+  `sizeof((int[]){1,2,3})` is 12; the type used to stay incomplete (size 0) and the size was counted as
+  one element, answering 4.  A designated index (`(int[]){[2]=7}`) takes `max(index)+1`.
+- **A compound literal is a postfix expression**: `((int[]){1,2,3})[2]` and `(struct S){3,4}.b` are
+  legal C.  The parser used to return the `{...}` node immediately, so nothing consumed `.b` / `[2]`
+  and the compiler answered `expected a )`; it now runs the postfix-suffix loop before returning.
+- **A cast changes the pointer stride**: in `char *q = (char *)&a[1] + 4;` the `+4` is four *bytes*.
+  The address walker (`addr_value`) used to forward the operand's own type, so `+4` was multiplied by
+  `sizeof(int)` and `q` landed on `a[5]`; a global initialiser built that way read a value out of
+  bounds.  `AST_CAST` now uses the cast's target type for the stride.
+- **An array decays to a pointer only where its value is taken**: `&g[1] + 1` strides one element while
+  `&arr + 1` strides a whole array.  `addr_value` used to forward `int[4]` as-is for a global array, so
+  `&g[1] + 1` in a global initialiser was scaled by `sizeof(int[4])`; the array case now decays through
+  `type->base`, and `&arr` still goes through `addr_lvalue` and keeps the array type.
+- **`2[arr]` is legal C**: C11 6.5.2.1p2 defines `E1[E2]` as `*((E1)+(E2))`, so either operand may be
+  the pointer.  Both subscript paths assumed the `arr[idx]` shape, so `2[arr]` multiplied the *address*
+  by the element size and added the scalar, landing on a wild address; the operands are now swapped
+  first.
+
 ### 4.2 Literals
 
 | Form | Example | Supported |

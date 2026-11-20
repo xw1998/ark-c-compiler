@@ -46,6 +46,7 @@ static AstNode *parse_mul_expr(Parser *p);
 static AstNode *parse_cast_expr(Parser *p);
 static AstNode *parse_unary_expr(Parser *p);
 static AstNode *parse_postfix_expr(Parser *p);
+static AstNode *parse_postfix_suffixes(Parser *p, AstNode *node);
 static AstNode *parse_primary_expr(Parser *p);
 static Type    *parse_declspec(Parser *p, int *p_storage, int *p_is_typedef);
 static Type    *parse_declarator(Parser *p, Type *base, char **out_name);
@@ -3270,10 +3271,33 @@ static AstNode *parse_cast_expr(Parser *p) {
             if (lexer_peek(p->lex).kind == TOK_LBRACE) {
                 AstNode *init = parse_init_list(p);
                 AstNode *n = ast_new(AST_COMPOUND_LITERAL, line);
+                /* C99 6.5.2.5p1: an array of unspecified size takes its size
+                 * from the initialiser, so `(int[]){1,2,3}` is int[3].  The
+                 * type stayed incomplete (size 0), and every later size test
+                 * read it as one element -- `sizeof((int[]){1,2,3})` folded to
+                 * 4 and the temporary got an 8-byte slot instead of 12. */
+                if (t && t->kind == TYPE_ARRAY && t->size <= 0 && init &&
+                    init->kind == AST_INIT_LIST) {
+                    int i;
+                    t->size = init->u.init_list.item_count;
+                    for (i = 0; i < init->u.init_list.item_count; i++) {
+                        AstNode *it = init->u.init_list.items[i];
+                        if (it && it->kind == AST_INIT_FIELD &&
+                            it->u.init_field.has_index &&
+                            it->u.init_field.index + 1 > t->size)
+                            t->size = it->u.init_field.index + 1;
+                    }
+                    if (t->size <= 0) t->size = 1;
+                }
                 n->type = t;
                 n->u.compound_lit.lit_type = t;
                 n->u.compound_lit.init = init;
-                return n;
+                /* A compound literal is a postfix-expression (C99 6.5.1.1
+                 * via 6.5.2), so `(struct S){3,4}.b` and
+                 * `((int[]){1,2,3})[1]` continue with the suffix operator.
+                 * Returning the bare node made sizeof((struct S){0}.b) fail
+                 * with "expected a )" -- the parser never consumed `.b`. */
+                return parse_postfix_suffixes(p, n);
             }
             operand = parse_cast_expr(p);
             return ast_cast(t, operand, line);
@@ -3453,8 +3477,7 @@ static AstNode *parse_unary_expr(Parser *p) {
     }
 }
 
-static AstNode *parse_postfix_expr(Parser *p) {
-    AstNode *node = parse_primary_expr(p);
+static AstNode *parse_postfix_suffixes(Parser *p, AstNode *node) {
     for (;;) {
         Token t = lexer_peek(p->lex);
         int line = t.line;
@@ -3530,6 +3553,10 @@ static AstNode *parse_postfix_expr(Parser *p) {
         } else break;
     }
     return node;
+}
+
+static AstNode *parse_postfix_expr(Parser *p) {
+    return parse_postfix_suffixes(p, parse_primary_expr(p));
 }
 
 /* C99 6.4.4.1p5: the type of an integer constant is the first of the

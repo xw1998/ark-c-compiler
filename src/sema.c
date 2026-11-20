@@ -1005,6 +1005,18 @@ static Type *sema_expr(AstNode *node) {
             node->type = type_int();
             return node->type;
         }
+        case AST_COMPOUND_LITERAL:
+            /* `(struct S){...}` carries its real type in lit_type; without
+             * this case sema fell into the default and retyped the node as
+             * int, so `((struct S){3,4}).b` looked the member up in int,
+             * got no field, and loaded offset 0 -- the value of .a.  A whole
+             * class of silent wrong answers: every member offset, array
+             * stride and cast decision hanging off a compound literal was
+             * decided from "int". */
+            node->type = node->u.compound_lit.lit_type
+                             ? node->u.compound_lit.lit_type : node->type;
+            if (node->u.compound_lit.init) sema_expr(node->u.compound_lit.init);
+            return node->type;
         case AST_ASM:
             node->type = type_void();
             return node->type;

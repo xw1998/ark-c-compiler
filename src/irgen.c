@@ -180,7 +180,11 @@ static long long addr_elem_size(Type *t) {
     long long n;
     if (!t) return 1;
     if (t->kind == TYPE_FUNC) return 0;
-    if (t->kind == TYPE_ARRAY) t = t->base ? t->base : t;
+    /* An array type here means "pointer to array" (`&arr`, or a cast to
+     * `int (*)[4]`), whose arithmetic strides by the whole array.  Array
+     * *decay* has already replaced the type with the element type in
+     * addr_value()'s AST_VAR branch, so this case no longer has to guess
+     * which of the two it is looking at. */
     n = type_size(t);
     return n > 0 ? n : 1;
 }
@@ -257,8 +261,24 @@ static int addr_value(AstNode *n, char **name, long long *off, Type **lty,
         if (n->u.unary.op == (int)TOK_BAND)
             return addr_lvalue(n->u.unary.operand, name, off, lty, isf);
         return 0;
-    case AST_CAST:
-        return addr_value(n->u.unary.operand, name, off, lty, isf);
+    case AST_CAST: {
+        /* A cast changes the stride, not just the printed type: in
+         * `char *q = (char *)&arr[1] + 4;` the `+4` must move four bytes.
+         * The walker used to forward the operand's own type, so the offset
+         * was multiplied by sizeof(int) and q landed on arr[5] -- a silently
+         * wrong initialiser (the global read back a value out of bounds). */
+        char *cn = 0;
+        long long coff = 0;
+        Type *ct = 0;
+        int cif = 0;
+        if (!addr_value(n->u.unary.operand, &cn, &coff, &ct, &cif)) return 0;
+        *name = cn;
+        *off = coff;
+        *isf = cif;
+        *lty = (n->type && n->type->kind == TYPE_PTR && n->type->base)
+                   ? n->type->base : ct;
+        return 1;
+    }
     case AST_VAR: {
         Symbol *s = sym_find(n->u.name);
         if (!s) return 0;
@@ -273,7 +293,11 @@ static int addr_value(AstNode *n, char **name, long long *off, Type **lty,
         if (s->kind == SYM_GLOBAL && s->type && s->type->kind == TYPE_ARRAY) {
             *name = n->u.name;
             *off = 0;
-            *lty = s->type;
+            /* Decayed: the value is the address of element 0, so pointer
+             * arithmetic on it strides by the element.  `&arr` goes through
+             * addr_lvalue() instead and keeps the array type, which is what
+             * makes `&arr + 1` move a whole array. */
+            *lty = s->type->base ? s->type->base : s->type;
             *isf = 0;
             return 1;
         }
@@ -3061,6 +3085,23 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
     }
 }
 
+/* `2[arr]` is legal C (C11 6.5.2.1p2: `E1[E2]` is `*((E1)+(E2))` and either
+ * operand may be the pointer).  Both array paths build the address as
+ * `pointer + index * stride`, so a subscript written backwards has to be
+ * swapped first -- it used to multiply the *address* by the element size and
+ * then add the scalar, and the load went to a wild address.
+ * Returns 1 when the operands were swapped. */
+static int irgen_subscript_swap(AstNode **pa, AstNode **pi) {
+    Type *at = (*pa)->type;
+    Type *it = (*pi)->type;
+    int ap = at && (at->kind == TYPE_PTR || at->kind == TYPE_ARRAY);
+    int ip = it && (it->kind == TYPE_PTR || it->kind == TYPE_ARRAY);
+    AstNode *t;
+    if (ap || !ip) return 0;
+    t = *pa; *pa = *pi; *pi = t;
+    return 1;
+}
+
 static void irgen_lvalue_addr(IrGen *g, AstNode *node) {
     if (!node) return;
     if (node->kind == AST_VAR) {
@@ -3091,7 +3132,9 @@ static void irgen_lvalue_addr(IrGen *g, AstNode *node) {
     }
     if (node->kind == AST_ARRAY_ACCESS) {
         AstNode *arr = node->u.array_access.array;
+        AstNode *idx = node->u.array_access.index;
         int elem_sz = 4;
+        irgen_subscript_swap(&arr, &idx);
         if (arr->type && (arr->type->kind == TYPE_ARRAY || arr->type->kind == TYPE_PTR))
             elem_sz = type_size(arr->type->base);
         else
@@ -3108,7 +3151,7 @@ static void irgen_lvalue_addr(IrGen *g, AstNode *node) {
         } else {
             irgen_expr(g, arr);
         }
-        irgen_expr(g, node->u.array_access.index);
+        irgen_expr(g, idx);
         ir_emit(g->fn, IR_PUSH_INT, elem_sz, 0, 0);
         ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_MUL);
         ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_PLUS);
@@ -5674,6 +5717,8 @@ static void irgen_expr(IrGen *g, AstNode *node) {
             int elem_sz;
             int packed_aux = 0;
             AstNode *arr = node->u.array_access.array;
+            AstNode *sub = node->u.array_access.index;
+            irgen_subscript_swap(&arr, &sub);
             /* Infer the type of the subscript result: if arr is an array/pointer the
              * result is the element type. An array-valued result (matrix[1] is still
              * int[3]) decays to a pointer to its first element per C semantics -- push

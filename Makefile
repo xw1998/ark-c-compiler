@@ -42,7 +42,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-softfloat
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-softfloat
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -182,6 +182,14 @@ test-strinit: $(ARKCC)
 # returns a number the program computed itself.
 test-layout: $(ARKCC)
 	$(PYTHON) tests/run_layout_tests.py --arkcc ./$(ARKCC)
+
+# Compound-literal / subscript gate: `(struct S){3,4}.b` used to read member 0,
+# `2[arr]` used to multiply the *address* by the element size, `(char *)&a[1]+4`
+# used to move four ints, and `sizeof((int[]){1,2,3})` answered 4.  Every case
+# asserts a number the program itself computes, and three checks replay a
+# deliberately wrong expectation to prove the gate can fail.
+test-complit: $(ARKCC)
+	$(PYTHON) tests/run_complit_tests.py --arkcc ./$(ARKCC)
 
 # Library gate: every stdlib entry point is compiled and run on the ARM
 # emulator, and each case asserts a number the program itself computed.  A
