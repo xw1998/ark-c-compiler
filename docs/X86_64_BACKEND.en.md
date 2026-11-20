@@ -186,7 +186,9 @@ The four former defect classes (`movq needs an xmm operand`, 64-bit arithmetic `
 structs passed by value returning huge numbers, local array indexing reading the wrong element) are
 **all fixed**, and i386 and x86-64 now run the same programs with the same answers. The tables in this
 section are the historical record; below them are the measured post-fix readings, and the x86-64 gate
-no longer marks any class as SKIP. A fifth class (`[symbol+disp]`) was cleared in 0.8.7, see §5.6.
+no longer marks any class as SKIP. A fifth class (`[symbol+disp]`) was cleared in 0.8.7, see §5.6;
+the sixth (unsigned semantics) was cleared the same round, see §5.7; and the seventh (the 2^31 bias
+in float -> 64-bit integer conversion) is §5.8.
 
 ### 5.1 Local array indexing: the frame mapping became structurally identical to x86-64
 
@@ -340,6 +342,33 @@ Six new gate anchors run the same expectation on x86_64 and i386: `unsigned_shif
 `unsigned_shift_right_var`=1, `unsigned_relational`=15, `uint_to_double`=4000,
 `double_to_uint`=3500, `uint_to_float32`=4000.
 
+### 5.8 The seventh debt: the 2^31 bias in float -> 64-bit integers rounded the high half up (cleared in 0.8.7)
+
+i386's `IR_64F2I` (`double`/`float` -> `long long` / `unsigned long long`) used to subtract 2^31
+unconditionally, truncate with `cvttsd2si`, and then add 2^31 back into the high word. The trouble is
+that `cvttsd2si` truncates **towards zero**, and whenever `x / 2^32` has a fraction it is the shifted
+value `x - 2^31` that gets truncated, so the high half was rounded **up** and the result came out
+2^32 too large. `double d = 1e9; unsigned long long u = (unsigned long long)d;` answered
+`0x100000000` on i386 (`u % 251` = 123) while the same source answered 187 on x86-64 and ARM
+(`10^9 % 251 = 187`, computed outside the program).
+
+The fix rewrote the whole block around three invariants:
+
+1. **Every `cvttsd2si` is fed a non-negative operand**, so "truncate" and "floor" coincide and the
+   high half becomes something you can reason about.
+2. **One shared magnitude path**: `q = |x| / 2^32` (non-negative => truncation is floor),
+   `rem = |x| - q*2^32`; if `rem >= 2^31`, subtract 2^31, truncate, and `or 0x80000000` into the low
+   word; otherwise truncate directly.
+3. **Sign and magnitude are reapplied once at the end**: unsigned with `x >= 2^63` subtracts 2^63
+   first and sets a flag, ending with `or edx, 0x80000000`; signed takes the absolute value first and
+   ends with `not/not/add 1/adc`. The single-precision entry widens with `movss` + `cvtss2sd` into the
+   same path.
+
+Three new gate anchors (same value on x86_64 / i386 / ARM): `dbl_ull_cast`=187, `dbl_ll_frac`=7,
+`f_ull_cast`=31. Seven further readings were taken in this round's probes only (same algorithm, all
+four arms agreeing): `dbl_ull_frac`=1, `dbl_ull_big`=182, `dbl_ll_neg`=230, `dbl_ull_half`=255,
+`dbl_ull_top`=249, `dbl_ll_min`=0, `dbl_ull_1e18`=80.
+
 ## 6. Single-file images refuse unresolved symbols
 
 When `resolve_refs_x` cannot find a label it leaves the disp32 as all zeros, so `call foo` becomes
@@ -355,7 +384,7 @@ make test-x86-64                  # already part of make test
 python tests/run_x86_64_image_tests.py --arkcc ./arkcc.exe
 ```
 
-51 programs are compiled into flat 0x400000 images and run by calling `main` on a 64-bit unicorn core,
+60 programs are compiled into flat 0x400000 images and run by calling `main` on a 64-bit unicorn core,
 each asserting a **constant computed outside the program** (host gcc is not used as an oracle); the
 same program is **then compiled again for 32-bit and run on a 32-bit unicorn core**, and an `i386`
 column that differs from the expectation is a FAIL (it used to be a footnote, which is why "a known
@@ -398,6 +427,11 @@ column that differs from the expectation is a FAIL (it used to be a footnote, wh
 | `uint_to_double` | `cvtsi2sd` is signed-only: `(double)4000000000u` used to answer -1610612736.0 | 4000 |
 | `double_to_uint` | `cvttsd2si` returns the 0xFFFFFFFE sentinel above 2^31; an unsigned destination is split at 2^31 and biased back | 3500 |
 | `uint_to_float32` | the single-precision arm of the same unsigned int -> float conversion | 4000 |
+| `dbl_ull_cast` | `double 1e9` -> `unsigned long long`: a 2^31 bias plus truncation-towards-zero rounds the high half up (i386 used to answer 0x100000000) | 187 |
+| `dbl_ll_frac` | the signed arm of the same path, with a fractional part (absolute value first, negate at the end) | 7 |
+| `f_ull_cast` | the single-precision entry widens with `cvtss2sd` and reuses the same magnitude path | 31 |
+| `struct_cond` | `k ? a : b` with a struct result: C99 6.5.15p6 makes it a value, so it is materialised into a temporary and copied | 34 |
+| `struct_cond_arg` | that same temporary passed by value as an argument (after materialising it must be addressable) | 12 |
 
 Plus three further stages that make those PASSes mean something:
 
@@ -418,7 +452,7 @@ Plus three further stages that make those PASSes mean something:
 - **selfcheck**: one case is re-run with an "expectation + 1" and must be judged DIFF. A harness that
   cannot detect a wrong answer proves nothing about any pass
 
-Current measurement: `65 passed, 0 failed, 0 skipped` (55 single-file cases + 3 two-object cases + 6 refusals + 1 self-check).
+Current measurement: `70 passed, 0 failed, 0 skipped` (60 single-file cases + 3 two-object cases + 6 refusals + 1 self-check).
 
 ### 7.1 The self-host gate: turning "it runs once" into "it reproduces the host object byte for byte"
 

@@ -25,11 +25,13 @@ What this gate holds to its claims:
              reported as DIFF.  A gate that cannot report a mismatch proves
              nothing about the passes above it.
 
-The 32-bit `x86` result is printed for every case as a reference arm only.  That
-backend has pre-existing gaps on 64-bit and double code paths (`movq needs an
-xmm operand`, UC_ERR_EXCEPTION, aggregates passed by value), which are recorded
-in docs/ and are *not* regressions of this work; those arms are reported as
-SKIP with the measured reason and never counted as pass or fail.
+The 32-bit `x86` result is printed for every case and is a verdict like the
+x86-64 one, not a reference arm.  That backend used to have gaps on 64-bit and
+double code paths (`movq needs an xmm operand`, UC_ERR_EXCEPTION, aggregates
+passed by value); they were closed in 0.8.7, and the two arms are now expected
+to agree on the value for every case in this file.  A case would be reported as
+SKIP only if a backend genuinely had no code for the construct, and today that
+count is zero.
 
 Static-initialiser anchors (`data_array_init`, `rodata_ptr`, `fptr_table`,
 `globals_two_objs`) exist because three defects used to hide behind a green
@@ -122,6 +124,41 @@ int main(void) { int a[10]; int *p = &a[2], *q = &a[7];
 struct B { int a : 3; };
 int main(void) { struct B x; x.a = -1; return (x.a == -1) ? 7 : 8; }
 """, 7, "a 3-bit signed field sign-extends back to -1"),
+
+    ("dbl_ull_cast",
+     """
+int main(void){ double d = 1e9;
+  unsigned long long u = (unsigned long long)d; return (int)(u % 251); }
+""", 187, "double -> unsigned long long: the 2^32 split has to floor, not round "
+          "the high half up (the i386 arm answered 123 here)"),
+
+    ("dbl_ll_frac",
+     """
+int main(void){ double d = 7.9; long long v = (long long)d; return (int)v; }
+""", 7, "truncation toward zero on the signed path (the i386 arm used to hand "
+        "back the high half of the double)"),
+
+    ("f_ull_cast",
+     """
+int main(void){ float f = 3e8f; unsigned long long u = (unsigned long long)f;
+  return (int)(u % 251); }
+""", 31, "a float source enters the same conversion through movss/cvtss2sd"),
+
+    ("struct_cond",
+     """
+struct P { int x, y; };
+int main(void){ struct P a = {1,2}, b = {3,4}, c; int k = 0;
+  c = k ? a : b; return c.x*10 + c.y; }
+""", 34, "C99 6.5.15p6: a struct-typed ?: is a value, not an lvalue; it is "
+         "materialised in a temporary so the assignment has an address"),
+
+    ("struct_cond_arg",
+     """
+struct P { int x, y; };
+int g(struct P p){ return p.x*10 + p.y; }
+int main(void){ struct P a = {1,2}, b = {3,4}; int k = 1;
+  return g(k ? a : b); }
+""", 12, "the same temporary feeds a by-value argument"),
 
     ("struct_ll_field",
      """

@@ -197,7 +197,7 @@ ARM 上另有 `__dmb()` 供 `atomic_thread_fence` 使用。明确写进文档的
 ```
 make test-atomic PYTHON="<path-to-python>"
 python tests/run_atomic_tests.py --arkcc ./arkcc.exe
-python tests/arm_exec/run_arm_exec.py            # 需 unicorn，共 33 个用例
+python tests/arm_exec/run_arm_exec.py            # 需 unicorn，共 34 个用例
 ```
 
 ## 7. 已登记的限制（不是 TODO，是明写的边界）

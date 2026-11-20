@@ -3207,6 +3207,41 @@ static void irgen_lvalue_addr(IrGen *g, AstNode *node) {
         ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_PLUS);
         return;
     }
+    if (node->kind == AST_TERNARY && node->type &&
+        (node->type->kind == TYPE_STRUCT || node->type->kind == TYPE_UNION)) {
+        /* C99 6.5.15p6: `c ? s1 : s2` on two structures is a VALUE, not an
+         * lvalue, so there is no address to hand out.  Materialise it in a
+         * temporary -- copy whichever branch is selected into the temp -- and
+         * push the temp's address.  Before this, every consumer of a
+         * struct-typed conditional (assignment, initialiser, by-value
+         * argument, `(c ? s1 : s2).x`) fell through to #137 "expression must
+         * be a modifiable lvalue": measured `struct P a={1,2},b={3,4},c;
+         * c = k ? a : b;` refusing, although the same code compiles for every
+         * scalar type.  IR_MEMCPY pops dst then src and leaves the SECOND dst
+         * push behind, so each arm ends with the temporary's address on the
+         * stack -- the same shape the assignment path produces. */
+        int tsz = type_size(node->type);
+        int tfl = alloc_label(g);
+        int tel = alloc_label(g);
+        int ttmp;
+        if (tsz <= 0) tsz = 4;
+        ttmp = alloc_local(g, tsz);
+        irgen_expr(g, node->u.ternary.cond);
+        irgen_cond_to_bool(g, node->u.ternary.cond);
+        ir_emit(g->fn, IR_JZ, tfl, 0, 0);
+        ir_emit(g->fn, IR_PUSH_ADDR, ttmp, 0, 0);             /* [dst] */
+        irgen_lvalue_addr(g, node->u.ternary.true_expr);      /* [dst,src] */
+        ir_emit(g->fn, IR_PUSH_ADDR, ttmp, 0, 0);             /* [dst,src,dst] */
+        ir_emit(g->fn, IR_MEMCPY, tsz, 0, 0);                 /* leaves [dst] */
+        ir_emit(g->fn, IR_JMP, tel, 0, 0);
+        ir_emit(g->fn, IR_LABEL, tfl, 0, 0);
+        ir_emit(g->fn, IR_PUSH_ADDR, ttmp, 0, 0);             /* [dst] */
+        irgen_lvalue_addr(g, node->u.ternary.false_expr);     /* [dst,src] */
+        ir_emit(g->fn, IR_PUSH_ADDR, ttmp, 0, 0);             /* [dst,src,dst] */
+        ir_emit(g->fn, IR_MEMCPY, tsz, 0, 0);                 /* leaves [dst] */
+        ir_emit(g->fn, IR_LABEL, tel, 0, 0);
+        return;
+    }
     {
         DiagLoc loc;
         loc.file = 0;
@@ -5846,6 +5881,15 @@ static void irgen_expr(IrGen *g, AstNode *node) {
         }
         case AST_TERNARY: {
             int false_l = alloc_label(g);
+            if (node->type && (node->type->kind == TYPE_STRUCT ||
+                              node->type->kind == TYPE_UNION)) {
+                /* Aggregate result: the value has no register form, so
+                 * it is materialised by irgen_lvalue_addr and arrives as
+                 * the temporary's address -- the same shape every other
+                 * aggregate rvalue has. */
+                irgen_lvalue_addr(g, node);
+                break;
+            }
             int end_l = alloc_label(g);
             irgen_expr(g, node->u.ternary.cond);
             irgen_cond_to_bool(g, node->u.ternary.cond);

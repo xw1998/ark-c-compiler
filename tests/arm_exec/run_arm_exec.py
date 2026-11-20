@@ -243,6 +243,29 @@ int main(void) { return len_a() * 10 + use_b(); }
         "expect": 37,
     },
     {
+        "name": "struct_cond",
+        "why": "C99 6.5.15p6: `k ? a : b` on two structures is a VALUE, not "
+               "an lvalue.  It is materialised into a temporary and copied, so "
+               "the assignment, a by-value argument and a member access all see "
+               "the selected branch instead of #137.",
+        "files": {
+            "sc.c": STARTUP + """\
+struct P { int x, y; };
+int gpad = 0;
+int take(struct P p) { return p.x * 10 + p.y; }
+int main(void)
+{
+    struct P a = {1, 2}, b = {3, 4}, c;
+    int k = 0;
+    c = k ? a : b;
+    return c.x * 10 + c.y + take(k ? b : a) + gpad;
+}
+""",
+        },
+        "build": [(["sc.c", "-target", "arm", "--vector-table", "-o", "out.bin"], "out.bin")],
+        "expect": 46,
+    },
+    {
         "name": "reloc_data_off",
         "why": "without --reloc-data the same link must refuse, not alias the globals",
         "files": {

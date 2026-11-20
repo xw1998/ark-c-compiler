@@ -491,7 +491,8 @@ That table is the crux of a patch-level fix: without it, any `unsigned` suffix w
 | bitwise `& \| ^ ~ << >>` | yes |
 | assignment `=` and all compound assignments `+= -= *= /= %= &= \|= ^= <<= >>=` | yes |
 | increment/decrement `++ --` (prefix + postfix) | yes |
-| conditional `?:` | yes |
+| conditional `?:` (including struct/union results: C99 6.5.15p6 makes it a VALUE, not an
+  lvalue, so the compiler materialises it in a temporary) | yes |
 | comma `,` (in expression context) | yes |
 | address-of `&` / dereference `*` | yes |
 | member access `.` / `->` | yes |

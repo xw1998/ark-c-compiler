@@ -2016,10 +2016,19 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                     /* double (or float, aux bit 0x200 clear) -> long long.
                      * aux 0x200 = source is double, 0x400 = destination is
                      * unsigned.  The source sits high-dword-first on the IR
-                     * stack, so it has to be flipped before the movq.  A single
-                     * cvttsd2si saturated at 2^31; the real conversion splits
-                     * the value into hi*2^32 + lo. */
-                    int lp = ++lbl64, ld = ++lbl64;
+                     * stack, so it has to be flipped before the movq.
+                     * Every cvttsd2si below is handed a NON-NEGATIVE operand,
+                     * so truncation toward zero is floor and the 2^32 split
+                     * carries exactly.  Folding the 2^31 bias in BEFORE the
+                     * truncation (as this used to) makes truncation round the
+                     * high half up whenever the quotient has a fraction:
+                     * `double d = 1e9; unsigned long long u = (unsigned long
+                     * long)d;` answered 0x100000000, so u%251 was 123 where
+                     * the x86-64 and ARM backends both say 187.  The sign is
+                     * now handled by converting the magnitude and negating
+                     * afterwards, the same shape as IR_64I2F. */
+                    int lp = ++lbl64, ld = ++lbl64, lu = ++lbl64, lv = ++lbl64;
+                    int lw = ++lbl64;
                     if (I->aux & 0x200) {
                         x86_pair_swap_at(&buf, 0);
                         asmbuf_puts(&buf, "    movq xmm0, [esp]\n    add esp, 8\n");
@@ -2030,37 +2039,48 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                     /* xmm2 = 2^32, xmm3 = 2^31 */
                     asmbuf_puts(&buf, "    mov ecx, 65536\n    cvtsi2sd xmm2, ecx\n    mulsd xmm2, xmm2\n");
                     asmbuf_puts(&buf, "    mov ecx, 1073741824\n    cvtsi2sd xmm3, ecx\n    addsd xmm3, xmm3\n");
-                    asmbuf_puts(&buf, "    movapd xmm1, xmm0\n    divsd xmm1, xmm2\n");
+                    asmbuf_puts(&buf, "    xor edi, edi\n");
                     if (I->aux & 0x400) {
-                        /* unsigned destination: both halves are converted as
-                         * unsigned, which is what the 2^31 split is for. */
-                        asmbuf_puts(&buf, "    subsd xmm1, xmm3\n    cvttsd2si edx, xmm1\n");
-                        asmbuf_puts(&buf, "    add edx, 0x80000000\n");
-                        asmbuf_puts(&buf, "    mov eax, edx\n");
-                        x86_u32_to_xmm(&buf, "xmm1");
-                        asmbuf_puts(&buf, "    mulsd xmm1, xmm2\n    subsd xmm0, xmm1\n");
-                        asmbuf_puts(&buf, "    subsd xmm0, xmm3\n    cvttsd2si eax, xmm0\n");
-                        asmbuf_puts(&buf, "    add eax, 0x80000000\n");
+                        /* Unsigned destination: values at or above 2^63 do not
+                         * fit a signed conversion, so they lose 2^63 up front
+                         * and get that bit put back at the end. */
+                        asmbuf_puts(&buf, "    movapd xmm1, xmm2\n    mulsd xmm1, xmm3\n");
+                        asmbuf_puts(&buf, "    comisd xmm0, xmm1\n    jb ");
+                        x86_elbl(&buf, f->name, "f2i", lu, 0);
+                        asmbuf_puts(&buf, "    subsd xmm0, xmm1\n    mov edi, 1\n");
+                        x86_elbl(&buf, f->name, "f2i", lu, 1);
                     } else {
-                        /* Signed: take the magnitude first (|x| < 2^63, so the
-                         * high half always fits a signed 32-bit conversion),
-                         * then re-apply the sign. */
-                        asmbuf_puts(&buf, "    xorpd xmm7, xmm7\n    xor edi, edi\n");
-                        asmbuf_puts(&buf, "    comisd xmm0, xmm7\n    jae ");
+                        /* Signed destination: take the magnitude first, then
+                         * re-apply the sign. |x| < 2^63 always fits. */
+                        asmbuf_puts(&buf, "    xorpd xmm7, xmm7\n    comisd xmm0, xmm7\n    jae ");
                         x86_elbl(&buf, f->name, "f2i", lp, 0);
-                        asmbuf_puts(&buf, "    mov edi, 1\n    subsd xmm7, xmm0\n");
-                        asmbuf_puts(&buf, "    movapd xmm0, xmm7\n    movapd xmm1, xmm0\n");
-                        asmbuf_puts(&buf, "    divsd xmm1, xmm2\n");
+                        asmbuf_puts(&buf, "    mov edi, 1\n    subsd xmm7, xmm0\n    movapd xmm0, xmm7\n");
                         x86_elbl(&buf, f->name, "f2i", lp, 1);
-                        asmbuf_puts(&buf, "    cvttsd2si edx, xmm1\n");
-                        asmbuf_puts(&buf, "    cvtsi2sd xmm1, edx\n    mulsd xmm1, xmm2\n");
-                        asmbuf_puts(&buf, "    subsd xmm0, xmm1\n");
-                        asmbuf_puts(&buf, "    subsd xmm0, xmm3\n    cvttsd2si eax, xmm0\n");
-                        asmbuf_puts(&buf, "    add eax, 0x80000000\n");
+                    }
+                    /* Shared: xmm0 = |x| in [0, 2^63).  High half = floor(x /
+                     * 2^32); the quotient is non-negative so cvttsd2si is a
+                     * floor.  The remainder is in [0, 2^32), so it needs the
+                     * same 2^31 split, again on a non-negative operand. */
+                    asmbuf_puts(&buf, "    movapd xmm1, xmm0\n    divsd xmm1, xmm2\n");
+                    asmbuf_puts(&buf, "    cvttsd2si edx, xmm1\n");
+                    asmbuf_puts(&buf, "    cvtsi2sd xmm1, edx\n    mulsd xmm1, xmm2\n");
+                    asmbuf_puts(&buf, "    subsd xmm0, xmm1\n");
+                    asmbuf_puts(&buf, "    comisd xmm0, xmm3\n    jb ");
+                    x86_elbl(&buf, f->name, "f2i", lv, 0);
+                    asmbuf_puts(&buf, "    subsd xmm0, xmm3\n    cvttsd2si eax, xmm0\n    add eax, 0x80000000\n    jmp ");
+                    x86_elbl(&buf, f->name, "f2i", lw, 0);
+                    x86_elbl(&buf, f->name, "f2i", lv, 1);
+                    asmbuf_puts(&buf, "    cvttsd2si eax, xmm0\n");
+                    x86_elbl(&buf, f->name, "f2i", lw, 1);
+                    if (I->aux & 0x400) {
                         asmbuf_puts(&buf, "    test edi, edi\n    jz ");
                         x86_elbl(&buf, f->name, "f2i", ld, 0);
-                        asmbuf_puts(&buf, "    not eax\n    not edx\n");
-                        asmbuf_puts(&buf, "    add eax, 1\n    adc edx, 0\n");
+                        asmbuf_puts(&buf, "    or edx, 0x80000000\n");
+                        x86_elbl(&buf, f->name, "f2i", ld, 1);
+                    } else {
+                        asmbuf_puts(&buf, "    test edi, edi\n    jz ");
+                        x86_elbl(&buf, f->name, "f2i", ld, 0);
+                        asmbuf_puts(&buf, "    not eax\n    not edx\n    add eax, 1\n    adc edx, 0\n");
                         x86_elbl(&buf, f->name, "f2i", ld, 1);
                     }
                     asmbuf_puts(&buf, "    push eax\n    push edx\n");

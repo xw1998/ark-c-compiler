@@ -188,6 +188,16 @@ int main(void) {
     return (x.a == -1) ? 7 : 8;
 }
 """, 7, RET),                                 # sign-extends back out of 3 bits
+
+    ("struct_cond", """
+struct P { int x, y; };
+int main(void) {
+    struct P a = {1, 2}, b = {3, 4}, c;
+    int k = 0;
+    c = k ? a : b;
+    return c.x * 10 + c.y;
+}
+""", 34, RET),                                # C99 6.5.15p6: the ?: is a value, materialised in a temp
 ]
 
 # name, assembly source, substring the diagnostic must contain
