@@ -2816,9 +2816,11 @@ limitations below remain:
   8-byte-slot default branch: the cursor advanced by 8 bytes while the region held 4-byte words, and
   `sum(3,10,20,30)` read 10, 30 and ran out of bounds (returning 40 instead of 60) with no diagnostic. It is
   now in the same class as RV32I and integer/pointer variadics measure correctly (the i386 reference arm of
-  `tests/run_x86_64_image_tests.py` changed from 40/33/4/36/8 to 60/45/7/78/20); **`double` variadics still
-  do not work on i386**, because it simply lacks an SSE double-precision path (assembly-time
-  `movq needs an xmm operand`) — that is a reported rejection, not a wrong value.
+  `tests/run_x86_64_image_tests.py` changed from 40/33/4/36/8 to 60/45/7/78/20). **`double` variadics work on
+  i386 as well**: it used to lack an SSE double-precision path (assembly-time `movq needs an xmm operand`),
+  which only reached the "reported rejection" tier; once the i386 float path was filled in, the i386 arms of
+  `varargs_double` / `varargs_fp_overflow` / `varargs_mixed` give 4 / 45 / 55, identical to x86_64 (they run on
+  every `make test-x86-64`).
   **The variadic frames of these two backends must stay small**: `irgen`'s 8064-byte reservation is turned
   off by the driver per backend (`g_ir_va_slot_region`), because a small program's task stack on the board
   is only 4 KB — an 8 KB mirror region was all green on the host and guaranteed to overflow on the board.
@@ -2940,8 +2942,7 @@ limitations below remain:
   semantics, so the C backend emits `__at(addr)` as a comment and merely parses `__global_reg` (a hint
   keyword) without changing the generated code. Use `-target arm` for them to take effect.
 
-- Some advanced optimisations (loop unrolling, loop-invariant hoisting, PHI merging, and so on) are not
-  implemented yet; for performance-sensitive code, use `__forceinline` to control it manually.
+- Optimisation is a set of **optional passes that are all off by default** (`-O1` turns on `ir.constfold` / `ir.dce` / `ir.dce-cfg` / `ir.licm` / `ir.unroll` / `ir.inline` / `ir.const-global`; `--print-pipeline` shows which pass ran and why the others were skipped -- see 5.14 and the two vectorisation limits in 5.x). What is **not** done: a register allocator (the backends emit stack slots directly and never promote locals into registers), SSA / PHI construction (this IR is a stack machine with three-address ops, so a PHI node is not an object that exists here), and loop transformations in general (`--licm` only hoists computations out of a single-level loop with a straight-line body, and `--unroll` only fully expands a `for` with constant bounds, step 1 and a trip count within `ARK_UNROLL_MAX` = 8). For performance-sensitive code `__forceinline` is still the manual control.
 - A few rare armcc builtins (the `__builtin_*` family) are not covered yet; use `__asm` inline assembly
   instead where needed.
 

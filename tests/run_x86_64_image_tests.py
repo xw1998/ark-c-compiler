@@ -45,8 +45,9 @@ target's va region is the caller's own 4-byte-word stack block, so it now walks
 packed word slots like RV32I does.  Before that it took <stdarg.h>'s 8-byte-slot
 default branch (cursor +8 per argument against a 4-byte-word image) and read
 every second argument, e.g. 40 instead of 60 for sum(3,10,20,30) -- a wrong
-answer with no diagnostic.  Its double varargs still refuse at build time
-(`movq needs an xmm operand`), which is why those arms stay SKIP.
+answer with no diagnostic.  Its double varargs used to refuse at build time
+(`movq needs an xmm operand`); once the i386 float path landed those arms run
+for real, so an i386 mismatch is now a verdict like everywhere else.
 
 Usage (from the repository root):
     python tests/run_x86_64_image_tests.py --arkcc ./arkcc.exe
