@@ -286,6 +286,28 @@ for (j = 0; j < reg_idx && j < 64; j++)      /* reg_idx 对 sret 函数还含隐
   `static double arr[2]={1.5,-2.25};` 读 `gs.d` 与 `arr[1]`，期望 7。
 - `sym_plus_disp_cross_obj`（跨 TU）：`d1.c` 定义 `double gd=2.5; struct S gs={4,0.75};`，
   `d2.c` 用 `extern` 读 `[gd+4]` 与 `[gs+8]`，期望 21。
+
+### 5.7 第六类欠账：无符号语义（0.8.7 清零）
+
+i386 发射器有两处不看 `aux` 的无符号位，都是"退出码 0 + 静默错答案"：
+
+1. `IR_BINARY`。`unsigned >> k` 一律发 `sar`（`0x80000000u>>31` 答 0，`int k` 变量计数
+   一样错）；无符号的 `< > <= >=` 因为 `aux` 带着 0x100 位匹配不上 `case (int)TOK_LT`
+   这些分派，全部落进 `else` 分支的 `sete` 默认（`0x80000000u > 1u` 答 false）。
+   修法是在分派前把标志位剥掉（`bin_op = aux & ~0x100`）：右移按标志在 `shr`/`sar`
+   之间选，关系运算按标志在 `seta/setb/setae/setbe` 与 `setg/setl/setge/setle`
+   之间选。ARM 与 C 后端一直用这个编码，i386 只是漏读。
+2. `IR_I2F` / `IR_F2I`。`cvtsi2sd` 只有有符号形式，所以 `(double)4000000000u`
+   曾答 **-1610612736.0**；`cvttsd2si` 对 ≥2^31 的值返回整数不定值 0xFFFFFFFE，
+   所以 `(unsigned)3.5e9` 曾答 **4294967294**。修法：`IR_I2F` 的无符号源复用文件里
+   早就有的 `x86_u32_to_xmm()`（拆最低位，`2*(u>>1)+(u&1)`；单精度分支再收窄一次），
+   `IR_F2I` 的无符号目标按 2^31 分段 —— 小于 2^31 直接截断，否则
+   `trunc(v - 2^31) + 0x80000000`。
+
+门禁新增六条，x86_64 与 i386 双跑同一期望值：`unsigned_shift_right`=1、
+`unsigned_shift_right_var`=1、`unsigned_relational`=15、`uint_to_double`=4000、
+`double_to_uint`=3500、`uint_to_float32`=4000。
+
 ## 6. 单文件镜像拒绝未解析符号
 
 `resolve_refs_x` 找不到 label 时把 disp32 留成全 0，于是 `call foo` 变成 `call +0`：
@@ -337,6 +359,12 @@ unicorn 的 32 位核上跑**，`i386` 列与期望不符即判 FAIL（早期只
 | `llong_local_init` | 局部 `long long a[3]={7,8,9}`：int 常量要先加宽成两个字再按 8 字节存（曾只压一个字、`IR_STORE` 却弹两个 ⇒ 元素全读成 0） | 1288 |
 | `double_local_init_from_int` | 同一处加宽用在浮点元素上：`double a[2]={1,2}` 与 `struct P{3,4}` 里的 `d` | 46 |
 | `ptr_local_init_null` | `char *t[3]={0,0,0}` 的 0 仍按一个字存，相邻的 `long long` 元素两个半字都在 | 11 |
+| `unsigned_shift_right` | i386 的 `unsigned >> 31` 一律发 `sar`：`aux` 的 0x100 位（无符号）被忽略，`0x80000000u>>31` 答 0 | 1 |
+| `unsigned_shift_right_var` | 同一错误的变量计数（`cl`）形式 | 1 |
+| `unsigned_relational` | 无符号 `>` `<` `>=` `<=` 要 `seta`/`setb`/`setae`/`setbe`；不认 0x100 位时全落到 `sete` 默认 | 15 |
+| `uint_to_double` | `cvtsi2sd` 只有有符号形式：`(double)4000000000u` 曾答 -1610612736.0 | 4000 |
+| `double_to_uint` | `cvttsd2si` 在 2^31 以上返回 0xFFFFFFFE 哨兵值；无符号目标按 2^31 分段再加回偏置 | 3500 |
+| `uint_to_float32` | 同一无符号转换的单精度分支 | 4000 |
 
 再加三段让上面那些 PASS 有意义的东西：
 
@@ -355,7 +383,7 @@ unicorn 的 32 位核上跑**，`i386` 列与期望不符即判 FAIL（早期只
 - **selfcheck**：用「期望值 +1」重跑一个用例，必须被判成 DIFF。判不出错的 harness
   证明不了任何通过
 
-当前实测：`55 passed, 0 failed, 0 skipped`（45 个单文件用例 + 3 个双对象用例 + 6 条 refusal + 1 条自检）。
+当前实测：`61 passed, 0 failed, 0 skipped`（51 个单文件用例 + 3 个双对象用例 + 6 条 refusal + 1 条自检）。
 
 ### 7.1 自举门禁：把"能跑一次"变成"逐字节复现宿主对象"
 

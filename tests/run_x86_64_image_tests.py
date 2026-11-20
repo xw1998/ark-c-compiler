@@ -506,6 +506,42 @@ int main(void){
   return (int)(v[0] + v[1]); }
 """, 11, "a pointer element initialised from 0 still stores one 8-byte word; "
          "the neighbouring long long elements keep both halves"),
+
+    ("unsigned_shift_right",
+     """
+int main(void){ unsigned v = 0x80000000u; return (int)(v >> 31); }
+""", 1, "an unsigned right shift must be `shr`, not `sar` -- irgen marks it with "
+         "aux bit 0x100 and the i386 emitter ignored the flag"),
+
+    ("unsigned_shift_right_var",
+     """
+int main(void){ unsigned v = 0x80000000u; int k = 31; return (int)(v >> k); }
+""", 1, "the same shift with a runtime count (cl form)"),
+
+    ("unsigned_relational",
+     """
+int main(void){
+  unsigned a = 0x80000000u, b = 1u;
+  return (a > b) * 1 + (b < a) * 2 + (a >= b) * 4 + (b <= a) * 8; }
+""", 15, "unsigned >/< />=/<= need seta/setb/setae/setbe; the emitter fell into "
+         "the `sete` default so 0x80000000u > 1u answered false"),
+
+    ("uint_to_double",
+     """
+int main(void){ unsigned u = 4000000000u; double d = u; return (int)(d / 1000000.0); }
+""", 4000, "cvtsi2sd is signed-only: (double)4000000000u used to be -1610612736.0"),
+
+    ("double_to_uint",
+     """
+int main(void){ double d = 3500000000.0; unsigned u = (unsigned)d;
+  return (int)(u / 1000000u); }
+""", 3500, "cvttsd2si returns the 0xFFFFFFFE sentinel above 2^31; the unsigned "
+           "destination is split at 2^31 and biased back"),
+
+    ("uint_to_float32",
+     """
+int main(void){ unsigned u = 4000000000u; float f = u; return (int)(f / 1000000.0f); }
+""", 4000, "the single-precision arm of the same unsigned int -> float conversion"),
 ]
 
 

@@ -946,30 +946,44 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                     break;
                 }
                 case IR_BINARY: {
-                    const char *op = binop_x(I->aux);
+                    /* aux bit 0x100 = the operands are UNSIGNED; this is the
+                     * encoding irgen already used for the ARM and C backends.
+                     * It was ignored here, so on i386
+                     *   - every unsigned right shift ran as `sar`
+                     *     (0x80000000u >> 31 answered 0, not 1), and
+                     *   - every unsigned relational operator missed the
+                     *     switch below and fell into the `sete` default
+                     *     (0x80000000u > 1u answered "false").
+                     * Mask the flag off for dispatch and pick the unsigned
+                     * condition codes (b/a/be/ae) when it is set. */
+                    int bin_op  = I->aux & ~0x100;
+                    int bin_uns = (I->aux & 0x100) != 0;
+                    const char *op = binop_x(bin_op);
                     if (op) {
                         asmbuf_puts(&buf, "    pop ecx\n    pop eax\n    ");
                         asmbuf_puts(&buf, op);
                         asmbuf_puts(&buf, " eax, ecx\n    push eax\n");
-                    } else if (I->aux == (int)TOK_MUL) {
+                    } else if (bin_op == (int)TOK_MUL) {
                         asmbuf_puts(&buf, "    pop ecx\n    pop eax\n    imul eax, ecx\n    push eax\n");
-                    } else if (I->aux == (int)TOK_DIV) {
+                    } else if (bin_op == (int)TOK_DIV) {
                         asmbuf_puts(&buf, "    pop ecx\n    pop eax\n    cdq\n    idiv ecx\n    push eax\n");
-                    } else if (I->aux == (int)TOK_MOD) {
+                    } else if (bin_op == (int)TOK_MOD) {
                         asmbuf_puts(&buf, "    pop ecx\n    pop eax\n    cdq\n    idiv ecx\n    push edx\n");
-                    } else if (I->aux == (int)TOK_SHL) {
+                    } else if (bin_op == (int)TOK_SHL) {
                         asmbuf_puts(&buf, "    pop ecx\n    pop eax\n    shl eax, cl\n    push eax\n");
-                    } else if (I->aux == (int)TOK_SHR) {
-                        asmbuf_puts(&buf, "    pop ecx\n    pop eax\n    sar eax, cl\n    push eax\n");
+                    } else if (bin_op == (int)TOK_SHR) {
+                        asmbuf_puts(&buf, "    pop ecx\n    pop eax\n    ");
+                        asmbuf_puts(&buf, bin_uns ? "shr eax, cl\n" : "sar eax, cl\n");
+                        asmbuf_puts(&buf, "    push eax\n");
                     } else {
                         const char *cc = 0;
-                        switch (I->aux) {
+                        switch (bin_op) {
                             case (int)TOK_EQ: cc = "sete";  break;
                             case (int)TOK_NE: cc = "setne"; break;
-                            case (int)TOK_LT: cc = "setl";  break;
-                            case (int)TOK_GT: cc = "setg";  break;
-                            case (int)TOK_LE: cc = "setle"; break;
-                            case (int)TOK_GE: cc = "setge"; break;
+                            case (int)TOK_LT: cc = bin_uns ? "setb" : "setl";  break;
+                            case (int)TOK_GT: cc = bin_uns ? "seta" : "setg";  break;
+                            case (int)TOK_LE: cc = bin_uns ? "setbe" : "setle"; break;
+                            case (int)TOK_GE: cc = bin_uns ? "setae" : "setge"; break;
                             default: cc = "sete"; break;
                         }
                         asmbuf_puts(&buf, "    pop ecx\n    pop eax\n    cmp eax, ecx\n    ");
@@ -1636,11 +1650,33 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                     if ((I->aux & 0x200) != 0) {
                         x86_pair_swap_at(&buf, 0);
                         asmbuf_puts(&buf, "    movq xmm0, [esp]\n    add esp, 8\n");
-                        asmbuf_puts(&buf, "    cvttsd2si eax, xmm0\n    push eax\n");
                     } else {
                         asmbuf_puts(&buf, "    movss xmm0, [esp]\n    add esp, 4\n");
-                        asmbuf_puts(&buf, "    cvttss2si eax, xmm0\n    push eax\n");
                     }
+                    /* aux bit 0x400 = the destination is unsigned.  cvttsd2si
+                     * is signed-only and answers 0xFFFFFFFE (the integer
+                     * indefinite sentinel) for anything >= 2^31, so
+                     * `(unsigned)3.5e9` came out as 4294967294.  Split at 2^31:
+                     * above it, truncate v - 2^31 and add the bias back. */
+                    if (I->aux & 0x400) {
+                        int lu = ++lbl64;
+                        if (!(I->aux & 0x200))
+                            asmbuf_puts(&buf, "    cvtss2sd xmm0, xmm0\n");
+                        asmbuf_puts(&buf, "    mov ecx, 1073741824\n    cvtsi2sd xmm1, ecx\n"
+                                          "    addsd xmm1, xmm1\n    comisd xmm0, xmm1\n    jb ");
+                        x86_elbl(&buf, f->name, "f2u", lu, 0);
+                        asmbuf_puts(&buf, "    subsd xmm0, xmm1\n    cvttsd2si eax, xmm0\n"
+                                          "    add eax, 0x80000000\n    jmp ");
+                        x86_elbl(&buf, f->name, "f2u", lu, 1);
+                        x86_elbl(&buf, f->name, "f2u", lu, 0);
+                        asmbuf_puts(&buf, "    cvttsd2si eax, xmm0\n");
+                        x86_elbl(&buf, f->name, "f2u", lu, 1);
+                    } else if ((I->aux & 0x200) != 0) {
+                        asmbuf_puts(&buf, "    cvttsd2si eax, xmm0\n");
+                    } else {
+                        asmbuf_puts(&buf, "    cvttss2si eax, xmm0\n");
+                    }
+                    asmbuf_puts(&buf, "    push eax\n");
                     break;
                 }
 
@@ -1653,16 +1689,31 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                         break;
                     }
                     if (is_dbl) {
-                        asmbuf_puts(&buf, "    pop eax\n    cvtsi2sd xmm0, eax\n"
-                                          "    sub esp, 8\n    movq [esp], xmm0\n");
+                        asmbuf_puts(&buf, "    pop eax\n");
+                        /* aux bit 0x400 = the source is unsigned.  cvtsi2sd is
+                         * signed-only, so `(double)4000000000u` used to
+                         * produce -1610612736.0.  x86_u32_to_xmm splits the
+                         * low bit off: 2*(u >> 1) + (u & 1). */
+                        if (I->aux & 0x400)
+                            x86_u32_to_xmm(&buf, "xmm0");
+                        else
+                            asmbuf_puts(&buf, "    cvtsi2sd xmm0, eax\n");
+                        asmbuf_puts(&buf, "    sub esp, 8\n    movq [esp], xmm0\n");
                         x86_pair_swap_at(&buf, 0);
                     } else {
                         /* float result: one word, genuinely single precision.
                          * The old code produced a 2-word double that merely
                          * had float-ish precision, so a float store popped one
                          * word and left the other on the IR stack. */
-                        asmbuf_puts(&buf, "    pop eax\n    cvtsi2ss xmm0, eax\n"
-                                          "    sub esp, 4\n    movss [esp], xmm0\n");
+                        asmbuf_puts(&buf, "    pop eax\n");
+                        if (I->aux & 0x400) {
+                            x86_u32_to_xmm(&buf, "xmm0");
+                            asmbuf_puts(&buf, "    cvtsd2ss xmm0, xmm0\n"
+                                              "    sub esp, 4\n    movss [esp], xmm0\n");
+                        } else {
+                            asmbuf_puts(&buf, "    cvtsi2ss xmm0, eax\n"
+                                              "    sub esp, 4\n    movss [esp], xmm0\n");
+                        }
                     }
                     break;
                 }

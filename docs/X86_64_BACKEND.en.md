@@ -315,6 +315,31 @@ Two gate anchors, both run at the execution level on x86_64 and i386:
   `static double arr[2]={1.5,-2.25};`, reads `gs.d` and `arr[1]`, expects 7.
 - `sym_plus_disp_cross_obj` (cross TU): `d1.c` defines `double gd=2.5; struct S gs={4,0.75};`,
   `d2.c` reads `[gd+4]` and `[gs+8]` through `extern`, expects 21.
+
+### 5.7 The sixth debt: unsigned semantics (cleared in 0.8.7)
+
+The i386 emitter ignored the unsigned bits of `aux` in two places, both "exit 0 + silently
+wrong answer":
+
+1. `IR_BINARY`. `unsigned >> k` was always emitted as `sar` (`0x80000000u>>31` answered 0,
+   with a runtime count just as wrong); and because an unsigned `< > <= >=` carries bit 0x100
+   in `aux`, it matched none of the `case (int)TOK_LT` style arms and fell into the `else`
+   branch's `sete` default (`0x80000000u > 1u` answered false). The fix masks the flag off
+   before dispatch (`bin_op = aux & ~0x100`): the shift picks `shr` vs `sar` from the flag,
+   and the relational operators pick `seta/setb/setae/setbe` vs `setg/setl/setge/setle`.
+   The ARM and C backends have always used this encoding; i386 simply never read it.
+2. `IR_I2F` / `IR_F2I`. `cvtsi2sd` is signed-only, so `(double)4000000000u` used to answer
+   **-1610612736.0**; `cvttsd2si` returns the integer-indefinite sentinel 0xFFFFFFFE for
+   values >= 2^31, so `(unsigned)3.5e9` used to answer **4294967294**. The fix reuses the
+   file's existing `x86_u32_to_xmm()` for the unsigned source of `IR_I2F` (split off the low
+   bit: `2*(u>>1)+(u&1)`, then narrow again for the single-precision arm), and splits the
+   unsigned destination of `IR_F2I` at 2^31 -- below it plain truncation, above it
+   `trunc(v - 2^31) + 0x80000000`.
+
+Six new gate anchors run the same expectation on x86_64 and i386: `unsigned_shift_right`=1,
+`unsigned_shift_right_var`=1, `unsigned_relational`=15, `uint_to_double`=4000,
+`double_to_uint`=3500, `uint_to_float32`=4000.
+
 ## 6. Single-file images refuse unresolved symbols
 
 When `resolve_refs_x` cannot find a label it leaves the disp32 as all zeros, so `call foo` becomes
@@ -330,7 +355,7 @@ make test-x86-64                  # already part of make test
 python tests/run_x86_64_image_tests.py --arkcc ./arkcc.exe
 ```
 
-45 programs are compiled into flat 0x400000 images and run by calling `main` on a 64-bit unicorn core,
+51 programs are compiled into flat 0x400000 images and run by calling `main` on a 64-bit unicorn core,
 each asserting a **constant computed outside the program** (host gcc is not used as an oracle); the
 same program is **then compiled again for 32-bit and run on a 32-bit unicorn core**, and an `i386`
 column that differs from the expectation is a FAIL (it used to be a footnote, which is why "a known
@@ -367,6 +392,12 @@ column that differs from the expectation is a FAIL (it used to be a footnote, wh
 | `llong_local_init` | a local `long long a[3]={7,8,9}`: an int constant has to be widened to two words before the 8-byte store (it used to push one while `IR_STORE` popped two, so every element read back 0) | 1288 |
 | `double_local_init_from_int` | the same widening for a floating element: `double a[2]={1,2}` and the `d` of `struct P = {3,4}` | 46 |
 | `ptr_local_init_null` | `char *t[3]={0,0,0}` still stores its 0 as one word and the neighbouring `long long` elements keep both halves | 11 |
+| `unsigned_shift_right` | i386 emitted `sar` for `unsigned >> 31`: aux bit 0x100 (unsigned) was ignored, so `0x80000000u>>31` answered 0 | 1 |
+| `unsigned_shift_right_var` | the same defect with a runtime count (the `cl` form) | 1 |
+| `unsigned_relational` | unsigned `>` `<` `>=` `<=` need `seta`/`setb`/`setae`/`setbe`; ignoring 0x100 routed them all to the `sete` default | 15 |
+| `uint_to_double` | `cvtsi2sd` is signed-only: `(double)4000000000u` used to answer -1610612736.0 | 4000 |
+| `double_to_uint` | `cvttsd2si` returns the 0xFFFFFFFE sentinel above 2^31; an unsigned destination is split at 2^31 and biased back | 3500 |
+| `uint_to_float32` | the single-precision arm of the same unsigned int -> float conversion | 4000 |
 
 Plus three further stages that make those PASSes mean something:
 
@@ -387,7 +418,7 @@ Plus three further stages that make those PASSes mean something:
 - **selfcheck**: one case is re-run with an "expectation + 1" and must be judged DIFF. A harness that
   cannot detect a wrong answer proves nothing about any pass
 
-Current measurement: `55 passed, 0 failed, 0 skipped` (45 single-file cases + 3 two-object cases + 6 refusals + 1 self-check).
+Current measurement: `61 passed, 0 failed, 0 skipped` (51 single-file cases + 3 two-object cases + 6 refusals + 1 self-check).
 
 ### 7.1 The self-host gate: turning "it runs once" into "it reproduces the host object byte for byte"
 
