@@ -2821,6 +2821,12 @@ limitations below remain:
   backends call the same implementation, so ARM and RV32I produce the same bytes here — ARM's own earlier
   "walk by commas" parser skipped string elements and stored 0, turning every member of
   `struct Q gq = {3, "abcd", 9}` into NUL.
+  A local aggregate initialiser carried a second silent wrong answer, fixed in 0.8.7: the element value was
+  not converted to the element type first, so the int constant in `long long a[3] = {7,8,9}` pushed one
+  word while the 8-byte `IR_STORE` popped two and all three elements read back 0 (same for
+  `double a[2] = {1,2}`). Every element now goes through the very same conversion matrix an assignment
+  uses (`int -> long long` widening, `int -> double`, `_Bool` normalisation); the cases
+  `llong_local_init` / `double_local_init_from_int` / `ptr_local_init_null` pin the three shapes.
 - **Block-scope `_Alignas` is capped at 8 bytes**: 16/32/64 are all errors
   (`block-scope _Alignas above 8 bytes is not supported`), because the frame only guarantees 8-byte
   alignment of `sp`; file scope and struct members have no such limit.

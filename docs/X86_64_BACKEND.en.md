@@ -330,7 +330,7 @@ make test-x86-64                  # already part of make test
 python tests/run_x86_64_image_tests.py --arkcc ./arkcc.exe
 ```
 
-42 programs are compiled into flat 0x400000 images and run by calling `main` on a 64-bit unicorn core,
+45 programs are compiled into flat 0x400000 images and run by calling `main` on a 64-bit unicorn core,
 each asserting a **constant computed outside the program** (host gcc is not used as an oracle); the
 same program is **then compiled again for 32-bit and run on a 32-bit unicorn core**, and an `i386`
 column that differs from the expectation is a FAIL (it used to be a footnote, which is why "a known
@@ -364,6 +364,9 @@ column that differs from the expectation is a FAIL (it used to be a footnote, wh
 | `vla_sizeof_at_declaration` | `sizeof` of a VLA answers the byte count computed at its declaration: declared with `n=3`, then `n=5`, it is still 12 (it used to answer the pointer size 8) | 7 |
 | `vla_length_conversion` | the length expression must go through its own conversions: `double n=2.0; int a[(int)n]` used to multiply the low 32 bits and allocate 0 bytes | 7 |
 | `vla_outer_dim_2d` | a 2-D array whose outermost dimension is variable, `int a[n][4]`: `sizeof` is 48 and `a[2][2]` indexes correctly | 10 |
+| `llong_local_init` | a local `long long a[3]={7,8,9}`: an int constant has to be widened to two words before the 8-byte store (it used to push one while `IR_STORE` popped two, so every element read back 0) | 1288 |
+| `double_local_init_from_int` | the same widening for a floating element: `double a[2]={1,2}` and the `d` of `struct P = {3,4}` | 46 |
+| `ptr_local_init_null` | `char *t[3]={0,0,0}` still stores its 0 as one word and the neighbouring `long long` elements keep both halves | 11 |
 
 Plus three further stages that make those PASSes mean something:
 
@@ -384,7 +387,7 @@ Plus three further stages that make those PASSes mean something:
 - **selfcheck**: one case is re-run with an "expectation + 1" and must be judged DIFF. A harness that
   cannot detect a wrong answer proves nothing about any pass
 
-Current measurement: `52 passed, 0 failed, 0 skipped` (42 single-file cases + 3 two-object cases + 6 refusals + 1 self-check).
+Current measurement: `55 passed, 0 failed, 0 skipped` (45 single-file cases + 3 two-object cases + 6 refusals + 1 self-check).
 
 ### 7.1 The self-host gate: turning "it runs once" into "it reproduces the host object byte for byte"
 

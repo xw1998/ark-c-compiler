@@ -301,7 +301,7 @@ make test-x86-64                  # 已挂进 make test
 python tests/run_x86_64_image_tests.py --arkcc ./arkcc.exe
 ```
 
-42 个程序编译成 0x400000 的平铺镜像，在 unicorn 的 64 位核上跑 `main`，逐个断言一个
+45 个程序编译成 0x400000 的平铺镜像，在 unicorn 的 64 位核上跑 `main`，逐个断言一个
 **在程序之外算出来的常量**（不拿宿主 gcc 当 oracle）；同一个程序**再编一次 32 位并在
 unicorn 的 32 位核上跑**，`i386` 列与期望不符即判 FAIL（早期只把它写成脚注，
 "32 位已知差距"因此长期没有变红）。下表只列锚点用例，不是全表：
@@ -334,6 +334,9 @@ unicorn 的 32 位核上跑**，`i386` 列与期望不符即判 FAIL（早期只
 | `vla_sizeof_at_declaration` | `sizeof` 一个 VLA 回答声明处算出的字节数：`n=3` 声明后改成 5，仍是 12（曾答指针大小 8） | 7 |
 | `vla_length_conversion` | 长度表达式要过它自己的转换：`double n=2.0; int a[(int)n]`，曾按低 32 位相乘分配 0 字节 | 7 |
 | `vla_outer_dim_2d` | 外层维变长的二维数组 `int a[n][4]`，`sizeof` 48 且 `a[2][2]` 下标正确 | 10 |
+| `llong_local_init` | 局部 `long long a[3]={7,8,9}`：int 常量要先加宽成两个字再按 8 字节存（曾只压一个字、`IR_STORE` 却弹两个 ⇒ 元素全读成 0） | 1288 |
+| `double_local_init_from_int` | 同一处加宽用在浮点元素上：`double a[2]={1,2}` 与 `struct P{3,4}` 里的 `d` | 46 |
+| `ptr_local_init_null` | `char *t[3]={0,0,0}` 的 0 仍按一个字存，相邻的 `long long` 元素两个半字都在 | 11 |
 
 再加三段让上面那些 PASS 有意义的东西：
 
@@ -352,7 +355,7 @@ unicorn 的 32 位核上跑**，`i386` 列与期望不符即判 FAIL（早期只
 - **selfcheck**：用「期望值 +1」重跑一个用例，必须被判成 DIFF。判不出错的 harness
   证明不了任何通过
 
-当前实测：`52 passed, 0 failed, 0 skipped`（42 个单文件用例 + 3 个双对象用例 + 6 条 refusal + 1 条自检）。
+当前实测：`55 passed, 0 failed, 0 skipped`（45 个单文件用例 + 3 个双对象用例 + 6 条 refusal + 1 条自检）。
 
 ### 7.1 自举门禁：把"能跑一次"变成"逐字节复现宿主对象"
 

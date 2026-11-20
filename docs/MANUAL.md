@@ -2331,6 +2331,11 @@ v0.8.0 已实现完整的 C99 集合 + 98% 以上的 armcc 常用扩展，仅剩
 都按 binary32/binary64 精确舍入落字节（`ark_agg_fill_ex()` 直接写位模式），不再报错。`union` 已支持：按 C99 6.7.8p10 只取**一个**活跃成员（无指派时取第一个，`.f=` 另指，
 多于一个成员仍报错），成员本身既可以是指针（`union U u = { .p = &gv };`）也可以是字符数组
 （`union U u = { .b = "abc" };`）；位域也支持（`struct B{int a:3; int b:5;} b = {1,2};` 按位落，位域数组同理）。两个后端调同一份实现，所以 ARM 与 RV32I 在这里给出的是同一组字节——曾经 ARM 自己那份"按逗号走"的解析器把字符串元素跳过存 0，`struct Q gq = {3, "abcd", 9}` 的成员全成了 NUL。
+  局部聚合初始化器另有一条 0.8.7 修掉的静默错答案：元素初值没有先转换成元素的类型，
+  `long long a[3] = {7,8,9}` 的 int 常量只压一个字、而 8 字节的 `IR_STORE` 弹两个字，
+  于是三个元素全读成 0（`double a[2] = {1,2}` 同理）。现在每个元素都先走与赋值完全相同的
+  转换矩阵（`int -> long long` 加宽、`int -> double` 转换、`_Bool` 归一），
+  门禁 `llong_local_init` / `double_local_init_from_int` / `ptr_local_init_null` 钉住这三条。
 - **块作用域 `_Alignas` 上限 8 字节**：16/32/64 一律报错（`block-scope _Alignas above 8 bytes is not supported`），
    因为帧只保证 `sp` 8 字节对齐；文件作用域与结构体成员没有这个限制。
 - **`va_arg` 依赖小端目标**：`stdlib/include/stdarg.h` 的 `va_arg` 按"槽位地址重解释"取值（`*(type *)(...)`），整数/指针/`double` 通吃，但要求目标为小端。ARM Thumb-2 与全部宿主均满足；大端目标需改为按类型分派。

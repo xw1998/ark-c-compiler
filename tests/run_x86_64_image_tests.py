@@ -476,6 +476,36 @@ int main(void){
   if ((int)sizeof a != 48) return 91;
   return a[2][2]; }
 """, 10, "a 2-D array whose *outer* dimension is variable (a[n][4])"),
+
+    ("llong_local_init",
+     """
+int main(void){
+  long long a[3] = {7, 8, 9};
+  long long b[2] = {-1, 2};
+  return (int)(a[0] + a[1] * 10 + a[2] * 100) + (int)(b[0] + b[1] + 300); }
+""", 1288, "an int constant filling a long long element must be widened to two "
+          "stack words before the 8-byte store (it pushed one and the store "
+          "popped two: a[0..2] all read back 0)"),
+
+    ("double_local_init_from_int",
+     """
+struct P { double d; int n; };
+int main(void){
+  double a[2] = {1, 2};
+  struct P p = {3, 4};
+  return (int)(a[0] * 10 + a[1]) + (int)(p.d * 10) + p.n; }
+""", 46, "the same widening for a floating element whose initialiser is an int "
+         "constant, inside an array and inside a struct"),
+
+    ("ptr_local_init_null",
+     """
+int main(void){
+  char *t[3] = {0, 0, 0};
+  long long v[2] = {5, 6};
+  if (t[0] || t[2]) return 99;
+  return (int)(v[0] + v[1]); }
+""", 11, "a pointer element initialised from 0 still stores one 8-byte word; "
+         "the neighbouring long long elements keep both halves"),
 ]
 
 

@@ -2077,8 +2077,16 @@ static void lw_object(LocalAggWalk *w, int off, Type *t) {
          * variable store path (AST_ASSIGN -> IR_STORE) has carried this same
          * SLOT64 marking all along; only aggregate initialisers lacked it. */
         int aux = es;
+        Type *vt = irgen_expr_type(val);
         if (g_irgen_slot64_ptrs && t->kind == TYPE_PTR) aux = 8 | IR_AUX_SLOT64;
         irgen_expr(w->g, val);
+        /* Convert the value to the element type before the store, exactly
+         * as an assignment would.  Without this an int constant filling a
+         * long long element pushed ONE word while the 8-byte IR_STORE popped
+         * TWO, so the high half came from whatever was below it: measured
+         * "long long a[3] = {7,8,9}; a[1]" answered 0 (and "double a[2] =
+         * {1,2}" lost its elements the same way). */
+        irgen_convert_value(w->g, vt, t);
         ir_emit(w->g->fn, IR_STORE, off, 0, aux);
     }
 }
