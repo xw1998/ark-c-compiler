@@ -396,6 +396,29 @@ case runs on the ARM emulator and returns a number the program itself computed.
   by the element size and added the scalar, landing on a wild address; the operands are now swapped
   first.
 
+### 4.1.3 Old-style (K&R) function definitions
+
+`tests/run_knr_tests.py` (`make test-knr`, five running cases, three cases that must be rejected, and
+three anti-false-green self checks).
+
+- **The identifier-list spelling**: `int add(a, b) int a; int b; { return a + b; }` is the C89 6.5.1
+  way of writing a definition and is still legal C99 (obsolescent; removed only in C23). The parser
+  used to answer `expected param type` / `#18: expected a ")"`, i.e. it rejected a legal C99
+  program.
+- **The types live in a declaration list**: they are not part of the declarator but follow the ')' as
+  ordinary declarations (`int a, b;` -- several declarators in one declaration -- is included), and a
+  parameter that is never declared there is `int`, as C89 says. So the names have to be recorded
+  first and the types filled in afterwards: `parse_param_list` keeps the names,
+  `knr_parse_decl_list` reads the declarations and builds the parameter list.
+- **Only a definition may carry one**: `int f(a, b);` -- names without types -- is a constraint
+  violation. It used to be unreachable; it is now **rejected** instead of quietly becoming a
+  prototype with no parameters, which would change the argument conversions at every call site (a
+  wrong answer, not a missing feature). The same check sits at the typedef function-type tail, in
+  nested declarators and at block-scope declarations, so no path is left open.
+- **The names must match**: a declaration for a name that is not in the identifier list, or the same
+  parameter declared twice, is an error; array and function parameters still decay to pointers
+  exactly as they do in a prototype.
+
 ### 4.2 Literals
 
 | Form | Example | Supported |

@@ -1647,6 +1647,13 @@ static void      decl_parse_suffixes(Parser *p, DeclNode *n, int consume_paren);
 static Type     *decl_apply(Parser *p, DeclNode *n, Type *T, char **out_name);
 static Type     *decl_normalise(Type *t);
 
+/* K&R identifier-list state; the helpers live below parse_declarator(). */
+static char    **g_knr_names;
+static Type    **g_knr_types;
+static int       g_knr_count;
+static int       g_knr_pending;   /* 1 between the ')' and the declaration list */
+static void knr_reject(Parser *p);
+
 /* Skip one balanced `( ... )`, used only to resynchronise after a declarator
  * that is rejected (the diagnostic has already been issued). */
 static void decl_skip_group(Parser *p) {
@@ -1768,6 +1775,7 @@ static void decl_parse_suffixes(Parser *p, DeclNode *n, int consume_paren) {
         lexer_advance(p->lex);                      /* '(' */
         parse_param_list(p, &params, &npc, &nva, p->name_line);
         lexer_expect(p->lex, TOK_RPAREN);
+        if (g_knr_pending) knr_reject(p);
         if (npc > 0 && params) {
             ptypes = (Type **)mem_pool_alloc(npc * (int)sizeof(Type *));
             for (i = 0; i < npc; i++)
@@ -1976,6 +1984,7 @@ static int parse_smc(Parser *p) {
 #endif
 
 /* Top-level declaration */
+
 /* Parameter list of a function declarator; the caller has already consumed
  * the '('.  Both the file-scope path and block-scope declarations
  * (C99 6.2.2p5, e.g. "extern int f(void);" inside a body) need exactly this,
@@ -1988,6 +1997,38 @@ static void parse_param_list(Parser *p, AstNode ***out_params, int *out_count,
     int param_count = 0;
     int param_capacity = 0;
     int is_variadic = 0;
+    g_knr_pending = 0;
+    /* K&R identifier list (C89 6.5.1): `int f(a, b) int a; ... { }`.  A
+     * typedef name in this position is an unnamed parameter of that type, so
+     * that is the one spelling that must keep going down the normal path. */
+    if (lexer_peek(p->lex).kind == TOK_IDENT &&
+        !sym_is_typedef(lexer_peek(p->lex).str)) {
+        int cap = 0;
+        g_knr_count = 0;
+        g_knr_names = 0;
+        g_knr_types = 0;
+        for (;;) {
+            if (g_knr_count >= cap) {
+                int nc = cap ? cap * 2 : 4;
+                g_knr_names = (char **)mem_realloc(g_knr_names,
+                    cap * (int)sizeof(char *), nc * (int)sizeof(char *));
+                g_knr_types = (Type **)mem_realloc(g_knr_types,
+                    cap * (int)sizeof(Type *), nc * (int)sizeof(Type *));
+                cap = nc;
+            }
+            g_knr_names[g_knr_count] = mem_strdup(lexer_peek(p->lex).str);
+            g_knr_types[g_knr_count] = 0;
+            g_knr_count++;
+            lexer_advance(p->lex);
+            if (lexer_peek(p->lex).kind == TOK_COMMA) { lexer_advance(p->lex); continue; }
+            break;
+        }
+        g_knr_pending = 1;
+        *out_params   = 0;
+        *out_count    = 0;
+        *out_variadic = 0;
+        return;
+    }
             if (lexer_peek(p->lex).kind == TOK_VOID && lexer_peek2(p->lex).kind == TOK_RPAREN) {
                 lexer_advance(p->lex);
             } else if (lexer_peek(p->lex).kind != TOK_RPAREN) {
@@ -2035,6 +2076,105 @@ static void parse_param_list(Parser *p, AstNode ***out_params, int *out_count,
     *out_variadic = is_variadic;
 }
 
+/* ---------------------------------------------------------------------------
+ * K&R (C89 6.5.1) style function definition: `int add(a, b) int a; long b; {
+ * return a + b; }'.  The parameter *types* are not part of the declarator:
+ * they follow the ')' as an ordinary declaration list, and a parameter that is
+ * never declared there has type int.  parse_param_list can therefore only
+ * record the names, and parse_top_decl -- the one place a definition can be
+ * written -- reads the declarations and fills the types in.  Everywhere else
+ * the form is a constraint violation and knr_reject() reports it, instead of
+ * quietly producing a prototype with no parameters (which would silently
+ * change every call site: the promotions at an unprototyped call are not the
+ * declared parameter types).
+ * -------------------------------------------------------------------------- */
+static int knr_name_eq(const char *a, const char *b) {
+    while (*a && *a == *b) { a++; b++; }
+    return *a == *b;
+}
+
+static void knr_reset(void) {
+    g_knr_names   = 0;
+    g_knr_types   = 0;
+    g_knr_count   = 0;
+    g_knr_pending = 0;
+}
+
+static void knr_reject(Parser *p) {
+    perror_at(p, "identifier-list parameters are only supported in a plain "
+                 "function definition (`int f(a, b) int a; ... { }`)");
+    knr_reset();
+}
+
+/* Read the declaration list of a K&R definition and turn it into the
+ * parameter list.  The list ends at the '{' that opens the body; an empty
+ * list is legal and leaves every parameter at int. */
+static void knr_parse_decl_list(Parser *p, AstNode ***out_params, int *out_count,
+                                int line) {
+    char **names = g_knr_names;
+    Type **types = g_knr_types;
+    int    count = g_knr_count;
+    int    i;
+    g_knr_pending = 0;
+    /* `int f(a, b);` -- a prototype cannot carry an identifier list.
+     * Reported here, before the declaration loop mistakes the ';' for the
+     * start of a declaration. */
+    if (lexer_peek(p->lex).kind == TOK_SEMICOLON) {
+        knr_reject(p);
+        *out_params = 0;
+        *out_count  = 0;
+        return;
+    }
+    /* The declarations are read with the ordinary declarator parser, which
+     * may itself meet a nested parameter list (`int (*cb)(void);`).  Take the
+     * name/type arrays out of the globals first so that a nested list cannot
+     * overwrite the outer one. */
+    if (count > 0) {
+        names = (char **)mem_pool_alloc(count * (int)sizeof(char *));
+        types = (Type **)mem_pool_alloc(count * (int)sizeof(Type *));
+        for (i = 0; i < count; i++) { names[i] = g_knr_names[i]; types[i] = 0; }
+    }
+    while (lexer_peek(p->lex).kind != TOK_LBRACE &&
+           lexer_peek(p->lex).kind != TOK_EOF) {
+        int sto = 0, tdd = 0;
+        Type *base = parse_declspec(p, &sto, &tdd);
+        if (!base) { perror_at(p, "expected a parameter declaration"); break; }
+        for (;;) {
+            char *nm = 0;
+            Type *dt = parse_declarator(p, base, &nm);
+            if (!nm) { perror_at(p, "expected a parameter name"); break; }
+            /* C89 6.5.1: same decay as a prototype parameter. */
+            if (dt && dt->kind == TYPE_ARRAY) dt = type_pointer(dt->base);
+            else if (dt && dt->kind == TYPE_FUNC) dt = type_pointer(dt);
+            for (i = 0; i < count; i++) {
+                if (names[i] && knr_name_eq(names[i], nm)) {
+                    if (types[i])
+                        perror_at(p, "this parameter is declared twice");
+                    types[i] = dt;
+                    break;
+                }
+            }
+            if (i == count)
+                perror_at(p, "this name is not in the parameter list of the "
+                             "function being defined");
+            if (lexer_peek(p->lex).kind == TOK_COMMA) { lexer_advance(p->lex); continue; }
+            break;
+        }
+        lexer_expect(p->lex, TOK_SEMICOLON);
+    }
+    if (count > 0) {
+        AstNode **ps = (AstNode **)mem_pool_alloc(count * (int)sizeof(AstNode *));
+        for (i = 0; i < count; i++) {
+            /* Undeclared parameter: C89 says int. */
+            ps[i] = ast_var_decl(names[i], types[i] ? types[i] : type_int(), 0, line);
+        }
+        *out_params = ps;
+    } else {
+        *out_params = 0;
+    }
+    *out_count = count;
+}
+
 /* Consume a `( params )` tail and build the function type `ret(params)`.
  * Used for typedefs that name a function type (`typedef int binop(int,int);`).
  * parse_declarator stops in front of the parameter list for that spelling --
@@ -2051,6 +2191,7 @@ static int parse_func_type_tail(Parser *p, Type *ret, Type **out_ft, int line) {
     lexer_advance(p->lex);              /* '(' */
     parse_param_list(p, &params, &param_count, &is_variadic, line);
     lexer_expect(p->lex, TOK_RPAREN);
+    if (g_knr_pending) knr_reject(p);
     while (lexer_peek(p->lex).kind == TOK_ATTRIBUTE) parse_attribute(p, ret);
     if (param_count > 0 && params) {
         ptypes = (Type **)mem_pool_alloc(param_count * (int)sizeof(Type *));
@@ -2326,6 +2467,9 @@ static AstNode *parse_top_decl(Parser *p) {
                 lexer_advance(p->lex);
                 parse_param_list(p, &params, &param_count, &is_variadic, line);
                 lexer_expect(p->lex, TOK_RPAREN);
+                /* K&R: the parameter types are the declarations that follow. */
+                if (g_knr_pending)
+                    knr_parse_decl_list(p, &params, &param_count, line);
             } else {
                 params      = g_decl_func_params;
                 param_count = g_decl_func_nparams;
@@ -2365,6 +2509,9 @@ static AstNode *parse_top_decl(Parser *p) {
             if (lexer_peek(p->lex).kind == TOK_SEMICOLON) {
                 AstNode *n;
                 lexer_advance(p->lex);
+                /* `int f(a, b);` names parameters but declares no types:
+                 * only a definition can carry an identifier list. */
+                if (g_knr_pending) knr_reject(p);
                 n = ast_func_def(name, ret_type, params, param_count, 0, line);
                 if (n) n->col = decl_name_col;
                 n->kind = AST_FUNC_DECL;
@@ -2777,6 +2924,7 @@ static AstNode *parse_local_var_decl(Parser *p, Type *base, int storage, int is_
             lexer_advance(p->lex);           /* '(' */
             parse_param_list(p, &params, &param_count, &is_variadic, line);
             lexer_expect(p->lex, TOK_RPAREN);
+            if (g_knr_pending) knr_reject(p);
             while (lexer_peek(p->lex).kind == TOK_ATTRIBUTE) parse_attribute(p, t);
             fn = ast_func_def(name, t, params, param_count, 0, line);
             if (fn) {

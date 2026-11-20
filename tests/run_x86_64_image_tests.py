@@ -54,12 +54,19 @@ Usage (from the repository root):
 import argparse
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-TMP = os.path.join(ROOT, 'build_x86_64_tests')
+# Scratch space lives under the system temp directory, not in the repository:
+# a build directory next to the sources is pollution the repository has to
+# ignore, and deleting a file inside the workspace can be refused by an
+# external deletion policy (os.remove then raises PermissionError and takes
+# the whole gate down with it).
+TMP = None
 
 IMAGE_BASE = 0x400000
 STACK_BASE = 0x700000
@@ -497,6 +504,8 @@ def main():
         return 1
     if need('unicorn', 'x86-64 emulation') is None:
         return 1
+    global TMP
+    TMP = tempfile.mkdtemp(prefix='ark_x86_64_')
     os.makedirs(TMP, exist_ok=True)
 
     src = os.path.join(TMP, 'case.c')
@@ -659,6 +668,7 @@ def main():
 
     print('---')
     print('%d passed, %d failed, %d skipped' % (passed, failed, skipped))
+    shutil.rmtree(TMP, ignore_errors=True)
     return 0 if failed == 0 else 1
 
 
