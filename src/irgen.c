@@ -2482,16 +2482,24 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
             if (node->u.var.is_vla && g_config.enable_vla) {
                 Type *elem_t = node->u.var.var_type->base;
                 int elem_sz = type_size(elem_t);
+                int size_slot;
                 if (elem_sz <= 0) elem_sz = 4;
                 /* Evaluate the element count */
                 irgen_expr(g, node->u.var.vla_size_expr);
                 /* element count * element size -> total bytes */
                 ir_emit(g->fn, IR_PUSH_INT, elem_sz, 0, 0);
                 ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_MUL);
+                /* Keep the byte count in its own slot: `sizeof` on this
+                 * object must answer the size this declaration computed, not
+                 * recompute it from a length that may have changed since. */
+                size_slot = alloc_local(g, 8);
+                ir_emit(g->fn, IR_STORE, size_slot, 0, 0);
+                ir_emit(g->fn, IR_PUSH_VAR, size_slot, 0, 0);
                 /* Allocate the block on the runtime stack */
                 ir_emit(g->fn, IR_ALLOCA, 0, 0, 0);
                 /* Save the resulting pointer into the local slot */
                 ir_emit(g->fn, IR_STORE, off, 0, 0);
+                if (s) s->vla_size_off = size_slot;
                 break;
             }
 #endif
@@ -3801,6 +3809,14 @@ static void irgen_expr(IrGen *g, AstNode *node) {
             break;
         }
         case AST_SIZEOF:
+            if (node->sizeof_is_vla && node->sizeof_operand &&
+                node->sizeof_operand->kind == AST_VAR) {
+                Symbol *vs = sym_find(node->sizeof_operand->u.name);
+                if (vs && vs->vla_size_off >= 0) {
+                    ir_emit(g->fn, IR_PUSH_VAR, vs->vla_size_off, 0, 0);
+                    break;
+                }
+            }
             ir_emit(g->fn, IR_PUSH_INT, node->u.num_val, 0, 0);
             break;
         case AST_COMPOUND_LITERAL: {

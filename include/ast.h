@@ -24,6 +24,11 @@ struct AstNode {
      * folding to the generic 4 (see ast_sizeof_pending); sema computes
      * u.num_val and clears this field.  NULL means "already folded". */
     AstNode    *sizeof_operand;
+    /* 1 = the operand is a variable-length array, so the answer is a run-time
+     * byte count that irgen reads from the slot the declaration filled.  The
+     * parser used to fold it to the pointer size (8) -- a wrong answer with
+     * no diagnostic.  Only meaningful with sizeof_operand set. */
+    int         sizeof_is_vla;
     union {
         long long num_val;
         char *name;

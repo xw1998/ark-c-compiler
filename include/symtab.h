@@ -25,6 +25,8 @@ typedef struct Symbol {
     Type          *type;
     int            scope_level;
     int            offset;       /* local var: offset relative to fp; global/enum const: other use */
+    int            vla_size_off; /* variable-length array: frame slot holding the byte count,
+                                  * -1 when this symbol is not a VLA object */
     int            is_defined;
     int            param_count;
     int            is_variadic;

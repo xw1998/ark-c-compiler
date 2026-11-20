@@ -652,6 +652,14 @@ static void sema_decl(AstNode *node) {
                     sema_implicit_cast(node->u.var.init,
                                        node->u.var.var_type);
             }
+            /* The run-time length of a VLA is an expression of its own: it
+             * lives on the variable node, not in the initialiser, so it was
+             * the one sub-tree sema never visited.  irgen then saw nodes with
+             * no type and skipped the conversion a cast asked for -- measured:
+             * `double n=2; int a[(int)n];` multiplied the low word of the
+             * double by 4 and allocated 0 bytes instead of 8. */
+            if (node->u.var.is_vla && node->u.var.vla_size_expr)
+                sema_expr(node->u.var.vla_size_expr);
             break;
         }
         case AST_TYPEDEF:
@@ -706,6 +714,14 @@ static void sema_stmt(AstNode *node) {
                     sema_implicit_cast(node->u.var.init,
                                        node->u.var.var_type);
             }
+            /* The run-time length of a VLA is an expression of its own: it
+             * lives on the variable node, not in the initialiser, so it was
+             * the one sub-tree sema never visited.  irgen then saw nodes with
+             * no type and skipped the conversion a cast asked for -- measured:
+             * `double n=2; int a[(int)n];` multiplied the low word of the
+             * double by 4 and allocated 0 bytes instead of 8. */
+            if (node->u.var.is_vla && node->u.var.vla_size_expr)
+                sema_expr(node->u.var.vla_size_expr);
             break;
         }
         case AST_TYPEDEF:
@@ -976,6 +992,12 @@ static Type *sema_expr(AstNode *node) {
             if (!node->type) node->type = type_pointer(type_char());
             return node->type;
         case AST_SIZEOF:
+            if (node->sizeof_is_vla) {
+                /* Runtime size: irgen reads the byte count the declaration
+                 * stored, so the operand stays in place for it. */
+                node->type = type_int();
+                return node->type;
+            }
             if (node->sizeof_operand) {
                 /* The parser deferred this operand because it could not name
                  * its type (member access, dereference, arithmetic, ...).
@@ -984,6 +1006,24 @@ static Type *sema_expr(AstNode *node) {
                  * assembler's `k < sizeof(op->sym) - 1` into a bound of 3. */
                 Type *ot = sema_expr(node->sizeof_operand);
                 int sz = ot ? type_size(ot) : 0;
+                if (ot && ot->is_vla) {
+                    /* The operand is a variably modified object but not a
+                     * plain variable, so there is no stored byte count to
+                     * read.  Report it rather than answer the pointer size. */
+                    if (node->sizeof_operand->kind == AST_VAR) {
+                        node->sizeof_is_vla = 1;
+                        node->type = type_int();
+                        return node->type;
+                    }
+                    {
+                        DiagLoc vloc = loc_of(node);
+                        diag_report_msg(DIAG_SEV_ERROR, &vloc,
+                            "'sizeof' of a variable-length array is only supported on a plain variable",
+                            0, 0, 0);
+                        g_errors++;
+                    }
+                    sz = 4;
+                }
                 if (sz <= 0) {
                     DiagLoc loc = loc_of(node);
                     diag_report_msg(DIAG_SEV_ERROR, &loc,

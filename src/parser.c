@@ -300,6 +300,18 @@ static int   g_decl_packed_ptr;
  * consumed and reset by parse_local_var_decl / parse_top_decl when constructing variable nodes.
  * Only the first VLA dimension is recorded (most VLA usage is single-dim int a[n]). */
 static AstNode *g_vla_size_expr;
+/* Where a variably modified type is being parsed:
+ *   0 = not allowed (file scope, struct/union member, typedef, type name,
+ *       cast, sizeof type name, ...),
+ *   1 = declarator of a block-scope object (a run-time length is honoured),
+ *   2 = function parameter (the array decays, its length is never used).
+ * C99 6.7.5.2p2 allows a variably modified type only for an ordinary
+ * identifier with block or prototype scope.  Everywhere else the length used
+ * to fall back to a silent one-element placeholder. */
+#define VLA_CTX_NONE   0
+#define VLA_CTX_LOCAL  1
+#define VLA_CTX_PARAM  2
+static int g_vla_ctx;
 static int   g_attr_is_softfp;
 static int   g_attr_is_forceinline;
 /* armcc-style __asm function body that appears inside the declaration specifier
@@ -1683,6 +1695,10 @@ static void decl_parse_suffixes(Parser *p, DeclNode *n, int consume_paren) {
         int dims[ARK_MAX_ARRAY_DIMS];
         int dim_count = 0;
         int vla_dim = -1;  /* B3: non-constant dimension index; -1 means no VLA */
+        int      vla_at[ARK_MAX_ARRAY_DIMS];   /* index of each non-constant dim */
+        AstNode *vla_exprs[ARK_MAX_ARRAY_DIMS];/* ... and its length expression */
+        int      vla_count = 0;
+        int      vla_ok = 0;                   /* 1 = the length is honoured */
         while (lexer_peek(p->lex).kind == TOK_LBRACKET) {
             int v = 0;
             int is_param_array = 0;  /* [static expr] or [*] in parameter context */
@@ -1720,22 +1736,20 @@ static void decl_parse_suffixes(Parser *p, DeclNode *n, int consume_paren) {
                      * so the VLA path below is untouched. */
                     if (dim_expr && expr_mentions_float(dim_expr))
                         perror_at(p, "array dimension is not an integer constant expression");
-#if ARKCC_FEATURE_VLA
-                    /* B3: non-constant dimension -> VLA. Only record first VLA dimension expression,
-                     * consumed by parse_local_var_decl / parse_top_decl.
-                     * Compile-time + run-time dual guard.
-                     * For [static expr] parameter form, size is known but decays to pointer.
-                     * Actual VLA uses alloca. */
-                    if (g_config.enable_vla && vla_dim < 0 && !g_vla_size_expr && !is_param_array) {
-                        vla_dim = dim_count;
-                        g_vla_size_expr = dim_expr;
-                        v = 0;  /* Placeholder; actual type uses type_pointer */
+                    /* A non-constant dimension.  Collect it and decide once
+                     * the whole dimension list is known: whether it can be
+                     * honoured depends on its position, on how many there
+                     * are, and on where the declarator appears. */
+                    if (is_param_array) {
+                        v = 1;   /* [static expr] / [*]: the parameter decays */
+                    } else if (vla_count < ARK_MAX_ARRAY_DIMS) {
+                        vla_at[vla_count]    = dim_count;
+                        vla_exprs[vla_count] = dim_expr;
+                        vla_count++;
+                        v = 0;   /* Placeholder; the real type uses type_pointer */
                     } else {
-                        v = 1;  /* Non-constant or eval failed: placeholder dimension */
+                        v = 1;
                     }
-#else
-                    v = 1;  /* Non-constant or eval failed: placeholder dimension */
-#endif
                 }
             }
             /* A missing "]" used to be skipped silently, so `int a[2;`
@@ -1747,6 +1761,51 @@ static void decl_parse_suffixes(Parser *p, DeclNode *n, int consume_paren) {
                 /* Dropping a dimension silently changes the array's rank, i.e.
                  * its element type and every index computation after it. */
                 perror_at(p, "too many array dimensions");
+            }
+        }
+        if (vla_count > 0) {
+            /* C99 6.7.5.2: only the outermost dimension may have a run-time
+             * length, and only an ordinary identifier with block scope can
+             * carry a variably modified type.  Everything else is reported:
+             * the old code fell back to a one-element placeholder, so
+             * `int a[2][n]` allocated n ints and then wrote past them, and a
+             * VLA parameter leaked its length expression into the next local
+             * declaration (measured: `int f(int n,int a[n]){int b=7;...}`
+             * returned 7863112 instead of 7). */
+            if (vla_count > 1) {
+                perror_at(p, "only one variable-length array dimension is supported");
+            } else if (vla_at[0] != 0) {
+                perror_at(p, "only the outermost array dimension may have a variable length");
+            } else if (n->inner) {
+                perror_at(p, "a pointer to a variable-length array is not supported");
+            } else if (g_vla_ctx == VLA_CTX_PARAM) {
+                /* Prototype scope: the parameter decays to a pointer, so the
+                 * length is never needed -- and must not be recorded, or it
+                 * is consumed by the next local declaration in the body. */
+            } else if (g_vla_ctx != VLA_CTX_LOCAL) {
+                perror_at(p, "a variably modified type is only allowed for a block-scope object");
+            } else if (g_vla_size_expr) {
+                perror_at(p, "nested variable-length array declarators are not supported");
+            } else if (!g_config.enable_vla) {
+                perror_at(p, "variable-length arrays are disabled in this configuration");
+            }
+#if !ARKCC_FEATURE_VLA
+            else {
+                perror_at(p, "variable-length arrays are not supported in this build");
+            }
+#else
+            else {
+                vla_ok = 1;
+                vla_dim = vla_at[0];
+                g_vla_size_expr = vla_exprs[0];
+            }
+#endif
+            if (!vla_ok && vla_at[0] < dim_count) {
+                /* Keep the rest of the declaration parseable: the rejected
+                 * dimension becomes the same one-element placeholder the
+                 * non-VLA path uses.  The diagnostic above already failed
+                 * the build, so no image is produced from it. */
+                dims[vla_at[0]] = 1;
             }
         }
         if (dim_count > 0) {
@@ -2044,7 +2103,12 @@ static void parse_param_list(Parser *p, AstNode ***out_params, int *out_count,
                     }
                     pbase = parse_declspec(p, &psto, &ptd);
                     if (!pbase) { perror_at(p, "expected param type"); break; }
-                    pt = parse_declarator(p, pbase, &pname);
+                    {
+                        int save_vla_ctx = g_vla_ctx;
+                        g_vla_ctx = VLA_CTX_PARAM;
+                        pt = parse_declarator(p, pbase, &pname);
+                        g_vla_ctx = save_vla_ctx;
+                    }
                     /* C99 6.7.5.3p7: array parameters decay; "array of T" becomes "pointer to T".
                      * First dimension decays: int arr[5] -> int *arr;
                      * int m[3][4] -> int (*m)[4]; only outermost decays to pointer.
@@ -2054,6 +2118,11 @@ static void parse_param_list(Parser *p, AstNode ***out_params, int *out_count,
                     if (pt && pt->kind == TYPE_ARRAY) {
                         pt = type_pointer(pt->base);
                     }
+                    /* A prototype-scope VLA parameter decays to a plain
+                     * pointer: drop the flag so `sizeof` on it keeps meaning
+                     * "pointer size" instead of looking for a run-time
+                     * length that a parameter does not own. */
+                    if (pt && pt->is_vla) pt->is_vla = 0;
                     if (!pname) pname = mem_strdup("_anon");
                     {
                         AstNode *param = ast_var_decl(pname, pt, 0, line);
@@ -2836,7 +2905,15 @@ static AstNode *parse_local_var_decl(Parser *p, Type *base, int storage, int is_
     int cur_atomic = g_decl_is_atomic;
     for (;;) {
         char *name = 0;
-        Type *t = parse_declarator(p, base, &name);
+        Type *t;
+        {
+            /* Only here may a run-time array length be honoured; a typedef at
+             * block scope declares a type, not an object. */
+            int save_vla_ctx = g_vla_ctx;
+            g_vla_ctx = is_typedef ? VLA_CTX_NONE : VLA_CTX_LOCAL;
+            t = parse_declarator(p, base, &name);
+            g_vla_ctx = save_vla_ctx;
+        }
         if (cur_atomic) check_atomic_type(p, t);
         int decl_name_col = p->name_col;
         AstNode *init = 0;
@@ -3533,6 +3610,18 @@ static AstNode *parse_unary_expr(Parser *p) {
                     s_known = 1;
                 } else if (e && e->kind == AST_VAR) {
                     Symbol *sym = sym_find(e->u.name);
+                    if (sym && sym->type && sym->type->is_vla) {
+                        /* sizeof of a variable-length array is a run-time
+                         * value, and it is the size the *declaration*
+                         * computed -- recomputing it from the current length
+                         * would be wrong once that length variable changes.
+                         * irgen reads the byte count the declaration stored.
+                         * This used to answer 8 (the pointer size) with no
+                         * diagnostic at all. */
+                        AstNode *late = ast_sizeof_pending(e, line);
+                        late->sizeof_is_vla = 1;
+                        return late;
+                    }
                     if (sym && sym->type) { s = type_size(sym->type); s_known = 1; }
                 } else if (e && e->kind == AST_FUNC_CALL &&
                            e->u.call.name && e->u.call.name[0] != '?') {

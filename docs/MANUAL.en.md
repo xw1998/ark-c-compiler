@@ -317,9 +317,36 @@ further C11 keywords (`_Static_assert` / `_Alignof` / `_Alignas` / `_Generic` / 
 | `__thread` (TLS) | yes | thread-local storage, emitting `.tbss`/`.tdata` (on the scatter-loading path) |
 | `_Thread_local` (C11 TLS) | yes | shares the same storage bit as `__thread` (`0x10000`) plus the C11 6.7.1p4 storage-class checks; equivalent to plain `.data`/`.bss` in a flat bare-metal image — semantic boundary in 4.9 |
 | casts `(type)expr` | yes | |
-| `sizeof(type)` / `sizeof expr` | yes | evaluated at compile time |
+| `sizeof(type)` / `sizeof expr` | yes | evaluated at compile time; `sizeof` of a VLA *variable* reads the byte count its declaration computed |
 | VLA (variable-length arrays) | yes | `int a[n]` allocates a runtime VLA on the stack through `IR_ALLOCA`, rounded up: 8 on ARM / x86_64, 16 on RV32I (the psABI requires sp to be 16-byte aligned before every call). Any RV32I function containing `IR_ALLOCA` rebuilds sp with `sub sp, s0, frame_size` in its epilogue before popping the frame, otherwise `return` reads `ra`/`s0` from the wrong offset. Gate: `tests/run_rv_alloca_tests.py --rv-as <bin>` |
 | `__packed` unaligned access | yes | byte-by-byte load-and-stitch covering 1/2/4/8 bytes (ARM and RV32I). 8 bytes means `long long`/`double`: the low word is assembled and pushed first, then the high word, matching the push order of the aligned path. Gate: `tests/run_rv_packed_tests.py --rv-as <bin> [--arm-as <bin>]` |
+
+#### 4.1.0 VLA (variable-length array) support boundary
+
+0.8.7 turns VLA support from "a one-dimensional VLA that happens to run" into an explicit table:
+anything this compiler cannot do correctly is a **compile-time error**, never a silently wrong
+answer. The five defects the old code let through were: `int a[2][n]` allocated only `n*4` bytes
+(out-of-bounds writes), `sizeof(VLA)` answered the pointer size 8, `int (*p)[n]` crashed at run
+time, the length expression of a VLA *parameter* leaked into the next local declaration, and the
+`double -> int` conversion on a length expression was skipped so 0 bytes were allocated.
+
+| Form | Result |
+| --- | :---: |
+| `int a[n]` (block scope, outermost dimension variable) | supported |
+| `int a[n][4]` (variable outermost + any constant inner dimensions) | supported |
+| `sizeof a` where `a` is a VLA object | supported, answers the byte count computed **at the declaration** |
+| `int f(int n, int a[n])` parameter | supported, decays to a plain pointer (`sizeof` is the pointer size) |
+| `int a[2][n]` (variable inner dimension) | rejected |
+| `int (*p)[n]` / `int a[][n]` (pointer to VLA / variable row length) | rejected |
+| file-scope `int g[n]` | rejected |
+| `sizeof(double[n])` (type-name form) | rejected |
+| block-scope VLA `typedef` | rejected |
+
+The byte count is kept in an extra stack slot allocated at the VLA declaration: `MUL` computes the
+total, `STORE` puts it in that slot, then `ALLOCA` obtains the buffer, and `sizeof` simply reads the
+slot. So the answer is always the size as of the declaration (changing the length variable later
+does not change it) and it always agrees with what `IR_ALLOCA` actually reserved. The x86-64 / i386
+dual-run gate carries 3 such cases plus 5 refusal cases (see `docs/X86_64_BACKEND.md` section 7).
 
 ### 4.1.1 Struct layout: the four rules that match armcc
 

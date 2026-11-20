@@ -330,7 +330,7 @@ make test-x86-64                  # already part of make test
 python tests/run_x86_64_image_tests.py --arkcc ./arkcc.exe
 ```
 
-39 programs are compiled into flat 0x400000 images and run by calling `main` on a 64-bit unicorn core,
+42 programs are compiled into flat 0x400000 images and run by calling `main` on a 64-bit unicorn core,
 each asserting a **constant computed outside the program** (host gcc is not used as an oracle); the
 same program is **then compiled again for 32-bit and run on a 32-bit unicorn core**, and an `i386`
 column that differs from the expectation is a FAIL (it used to be a footnote, which is why "a known
@@ -361,6 +361,9 @@ column that differs from the expectation is a FAIL (it used to be a footnote, wh
 | `sizeof_member_array` | `sizeof(s.sym)` / `sizeof(p->sym)` are the member array's size, not 4 (§3.5) | 0 |
 | `ptr_llong_roundtrip` | pointer ↔ `long long` in both directions: the high half must be filled and dropped (it used to be all zeros, §5.5) | 5 |
 | `ptr_llong_arg` | a pointer passed as a 64-bit argument and returned as a 64-bit result | 41 |
+| `vla_sizeof_at_declaration` | `sizeof` of a VLA answers the byte count computed at its declaration: declared with `n=3`, then `n=5`, it is still 12 (it used to answer the pointer size 8) | 7 |
+| `vla_length_conversion` | the length expression must go through its own conversions: `double n=2.0; int a[(int)n]` used to multiply the low 32 bits and allocate 0 bytes | 7 |
+| `vla_outer_dim_2d` | a 2-D array whose outermost dimension is variable, `int a[n][4]`: `sizeof` is 48 and `a[2][2]` indexes correctly | 10 |
 
 Plus three further stages that make those PASSes mean something:
 
@@ -374,11 +377,14 @@ Plus three further stages that make those PASSes mean something:
   object base, so such a table stored `0x3F571F` -- 0x400000 below the image -- and the image died on
   the first indirect call with `UC_ERR_FETCH_UNMAPPED`. That is exactly the defect the self-host gate
   exposed once `pipeline.c` joined the link set.
-- **refusals**: referencing an undefined external function must fail the build and leave no image
+- **refusals**: referencing an undefined external function must fail the build and leave no image;
+  so must the VLA forms outside the supported boundary -- a variable inner dimension `int a[2][n]`,
+  a pointer to a VLA `int (*p)[n]`, a file-scope `int g[n]`, the type-name form `sizeof(double[n])`,
+  and the parameter form `int a[][n]`
 - **selfcheck**: one case is re-run with an "expectation + 1" and must be judged DIFF. A harness that
   cannot detect a wrong answer proves nothing about any pass
 
-Current measurement: `44 passed, 0 failed, 0 skipped` (39 single-file cases + 3 two-object cases + 2 refusals + 1 self-check).
+Current measurement: `52 passed, 0 failed, 0 skipped` (42 single-file cases + 3 two-object cases + 6 refusals + 1 self-check).
 
 ### 7.1 The self-host gate: turning "it runs once" into "it reproduces the host object byte for byte"
 

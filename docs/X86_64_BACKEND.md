@@ -301,7 +301,7 @@ make test-x86-64                  # 已挂进 make test
 python tests/run_x86_64_image_tests.py --arkcc ./arkcc.exe
 ```
 
-39 个程序编译成 0x400000 的平铺镜像，在 unicorn 的 64 位核上跑 `main`，逐个断言一个
+42 个程序编译成 0x400000 的平铺镜像，在 unicorn 的 64 位核上跑 `main`，逐个断言一个
 **在程序之外算出来的常量**（不拿宿主 gcc 当 oracle）；同一个程序**再编一次 32 位并在
 unicorn 的 32 位核上跑**，`i386` 列与期望不符即判 FAIL（早期只把它写成脚注，
 "32 位已知差距"因此长期没有变红）。下表只列锚点用例，不是全表：
@@ -331,6 +331,9 @@ unicorn 的 32 位核上跑**，`i386` 列与期望不符即判 FAIL（早期只
 | `sizeof_member_array` | `sizeof(s.sym)` / `sizeof(p->sym)` 是成员数组的大小而不是 4（§3.5） | 0 |
 | `ptr_llong_roundtrip` | 指针 ↔ `long long` 双向转换：高半要补也要丢（曾全给 0，§5.5） | 5 |
 | `ptr_llong_arg` | 指针当 64 位实参传、并当 64 位返回值 | 41 |
+| `vla_sizeof_at_declaration` | `sizeof` 一个 VLA 回答声明处算出的字节数：`n=3` 声明后改成 5，仍是 12（曾答指针大小 8） | 7 |
+| `vla_length_conversion` | 长度表达式要过它自己的转换：`double n=2.0; int a[(int)n]`，曾按低 32 位相乘分配 0 字节 | 7 |
+| `vla_outer_dim_2d` | 外层维变长的二维数组 `int a[n][4]`，`sizeof` 48 且 `a[2][2]` 下标正确 | 10 |
 
 再加三段让上面那些 PASS 有意义的东西：
 
@@ -343,11 +346,13 @@ unicorn 的 32 位核上跑**，`i386` 列与期望不符即判 FAIL（早期只
   0.8.5 之前链接器只加了对象 base，于是这张表把函数指针写成 `0x3F571F`（比镜像低
   0x400000），镜像在第一次间接调用就死在 `UC_ERR_FETCH_UNMAPPED`——它正是自举门禁
   引入 `pipeline.c` 之后暴露出来的那个缺陷。
-- **refusals**：引用未定义外部函数必须构建失败、且不留镜像
+- **refusals**：引用未定义外部函数必须构建失败、且不留镜像；VLA 的越界形态同样必须失败——
+  内层维变长 `int a[2][n]`、指向 VLA 的指针 `int (*p)[n]`、文件作用域 `int g[n]`、
+  `sizeof(double[n])` 类型名形式、参数 `int a[][n]`
 - **selfcheck**：用「期望值 +1」重跑一个用例，必须被判成 DIFF。判不出错的 harness
   证明不了任何通过
 
-当前实测：`44 passed, 0 failed, 0 skipped`（39 个单文件用例 + 3 个双对象用例 + 2 条 refusal + 1 条自检）。
+当前实测：`52 passed, 0 failed, 0 skipped`（42 个单文件用例 + 3 个双对象用例 + 6 条 refusal + 1 条自检）。
 
 ### 7.1 自举门禁：把"能跑一次"变成"逐字节复现宿主对象"
 

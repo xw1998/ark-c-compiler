@@ -12,6 +12,7 @@ AstNode *ast_new(AstNodeKind kind, int line) {
     n->col = 0;
     n->fval = 0.0;
     n->sizeof_operand = 0;
+    n->sizeof_is_vla = 0;
     return n;
 }
 

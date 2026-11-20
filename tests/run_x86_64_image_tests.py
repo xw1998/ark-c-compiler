@@ -434,6 +434,48 @@ int main(void){
   if ((int)(arr[1] * -4.0) != 9) return 93;
   return 7; }
 """, 7, "[symbol+disp] loads: a global 64-bit object's high word (i386 emits mov eax,[gs+8])"),
+
+    # --- variable-length arrays -------------------------------------------
+    # These three lock the answers that used to be wrong in silence:
+    #   * sizeof of a VLA was the pointer size (8) on every target;
+    #   * its byte count was computed from an untyped length expression, so
+    #     any conversion in the length (a cast, a float operand) was skipped
+    #     and the block could come out 0 bytes long.
+    # sizeof is written as (int) because the value *is* an int here; the
+    # expected numbers are identical on i386 (int is 4 bytes there too).
+    ("vla_sizeof_at_declaration",
+     """
+int main(void){
+  int n = 3;
+  int a[n];
+  n = 5;                       /* the length is fixed at the declaration */
+  if ((int)sizeof a != 12) return 91;
+  a[2] = 7;
+  return a[2]; }
+""", 7, "sizeof a VLA answers the size its declaration computed (12), not 8, "
+         "and not the size recomputed from a changed length"),
+
+    ("vla_length_conversion",
+     """
+int main(void){
+  double n = 2.0;
+  int a[(int)n];               /* the length is a converted double */
+  if ((int)sizeof a != 8) return 91;
+  a[0] = 3; a[1] = 4;
+  return a[0] + a[1]; }
+""", 7, "a run-time length goes through its conversions: the old code "
+         "multiplied the low word of the double and allocated 0 bytes"),
+
+    ("vla_outer_dim_2d",
+     """
+int main(void){
+  int n = 3;
+  int a[n][4];
+  int i;
+  for (i = 0; i < n; i++) a[i][2] = i * 5;
+  if ((int)sizeof a != 48) return 91;
+  return a[2][2]; }
+""", 10, "a 2-D array whose *outer* dimension is variable (a[n][4])"),
 ]
 
 
@@ -509,6 +551,35 @@ REFUSALS = [
      """
 int foo(void);
 int main(void){ return foo(); }
+"""),
+
+    # A variably modified type is only allowed on an ordinary identifier with
+    # block scope, and only in its outermost dimension.  Each of these used to
+    # compile into something that ran off the end of its allocation (or, for
+    # the parameter, corrupted the next declaration), so each is now a
+    # diagnostic instead of an answer.
+    ("vla_inner_dimension",
+     """
+int main(void){ int n = 3; int a[2][n]; a[1][2] = 1; return a[1][2]; }
+"""),
+    ("vla_pointer_to_vla",
+     """
+int main(void){ int n = 4; int a[4] = {1,2,3,4}; int (*p)[n] = &a; return (*p)[2]; }
+"""),
+    ("vla_at_file_scope",
+     """
+int n = 3;
+int g[n];
+int main(void){ g[0] = 1; return g[0]; }
+"""),
+    ("vla_sizeof_type_name",
+     """
+int main(void){ int n = 5; return (int)sizeof(double[n]); }
+"""),
+    ("vla_parameter_row_length",
+     """
+int f(int n, int a[][n]){ return a[1][1]; }
+int main(void){ int b[2][2]; b[1][1] = 7; return f(2, b); }
 """),
 ]
 

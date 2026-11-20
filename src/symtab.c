@@ -76,6 +76,7 @@ Symbol *sym_add(SymKind kind, const char *name, Type *type, int offset) {
     s->type = type;
     s->scope_level = g_current_scope;
     s->offset = offset;
+    s->vla_size_off = -1;
     s->is_defined = 0;
     s->param_count = 0;
     s->is_variadic = 0;

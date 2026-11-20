@@ -289,9 +289,33 @@ M4/M33 只有单精度。传 `-mcpu Cortex-M7` 时，`double`↔`float` 的隐�
 | `__thread`（TLS） | 是 | 线程本地存储，输出 `.tbss`/`.tdata` 段（散列加载路径） |
 | `_Thread_local`（C11 TLS） | 是 | 与 `__thread` 同一套存储位（`0x10000`），另加 C11 6.7.1p4 的存储类校验；平铺裸镜像里等价于普通 `.data`/`.bss`，语义边界见 4.9 |
 | 强制类型转换 `(type)expr` | 是 | |
-| `sizeof(type)` / `sizeof expr` | 是 | 编译期求值 |
+| `sizeof(type)` / `sizeof expr` | 是 | 编译期求值；`sizeof` 作用在 VLA 变量上时改为运行期读声明处的字节数 |
 | VLA 可变长度数组 | 是 | `int a[n]` 运行期 VLA，通过 `IR_ALLOCA` 在栈上分配；向上取整对齐：ARM / x86_64 取 8，RV32I 取 16（psABI 要求每次调用前 sp 16 字节对齐）。RV32I 的函数只要含 `IR_ALLOCA`，尾声就先 `sub sp, s0, frame_size` 把 sp 重建回固定帧底再弹帧，否则 `return` 会从错位处读 `ra`/`s0`。门禁：`tests/run_rv_alloca_tests.py --rv-as <bin>` |
 | `__packed` 非对齐访问 | 是 | 逐字节 load-and-stitch，1/2/4/8 字节全覆盖（ARM 与 RV32I）。8 字节即 `long long`/`double`：先装配低字压栈、再装配高字压栈，与对齐路径的入栈顺序一致。门禁：`tests/run_rv_packed_tests.py --rv-as <bin> [--arm-as <bin>]` |
+
+#### 4.1.0 VLA（可变长度数组）支持边界
+
+0.8.7 把 VLA 从"一维能跑就行"收成一张明确的支持表：凡是做不到的形态一律**编译期报错**，
+不给静默错答案。旧版本放过去的 5 类缺陷是：`int a[2][n]` 只按 `n*4` 分配（越界写）、
+`sizeof(VLA)` 答指针大小 8、`int (*p)[n]` 运行期崩、VLA 形参的长度表达式泄漏到下一个局部
+声明、长度表达式的 `double -> int` 转换被跳过导致分配 0 字节。
+
+| 形态 | 结果 |
+| --- | :---: |
+| `int a[n]`（块作用域，最外层维变长） | 支持 |
+| `int a[n][4]`（外层变长 + 任意内层常量维） | 支持 |
+| `sizeof a`（`a` 是 VLA 变量） | 支持，取**声明处**算出的字节数 |
+| `int f(int n, int a[n])` 形参 | 支持，退化为普通指针（`sizeof` 为指针大小） |
+| `int a[2][n]`（内层维变长） | 拒绝 |
+| `int (*p)[n]` / `int a[][n]`（指向 VLA 的指针 / 行变长） | 拒绝 |
+| 文件作用域 `int g[n]` | 拒绝 |
+| `sizeof(double[n])`（类型名形式） | 拒绝 |
+| 块作用域 VLA `typedef` | 拒绝 |
+
+运行时字节数保存在 VLA 声明时额外分配的栈槽里：`MUL` 算出总数后先 `STORE` 进该槽，
+再 `ALLOCA` 拿缓冲，`sizeof` 直接读这个槽。因此它回答的永远是"声明那一刻的字节数"，
+即使长度变量之后被改也不再变，并且与 `IR_ALLOCA` 实际拿到的量一致。
+x86-64 / i386 双跑门禁有 3 条用例与 5 条拒绝用例（`docs/X86_64_BACKEND.md` §7）。
 
 ### 4.1.1 结构体布局：与 armcc 对齐的四条口径
 
