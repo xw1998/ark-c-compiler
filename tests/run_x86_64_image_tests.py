@@ -398,6 +398,29 @@ int main(void){
   if (m[1][2] != 4 || m[0][1] != 6 || m[1][0] != 0) return 92;
   return g.p[0].x + g.p[1].y + g.tag + m[0][1] * 10 + m[1][2]; }
 """, 79, "designator chains in static data: .p[1].y and [i][j]"),
+
+    ("double_precision_bits",
+     """
+union U { double d; unsigned long long u; };
+static double g = 0.1;
+int main(void){
+  union U x;
+  x.d = g;
+  if (x.u != 0x3FB999999999999AULL) return 91;
+  x.d = 1.0 / 3.0;
+  if (x.u != 0x3FD5555555555555ULL) return 92;
+  return 7; }
+""", 7, "double stores 64 bits: 0.1 and 1/3 have their binary64 patterns"),
+
+    ("double_precision_arith",
+     """
+int main(void){
+  double d = 1.0 / 3.0;
+  if ((int)(d * 3.0 * 1000000.0) != 1000000) return 91;
+  if ((int)((0.1 + 0.2) * 1000.0) != 300) return 92;
+  if (!(1e300 < 1e301)) return 93;
+  return 45; }
+""", 45, "double arithmetic keeps binary64 precision (a float pipeline gives 91/92/93)"),
 ]
 
 

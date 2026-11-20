@@ -2732,6 +2732,16 @@ limitations below remain:
   so `long double` is 8 bytes like `double`, whereas it is 12 on a 32-bit x86 host GCC. Code that relies on
   `sizeof(long double)` to distinguish precision is not portable, and when comparing `sizeof` results across
   platforms you must judge by the target model, not the host model.
+- **`double` really is 64-bit -- storage and arithmetic are binary64**: `0.1` is stored as
+  `0x3FB999999999999A` and `1.0/3.0` as `0x3FD5555555555555`; `d*3.0*1000000.0` with
+  `d = 1.0/3.0` is exactly `1000000` (the intermediate `d*3.0` rounds to 1.0, nearest-even);
+  `1e300 < 1e301` holds and `1e-60` stays a normalised positive number. The gate
+  `tests/run_arm_double_precision_tests.py` (`make test-dblprec`, 8 cases / 11 checks) pins the
+  bit patterns and those derived values, and the x86-64 gate has `double_precision_bits` /
+  `double_precision_arith`. **Watch the host when diffing**: the MinGW gcc 4.8 in this workspace
+  is built `--with-arch=i686`, so it defaults to x87 with `FLT_EVAL_METHOD == 2` and keeps
+  80-bit intermediates -- the same expression answers `999999`. That is not a compiler bug; a
+  host gcc used as a floating-point oracle must be given `-msse2 -mfpmath=sse`.
 - **Bitfield width is capped at 32 bits**: `IR_LOAD_FLD`/`IR_STORE_FLD` read and write a 32-bit container,
   and `long long x:40` would read back a wrong value. So parsing reports an error directly
   (`bit-field width 40 exceeds 32`) and generates no code, never a silent truncation.
@@ -2745,10 +2755,14 @@ limitations below remain:
   read and whose type is a pointer/function are handed to a backend hook and reconciled by offset against
   `IrGlobal.init_refs`, with string elements additionally getting one label per element offset in
   `.rodata`; see the section "Address elements inside aggregate initialisers"). **Any initial value that
-  cannot be turned into bytes is an explicit error**: a **floating-point literal** inside an aggregate
-  (`struct S{double d;} s = {1.5};` reports
-  `the arm backend cannot turn the initialiser of the global 's' into data ...`), and any initial value not
-  representable as a literal, is never replaced by a zero. `union` is supported: per C99 6.7.8p10 only
+  cannot be turned into bytes is an explicit error**: an initialiser not representable as a literal (for
+  example `int g = (int)1e30;`, a floating-point to integer cast) reports
+  `the ... backend cannot turn the initialiser of the global 'g' into data ...` and is never replaced by a
+  zero. **Floating-point initialisers, including nested ones, are supported**:
+  `struct S{double d;} s = {1.5};`, `double a[3] = {1.0, 2.5, -3.75};`,
+  `struct T{float f; struct I in;} t = { .in = {0.5, 0.25}, .f = 1.25f };`,
+  `struct V{int n; double d[2];} v[2] = { {1,{0.5,0.25}}, {2,{1.5,-2.5}} };` and hexadecimal floats such as
+  `0x1.8p+3` all land as exact binary32/binary64 bytes (`ark_agg_fill_ex()` writes the bit pattern). `union` is supported: per C99 6.7.8p10 only
   **one** active member is taken (the first without a designator, `.f=` selects another, more than one
   member is still an error), and the member itself may be a pointer (`union U u = { .p = &gv };`) or a
   character array (`union U u = { .b = "abc" };`); bitfields are supported too

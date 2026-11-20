@@ -757,8 +757,10 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
             } else if (g->has_init && g->init_aggregate) {
                 diag_tool(DIAG_SEV_ERROR, "arkcc",
                           "the riscv32 backend cannot turn the initialiser of "
-                          "the global '%s' into data (it is not a plain "
-                          "constant this backend can resolve)",
+                          "the global '%s' into data (it is not a constant "
+                          "this backend can resolve into bytes: integer, "
+                          "floating-point, a string literal for a char array, "
+                          "or an address constant)",
                           g->name, 0,0,0,0,0);
                 asmbuf_puts(&buf, "    .word 0\n");
             } else if (kind == TYPE_COMPLEX) {

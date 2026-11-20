@@ -5290,10 +5290,10 @@ static char *codegen_arm(IrProgram *prog) {
                 if (bad) {
                     diag_tool(DIAG_SEV_ERROR, "arkcc",
                               "the arm backend cannot turn the initialiser of "
-                              "the global '%s' into data; only integer "
-                              "constants in arrays and structures, string "
-                              "literals for char arrays, and a string literal "
-                              "for a pointer are implemented",
+                              "the global '%s' into data; this backend turns "
+                              "integer and floating-point constants, string "
+                              "literals for char arrays, and address constants "
+                              "into bytes -- this initialiser is none of those",
                               g->name, 0,0,0,0,0);
                     continue;
                 }

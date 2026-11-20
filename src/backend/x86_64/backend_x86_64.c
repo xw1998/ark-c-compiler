@@ -212,9 +212,10 @@ static void x86_emit_aggregate_init(AsmBuffer *b, IrGlobal *g) {
     if (bad) {
         diag_tool(DIAG_SEV_ERROR, "arkcc",
                   "the %s backend cannot turn the initialiser of the global "
-                  "'%s' into data; only constants in arrays and structures, a "
-                  "string literal for a char array, and an address constant are "
-                  "implemented",
+                  "'%s' into data; this backend turns integer and "
+                  "floating-point constants, a string literal for a char array, "
+                  "and address constants into bytes -- this initialiser is "
+                  "none of those",
                   be, g->name, 0,0,0,0);
         asmbuf_puts(b, "    .zero ");
         asmbuf_int(b, sz);

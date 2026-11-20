@@ -2271,10 +2271,21 @@ v0.8.0 已实现完整的 C99 集合 + 98% 以上的 armcc 常用扩展，仅剩
 - **x86 内联汇编的 `%N` 操作数被拒绝**：ARM 后端把 `%0..%3` 粗映射到 `r0..r3`，x86 cdecl 没有对应的操作数→寄存器约定，粗映射会静默给出错值，所以 x86 后端在汇编文本里发现 `%0..%9` 时直接报错、不产出（`test_asm_operand.c` 就是这条的预期失败项）。
 - **IR 生成不完整即失败**：`irgen` 遇到无法降级的赋值目标时会累计 `g_irgen_errors`，驱动看到非 0 就 `return ARK_ERR_IRGEN` 并不产出镜像（原先只打一行日志再 push 一个 0，会得到静默算错的二进制）。
 - **`sizeof(long double)` 为 8**：本编译器采用 LLP64 数据模型（与 armcc 默认一致），`long double` 与 `double` 同为 8 字节，而 32 位 x86 宿主 GCC 上是 12。依赖 `sizeof(long double)` 区分精度的代码不可移植，跨平台比对 `sizeof` 结果时须按目标模型而非宿主模型来判断。
+- **`double` 是真 64 位，存储与运算都是 binary64**：`0.1` 落盘为 `0x3FB999999999999A`、`1.0/3.0` 为
+  `0x3FD5555555555555`，`d*3.0*1000000.0`（`d = 1.0/3.0`）严格等于 `1000000`（中间结果 `d*3.0` 按
+  就近偶数舍入成 1.0），`1e300 < 1e301` 成立、`1e-60` 是有符号的规格化数。门禁
+  `tests/run_arm_double_precision_tests.py`（`make test-dblprec`，8 用例 11 检查）把位模式与这些
+  派生值钉死，x86-64 侧另有 `double_precision_bits` / `double_precision_arith` 两例。
+  **差分时注意宿主口径**：本机 MinGW gcc 4.8 是 `--with-arch=i686` 构建，默认走 x87、
+  `FLT_EVAL_METHOD == 2`，同样的表达式会保留 80 位中间量并给出 `999999`；这不是编译器错，
+  比对浮点结果时宿主 gcc 必须加 `-msse2 -mfpmath=sse`。
 - **位域宽度上限 32 位**：`IR_LOAD_FLD`/`IR_STORE_FLD` 按 32 位容器读写，`long long x:40` 会读回错值。因此语法分析阶段直接报错（`bit-field width 40 exceeds 32`）、不生成代码，不做静默截断。
-- **聚合初始化器只认能变成字节的东西（两个机器后端共用一份实现）**：全局聚合初始化走 [include/agginit.h](../include/agginit.h) 的 `ark_agg_fill()`，类型驱动地按声明偏移写字节，所以支持整数/字符常量、字符串填充 `char` 数组（含 `char m[2][6] = {"ab","cd"}` 这种按行的）、嵌套 `{}`、`.field=` 与 `[idx]=` 指派器，以及**地址常量元素**（`int (*tab[2])(int,int) = {add,sub};`、`char *cs[2] = {"xy","cd"};`——文本里读不出数字、类型是指针/函数的元素交给后端 hook，按 `IrGlobal.init_refs` 的偏移对账，字符串元素额外在 `.rodata` 里按元素偏移各开一个标签，见「聚合初始化器里的地址元素」一节）。**读不出字节的初值一律显式报错**：聚合里的**浮点字面量**（`struct S{double d;} s = {1.5};` 报
-`the arm backend cannot turn the initialiser of the global 's' into data ...`）以及不能用字面量表示的初值，
-绝不写零充数。`union` 已支持：按 C99 6.7.8p10 只取**一个**活跃成员（无指派时取第一个，`.f=` 另指，
+- **聚合初始化器只认能变成字节的东西（两个机器后端共用一份实现）**：全局聚合初始化走 [include/agginit.h](../include/agginit.h) 的 `ark_agg_fill()`，类型驱动地按声明偏移写字节，所以支持整数/字符常量、字符串填充 `char` 数组（含 `char m[2][6] = {"ab","cd"}` 这种按行的）、嵌套 `{}`、`.field=` 与 `[idx]=` 指派器，以及**地址常量元素**（`int (*tab[2])(int,int) = {add,sub};`、`char *cs[2] = {"xy","cd"};`——文本里读不出数字、类型是指针/函数的元素交给后端 hook，按 `IrGlobal.init_refs` 的偏移对账，字符串元素额外在 `.rodata` 里按元素偏移各开一个标签，见「聚合初始化器里的地址元素」一节）。**读不出字节的初值一律显式报错**：不能用字面量表示的初值（例如 `int g = (int)1e30;` 这种把浮点
+转成整数的强制转换）会报 `the ... backend cannot turn the initialiser of the global 'g' into data ...`，
+绝不写零充数。**浮点（含嵌套）初值是支持的**：`struct S{double d;} s = {1.5};`、
+`double a[3] = {1.0, 2.5, -3.75};`、`struct T{float f; struct I in;} t = { .in = {0.5, 0.25}, .f = 1.25f };`、
+`struct V{int n; double d[2];} v[2] = { {1,{0.5,0.25}}, {2,{1.5,-2.5}} };` 与十六进制浮点 `0x1.8p+3`
+都按 binary32/binary64 精确舍入落字节（`ark_agg_fill_ex()` 直接写位模式），不再报错。`union` 已支持：按 C99 6.7.8p10 只取**一个**活跃成员（无指派时取第一个，`.f=` 另指，
 多于一个成员仍报错），成员本身既可以是指针（`union U u = { .p = &gv };`）也可以是字符数组
 （`union U u = { .b = "abc" };`）；位域也支持（`struct B{int a:3; int b:5;} b = {1,2};` 按位落，位域数组同理）。两个后端调同一份实现，所以 ARM 与 RV32I 在这里给出的是同一组字节——曾经 ARM 自己那份"按逗号走"的解析器把字符串元素跳过存 0，`struct Q gq = {3, "abcd", 9}` 的成员全成了 NUL。
 - **块作用域 `_Alignas` 上限 8 字节**：16/32/64 一律报错（`block-scope _Alignas above 8 bytes is not supported`），

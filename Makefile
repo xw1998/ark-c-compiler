@@ -42,7 +42,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-softfloat
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -196,6 +196,13 @@ test-knr: $(ARKCC)
 # Bit-field read-modify-write: `s.b++` must not move `s.a` (ARM run gate).
 test-bitfield: $(ARKCC)
 	$(PYTHON) tests/run_bitfield_tests.py --arkcc ./$(ARKCC)
+
+# `double` must really be 64-bit, in storage and in arithmetic.  The suite had
+# no case that would notice a double degrading to float precision (plausible
+# values, nothing diagnosed), so this gate pins bit patterns and the
+# strict-binary64 answers of a few derived expressions.
+test-dblprec: $(ARKCC)
+	$(PYTHON) tests/run_arm_double_precision_tests.py --arkcc ./$(ARKCC)
 
 # Library gate: every stdlib entry point is compiled and run on the ARM
 # emulator, and each case asserts a number the program itself computed.  A
