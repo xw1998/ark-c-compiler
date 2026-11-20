@@ -821,6 +821,35 @@ so an over-wide store cannot slip through), and `struct_narrow_call_assign` (who
 right-hand side is a 3- or 5-byte struct return, followed by stack-pushing statements, so both the stack drift
 and an over-wide store are caught).
 
+**Compound literals `(T){...}`: they are lvalues, and `irgen_expr()` hands out the ADDRESS**
+
+`(struct S){...}` is an **lvalue** (C99 6.5.2.5), so for an aggregate type `irgen_expr()` pushes the
+**address** of its storage. That is exactly right for taking an address, decaying to a pointer or
+selecting a member, and exactly wrong wherever a *value* is wanted: the address of a stack slot went out
+as if it were the data. There is a second layer under it -- `sema_expr()` has no `AST_COMPOUND_LITERAL`
+case, so its default arm leaves the node typed `int`, and every consumer that decides "aggregate or
+scalar" by looking at `expr->type` (argument classification, `return`, an element of an initialiser
+list, whole-aggregate assignment) then took the scalar road.
+
+The fix has two halves: `irgen_expr_type()` answers `lit_type` for a compound literal (the only honest
+type), and every value context reads the object back through its address at its own width instead of
+calling `irgen_expr()` directly:
+
+| Context | Before (measured) | After |
+| --- | --- | --- |
+| `f((struct S1){7})`, 1-byte struct argument | `-48` (a stack address) | `7` |
+| `f((struct S5){1,2,3,4,5})`, 5-byte argument | `-143` (a stack address) | `16` |
+| `return (struct S1){7};` | `-72` (a stack address) | `7` |
+| `struct S1 a[2] = {(struct S1){4}, (struct S1){9}};` | element held an address, rest zero | `4` / `9` |
+| `struct S1 s; s = (struct S1){6};` | stored an address | `6` |
+
+The other half was hidden behind the first and had to be fixed with it: AAPCS passes a 5..8-byte
+aggregate as **two words**, but the backends' `IR_GETARG` tested `st_sz == 8`, so a 5/6/7-byte struct
+parameter only ever received the low four bytes (measured: `struct S5{char a,b,c,d,e;}` passed by value
+read `s.e` as 0 and answered 1 instead of 16). ARM and RV32I carried the same mistake and are fixed the
+same way (the test is now `st_sz > 4`); every frame slot is rounded up to 8 bytes by `alloc_local()`, so
+the extra word cannot reach a neighbour.
+
 **struct/union (larger than 8 bytes) return values: both machine backends use sret (a hidden buffer pointer)**
 
 | Target | Who allocates the buffer | In / out | First argument | Stack arguments |

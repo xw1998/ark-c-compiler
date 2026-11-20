@@ -2892,9 +2892,19 @@ static char *codegen_arm(IrProgram *prog) {
                             asmbuf_puts(&buf, "    PUSH {lr}\n    BL __aeabi_memcpy\n    POP {r0}\n"
                                              "    POP {r1, r2, r3}\n");
                         }
-                    } else if (st_sz == 8) {
-                        /* 64-bit scalar (long long / double): read two words from
-                         * the even register pair (r0/r1 or r2/r3) or caller's stack. */
+                    } else if (st_sz > 4) {
+                        /* Two words: a 64-bit scalar (long long / double) or a
+                         * composite of 5..8 bytes, which AAPCS carries in an
+                         * even register pair / two stack words.  The test used
+                         * to be `st_sz == 8`, so a 5..7-byte struct fell into
+                         * the one-word branch below and the callee kept only
+                         * the low four bytes -- measured: `struct S5{char
+                         * a,b,c,d,e;}` passed by value read s.e as 0 instead
+                         * of 5.  alloc_local() rounds every slot up to 8
+                         * bytes, so the second store stays inside this
+                         * parameter's own slot.  Words come from the even
+                         * register pair (r0/r1 or r2/r3) or the caller's
+                         * stack. */
                         int reg_hi = (arg_idx + 1 < 64) ? aapcs_map[arg_idx + 1] : -1;
                         /* Low word */
                         if (reg >= 0 && reg < 4) {

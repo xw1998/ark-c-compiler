@@ -3681,7 +3681,7 @@ arkc 的做法是先判断"这次转换会不会改变机器表示"，只有会�
  * - float <-> int:      一定需要（IR_I2F / IR_F2I）
  * - int(32 位) <-> ll(64 位): 需要（加宽/收窄栈槽）
  * - 同宽 int <-> int:    空操作（有无符号只体现在类型上）
- * - float <-> double:    尚未支持，跳过，使当前浮点运算仍能工作
+ * - float <-> double:    需要（IR_F2F，两边表示不同：4 字节 vs 8 字节）
  * - 非算术类型:          空操作（指针/结构体的转换只是地址传递） */
 static int cast_changes_repr(Type *src, Type *dst) {
     int src_float, dst_float;
@@ -3691,13 +3691,21 @@ static int cast_changes_repr(Type *src, Type *dst) {
     dst_float = (dst->kind == TYPE_FLOAT || dst->kind == TYPE_DOUBLE);
     if (src_float && !dst_float) return 1;        /* 浮点 -> 整数 */
     if (!src_float && dst_float) return 1;        /* 整数 -> 浮点 */
-    if (src_float && dst_float) return 0;         /* float <-> double：跳过 */
+#if ARKCC_FEATURE_CAST_F64F32
+    /* float <-> double 的表示不同（4 字节 vs 8 字节），必须插一条 IR_F2F。
+     * 这是早先被记为"欠账"的那一行，现在由开关控制（默认开）。 */
+    if (src_float && dst_float) return (src->kind != dst->kind);
+#else
+    if (src_float && dst_float) return 0;         /* 关掉开关时退回旧行为 */
+#endif
     /* 都是整数类型：只有宽度不同才需要 */
     return (type_size(src) != type_size(dst));
 }
 ```
 
-注释里"float <-> double：跳过"这一条是一个**明确的欠账**。它不是设计选择，而是"当前实现不支持，跳过以免破坏现有功能"。这种地方必须写清楚，否则读者会以为 float 到 double 真的不需要转换（实际上需要一条硬件指令或库调用）。
+这一段里曾经有一条"float <-> double：跳过"的**明确的欠账**——它不是设计选择，而是"当前实现不支持，跳过以免破坏现有功能"。现在它补上了：`cast_changes_repr()` 在 `ARKCC_FEATURE_CAST_F64F32`（默认 1）打开时对 `float <-> double` 返回 1，插一条 `IR_F2F`（`aux` 的 `0x200` 位表示源是 double、`0x100` 位表示目标是 double），四个后端各自发射对应的转换（ARM 走 VFP `vcvt` 或 `__aeabi_*` 软浮点、x86_64 走 `cvtss2sd`/`cvtsd2ss` 一类、RV32I 走软浮点运行时、C 后端直接写 `(double)`）。
+
+实测（ARM 软浮点、unicorn 执行、`gcc -O0` 对拍、`-mcpu cortex-m0`）：`(float)(16777216.0 + 1.0)` 按 IEEE 就近舍入得到 `2^24`，再 `(double)` 宽化回来精确等于 `2^24`；`(double)(1.0f/3.0f)` 落在 `(0.3333333, 0.3333334)` 开区间内（即 `0.3333333432674408`）；隐式传参 `twice(float)` 与显式 `half((float)2.0)` 都与宿主逐位一致。
 
 插入函数本身只有五行：
 

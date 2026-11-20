@@ -874,6 +874,10 @@ static int irgen_complex_aux(Type *t, int width);
 static void irgen_expr(IrGen *g, AstNode *node);
 static void irgen_lvalue_addr(IrGen *g, AstNode *node);
 static void irgen_cond_to_bool(IrGen *g, AstNode *cond);
+static void irgen_float_to_bool(IrGen *g, int is_dbl);
+static void irgen_bool_norm_top(IrGen *g, Type *t);
+static Type *irgen_expr_type(AstNode *e);
+static void irgen_store_small_agg(IrGen *g, int off, int sz);
 static void irgen_widen_to_64(IrGen *g, Type *src_t, Type *dst_t);
 static void irgen_truncate_int(IrGen *g, Type *dst_t);
 /* Pointer <-> 64-bit integer conversion.  A pointer occupies ONE IR word,
@@ -1954,6 +1958,32 @@ static int lw_designator(AstNode *it) {
     return -1;
 }
 
+/* Land one aggregate *expression* in the frame slot at `off`.
+ * An aggregate expression is either a call result (a value in r0:r1, or a
+ * buffer address for a wide one) or an lvalue (variable, member, dereference,
+ * compound literal), and the two shapes need different code.  Byte-copying
+ * an lvalue with IR_MEMCPY is exact for every width, so no width has to be
+ * composed by hand. */
+static void lw_store_agg_expr(LocalAggWalk *w, int off, Type *t, AstNode *val) {
+    IrGen *g = w->g;
+    int sz = type_size(t);
+    if (sz <= 0) sz = 4;
+    if (val && val->kind == AST_FUNC_CALL) {
+        if (sz <= 8) {
+            irgen_expr(g, val);                    /* value in r0 (:r1) */
+            irgen_store_small_agg(g, off, sz);
+        } else {
+            irgen_expr(g, val);                    /* result buffer address */
+            ir_emit(g->fn, IR_PUSH_ADDR, off, 0, 0);
+            ir_emit(g->fn, IR_MEMCPY, sz, 0, 0);
+        }
+        return;
+    }
+    irgen_lvalue_addr(g, val);
+    ir_emit(g->fn, IR_PUSH_ADDR, off, 0, 0);
+    ir_emit(g->fn, IR_MEMCPY, sz, 0, 0);
+}
+
 /* Consume the next value of the current level as one object of type `t` at
  * frame offset `off`. */
 static void lw_object(LocalAggWalk *w, int off, Type *t) {
@@ -1973,6 +2003,24 @@ static void lw_object(LocalAggWalk *w, int off, Type *t) {
         sub.excess = w->excess;
         lw_fill(&sub, off, t, 1);
         return;
+    }
+    /* An aggregate *expression* filling one element -- a compound literal
+     * (`struct S a[2] = {(struct S){1,2}, (struct S){3,4}}`), a struct
+     * variable, a member, a call -- is one object, not a brace level to be
+     * filled from the same value cursor.  Falling through to lw_fill() fed
+     * its single item to the first member and left the rest zero, and for a
+     * compound literal it stored the literal's ADDRESS as that member
+     * (measured: a[1] answered -104 instead of 9). */
+    if (t && (t->kind == TYPE_ARRAY || t->kind == TYPE_STRUCT ||
+              t->kind == TYPE_UNION) && val && val->kind != AST_INIT_LIST) {
+        Type *vt = irgen_expr_type(val);
+        if (vt && vt->kind != TYPE_PTR &&
+            (vt->kind == TYPE_ARRAY || vt->kind == TYPE_STRUCT ||
+             vt->kind == TYPE_UNION)) {
+            w->i++;
+            lw_store_agg_expr(w, off, t, val);
+            return;
+        }
     }
     if (t->kind == TYPE_ARRAY || t->kind == TYPE_STRUCT || t->kind == TYPE_UNION) {
         if (t->kind == TYPE_ARRAY && val && val->kind == AST_STR && t->base &&
@@ -2611,7 +2659,7 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
                         int df = dt && (dt->kind == TYPE_FLOAT || dt->kind == TYPE_DOUBLE);
                         int si = st && type_is_integer(st);
                         int di = dt && type_is_integer(dt);
-                        if (sf && di) {
+                        if (sf && di && !(dt && dt->kind == TYPE_BOOL)) {
                             int is_dbl = (st && st->kind == TYPE_DOUBLE);
                             int aux = is_dbl ? 0x200 : 0;
                             if (dt && dt->is_unsigned) aux |= 0x400;
@@ -2624,8 +2672,12 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
                             ir_emit(g->fn, IR_I2F, 0, 0, aux);
                         }
                         if (dt && dt->kind == TYPE_BOOL) {
-                            ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
-                            ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_NE);
+                            if (sf) {
+                                irgen_float_to_bool(g, st && st->kind == TYPE_DOUBLE);
+                            } else {
+                                ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
+                                ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_NE);
+                            }
                         }
                         /* Widen int to long long for 64-bit integer locals.
                          * Without this, `long long x = 42` only pushes 4
@@ -2714,7 +2766,7 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
                  * pointer (the callee returns _ark_ret_buf address).
                  * Small structs (<= 8 bytes) are returned as a value, not
                  * a pointer; irgen_expr pushes the value directly. */
-                Type *rt = node->u.unary.operand->type;
+                Type *rt = irgen_expr_type(node->u.unary.operand);
                 if (!rt) rt = g->fn->ret_type;
                 if (rt && (rt->kind == TYPE_STRUCT || rt->kind == TYPE_UNION) &&
                     type_size(rt) > 8) {
@@ -2738,6 +2790,19 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
                         irgen_lvalue_addr(g, node->u.unary.operand);
                         ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
                         ir_emit(g->fn, IR_LOAD_IDX, 8, 0, 0);
+                    }
+                } else if (rt && (rt->kind == TYPE_STRUCT || rt->kind == TYPE_UNION) &&
+                           type_size(rt) > 0) {
+                    /* 1..4-byte composite return: one word in r0.  A plain
+                     * irgen_expr() on an aggregate lvalue pushes its ADDRESS,
+                     * not its contents -- measured: `return (struct S1){7};`
+                     * answered -72 (a frame address) instead of 7. */
+                    if (node->u.unary.operand->kind == AST_FUNC_CALL)
+                        irgen_expr(g, node->u.unary.operand);
+                    else {
+                        irgen_lvalue_addr(g, node->u.unary.operand);
+                        ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
+                        ir_emit(g->fn, IR_LOAD_IDX, 4, 0, 0);
                     }
                 } else {
                     irgen_expr(g, node->u.unary.operand);
@@ -3301,6 +3366,41 @@ static void irgen_truncate_int(IrGen *g, Type *dst_t) {
  * Complex and aggregate types are left alone: real -> _Complex is done by
  * irgen_widen_real_to_complex at the call site, and a struct return travels
  * as an address (handled by the branches above this one). */
+/* C99 6.3.1.2: conversion to _Bool is "unequal to 0", not a truncating
+ * integer conversion.  IR_F2I truncates toward zero, so `_Bool b = 0.5;`
+ * answered 0 (and NaN answered 0 as well) while every C compiler says 1.
+ * Emit a floating compare against 0.0 instead: it is the same instruction
+ * pair a source-level `x != 0.0` produces, so NaN compares unequal (true)
+ * and 0.5 is true without ever leaving the float domain. */
+/* The type to classify an expression by.  sema_expr() has no
+ * AST_COMPOUND_LITERAL case, so its default arm leaves the node typed
+ * `int`; lit_type is the only honest type for it.  Every consumer that
+ * decides "aggregate or scalar" through expr->type got the wrong answer for
+ * a compound literal, and the wrong answer is always the same one: the
+ * literal's ADDRESS was used where its CONTENTS were meant -- measured as
+ * `return (struct S1){7};` answering -72 (a frame address) instead of 7. */
+static Type *irgen_expr_type(AstNode *e) {
+    if (!e) return 0;
+    if (e->kind == AST_COMPOUND_LITERAL && e->u.compound_lit.lit_type)
+        return e->u.compound_lit.lit_type;
+    return e->type;
+}
+static void irgen_float_to_bool(IrGen *g, int is_dbl) {
+    int fid = ir_program_add_float(g->prog, 0.0);
+    ir_emit(g->fn, IR_PUSH_FLOAT, fid, 0, is_dbl ? 0x200 : 0);
+    ir_emit(g->fn, IR_FCMP, 0, 0, (int)TOK_NE | (is_dbl ? 0x200 : 0));
+}
+
+/* ++/-- and compound assignment never pass through the assignment conversion
+ * matrix, so a _Bool lvalue there kept whatever integer the arithmetic made
+ * (measured: `_Bool b = 0; b++; b++;` answered 2, `b += 1` twice answered 2).
+ * Collapse the value on top of the stack to 0/1, same rule as irgen_convert. */
+static void irgen_bool_norm_top(IrGen *g, Type *t) {
+    if (!t || t->kind != TYPE_BOOL) return;
+    ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
+    ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_NE);
+}
+
 static void irgen_convert_value(IrGen *g, Type *src_t, Type *dst_t) {
     int src_float, dst_float, src_int, dst_int;
     if (!src_t || !dst_t) return;
@@ -3312,6 +3412,11 @@ static void irgen_convert_value(IrGen *g, Type *src_t, Type *dst_t) {
     src_int   = type_is_integer(src_t);
     dst_int   = type_is_integer(dst_t);
 
+    /* _Bool from a floating operand: compare against 0.0 (see helper). */
+    if (dst_t->kind == TYPE_BOOL && src_float) {
+        irgen_float_to_bool(g, src_t->kind == TYPE_DOUBLE);
+        return;
+    }
     if (src_float && dst_int) {
         /* aux: 0x200 = source is double, 0x400 = destination is unsigned
          * (same encoding AST_CAST and the backends already agree on). */
@@ -3767,7 +3872,11 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                 int dst_float = dst_t && (dst_t->kind == TYPE_FLOAT || dst_t->kind == TYPE_DOUBLE);
                 int src_int   = src_t && type_is_integer(src_t);
                 int dst_int   = dst_t && type_is_integer(dst_t);
-                if (src_float && dst_int) {
+                /* _Bool from a floating operand compares against 0.0. */
+                if (dst_t && dst_t->kind == TYPE_BOOL && src_float) {
+                    irgen_float_to_bool(g, src_t->kind == TYPE_DOUBLE);
+                }
+                else if (src_float && dst_int) {
                     int is_dbl = (src_t->kind == TYPE_DOUBLE);
                     /* Bug-N2: double -> long long requires IR_64F2I (not
                      * IR_F2I) because IR_F2I truncates to 32-bit int.
@@ -4139,11 +4248,13 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                             ir_emit(g->fn, IR_PUSH_GLOBAL, 0, gname, 0);
                             ir_emit(g->fn, IR_PUSH_INT, delta, 0, 0);
                             ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_PLUS);
+                            irgen_bool_norm_top(g, s->type);
                             ir_emit(g->fn, IR_STORE_GLOBAL, 0, gname, 0);
                         } else {
                             ir_emit(g->fn, IR_PUSH_GLOBAL, 0, gname, 0);
                             ir_emit(g->fn, IR_PUSH_INT, delta, 0, 0);
                             ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_PLUS);
+                            irgen_bool_norm_top(g, s->type);
                             ir_emit(g->fn, IR_STORE_GLOBAL, 0, gname, 0);
                             ir_emit(g->fn, IR_PUSH_GLOBAL, 0, gname, 0);
                         }
@@ -4192,11 +4303,13 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         ir_emit(g->fn, IR_PUSH_VAR, s->offset, operand->u.name, 0);
                         ir_emit(g->fn, IR_PUSH_INT, delta, 0, 0);
                         ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_PLUS);
+                        irgen_bool_norm_top(g, s->type);
                         ir_emit(g->fn, IR_STORE, s->offset, operand->u.name, 0);
                     } else {
                         ir_emit(g->fn, IR_PUSH_VAR, s->offset, operand->u.name, 0);
                         ir_emit(g->fn, IR_PUSH_INT, delta, 0, 0);
                         ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_PLUS);
+                        irgen_bool_norm_top(g, s->type);
                         ir_emit(g->fn, IR_STORE, s->offset, operand->u.name, 0);
                         ir_emit(g->fn, IR_PUSH_VAR, s->offset, operand->u.name, 0);
                     }
@@ -4247,6 +4360,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         irgen_load_idx(g, vt, elem_sz, packed_aux);     /* [addr,old] */
                         irgen_push_step(g, vt, step);                   /* [addr,old,step] */
                         irgen_emit_binary_op(g, (int)TOK_PLUS, vt, rt); /* [addr,new] */
+                        irgen_bool_norm_top(g, vt);
                         ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, idx_aux); /* [new] */
                         if (node->u.unary.is_postfix) {
                             irgen_push_step(g, vt, step);               /* [new,step] */
@@ -4301,7 +4415,14 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                             ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
                             ir_emit(g->fn, IR_LOAD_IDX, 8, 0, 0); /* two words */
                         } else {
-                            irgen_expr(g, r);
+                            /* An aggregate source is an lvalue, and
+                             * irgen_expr() on one pushes its ADDRESS: `struct
+                             * S1 s; s = (struct S1){6};` stored the
+                             * literal's frame address instead of 6.  Read the
+                             * object's own width back out of it instead. */
+                            irgen_lvalue_addr(g, r);
+                            ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
+                            ir_emit(g->fn, IR_LOAD_IDX, es, 0, 0);
                         }
                         ir_emit(g->fn, IR_STORE_IDX, es, 0, 0);   /* [value] */
                         break;
@@ -4372,7 +4493,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         int df = dt && (dt->kind == TYPE_FLOAT || dt->kind == TYPE_DOUBLE);
                         int si = st && type_is_integer(st);
                         int di = dt && type_is_integer(dt);
-                        if (sf && di) {
+                        if (sf && di && !(dt && dt->kind == TYPE_BOOL)) {
                             int is_dbl = (st && st->kind == TYPE_DOUBLE);
                             int aux = is_dbl ? 0x200 : 0;
                             if (dt && dt->is_unsigned) aux |= 0x400;
@@ -4386,8 +4507,12 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         }
                         /* _Bool assignment: normalise to 0/1 (C99 6.3.1.2) */
                         if (dt && dt->kind == TYPE_BOOL) {
-                            ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
-                            ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_NE);
+                            if (sf) {
+                                irgen_float_to_bool(g, st && st->kind == TYPE_DOUBLE);
+                            } else {
+                                ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
+                                ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_NE);
+                            }
                         }
                         /* Bug-N4 FIX: Widen 32-bit int to 64-bit for long long
                          * local variable assignment. Without this, IR_STORE with
@@ -4509,7 +4634,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         int df = dt && (dt->kind == TYPE_FLOAT || dt->kind == TYPE_DOUBLE);
                         int si = st && type_is_integer(st);
                         int di = dt && type_is_integer(dt);
-                        if (sf && di) {
+                        if (sf && di && !(dt && dt->kind == TYPE_BOOL)) {
                             int is_dbl = (st && st->kind == TYPE_DOUBLE);
                             int aux = is_dbl ? 0x200 : 0;
                             if (dt && dt->is_unsigned) aux |= 0x400;
@@ -4539,6 +4664,15 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                                  irgen_is_ptrish(dt)) {
                             irgen_int64_to_ptr(g);
                         }
+                        /* C99 6.3.1.2: a _Bool lvalue always stores 0 or 1. */
+                        if (dt && dt->kind == TYPE_BOOL) {
+                            if (sf) {
+                                irgen_float_to_bool(g, st && st->kind == TYPE_DOUBLE);
+                            } else {
+                                ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
+                                ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_NE);
+                            }
+                        }
 
                     }
                     ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, irgen_idx_aux(L->type, packed_aux));
@@ -4564,7 +4698,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         int df = dt && (dt->kind == TYPE_FLOAT || dt->kind == TYPE_DOUBLE);
                         int si = st && type_is_integer(st);
                         int di = dt && type_is_integer(dt);
-                        if (sf && di) {
+                        if (sf && di && !(dt && dt->kind == TYPE_BOOL)) {
                             int is_dbl = (st && st->kind == TYPE_DOUBLE);
                             int aux = is_dbl ? 0x200 : 0;
                             if (dt && dt->is_unsigned) aux |= 0x400;
@@ -4593,6 +4727,15 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         else if (st && type_is_integer(st) && type_size(st) == 8 &&
                                  irgen_is_ptrish(dt)) {
                             irgen_int64_to_ptr(g);
+                        }
+                        /* C99 6.3.1.2: a _Bool lvalue always stores 0 or 1. */
+                        if (dt && dt->kind == TYPE_BOOL) {
+                            if (sf) {
+                                irgen_float_to_bool(g, st && st->kind == TYPE_DOUBLE);
+                            } else {
+                                ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
+                                ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_NE);
+                            }
                         }
 
                     }
@@ -4629,7 +4772,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                             int df = dt && (dt->kind == TYPE_FLOAT || dt->kind == TYPE_DOUBLE);
                             int si = st && type_is_integer(st);
                             int di = dt && type_is_integer(dt);
-                            if (sf && di) {
+                            if (sf && di && !(dt && dt->kind == TYPE_BOOL)) {
                                 int is_dbl = (st && st->kind == TYPE_DOUBLE);
                                 int aux = is_dbl ? 0x200 : 0;
                                 if (dt && dt->is_unsigned) aux |= 0x400;
@@ -4660,6 +4803,15 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                             else if (st && type_is_integer(st) && type_size(st) == 8 &&
                                      irgen_is_ptrish(dt)) {
                                 irgen_int64_to_ptr(g);
+                            }
+                            /* C99 6.3.1.2: a _Bool lvalue always stores 0 or 1. */
+                            if (dt && dt->kind == TYPE_BOOL) {
+                                if (sf) {
+                                    irgen_float_to_bool(g, st && st->kind == TYPE_DOUBLE);
+                                } else {
+                                    ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
+                                    ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_NE);
+                                }
                             }
 
                         }
@@ -4702,6 +4854,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         irgen_expr(g, node->u.binary.right);
                         irgen_maybe_widen_for_binary(g, s->type, node->u.binary.right ? node->u.binary.right->type : 0);
                         irgen_emit_binary_op(g, bop, s->type, node->u.binary.right ? node->u.binary.right->type : 0);
+                        irgen_bool_norm_top(g, s->type);
                         irgen_dup_words(g, irgen_store_dup_words(s->type));
                         ir_emit(g->fn, IR_STORE_GLOBAL, 0, gname,
                                 irgen_is_cplx_float(s->type) ? IR_AUX_COMPLEX : 0);
@@ -4743,6 +4896,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         irgen_expr(g, node->u.binary.right);
                         irgen_maybe_widen_for_binary(g, s->type, node->u.binary.right ? node->u.binary.right->type : 0);
                         irgen_emit_binary_op(g, bop, s->type, node->u.binary.right ? node->u.binary.right->type : 0);
+                        irgen_bool_norm_top(g, s->type);
                         ir_emit(g->fn, IR_STORE, s->offset, L->u.name, store_aux);
                         ir_emit(g->fn, IR_PUSH_VAR, s->offset, L->u.name, push_aux);
                     }
@@ -4775,6 +4929,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                     irgen_expr(g, node->u.binary.right);            /* [addr, old_val, rhs] */
                     irgen_maybe_widen_for_binary(g, L->type, node->u.binary.right ? node->u.binary.right->type : 0);
                     irgen_emit_binary_op(g, bop, L->type, node->u.binary.right ? node->u.binary.right->type : 0); /* [addr, new_val] */
+                    irgen_bool_norm_top(g, L->type);
                     ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, irgen_idx_aux(L->type, packed_aux)); /* [new_val] */
                 } else if (L->kind == AST_ARRAY_ACCESS) {
                     /* arr[i] OP= val
@@ -4801,6 +4956,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                     irgen_expr(g, node->u.binary.right);            /* [addr, old_val, rhs] */
                     irgen_maybe_widen_for_binary(g, L->type, node->u.binary.right ? node->u.binary.right->type : 0);
                     irgen_emit_binary_op(g, bop, L->type, node->u.binary.right ? node->u.binary.right->type : 0); /* [addr, new_val] */
+                    irgen_bool_norm_top(g, L->type);
                     ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, irgen_idx_aux(L->type, packed_aux)); /* [new_val] */
                 } else if (L->kind == AST_MEMBER) {
                     int bo, bw;
@@ -4842,6 +4998,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         irgen_expr(g, node->u.binary.right);            /* [addr, old_val, rhs] */
                         irgen_maybe_widen_for_binary(g, L->type, node->u.binary.right ? node->u.binary.right->type : 0);
                         irgen_emit_binary_op(g, bop, L->type, node->u.binary.right ? node->u.binary.right->type : 0); /* [addr, new_val] */
+                        irgen_bool_norm_top(g, L->type);
                         ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, irgen_idx_aux(L->type, vol_aux)); /* [new_val] */
                     }
                 } else {
@@ -4949,7 +5106,12 @@ static void irgen_expr(IrGen *g, AstNode *node) {
             }
             for (i = n - 1; i >= 0; i--) {
                 AstNode *arg = node->u.call.args[i];
-                Type *at = arg ? arg->type : 0;
+                /* irgen_expr_type() rather than arg->type: without it the
+                 * aggregate branches below never fired for a compound literal
+                 * and its ADDRESS went on the wire as if it were the value --
+                 * measured: `f((struct S5){1,2,3,4,5})` read -143 (a frame
+                 * address) instead of 16. */
+                Type *at = irgen_expr_type(arg);
                 /* Parameter type from function prototype (if available).
                  * Used to emit 64-bit argument passing conversion for the
                  * x86 cdecl ABI. Falls back to NULL for indirect calls or
@@ -5132,6 +5294,24 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         irgen_expr(g, arg);          /* already the result buffer address */
                     else
                         irgen_lvalue_addr(g, arg);
+                } else if (at && (at->kind == TYPE_STRUCT || at->kind == TYPE_UNION) &&
+                           type_size(at) > 0 && type_size(at) <= 4 &&
+                           arg->kind != AST_FUNC_CALL) {
+                    /* A composite of one word or less travels by value in a
+                     * single core register, but irgen_expr() on an aggregate
+                     * *lvalue* -- and a compound literal is one -- pushes its
+                     * ADDRESS, not its contents.  Handing that address over as
+                     * the argument made the callee read a pointer as data:
+                     * measured, `int f(struct S1); f((struct S1){7})` returned
+                     * -48 instead of 7 (the address of the literal's slot).
+                     * Load the single word through the address instead.  A call
+                     * result is already a value (r0) and keeps going through
+                     * the plain expression path below.  The slot is rounded up
+                     * to 8 bytes by alloc_local(), so reading a full word from
+                     * a 1..3-byte object stays inside the frame. */
+                    irgen_lvalue_addr(g, arg);
+                    ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
+                    ir_emit(g->fn, IR_LOAD_IDX, 4, 0, 0);
                 } else if (at && (at->kind == TYPE_STRUCT || at->kind == TYPE_UNION) &&
                            type_size(at) > 4) {
                     if (arg->kind == AST_FUNC_CALL) {

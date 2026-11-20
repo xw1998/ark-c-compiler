@@ -1017,9 +1017,13 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
                         break;
                     }
                     /* one or two words; a stack word is read from s0+0, which
-                     * is where the caller left it */
+                     * is where the caller left it.  A composite of 5..8
+                     * bytes occupies two words as well (AAPCS passes it
+                     * by value in a0/a1) -- the wide test used to be
+                     * `st_sz == 8`, which dropped the high half of every
+                     * 5..7-byte struct parameter. */
                     rv_s0_slot(&buf, dst - fsize);
-                    for (k = 0; k < ((st_sz == 8) ? 2 : 1); k++) {
+                    for (k = 0; k < ((st_sz > 4) ? 2 : 1); k++) {
                         int w = slot + k;
                         asmbuf_puts(&buf, "    ");
                         if (w < RV_VA_WORDS) {
