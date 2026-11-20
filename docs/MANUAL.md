@@ -325,14 +325,22 @@ M4/M33 只有单精度。传 `-mcpu Cortex-M7` 时，`double`↔`float` 的隐�
   `offset = max(0, ceil((P + width - 32)/8))`、`bit_offset = P - 8*offset`，保证
   `bit_offset∈[0,31]` 且 `bit_offset+width≤32`。packed 布局下这个窗口可以非对齐：ARMv6-M 的
   `LDR`/`STR` 允许非对齐单字访问，写回时把刚读到的邻位原样写回，因此不会破坏同字节的其它位域。
+- **位域的具体读写落点**：`s.b++` 曾经走通用左值路径（按 `type_size` 整字读改写），步长加在
+  整个存储字上，`struct S { unsigned a:4; unsigned b:5; int c:6; }` 里 `s.b++` 会**同时**把 `s.a`
+  加 1。现在 `++`/`--` 的操作数是位域 `AST_MEMBER` 时改走 `IR_LOAD_FLD`/`IR_STORE_FLD`。难点在
+  栈契约：`IR_STORE_FLD` 恰好消费 `[addr, value]` 两个字且**不压栈**，所以表达式结果只能垫在这两个
+  字**之下**——后缀式先 `SWAP` 把旧值垫底，前缀式自增后再 `SWAP` 垫新值；两条路都要**第二次读同一
+  存储单元**补上算术操作数（地址只求值一次）。四个后端（ARM / C / RV32I / x86-64）现在共用同一份
+  契约；x86-64 原来既 `push` 结果（破坏栈平衡）又只保留字段**下方**的位（把上方邻接字段清零），
+  `IR_LOAD_FLD` 还忽略了 `aux` 的 `0x100` 符号标志（`int c:6` 读回整个存储字），一并修掉。
 - **窄化转换会重新扩展**：`(unsigned char)`/`(unsigned short)` 这类**同宽或更宽的目标类型**以前不进
   `IR_TRUNC`，于是 `char c = 0xAA; return (unsigned char)c;` 答 −86（应为 170）、
   `(unsigned short)c` 答 −86（应为 65450）。现在只要符号性变了就走同一条窄化/重扩展指令。
 
 ### 4.1.2 复合字面量、逆序下标与转型改变步长
 
-门禁 `tests/run_complit_tests.py`（`make test-complit`，8 个用例 11 个检查，其中 3 个是"故意写错期望必须
-被拒"的防假绿自检）钉住下面五条，每个用例都在 ARM 模拟器上跑、返回程序自己算出来的数字。
+门禁 `tests/run_complit_tests.py`（`make test-complit`，12 个用例 15 个检查，其中 3 个是"故意写错期望必须
+被拒"的防假绿自检）钉住下面六条，每个用例都在 ARM 模拟器上跑、返回程序自己算出来的数字。
 
 - **复合字面量有自己的类型**：`((struct S){5, 6}).b` 以前读 offset 0 的值（`.a` = 5）。sema 没有
   `AST_COMPOUND_LITERAL` 分支，落到 default 里把节点重新标成 `int`，于是 `.b` 在"int"里查成员查不到、
@@ -677,6 +685,29 @@ expression` / 同上 / `a designator index must not be negative`。此处曾经�
 接着在错位的 token 上反复递归，最后以 `[arkcc] FATAL: memory pool exhausted` 收场——那是
 崩溃级失败，违反"宁可报错"；现在的 `parse_designator_index()` 折常量失败就报一条清晰错误、
 把 token 跳到 `]` 为止，初始值解析继续走，构建按 `error_count` 失败。
+
+**链式指派器（`.f[1].g = v`、`[i][j] = v`）已支持**
+
+C 允许任意深度的链：`.p[1].y = 7` 先用 `.p` 进到成员 `p`、再用 `[1]` 进到它的第 1 个元素、最后
+用 `.y` 指定该元素里的成员。旧解析器只吃**一层**子指派器，从第三层起直接报
+`unexpected token in expression`。
+
+实现上，链上每一环就是一个 `AST_INIT_FIELD`，它的 `value` 要么是最后一环的初值，要么是一个
+**只含下一环的单元素花括号层**——这正是 `{ .f = { .g = 1 } }` 本来就折叠成的形状。于是下游
+（`irgen.c` 的地址走查、`agginit.c` 的填字节）一行都不用改，靠既有的"逐层递归 + 两份偏移对账"
+把链走完。`parse_designator_item()` 就是那个递归：读 `.name` 或 `[常量下标]`，若下一个 token 还是
+`.`/`[` 就递归取下一环、包成单元素 `AST_INIT_LIST`，否则读 `= 初值`。
+
+| 形态 | 结果 |
+| --- | --- |
+| `struct R r = { .p[1].y = 7, .tag = 5, .p[0].x = 3 };` | 三个值各落其位，邻接成员保持 0 |
+| `static struct R g = { .p[1].y = 7, ... };` | 同上（静态数据侧） |
+| `int m[2][3] = { [1][2] = 4, [0][1] = 6 };` | `[i][j]` 就是两层下标链 |
+| `struct R q = { .p[0] = { 9, 8 }, .tag = 2 };` | 链的一环后面可以接**花括号初值**而不只是标量 |
+
+下标折不出来（`[i]`、`[]`、`[-1]`）仍在出错的那一环报原有错误、把 token 跳到 `]`
+（`parse_designator_index()` 内部完成），随后整条链被放弃、解析跳到本层的下一个 `,` 或 `}`，
+所以一次坏下标只产出一条诊断，不会连锁崩。
 
 **必须拒绝的形态（已实现，均报错不产镜像）：**
 

@@ -362,6 +362,18 @@ printed.
   `bit_offset` in `[0,31]` and `bit_offset+width <= 32`.  Under packed layout that window may be
   unaligned: ARMv6-M `LDR`/`STR` permit unaligned single-word access, and the write-back stores the
   neighbouring bits it just read, so the other bit-fields sharing those bytes are preserved.
+- **Where a bit-field increment actually writes**: `s.b++` used to take the generic lvalue path (a
+  whole-word read-modify-write sized by `type_size`), so the step landed on the storage word: in
+  `struct S { unsigned a:4; unsigned b:5; int c:6; }` a `s.b++` also incremented `s.a`.  When the
+  operand of `++`/`--` is a bit-field `AST_MEMBER` it now goes through `IR_LOAD_FLD`/`IR_STORE_FLD`.
+  The hard part is the stack contract: `IR_STORE_FLD` consumes exactly the two words `[addr, value]`
+  and **pushes nothing**, so the expression's result can only sit **below** those two words -- the
+  postfix form `SWAP`s the old value underneath first, the prefix form `SWAP`s the new value underneath
+  after incrementing, and both need a **second read of the same storage unit** to supply the arithmetic
+  operand (the address is evaluated once).  All four backends (ARM / C / RV32I / x86-64) now share that
+  one contract; x86-64 used to `push` the result (breaking the stack balance) and kept only the bits
+  **below** the field (zeroing an adjacent field above it), and its `IR_LOAD_FLD` ignored the `0x100`
+  sign flag in `aux` (`int c:6` read back the whole storage word) -- both fixed.
 - **Narrowing casts re-extend**: a cast to `(unsigned char)`/`(unsigned short)` -- a target of the same
   or larger width -- used to skip `IR_TRUNC`, so `char c = 0xAA; return (unsigned char)c;` answered
   -86 instead of 170 and `(unsigned short)c` answered -86 instead of 65450.  A change of signedness now
@@ -369,7 +381,7 @@ printed.
 
 ### 4.1.2 Compound literals, reversed subscripts and casts that change the stride
 
-`tests/run_complit_tests.py` (`make test-complit`, 8 cases and 11 checks, three of them replaying a
+`tests/run_complit_tests.py` (`make test-complit`, 12 cases and 15 checks, three of them replaying a
 deliberately wrong expectation so the gate is proven able to fail) pins the five rules below.  Every
 case runs on the ARM emulator and returns a number the program itself computed.
 
@@ -780,6 +792,32 @@ it left `has_index` at 0 yet still did `expect "]"`, then recursed repeatedly on
 finally ended in `[arkcc] FATAL: memory pool exhausted` — a crash-level failure that violates "better an
 error". The current `parse_designator_index()` reports one clear error when constant folding fails, skips
 tokens up to the `]`, lets initialiser parsing continue, and fails the build via `error_count`.
+
+**Chained designators (`.f[1].g = v`, `[i][j] = v`) are supported**
+
+C allows a chain of any depth: `.p[1].y = 7` enters member `p` with `.p`, its element 1 with `[1]`, and
+finally names a member of that element with `.y`. The old parser accepted exactly **one** sub-designator
+and reported `unexpected token in expression` from the third link on.
+
+Each link of the chain is one `AST_INIT_FIELD` whose `value` is either the initialiser of the last link or
+a **one-element brace level holding the next link** -- exactly the shape `{ .f = { .g = 1 } }` already
+folds to. So nothing downstream changed (`irgen.c`'s address walk, `agginit.c`'s byte filling): the
+existing "recurse one level deeper + reconcile two offset cursors" machinery walks the chain as-is.
+`parse_designator_item()` is that recursion: read `.name` or `[constant index]`; if the next token is
+still `.`/`[` recurse for the next link and wrap it in a one-element `AST_INIT_LIST`, otherwise read
+`= initialiser`.
+
+| Form | Result |
+| --- | --- |
+| `struct R r = { .p[1].y = 7, .tag = 5, .p[0].x = 3 };` | each value lands in its own slot, neighbours stay 0 |
+| `static struct R g = { .p[1].y = 7, ... };` | same, on the static-data side |
+| `int m[2][3] = { [1][2] = 4, [0][1] = 6 };` | `[i][j]` is a two-link subscript chain |
+| `struct R q = { .p[0] = { 9, 8 }, .tag = 2 };` | a link may be followed by a **braced** initialiser, not just a scalar |
+
+An index that does not fold (`[i]`, `[]`, `[-1]`) still reports its existing error at the link where it
+appears and skips tokens up to the `]` (inside `parse_designator_index()`); the whole chain is then
+abandoned and parsing skips to the next `,` or `}` of this level, so one bad index yields one diagnostic
+instead of a cascade.
 
 **Forms that must be rejected (implemented; each reports an error and produces no image):**
 

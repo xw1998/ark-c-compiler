@@ -152,6 +152,61 @@ int main(void)
 }
 '''
 
+# --- C99 designator chains ('.f[1].g = v', '[i][j] = v') --------------
+# The parser used to accept exactly one sub-designator, so `.p[1].y = 7` ended
+# in "unexpected token in expression".  The resolver downstream already walked
+# nested brace levels, so a chain of any depth is one more brace level per link.
+DESIG_LOCAL = STARTUP + '''\
+struct P { int x, y; };
+struct R { struct P p[2]; int tag; };
+int main(void)
+{
+    struct R r = { .p[1].y = 7, .tag = 5, .p[0].x = 3 };
+    if (r.p[0].x != 3) return 91;
+    if (r.p[1].y != 7) return 92;
+    if (r.p[0].y != 0) return 93;   /* neighbours stay zero-filled */
+    if (r.tag != 5) return 94;
+    return r.p[0].x + r.p[1].y + r.tag;            /* 15 */
+}
+'''
+
+DESIG_GLOBAL = STARTUP + '''\
+struct P { int x, y; };
+struct R { struct P p[2]; int tag; };
+static struct R g = { .p[1].y = 7, .tag = 5, .p[0].x = 3 };
+int main(void)
+{
+    if (g.p[0].x != 3) return 91;
+    if (g.p[1].y != 7) return 92;
+    if (g.tag != 5) return 93;
+    return g.p[0].x + g.p[1].y + g.tag;            /* 15 */
+}
+'''
+
+DESIG_2D = STARTUP + '''\
+int m[2][3] = { [1][2] = 4, [0][1] = 6 };
+int main(void)
+{
+    if (m[1][2] != 4) return 91;
+    if (m[0][1] != 6) return 92;
+    if (m[1][0] != 0) return 93;
+    return m[0][1] * 10 + m[1][2];                 /* 64 */
+}
+'''
+
+DESIG_BRACED_LINK = STARTUP + '''\
+struct P { int x, y; };
+struct R { struct P p[2]; int tag; };
+int main(void)
+{
+    struct R q = { .p[0] = { 9, 8 }, .tag = 2 };
+    if (q.p[0].x != 9) return 91;
+    if (q.p[0].y != 8) return 92;
+    if (q.tag != 2) return 93;
+    return q.p[0].x + q.p[0].y + q.tag;             /* 19 */
+}
+'''
+
 CASES = [
     ('cl_member',         CL_MEMBER,         48),   # 4*10 + 3 + 5
     ('cl_array',          CL_ARRAY,          12),
@@ -161,6 +216,10 @@ CASES = [
     ('cast_stride',       CAST_STRIDE,       12),
     ('addr_array',        ADDR_ARRAY,        12),
     ('global_addr',       GLOBAL_ADDR,       30),
+    ('desig_local',       DESIG_LOCAL,        15),
+    ('desig_global',      DESIG_GLOBAL,       15),
+    ('desig_2d',          DESIG_2D,           64),
+    ('desig_braced_link', DESIG_BRACED_LINK,  19),
 ]
 
 TARGET_ARGS = ['-target', 'arm', '-c', '--vector-table', '-mcpu', 'cortex-m0']

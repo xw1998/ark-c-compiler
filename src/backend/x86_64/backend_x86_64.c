@@ -2051,33 +2051,37 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                     int bit_off = I->val;
                     int bw = I->aux;
                     unsigned mask = (bw >= 32) ? 0xFFFFFFFFu : ((1u << bw) - 1u);
+                    unsigned field = (unsigned)(mask << bit_off);
+                    /* Consume [addr, value] and leave nothing, the contract the
+                     * ARM and C backends already keep: the value used to be
+                     * pushed back here, which left a stray word for every
+                     * enclosing expression.  The merge must also preserve the
+                     * neighbouring fields; the old code kept only the bits
+                     * below the field and wiped everything above it (measured:
+                     * `s.b++` zeroed the upper field `s.c`). */
                     asmbuf_puts(&buf, "    pop eax\n    pop ecx\n");  /* value, addr */
-                    asmbuf_puts(&buf, "    mov edx, dword ptr [ecx]\n");
                     asmbuf_puts(&buf, "    and eax, ");
                     asmbuf_int(&buf, (int)mask);
-                    asmbuf_puts(&buf, "\n");
                     if (bit_off > 0) {
-                        asmbuf_puts(&buf, "    shl eax, ");
+                        asmbuf_puts(&buf, "\n    shl eax, ");
                         asmbuf_int(&buf, bit_off);
-                        asmbuf_puts(&buf, "\n");
-                        asmbuf_puts(&buf, "    shl edx, ");
-                        asmbuf_int(&buf, 32 - bit_off);
-                        asmbuf_puts(&buf, "\n    shr edx, ");
-                        asmbuf_int(&buf, 32 - bit_off);
-                        asmbuf_puts(&buf, "\n    or eax, edx\n");
-                    } else {
-                        asmbuf_puts(&buf, "    and edx, ");
-                        asmbuf_int(&buf, (int)(~mask));
-                        asmbuf_puts(&buf, "\n    or eax, edx\n");
                     }
-                    asmbuf_puts(&buf, "    mov dword ptr [ecx], eax\n    push eax\n");
+                    asmbuf_puts(&buf, "\n    mov edx, dword ptr [ecx]\n    and edx, ");
+                    asmbuf_int(&buf, (int)(unsigned)(~field));
+                    asmbuf_puts(&buf, "\n    or eax, edx\n    mov dword ptr [ecx], eax\n");
                     break;
                 }
 
                 /* IR_LOAD_FLD: bitfield load. val=bit_off, aux=bit_width. */
                 case IR_LOAD_FLD: {
                     int bit_off = I->val;
-                    int bw = I->aux;
+                    /* aux low byte = bit width, bit 8 = signed (the same
+                     * encoding the ARM and C backends read).  Using aux
+                     * directly made every signed field's 0x100 look like a
+                     * width over 32, so `int c:6` holding -6 came back as the
+                     * whole storage word. */
+                    int bw = I->aux & 0xFF;
+                    int is_signed = (I->aux & 0x100) != 0;
                     unsigned mask = (bw >= 32) ? 0xFFFFFFFFu : ((1u << bw) - 1u);
                     asmbuf_puts(&buf, "    pop eax\n    mov eax, dword ptr [eax]\n");
                     if (bit_off > 0) {
@@ -2087,6 +2091,12 @@ static int x86_emit_internal(IrProgram *prog, char *out, int cap, int abi) {
                     }
                     asmbuf_puts(&buf, "    and eax, ");
                     asmbuf_int(&buf, (int)mask);
+                    if (is_signed && bw > 0 && bw < 32) {
+                        asmbuf_puts(&buf, "\n    shl eax, ");
+                        asmbuf_int(&buf, 32 - bw);
+                        asmbuf_puts(&buf, "\n    sar eax, ");
+                        asmbuf_int(&buf, 32 - bw);
+                    }
                     asmbuf_puts(&buf, "\n    push eax\n");
                     break;
                 }
@@ -3674,30 +3684,25 @@ static int amd64_emit_internal(IrProgram *prog, char *out, int cap) {
                     int bit_off = (int)I->val;
                     int bw = (int)I->aux;
                     unsigned mask = (bw >= 32) ? 0xFFFFFFFFu : ((1u << bw) - 1u);
-                    asmbuf_puts(&buf, "    pop rax\n    pop rcx\n"
-                                      "    mov edx, dword ptr [rcx]\n    and eax, ");
+                    unsigned field = (unsigned)(mask << bit_off);
+                    /* Same contract as the emitter above: consume
+                     * [addr, value], push nothing, keep the neighbouring bits. */
+                    asmbuf_puts(&buf, "    pop rax\n    pop rcx\n    and eax, ");
                     asmbuf_int(&buf, (long long)mask);
-                    asmbuf_putc(&buf, '\n');
                     if (bit_off > 0) {
-                        asmbuf_puts(&buf, "    shl eax, ");
+                        asmbuf_puts(&buf, "\n    shl eax, ");
                         asmbuf_int(&buf, bit_off);
-                        asmbuf_puts(&buf, "\n    shl edx, ");
-                        asmbuf_int(&buf, 32 - bit_off);
-                        asmbuf_puts(&buf, "\n    shr edx, ");
-                        asmbuf_int(&buf, 32 - bit_off);
-                        asmbuf_puts(&buf, "\n    or eax, edx\n");
-                    } else {
-                        asmbuf_puts(&buf, "    and edx, ");
-                        asmbuf_int(&buf, (long long)(unsigned int)~mask);
-                        asmbuf_puts(&buf, "\n    or eax, edx\n");
                     }
-                    asmbuf_puts(&buf, "    mov dword ptr [rcx], eax\n    push rax\n");
+                    asmbuf_puts(&buf, "\n    mov edx, dword ptr [rcx]\n    and edx, ");
+                    asmbuf_int(&buf, (long long)(unsigned int)(~field));
+                    asmbuf_puts(&buf, "\n    or eax, edx\n    mov dword ptr [rcx], eax\n");
                     break;
                 }
 
                 case IR_LOAD_FLD: {
                     int bit_off = (int)I->val;
-                    int bw = (int)I->aux;
+                    int bw = (int)I->aux & 0xFF;
+                    int is_signed = ((int)I->aux & 0x100) != 0;
                     unsigned mask = (bw >= 32) ? 0xFFFFFFFFu : ((1u << bw) - 1u);
                     asmbuf_puts(&buf, "    pop rax\n    mov eax, dword ptr [rax]\n");
                     if (bit_off > 0) {
@@ -3707,6 +3712,12 @@ static int amd64_emit_internal(IrProgram *prog, char *out, int cap) {
                     }
                     asmbuf_puts(&buf, "    and eax, ");
                     asmbuf_int(&buf, (long long)mask);
+                    if (is_signed && bw > 0 && bw < 32) {
+                        asmbuf_puts(&buf, "\n    shl eax, ");
+                        asmbuf_int(&buf, 32 - bw);
+                        asmbuf_puts(&buf, "\n    sar eax, ");
+                        asmbuf_int(&buf, 32 - bw);
+                    }
                     asmbuf_puts(&buf, "\n    push rax\n");
                     break;
                 }

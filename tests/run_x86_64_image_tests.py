@@ -353,6 +353,51 @@ int sum2(int n, ...) { va_list ap, aq; int s = 0; int i;
   va_end(aq); va_end(ap); return s; }
 int main(void){ return sum2(4, 1, 2, 3, 4) % 251; }
 """, 20, "va_copy gives an independent cursor (2*(1+2+3+4))"),
+
+    # bit-fields on this backend: the store used to keep only the bits below
+    # the field (wiping the neighbours above it) and pushed the value back,
+    # and the load ignored the 0x100 signed flag, so every signed field read
+    # back as the whole storage word.
+    ("bitfield_incdec",
+     """
+struct S { unsigned a:4; unsigned b:5; int c:6; };
+int main(void){ struct S s; s.a = 1; s.b = 31; s.c = 3;
+  int r1 = s.b++; int r2 = s.b; int r3 = s.a--; int r4 = s.a;
+  if (s.c != 3) return 91;
+  return r1*7 + r2*5 + r3*3 + r4; }
+""", 220, "bit-field ++/-- must leave the neighbouring fields alone"),
+
+    ("bitfield_signed",
+     """
+struct S { signed int a:4; signed int b:5; unsigned c:3; };
+int main(void){ struct S s; s.a = 6; s.b = -3; s.c = 5;
+  int r1 = ++s.a; int r2 = --s.b; int r3 = ++s.c;
+  if (s.a != 7 || s.b != -4 || s.c != 6) return 91;
+  return r1*10 + r2 + 40 + r3; }
+""", 112, "signed bit-field loads sign-extend and prefix ++/-- write the field"),
+
+    # C99 designator chains: '.p[1].y = v' and '[i][j] = v'.  The parser used
+    # to accept one sub-designator only, so these failed to parse at all.
+    ("designator_chain_local",
+     """
+struct P { int x, y; };
+struct R { struct P p[2]; int tag; };
+int main(void){ struct R r = { .p[1].y = 7, .tag = 5, .p[0].x = 3 };
+  if (r.p[0].x != 3 || r.p[1].y != 7 || r.p[0].y != 0 || r.tag != 5) return 91;
+  return r.p[0].x + r.p[1].y + r.tag; }
+""", 15, "designator chain names a sub-object of a sub-object (local)"),
+
+    ("designator_chain_global",
+     """
+struct P { int x, y; };
+struct R { struct P p[2]; int tag; };
+static struct R g = { .p[1].y = 7, .tag = 5, .p[0].x = 3 };
+int m[2][3] = { [1][2] = 4, [0][1] = 6 };
+int main(void){
+  if (g.p[0].x != 3 || g.p[1].y != 7 || g.tag != 5) return 91;
+  if (m[1][2] != 4 || m[0][1] != 6 || m[1][0] != 0) return 92;
+  return g.p[0].x + g.p[1].y + g.tag + m[0][1] * 10 + m[1][2]; }
+""", 79, "designator chains in static data: .p[1].y and [i][j]"),
 ]
 
 

@@ -4264,6 +4264,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
             } else if (op == (int)TOK_INC || op == (int)TOK_DEC) {
                 int delta = (op == (int)TOK_INC) ? 1 : -1;
                 AstNode *operand = node->u.unary.operand;
+                int bf_bo = 0, bf_bw = 0;   /* bit-field ++/-- (see the AST_MEMBER branch) */
                 /* Pointer arithmetic: p++ advances p by sizeof(T) bytes for T *p.
                  * Without this scaling, va_arg(ap, type) using *ap++ (where ap is
                  * long long * from stdarg.h) would only advance ap by 1 byte
@@ -4367,6 +4368,55 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         irgen_bool_norm_top(g, s->type);
                         ir_emit(g->fn, IR_STORE, s->offset, operand->u.name, 0);
                         ir_emit(g->fn, IR_PUSH_VAR, s->offset, operand->u.name, 0);
+                    }
+                } else if (operand->kind == AST_MEMBER &&
+                           member_bitfield_info(operand, &bf_bo, &bf_bw)) {
+                    /* Bit-field ++/--: the generic word path below loads the
+                     * whole storage unit and adds the step to it, so `s.b++`
+                     * bumped the neighbouring field instead (measured: with
+                     * struct S { unsigned a:4; unsigned b:5; int c:6; } and
+                     * a=1 b=2 c=3, `s.b++` left a=2 b=2).  Read-modify-write
+                     * at the field's own bit offset through IR_LOAD_FLD /
+                     * IR_STORE_FLD, exactly like the compound-assign path.
+                     * IR_STORE_FLD consumes [addr, value] and leaves nothing
+                     * behind, so the expression result is kept underneath the
+                     * pair: postfix swaps the old value below the address first
+                     * (leaving [old] after the store), prefix duplicates the
+                     * new value on top (leaving [new]).  Both shapes read the
+                     * storage unit at one bit offset, store once, and evaluate
+                     * the lvalue address exactly once. */
+                    int fld_aux = bf_bw;
+                    int bstep = (op == (int)TOK_INC) ? 1 : -1;
+                    Type *vt = operand->type ? operand->type : type_int();
+                    if (operand->type && !operand->type->is_unsigned)
+                        fld_aux |= 0x100;
+                    irgen_lvalue_addr(g, operand);                  /* [addr] */
+                    ir_emit(g->fn, IR_DUP, 0, 0, 0);                /* [addr,addr] */
+                    ir_emit(g->fn, IR_LOAD_FLD, bf_bo, 0, fld_aux);  /* [addr,old] */
+                    /* Both forms leave the result *under* the [addr, value]
+                     * pair the store consumes, which is the only place a word
+                     * can survive the store: it pops exactly two.  The tail of
+                     * the value is then mended over from a second read of the
+                     * same storage unit, because the copy underneath is out of
+                     * reach without a scratch slot.  Postfix keeps the value
+                     * read before the store (that is its answer); prefix keeps
+                     * the incremented one. */
+                    if (node->u.unary.is_postfix) {
+                        ir_emit(g->fn, IR_SWAP, 0, 0, 0);            /* [old,addr] */
+                        ir_emit(g->fn, IR_DUP, 0, 0, 0);             /* [old,addr,addr] */
+                        ir_emit(g->fn, IR_LOAD_FLD, bf_bo, 0, fld_aux); /* [old,addr,old] */
+                        irgen_push_step(g, vt, bstep);               /* [old,addr,old,step] */
+                        irgen_emit_binary_op(g, (int)TOK_PLUS, vt, type_int());
+                        ir_emit(g->fn, IR_STORE_FLD, bf_bo, 0, bf_bw); /* [old] */
+                    } else {
+                        irgen_push_step(g, vt, bstep);               /* [addr,old,step] */
+                        irgen_emit_binary_op(g, (int)TOK_PLUS, vt, type_int());
+                        ir_emit(g->fn, IR_SWAP, 0, 0, 0);            /* [new,addr] */
+                        ir_emit(g->fn, IR_DUP, 0, 0, 0);             /* [new,addr,addr] */
+                        ir_emit(g->fn, IR_LOAD_FLD, bf_bo, 0, fld_aux); /* [new,addr,old] */
+                        irgen_push_step(g, vt, bstep);               /* [new,addr,old,step] */
+                        irgen_emit_binary_op(g, (int)TOK_PLUS, vt, type_int());
+                        ir_emit(g->fn, IR_STORE_FLD, bf_bo, 0, bf_bw); /* [new] */
                     }
                 } else {
                     /* General lvalue: *ptr, arr[i], s.f, p->f, etc.

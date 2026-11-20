@@ -555,6 +555,67 @@ static int parse_designator_index(Parser *p, int *out) {
     return 0;
 }
 
+/* A C99 designator names one sub-object and the initialiser text that follows:
+ * ".f", "[i]", ".f.g", ".p[1].y", "[2][3]", ...  Any number of links may be
+ * chained.  Each link becomes one AST_INIT_FIELD whose value is either the
+ * initialiser (last link) or a one-element brace level holding the next link --
+ * exactly the shape "{ .f = { .g = 1 } }" already folds to, so the resolver
+ * downstream (irgen/agginit) needs nothing new.
+ *
+ * *ok is 0 when no designator starts here, or when the index is not an integer
+ * constant expression (reported by parse_designator_index); the caller then
+ * skips to the enclosing ',' or '}'.
+ */
+static AstNode *parse_designator_item(Parser *p, int line, int *ok) {
+    char *fname = 0;
+    int has_field = 0, has_index = 0, idx = 0;
+    AstNode *val, *item;
+
+    *ok = 0;
+    if (lexer_peek(p->lex).kind == TOK_DOT) {
+        lexer_advance(p->lex);
+        if (lexer_peek(p->lex).kind != TOK_IDENT) {
+            perror_at(p, "expected a member name after '.' in a designator");
+            return 0;
+        }
+        fname = mem_strdup(lexer_peek(p->lex).str);
+        has_field = 1;
+        lexer_advance(p->lex);
+    } else if (lexer_peek(p->lex).kind == TOK_LBRACKET) {
+        lexer_advance(p->lex);
+        if (!parse_designator_index(p, &idx)) return 0;   /* reported already */
+        has_index = 1;
+    } else {
+        return 0;
+    }
+
+    if (lexer_peek(p->lex).kind == TOK_DOT ||
+        lexer_peek(p->lex).kind == TOK_LBRACKET) {
+        /* This designator names a sub-object whose own designator follows. */
+        AstNode *sub_item = parse_designator_item(p, line, ok);
+        AstNode *sub;
+        if (!*ok) return 0;
+        sub = ast_new(AST_INIT_LIST, line);
+        sub->u.init_list.items = (AstNode **)mem_pool_alloc(sizeof(AstNode *));
+        sub->u.init_list.items[0] = sub_item;
+        sub->u.init_list.item_count = 1;
+        sub->u.init_list.item_capacity = 1;
+        val = sub;
+    } else {
+        if (lexer_peek(p->lex).kind == TOK_ASSIGN) lexer_advance(p->lex);
+        val = parse_initializer(p);
+    }
+
+    item = ast_new(AST_INIT_FIELD, line);
+    item->u.init_field.field = fname;
+    item->u.init_field.has_field = has_field;
+    item->u.init_field.index = idx;
+    item->u.init_field.has_index = has_index;
+    item->u.init_field.value = val;
+    *ok = 1;
+    return item;
+}
+
 /* Parse initializer: { ... } or plain expression */
 static AstNode *parse_init_list(Parser *p) {
     int line = lexer_peek(p->lex).line;
@@ -565,93 +626,32 @@ static AstNode *parse_init_list(Parser *p) {
     lexer_advance(p->lex); /* '{' */
     while (lexer_peek(p->lex).kind != TOK_RBRACE &&
            lexer_peek(p->lex).kind != TOK_EOF) {
-        AstNode *item = 0;
-        AstNode *value;
-        int has_field = 0, has_index = 0, idx_val = 0;
-        char *field_name = 0;
-        if (lexer_peek(p->lex).kind == TOK_DOT) {
-            lexer_advance(p->lex);
-            if (lexer_peek(p->lex).kind == TOK_IDENT) {
-                field_name = mem_strdup(lexer_peek(p->lex).str);
-                has_field = 1;
-                lexer_advance(p->lex);
-            }
-            /* C99 designated initializer: .field1.field2 = value or
-             * .field1[idx].field2 = value; arkcc flattens field chains,
-             * designator sets value position; non-designator assigns to next position.
-             * Each designator+value pair is a separate INIT_LIST element. */
-            if (lexer_peek(p->lex).kind == TOK_DOT ||
-                lexer_peek(p->lex).kind == TOK_LBRACKET) {
-                /* Handle ".f2.f3 = value" shorthand: equivalent to {.f2.f3 = value} */
-                AstNode *sub = ast_new(AST_INIT_LIST, line);
-                AstNode *sub_item;
-                int has_sub_field = 0, has_sub_index = 0;
-                char *sub_field = 0;
-                int sub_idx = 0;
-                if (lexer_peek(p->lex).kind == TOK_DOT) {
+        AstNode *item;
+        if (lexer_peek(p->lex).kind == TOK_DOT ||
+            lexer_peek(p->lex).kind == TOK_LBRACKET) {
+            /* C99 designated initializer: ".f = v", "[i] = v", and chains such
+             * as ".p[1].y = v"; each designator+value pair is a separate
+             * element of this brace level. */
+            int ok = 0;
+            item = parse_designator_item(p, line, &ok);
+            if (!ok) {
+                /* The chain is broken and the diagnostic is already out.  Skip
+                 * to the next separator so the rest of the level still parses. */
+                while (lexer_peek(p->lex).kind != TOK_COMMA &&
+                       lexer_peek(p->lex).kind != TOK_RBRACE &&
+                       lexer_peek(p->lex).kind != TOK_EOF)
                     lexer_advance(p->lex);
-                    if (lexer_peek(p->lex).kind == TOK_IDENT) {
-                        sub_field = mem_strdup(lexer_peek(p->lex).str);
-                        has_sub_field = 1;
-                        lexer_advance(p->lex);
-                    }
-                } else {
-                    /* [index] */
-                    lexer_advance(p->lex);
-                    if (parse_designator_index(p, &sub_idx)) has_sub_index = 1;
-                }
-                if (lexer_peek(p->lex).kind == TOK_ASSIGN) lexer_advance(p->lex);
-                {
-                    AstNode *sub_val = parse_initializer(p);
-                    sub_item = ast_new(AST_INIT_FIELD, line);
-                    sub_item->u.init_field.field = sub_field;
-                    sub_item->u.init_field.has_field = has_sub_field;
-                    sub_item->u.init_field.index = sub_idx;
-                    sub_item->u.init_field.has_index = has_sub_index;
-                    sub_item->u.init_field.value = sub_val;
-                    sub->u.init_list.items = (AstNode **)mem_pool_alloc(sizeof(AstNode *));
-                    sub->u.init_list.items[0] = sub_item;
-                    sub->u.init_list.item_count = 1;
-                }
-                /* Assign item value to init_list; subsequent value continues */
-                item = ast_new(AST_INIT_FIELD, line);
-                item->u.init_field.field = field_name;
-                item->u.init_field.has_field = has_field;
-                item->u.init_field.index = 0;
-                item->u.init_field.has_index = 0;
-                item->u.init_field.value = sub;
-                {
-                    int c = n->u.init_list.item_count;
-                    if (c >= n->u.init_list.item_capacity) {
-                        int nc = n->u.init_list.item_capacity ? n->u.init_list.item_capacity * 2 : 8;
-                        n->u.init_list.items = (AstNode **)mem_realloc(
-                            n->u.init_list.items,
-                            n->u.init_list.item_capacity * (int)sizeof(AstNode *),
-                            nc * (int)sizeof(AstNode *));
-                        n->u.init_list.item_capacity = nc;
-                    }
-                    n->u.init_list.items[c] = item;
-                    n->u.init_list.item_count = c + 1;
-                }
                 if (lexer_peek(p->lex).kind == TOK_COMMA) lexer_advance(p->lex);
                 continue;
             }
-            if (lexer_peek(p->lex).kind == TOK_ASSIGN) lexer_advance(p->lex);
-        } else if (lexer_peek(p->lex).kind == TOK_LBRACKET) {
-            lexer_advance(p->lex);
-            if (parse_designator_index(p, &idx_val)) has_index = 1;
-            /* A missing "]" used to be skipped silently, so `int a[2;`
-             * compiled with no diagnostic at all. Report it (armcc #17);
-             * parse_designator_index now does that reporting as well. */
-            if (lexer_peek(p->lex).kind == TOK_ASSIGN) lexer_advance(p->lex);
+        } else {
+            item = ast_new(AST_INIT_FIELD, line);
+            item->u.init_field.field = 0;
+            item->u.init_field.has_field = 0;
+            item->u.init_field.index = 0;
+            item->u.init_field.has_index = 0;
+            item->u.init_field.value = parse_initializer(p);
         }
-        value = parse_initializer(p);
-        item = ast_new(AST_INIT_FIELD, line);
-        item->u.init_field.field = field_name;
-        item->u.init_field.has_field = has_field;
-        item->u.init_field.index = idx_val;
-        item->u.init_field.has_index = has_index;
-        item->u.init_field.value = value;
         {
             int c = n->u.init_list.item_count;
             if (c >= n->u.init_list.item_capacity) {
