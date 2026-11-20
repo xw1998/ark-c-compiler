@@ -1473,7 +1473,7 @@ powershell -ExecutionPolicy Bypass -File examples\run_tests.ps1
 | `examples\run_tests.ps1` | 75 个样例的 ARM 发射 + C 后端执行 | 退出码必须等于样例头部 `Expected exit code: N`；skip 与 pass 分开计数 | `asserted pass 71 / failed 0 / skipped 4` |
 | `run_asm_test.ps1` | `.s/.asm` 输入路径 | 产物尺寸 + ARKOBJ2 头 + 与 armasm 黄金字节逐字节相同（28 条指令，含 `BKPT`、三操作数 `MUL`、6 条**低寄存器** extend 形式）+ 未知助记符与三寄存器 `MUL` 都必须失败 | `pass=18 fail=0` |
 | `run_tests_x86.ps1` | `x86` / `x86_64` 后端 | emit 成功、GAS 语法接受、`x86` 的真别名（`i386`/`i686`/`*-msvc`）字节等价、`x86_64` **必须不是** `x86` 的别名且产物含 64 位寄存器、三条负向对照 | `pass=85 fail=0 skip=2`（`gcc` 不在 PATH 时两项 SKIP） |
-| `tests/run_x86_64_image_tests.py` | `x86_64` 执行级 | 35 个用例的 `main` 返回值 == 程序之外算出的常量（含初始化全局数组 / 字符串指针 / 静态函数指针表三个**静态绝对寻址**锚点，以及 `sizeof` 成员数组、`sret` 拷贝、指针数组初始化三个自举期才暴露的锚点）；一个双对象 `-c` + `-link` 跨 TU 用例；未解析符号必须被拒且不留镜像；期望值 +1 必须判 DIFF | `35 passed, 0 failed`（`make test-x86-64`），详见 6.3.1 |
+| `tests/run_x86_64_image_tests.py` | `x86_64` 执行级 | 39 个单文件用例的 `main` 返回值 == 程序之外算出的常量（含初始化全局数组 / 字符串指针 / 静态函数指针表三个**静态绝对寻址**锚点，`sizeof` 成员数组、`sret` 拷贝、指针数组初始化三个自举期才暴露的锚点，以及 `[symbol+disp]` 的单 TU / 跨 TU 两条锚点）；三个双对象 `-c` + `-link` 跨 TU 用例；未解析符号必须被拒且不留镜像；期望值 +1 必须判 DIFF | `44 passed, 0 failed, 0 skipped`（`make test-x86-64`），详见 6.3.1 |
 | `tests/run_x86_64_selfhost.py` | `x86_64` **自举** | 编译器把自己 24 个 TU 编成对象、链成平铺镜像、在 unicorn 上跑起来，再编一份 payload，产物必须与宿主对象**逐字节**相同（长度 + fnv-1a）；同一 payload 的汇编文本另行对比，用来把差异定位到代码生成还是汇编器 | `PASS self-host: byte-identical object`（2130 B / `fnv=28c333dc`），`make test-x86-64-selfhost`，详见 [X86_64_BACKEND.md](X86_64_BACKEND.md) §7.1 |
 | `run_link_test.ps1` | `-c` + `-link` 多对象 | ARKOBJ2 头、RAM 描述符、**输出不是原始对象拼接**、镜像长度 == 两对象代码长度之和、重叠必须报错且不留产物 | `pass=17 fail=0` |
 | `run_arm_exec_test.ps1` | ARM **执行级**（编译→链接→QEMU 真跑） | 向量表 SP/reset 向量合法（reset 向量必须带 Thumb 位）、两个不同负载分别返回 8 与 3、负向对照必须被拒；QEMU 缺失时 `exit 2` | `pass=13 fail=0` |
@@ -1539,7 +1539,7 @@ gcc -m32 -c foo.s -o foo.o    # 只校验 GAS 是否接受（本机 MinGW 没有
 .\arkcc.exe foo.c -target x86_64 -S -o foo.s       # 看 SysV 汇编
 ```
 
-**执行级验证**：`tests/run_x86_64_image_tests.py`（`make test-x86-64`）把 35 个程序编成
+**执行级验证**：`tests/run_x86_64_image_tests.py`（`make test-x86-64`）把 39 个程序编成
 0x400000 的镜像、在 unicorn 的 64 位核上跑 `main`，逐个断言一个**在程序之外算出来的常量**；
 另有两段自检——未定义的外部符号必须被拒绝且不留镜像（否则 `call foo` 退化成 `call +0`，
 镜像自己调自己而 arkcc 退出 0），以及「期望值 +1」必须被判成 DIFF。
@@ -1551,15 +1551,25 @@ gcc -m32 -c foo.s -o foo.o    # 只校验 GAS 是否接受（本机 MinGW 没有
 **不**证明「产出了一个能在真实操作系统上直接执行的编译器二进制」——平铺镜像没有 ELF/PE 头、
 没有系统调用层，`main` 与 libc 都是探针供的。详见 [X86_64_BACKEND.md](X86_64_BACKEND.md) §7.1。
 
-**i386 侧没有本机链接环**：MinGW 的 `gcc -m32` 只能汇编不能链接（缺 32 位 crt 与
+**i386 侧没有本机链接环，但有执行级回路**：MinGW 的 `gcc -m32` 只能汇编不能链接（缺 32 位 crt 与
 `_main`/`_printf` 前缀），所以 i386 的 emit / GAS 语法 / 负向对照仍由 `run_tests_x86.ps1` 覆盖。
 执行级则在 x86-64 门禁里给每个程序再编一次 32 位、再跑一遍，**用同一套期望值判定**——
-不符即判 FAIL。它曾有四处历史缺陷（浮点 `movq needs an xmm operand`、64 位算术
+不符即判 FAIL，而不可编译或跑不起来按 SKIP 记。它曾有四处历史缺陷（浮点 `movq needs an xmm operand`、64 位算术
 `UC_ERR_EXCEPTION`、>8 字节结构体按值传参结果错、**本地数组下标读到错的元素**——32 位帧映射
 原先写成 `[ebp-(48+off)]`，帧偏移递增对应地址递减，而下标按地址递增），v0.8.2 已全部修完。
 详见 [X86_64_BACKEND.md](X86_64_BACKEND.md) §5。
 
-#### 6.3.1 镜像加载基址与对象内的自基址重定位
+**`[symbol+disp]` 也已修好（0.8.7）**：`mov eax, [g+4]` 这种"全局符号 + 常量偏移"过去直接被拒
+（`arkcc: Error: [symbol+disp] is not supported`），而只要程序里有 8 字节全局对象
+（`double` / `long long` / 指针），读它的第二块就是这个形态，所以**任何带 `double` 全局变量的
+i386 程序都编不出来**，那条用例长期只能标 SKIP。修法是让重定位**自带 addend**：32 位绝对记
+`X86_RELOC_ABS32_ADDEND`(8)、64 位 RIP 相对记 `X86_RELOC_PC32_ADDEND`(9)，站点里存常量偏移，
+链接期结算成 `target + site`（32 位先折 addend 再加镜像基址）。门禁锚点为 `x86_sym_plus_disp`
+（单 TU 读 `struct{int,double}` 的 `double` 字段与 `double[2]` 的元素）与 `sym_plus_disp_cross_obj`
+（跨 TU 读 `extern double gd` 的 `[gd+4]` 与 `extern struct S gs` 的 `[gs+8]`），x86_64 与 i386
+两侧都跑执行级。详见 [X86_64_BACKEND.md](X86_64_BACKEND.md) §5.6。
+
+#### 6.3.1 镜像加载基址、对象自基址与 addend 重定位
 
 平铺镜像（`-target x86_64 -o a.bin`）没有加载器，所以**基址是编译期烘死的**：
 
@@ -1589,6 +1599,15 @@ flash base（`0x08000000`）烘进镜像，语义一致——静态初始化器�
 （`.long/.quad/.byte/.word/.zero/.skip/.space/.asciz`）于是从行尾开始解析 ⇒ 一个字节都不发射，
 标签位置正确但身后 0 字节；`-S` 文本路径走的是 GAS，看不出这类问题，
 只有在 `-o`/`-c` 的字节级产物上跑执行级门禁才会暴露。
+
+**`[symbol+disp]` 用站点自带的 addend 结算（类型 8 / 9）**：`mov eax, [g+4]` 里那个 `disp`
+就是 addend，但 `-c` 时符号地址还不知道，所以它不能像 `SELF_BASE`(7) 那样在对象读入时补 base。
+做法是让重定位自带 addend：32 位绝对用 `X86_RELOC_ABS32_ADDEND`(8)，链接期算成 `target + site`
+（先折 addend、再加镜像基址）；64 位 RIP 相对用 `X86_RELOC_PC32_ADDEND`(9)，链接期算成
+`target - (pc + 4) + site`。汇编期由 `xa_add_ref_a()`（`xa_add_ref()` 的带 addend 版本）把常量
+偏移写在站点上，`xa_modrm_mem()` 的 `[symbol]` 无 base/index 分支不再对 `disp != 0` 报错；
+`resolve_refs_x()` 在汇编结束后若标签仍未解析且 addend 非零，就把 5→9、4→8 重定型。
+`-S` 文本路径不受影响，因为它把这件事交给 GAS。
 
 ```powershell
 .\arkcc.exe foo.c -target riscv32 -S -o foo.s
@@ -2397,8 +2416,8 @@ v0.8.0 已实现完整的 C99 集合 + 98% 以上的 armcc 常用扩展，仅剩
 ### 验证边界
 
 - **ARM 执行语义**：已由 `run_arm_exec_test.ps1` 在 `qemu-system-arm -machine mps2-an385` 上验证（编译→链接→真跑→semihosting 退出码，两个不同负载 8/3）；**仍未验**的是"板载产物烧回 Flash 再跳转"这一层（无硬件）。细节见 6.2。
-- **x86-64 执行语义已验证**：35 个用例在 unicorn 64 位核上真跑 `main` 并断言独立算出的常量，见 6.3 与 [X86_64_BACKEND.md](X86_64_BACKEND.md)。
-- **i386 执行语义未验证**：本机 MinGW `gcc -m32` 只能汇编不能链接；i386 只验 emit / GAS 语法 / 负向对照，且其浮点、64 位算术、大结构体按值传参三处仍有历史缺陷，见 6.3。
+- **x86-64 执行语义已验证**：39 个单文件用例 + 3 个双对象用例在 unicorn 64 位核上真跑 `main` 并断言独立算出的常量，见 6.3 与 [X86_64_BACKEND.md](X86_64_BACKEND.md)。
+- **i386 执行语义已验证**：同一批用例再编 32 位、在 unicorn 的 32 位核上跑，期望值不符即 FAIL，不再有 SKIP；浮点、64 位算术、大结构体按值传参、本地数组下标四类历史缺陷 v0.8.2 清零，`[symbol+disp]` 0.8.7 清零，见 6.3。
 - **`__at` / `__global_reg` 在 `c` 后端降级为注释**：这两个是 ARM 特有的放置语义，C 后端只把 `__at(addr)` 输出成一条注释，`__global_reg` 仅做解析（提示性关键字），不改变生成代码。要它们真正生效请用 `-target arm`。
 
 - 部分高级优化（循环展开、循环不变量外提、PHI 节点合并等）暂未实现；对性能敏感的代码，建议使用 `__forceinline` 手动控制。

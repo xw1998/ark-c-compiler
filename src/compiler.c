@@ -579,6 +579,35 @@ static void ld_patch_ref(unsigned char *code, int code_size, int pc, int target,
         }
         return;
     }
+    if (type == 8) {
+        /* x86 absolute 32-bit address plus the addend the site already
+         * holds (`[sym+disp]` on i386).  Type 4 overwrites the field, so
+         * it cannot carry the disp. */
+        unsigned v = ((unsigned)code[pc]      ) |
+                     ((unsigned)code[pc + 1] << 8)  |
+                     ((unsigned)code[pc + 2] << 16) |
+                     ((unsigned)code[pc + 3] << 24);
+        v += (unsigned)target;
+        code[pc]     = (unsigned char)(v & 0xFF);
+        code[pc + 1] = (unsigned char)((v >> 8) & 0xFF);
+        code[pc + 2] = (unsigned char)((v >> 16) & 0xFF);
+        code[pc + 3] = (unsigned char)((v >> 24) & 0xFF);
+        return;
+    }
+    if (type == 9) {
+        /* x86 PC-relative disp32 plus the addend the site already holds
+         * (`[sym+disp]` on x86-64, RIP-relative). */
+        int off = (int)(((unsigned)code[pc]      ) |
+                        ((unsigned)code[pc + 1] << 8)  |
+                        ((unsigned)code[pc + 2] << 16) |
+                        ((unsigned)code[pc + 3] << 24));
+        int disp = target - (pc + 4) + off;
+        code[pc]     = (unsigned char)(disp & 0xFF);
+        code[pc + 1] = (unsigned char)((disp >> 8) & 0xFF);
+        code[pc + 2] = (unsigned char)((disp >> 16) & 0xFF);
+        code[pc + 3] = (unsigned char)((disp >> 24) & 0xFF);
+        return;
+    }
     if (type == 5) {
         /* R_386_PC32: x86 PC-relative disp32 (relative to next instr = pc+4) */
         int disp = target - (pc + 4);
@@ -2967,7 +2996,8 @@ int ark_compile(const ArkOptions *opts) {
                          * cancels), and the ARM/Thumb branch types are all
                          * relative.  Only a stored 32-bit address needs the
                          * base added back. */
-                        if (is_x64_link && g_ld_relocs[ri].type == 4)
+                        if (is_x64_link && (g_ld_relocs[ri].type == 4 ||
+                                            g_ld_relocs[ri].type == 8))
                             target += (int)X86_IMAGE_BASE;
                         ld_patch_ref(out_buf, out_len, g_ld_relocs[ri].offset,
                                      target, g_ld_relocs[ri].type);

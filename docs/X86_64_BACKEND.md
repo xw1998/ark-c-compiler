@@ -162,12 +162,12 @@ new:  mov eax, esp
 
 ② **`rep movsb` 现在真的发出字节**（见 §3.4），所以聚合体拷贝开始生效。
 
-## 5. i386 的四类历史欠账：已全部清零
+## 5. i386 的历史欠账：已全部清零
 
 曾经的四类缺陷（`movq needs an xmm operand`、64 位算术 `UC_ERR_EXCEPTION`、
 结构体按值传参得到大数、本地数组下标读到错的元素）**都已修好**，i386 与 x86-64
 现在跑同一批程序给同一个答案。本节的表格是当时的记录，下面是修复后的实测读数；
-x86-64 门禁不再对任何一类标 SKIP。
+x86-64 门禁不再对任何一类标 SKIP。第五类（`[symbol+disp]`）在 0.8.7 清零，见 §5.6。
 
 ### 5.1 本地数组下标：帧映射改成与 x86-64 同构
 
@@ -259,6 +259,33 @@ for (j = 0; j < reg_idx && j < 64; j++)      /* reg_idx 对 sret 函数还含隐
 > x86-64 的 `(long long)q >> 32` 必须给 1，这正是那条"高半不能靠压 0"的分辨点。
 
 
+
+### 5.6 第五类欠账：`[symbol+disp]`（0.8.7 清零）
+
+`mov eax, [g+4]` 这类"全局符号 + 常量偏移"的寻址过去直接被拒
+（`arkcc: Error: [symbol+disp] is not supported`），而只要程序里有 8 字节全局对象
+（`double`、`long long`、8 字节指针），读它的第二块就是这个形态——所以 **i386 上任何
+带 `double` 全局变量的程序都编不出来**，`double_precision_bits` 那一类用例长期只能标 SKIP。
+
+修法不是给局部量造符号名、也不是先算地址再进寄存器（那要多一条指令、动指令选择），
+而是让重定位**自带 addend**：
+
+| 重定位 | 值 | 站点里存什么 | 链接期结算 |
+| --- | :---: | --- | --- |
+| `X86_RELOC_ABS32_ADDEND` | 8 | 常量偏移 `disp` | `target + site`（32 位先折 addend、再加镜像基址） |
+| `X86_RELOC_PC32_ADDEND` | 9 | 常量偏移 `disp` | `target - (pc + 4) + site` |
+
+`xa_add_ref_a()` 是 `xa_add_ref()` 的带 addend 版本；`xa_modrm_mem()` 的 `[symbol]`
+无 base/index 分支不再对 `disp != 0` 报错，而是记下 addend 再原样发出 `disp`；
+`resolve_refs_x()` 在汇编结束后若标签仍未解析且 addend 非零，就把 5→9、4→8 重定型。
+`-S` 文本路径不受影响（它把这件事交给 GAS），所以这个缺陷只会在 `-o`/`-c` 的字节级产物上暴露。
+
+门禁锚点两条，x86_64 与 i386 都要跑执行级：
+
+- `x86_sym_plus_disp`（单 TU）：`static struct S {int a; double d;} gs={3,0.25};`
+  `static double arr[2]={1.5,-2.25};` 读 `gs.d` 与 `arr[1]`，期望 7。
+- `sym_plus_disp_cross_obj`（跨 TU）：`d1.c` 定义 `double gd=2.5; struct S gs={4,0.75};`，
+  `d2.c` 用 `extern` 读 `[gd+4]` 与 `[gs+8]`，期望 21。
 ## 6. 单文件镜像拒绝未解析符号
 
 `resolve_refs_x` 找不到 label 时把 disp32 留成全 0，于是 `call foo` 变成 `call +0`：
@@ -274,7 +301,7 @@ make test-x86-64                  # 已挂进 make test
 python tests/run_x86_64_image_tests.py --arkcc ./arkcc.exe
 ```
 
-35 个程序编译成 0x400000 的平铺镜像，在 unicorn 的 64 位核上跑 `main`，逐个断言一个
+39 个程序编译成 0x400000 的平铺镜像，在 unicorn 的 64 位核上跑 `main`，逐个断言一个
 **在程序之外算出来的常量**（不拿宿主 gcc 当 oracle）；同一个程序**再编一次 32 位并在
 unicorn 的 32 位核上跑**，`i386` 列与期望不符即判 FAIL（早期只把它写成脚注，
 "32 位已知差距"因此长期没有变红）。下表只列锚点用例，不是全表：
@@ -320,7 +347,7 @@ unicorn 的 32 位核上跑**，`i386` 列与期望不符即判 FAIL（早期只
 - **selfcheck**：用「期望值 +1」重跑一个用例，必须被判成 DIFF。判不出错的 harness
   证明不了任何通过
 
-当前实测：`36 passed, 0 failed, 0 skipped`。
+当前实测：`44 passed, 0 failed, 0 skipped`（39 个单文件用例 + 3 个双对象用例 + 2 条 refusal + 1 条自检）。
 
 ### 7.1 自举门禁：把"能跑一次"变成"逐字节复现宿主对象"
 

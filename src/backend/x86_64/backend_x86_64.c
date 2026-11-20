@@ -3825,7 +3825,10 @@ static int amd64_emit_sysv(IrProgram *prog, char *out, int cap) {
  * over and bound every TU's calls to the first object's copy.  The .globl in
  * the emitted text was already there and was being ignored. */
 typedef struct { char *name; int addr; int is_weak; int is_global; } X86AsmLabel;
-typedef struct { int pc; char *name; int type; } X86AsmRef;
+/* addend: the `+disp` of a `[symbol+disp]` operand.  Relocation types 8/9
+ * carry it in the site's disp32 field; for a label this module defines the
+ * addend is folded in here instead.  Always 0 for plain [symbol]. */
+typedef struct { int pc; char *name; int type; int addend; } X86AsmRef;
 
 typedef struct {
     const char    *src;
@@ -3988,7 +3991,8 @@ static int xa_find_label(X86Asm *a, const char *name) {
         if (ark_streq(a->labels[i].name, name)) return a->labels[i].addr;
     return -1;
 }
-static void xa_add_ref(X86Asm *a, int pc, const char *name, int type) {
+static void xa_add_ref_a(X86Asm *a, int pc, const char *name, int type,
+                         int addend) {
     if (a->ref_count >= a->ref_cap) {
         int nc = a->ref_cap == 0 ? 64 : a->ref_cap * 2;
         a->refs = (X86AsmRef *)mem_realloc(a->refs,
@@ -3998,7 +4002,11 @@ static void xa_add_ref(X86Asm *a, int pc, const char *name, int type) {
     a->refs[a->ref_count].pc = pc;
     a->refs[a->ref_count].name = mem_strdup(name);
     a->refs[a->ref_count].type = type;
+    a->refs[a->ref_count].addend = addend;
     a->ref_count++;
+}
+static void xa_add_ref(X86Asm *a, int pc, const char *name, int type) {
+    xa_add_ref_a(a, pc, name, type, 0);
 }
 
 /* --- byte emission (respects dry_run) --- */
@@ -4398,21 +4406,28 @@ static void xa_modrm_mem(X86Asm *a, int reg_field, X86Operand *mem) {
     /* rsp/r12 as base, or rbp/r13 as base with mod==0, need the (base&7) test. */
     int needs_sib = (base >= 0 && (base & 7) == 4) || (index >= 0);
 
-    /* [symbol] with no base/index: mod=00, rm=101, disp32 = symbol addr */
+    /* [symbol] with no base/index: mod=00, rm=101, disp32 = symbol addr.
+     * In 32-bit mode that encoding is an absolute address, so `+disp` is a
+     * plain addend on the same relocation; in 64-bit mode it is RIP-relative
+     * and the addend has to move along with the displacement.  Both used to
+     * be refused outright, which made every global 64-bit object unusable on
+     * i386: `double g;` reads the high word as `mov eax, [g+4]`. */
     if (mem->has_sym && base < 0 && index < 0) {
-        if (disp != 0) {
-            /* RIP-relative relocations carry no addend in this object format,
-             * so [sym+32] cannot be encoded; refuse instead of guessing. */
-            a->error_count++;
-            diag_tool(DIAG_SEV_ERROR, "arkcc", "[symbol+disp] is not supported", 0,0,0,0,0,0);
-            return;
+        int rtype;
+        if (!a->mode64) {
+            rtype = (disp != 0) ? X86_RELOC_ABS32_ADDEND : 4;
+        } else {
+            rtype = (disp != 0) ? X86_RELOC_PC32_ADDEND : 5;
         }
         /* In 64-bit mode mod=00 rm=101 means RIP-relative: the disp32 field is
          * patched by the same reloc type 5 (target-(pc+4)) the linker already
-         * implements, which is exactly the RIP-relative semantic. */
+         * implements, which is exactly the RIP-relative semantic.  The field
+         * starts out holding the addend: resolve_refs folds it in when the
+         * label is local (byte-identical for addend 0), and types 8/9 tell
+         * the linker to add it for a cross-object symbol. */
         xa_emit(a, (unsigned char)(((reg_field & 7) << 3) | 5));
-        xa_add_ref(a, a->pc, mem->sym, a->mode64 ? 5 : 4);
-        xa_emit32(a, 0);  /* placeholder; patched by resolve_refs */
+        xa_add_ref_a(a, a->pc, mem->sym, rtype, disp);
+        xa_emit32(a, disp);
         return;
     }
     /* [symbol + base]: symbol contributes to disp32 (absolute reloc). */
@@ -5395,12 +5410,18 @@ static void resolve_refs_x(X86Asm *a) {
         X86AsmRef *r = &a->refs[i];
         int addr = xa_find_label(a, r->name);
         if (addr < 0) {
-            /* Unresolved: will be handled as a cross-object relocation */
+            /* Unresolved: will be handled as a cross-object relocation.
+             * Types 4/5 overwrite the site, so an addend cannot survive in
+             * them -- hand the linker the addend-carrying variants instead. */
+            if (r->addend != 0) {
+                r->type = (r->type == 5) ? X86_RELOC_PC32_ADDEND
+                                         : X86_RELOC_ABS32_ADDEND;
+            }
             continue;
         }
         if (r->type == 5) {
-            /* PC-relative disp32: disp = target - (ref_pc + 4) */
-            int disp = addr - (r->pc + 4);
+            /* PC-relative disp32: disp = target + addend - (ref_pc + 4) */
+            int disp = addr + r->addend - (r->pc + 4);
             if (!a->dry_run) {
                 a->out[r->pc]     = (unsigned char)(disp & 0xFF);
                 a->out[r->pc + 1] = (unsigned char)((disp >> 8) & 0xFF);
@@ -5423,6 +5444,7 @@ static void resolve_refs_x(X86Asm *a) {
              * x86_64: code is RIP-relative and needs no base, but a stored
              * pointer does).  Inside a -c object the linker adds the base it
              * placed this object at, so only the image base goes in here. */
+            addr += r->addend;
             addr += a->mode64 ? (int)X86_IMAGE_BASE : 0;
             if (!a->dry_run) {
                 a->out[r->pc]     = (unsigned char)(addr & 0xFF);

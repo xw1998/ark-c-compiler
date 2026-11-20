@@ -421,6 +421,18 @@ int main(void){
   if (!(1e300 < 1e301)) return 93;
   return 45; }
 """, 45, "double arithmetic keeps binary64 precision (a float pipeline gives 91/92/93)"),
+
+    ("x86_sym_plus_disp",
+     """
+struct S { int a; double d; };
+static struct S gs = { 3, 0.25 };
+static double arr[2] = { 1.5, -2.25 };
+int main(void){
+  if (gs.a != 3) return 91;
+  if ((int)(gs.d * 4.0) != 1) return 92;
+  if ((int)(arr[1] * -4.0) != 9) return 93;
+  return 7; }
+""", 7, "[symbol+disp] loads: a global 64-bit object's high word (i386 emits mov eax,[gs+8])"),
 ]
 
 
@@ -465,6 +477,29 @@ int main(void) { return tab[0]() + tab[1]() * 2; }
 """)],
      50, "a stored function pointer to another object's code (10 + 2*20); "
          "the linker must add the load base, not only the object base"),
+
+    ("sym_plus_disp_cross_obj",
+     [("d1.c", """
+struct S { int a; double d; };
+double gd = 2.5;
+struct S gs = { 4, 0.75 };
+int geta(void) { return gs.a; }
+"""),
+      ("d2.c", """
+struct S { int a; double d; };
+extern double gd;
+extern struct S gs;
+int geta(void);
+int main(void)
+{
+    if ((int)(gd * 4.0) != 10) return 91;   /* [gd+4] through a relocation */
+    if (geta() != 4) return 92;
+    if ((int)(gs.d * 4.0) != 3) return 93;  /* [gs+8]  through a relocation */
+    return 21;
+}
+""")],
+     21, "a cross-object [symbol+disp] load: the addend lives in the site and "
+         "the relocation has to add it (types 8/9), not overwrite the field"),
 ]
 
 # stage 2: must be refused, not silently linked
@@ -704,15 +739,65 @@ def main():
         with open(img, 'rb') as f:
             code = f.read()
         got, why = run64(code, IMAGE_BASE + main_at)
+
+        # reference arm: the same two objects through the 32-bit i386 backend,
+        # where a [symbol+disp] site is an absolute relocation (type 8) rather
+        # than a RIP-relative one.  A mismatch is a verdict, not a footnote.
+        note = ''
+        i386_bad = False
+        objs32 = []
+        base32 = 0
+        main32 = None
+        ok32 = True
+        for fname, text in files:
+            src_path = os.path.join(TMP, 'i32_' + fname)
+            obj_path = os.path.join(TMP, 'i32_' + fname + '.o')
+            with open(src_path, 'w', encoding='utf-8', newline='\n') as f:
+                f.write(text)
+            proc = subprocess.run([arkcc, '-target', 'x86', '-c', src_path,
+                                   '-o', obj_path], capture_output=True)
+            if proc.returncode != 0:
+                note = '| i386 SKIP (object build failed)'
+                ok32 = False
+                break
+            code_size, syms = obj_header(obj_path)
+            objs32.append(obj_path)
+            if 'main' in syms:
+                main32 = base32 + syms['main']
+            base32 += code_size
+        if ok32 and main32 is not None:
+            img32 = os.path.join(TMP, 'linked32.bin')
+            if os.path.exists(img32):
+                os.remove(img32)
+            proc = subprocess.run([arkcc, '-target', 'x86', '-link'] + objs32 +
+                                  ['-o', img32], capture_output=True)
+            if proc.returncode != 0 or not os.path.exists(img32):
+                note = '| i386 SKIP (link failed)'
+            else:
+                with open(img32, 'rb') as f:
+                    code32 = f.read()
+                got32, why32 = run32(code32, main32)
+                if why32:
+                    note = '| i386 SKIP (%s)' % why32
+                else:
+                    note = '| i386=%d' % got32
+                    if got32 != expect:
+                        note += ' (32-bit mismatch)'
+                        i386_bad = True
+
         if why:
             print('FAIL %-16s %s  [%s]' % (name, why, about))
             failed += 1
         elif got != expect:
-            print('FAIL %-16s x86_64=%d expect=%d  [%s]'
-                  % (name, got, expect, about))
+            print('FAIL %-16s x86_64=%d expect=%d  [%s] %s'
+                  % (name, got, expect, about, note))
+            failed += 1
+        elif i386_bad:
+            print('FAIL %-16s x86_64=%d i386=%d expect=%d  [%s] %s'
+                  % (name, got, got32, expect, about, note))
             failed += 1
         else:
-            print('PASS %-16s x86_64=%d  [%s]' % (name, got, about))
+            print('PASS %-16s x86_64=%d  [%s] %s' % (name, got, about, note))
             passed += 1
 
     print('=== selfcheck (the harness must be able to fail) ===')

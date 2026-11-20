@@ -180,13 +180,13 @@ new:  mov eax, esp
 
 ② **`rep movsb` now really emits bytes** (see §3.4), so aggregate copies start working.
 
-## 5. The four historical i386 debts: all cleared
+## 5. The historical i386 debts: all cleared
 
 The four former defect classes (`movq needs an xmm operand`, 64-bit arithmetic `UC_ERR_EXCEPTION`,
 structs passed by value returning huge numbers, local array indexing reading the wrong element) are
 **all fixed**, and i386 and x86-64 now run the same programs with the same answers. The tables in this
 section are the historical record; below them are the measured post-fix readings, and the x86-64 gate
-no longer marks any class as SKIP.
+no longer marks any class as SKIP. A fifth class (`[symbol+disp]`) was cleared in 0.8.7, see §5.6.
 
 ### 5.1 Local array indexing: the frame mapping became structurally identical to x86-64
 
@@ -285,6 +285,36 @@ more than 4 GB, so two cases differ by ISA):
 > ISA fact, not a backend difference. On x86-64, `(long long)q >> 32` must give 1, which is precisely
 > the discriminating point for "the high half cannot be zero-filled".
 
+
+### 5.6 The fifth debt: `[symbol+disp]` (cleared in 0.8.7)
+
+Addressing of the form `mov eax, [g+4]` — "global symbol + constant offset" — used to be refused
+outright (`arkcc: Error: [symbol+disp] is not supported`), and any program holding an 8-byte global
+object (`double`, `long long`, an 8-byte pointer) reads its second half exactly that way — so **no i386
+program with a `double` global could be compiled at all**, and cases like `double_precision_bits` were
+stuck on SKIP.
+
+The fix is not to invent symbol names for locals, nor to compute the address into a register first
+(that costs an extra instruction and touches instruction selection). Instead the relocation **carries
+its own addend**:
+
+| Relocation | Value | Site holds | Link-time resolution |
+| --- | :---: | --- | --- |
+| `X86_RELOC_ABS32_ADDEND` | 8 | constant offset `disp` | `target + site` (addend first, image base second) |
+| `X86_RELOC_PC32_ADDEND` | 9 | constant offset `disp` | `target - (pc + 4) + site` |
+
+`xa_add_ref_a()` is the addend-carrying variant of `xa_add_ref()`; the no-base/no-index `[symbol]`
+branch of `xa_modrm_mem()` no longer rejects `disp != 0`, it records the addend and emits `disp` as is;
+and if a label is still unresolved after assembly with a non-zero addend, `resolve_refs_x()` re-types
+5→9 and 4→8. The `-S` text path is unaffected (it hands this to GAS), which is why the defect only
+surfaces on byte-level artefacts from `-o`/`-c`.
+
+Two gate anchors, both run at the execution level on x86_64 and i386:
+
+- `x86_sym_plus_disp` (single TU): `static struct S {int a; double d;} gs={3,0.25};`
+  `static double arr[2]={1.5,-2.25};`, reads `gs.d` and `arr[1]`, expects 7.
+- `sym_plus_disp_cross_obj` (cross TU): `d1.c` defines `double gd=2.5; struct S gs={4,0.75};`,
+  `d2.c` reads `[gd+4]` and `[gs+8]` through `extern`, expects 21.
 ## 6. Single-file images refuse unresolved symbols
 
 When `resolve_refs_x` cannot find a label it leaves the disp32 as all zeros, so `call foo` becomes
@@ -300,7 +330,7 @@ make test-x86-64                  # already part of make test
 python tests/run_x86_64_image_tests.py --arkcc ./arkcc.exe
 ```
 
-35 programs are compiled into flat 0x400000 images and run by calling `main` on a 64-bit unicorn core,
+39 programs are compiled into flat 0x400000 images and run by calling `main` on a 64-bit unicorn core,
 each asserting a **constant computed outside the program** (host gcc is not used as an oracle); the
 same program is **then compiled again for 32-bit and run on a 32-bit unicorn core**, and an `i386`
 column that differs from the expectation is a FAIL (it used to be a footnote, which is why "a known
@@ -348,7 +378,7 @@ Plus three further stages that make those PASSes mean something:
 - **selfcheck**: one case is re-run with an "expectation + 1" and must be judged DIFF. A harness that
   cannot detect a wrong answer proves nothing about any pass
 
-Current measurement: `36 passed, 0 failed, 0 skipped`.
+Current measurement: `44 passed, 0 failed, 0 skipped` (39 single-file cases + 3 two-object cases + 2 refusals + 1 self-check).
 
 ### 7.1 The self-host gate: turning "it runs once" into "it reproduces the host object byte for byte"
 

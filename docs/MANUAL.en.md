@@ -1730,7 +1730,7 @@ are measured values from 2026-11-02):
 | `examples\run_tests.ps1` | 75 samples: ARM emit + C-backend execution | the exit code must equal the sample's header `Expected exit code: N`; skips and passes are counted separately | `asserted pass 71 / failed 0 / skipped 4` |
 | `run_asm_test.ps1` | the `.s/.asm` input path | artefact size + ARKOBJ2 header + byte-for-byte identity with the armasm golden bytes (28 instructions, including `BKPT`, three-operand `MUL` and six **low-register** extend forms) + an unknown mnemonic and a three-register `MUL` must both fail | `pass=18 fail=0` |
 | `run_tests_x86.ps1` | the `x86` / `x86_64` backends | emit succeeds, GAS accepts the syntax, the real aliases of `x86` (`i386`/`i686`/`*-msvc`) are byte-equivalent, `x86_64` **must not** be an alias of `x86` and its output must contain 64-bit registers, plus three negative controls | `pass=85 fail=0 skip=2` (the two SKIPs when `gcc` is not on PATH) |
-| `tests/run_x86_64_image_tests.py` | `x86_64` execution level | the `main` return value of 35 programs equals a constant computed outside the program (including the three **static absolute addressing** anchors — initialised global arrays / string pointers / static function pointer table — and three anchors only exposed during self-hosting: `sizeof` of a member array, an `sret` copy, and pointer-array initialisation); one two-object `-c` + `-link` cross-TU case; an unresolved symbol must be refused with no image left behind; an expected value of +1 must be judged DIFF | `35 passed, 0 failed` (`make test-x86-64`), see 6.3.1 for details |
+| `tests/run_x86_64_image_tests.py` | `x86_64` execution level | the `main` return value of 39 single-file programs equals a constant computed outside the program (including the three **static absolute addressing** anchors — initialised global arrays / string pointers / static function pointer table — three anchors only exposed during self-hosting: `sizeof` of a member array, an `sret` copy, and pointer-array initialisation, and the two `[symbol+disp]` anchors, single-TU and cross-TU); three two-object `-c` + `-link` cross-TU cases; an unresolved symbol must be refused with no image left behind; an expected value of +1 must be judged DIFF | `44 passed, 0 failed, 0 skipped` (`make test-x86-64`), see 6.3.1 for details |
 | `tests/run_x86_64_selfhost.py` | `x86_64` **self-hosting** | the compiler compiles its own 24 TUs into objects, links them into a flat image, runs it under unicorn, has it compile one more payload, and the artefact must be **byte-identical** to the host object (length + fnv-1a); the assembly text of the same payload is compared separately, to attribute any difference to code generation versus the assembler | `PASS self-host: byte-identical object` (2130 B / `fnv=28c333dc`), `make test-x86-64-selfhost`, see [X86_64_BACKEND.md](X86_64_BACKEND.md) §7.1 |
 | `run_link_test.ps1` | `-c` + `-link` with several objects | ARKOBJ2 header, RAM descriptor, **the output is not a raw concatenation of objects**, image length == the sum of the two objects' code lengths, overlap must be reported with no artefact left behind | `pass=17 fail=0` |
 | `run_arm_exec_test.ps1` | ARM **execution level** (compile → link → really run under QEMU) | the vector table SP/reset vector are legal (the reset vector must carry the Thumb bit), two different payloads return 8 and 3 respectively, and the negative control must be rejected; `exit 2` when QEMU is missing | `pass=13 fail=0` |
@@ -1827,7 +1827,7 @@ identical, and there is no such thing as "equivalent" any more.
 .\arkcc.exe foo.c -target x86_64 -S -o foo.s       # look at the SysV assembly
 ```
 
-**Execution-level verification**: `tests/run_x86_64_image_tests.py` (`make test-x86-64`) compiles 35
+**Execution-level verification**: `tests/run_x86_64_image_tests.py` (`make test-x86-64`) compiles 39
 programs into 0x400000 images, runs `main` on unicorn's 64-bit core and asserts, one by one, a constant
 **computed outside the program**; there are also two self-checks — an undefined external symbol must be
 refused with no image left behind (otherwise `call foo` degenerates into `call +0`, the image calls itself,
@@ -1842,16 +1842,29 @@ that the compiler itself uses", **not** "a compiler binary that runs directly on
 was produced" — the flat image has no ELF/PE header and no system-call layer, and both `main` and libc are
 supplied by the probes. See [X86_64_BACKEND.md](X86_64_BACKEND.md) §7.1 for details.
 
-**The execution-level gap on the i386 side**: MinGW's `gcc -m32` can only assemble, not link (no 32-bit crt,
-and no `_main`/`_printf` prefixing), so i386 only reaches the layer "emit succeeds / GAS accepts the syntax
-/ negative controls". It also had four historical defects (float `movq needs an xmm operand`, 64-bit
-arithmetic `UC_ERR_EXCEPTION`, structs larger than 8 bytes passed by value giving wrong results, and **a
-local array subscript reading the wrong element** — the 32-bit frame mapping was `[ebp-(48+off)]`, where
-increasing frame offset means decreasing address while subscripts increase with address). In the x86-64
-gate these are now judged against the same expected values, so a wrong i386 answer fails the case; see
+**The i386 side has no native link loop, but it does have an execution-level loop**: MinGW's `gcc -m32`
+can only assemble, not link (no 32-bit crt, and no `_main`/`_printf` prefixing), so the i386 emit / GAS
+syntax / negative controls are still covered by `run_tests_x86.ps1`. At the execution level the x86-64 gate
+compiles every program a second time as 32-bit and runs it again, **judged against the same expected
+values** — a wrong answer fails the case, while a build or run that cannot happen is recorded as SKIP. It had
+four historical defects (float `movq needs an xmm operand`, 64-bit arithmetic `UC_ERR_EXCEPTION`, structs
+larger than 8 bytes passed by value giving wrong results, and **a local array subscript reading the wrong
+element** — the 32-bit frame mapping was `[ebp-(48+off)]`, where increasing frame offset means decreasing
+address while subscripts increase with address); all four were closed in v0.8.2. See
 [X86_64_BACKEND.md](X86_64_BACKEND.md) §5.
 
-#### 6.3.1 Image load base and self-base relocation inside objects
+**`[symbol+disp]` is fixed too (0.8.7)**: `mov eax, [g+4]` — "global symbol + constant offset" — used to be
+refused outright (`arkcc: Error: [symbol+disp] is not supported`), and any program holding an 8-byte global
+object (`double` / `long long` / a pointer) reads its second half exactly that way, so **no i386 program with
+a `double` global could be compiled at all** and that case was stuck on SKIP. The fix is to give the
+relocation its **own addend**: 32-bit absolute becomes `X86_RELOC_ABS32_ADDEND`(8) and 64-bit RIP-relative
+becomes `X86_RELOC_PC32_ADDEND`(9); the site stores the constant offset and the linker resolves it to
+`target + site` (32-bit folds the addend in before adding the image base). The anchors are `x86_sym_plus_disp`
+(single TU: reads the `double` field of `struct{int,double}` and an element of `double[2]`) and
+`sym_plus_disp_cross_obj` (cross TU: reads `[gd+4]` of `extern double gd` and `[gs+8]` of `extern struct S gs`);
+both architectures run them at the execution level. See [X86_64_BACKEND.md](X86_64_BACKEND.md) §5.6.
+
+#### 6.3.1 Image load base, self-base relocation and addend relocations
 
 A flat image (`-target x86_64 -o a.bin`) has no loader, so **the base address is baked in at compile
 time**:
@@ -1886,6 +1899,17 @@ pre-parser swallowed the whole line**, so directives (`.long/.quad/.byte/.word/.
 were parsed starting from the end of the line ⇒ not a single byte was emitted, the label was in the right
 place but had 0 bytes behind it; the `-S` text path goes through GAS and shows none of this, so it only
 surfaces when an execution-level gate runs on the byte-level artefact of `-o`/`-c`.
+
+**`[symbol+disp]` resolves with the addend carried by the site (types 8 / 9)**: the `disp` in
+`mov eax, [g+4]` *is* the addend, but at `-c` time the symbol address is unknown, so this cannot be handled
+the way `SELF_BASE`(7) is (adding the base when the object is read in). Instead the relocation carries the
+addend: 32-bit absolute uses `X86_RELOC_ABS32_ADDEND`(8), resolved at link time as `target + site` (addend
+first, image base second); 64-bit RIP-relative uses `X86_RELOC_PC32_ADDEND`(9), resolved as
+`target - (pc + 4) + site`. The assembler writes the constant offset into the site through `xa_add_ref_a()`
+(the addend-carrying variant of `xa_add_ref()`), and the no-base/no-index `[symbol]` branch of
+`xa_modrm_mem()` no longer rejects `disp != 0`. If a label is still unresolved after assembly and the addend
+is non-zero, `resolve_refs_x()` re-types 5→9 and 4→8. The `-S` text path is unaffected because it hands
+this to GAS.
 
 ```powershell
 .\arkcc.exe foo.c -target riscv32 -S -o foo.s
@@ -2906,9 +2930,12 @@ limitations below remain:
   Flash and jump to it" (no hardware). Details in 6.2.
 - **x86-64 execution semantics verified**: 35 cases really run `main` on unicorn's 64-bit core and assert
   independently computed constants, see 6.3 and [X86_64_BACKEND.md](X86_64_BACKEND.md).
-- **i386 execution semantics unverified**: MinGW `gcc -m32` here can only assemble, not link; i386 only
-  verifies emit / GAS syntax / negative controls, and its float, 64-bit arithmetic and large-struct-by-value
-  passing still had historical defects, see 6.3.
+- **x86-64 execution semantics verified**: 39 single-file cases plus 3 two-object cases really run `main` on
+  unicorn's 64-bit core and assert independently computed constants, see 6.3 and [X86_64_BACKEND.md](X86_64_BACKEND.md).
+- **i386 execution semantics verified**: the same cases are compiled as 32-bit again and run on the 32-bit
+  unicorn core; a wrong expected value fails the case and no SKIP remains. The four historical defects (float,
+  64-bit arithmetic, large structs by value, local array subscript) were closed in v0.8.2 and `[symbol+disp]`
+  in 0.8.7, see 6.3.
 - **`__at` / `__global_reg` degrade to comments in the `c` backend**: both are ARM-specific placement
   semantics, so the C backend emits `__at(addr)` as a comment and merely parses `__global_reg` (a hint
   keyword) without changing the generated code. Use `-target arm` for them to take effect.

@@ -92,6 +92,13 @@ extern int g_x86_obj_mode;
  * driver adds the base it placed the object at.  It names no symbol, so it
  * is applied while the object is read and never enters the reloc table. */
 #define X86_RELOC_SELF_BASE 7
+/* A site that also carries an addend.  `[sym+disp]` is ordinary code: the
+ * high word of a global 64-bit object, a member of a global struct, an
+ * array element.  The disp32 field is written with the addend, and the
+ * linker adds the symbol's address to whatever the field already holds.
+ * The plain type 4/5 patches overwrite the field, so they cannot carry it. */
+#define X86_RELOC_ABS32_ADDEND 8
+#define X86_RELOC_PC32_ADDEND  9
 
 /* Where an x86_64 image is assumed to be loaded.  Code references are
  * RIP-relative (position independent), but a static absolute pointer --
