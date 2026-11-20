@@ -545,14 +545,30 @@
 
 #ifndef ARK_SRC_BUF_SIZE
 # if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
-#   define ARK_SRC_BUF_SIZE       (16 * 1024)     /* 16 KB source buffer (was 32K to ease 64KB pool pressure) */
+#   define ARK_SRC_BUF_SIZE       (32 * 1024)     /* 32 KB source buffer.
+                                                   * g_src lives in .ark_buf (SDRAM, UNINIT), so
+                                                   * this costs no flash and no AXI RAM.  16 KB was
+                                                   * measured short: the AEABI runtime the board has
+                                                   * to compile itself (stdlib/src/arm/aeabi.c) is
+                                                   * 17.8 KB, and `runtime` answered "input file is
+                                                   * 17847 bytes, larger than the 16384-byte source
+                                                   * buffer" -- a silent gap, not a compile error. */
 # else
 #   define ARK_SRC_BUF_SIZE       (1024 * 1024)   /* 1 MB source buffer */
 # endif
 #endif
 #ifndef ARK_ASM_BUF_SIZE
 # if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
-#   define ARK_ASM_BUF_SIZE      (64 * 1024)      /* 64 KB asm buffer */
+#   define ARK_ASM_BUF_SIZE     (256 * 1024)      /* 256 KB asm buffer.
+                                                   * g_asm lives in .ark_buf (SDRAM, UNINIT),
+                                                   * so the size is not a flash or AXI cost.
+                                                   * 64 KB was measured short: -O0 assembly for
+                                                   * the AEABI runtime (stdlib/src/arm/aeabi.c,
+                                                   * 17.8 KB of source) is 92,259 bytes, and the
+                                                   * overflow used to be *silent* -- the text was
+                                                   * cut mid-line and the assembler answered
+                                                   * "unknown mnemonic P" instead of "buffer too
+                                                   * small".  *_emit now refuses (see compiler.c). */
 # else
 #   define ARK_ASM_BUF_SIZE      (8 * 1024 * 1024)  /* 8 MB asm buffer */
 # endif

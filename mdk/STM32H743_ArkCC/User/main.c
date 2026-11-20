@@ -26,7 +26,9 @@ extern uint32_t g_rcc_ahb3enr;
 #include "platform.h"
 #include "flash_fs.h"
 #include "compiler.h"
+#include "memory.h"
 #include <string.h>
+#include <setjmp.h>
 
 /* === Bare-metal register definitions ===
  * The placeholder stm32h743xx.h only provides GPIO/USART/SPI structs;
@@ -76,6 +78,28 @@ SPI_HandleTypeDef  hspi1;
  */
 __attribute__((section(".ark_heap"))) unsigned char ark_heap_buffer[32 * 1024];
 __attribute__((section(".ark_code"))) unsigned char ark_code_buffer[32 * 1024];
+
+/* Upload buffer for the `put` command (see cmd_put).  It has to be at least as
+ * large as a RAM file slot, because it holds the whole transfer before it is
+ * handed to fs_ram_put(); both are 32 KB now (aeabi.c is 17.0 KB).  It lives
+ * in AXI SRAM next to the other work buffers rather than DTCM, which is stack
+ * only. */
+__attribute__((section(".ark_heap"))) static char g_put_buf[32768];
+
+/* -O level used by `run`/`build`.  The board used to hard-code 0, so the two
+ * optimisation levels the compiler implements were never executed here. */
+static int g_opt_level = 0;
+
+/* A compile-time abort (the arena bumping into ARK_POOL_SIZE, or any other
+ * ark_abort() call) used to stop the firmware for good: the message was
+ * printed, then the shell never answered again and the only way back was the
+ * reset button.  A recovery point is armed around every ark_compile() call, so
+ * the failure is reported and the console keeps working -- reported, never
+ * worked around. */
+static jmp_buf g_abort_point;
+
+extern void ark_abort_arm(jmp_buf *jb);
+extern void ark_abort_disarm(void);
 
 /* === UART wrapper required by platform_stm32.c === */
 void HAL_UART_Transmit_Wrapper(const unsigned char *buf, int len) {
@@ -135,6 +159,72 @@ static int shell_split(char *buf, char **argv, int max) {
     return argc;
 }
 
+static void put_int_dec(int v);   /* defined further down */
+
+/* Read one line without echoing it.  `put` uses this: echoing every byte of a
+ * 4 KB source doubles the wire time and makes the upload look stuck. */
+static int read_line_quiet(char *buf, int max) {
+    int n = 0;
+    while (n < max - 1) {
+        uint8_t ch;
+        HAL_StatusTypeDef st = HAL_UART_Receive(&huart1, &ch, 1, HAL_MAX_DELAY);
+        if (st != HAL_OK) { continue; }
+        if (ch == '\r' || ch == '\n') break;
+        buf[n++] = (char)ch;
+    }
+    buf[n] = 0;
+    return n;
+}
+
+static int line_is(const char *a, const char *b) {
+    while (*a && *b) { if (*a != *b) return 0; a++; b++; }
+    return *a == 0 && *b == 0;
+}
+
+/* put <name>: receive a text file into a RAM slot, one UART line per line.
+ * A line consisting of exactly @@EOF@@ ends the transfer.  Every stored line is
+ * terminated with CRLF, so the file the compiler reads is byte-identical to
+ * what the host sent whatever line ending the host used.  No silent
+ * truncation: a payload that does not fit is refused, not cut. */
+static void cmd_put(const char *name) {
+    char line[200];
+    int total = 0;
+    int n;
+    int i;
+    int rc;
+
+    if (!name || !*name) {
+        shell_puts("Usage: put <name>   (end the file with a line @@EOF@@)\r\n");
+        return;
+    }
+    shell_puts("\r\n[arkcc] put ");
+    shell_puts(name);
+    shell_puts(": send the file, end with @@EOF@@\r\n");
+
+    for (;;) {
+        n = read_line_quiet(line, (int)sizeof(line));
+        if (line_is(line, "@@EOF@@")) break;
+        if (total + n + 2 > (int)sizeof(g_put_buf)) {
+            shell_puts("[put] refused: larger than one RAM slot\r\n");
+            return;
+        }
+        for (i = 0; i < n; i++) g_put_buf[total++] = line[i];
+        g_put_buf[total++] = '\r';
+        g_put_buf[total++] = '\n';
+    }
+
+    rc = fs_ram_put(name, g_put_buf, total);
+    if (rc < 0) {
+        shell_puts("[put] refused: slot set is full or the name is too long\r\n");
+        return;
+    }
+    shell_puts("[put] stored ");
+    put_int_dec(rc);
+    shell_puts(" bytes in RAM slot '");
+    shell_puts(name);
+    shell_puts("'\r\n");
+}
+
 /* ---------------- Filesystem listing (flash_fs_stm32.c) ---------------- */
 /* fs_list_files is declared in flash_fs_stm32.c if ARK_TARGET_STM32 is defined.
  * It prints all file entries on the flash FS to UART via ark_log. */
@@ -148,9 +238,15 @@ static void cmd_help(void) {
         "  help              - show this help\r\n"
         "  ls                - list files on flash FS\r\n"
         "  cat <file>        - print file content\r\n"
+        "  sum <file>        - size + FNV-1a hash of a RAM/flash file"
+        "                      (proves a 12 KB upload arrived intact)"
+                      "\r\n"
+        "  put <name>        - receive a text file into a RAM slot (end with @@EOF@@)\r\n"
+        "  opt <0|1|2>       - set the optimisation level used by run/build\r\n"
         "  compile <file>    - compile .c source to ARM binary\r\n"
         "  run <file>        - compile and execute .c source\r\n"
         "  demo              - install the POSIX hello-world sources into RAM\r\n"
+        "  runtime           - compile the AEABI helpers (aeabi.c + aeabi_divmod.s) into RAM\r\n"
         "  build             - compile+link+run the POSIX hello world on this chip\r\n"
         "  sdram             - init the 32MB FMC SDRAM and run a full read/write check\r\n"
         "  echo <text>      - echo text back\r\n"
@@ -164,6 +260,42 @@ static void cmd_ls(void) {
     if (fs_list_files() < 0) {
         shell_puts("Error: file listing is not available on this build\r\n");
     }
+}
+
+/* sum <file>: size and FNV-1a/32 of the file's bytes.
+ *
+ * Why: `put` only proves how many bytes the shell stored, and `cat` stops at
+ * its 4 KB console buffer, so a 12 KB source (aeabi.c) could arrive mangled
+ * and nothing would notice -- the mangled text would then be compiled and
+ * graded as a compiler answer.  A hash computed on the board over the same
+ * bytes the compiler will read closes that hole. */
+const char *fs_ram_data_at(int i);
+static void put_hex32(unsigned v);
+static void cmd_sum(const char *path) {
+    const char *data = 0;
+    int n = -1, i;
+    unsigned h = 2166136261u;
+    for (i = 0; i < fs_ram_count(); i++) {
+        const char *nm = fs_ram_name_at(i);
+        const char *a = nm, *bq = path;
+        while (*a && *bq && *a == *bq) { a++; bq++; }
+        if (*a == 0 && *bq == 0) { data = fs_ram_data_at(i); n = fs_ram_size_at(i); break; }
+    }
+    if (!data || n < 0) {
+        shell_puts("Usage: sum <ram-file>\r\n");
+        return;
+    }
+    for (i = 0; i < n; i++) {
+        h ^= (unsigned char)data[i];
+        h *= 16777619u;
+    }
+    shell_puts("\r\n[sum] ");
+    shell_puts(path);
+    shell_puts(" size=");
+    put_int_dec(n);
+    shell_puts(" fnv=");
+    put_hex32(h);
+    shell_puts("\r\n");
 }
 
 static void cmd_cat(const char *path) {
@@ -189,6 +321,8 @@ static void cmd_cat(const char *path) {
 /* Defined further down, next to the other option helpers; cmd_compile() runs
  * before it in the file, so the prototype has to come first. */
 static void opts_reset(ArkOptions *o);
+static int ram_has(const char *name);
+static void report_abort(const char *what);
 
 static void cmd_compile(const char *path) {
     ArkOptions opts;
@@ -209,7 +343,19 @@ static void cmd_compile(const char *path) {
     opts_reset(&opts);
     opts.input_path = path;
 
+    /* Arm the abort recovery point (see g_abort_point).  A longjmp lands here
+     * and the message ark_abort() printed is then followed by the pool figures,
+     * so "why did it stop" is answered without a debugger. */
+    if (setjmp(g_abort_point) != 0) {
+        ark_abort_disarm();
+        mem_pool_reset();
+        report_abort("compile");
+        return;
+    }
+    ark_abort_arm(&g_abort_point);
+
     rc = ark_compile(&opts);
+    ark_abort_disarm();
 
     {
         char msg[64];
@@ -396,6 +542,19 @@ static void opts_reset(ArkOptions *o) {
  * stream), so the link refuses it -- and it is right to: the image would fault
  * on the first global write.  Compiling with app.sct here is what makes the
  * object's baked base match the region it will actually run in. */
+/* One line of evidence for a compile/link that ark_abort() stopped: the
+ * message it printed says what was wrong, these two numbers say how far the
+ * arena got and how big it is. */
+static void report_abort(const char *what) {
+    shell_puts("[arkcc] ");
+    shell_puts(what);
+    shell_puts(" aborted: wanted ");
+    put_int_dec(mem_pool_high());
+    shell_puts(" B, arena is ");
+    put_int_dec(mem_pool_capacity());
+    shell_puts(" B\r\n");
+}
+
 static int build_object(const char *src, const char *obj, int first) {
     ArkOptions o;
     int rc;
@@ -404,6 +563,7 @@ static int build_object(const char *src, const char *obj, int first) {
     o.output_path = obj;
     o.compile_only = 1;
     o.scatter_file = "app.sct";
+    o.opt_level = g_opt_level;
     /* Only the FIRST object of the image reserves the vector-table hole (that
      * is the shape the host tests pin: hello.c with --vector-table, crt.c
      * without).  Reserving 0x400 in both would leave a hole in the middle of
@@ -411,27 +571,71 @@ static int build_object(const char *src, const char *obj, int first) {
     o.vector_table = first ? 1 : 0;
     g_cap_mode = CAP_RAM;
     g_cap_name = obj;
+    if (setjmp(g_abort_point) != 0) {
+        ark_abort_disarm();
+        g_cap_mode = CAP_NONE;
+        mem_pool_reset();
+        report_abort("compile");
+        return -1;
+    }
+    ark_abort_arm(&g_abort_point);
     rc = ark_compile(&o);
+    ark_abort_disarm();
     g_cap_mode = CAP_NONE;
     return rc;
 }
 
-/* -link <objs> -o app.bin --scatter app.sct, loaded at APP_BASE. */
-static int link_app(const char *obj0, const char *obj1) {
+/* -link <objs> -o app.bin --scatter app.sct, loaded at APP_BASE.
+ * The object count is a parameter because a program that needs the AEABI
+ * runtime links four objects (program + crt + aeabi + aeabi_div), not two. */
+static int link_app(const char *const *objs, int n) {
     ArkOptions o;
     int rc;
+    int i;
     opts_reset(&o);
     o.link_mode = 1;
-    o.link_inputs[0] = obj0;
-    o.link_inputs[1] = obj1;
-    o.link_input_count = 2;
+    if (n > ARK_LINK_MAX_OBJS) return ARK_ERR_ARG;
+    for (i = 0; i < n; i++) o.link_inputs[i] = objs[i];
+    o.link_input_count = n;
     o.output_path = "app.bin";
     o.scatter_file = "app.sct";
     g_img_len = -1;
     g_cap_mode = CAP_LOAD;
+    if (setjmp(g_abort_point) != 0) {
+        ark_abort_disarm();
+        g_cap_mode = CAP_NONE;
+        mem_pool_reset();
+        report_abort("link");
+        return -1;
+    }
+    ark_abort_arm(&g_abort_point);
     rc = ark_compile(&o);
+    ark_abort_disarm();
     g_cap_mode = CAP_NONE;
     return rc;
+}
+
+/* Object list for one image: the program, crt.c, and -- when the `runtime`
+ * command has built them -- the AEABI helpers a real C program needs (64-bit
+ * multiply/divide, double <-> uint64).  They cannot come from the firmware:
+ * the image is loaded at 0x24070000 and runs on its own, so only objects
+ * linked *into* it are reachable.  A program that needs a helper and does not
+ * get one fails the link with the symbol's name -- that is the honest
+ * outcome, not a guessed value. */
+static int link_image(const char *prog_obj) {
+    const char *objs[4];
+    int n = 0;
+    int i;
+    objs[n++] = prog_obj;
+    objs[n++] = "crt.o";
+    if (ram_has("aeabi.o") && ram_has("aeabi_div.o")) {
+        objs[n++] = "aeabi.o";
+        objs[n++] = "aeabi_div.o";
+    }
+    shell_puts("[arkcc] cc -link ");
+    for (i = 0; i < n; i++) { shell_puts(objs[i]); shell_puts(" "); }
+    shell_puts("-o app.bin --scatter app.sct\r\n");
+    return link_app(objs, n);
 }
 
 /* Sources kept in the firmware so the demo is reproducible without a host
@@ -592,12 +796,9 @@ static void cmd_build(void) {
         return;
     }
 
-    /* 0.8.0 --reloc-text：板上这个链接一定是"多对象 + 位移"（镜像装在
-     * 0x24070000，而两个对象都是按默认基址 0x08000000 编出来的），所以
-     * 字符串字面量那种段内绝对地址必须由链接器纠正，否则第二个 write()
-     * 会去读 0x08000400 那块 Flash。开关开在这里而不是启动时全局设，
-     * 是为了让 cc -S / 单对象这类老用法不受影响。 */
-    g_config.enable_reloc_text = 1;
+    /* --reloc-text is set once in main(): this link is always "several
+     * objects + displaced", so the in-section absolute addresses that string
+     * literals carry must be corrected by the linker. */
 
     shell_puts("\r\n[arkcc] cc -c hello.c -o hello.o\r\n");
     rc = build_object("hello.c", "hello.o", 1);
@@ -607,8 +808,7 @@ static void cmd_build(void) {
     rc = build_object("crt.c", "crt.o", 0);
     if (rc != 0) { shell_puts("[arkcc] compile crt.c failed: "); put_int_dec(rc); shell_puts("\r\n"); return; }
 
-    shell_puts("[arkcc] cc -link hello.o crt.o -o app.bin --scatter app.sct\r\n");
-    rc = link_app("hello.o", "crt.o");
+    rc = link_image("hello.o");
     if (rc != 0 || g_img_len < 0) {
         shell_puts("[arkcc] link failed: ");
         put_int_dec(rc);
@@ -640,8 +840,6 @@ static void cmd_run(const char *src) {
         return;
     }
 
-    g_config.enable_reloc_text = 1;
-
     shell_puts("\r\n[arkcc] cc -c ");
     shell_puts(src);
     shell_puts(" -o run.o\r\n");
@@ -651,8 +849,7 @@ static void cmd_run(const char *src) {
     rc = build_object("crt.c", "crt.o", 0);
     if (rc != 0) { shell_puts("[arkcc] compile crt.c failed: "); put_int_dec(rc); shell_puts("\r\n"); return; }
 
-    shell_puts("[arkcc] cc -link run.o crt.o -o app.bin --scatter app.sct\r\n");
-    rc = link_app("run.o", "crt.o");
+    rc = link_image("run.o");
     if (rc != 0 || g_img_len < 0) {
         shell_puts("[arkcc] link failed: ");
         put_int_dec(rc);
@@ -664,6 +861,144 @@ static void cmd_run(const char *src) {
     shell_puts(" bytes\r\n");
 
     exec_image();
+}
+
+/* Little-endian 32-bit field out of an object blob. */
+static unsigned obj_rd32(const char *p) {
+    const unsigned char *b = (const unsigned char *)p;
+    return (unsigned)b[0] | ((unsigned)b[1] << 8) |
+           ((unsigned)b[2] << 16) | ((unsigned)b[3] << 24);
+}
+
+/* Size of a RAM file by name, or -1 when there is no such slot. */
+static int ram_file_size(const char *name) {
+    int i;
+    for (i = 0; i < fs_ram_count(); i++) {
+        const char *nm = fs_ram_name_at(i);
+        const char *a = nm, *b = name;
+        while (*a && *b && *a == *b) { a++; b++; }
+        if (*a == 0 && *b == 0) return fs_ram_size_at(i);
+    }
+    return -1;
+}
+
+/* Walk an ARKOBJ2 object sitting in its RAM slot and report what -link will
+ * read out of it: code bytes, symbol count, relocation count, and how many of
+ * those relocations are .arktext (in-object absolute addresses that only get a
+ * patch site when --reloc-text was on).
+ *
+ * Why this is a check and not a printout: on a freshly booted board
+ * g_config.enable_reloc_text was still 0 when `runtime` built aeabi.o, so the
+ * object came out 12607 B / 26 syms / 0 relocs instead of 12833 B / 27 syms /
+ * 11 .arktext entries.  Both objects link; the difference only shows up at run
+ * time, where the helper reads its double constants through addresses baked
+ * for 0x08000000 and three double->64-bit cases return wrong values.  Counting
+ * the entries in the file the linker is about to read is what turns that into
+ * a failure the board reports itself.
+ *
+ * Returns 0 when the object parsed exactly to its last byte, -1 otherwise. */
+static int obj_stats(const char *name, int *code, int *syms, int *relocs,
+                     int *text) {
+    const char *d = 0;
+    int n = -1, i, o, sc, rc;
+    int ntext = 0;
+    for (i = 0; i < fs_ram_count(); i++) {
+        const char *nm = fs_ram_name_at(i);
+        const char *a = nm, *b = name;
+        while (*a && *b && *a == *b) { a++; b++; }
+        if (*a == 0 && *b == 0) {
+            d = fs_ram_data_at(i);
+            n = fs_ram_size_at(i);
+            break;
+        }
+    }
+    if (!d || n < 16) return -1;
+    if (d[0] != 'A' || d[1] != 'R' || d[2] != 'K' || d[3] != 'O' ||
+        d[4] != 'B' || d[5] != 'J' || d[6] != '2' || d[7] != '\n') return -1;
+    o = 8;
+    *code = (int)obj_rd32(d + o);
+    o += 4 + *code;
+    if (*code < 0 || o + 4 > n) return -1;
+    sc = (int)obj_rd32(d + o);
+    o += 4;
+    for (i = 0; i < sc; i++) {
+        int nl;
+        if (o + 4 > n) return -1;
+        nl = (int)obj_rd32(d + o);
+        o += 4;
+        if (nl < 0 || o + nl + 6 > n) return -1;
+        o += nl + 4 + 2;         /* name, offset(4), type(1), is_weak(1) */
+    }
+    if (o + 4 > n) return -1;
+    rc = (int)obj_rd32(d + o);
+    o += 4;
+    for (i = 0; i < rc; i++) {
+        int nl;
+        if (o + 4 > n) return -1;
+        nl = (int)obj_rd32(d + o);
+        o += 4;
+        if (nl < 0 || o + nl + 5 > n) return -1;
+        if (nl == 9 && d[o] == '.' && d[o + 1] == 'a' && d[o + 2] == 'r' &&
+            d[o + 3] == 'k' && d[o + 4] == 't' && d[o + 5] == 'e' &&
+            d[o + 6] == 'x' && d[o + 7] == 't' && d[o + 8] == 0)
+            ntext++;
+        o += nl + 4 + 1;         /* name, offset(4), type(1) */
+    }
+    *syms = sc;
+    *relocs = rc;
+    *text = ntext;
+    return (o == n) ? 0 : -1;
+}
+
+/* runtime: build the AEABI helper objects from the sources in RAM.
+ *
+ * The two sources are the ones the host gates link (stdlib/src/arm/aeabi.c and
+ * aeabi_divmod.s); they are not baked into the firmware so there is exactly one
+ * copy of them, the one in the repository, uploaded with `put`.  Compiling them
+ * on the board is the point: the same compiler that will use them produces
+ * them, and the pool figure this prints is a reading of what that costs. */
+static void cmd_runtime(void) {
+    int rc, code, syms, relocs, text;
+    if (!ram_has("aeabi.c") || !ram_has("aeabi_divmod.s")) {
+        shell_puts("Error: aeabi.c / aeabi_divmod.s are not in RAM;"
+                   " upload them with 'put aeabi.c' and 'put aeabi_divmod.s'\r\n");
+        return;
+    }
+    /* --reloc-text is set once in main() for every object this shell builds.
+     * It is not optional here: these objects are always linked into an image
+     * that is displaced from the base they were compiled against, so an object
+     * built without it carries literal-pool addresses that point at
+     * 0x08000000.  The check below fails the build rather than let such an
+     * object reach `run` and answer wrongly. */
+    shell_puts("\r\n[arkcc] cc -c aeabi.c -o aeabi.o\r\n");
+    rc = build_object("aeabi.c", "aeabi.o", 0);
+    if (rc != 0) { shell_puts("[arkcc] compile aeabi.c failed: "); put_int_dec(rc); shell_puts("\r\n"); return; }
+    if (obj_stats("aeabi.o", &code, &syms, &relocs, &text) != 0) {
+        shell_puts("[arkcc] aeabi.o did not parse as an ARKOBJ2 object -- the"
+                   " RAM slot holds a truncated or stale file; not using it\r\n");
+        return;
+    }
+    if (text <= 0) {
+        shell_puts("[arkcc] aeabi.o carries 0 .arktext relocations (");
+        put_int_dec(syms); shell_puts(" syms, "); put_int_dec(relocs);
+        shell_puts(" relocs): it was built with --reloc-text off, so its"
+                   " constant-pool addresses point at 0x08000000 and the"
+                   " double helpers answer wrongly. Refusing to report the"
+                   " runtime as ready\r\n");
+        return;
+    }
+
+    shell_puts("[arkcc] cc -c aeabi_divmod.s -o aeabi_div.o\r\n");
+    rc = build_object("aeabi_divmod.s", "aeabi_div.o", 0);
+    if (rc != 0) { shell_puts("[arkcc] compile aeabi_divmod.s failed: "); put_int_dec(rc); shell_puts("\r\n"); return; }
+
+    shell_puts("[arkcc] runtime ready: aeabi.o ");
+    put_int_dec(ram_file_size("aeabi.o"));
+    shell_puts(" B (");
+    put_int_dec(code);  shell_puts(" code, ");
+    put_int_dec(syms);  shell_puts(" syms, ");
+    put_int_dec(relocs); shell_puts(" relocs, ");
+    put_int_dec(text);  shell_puts(" text) + aeabi_div.o\r\n");
 }
 
 /* FMC SDRAM bring-up: init, then prove the whole 32 MB reads back what was
@@ -764,11 +1099,30 @@ static void shell_loop(void) {
         else if (strcmp(argv[0], "cat") == 0 && argc >= 2) {
             cmd_cat(argv[1]);
         }
+        else if (strcmp(argv[0], "sum") == 0 && argc >= 2) {
+            cmd_sum(argv[1]);
+        }
         else if (strcmp(argv[0], "compile") == 0 && argc >= 2) {
             cmd_compile(argv[1]);
         }
         else if (strcmp(argv[0], "run") == 0 && argc >= 2) {
             cmd_run(argv[1]);
+        }
+        else if (strcmp(argv[0], "put") == 0 && argc >= 2) {
+            cmd_put(argv[1]);
+        }
+        else if (strcmp(argv[0], "opt") == 0) {
+            if (argc >= 2) {
+                int v = argv[1][0] - '0';
+                if (v < 0 || v > 2 || argv[1][1] != 0) {
+                    shell_puts("Usage: opt <0|1|2>\r\n");
+                } else {
+                    g_opt_level = v;
+                }
+            }
+            shell_puts("opt level: ");
+            put_int_dec(g_opt_level);
+            shell_puts("\r\n");
         }
         else if (strcmp(argv[0], "echo") == 0 && argc >= 2) {
             shell_puts(argv[1]);
@@ -782,6 +1136,9 @@ static void shell_loop(void) {
         }
         else if (strcmp(argv[0], "build") == 0) {
             cmd_build();
+        }
+        else if (strcmp(argv[0], "runtime") == 0) {
+            cmd_runtime();
         }
         else if (strcmp(argv[0], "sdram") == 0) {
             cmd_sdram();
@@ -925,6 +1282,35 @@ int main(void) {
     MX_USART1_UART_Init();
     MX_SPI1_Init();
     (void)W25Q_Init();
+
+    /* g_config carries the compiler's runtime switches; config_init() fills it
+     * with the defaults this build was configured for.  It was never called
+     * here, so the whole struct sat at zero -- which is not "default", it is
+     * "everything off": a zeroed enable_fpu_hw is why every float and double
+     * on this board went through __aeabi_* soft-float calls (and then failed
+     * to link, because the board has no such runtime), while the same sources
+     * compiled on the host emitted VADD/VMUL.  The STM32 port calls this in
+     * main_stm32.c for exactly the same reason. */
+    config_init();
+
+    /* --reloc-text (0.8.0) on for every object this shell builds.
+     *
+     * It used to be set per command, in `build` and `run` only, so `runtime`
+     * built the AEABI helpers with it OFF -- and that was the one case where
+     * the objects are guaranteed to be displaced: they are linked at
+     * 0x24070000 while every absolute address inside them was computed against
+     * 0x08000000.  Measured, same source, same compiler: with the flag off
+     * aeabi.o is 12607 B (26 syms, 0 relocs) and three double->64-bit cases
+     * return wrong values; with it on, 12833 B (27 syms, 11 .arktext relocs)
+     * and they are correct.  Nothing about the object looks broken either way,
+     * which is why this belongs at startup and not per command. */
+    g_config.enable_reloc_text = 1;
+
+    /* The compiler's work buffers live in SDRAM and are linked UNINIT (no ROM
+     * copy, no startup zeroing -- see the scatter file), so the RAM file slots
+     * arrive full of whatever the DRAM powered up with.  Clearing them here is
+     * what makes "which slots are in use" a fact instead of a leftover. */
+    fs_ram_clear();
 
     /* Fail closed if the console trampoline is not where crt.c calls it:
      * a compiled program would otherwise jump into garbage and the shell

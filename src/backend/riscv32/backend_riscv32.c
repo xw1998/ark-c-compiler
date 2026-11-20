@@ -2641,7 +2641,15 @@ static int rv_emit(IrProgram *prog, char *out, int cap) {
     {
         int n = buf.len;
         int i;
-        if (n + 1 > cap) n = cap - 1;
+        if (n + 1 > cap) {
+            /* A truncated program is an answer nobody asked for:
+             * the text would be cut mid-instruction and the
+             * assembler would report a nonsense mnemonic (measured:
+             * "unknown mnemonic P") instead of "buffer too small".
+             * Refuse, so the driver can name ARK_ASM_BUF_SIZE. */
+            if (cap > 0) out[0] = 0;
+            return -1;
+        }
         for (i = 0; i < n; i++) out[i] = buf.buf[i];
         out[n] = 0;
         return n;

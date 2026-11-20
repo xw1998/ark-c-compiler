@@ -28,14 +28,23 @@ static int       s_table_loaded = 0;
  * it back through fs_read_file().  A bare board has no flash filesystem, so
  * the objects (and the .c / .sct inputs they came from) live in these
  * slots.  Flat names only, RAM first, flash second. */
-#define RAMFS_SLOTS     8
-#define RAMFS_SLOT_SIZE 8192
+/* 32 KB per slot because the AEABI runtime source (stdlib/src/arm/aeabi.c) is
+ * uploaded with `put` and compiled on the board, and it has outgrown the slot
+ * twice: 8.4 KB when the slot was 8 KB, then 17.0 KB once the float <-> double
+ * conversion helpers moved in.  12 slots because a full five-object link
+ * (program, crt, aeabi, aeabi_div + their sources and app.sct) no longer fits
+ * in eight.  The array itself lives in the 32 MB SDRAM via .ark_buf: 12 x 32 KB
+ * is 384 KB of SDRAM, and these slots are read once per compile, not per
+ * instruction.  fs_ram_put() refuses an oversized payload instead of truncating
+ * it, so this limit is a wall and can never be a silent cut. */
+#define RAMFS_SLOTS     12
+#define RAMFS_SLOT_SIZE 32768
 typedef struct {
     char name[24];
     int  len;
     char data[RAMFS_SLOT_SIZE];
 } RamFile;
-static RamFile s_ram[RAMFS_SLOTS];
+__attribute__((section(".ark_buf"))) static RamFile s_ram[RAMFS_SLOTS];
 static int my_streq(const char *a, const char *b);   /* defined below */
 
 void fs_ram_clear(void) {
@@ -57,6 +66,15 @@ const char *fs_ram_name_at(int i) {
 int fs_ram_size_at(int i) {
     if (i < 0 || i >= RAMFS_SLOTS || !s_ram[i].name[0]) return -1;
     return s_ram[i].len;
+}
+
+/* Direct view of a slot's bytes, so the shell can hash an uploaded file
+ * without a second copy: `sum` walks this buffer and prints size+FNV-1a.
+ * A hash is the only way to prove a 12 KB upload arrived byte-for-byte
+ * -- `cat` stops at its 4 KB console buffer. */
+const char *fs_ram_data_at(int i) {
+    if (i < 0 || i >= RAMFS_SLOTS || !s_ram[i].name[0]) return 0;
+    return s_ram[i].data;
 }
 
 static RamFile *ram_find(const char *name) {

@@ -42,7 +42,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -151,6 +151,22 @@ test-partiallink: $(ARKCC)
 # any unit containing inline asm (the pass backs off entirely).
 test-deadinline: $(ARKCC)
 	$(PYTHON) tests/run_deadinline_tests.py ./$(ARKCC)
+
+# A too-small buffer must be named, never silently truncated: the ARM emitter
+# used to hand the assembler the prefix of a 92 KB program, which came back as
+# the board answered 'unknown mnemonic P'.  The sizes are compile-time,
+# so the gate builds cropped copies and requires the diagnostic + no output.
+test-buffers: $(ARKCC)
+	$(PYTHON) tests/run_buffer_tests.py ./$(ARKCC)
+
+# The only gate that *executes* the ARM machine code (unicorn, a QEMU core):
+# every other ARM target checks that the assembly looks plausible and that it
+# assembles, which is exactly the evidence this project does not accept.  The
+# script exits 0 with "skipped" when unicorn is not installed -- the compiler
+# itself must never depend on a Python package to build -- so this target is
+# safe on a bare machine and load-bearing wherever the dependency is present.
+test-arm-exec: $(ARKCC)
+	$(PYTHON) tests/arm_exec/run_arm_exec.py --arkcc ./$(ARKCC)
 
 # Soft-float runtime gates (stdlib/src/arm/aeabi_float.c).  Two independent
 # oracles, because "the algorithm looks right" is not evidence: the host build

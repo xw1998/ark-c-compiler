@@ -48,7 +48,14 @@ LR_IROM1 0x08000000 0x00200000  {
   }
 
   ; The compiler's working set, in the external 32 MB SDRAM.
-  RW_SDRAM 0xC0000000 0x02000000  {
+  ; UNINIT: none of these buffers has an initial value (the arena, the source /
+  ; asm / code / link buffers, the RAM file slots).  Without it armlink copies
+  ; every zero byte into the .hex as initialised RW data -- at a 2 MB arena that
+  ; is 3 MB of load image for a 2 MB flash, so the image would not even fit.
+  ; Nothing here relies on being zeroed at boot: the arena is reset by
+  ; mem_pool_reset() before every use and the RAM slots are cleared by
+  ; fs_ram_clear() at startup.
+  RW_SDRAM 0xC0000000 UNINIT 0x02000000  {
     *(.ark_buf)
   }
 

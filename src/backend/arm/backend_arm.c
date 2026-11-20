@@ -4141,6 +4141,18 @@ static char *codegen_arm(IrProgram *prog) {
 #if ARKCC_FEATURE_FPU_HW
                     if (g_config.enable_fpu_hw) {
                         const char *cond = "EQ";
+                        /* r0 must be cleared after the operands are moved
+                         * into the FPU registers and before VCMP, never
+                         * between VMRS and the IT block: outside an IT block
+                         * `MOV r0, #imm8` assembles to the 16-bit MOVS form and
+                         * would overwrite the flags that VMRS has just loaded
+                         * from FPSCR.  Both halves were measured on the board:
+                         * with the MOV after VMRS every EQ test came out true
+                         * (double_cmp returned 100, not 1001), and with it
+                         * before the POPs r0 still held the low word of the
+                         * left operand, so a *false* compare returned that word
+                         * (7.9 >= 2^63 answered -1717986918 = 0x9999999A, and
+                         * __aeabi_d2lz read it as "too large" and saturated). */
                         if (is_dbl) {
                             emit_line(&buf, "POP {r3}");
                             emit_line(&buf, "POP {r2}");
@@ -4150,15 +4162,16 @@ static char *codegen_arm(IrProgram *prog) {
                             emit_line(&buf, "VMOV s1, r1");
                             emit_line(&buf, "VMOV s2, r2");
                             emit_line(&buf, "VMOV s3, r3");
+                            emit_mov_imm(&buf, 0, 0);
                             emit_line(&buf, "VCMP.F64 d0, d1");
                         } else {
                             emit_pop_r1(&buf); emit_pop_r0(&buf);
                             emit_line(&buf, "VMOV s0, r0");
                             emit_line(&buf, "VMOV s1, r1");
+                            emit_mov_imm(&buf, 0, 0);
                             emit_line(&buf, "VCMP.F32 s0, s1");
                         }
                         emit_line(&buf, "VMRS APSR_nzcv, FPSCR");
-                        emit_mov_imm(&buf, 0, 0);
                         switch (op) {
                             case (int)TOK_EQ: cond = "EQ"; break;
                             case (int)TOK_NE: cond = "NE"; break;
@@ -7223,7 +7236,11 @@ static void emit_bcond_w_a(ArmAsm *a, int cond, int target) {
 static int read_label_name_a(const char **p, char *buf, int cap) {
     int n = 0;
     skip_space_a(p);
-    while (**p && **p != ' ' && **p != '\t' && **p != '\n' && **p != ';' && **p != ',' && n < cap - 1) {
+    /* '\r' is a delimiter too: a CRLF source line ends the symbol here.
+     * Leaving it out put the CR into the name, so a .s file uploaded with
+     * CRLF produced relocations for "sym\r" that no definition matched
+     * (measured on the board: aeabi_div.o referenced "__ark_udiv64\r"). */
+    while (**p && **p != ' ' && **p != '\t' && **p != '\n' && **p != '\r' && **p != ';' && **p != ',' && n < cap - 1) {
         buf[n++] = **p; (*p)++;
     }
     buf[n] = 0;
@@ -7591,6 +7608,7 @@ static void pass2_a(ArmAsm *a) {
                         char sym_name[128];
                         int sn = 0;
                         while (*p && *p != ',' && *p != '\n' &&
+                               *p != '\r' &&
                                *p != ' ' && *p != '\t' &&
                                sn < (int)sizeof(sym_name) - 1) {
                             sym_name[sn++] = *p++;
@@ -7637,6 +7655,7 @@ static void pass2_a(ArmAsm *a) {
                 int sn = 0;
                 skip_space_a(&p);
                 while (*p && *p != ',' && *p != '\n' &&
+                       *p != '\r' &&
                        *p != ' ' && *p != '\t' &&
                        sn < (int)sizeof(sym_name) - 1) {
                     sym_name[sn++] = *p++;
@@ -9250,8 +9269,30 @@ static void pass2_a(ArmAsm *a) {
             out16(a, lo);
         }
         else if (strieq_a(first, "VMRS")) {
-            /* VMRS APSR_nzcv, FPSCR — fixed encoding 0xFEF1FA10 */
-            out16(a, 0xFEF1);
+            /* VMRS APSR_nzcv, FPSCR = 0xEEF1FA10.
+             * The T1 encoding is 1110 1110 1111 0001 1010 0001 1111 1111;
+             * this used to write 0xFEF1 as the first halfword (bit 12 set),
+             * which is not an instruction at all: every float comparison
+             * raised UNDEFINSTR on the board (CFSR=0x00010000 at the VMRS,
+             * measured on the H743 running a double comparison).
+             * Only the APSR form is emitted by this backend, and it is the
+             * only form encoded here: "VMRS Rn, FPSCR" asks for a different
+             * instruction, so it is refused instead of silently rewritten. */
+            char rn_m[32], sys_m[32];
+            rn_m[0] = 0; sys_m[0] = 0;
+            read_label_name_a(&p, rn_m, (int)sizeof(rn_m));
+            if (*p == ',') {
+                p++;
+                read_label_name_a(&p, sys_m, (int)sizeof(sys_m));
+            }
+            if (!strieq_a(rn_m, "APSR_NZCV") || !strieq_a(sys_m, "FPSCR")) {
+                diag_tool(DIAG_SEV_ERROR, "arkcc",
+                          "VMRS is encoded here only as 'VMRS APSR_nzcv, FPSCR'; "
+                          "'VMRS %s, %s' would be a different instruction",
+                          rn_m, sys_m, 0,0,0,0);
+                a->hard_errors++;
+            }
+            out16(a, 0xEEF1);
             out16(a, 0xFA10);
         }
         else if (strieq_a(first, "VNEG") || strieq_a(first, "VABS") ||
@@ -9801,7 +9842,15 @@ static int arm_emit(IrProgram *m, char *out, int cap) {
     char *text = codegen_arm(m);
     int n = ark_strlen(text);
     int i;
-    if (n + 1 > cap) n = cap - 1;
+    if (n + 1 > cap) {
+        /* A truncated program is an answer nobody asked for:
+         * the text would be cut mid-instruction and the
+         * assembler would report a nonsense mnemonic (measured:
+         * "unknown mnemonic P") instead of "buffer too small".
+         * Refuse, so the driver can name ARK_ASM_BUF_SIZE. */
+        if (cap > 0) out[0] = 0;
+        return -1;
+    }
     for (i = 0; i < n; i++) out[i] = text[i];
     out[n] = 0;
     return n;

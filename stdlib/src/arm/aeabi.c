@@ -250,3 +250,247 @@ int __aeabi_ulcmp(unsigned long long a, unsigned long long b)
     if (al > bl) return 1;
     return 0;
 }
+
+/* ==== long long <-> floating point =====================================
+ *
+ * These are not optional on an ARMv7-M: VCVT converts between a
+ * floating-point register and a *32-bit* integer only, so the backend emits
+ * a call for every 64-bit integer / floating-point conversion even when the
+ * FPU is on (see IR_64I2F / IR_64F2I in the ARM backend).  Without them a
+ * perfectly ordinary `long long v = (long long)d;` fails to link, which is
+ * what the H743 gate found.
+ *
+ * Both directions are built from 32-bit halves so that nothing here depends
+ * on a 64-bit integer operation the backend does not already inline.
+ *
+ * Rounding: the AAED specifies round toward zero for the f -> int direction
+ * and round to nearest (ties to even) for the int -> f direction.  The
+ * u64 -> double path below gets the second one for free: 2^32 * hi is exact,
+ * lo is exact, and a single addition rounds the exact sum once.
+ */
+
+/* Unsigned 64 -> double.  Exact inputs, one rounding step: correct. */
+double __aeabi_ul2d(unsigned long long v)
+{
+    u32 hi = hi32(v), lo = lo32(v);
+    double dhi = (double)hi;            /* u32 -> double is exact */
+
+    if (hi == 0) return (double)lo;
+    return dhi * 4294967296.0 + (double)lo;
+}
+
+/* Signed 64 -> double: negate the magnitude, then reuse the unsigned path
+ * (0 - v is the magnitude even for the most negative value, because the
+ * arithmetic is modulo 2^64). */
+double __aeabi_l2d(long long v)
+{
+    if (v < 0) return -__aeabi_ul2d(0ULL - (unsigned long long)v);
+    return __aeabi_ul2d((unsigned long long)v);
+}
+
+/* The float results go through the double path: converting to double first
+ * is exact, so the only rounding is the final one.  That means these need
+ * __aeabi_d2f / __aeabi_f2d, which are defined further down in this same
+ * object -- a flat image takes every byte of every object it links, so an
+ * object that *references* a helper has to *define* it, or every image that
+ * links this file fails to link even when it never converts a float. */
+float __aeabi_ul2f(unsigned long long v)
+{
+    return (float)__aeabi_ul2d(v);
+}
+
+float __aeabi_l2f(long long v)
+{
+    return (float)__aeabi_l2d(v);
+}
+
+/* double (already truncated toward zero) -> unsigned 64.  Splitting at 2^32
+ * keeps every intermediate exact: h = trunc(d / 2^32) < 2^32, h * 2^32 has a
+ * 32-bit significand, and d - h * 2^32 is an exact integer below 2^32. */
+unsigned long long __aeabi_d2ulz(double d)
+{
+    double frac;
+    u32 h, l;
+
+    if (!(d > 0.0))                 /* NaN, +-0, or negative */
+        return 0ULL;
+    if (d >= 18446744073709551616.0) /* 2^64: outside the type */
+        return ~0ULL;
+    if (d < 4294967296.0)           /* whole value fits in the low word */
+        return (unsigned long long)(u32)d;
+    h = (u32)(d / 4294967296.0);
+    frac = d - (double)h * 4294967296.0;
+    l = (u32)frac;
+    return ((unsigned long long)h << 32) | (unsigned long long)l;
+}
+
+/* Signed 64: the unsigned path on the magnitude, then negate.  -2^63 has no
+ * positive counterpart, so it is answered directly. */
+long long __aeabi_d2lz(double d)
+{
+    if (!(d > 0.0)) {
+        if (d == 0.0) return 0;
+        if (!(d < 0.0)) return 0;                        /* NaN */
+        if (d <= -9223372036854775808.0)                 /* -2^63 (and below) */
+            return (long long)0x8000000000000000ULL;
+        return -(long long)__aeabi_d2ulz(-d);
+    }
+    if (d >= 9223372036854775808.0)                      /* 2^63 */
+        return (long long)0x7FFFFFFFFFFFFFFFULL;
+    return (long long)__aeabi_d2ulz(d);
+}
+
+/* float -> 64-bit: widening to double is exact, so it cannot change the
+ * result of the truncating conversion. */
+unsigned long long __aeabi_f2ulz(float f)
+{
+    return __aeabi_d2ulz((double)f);
+}
+
+long long __aeabi_f2lz(float f)
+{
+    return __aeabi_d2lz((double)f);
+}
+
+/* ==== float <-> double ==================================================
+ *
+ * Not here because a hardware-FPU build needs them: with VCVT.F32.F64 /
+ * VCVT.F64.F32 available the backend emits the instruction (`--cpu
+ * Cortex-M7` takes that path, g_arm_fpu_dp).  They are here because the
+ * *software* path -- a single-precision-only FPU, and the host test gate,
+ * which keeps the conservative path because unicorn cannot run FPU
+ * instructions -- emits `BL __aeabi_f2d` / `BL __aeabi_d2f`, and the 64-bit
+ * helpers above go through double: `__aeabi_ul2f` is
+ * `(float)__aeabi_ul2d(v)` and `__aeabi_f2ulz` is
+ * `__aeabi_d2ulz((double)f)`.
+ *
+ * Both functions work on bit patterns only, with no floating-point operation
+ * at all, so a build whose core has no FPU can still execute them:
+ *
+ *   f2d  float -> double is exact (24 significant bits fit in 52) and every
+ *        float is normal in double's exponent window, so this is a field
+ *        shift with no rounding and no overflow.
+ *
+ *   d2f  needs round-to-nearest-even, overflow to infinity and gradual
+ *        underflow into a subnormal float.  The 53-bit significand is
+ *        shifted down to 24 bits with a guard/sticky round; for a subnormal
+ *        result the shift grows by one bit per lost power of two, which
+ *        makes the shifted-out value the integer significand itself.  A
+ *        subnormal *double* is always below the smallest subnormal float, so
+ *        it returns a signed zero.
+ *
+ * Correct rounding here is not cosmetic: `(float)(long long)` goes through
+ * this path, and rounding twice (or truncating) would be a silent wrong
+ * answer, which this project does not ship.
+ */
+typedef union { float f; u32 u; } f32bits;
+typedef union { double d; u64 v; } f64bits;
+
+/* m >> k, rounded to nearest with ties to even.  k >= 1.  The result is a u32
+ * because every caller asks for at most 24 significant bits. */
+static u32 rshift_rne(u64 m, int k)
+{
+    u64 q, half;
+
+    if (k >= 64) {
+        /* Only the leading bit can carry, and only when it is strictly above
+         * the halfway point.  k == 64 with m == 2^63 is an exact tie, which
+         * rounds to the even (zero) result. */
+        return (k == 64 && m > 0x8000000000000000ULL) ? 1u : 0u;
+    }
+    q = m >> k;
+    half = (u64)1 << (k - 1);
+    if ((m - (q << k)) > half || ((m - (q << k)) == half && (q & 1)))
+        q++;
+    return (u32)q;
+}
+
+double __aeabi_f2d(float x)
+{
+    f32bits a;
+    f64bits r;
+    u32 sign, exp, man;
+    int e;
+
+    a.f = x;
+    sign = a.u >> 31;
+    exp  = (a.u >> 23) & 0xFF;
+    man  = a.u & 0x7FFFFF;
+
+    if (exp == 0xFF) {                  /* infinity or NaN: keep the payload */
+        r.v = ((u64)sign << 63) | ((u64)0x7FF << 52) | ((u64)man << 29);
+        return r.d;
+    }
+    if (exp == 0) {
+        if (man == 0) {                 /* +-0 */
+            r.v = (u64)sign << 63;
+            return r.d;
+        }
+        /* Subnormal float: normalise until the hidden bit appears.  The
+         * exponent really does go below 1, and double holds it. */
+        e = 1;
+        while ((man & 0x800000) == 0) { man <<= 1; e--; }
+        man &= 0x7FFFFF;
+    } else {
+        e = (int)exp;
+    }
+    r.v = ((u64)sign << 63) | ((u64)(e + 896) << 52) | ((u64)man << 29);
+    return r.d;
+}
+
+float __aeabi_d2f(double x)
+{
+    f64bits a;
+    f32bits r;
+    u64 sign, exp, man, mant;
+    int e, k;
+    u32 mf;
+
+    a.d = x;
+    sign = a.v >> 63;
+    exp  = (a.v >> 52) & 0x7FF;
+    man  = a.v & 0xFFFFFFFFFFFFFULL;
+
+    if (exp == 0x7FF) {                 /* infinity or NaN */
+        u32 q = (u32)(sign << 31) | 0x7F800000u | (u32)(man >> 29);
+        if (!(man == 0) && (q & 0x7FFFFFFFu) == 0x7F800000u)
+            q |= 0x00400000u;           /* a NaN must stay a NaN */
+        r.u = q;
+        return r.f;
+    }
+    if (exp == 0) {                     /* zero or subnormal double */
+        r.u = (u32)(sign << 31);
+        return r.f;
+    }
+
+    e = (int)exp - 1023;                /* value in [2^e, 2^(e+1)) */
+    mant = man | ((u64)1 << 52);        /* 2^52 <= mant < 2^53 */
+
+    if (e > 127) {                      /* beyond the float range */
+        r.u = (u32)(sign << 31) | 0x7F800000u;
+        return r.f;
+    }
+
+    k = 29;                             /* 52 - 23 bits: 24 to keep */
+    if (e < -126)
+        k += (-126 - e);                /* one more per lost power of two */
+    mf = rshift_rne(mant, k);
+
+    if (e < -126) {
+        /* Subnormal result: mf is the integer significand (no hidden bit).
+         * Rounding up to 0x800000 is the smallest *normal* float, and that
+         * bit pattern is exactly what 0x800000 in this field means. */
+        r.u = (u32)(sign << 31) | (mf & 0xFFFFFFu);
+        return r.f;
+    }
+    if (mf >= 0x01000000u) {            /* rounding carried out of 24 bits */
+        mf >>= 1;
+        e++;
+    }
+    if (e > 127) {                      /* carried all the way to infinity */
+        r.u = (u32)(sign << 31) | 0x7F800000u;
+        return r.f;
+    }
+    r.u = (u32)(sign << 31) | ((u32)(e + 127) << 23) | (mf & 0x7FFFFFu);
+    return r.f;
+}

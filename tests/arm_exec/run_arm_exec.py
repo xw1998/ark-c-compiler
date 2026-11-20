@@ -655,6 +655,150 @@ int ar_pad;\nextern long long __aeabi_lmul(long long, long long);\nextern long l
         "expect": 50,
     },
     {
+        "name": "ptr_llong_arg",
+        "why": "a pointer is ONE stack word and a long long TWO, so passing "
+               "one as a 64-bit argument has to widen it.  sema used to answer "
+               "cast_changes_repr() == 0 for every non-arithmetic type, so no "
+               "cast node was inserted and irgen emitted only an IR_ZEXT, which "
+               "every backend treats as a no-op (it only fixed word *order*, it "
+               "never created the high word).  The call then pushed one word "
+               "while the argument mask said eight bytes, and the callee read a "
+               "stale frame word as the high half -- this case returned 37 on the "
+               "host and on the board instead of 41.  Both shapes are covered: "
+               "f(q) is the pointer argument, g(q) the pointer return.",
+        "files": {
+            "pl.c": STARTUP + """\
+long long f(long long x) { return x + 1; }
+long long g(char *q) { return (long long)q; }
+int g_dummy;
+int main(void)
+{
+    char *p = (char *)0x10;
+    char *q = p + 4;
+    long long a = f(q);
+    long long b = g(q);
+    return (int)(a + b) % 251;
+}
+""",
+        },
+        "build": [(["pl.c", "-target", "arm", "-c", "--vector-table", "-o", "pl.obj"], None),
+                  (["-link", "pl.obj", "--vector-table", "-o", "out.bin"], "out.bin")],
+        "expect": 41,
+    },
+    {
+        "name": "fconv_rne",
+        "why": "float <-> double conversion is the one place a single-precision FPU cannot stand in, so the backend emits BL __aeabi_f2d / __aeabi_d2f and the software path has to round correctly.  __aeabi_d2f is round-to-nearest-even with overflow to infinity and gradual underflow into a subnormal float; this case pins both directions against 74 bit patterns computed independently, including the exact ties at 0x3F800000+1/2 ulp, 0x3F800000+3/4 ulp, 2^-150 (tie to zero) and FLT_MAX+1/2 ulp (tie to infinity).  It also covers the reason the two helpers exist in aeabi.c at all: without them every image that links aeabi.o failed to link with unresolved __aeabi_d2f / __aeabi_f2d, including images that never converted a float.  A mismatch returns 100+i / 200+i, so a partially correct conversion cannot pass by returning 0.",
+        "runtime": True,
+        "files": {
+            "f.c": STARTUP + """\
+struct d2f_case { unsigned long long in; unsigned int want; };
+struct f2d_case { unsigned int in; unsigned long long want; };
+static const struct d2f_case g_d2f[] = {
+    { 0x0000000000000000ULL, 0x00000000UL },
+    { 0x8000000000000000ULL, 0x80000000UL },
+    { 0x3FF0000000000000ULL, 0x3F800000UL },
+    { 0xBFF0000000000000ULL, 0xBF800000UL },
+    { 0x3FE0000000000000ULL, 0x3F000000UL },
+    { 0x3FD5555555555555ULL, 0x3EAAAAABUL },
+    { 0x37A16C262777579CULL, 0x000116C2UL },
+    { 0x47EFFFFFE0000000ULL, 0x7F7FFFFFUL },
+    { 0x7FF0000000000000ULL, 0x7F800000UL },
+    { 0xFFF0000000000000ULL, 0xFF800000UL },
+    { 0x7E37E43C8800759CULL, 0x7F800000UL },
+    { 0xFE37E43C8800759CULL, 0xFF800000UL },
+    { 0x3810000000000000ULL, 0x00800000UL },
+    { 0x36A0000000000000ULL, 0x00000001UL },
+    { 0x3690000000000000ULL, 0x00000000UL },
+    { 0x35F0000000000000ULL, 0x00000000UL },
+    { 0x3FF0000000000001ULL, 0x3F800000UL },
+    { 0x419D6F3454000000ULL, 0x4CEB79A3UL },
+    { 0x3FB999999999999AULL, 0x3DCCCCCDUL },
+    { 0x3696D601AD376AB9ULL, 0x00000001UL },
+    { 0x0000000000000001ULL, 0x00000000UL },
+    { 0x0000000000000001ULL, 0x00000000UL },
+    { 0x7FF8000000000000ULL, 0x7FC00000UL },
+    { 0xFFF8000000000123ULL, 0xFFC00000UL },
+    { 0x3FF0000010000000ULL, 0x3F800000UL },
+    { 0x3FF0000008000000ULL, 0x3F800000UL },
+    { 0x3FF0000018000000ULL, 0x3F800001UL },
+    { 0x4000000010000000ULL, 0x40000000UL },
+    { 0x4000000008000000ULL, 0x40000000UL },
+    { 0x4000000018000000ULL, 0x40000001UL },
+    { 0x36A8000000000000ULL, 0x00000002UL },
+    { 0x36A4000000000000ULL, 0x00000001UL },
+    { 0x36AC000000000000ULL, 0x00000002UL },
+    { 0x380FFFFFE0000000ULL, 0x00800000UL },
+    { 0x380FFFFFD0000000ULL, 0x007FFFFFUL },
+    { 0x380FFFFFF0000000ULL, 0x00800000UL },
+    { 0xBF72B7A88E139873ULL, 0xBB95BD44UL },
+    { 0x3D17008D34DA0937ULL, 0x28B8046AUL },
+    { 0xBEDB2BA07D8F5910ULL, 0xB6D95D04UL },
+    { 0xBA8B86DF90814B94ULL, 0x945C36FDUL },
+    { 0xBBDCA017B9DE3985ULL, 0x9EE500BEUL },
+    { 0xC5F529415140FD36ULL, 0xEFA94A0BUL },
+    { 0x39B323B7E86D98BEULL, 0x0D991DBFUL },
+    { 0xC3C623BEF49CD710ULL, 0xDE311DF8UL },
+    { 0xBE3425F01307636CULL, 0xB1A12F81UL },
+    { 0x3DEFC262C6A942C0ULL, 0x2F7E1316UL },
+    { 0xBDED7CF986ED91F0ULL, 0xAF6BE7CCUL },
+    { 0xB937545231AFA653ULL, 0x89BAA292UL },
+    { 0xB9139C954B789CE1ULL, 0x889CE4AAUL },
+    { 0xC59EB149B3AC1194ULL, 0xECF58A4EUL },
+    { 0xBE7174A3033862C4ULL, 0xB38BA518UL },
+    { 0xB8679C39664DADEBULL, 0x833CE1CBUL },
+    { 0x38F0869B313ABDB5ULL, 0x078434DAUL },
+    { 0x3BA288F058AE8CF5ULL, 0x1D144783UL },
+    { 0xBADBD9F2B327CA2AULL, 0x96DECF96UL },
+    { 0xBCE70B327558D92FULL, 0xA7385994UL },
+    { 0xBA282FB585EE5AE0ULL, 0x91417DACUL },
+    { 0x3C32521A2358FCE0ULL, 0x219290D1UL },
+    { 0x3B27271D940DEC6FULL, 0x193938EDUL },
+    { 0xB95D221F91198D6AULL, 0x8AE910FDUL },
+};
+static const struct f2d_case g_f2d[] = {
+    { 0x00000000UL, 0x0000000000000000ULL },
+    { 0x80000000UL, 0x8000000000000000ULL },
+    { 0x3F800000UL, 0x3FF0000000000000ULL },
+    { 0xBF800000UL, 0xBFF0000000000000ULL },
+    { 0x00000001UL, 0x36A0000000000000ULL },
+    { 0x007FFFFFUL, 0x380FFFFFC0000000ULL },
+    { 0x00800000UL, 0x3810000000000000ULL },
+    { 0x7F800000UL, 0x7FF0000000000000ULL },
+    { 0xFF800000UL, 0xFFF0000000000000ULL },
+    { 0x7FC00000UL, 0x7FF8000000000000ULL },
+    { 0x3F8CCCCDUL, 0x3FF19999A0000000ULL },
+    { 0x4B000000UL, 0x4160000000000000ULL },
+    { 0x4EFFFFFFUL, 0x41DFFFFFE0000000ULL },
+    { 0x33D6BF95UL, 0x3E7AD7F2A0000000ULL },
+};
+
+typedef union { double d; unsigned long long u; } dbits;
+typedef union { float f; unsigned int u; } fbits;
+
+int main(void)
+{
+    int i;
+    dbits x;
+    fbits y;
+
+    for (i = 0; i < (int)(sizeof(g_d2f) / sizeof(g_d2f[0])); i++) {
+        x.u = g_d2f[i].in;
+        y.f = (float)x.d;
+        if (y.u != g_d2f[i].want) return 100 + i;
+    }
+    for (i = 0; i < (int)(sizeof(g_f2d) / sizeof(g_f2d[0])); i++) {
+        y.u = g_f2d[i].in;
+        x.d = (double)y.f;
+        if (x.u != g_f2d[i].want) return 200 + i;
+    }
+    return 0;
+}
+""",
+        },
+        "build": link_with_runtime("f.c", "f.obj"),
+        "expect": 0,
+    },
+    {
         "name": "setjmp_longjmp",
         "why": "setjmp/longjmp as real Thumb-2 functions assembled from a .s "
                "object (stdlib/src/arm/setjmp.s).  A C wrapper cannot capture "

@@ -33,7 +33,14 @@
  * Override via -DPP_INC_BUF=<bytes> if a larger header is needed. */
 #ifndef PP_INC_BUF
 # if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
-#   define PP_INC_BUF  (8 * 1024)         /* 8 KB per include for STM32 (was 16K to fit 512KB AXI) */
+#   define PP_INC_BUF  (16 * 1024)        /* 16 KB per include for STM32.
+                                           * The 8 KB this used to be was sized for the
+                                           * old layout, where these buffers lived in the
+                                           * 512 KB AXI SRAM; they sit in the 32 MB SDRAM
+                                           * now, so the cost is 8 depth levels * 16 KB of
+                                           * UNINIT SDRAM and no flash.  8 KB could not
+                                           * hold the compiler's own <stdarg.h> (9.8 KB),
+                                           * so a self-hosted build could not include it. */
 # else
 #   define PP_INC_BUF  (1024 * 1024)      /* 1 MB per include for host */
 # endif

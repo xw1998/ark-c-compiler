@@ -630,6 +630,7 @@ ark c compiler/
 ├── docs/IPO_LTO.md         Whole-program compilation (--ipo / -flto) and cross-TU constant propagation (--const-global): why it is not object-level LTO, merge semantics, refused combinations, cropping, gates (Chinese, UTF-8)
 ├── docs/OBJ_IR.md         An IR payload in the object and link-time recompilation (--obj-ir / -link --lto): payload format, pool remapping on merge, byte equivalence, refusals and diagnostics, cropping, gate (Chinese, UTF-8)
 ├── docs/PARTIAL_LINK.md   Partial link (-r): machine code wins, symbol/relocation rebasing, data never moved, three refusals, substitutability and idempotence, cropping, gate (Chinese, UTF-8)
+├── docs/BOARD_VALIDATION.md  On-board full validation (the 0.9.0 criterion): 54 cases x three levels, measured readings, the gate's own self-check and every root cause (Chinese, UTF-8)
 ├── docs/从零写一个C编译器.md  Textbook-style walkthrough: 19 chapters, from 30 lines to 30 000 (Chinese, UTF-8)
 ├── docs/from-scratch-c-compiler.en.md  English summary of that textbook (structure, chapter map, reading routes)
 └── README.md               Project overview (Chinese, UTF-8)
@@ -1038,7 +1039,10 @@ See [docs/MANUAL.en.md](docs/MANUAL.en.md) for the full manual.
 
 ## Version history
 
-- v0.8.7: **whole-program compilation** `--ipo` (alias `-flto`, `docs/IPO_LTO.en.md`). One invocation
+- v0.9.0: **the stable release** -- "what this compiler can do" stops being "the assembly looks right" and becomes "the return value the board computed is right".  New board gate `tests/run_stm32_board_tests.py`: 54 cases x `-O0/-O1/-O2` = 162 rounds of "compile on the board -> link -> load -> execute -> read the return value", measured **162/162** on an STM32H743 (about 956 s), with the gate carrying its own anti-false-green self-check; criterion, coverage table and every root cause are in [`docs/BOARD_VALIDATION.en.md`](docs/BOARD_VALIDATION.en.md).
+  Three classes of defect that would have made "stable" a claim rather than a fact were fixed in the same cycle: (1) **silent truncation on buffer overrun** -- all four back ends (arm / c / riscv32 / x86_64) used to truncate an oversized assembly buffer at `%.*s` and emit anyway, and now **refuse** by name; the STM32 profile's `ARK_SRC_BUF_SIZE` / `ARK_ASM_BUF_SIZE` went to 32 KB / 256 KB, and `make test-buffers` (7 checks) guards it; (2) the board's `link` fails loudly on an undefined symbol (`app.bin: Error: unresolved symbol "nope"`, `link failed: -8`) instead of quietly producing an image that jumps into the vector table; (3) three wrong readings inside the gate itself -- `fconv_rne` treated `FLT_MAX` as an overflow (the expected bit pattern is `0x47EFFFFFF0000000`), the return-value regex accepted half a number (`11` read as `1`, `68` read as `6`; the pattern now carries the line terminator), and a dropped UART had no recovery path (reset + retry, recorded as `[board] note:` rather than silently promoted to a pass).
+  This release contains everything that was staged as v0.8.7-wip: `--ipo` whole-program compilation and `--const-global` cross-TU constant propagation (next bullet).
+- v0.8.7 (never released on its own; this entry ships as part of v0.9.0): **whole-program compilation** `--ipo` (alias `-flto`, `docs/IPO_LTO.en.md`). One invocation
   takes several `.c` files; each still runs through the frontend on its own (its `static` stays its
   own), and the IR is **appended** into one `IrProgram`, after which the pipeline runs **once** and code
   is generated once. Not object-level LTO because `ARKOBJ2` objects carry no IR: real LTO would add an

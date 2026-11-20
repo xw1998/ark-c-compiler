@@ -338,7 +338,7 @@
             <v6Rtti>0</v6Rtti>
             <VariousControls>
               <MiscControls></MiscControls>
-              <Define>USE_HAL_DRIVER,STM32H743xx,ARK_TARGET_STM32H7,ARKCC_PROFILE=ARKCC_PROFILE_STM32_MIN</Define>
+              <Define>USE_HAL_DRIVER,STM32H743xx,ARK_TARGET_STM32H7,ARKCC_PROFILE=ARKCC_PROFILE_STM32_MIN,ARK_POOL_SIZE=2097152</Define>
               <Undefine></Undefine>
               <IncludePath>..\..\include;..\..\stdlib\include;.\User\Inc;.\Drivers\CMSIS\Device\ST\STM32H7xx\Include;.\Drivers\CMSIS\Include;.\Drivers\STM32H7xx_HAL_Driver\Inc;.\RTE\_ArkCC</IncludePath>
             </VariousControls>

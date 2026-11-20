@@ -191,11 +191,28 @@ void ark_log(const char *fmt, ...) {
     uart_puts(buf);
 }
 
+/* Recovery point for ark_abort().  A compiler that runs inside a shell must
+ * not take the shell down with it: the arena running out used to print the
+ * message and then hang the firmware for good, so the only way back was the
+ * reset button -- and the console said nothing about what had happened.  The
+ * caller arms a jmp_buf around the compile; ark_abort() reports and returns
+ * there.  Unarmed (no shell, or a fault outside a compile) it still hangs,
+ * which is the old behaviour and the right one for an unhandled abort. */
+#include <setjmp.h>
+static jmp_buf *g_abort_jb = 0;
+void ark_abort_arm(jmp_buf *jb) { g_abort_jb = jb; }
+void ark_abort_disarm(void) { g_abort_jb = 0; }
+
 void ark_abort(const char *msg) {
     if (msg) uart_puts(msg);
     uart_puts("\r\n[arkcc] FATAL: aborting\r\n");
+    if (g_abort_jb) {
+        jmp_buf *jb = g_abort_jb;
+        g_abort_jb = 0;
+        longjmp(*jb, 1);
+    }
     for (;;) {
-        /* hang forever */
+        /* hang forever: nothing on this board can resume an unarmed abort */
     }
 }
 

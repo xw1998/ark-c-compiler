@@ -361,7 +361,22 @@ Type *usual_arith_conv(Type *lt, Type *rt) {
 static int cast_changes_repr(Type *src, Type *dst) {
     int src_float, dst_float;
     if (!src || !dst) return 0;
-    if (!type_is_arith(src) || !type_is_arith(dst)) return 0;
+    if (!type_is_arith(src) || !type_is_arith(dst)) {
+        /* A pointer is not arithmetic, but pointer -> integer is still a
+         * *width* change on a 32-bit target.  `long long f(long long);
+         * f(p);` needs the value widened to two words: without a cast node
+         * irgen emitted only its IR_ZEXT marker, which every machine
+         * backend treats as a no-op (it only ever fixed word *order*), so
+         * the call pushed one word while the argument mask said eight bytes
+         * and the callee read a stale frame word as the high half.
+         * Measured on ARM: f((char *)0x14) returned 37 instead of 41, and
+         * the same shape fed a 64-bit divide.  Narrowed to pointer ->
+         * integer so pointer -> pointer, array decay and composite casts
+         * keep the old address-pass behaviour (no cast node, no new IR). */
+        if (src && dst && src->kind == TYPE_PTR && type_is_integer(dst))
+            return type_size(src) != type_size(dst);
+        return 0;
+    }
     src_float = (src->kind == TYPE_FLOAT || src->kind == TYPE_DOUBLE);
     dst_float = (dst->kind == TYPE_FLOAT || dst->kind == TYPE_DOUBLE);
     if (src_float && !dst_float) return 1;        /* float -> int */

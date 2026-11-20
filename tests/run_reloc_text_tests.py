@@ -97,6 +97,25 @@ SRC_SCT = ('LR_APP 0x24070000 0x0000F000 {\n'
 LIT0 = b'written by arkcc running on the STM32H743 itself\r\n'
 LIT1 = b'runtime message from object #1\r\n'
 
+
+# A CRLF assembly input and a C caller for it.  The assembler reads .s line by
+# line, so a symbol or section name has to stop at the CR that ends a CRLF
+# line.  When it did not, the object carried "asm_crlf\r" as the name and the
+# link could not resolve the caller's "asm_crlf" -- a CRLF source file looked
+# like a missing symbol, which is the least debuggable shape of this bug.
+CRLF_LINES = [
+    '@ CRLF line endings on purpose: every name ends at the CR',
+    '    .syntax unified',
+    '    .text',
+    '    .global asm_crlf',
+    'asm_crlf:',
+    '    mov r0, #7',
+    '    bx lr',
+]
+CRLF_S = '\r\n'.join(CRLF_LINES) + '\r\n'
+CRLF_CALLER = ('extern int asm_crlf(void);\n'
+               'int main(void) { return asm_crlf(); }\n')
+
 failures = []
 
 
@@ -215,6 +234,11 @@ def main():
             with open(os.path.join(work, name), 'w', newline='') as f:
                 f.write(text)
 
+        with open(os.path.join(work, 'crlf.s'), 'w', newline='') as f:
+            f.write(CRLF_S)
+        with open(os.path.join(work, 'crlf_main.c'), 'w', newline='') as f:
+            f.write(CRLF_CALLER)
+
         on0, on1, on_img, on_log = build(arkcc, work, True)
         off0, off1, off_img, off_log = build(arkcc, work, False)
 
@@ -271,6 +295,30 @@ def main():
         check('[link] warning:' not in on_log,
               'link with --reloc-text stays quiet',
               (on_log.strip().splitlines() or [''])[-1][:90])
+
+        # 4d. CRLF assembly input: the names in the object must not carry the
+        #     CR of a CRLF line, and the link must resolve the reference.  The
+        #     byte assertions are the direct evidence -- a name ending in '\r'
+        #     is invisible in the source and fatal in the link.
+        rc, log = run(arkcc, ['-c', 'crlf.s', '-o', 'crlf.o',
+                              '-target', 'arm'], work)
+        check(rc == 0, 'CRLF .s assembles',
+              (log.strip().splitlines() or [''])[-1][:90])
+        crlf_obj = b''
+        if rc == 0:
+            crlf_obj = open(os.path.join(work, 'crlf.o'), 'rb').read()
+        check(b'asm_crlf' in crlf_obj, 'CRLF object defines asm_crlf')
+        check(b'asm_crlf\r' not in crlf_obj,
+              'no symbol name carries the CR of a CRLF line')
+        check(b'\x00\r\x00' not in crlf_obj,
+              'no NUL-delimited name in the object ends in CR')
+        rc, log = run(arkcc, ['-c', 'crlf_main.c', '-o', 'crlf_main.o',
+                              '-target', 'arm', '--vector-table'], work)
+        if rc == 0:
+            rc, log = run(arkcc, ['-link', 'crlf_main.o', 'crlf.o',
+                                  '-o', 'crlf.bin', '--vector-table'], work)
+        check(rc == 0, 'the CRLF object links against a C caller',
+              (log.strip().splitlines() or [''])[-1][:90])
 
         # 5. the pass rewrites immediates, it does not move anything
         check(len(on_img) == len(off_img), 'image size unchanged by the pass',

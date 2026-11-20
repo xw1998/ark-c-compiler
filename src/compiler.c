@@ -3288,7 +3288,25 @@ int ark_emit_program(const ArkOptions *opts, IrProgram *ir, const ArkBackend *be
     {
         int diag_before_codegen = diag_errors();
         asm_len = be->emit_asm(ir, g_asm, ARK_ASM_BUF_SIZE);
-        if (asm_len < 0) return ARK_ERR_CODEGEN;
+        if (asm_len < 0) {
+            /* Every backend returns -1 when the whole program does not
+             * fit the buffer instead of handing back the prefix: a cut
+             * text used to reach the assembler, which answered with a
+             * nonsense mnemonic ("unknown mnemonic P") and left the
+             * reader hunting a frontend bug.  Name the real knob. */
+            if (diag_errors() == diag_before_codegen) {
+                char b1[12];
+                diag_tool(DIAG_SEV_ERROR, opts->input_path,
+                          "the %s backend's output is larger than the "
+                          "%s-byte assembly buffer (ARK_ASM_BUF_SIZE); "
+                          "rebuild with a bigger buffer -- nothing was "
+                          "written, because the text would have been cut "
+                          "mid-instruction",
+                          be->name, diag_num(b1, ARK_ASM_BUF_SIZE),
+                          0,0,0,0);
+            }
+            return ARK_ERR_CODEGEN;
+        }
         if (diag_errors() > diag_before_codegen) {
             if (g_config.scatter_file && g_config.scatter_file[0]) {
                 /* Factual, no blame: this branch runs on ANY codegen error, and
