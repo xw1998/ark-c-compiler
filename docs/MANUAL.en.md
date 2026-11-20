@@ -2548,7 +2548,10 @@ limitations below remain:
   still never links it implicitly**. Still built in:
   `__aeabi_memcpy` (struct assignment/argument passing/array initialisation all use it, and a freestanding
   target has no libc `memcpy`); 64-bit **add/sub** is inlined (ARM `ADDS/ADCS`, RV `sltu` carry chain) and
-  needs no library. Hardware FPU mode (ARM `--fpu=hard`) replaces soft float with
+  needs no library. 0.8.7 closed the one path that bypassed it: a block-scope `char a[] = "..."` and a
+  string literal filling a char-array *member* of a local aggregate used to emit a real `BL memcpy`, which
+  links on the host and fails on a freestanding target with `unresolved symbol "memcpy"`; both now go
+  through `IR_MEMCPY` (gate: `tests/run_str_init_tests.py`, which links with no runtime object at all). Hardware FPU mode (ARM `--fpu=hard`) replaces soft float with
   `VADD/VMUL/VCVT/VCMP`, and that dependency disappears as well.
 - **RV32I inline assembly, `__svc`/`__smc`, and packed-lane arithmetic**: `asm("...")` is emitted as-is, and
   in the extended form (`asm("t" : outs : ins : clobbers)`) `%0..%3` become `a0..a3` (`r0..r3` on ARM) —

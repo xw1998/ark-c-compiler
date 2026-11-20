@@ -1886,14 +1886,19 @@ static void irgen_local_store_str_lit(IrGen *g, int off, Type *arr_t, AstNode *v
     int arr_len = (arr_t && arr_t->size > 0) ? arr_t->size : slen + 1;
     int copy_n = slen + 1;
     if (copy_n > arr_len) copy_n = arr_len;
-    ir_emit(g->fn, IR_PUSH_INT, copy_n, 0, 0);
+    /* IR_MEMCPY, not IR_CALL "memcpy": a freestanding target has no libc.
+     * The ARM backend emits its own __aeabi_memcpy for IR_MEMCPY, while
+     * a plain call to memcpy stays an undefined symbol -- measured:
+     * `char a[] = "hello";` inside a function failed to link with
+     * "unresolved symbol memcpy" on ARM and RV32I.  Stack form is
+     * [src, dst] with the byte count in val; n is a compile-time
+     * constant at every call site here. */
     {
         int id = ir_program_add_string(g->prog, s, slen);
         ir_emit(g->fn, IR_PUSH_STR, id, s, 0);
     }
     ir_emit(g->fn, IR_PUSH_ADDR, off, 0, 0);
-    ir_emit(g->fn, IR_CALL, 3, "memcpy", 0);
-    ir_emit(g->fn, IR_POP, 0, 0, 0);
+    ir_emit(g->fn, IR_MEMCPY, copy_n, 0, 0);
 }
 
 /* Block-scope aggregate initialiser.
@@ -2559,15 +2564,16 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
                         ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
                         ir_emit(g->fn, IR_STORE, off + kk, 0, 4);
                     }
-                    /* push n, src, dst (the last push becomes arg0 = dst) */
-                    ir_emit(g->fn, IR_PUSH_INT, copy_n, 0, 0);
+                    /* push src, dst; IR_MEMCPY takes the byte count from
+                     * val.  A plain IR_CALL "memcpy" left an undefined
+                     * symbol on freestanding targets (see
+                     * irgen_local_store_str_lit above). */
                     {
                         int id = ir_program_add_string(g->prog, s2, slen);
                         ir_emit(g->fn, IR_PUSH_STR, id, s2, 0);
                     }
                     ir_emit(g->fn, IR_PUSH_ADDR, off, 0, 0);
-                    ir_emit(g->fn, IR_CALL, 3, "memcpy", 0);
-                    ir_emit(g->fn, IR_POP, 0, 0, 0);
+                    ir_emit(g->fn, IR_MEMCPY, copy_n, 0, 0);
                 } else if (node->u.var.var_type &&
                            (node->u.var.var_type->kind == TYPE_STRUCT ||
                             node->u.var.var_type->kind == TYPE_UNION)) {

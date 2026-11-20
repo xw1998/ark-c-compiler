@@ -42,7 +42,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-softfloat
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-softfloat
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -165,6 +165,15 @@ test-softfloat: $(ARKCC)
 	    tests/softfloat_ref.c stdlib/src/arm/aeabi_float.c -o build_softfloat_tests/sf_ref$(EXE)
 	./build_softfloat_tests/sf_ref$(EXE)
 	$(PYTHON) tests/run_arm_softfloat_tests.py --arkcc ./$(ARKCC)
+# Gate for a block-scope string literal initialiser on a freestanding target:
+# `char a[] = "hello";` used to lower to a real `IR_CALL "memcpy"`, which links
+# on the host (libc) and fails on a freestanding ARM/RV32I target with
+# "unresolved symbol memcpy".  The programs here link with no runtime object
+# at all, run on the emulator, and a planted libc call proves the detector has
+# a positive sample.
+test-strinit: $(ARKCC)
+	$(PYTHON) tests/run_str_init_tests.py --arkcc ./$(ARKCC)
+
 # Library gate: every stdlib entry point is compiled and run on the ARM
 # emulator, and each case asserts a number the program itself computed.  A
 # case that needs hardware the emulator does not have (double-precision FPU)
