@@ -220,7 +220,7 @@ implementation truncated it to `0x004CA300` here.
 ```
 make test-atomic PYTHON="<path-to-python>"
 python tests/run_atomic_tests.py --arkcc ./arkcc.exe
-python tests/arm_exec/run_arm_exec.py            # needs unicorn; 29 cases in total
+python tests/arm_exec/run_arm_exec.py            # needs unicorn; 33 cases in total
 ```
 
 ## 7. Registered limitations (written boundaries, not TODOs)

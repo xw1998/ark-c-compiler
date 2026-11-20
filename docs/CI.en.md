@@ -49,7 +49,7 @@ its own.
 | `test-riscv` | same with `-target riscv32` | arkcc only |
 | `test-stdlib` | 21 standard-library cases: compile → multi-object link → **really run** `main()` on unicorn's ARM M core | unicorn |
 | `test-install` | `make install` into a temporary DESTDIR; byte comparison, a second run changing no mtime, `--dry-run` writing nothing, absolute PREFIX + DESTDIR rejected; then a program built from the **installed tree** must print 181 | unicorn |
-| `test-reloc-text` | two objects are moved 0x1C070000 away from the address they were compiled for and string literals must still point at themselves; turning `--reloc-text` off must fall back to the old (wrong) address | arkcc only |
+| `test-reloc-text` | two objects are moved 0x1C070000 away from the address they were compiled for and string literals must still point at themselves; turning `--reloc-text` off must fall back to the old (wrong) address and the link must print one named `[link] warning` (and stay quiet with the flag on) | arkcc only |
 | `test-x86-64` | 35 programs compiled into flat 0x400000 images and run on a 64-bit unicorn core by calling `main`, each asserting a constant computed outside the program; every program is compiled a second time for 32-bit i386 and run again, and a mismatch FAILS; includes "an unresolved symbol must be rejected without leaving an image" and "an expectation off by +1 must be judged DIFF" | unicorn |
 | `test-atomic` | `_Atomic` / `<stdatomic.h>` gate across five targets: exactly one target-identity macro, the 11 atomic operations must be compile-time errors on the four non-ARM targets with no artifact left behind, `atomic_init` must compile everywhere; the tail self-check requires the same source to be *not* rejected on arm | arkcc only |
 

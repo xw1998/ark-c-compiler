@@ -1268,9 +1268,20 @@ That error is valuable: the corresponding bad image shows up on hardware as `CFS
 `MMFAR=0x20000000` on the first write to a global. **It is only caught when exactly one object carries
 RAM** (when both do, the overlap check already fails first), which is precisely the easiest case to miss.
 
-The default values of the on-board `cc` follow the command line: whenever `-link` or `--scatter` appears,
-`--reloc-data` / `--reloc-text` are **on** by default; `--no-reloc-data` / `--no-reloc-text` revert to the
-old output.
+On the arkcc command line both switches default to **off** (with them off the output is byte-identical to
+the old behaviour), so the example above must spell them out; `--no-reloc-data` / `--no-reloc-text` only
+turn an already enabled switch back off. Forgetting one does not make the linker guess -- the addresses
+stay where they were compiled for:
+
+- with `--reloc-text` off and an object placed at a non-zero base, `-link` prints
+  `[link] warning: N object(s) are placed at a different address than they were compiled for ...`
+  (new in 0.8.7). The measured wrong answer behind that warning: two objects where the second holds
+  `const char *a = "abc"; return a[0] - 80;` returns -22 without `--reloc-text` and the correct 17 with
+  it, with no other diagnostic in between. Read the warning as "the linker cannot check this", not
+  as "the address is certainly wrong": objects compiled with the same `--scatter` the link uses already
+  hold the right addresses, and the warning only says the linker has no evidence either way.
+- the on-board `cc`'s `build` / `run` subcommands turn `--reloc-text` on themselves (see
+  `mdk/STM32H743_ArkCC/User/main.c`), so that path needs no flag; the host tool has no such default.
 
 ### 5.9 Intra-procedural memory lint (`--warn-mem`)
 

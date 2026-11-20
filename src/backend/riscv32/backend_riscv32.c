@@ -3103,7 +3103,13 @@ static void rv_insn(RvAsm *a, const char **pp) {
         {"sltu",0x3,0x00},{"xor",0x4,0x00},{"srl",0x5,0x00},{"sra",0x5,0x20},
         {"or",0x6,0x00},{"and",0x7,0x00},
         {"mul",0x0,0x01},{"div",0x4,0x01},{"divu",0x5,0x01},
-        {"rem",0x6,0x01},{"remu",0x7,0x01}
+        {"rem",0x6,0x01},{"remu",0x7,0x01},
+        /* RV32M high-half multiplies. IR_64BINARY TOK_MUL emits
+         * `mulhu` for the carry out of the low 32x32 product, so an
+         * assembler without it refused every 64-bit multiply in the
+         * whole language ("unknown riscv32 mnemonic").  All three are
+         * R-type with funct7=0000001; only funct3 differs. */
+        {"mulh",0x1,0x01},{"mulhsu",0x2,0x01},{"mulhu",0x3,0x01}
     };
     static const struct { const char *n; int f3; } itab[] = {
         {"addi",0x0},{"slti",0x2},{"sltiu",0x3},{"xori",0x4},

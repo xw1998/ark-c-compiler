@@ -1075,8 +1075,18 @@ object #0 puts .data/.bss at 0x20000000 but the scatter file puts RW at 0x240720
 `MMFAR=0x20000000`。**只在只有一个对象带 RAM 时**它才抓得到（两个对象都带时，重叠检查
 本来就会先报错），恰好是最容易漏的一种。
 
-板端 `cc` 的默认值跟着命令行走：只要出现 `-link` 或 `--scatter`，`--reloc-data` /
-`--reloc-text` 默认**打开**；`--no-reloc-data` / `--no-reloc-text` 退回旧输出。
+这两个开关在 arkcc 命令行上默认**关闭**（关掉时产物逐字节不变，即旧行为），上面的例子里必须
+显式写上；`--no-reloc-data` / `--no-reloc-text` 只是把已经打开的开关再关回去。忘带的后果
+不是「链接器替你猜」，而是地址留在编译期那个位置：
+
+- `--reloc-text` 没带、而某个对象又被放到非 0 基址时，`-link` 会打印
+  `[link] warning: N object(s) are placed at a different address than they were compiled for ...`
+  （0.8.7 新增）。这条警告对应的实测坏答案：两个对象链接、其中第二个写着
+  `const char *a = "abc"; return a[0] - 80;`，不带 `--reloc-text` 返回 -22，带上返回正确的 17 —— 
+  中间没有任何别的诊断。这条警告读作「链接器无法核对」而不是「地址一定错」：如果每个对象本来就是
+  按链接时那份 `--scatter` 编的，它们烤进去的地址已经是对的，警告只是说链接器没有依据去证明这一点。
+- 板端 `cc` 的 `build` / `run` 子命令自己会把 `--reloc-text` 打开（见
+  `mdk/STM32H743_ArkCC/User/main.c`），所以板上那条路不需要手敲；宿主机上没有这个默认。
 
 ### 5.9 函数内内存 lint（`--warn-mem`）
 

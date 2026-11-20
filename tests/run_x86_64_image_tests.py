@@ -96,6 +96,33 @@ unsigned long long udiv(unsigned long long a, unsigned long long b){ return a/b;
 int main(void){ return (int)(udiv(0xFFFFFFFFFFFFFF00ULL, 1000ULL) % 251); }
 """, 74, "unsigned 64-bit division, high word matters"),
 
+    # Four integer corners taken from the four-backend differential battery.
+    # Each one also runs on i386 as the reference arm, so a backend that starts
+    # disagreeing here is caught by the same case list.
+    ("promo_uchar",
+     """
+int main(void) { unsigned char a = 200, b = 100; int s = a + b;
+  return (s == 300) ? 3 : 44; }
+""", 3, "unsigned char promotes unsigned, not signed char (would give 44)"),
+
+    ("neg_div",
+     """
+int main(void) { int a = -7, b = 2;
+  return (a / b) * 10 + (a % b) + 60; }
+""", 29, "C99 6.5.5p6 truncates toward zero: -3*10 + (-1) + 60"),
+
+    ("ptr_diff",
+     """
+int main(void) { int a[10]; int *p = &a[2], *q = &a[7];
+  return (int)(q - p) * 10 + (int)(p < q); }
+""", 51, "pointer difference in elements (5), then an unsigned compare"),
+
+    ("bitfield_neg",
+     """
+struct B { int a : 3; };
+int main(void) { struct B x; x.a = -1; return (x.a == -1) ? 7 : 8; }
+""", 7, "a 3-bit signed field sign-extends back to -1"),
+
     ("struct_ll_field",
      """
 struct S { int a; int b; long long c; };

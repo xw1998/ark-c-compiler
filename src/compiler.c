@@ -2929,6 +2929,42 @@ int ark_compile(const ArkOptions *opts) {
                     if (ld_relocate_text(out_buf, out_len, flash_base) != 0) {
                         return ARK_ERR_LINK;
                     }
+                } else {
+                    /* The switches are OFF by default and the "old" addresses
+                     * are a documented fallback, so this cannot be an error.
+                     * It still must be said out loud: an object that was
+                     * assembled for a base it no longer sits at keeps every
+                     * MOVW/MOVT pair it baked for its own labels (a string
+                     * literal, a function-pointer constant) pointing at the
+                     * old place.  Object #0 is the only one whose base does
+                     * not move; every later object is suspect.  Measured:
+                     * `const char *a = "abc"; return a[0] - 80;` linked as
+                     * two objects without --reloc-text returns -22 instead of
+                     * 17, with no other diagnostic.  RV32 references are all
+                     * PC-relative, so the warning does not apply there. */
+                    int moved_no_base = 0;
+                    int wi;
+                    if (!ld_isa_rv32) {
+                        for (wi = 1; wi < opts->link_input_count && wi < LD_MAX_OBJS; wi++) {
+                            if (g_ld_code_base[wi] != 0 && !g_ld_have_text_base[wi])
+                                moved_no_base++;
+                        }
+                    }
+                    if (moved_no_base > 0) {
+                        char b1[12];
+                        ark_log("[link] warning: %s object(s) are placed at a "
+                                "different address than they were compiled for "
+                                "and carry no --reloc-text sites, so the linker "
+                                "cannot check the absolute addresses baked into "
+                                "them (a string literal, a function-pointer "
+                                "constant); a stale one still points at the old "
+                                "location. If the objects were compiled with the "
+                                "same --scatter the link uses, their addresses "
+                                "are already right and this warning is harmless. "
+                                "Pass --reloc-text to every compile and to the "
+                                "link (MANUAL 5.8).\n",
+                                diag_num(b1, moved_no_base));
+                    }
                 }
             }
             /* Resolve cross-object relocations via find_global (strong > weak).

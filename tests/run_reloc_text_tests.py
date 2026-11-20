@@ -166,7 +166,7 @@ def build(arkcc, where, reloc_text, scatter=True):
     obj0 = open(os.path.join(where, 'hello.o'), 'rb').read()
     obj1 = open(os.path.join(where, 'crt.o'), 'rb').read()
     img = open(os.path.join(where, 'app.bin'), 'rb').read()
-    return obj0, obj1, img
+    return obj0, obj1, img, log
 
 
 def refuse(arkcc, where):
@@ -215,8 +215,8 @@ def main():
             with open(os.path.join(work, name), 'w', newline='') as f:
                 f.write(text)
 
-        on0, on1, on_img = build(arkcc, work, True)
-        off0, off1, off_img = build(arkcc, work, False)
+        on0, on1, on_img, on_log = build(arkcc, work, True)
+        off0, off1, off_img, off_log = build(arkcc, work, False)
 
         # 1. the descriptor is what makes the correction possible at all
         check(b'__arkcc_text_base' in on0, 'object carries __arkcc_text_base '
@@ -257,6 +257,20 @@ def main():
         check(refuse_rc != 0 and 'puts .data/.bss at' in refuse_log,
               'link refuses objects compiled for another layout',
               (refuse_log.strip().splitlines() or [''])[-1][:90])
+
+        # 4c. switching the flag off must not be silent.  The image above is
+        #     the one that still holds object #1's stale literal address, and
+        #     "an address that points at the old location" is exactly what the
+        #     user cannot see: it links, it runs, it returns a wrong answer.
+        #     So the link prints one named warning, and the same link with the
+        #     flag prints nothing (no warning on the repaired path, or the
+        #     warning would become noise that everybody learns to ignore).
+        check('[link] warning:' in off_log and '--reloc-text' in off_log,
+              'link without --reloc-text warns about the stale addresses',
+              (off_log.strip().splitlines() or [''])[-1][:90])
+        check('[link] warning:' not in on_log,
+              'link with --reloc-text stays quiet',
+              (on_log.strip().splitlines() or [''])[-1][:90])
 
         # 5. the pass rewrites immediates, it does not move anything
         check(len(on_img) == len(off_img), 'image size unchanged by the pass',

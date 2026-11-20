@@ -418,7 +418,7 @@ Plus three further stages that make those PASSes mean something:
 - **selfcheck**: one case is re-run with an "expectation + 1" and must be judged DIFF. A harness that
   cannot detect a wrong answer proves nothing about any pass
 
-Current measurement: `61 passed, 0 failed, 0 skipped` (51 single-file cases + 3 two-object cases + 6 refusals + 1 self-check).
+Current measurement: `65 passed, 0 failed, 0 skipped` (55 single-file cases + 3 two-object cases + 6 refusals + 1 self-check).
 
 ### 7.1 The self-host gate: turning "it runs once" into "it reproduces the host object byte for byte"
 

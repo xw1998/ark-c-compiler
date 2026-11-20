@@ -136,6 +136,58 @@ int main(void) {
     return r;
 }
 """, 14, RET),                                # (3 + 4) * 2
+
+    # 64-bit multiply is the only place IR_64BINARY needs the high-half
+    # multiply `mulhu`; before it was in the assembler's R-type table every
+    # `long long` product in the language refused to compile ("unknown
+    # riscv32 mnemonic 'mulhu'").  The 64-bit divide/modulus path also runs
+    # here so a regression in either shows up as a wrong number, not a crash.
+    ("llmul_div", """
+int main(void) {
+    long long a = 0x0000000100000003LL, b = 0x0000000200000005LL;
+    long long p = a * b;
+    long long q = p / 7;
+    return (int)((p >> 32) & 0xFF) + (int)(q & 0x0F);
+}
+""", 15, RET),                                # hi(0xB0000000F)=11, (0x192492494&0xF)=4
+
+    # The next four came out of the four-backend differential battery (the same
+    # sources run on x86_64/i386/arm/riscv32).  They are not new bugs -- all
+    # four already agreed -- they are the integer corners where a backend
+    # usually stops agreeing later: integer promotion of an unsigned char, the
+    # truncation direction of signed division, pointer difference, and a signed
+    # bitfield read back through its own width.
+    ("promo_uchar", """
+int main(void) {
+    unsigned char a = 200, b = 100;
+    int s = a + b;
+    return (s == 300) ? 3 : 44;
+}
+""", 3, RET),                                 # unsigned char promotes unsigned
+
+    ("neg_div", """
+int main(void) {
+    int a = -7, b = 2;
+    return (a / b) * 10 + (a % b) + 60;
+}
+""", 29, RET),                                # -3*10 + (-1) + 60; C99 truncates to zero
+
+    ("ptr_diff", """
+int main(void) {
+    int a[10];
+    int *p = &a[2], *q = &a[7];
+    return (int)(q - p) * 10 + (int)(p < q);
+}
+""", 51, RET),                                # 5 elements, then unsigned compare
+
+    ("bitfield_neg", """
+struct B { int a : 3; };
+int main(void) {
+    struct B x;
+    x.a = -1;
+    return (x.a == -1) ? 7 : 8;
+}
+""", 7, RET),                                 # sign-extends back out of 3 bits
 ]
 
 # name, assembly source, substring the diagnostic must contain

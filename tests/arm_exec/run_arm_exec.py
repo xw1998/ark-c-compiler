@@ -210,6 +210,39 @@ int main(void) { return use_a() + use_b(); }
         "expect": 40,
     },
     {
+        "name": "reloc_text_runtime",
+        "why": "--reloc-text: the string literals of the *moved* objects still "
+               "resolve, proven by running the image rather than by reading the "
+               "immediates.  Both literal-bearing objects are linked after the "
+               "one at base 0, so every one of their baked addresses is short by "
+               "the size of the objects in front of them unless the linker "
+               "rewrites the MOVW/MOVT pairs.  Without the flag the same "
+               "program returns -97 (it reads whatever the stale pointer lands "
+               "on) instead of 37, and the only sign of it is the "
+               "[link] warning -- the compile-level gate checks the addresses in "
+               "the image, this one checks that the addresses are the ones the "
+               "code actually reads.",
+        "files": {
+            "ta.c": 'const char *na = "abc";\n'
+                    "int len_a(void) { int i = 0; while (na[i]) i++; return i; }\n",
+            "tb.c": 'const char *nb = "hello";\n'
+                    "int use_b(void) { return nb[0] - 'a'; }\n",
+            "tm.c": STARTUP + """\
+int len_a(void);
+int use_b(void);
+int main(void) { return len_a() * 10 + use_b(); }
+""",
+        },
+        "build": [
+            (["ta.c", "-target", "arm", "-c", "--reloc-data", "--reloc-text", "-o", "ta.obj"], None),
+            (["tb.c", "-target", "arm", "-c", "--reloc-data", "--reloc-text", "-o", "tb.obj"], None),
+            (["tm.c", "-target", "arm", "-c", "--reloc-data", "--reloc-text", "--vector-table", "-o", "tm.obj"], None),
+            (["-link", "tm.obj", "ta.obj", "tb.obj", "--reloc-data", "--reloc-text", "--vector-table",
+              "-o", "out.bin"], "out.bin"),
+        ],
+        "expect": 37,
+    },
+    {
         "name": "reloc_data_off",
         "why": "without --reloc-data the same link must refuse, not alias the globals",
         "files": {
