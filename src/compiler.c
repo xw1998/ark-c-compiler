@@ -2056,6 +2056,10 @@ int ark_frontend_unit(const ArkOptions *opts, IrProgram *shared,
     /* The C backend stores a complex value in one 8-byte slot; the machine
      * backends carry four 32-bit words on the expression stack. */
     irgen_set_complex_words(ark_streq(be->name, "c") ? 1 : 4);
+    /* #pragma pack is applied by the lexer at the position it appears, so the
+     * parser must start from the default alignment no matter what the
+     * preprocessor (or a previous translation unit) left behind. */
+    type_pack_reset();
     lexer_init(&lex, preprocessed);
     ast = parse_program(&lex);
     if (!ast) return ARK_ERR_PARSE;      /* diagnostics were already printed */

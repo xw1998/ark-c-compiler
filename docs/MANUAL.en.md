@@ -321,6 +321,52 @@ further C11 keywords (`_Static_assert` / `_Alignof` / `_Alignas` / `_Generic` / 
 | VLA (variable-length arrays) | yes | `int a[n]` allocates a runtime VLA on the stack through `IR_ALLOCA`, rounded up: 8 on ARM / x86_64, 16 on RV32I (the psABI requires sp to be 16-byte aligned before every call). Any RV32I function containing `IR_ALLOCA` rebuilds sp with `sub sp, s0, frame_size` in its epilogue before popping the frame, otherwise `return` reads `ra`/`s0` from the wrong offset. Gate: `tests/run_rv_alloca_tests.py --rv-as <bin>` |
 | `__packed` unaligned access | yes | byte-by-byte load-and-stitch covering 1/2/4/8 bytes (ARM and RV32I). 8 bytes means `long long`/`double`: the low word is assembled and pushed first, then the high word, matching the push order of the aligned path. Gate: `tests/run_rv_packed_tests.py --rv-as <bin> [--arm-as <bin>]` |
 
+### 4.1.1 Struct layout: the four rules that match armcc
+
+The gate `tests/run_layout_tests.py` (`make test-layout`, 46 checks) pins down `sizeof`/`offsetof`,
+the byte image of a packed struct, bit-field values, `#pragma pack` scope, and a `static` global
+initialised with `sizeof`.  Every case is compiled to an ARM image and executed on the emulator, so
+the number that decides the check is the one the **program itself computed**, not a table the compiler
+printed.
+
+- **The oracle is armcc 5.06, not the host gcc**: the reference values come from
+  `D:/Keil_v5/ARM/ARMCC/bin/armcc.exe` compiling `char sz_N[sizeof(struct N)];` and reading the symbol
+  size out of `fromelf -s`.  The host MinGW gcc 4.8 **ignores** `__attribute__((packed))` on structs
+  entirely (it answers 8 bytes for a shape where `#pragma pack` does work), so using it as the oracle
+  would let every packed case "pass" exactly the wrong layout.
+- **Ordinary members**: natural alignment, and the total is rounded up to the largest member's
+  alignment.  `union` rounds up the same way -- once a bit-field became the largest member, the old
+  code returned `t->size` unchanged and `union {unsigned a:4; unsigned char c;}` answered 2 (armcc: 4).
+- **`#pragma pack(n)` is position sensitive**: it only applies to a `struct` declared after it.
+  `pack()`, `pack(1)`, `pack(push,n)`/`pack(pop)` and nested pushes are all honoured.  Previously "the
+  last pragma in the file" won, so `#pragma pack(1) struct A{...}; #pragma pack() struct B{...};`
+  squeezed `B` too (5 instead of 8).
+- **`__packed` / `} __attribute__((packed))` re-lays the fields it already parsed**: it is not merely
+  an alignment tweak -- `type_struct_repack()` replays the field list with the packed flag set, so
+  `__packed struct {char c; int i;}` is 5 bytes.  Before, every field offset stayed at its natural
+  position (8).
+- **Bit-fields: two models, both measured on armcc**.  Without a pack pragma a bit-field lives inside a
+  **container** of its declared type and may not straddle a container boundary; one that does not fit
+  moves to the next container boundary.  The first container starts where the previous member ended,
+  with **no** padding out to a container boundary (`struct {char c; unsigned a:4; unsigned b:12;}` is
+  4 bytes with the pair at bits 8..23).  With `#pragma pack(n)` or `__packed` the bit-fields are a
+  **pure bit stream**: no containers, no straddle rule (`__packed {unsigned a:4; unsigned b:12;}` = 2,
+  `__packed {char c; a:4; b:12;}` = 3, `#pragma pack(2) {unsigned a:20; unsigned b:20;}` = 6).
+- **The `:0` separator**: without a pack pragma it pushes the next bit-field to the next **container**
+  boundary (`{a:4; :0; b:4}` = 8); packed, it only pushes to the next **byte** (`= 2`).  A separator is
+  not a member, so it is recorded separately in `Type.bf_breaks` (a `BfBreak` node remembers "it sat
+  before member #k"), and `type_struct_repack()` re-inserts it at the same position; otherwise
+  `__packed` + `:0` silently answered 1 instead of 2.
+- **Representation**: `IR_LOAD_FLD`/`IR_STORE_FLD` do "load, shift, write back" inside one 32-bit
+  window chosen as `offset = max(0, ceil((P + width - 32)/8))`, `bit_offset = P - 8*offset`, which keeps
+  `bit_offset` in `[0,31]` and `bit_offset+width <= 32`.  Under packed layout that window may be
+  unaligned: ARMv6-M `LDR`/`STR` permit unaligned single-word access, and the write-back stores the
+  neighbouring bits it just read, so the other bit-fields sharing those bytes are preserved.
+- **Narrowing casts re-extend**: a cast to `(unsigned char)`/`(unsigned short)` -- a target of the same
+  or larger width -- used to skip `IR_TRUNC`, so `char c = 0xAA; return (unsigned char)c;` answered
+  -86 instead of 170 and `(unsigned short)c` answered -86 instead of 65450.  A change of signedness now
+  goes through the same narrowing/re-extension instruction.
+
 ### 4.2 Literals
 
 | Form | Example | Supported |

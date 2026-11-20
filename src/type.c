@@ -7,22 +7,22 @@
 /* Note: <stdio.h> intentionally NOT included - no stdio functions used in
  * type.c, and we want to avoid pulling in semihosting on STM32. */
 
-static Type ty_void   = { TYPE_VOID, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_char   = { TYPE_CHAR, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_short  = { TYPE_SHORT, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_int    = { TYPE_INT, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_long   = { TYPE_LONG, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_llong  = { TYPE_LLONG, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_bool   = { TYPE_BOOL, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_float  = { TYPE_FLOAT, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_double = { TYPE_DOUBLE, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_uchar  = { TYPE_CHAR, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_ushort = { TYPE_SHORT, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_uint   = { TYPE_INT, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_ulong  = { TYPE_LONG, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-static Type ty_ullong = { TYPE_LLONG, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_void   = { TYPE_VOID, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_char   = { TYPE_CHAR, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_short  = { TYPE_SHORT, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_int    = { TYPE_INT, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_long   = { TYPE_LONG, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_llong  = { TYPE_LLONG, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_bool   = { TYPE_BOOL, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_float  = { TYPE_FLOAT, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_double = { TYPE_DOUBLE, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_uchar  = { TYPE_CHAR, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_ushort = { TYPE_SHORT, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_uint   = { TYPE_INT, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_ulong  = { TYPE_LONG, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_ullong = { TYPE_LLONG, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 /* B2: wchar_t - passed through to gcc by host/C backend, treated as 4-byte unsigned integer */
-static Type ty_wchar  = { TYPE_WCHAR, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static Type ty_wchar  = { TYPE_WCHAR, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
 Type *type_void(void)   { return &ty_void;  }
 Type *type_char(void)   { return &ty_char;  }
@@ -192,6 +192,111 @@ static int g_pack_align = 0;
 void type_set_pack(int n) { g_pack_align = n; }
 int  type_get_pack(void)  { return g_pack_align; }
 
+/* #pragma pack push/pop stack and the directive parser.
+ *
+ * These used to live in the preprocessor, which applied the directive while
+ * expanding the file.  That is one phase too early: struct layout happens
+ * when the PARSER sees the definition, so every struct in the file ended up
+ * laid out with whatever value the LAST pragma left behind.  Measured before
+ * the fix: `#pragma pack(push,1) struct P{char c;int i;}; #pragma pack(pop)`
+ * gave sizeof(P) == 8 instead of 5 -- the canonical embedded idiom silently
+ * produced an unpacked struct, and every offset taken from it was wrong.
+ * The preprocessor now hands the raw line through and the lexer applies it
+ * here, at the position it appears. */
+static int g_pack_stack[32];
+static int g_pack_top = 0;
+
+void type_pack_reset(void) { g_pack_align = 0; g_pack_top = 0; }
+
+/* q points at the '(' of "pack(...)".  Accepted forms:
+ *   pack         -> reset to default alignment
+ *   pack()       -> reset to default (0)
+ *   pack(n)      -> set current alignment to n
+ *   pack(push)   -> push current alignment onto the stack
+ *   pack(push,n) -> push current and set the new alignment to n
+ *   pack(pop)    -> pop the alignment off the stack
+ * Returns 1 when the directive was understood, 0 otherwise (caller leaves
+ * the state alone, so an unparsable directive is not mistaken for pack()). */
+int type_pragma_pack(const char *q) {
+    while (*q == ' ' || *q == '\t') q++;
+    if (*q != '(') return 0;
+    q++;
+    while (*q == ' ' || *q == '\t') q++;
+    if (*q == ')') { type_set_pack(0); return 1; }
+    if (q[0] == 'p' && q[1] == 'u' && q[2] == 's' && q[3] == 'h') {
+        int old = type_get_pack();
+        q += 4;
+        while (*q == ' ' || *q == '\t') q++;
+        if (*q == ',') {
+            int n = 0;
+            q++;
+            while (*q == ' ' || *q == '\t') q++;
+            if (*q >= '0' && *q <= '9') {
+                while (*q >= '0' && *q <= '9') { n = n * 10 + (*q - '0'); q++; }
+                if (g_pack_top < 32) g_pack_stack[g_pack_top++] = old;
+                type_set_pack(n);
+                return 1;
+            }
+        }
+        if (g_pack_top < 32) g_pack_stack[g_pack_top++] = old;
+        return 1;
+    }
+    if (q[0] == 'p' && q[1] == 'o' && q[2] == 'p') {
+        if (g_pack_top > 0) type_set_pack(g_pack_stack[--g_pack_top]);
+        return 1;
+    }
+    if (*q >= '0' && *q <= '9') {
+        int n = 0;
+        while (*q >= '0' && *q <= '9') { n = n * 10 + (*q - '0'); q++; }
+        type_set_pack(n);
+        return 1;
+    }
+    return 0;
+}
+
+/* See include/type.h.  `packed` can arrive after the members were laid out
+ * (armcc writes `__packed struct S {...};`, and GCC allows `struct S {...}
+ * __attribute__((packed));`), and the normal add path fixes each offset as
+ * the member is parsed -- so a late flag left every offset and the size at
+ * their natural values (measured: sizeof 8 instead of 5, i.e. every field
+ * after the first one sat at the wrong address).  Replaying the field list
+ * through the same add path with is_packed already set gives exactly the
+ * layout the flag would have produced up front.  The old StructField nodes
+ * stay in the memory pool; only the list head is rebuilt. */
+/* `:0` separators are replayed too: struct_note_break() recorded where they
+ * sat, and under packed layout a separator rounds up to the next byte instead
+ * of the next container, so each one is re-applied as a byte break just before
+ * the member it preceded.  A struct type that arrived from an object file has
+ * no such record (see BfBreak) -- its offsets are already final, and repacking
+ * a deserialized type is not something the parser does. */
+void type_struct_repack(Type *st) {
+    StructField *f, *saved;
+    if (!st || !st->is_packed) return;
+    if (st->kind != TYPE_STRUCT && st->kind != TYPE_UNION) return;
+    if (!st->fields) return;
+    saved = st->fields;
+    st->fields = 0;
+    st->size = 0;
+    st->align_override = 0;
+    st->bf_break = 0;   /* replay starts fresh; see the :0 note below */
+    {
+        BfBreak *br = st->bf_breaks;
+        int idx = 0;
+        for (f = saved; f; f = f->next) {
+            while (br && br->index == idx) {
+                st->bf_break = 2;      /* packed: `:0` goes to the next byte */
+                br = br->next;
+            }
+            if (f->bit_width > 0) {
+                type_struct_add_bitfield(st, f->name, f->type, f->bit_width);
+            } else {
+                type_struct_add_field(st, f->name, f->type);
+            }
+            idx++;
+        }
+    }
+}
+
 void type_struct_add_field(Type *st, const char *name, Type *ft) {
     StructField *f = (StructField *)mem_pool_alloc(sizeof(StructField));
     int al = type_align(ft);
@@ -238,80 +343,138 @@ void type_struct_add_field(Type *st, const char *name, Type *ft) {
     }
 }
 
+/* Absolute bit position just past the last laid-out member: where the next
+ * bit-field starts.  When the last member is a bit-field its end is exact;
+ * otherwise every preceding member ends on a byte boundary, so st->size*8 is
+ * exact as well (st->size carries no tail padding -- type_size() adds that). */
+static int struct_bitpos(const Type *st) {
+    StructField *f = st->fields;
+    StructField *last = 0;
+    while (f) { last = f; f = f->next; }
+    if (last && last->bit_width > 0)
+        return last->offset * 8 + last->bit_offset + last->bit_width;
+    return st->size * 8;
+}
+
+/* Record a `:0` separator at the current end of the field list, so that
+ * type_struct_repack() can put it back when a late packed flag forces a
+ * re-layout.  Without it the replay produced the packed layout of a struct
+ * that never had a separator: measured on armcc, `__packed struct {unsigned
+ * a:4; unsigned :0; unsigned b:4;}` is 2 bytes while the separator-less version
+ * is 1, and the replay used to answer 1 for both. */
+static void struct_note_break(Type *st) {
+    BfBreak *n = (BfBreak *)mem_pool_alloc(sizeof(BfBreak));
+    StructField *p;
+    int n_fields = 0;
+    for (p = st->fields; p; p = p->next) n_fields++;
+    n->index = n_fields;
+    n->next = 0;
+    if (!st->bf_breaks) {
+        st->bf_breaks = n;
+    } else {
+        BfBreak *b = st->bf_breaks;
+        while (b->next) b = b->next;
+        b->next = n;
+    }
+}
+
 void type_struct_add_bitfield(Type *st, const char *name, Type *ft, int width) {
-    /* Bitfield implementation: same-type bitfields share a storage unit where possible, packed tightly.
-     *   - unit_bits = sizeof(ft) * 8 is the number of bits in a storage unit
-     *   - If the previous field is a same-type bitfield with enough remaining bits, append after it
-     *   - Otherwise open a new storage unit at a new aligned offset
-     * Field offset points to the storage unit start; bit_offset is the in-unit bit offset;
-     * bit_width is the bit width (>0 indicates a bitfield). irgen emits IR_LOAD_FLD/IR_STORE_FLD accordingly. */
+    /* Bit-field layout, matched against armcc (ARM Compiler 5.06) measured
+     * through sizeof()/offsetof(); the gate is tests/run_layout_tests.py.
+     *
+     * Two regimes:
+     *   - Without #pragma pack / __packed: a bit-field lives inside a naturally
+     *     aligned container of its declared type (32 bits for `unsigned`), and
+     *     may not straddle a container boundary.  If it does not fit in what is
+     *     left of the container it moves to the next container boundary.  The
+     *     FIRST container starts wherever the previous member ended, with no
+     *     padding out to a container boundary -- measured: `struct {char c;
+     *     unsigned a:4; unsigned b:12;}` is 4 bytes with the pair at bits 8..23.
+     *   - With #pragma pack(n) or __packed: bit-fields are a pure bit stream.
+     *     No containers, no straddle rule -- measured: `__packed struct {char c;
+     *     unsigned a:4; unsigned b:12;}` is 3 bytes and `__packed struct
+     *     {unsigned a:4; unsigned b:12;}` is 2 bytes (pack(2) takes the same
+     *     path: `#pragma pack(2) struct {unsigned a:20; unsigned b:20;}` is 6).
+     * In both regimes the accumulated byte size is ceil(bits/8); type_size()
+     * then rounds it up to the struct alignment, which still counts the
+     * bit-field's declared type as a member for alignment purposes.
+     *
+     * Storage representation: IR_LOAD_FLD/IR_STORE_FLD read and write ONE
+     * 32-bit word at f->offset and shift by f->bit_offset, so the field must fit
+     * inside that word.  f->offset is therefore the address of the leftmost
+     * byte window that still contains the field:
+     *     offset = max(0, ceil((P + width - 32) / 8)),  bit_offset = P - 8*offset
+     * which keeps bit_offset in [0,31] and bit_offset + width <= 32.  Under
+     * packed layout that window can be unaligned; ARMv6-M LDR/STR permit it,
+     * and the read-modify-write store writes back the neighbouring bits it
+     * just read, so bytes outside the field are preserved. */
     int unit_sz   = type_size(ft);
     int unit_bits = unit_sz * 8;
-    int unit_al   = type_align(ft);
     int pack_val  = 0;
-    StructField *f;
-    StructField *last = 0;
-    int cur_off;
+    int packed_mode;
+    int P;
+    int off_bytes;
     int bit_off;
+    StructField *f;
 
     if (g_pack_align > 0) pack_val = g_pack_align;
     if (st->is_packed)    pack_val = 1;
-    if (pack_val > 0 && unit_al > pack_val) unit_al = pack_val;
     if (pack_val > 0 && st->align_override == 0) st->align_override = pack_val;
-    if (unit_al < 1) unit_al = 1;
+    packed_mode = (pack_val > 0);
 
-    /* C99 6.7.2.1: A bit-field with width 0 indicates that no further
-     * bit-field is to be packed into the unit in which the previous bit-field,
-     * if any, was placed. No field is added; the next bitfield must start at
-     * a new storage unit boundary. Named zero-width bitfields are forbidden by
-     * C99 but accepted as a GCC extension (treated as anonymous separator). */
     if (width == 0) {
-        st->bf_break = 1;
+        /* C99 6.7.2.1: width 0 stops bit-fields from packing into the unit that
+         * holds the previous one.  Measured on armcc: unpacked `struct {unsigned
+         * a:4; unsigned :0; unsigned b:4;}` is 8 bytes (b starts at bit 32),
+         * while `__packed` with the same members is 2 bytes (b starts at bit 8,
+         * i.e. the separator only advances to the next byte). */
+        st->bf_break = packed_mode ? 2 : 1;
+        struct_note_break(st);
         return;
     }
     if (width < 0) {
+        st->bf_break = 0;
         type_struct_add_field(st, name, ft);
         return;
     }
-    /* Bit width cannot exceed storage unit bit count */
     if (width > unit_bits) width = unit_bits;
 
-    /* Find the last field */
-    if (st->fields) {
-        last = st->fields;
-        while (last->next) last = last->next;
-    }
-    /* Try to share a storage unit with the previous same-type bitfield.
-     * bf_break (set by a preceding width=0 bitfield) forces a new unit. */
-    /* Share the current storage unit with the previous bit-field when the two
-     * have the same container size and alignment. Comparing the Type pointer
-     * (the previous rule) split `unsigned a:3; int c:4;` into two units even
-     * though armcc/gcc pack both into one 32-bit word: an int and an unsigned
-     * int are distinct Type singletons but the same container class. Signedness
-     * is irrelevant to packing (only to extraction), so it is not compared. */
-    if (last && last->bit_width > 0 &&
-        type_size(last->type) == unit_sz && type_align(last->type) == unit_al &&
-        last->bit_offset + last->bit_width + width <= unit_bits &&
-        !st->bf_break) {
-        cur_off = last->offset;
-        bit_off = last->bit_offset + last->bit_width;
+    if (st->kind == TYPE_UNION) {
+        /* Union members all start at bit 0 (overlapping storage). */
+        P = 0;
     } else {
-        /* New storage unit: align current size to unit_al */
-        st->bf_break = 0;
-        cur_off = st->size;
-        cur_off = (cur_off + unit_al - 1) & ~(unit_al - 1);
-        bit_off = 0;
-        if (st->kind == TYPE_UNION) {
-            if (unit_sz > st->size) st->size = unit_sz;
-        } else {
-            st->size = cur_off + unit_sz;
+        P = struct_bitpos(st);
+        if (st->bf_break) {
+            if (st->bf_break == 2) {
+                P = (P + 7) & ~7;                       /* packed: next byte */
+            } else if (unit_bits > 0) {
+                P = ((P + unit_bits - 1) / unit_bits) * unit_bits;
+            }
+        } else if (!packed_mode && unit_bits > 0) {
+            int rem = unit_bits - (P % unit_bits);
+            if (width > rem) P += rem;                  /* next container */
         }
+    }
+    st->bf_break = 0;
+
+    off_bytes = 0;
+    if (P + width > 32) {
+        off_bytes = (P + width - 32 + 7) / 8;
+        if (off_bytes > P / 8) off_bytes = P / 8;
+    }
+    bit_off = P - off_bytes * 8;
+
+    if (st->kind == TYPE_UNION) {
+        int need = (P + width + 7) / 8;
+        if (need > st->size) st->size = need;
+    } else {
+        st->size = (P + width + 7) / 8;
     }
 
     f = (StructField *)mem_pool_alloc(sizeof(StructField));
     f->name = mem_strdup(name ? name : "");
     f->type = ft;
-    f->offset = cur_off;
+    f->offset = off_bytes;
     f->bit_offset = bit_off;
     f->bit_width = width;
     f->next = 0;
@@ -421,7 +584,24 @@ int type_size(Type *t) {
             s = (s + max_align - 1) & ~(max_align - 1);
             return s;
         }
-        case TYPE_UNION:  return t->size;
+        case TYPE_UNION: {
+            /* Same tail rounding as a struct: the union's size must be a
+             * multiple of its alignment so that array stride holds.  This
+             * used to be implied by the largest member, which stops being
+             * true once a bit-field is the largest member -- measured:
+             * `union {unsigned a:4; unsigned char c;};` is 4 bytes on armcc
+             * (2 bits worth of storage, rounded up to the unsigned align). */
+            int max_align = 1, s = t->size;
+            StructField *f;
+            for (f = t->fields; f; f = f->next) {
+                int al = type_align(f->type);
+                if (al > max_align) max_align = al;
+            }
+            if (max_align < 1) max_align = 1;
+            if (t->align_override > 0 && t->align_override < max_align)
+                max_align = t->align_override;
+            return (s + max_align - 1) & ~(max_align - 1);
+        }
         case TYPE_ENUM:
             /* --enum_is_int / -fenum-is-int: force enum to int (4 bytes).
              * armcc by default picks the smallest type based on enum value range; arkcc always uses int,

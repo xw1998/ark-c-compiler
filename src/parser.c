@@ -424,6 +424,7 @@ static void parse_attribute(Parser *p, Type *attach_type) {
             } else {
                 if (attach_type && (ark_streq(nm, "packed") || ark_streq(nm, "__packed__"))) {
                     attach_type->is_packed = 1;
+                    type_struct_repack(attach_type);
                 }
                 if (ark_streq(nm, "aligned") || ark_streq(nm, "__aligned__")) {
                     if (attach_type) attach_type->align_override = 8;
@@ -1223,9 +1224,12 @@ static Type *parse_declspec(Parser *p, int *p_storage, int *p_is_typedef) {
                 AstNode *def;
                 def = parse_struct_or_union(p, is_union);
                 if (def) base = def->type;
-                /* __packed prefix: equivalent to __attribute__((packed)) */
+                /* __packed prefix: equivalent to __attribute__((packed)).
+                 * The members are already laid out by now, so the flag has
+                 * to be replayed into the offsets (see type_struct_repack). */
                 if (packed_pending && base) {
                     base->is_packed = 1;
+                    type_struct_repack(base);
                     packed_pending = 0;
                 }
                 saw_kw = 1;
@@ -1482,7 +1486,7 @@ static AstNode *parse_struct_or_union(Parser *p, int is_union) {
         if (tag) sym_add(is_union ? SYM_UNION_TAG : SYM_STRUCT_TAG, tag, t, 0);
     } else if (has_attr && attr_tmp) {
         /* Apply leading attribute when referencing existing type */
-        if (attr_tmp->is_packed) t->is_packed = 1;
+        if (attr_tmp->is_packed) { t->is_packed = 1; type_struct_repack(t); }
         if (attr_tmp->align_override) t->align_override = attr_tmp->align_override;
     }
     {

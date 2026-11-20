@@ -293,6 +293,42 @@ M4/M33 只有单精度。传 `-mcpu Cortex-M7` 时，`double`↔`float` 的隐�
 | VLA 可变长度数组 | 是 | `int a[n]` 运行期 VLA，通过 `IR_ALLOCA` 在栈上分配；向上取整对齐：ARM / x86_64 取 8，RV32I 取 16（psABI 要求每次调用前 sp 16 字节对齐）。RV32I 的函数只要含 `IR_ALLOCA`，尾声就先 `sub sp, s0, frame_size` 把 sp 重建回固定帧底再弹帧，否则 `return` 会从错位处读 `ra`/`s0`。门禁：`tests/run_rv_alloca_tests.py --rv-as <bin>` |
 | `__packed` 非对齐访问 | 是 | 逐字节 load-and-stitch，1/2/4/8 字节全覆盖（ARM 与 RV32I）。8 字节即 `long long`/`double`：先装配低字压栈、再装配高字压栈，与对齐路径的入栈顺序一致。门禁：`tests/run_rv_packed_tests.py --rv-as <bin> [--arm-as <bin>]` |
 
+### 4.1.1 结构体布局：与 armcc 对齐的四条口径
+
+门禁 `tests/run_layout_tests.py`（`make test-layout`，46 个检查）把 `sizeof`/`offsetof`、打包后的
+字节镜像、位域取值、`#pragma pack` 作用域、`static` 全局用 `sizeof` 初始化的值一次性钉住：每个用例
+都编译成 ARM 镜像在模拟器上跑，返回的是**程序自己算出来的数字**，不是编译器打印的对照表。
+
+- **oracle 是 armcc 5.06，不是宿主 gcc**：判据来自 `D:/Keil_v5/ARM/ARMCC/bin/armcc.exe` 编译
+  `char sz_N[sizeof(struct N)];` 后用 `fromelf -s` 读出的符号尺寸。宿主 MinGW gcc 4.8 **完全忽略**
+  `struct` 上的 `__attribute__((packed))`（同型例子里仍给 8 字节，而 `#pragma pack` 生效），拿它当
+  参照会让每一个打包用例都"通过"一个错布局。
+- **普通成员**：自然对齐 + 末尾按最大成员对齐上取整。`union` 也按最大成员对齐上取整——位域成为
+  最大成员之后旧实现直接返回 `t->size`，`union {unsigned a:4; unsigned char c;}` 会答 2（armcc 是 4）。
+- **`#pragma pack(n)` 位置敏感**：只有出现在 `struct` 之前才作用于它；`pack()` 恢复、`pack(1)` 直接设、
+  `pack(push,n)`/`pack(pop)` 与嵌套 push 都支持。此前是"整份文件最后一次 pragma 说了算"，
+  `#pragma pack(1) struct A{...}; #pragma pack() struct B{...};` 会把 B 也压紧（5 而不是 8）。
+- **`__packed` 前缀与 `} __attribute__((packed))` 会重排已解析的字段**：不只是改对齐值，
+  `type_struct_repack()` 把字段列表按当前 packed 状态**重放**一遍，`__packed struct {char c; int i;}`
+  因此是 5；此前每个字段偏移都停在自然位置（8）。
+- **位域两套模型（armcc 实测）**：没有 pack 时位域落在**声明类型的容器**里且不得跨容器边界，放不下
+  就移到下一个容器边界；容器起点是上一个成员的结束处，**不**填充到容器边界
+  （`struct {char c; unsigned a:4; unsigned b:12;}` 是 4 字节，位域在 bit 8..23）。有 `#pragma pack(n)`
+  或 `__packed` 时位域是**纯位流**：无容器、无跨边界限制
+  （`__packed {unsigned a:4; unsigned b:12;}` = 2，`__packed {char c; a:4; b:12;}` = 3，
+  `#pragma pack(2) {unsigned a:20; unsigned b:20;}` = 6）。
+- **`:0` 分隔符**：无 pack 时把下一个位域推到下一个**容器**边界（`{a:4; :0; b:4}` = 8），packed 时
+  只推到下一个**字节**（`= 2`）。分隔符不在字段列表里，所以它被单独记在 `Type.bf_breaks`
+  （`BfBreak` 节点记"它出现在第几个成员之前"）里，`type_struct_repack()` 重放时按同样的位置补回去；
+  否则 `__packed` + `:0` 会静默算出 1 而不是 2。
+- **表示方式**：`IR_LOAD_FLD`/`IR_STORE_FLD` 都在一个 32 位窗口里做"读-移位-写回"，窗口取
+  `offset = max(0, ceil((P + width - 32)/8))`、`bit_offset = P - 8*offset`，保证
+  `bit_offset∈[0,31]` 且 `bit_offset+width≤32`。packed 布局下这个窗口可以非对齐：ARMv6-M 的
+  `LDR`/`STR` 允许非对齐单字访问，写回时把刚读到的邻位原样写回，因此不会破坏同字节的其它位域。
+- **窄化转换会重新扩展**：`(unsigned char)`/`(unsigned short)` 这类**同宽或更宽的目标类型**以前不进
+  `IR_TRUNC`，于是 `char c = 0xAA; return (unsigned char)c;` 答 −86（应为 170）、
+  `(unsigned short)c` 答 −86（应为 65450）。现在只要符号性变了就走同一条窄化/重扩展指令。
+
 ### 4.2 字面量
 
 | 形式 | 示例 | 支持 |

@@ -367,6 +367,17 @@ static int read_escape(const char **pp) {
     }
 }
 
+/* True when nothing but blanks separate lex->p from the start of its line
+ * (so a '#' here really is a directive, not a stray token mid-expression). */
+static int lex_at_line_start(const Lexer *lex) {
+    const char *q = lex->line_start;
+    while (q < lex->p) {
+        if (*q != ' ' && *q != '\t' && *q != '\r') return 0;
+        q++;
+    }
+    return 1;
+}
+
 static Token lexer_read_token(Lexer *lex) {
     const char *start;
     int line;
@@ -374,6 +385,27 @@ static Token lexer_read_token(Lexer *lex) {
     Token tk;
 
     skip_ws_and_comments(lex);
+    /* Directives the preprocessor chose to hand through (currently only
+     * `#pragma pack`) are applied here, so the value is in effect exactly at
+     * the point it appears rather than at file end.  A '#' that does not
+     * start a line is left alone. */
+    while (lex->p[0] == '#' && lex_at_line_start(lex)) {
+        const char *q = lex->p + 1;
+        while (*q == ' ' || *q == '\t') q++;
+        if (q[0] == 'p' && q[1] == 'r' && q[2] == 'a' && q[3] == 'g' &&
+            q[4] == 'm' && q[5] == 'a' && !is_alnum(q[6])) {
+            q += 6;
+            while (*q == ' ' || *q == '\t') q++;
+            if (q[0] == 'p' && q[1] == 'a' && q[2] == 'c' && q[3] == 'k' &&
+                !is_alnum(q[4])) {
+                type_pragma_pack(q + 4);
+            }
+        }
+        while (*q && *q != '\n') q++;
+        if (*q == '\n') { q++; lex->line++; lex->line_start = q; }
+        lex->p = q;
+        skip_ws_and_comments(lex);
+    }
     start = lex->p;
     line = lex->line;
     c = *lex->p;

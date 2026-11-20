@@ -443,10 +443,9 @@ void preproc_reset(void) {
     g_inc_files = 0;
     g_inc_file_cap = 0;
 #endif
-    g_pack_top = 0;
     g_macro_depth = 0;
     g_blue_top = 0;
-    type_set_pack(0);
+    type_pack_reset();
 }
 
 /* Public API used by cpu.c (built-in macro definitions): defines NAME as body.
@@ -1099,66 +1098,6 @@ static void handle_pragma_diag(const char *r) {
     }
 }
 
-/* Handle the #pragma pack directive; q points right after the "pack" token.
- * Supported forms:
- *   pack        -> reset to default alignment
- *   pack()      -> reset to default (0)
- *   pack(n)     -> set current alignment to n
- *   pack(push)  -> push current alignment onto stack
- *   pack(push,n)-> push current and set new alignment to n
- *   pack(pop)   -> pop alignment from stack
- * The named-pack and push/pop stacks are tracked separately; the only special
- * case is "if no pack has ever been set, packed attribute is honored" which we
- * model by leaving the stack empty and returning pack=0 (no explicit align). */
-static int handle_pragma_pack(const char *q) {
-    /* q is past "pack"; skip whitespace and expect an opening '('. */
-    while (*q == ' ' || *q == '\t') q++;
-    if (*q != '(') return 0;
-    q++;
-    while (*q == ' ' || *q == '\t') q++;
-    if (*q == ')') {
-        /* pack(): reset to default. */
-        type_set_pack(0);
-        return 1;
-    }
-    if (q[0] == 'p' && q[1] == 'u' && q[2] == 's' && q[3] == 'h') {
-        /* push [n] */
-        int old = type_get_pack();
-        q += 4;
-        while (*q == ' ' || *q == '\t') q++;
-        if (*q == ',') {
-            q++;
-            while (*q == ' ' || *q == '\t') q++;
-            if (*q >= '0' && *q <= '9') {
-                int n = 0;
-                while (*q >= '0' && *q <= '9') { n = n * 10 + (*q - '0'); q++; }
-                if (g_pack_top < PP_PACK_STACK) g_pack_stack[g_pack_top++] = old;
-                type_set_pack(n);
-                return 1;
-            }
-        }
-        /* pack(push): just save the current alignment. */
-        if (g_pack_top < PP_PACK_STACK) g_pack_stack[g_pack_top++] = old;
-        return 1;
-    }
-    if (q[0] == 'p' && q[1] == 'o' && q[2] == 'p') {
-        /* pop */
-        if (g_pack_top > 0) {
-            int v = g_pack_stack[--g_pack_top];
-            type_set_pack(v);
-        }
-        return 1;
-    }
-    if (*q >= '0' && *q <= '9') {
-        /* pack(n) */
-        int n = 0;
-        while (*q >= '0' && *q <= '9') { n = n * 10 + (*q - '0'); q++; }
-        type_set_pack(n);
-        return 1;
-    }
-    return 0;
-}
-
 /* Main processing entry point.
  *
  * is_file separates a real file from a macro body being rescanned: only a real
@@ -1564,7 +1503,18 @@ static void process(const char *src, char *out, int *out_len, int out_cap,
                 const char *r = q;
                 if (r[0] == 'p' && r[1] == 'a' && r[2] == 'c' && r[3] == 'k' &&
                     (r[4] == '(' || r[4] == ' ' || r[4] == '\t')) {
-                    handle_pragma_pack(r + 4);
+                    /* Hand the line through verbatim instead of applying it
+                     * here.  Layout happens at PARSE time, so applying it in
+                     * the preprocessor made every struct in the file see the
+                     * last pragma's value: `#pragma pack(push,1) ... pop`
+                     * around a struct gave sizeof 8 instead of 5.  The lexer
+                     * applies the directive where it appears (type.c:
+                     * type_pragma_pack). */
+                    const char *z = line_start;
+                    while (*z && *z != '\n' && *z != '\r') {
+                        buf_putc(out, out_len, out_cap, *z);
+                        z++;
+                    }
                 }
                 /* #pragma location=addr: rewrite as __at(N) so the parser
                  *   picks it up as a declaration attribute on the next

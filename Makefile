@@ -42,7 +42,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-softfloat
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-softfloat
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -173,6 +173,15 @@ test-softfloat: $(ARKCC)
 # a positive sample.
 test-strinit: $(ARKCC)
 	$(PYTHON) tests/run_str_init_tests.py --arkcc ./$(ARKCC)
+
+# Layout gate: sizeof/offsetof of packed structs, bit-fields, `:0` separators and
+# #pragma pack scopes, checked against armcc 5.06 (the ABI these targets use).
+# The host gcc cannot serve as the oracle: gcc 4.8 (MinGW) ignores
+# __attribute__((packed)) on structs entirely, so every packed case would
+# "agree" with the wrong layout.  Each case runs on the ARM emulator and
+# returns a number the program computed itself.
+test-layout: $(ARKCC)
+	$(PYTHON) tests/run_layout_tests.py --arkcc ./$(ARKCC)
 
 # Library gate: every stdlib entry point is compiled and run on the ARM
 # emulator, and each case asserts a number the program itself computed.  A

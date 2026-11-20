@@ -3463,7 +3463,7 @@ static void irgen_convert_value(IrGen *g, Type *src_t, Type *dst_t) {
         irgen_widen_to_64(g, src_t, dst_t);
         if (dst_t->kind != TYPE_BOOL &&
             (type_size(dst_t) < type_size(src_t) ||
-             (type_size(dst_t) == 4 && src_t->is_unsigned != dst_t->is_unsigned)))
+             src_t->is_unsigned != dst_t->is_unsigned))   /* see AST_CAST */
             irgen_truncate_int(g, dst_t);
     }
     /* Pointer <-> 64-bit integer (C99 6.3.2.3): a pointer is one IR word
@@ -3945,8 +3945,14 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                     /* Same-width unsigned<->signed and narrowing casts must
                      * actually reinterpret/truncate the value. */
                     if (dst_t->kind != TYPE_BOOL &&
+                        /* C99 6.3.1.3: any difference in signedness needs the
+                         * re-extension, not just the 32-bit case.  A char and an
+                         * unsigned char are the same width, so `(unsigned char)c`
+                         * used to be a no-op and left the sign-extended value on
+                         * the stack (measured: `char c = 0xAA; return (unsigned
+                         * char)c;` answered -86, want 170). */
                         (type_size(dst_t) < type_size(src_t) ||
-                         (type_size(dst_t) == 4 && src_t->is_unsigned != dst_t->is_unsigned))) {
+                         src_t->is_unsigned != dst_t->is_unsigned)) {
                         irgen_truncate_int(g, dst_t);
                     }
                 }

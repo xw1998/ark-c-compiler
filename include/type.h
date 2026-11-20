@@ -36,6 +36,18 @@ typedef struct StructField {
     struct StructField *next;
 } StructField;
 
+/* A `:0` separator met while laying out a struct: `index` is the number of
+ * members laid out so far, i.e. the separator sits immediately before member
+ * #index of the field list.  type_struct_repack() -- the replay that applies a
+ * late `__packed`/`__attribute__((packed))` -- re-inserts it there, so the
+ * packed layout keeps the separators the source spelled.  Not serialized: an
+ * object file already carries the final offsets, and repack only runs while
+ * parsing a definition. */
+typedef struct BfBreak {
+    int             index;
+    struct BfBreak *next;
+} BfBreak;
+
 /* One enumerator of an enum type, recorded by the parser.
  *
  * C has no way to enumerate an enum's identifiers after the fact: the symbol
@@ -83,6 +95,10 @@ typedef struct Type {
      * struct so the positional initialisers in type.c keep their meaning. */
     EnumConst   *enumerators;
     int          enumerator_count;
+    /* Members of the list above that were preceded by a `:0` separator, in
+     * the order they were met.  Appended at the very end so the positional
+     * initialisers in type.c keep their meaning; see BfBreak. */
+    BfBreak     *bf_breaks;
 } Type;
 
 /* ARK_IS_CX(t): does `t` name a _Complex type?  Spelled as a literal 0 in a
@@ -158,5 +174,13 @@ StructField *type_find_field(Type *t, const char *name);
 /* #pragma pack(n) global alignment control */
 void type_set_pack(int n);
 int  type_get_pack(void);
+/* Applies one pack(...) directive; q points at the '('.  Called from the
+ * lexer so the value is in effect exactly where the directive appears. */
+int  type_pragma_pack(const char *q);
+/* Re-lays-out a struct/union after `is_packed` was set post-hoc (the
+ * `__packed` prefix or a trailing __attribute__((packed))). */
+void type_struct_repack(Type *st);
+/* Resets the pack value and its push/pop stack (start of every TU). */
+void type_pack_reset(void);
 
 #endif /* ARK_TYPE_H */
