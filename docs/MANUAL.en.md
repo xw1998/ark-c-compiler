@@ -783,6 +783,44 @@ Boundaries still rejected (error, no image):
   `int a[2] = {1,2,3}` still reports `cannot turn the initialiser ... into data` (a correct but not the most
   apt wording; a known item).
 
+**struct/union (8 bytes or less) return values and whole-aggregate copies: store the object's real width**
+
+A small aggregate comes back in registers (ARM `r0`/`r1`, low word first) with only **`ceil(sz/4)` words** on
+the caller's stack -- one word for a 1-byte struct, two for an 8-byte one. So "always two words / always store
+8 bytes" cannot receive it: the store width has to be the object's real width, and there is no 3/5/6/7-byte
+store, so those widths are composed from a word duplicated with `IR_DUP`:
+
+| Width | How it lands |
+| --- | --- |
+| 1 / 2 / 4 | one `STRB` / `STRH` / `STR` |
+| 3 | low 2 bytes `STRH` to +0; the remaining word **shifted right by 16** then `STRB` to +2 |
+| 5 / 6 | high word to +4 (1 / 2 bytes), drop the high word, low word to +0 |
+| 7 | high word to +4 (2 bytes), shifted right by 16 then `STRB` to +6, low word to +0 |
+| 8 | one 8-byte store (two words) |
+
+Two silent wrong answers used to live here -- both compiled fine and were only slightly wrong at run time:
+
+- **Declaration-initialisation `struct T b = a;` copied just the first word**: `irgen_expr()` on an aggregate
+  lvalue pushes only its first word, and storing that as an 8-byte value made the second half of the object
+  read an unrelated stack slot. Lvalues now copy through "take the address + `IR_MEMCPY`", byte-exact.
+- **Whole-aggregate assignment stored 4 or 8 bytes**: 1/2/3/5/6/7-byte structs were rounded up and
+  **clobbered the neighbouring object** (measured: `v[1] = t` inside `struct S3 v[3]` wrote into `v[2]`).
+  Anything with an address now goes through `IR_MEMCPY`; only register returns use the width table above.
+- **When the right-hand side is a struct-returning call, the assignment expression's value width disagreed
+  with its consumers**: `v[1] = f3();` used to yield the *destination address* (one word), while
+  `irgen_discard_result` pops two words for a 5..8-byte aggregate -- so every such statement lost one IR-stack
+  word and moved the frame cursor into slot 0, where **the next `PUSH` overwrote the first local** (measured:
+  `{struct S5 z[3]; z[1] = f5();} if (0) {}` returned 0 instead of 5, and `if (1) s += 0;` turned `s` into 1).
+  The assignment expression now yields the aggregate value itself (one word for 3 bytes, a low/high pair for
+  5..8), which is the same shape every other aggregate expression produces.
+
+Gates: `struct_narrow_return` in `tests/arm_exec/run_arm_exec.py` (1..8-byte returns one by one, expected
+values computed by the host compiler), `struct_narrow_copy` (declaration-initialisation and whole-aggregate
+assignment for 1..8 bytes, with SRAM pre-filled with `0xAA` and the neighbours inside a struct array checked,
+so an over-wide store cannot slip through), and `struct_narrow_call_assign` (whole-aggregate assignment whose
+right-hand side is a 3- or 5-byte struct return, followed by stack-pushing statements, so both the stack drift
+and an over-wide store are caught).
+
 **struct/union (larger than 8 bytes) return values: both machine backends use sret (a hidden buffer pointer)**
 
 | Target | Who allocates the buffer | In / out | First argument | Stack arguments |

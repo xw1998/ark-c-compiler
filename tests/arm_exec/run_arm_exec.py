@@ -322,6 +322,50 @@ int sb_pad;\nstruct P { int x, y; };\nstruct Q { int x, y, z; };\nstruct S3 { ch
         "expect": 50,
     },
     {
+        "name": "struct_narrow_return",
+        "why": "aggregate returns narrower than a word: 1/2/3/4/5/6/7/8-byte "
+               "structs come back in r0/r1 with ceil(sz/4) words on the caller's "
+               "stack, so the store width must be the object's real width.  No "
+               "store takes 3/5/6/7 bytes, so those are composed from a "
+               "duplicated word -- and the byte at offset 2 lives in bits "
+               "16..23, which has to be shifted down before the 1-byte store "
+               "(storing the word as-is put byte 0 into offset 2: measured "
+               "1088 instead of 1122, i.e. the third field read the first)",
+        "files": {
+            "r.c": STARTUP + """\
+int sn_pad;\nstruct S1{char a;}; struct S2{char a,b;}; struct S3{char a,b,c;};\nstruct S4{unsigned a,b;}; struct S5{char c[5];}; struct S6{short a,b,c;};\nstruct S7{char c[7];}; struct S8{int a,b;};\nstruct S1 f1(void){struct S1 s;s.a=0x11;return s;}\nstruct S2 f2(void){struct S2 s;s.a=0x22;s.b=0x33;return s;}\nstruct S3 f3(void){struct S3 s;s.a=0x44;s.b=0x55;s.c=0x66;return s;}\nstruct S4 f4(void){struct S4 s;s.a=3;s.b=5;return s;}\nstruct S5 f5(void){struct S5 s;int i;for(i=0;i<5;i++)s.c[i]=i+1;return s;}\nstruct S6 f6(void){struct S6 s;s.a=2;s.b=3;s.c=4;return s;}\nstruct S7 f7(void){struct S7 s;int i;for(i=0;i<7;i++)s.c[i]=i+1;return s;}\nstruct S8 f8(void){struct S8 s;s.a=0x1234;s.b=0x5678;return s;}\nint main(void){ struct S1 b1=f1(); struct S2 b2=f2(); struct S3 b3=f3();\n struct S4 b4=f4(); struct S5 b5=f5(); struct S6 b6=f6(); struct S7 b7=f7(); struct S8 b8=f8();\n int s = b1.a + b2.a + b2.b + b3.a + b3.b + b3.c + b4.a + b4.b\n       + b5.c[0] + b5.c[4] + b6.a + b6.b + b6.c + b7.c[0] + b7.c[6]\n       + (b8.a & 0xF) + (b8.b & 0xF);\n return s & 0x7f; }\n""",
+        },
+        "build": [(["r.c", "-target", "arm", "--vector-table", "-o", "out.bin"], "out.bin")],
+        "expect": 16,
+    },
+    {
+        "name": "struct_narrow_copy",
+        "why": "whole-aggregate assignment and declaration-initialisation for "
+               "1..8-byte structs: an lvalue copy must go through the ADDRESS "
+               "(irgen_expr on an aggregate lvalue pushes only its first word), "
+               "and a 3/5/6/7-byte store must not round up to 4 or 8 bytes.  "
+               "SRAM is pre-filled with 0xAA and neighbours inside a struct "
+               "array are checked, so an over-wide store cannot pass unnoticed",
+        "files": {
+            "c.c": STARTUP + """\
+int sc_pad;\nstruct S1{char a;}; struct S2{char a,b;}; struct S3{char a,b,c;};\nstruct S4{unsigned a,b;}; struct S5{char c[5];}; struct S6{short a,b,c;};\nstruct S7{char c[7];}; struct S8{int a,b;};\nint main(void){\n struct S1 a1; struct S2 a2; struct S3 a3; struct S4 a4;\n struct S5 a5; struct S6 a6; struct S7 a7; struct S8 a8;\n struct S1 c1; struct S2 c2; struct S3 c3; struct S4 c4;\n struct S5 c5; struct S6 c6; struct S7 c7; struct S8 c8;\n int i; int s = 0;\n a1.a=1; a2.a=2; a2.b=3; a3.a=4; a3.b=5; a3.c=6; a4.a=7; a4.b=8;\n for(i=0;i<5;i++) a5.c[i]=i+1; a6.a=1; a6.b=2; a6.c=3;\n for(i=0;i<7;i++) a7.c[i]=i+1; a8.a=9; a8.b=10;\n c1=a1; c2=a2; c3=a3; c4=a4; c5=a5; c6=a6; c7=a7; c8=a8;\n s = c1.a + c2.a + c2.b + c3.a + c3.b + c3.c + c4.a + c4.b\n   + c5.c[0] + c5.c[4] + c6.a + c6.b + c6.c + c7.c[0] + c7.c[6] + c8.a + c8.b;\n { struct S3 v[3]; struct S3 t; struct S5 w[3];\n   for(i=0;i<3;i++){ v[i].a=0x7F; v[i].b=0x7F; v[i].c=0x7F; }\n   t.a=1; t.b=2; t.c=3; v[1]=t;\n   if (v[0].a!=0x7F || v[0].b!=0x7F || v[0].c!=0x7F) s += 40;\n   if (v[2].a!=0x7F || v[2].b!=0x7F || v[2].c!=0x7F) s += 40;\n   if (v[1].a!=1 || v[1].b!=2 || v[1].c!=3) s += 40;\n   for(i=0;i<3;i++){int j; for(j=0;j<5;j++) w[i].c[j]=0x7F;}\n   for(i=0;i<5;i++) w[1].c[i]=i+1;\n   if (w[0].c[0]!=0x7F || w[0].c[4]!=0x7F) s += 40;\n   if (w[2].c[0]!=0x7F || w[2].c[4]!=0x7F) s += 40;\n   if (w[1].c[0]!=1 || w[1].c[4]!=5) s += 40;\n   s += v[1].a + v[1].c + w[1].c[4];\n }\n return s & 0x7f;\n}\n""",
+        },
+        "sram_fill": 0xAA,
+        "build": [(["c.c", "-target", "arm", "--vector-table", "-o", "out.bin"], "out.bin")],
+        "expect": 84,
+    },
+    {
+        "name": "struct_narrow_call_assign",
+        "why": "aggregate assignment whose right-hand side is a struct-returning CALL (3- and 5-byte objects) followed by more statements: the expression value of such an assignment has to be the aggregate VALUE (one word for 3 bytes, a low/high pair for 5..8), not the destination address.  Leaving the address made a plain `v[1] = f3();` statement pop one word too many, the frame cursor then sat four bytes into slot 0, and the next pushed value overwrote the first local (`if (0) {}` after such an assignment returned 0 instead of 5).  Neighbours inside `struct S3 v[3]` / `struct S5 z[3]` are checked and SRAM is pre-filled with 0xAA, so an over-wide store cannot pass either",
+        "files": {
+            "a.c": STARTUP + """\
+int sa_pad;\nstruct S1{char a;}; struct S2{char a,b;}; struct S3{char a,b,c;};\nstruct S4{unsigned a,b;}; struct S5{char c[5];}; struct S6{short a,b,c;};\nstruct S7{char c[7];}; struct S8{int a,b;};\nstruct S3 f3(void){struct S3 r;r.a=0x44;r.b=0x55;r.c=0x66;return r;}\nstruct S5 f5(void){struct S5 r;int i;for(i=0;i<5;i++)r.c[i]=i+1;return r;}\nint main(void){\n struct S1 a1; struct S2 a2; struct S3 a3; struct S4 a4;\n struct S5 a5; struct S6 a6; struct S7 a7; struct S8 a8;\n struct S1 c1; struct S2 c2; struct S3 c3; struct S4 c4;\n struct S5 c5; struct S6 c6; struct S7 c7; struct S8 c8;\n int i; int s = 0;\n a1.a=1; a2.a=2; a2.b=3; a3.a=4; a3.b=5; a3.c=6; a4.a=7; a4.b=8;\n for(i=0;i<5;i++) a5.c[i]=i+1; a6.a=1; a6.b=2; a6.c=3;\n for(i=0;i<7;i++) a7.c[i]=i+1; a8.a=9; a8.b=10;\n c1=a1; c2=a2; c3=a3; c4=a4; c5=a5; c6=a6; c7=a7; c8=a8;\n s = c1.a + c2.a + c2.b + c3.a + c3.b + c3.c + c4.a + c4.b\n   + c5.c[0] + c5.c[4] + c6.a + c6.b + c6.c + c7.c[0] + c7.c[6] + c8.a + c8.b;\n { struct S3 v[3]; struct S3 t; struct S5 w[3];\n   for(i=0;i<3;i++){ v[i].a=0x7F; v[i].b=0x7F; v[i].c=0x7F; }\n   t.a=1; t.b=2; t.c=3; v[1]=t;\n   if (v[0].a!=0x7F || v[0].b!=0x7F || v[0].c!=0x7F) s += 40;\n   if (v[2].a!=0x7F || v[2].b!=0x7F || v[2].c!=0x7F) s += 40;\n   if (v[1].a!=1 || v[1].b!=2 || v[1].c!=3) s += 40;\n   for(i=0;i<3;i++){int j; for(j=0;j<5;j++) w[i].c[j]=0x7F;}\n   for(i=0;i<5;i++) w[1].c[i]=i+1;\n   if (w[0].c[0]!=0x7F || w[0].c[4]!=0x7F) s += 40;\n   if (w[2].c[0]!=0x7F || w[2].c[4]!=0x7F) s += 40;\n   if (w[1].c[0]!=1 || w[1].c[4]!=5) s += 40;\n   s += v[1].a + v[1].c + w[1].c[4];\n }\n   { struct S3 y[3]; struct S5 z[3]; int i2;\n     for(i2=0;i2<3;i2++){ y[i2].a=0x7F; y[i2].b=0x7F; y[i2].c=0x7F; }\n     y[1] = f3();\n     if (y[0].a!=0x7F || y[0].c!=0x7F) s += 40;\n     if (y[2].a!=0x7F || y[2].c!=0x7F) s += 40;\n     if (y[1].a!=0x44 || y[1].b!=0x55 || y[1].c!=0x66) s += 40;\n     for(i2=0;i2<3;i2++){int j2; for(j2=0;j2<5;j2++) z[i2].c[j2]=0x7F;}\n     z[1] = f5();\n     if (z[0].c[0]!=0x7F || z[0].c[4]!=0x7F) s += 40;\n     if (z[2].c[0]!=0x7F || z[2].c[4]!=0x7F) s += 40;\n     if (z[1].c[0]!=1 || z[1].c[4]!=5) s += 40;\n     s += y[1].c + z[1].c[2];\n   }\n return s & 0x7f;\n}\n""",
+        },
+        "sram_fill": 0xAA,
+        "build": [(["a.c", "-target", "arm", "--vector-table", "-o", "out.bin"], "out.bin")],
+        "expect": 61,
+    },
+    {
         "name": "sret_cross_tu",
         "why": "struct return > 8 bytes across translation units: the caller "
                "only has a declaration (`struct S mk(int);`), so the hidden "

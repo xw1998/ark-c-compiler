@@ -2216,6 +2216,46 @@ static void irgen_discard_result(IrGen *g, AstNode *node) {
     }
 }
 
+/* Store a small aggregate that came back in registers into the frame slot at
+ * `off`, using the object's exact width.
+ *
+ * A call returning a struct/union of at most 8 bytes returns it in r0/r1 and
+ * leaves ceil(sz/4) words on the caller's stack (1 word for a 1-byte object,
+ * 2 for an 8-byte one), so the caller cannot "pop the two words" -- it has to
+ * store the object's own width.  No store takes 3/5/6/7 bytes, so those
+ * widths are composed from a word duplicated with IR_DUP:
+ *   3   : STRH +0 (low 2 bytes), shift >>16, STRB +2
+ *   5/6 : STR (1/2 bytes) +4 from the high word, drop it, STR +0
+ *   7   : STRH +4 from the high word, shift >>16, STRB +6, STR +0
+ * The value must already be on the expression stack (irgen_expr of the call).
+ * Writing 4 or 8 bytes instead would clobber the object behind the
+ * destination: measured with `struct S3 v[3]; v[1] = f3();` writing v[2]. */
+static void irgen_store_small_agg(IrGen *g, int off, int sz) {
+    if (sz == 1 || sz == 2 || sz == 4) {
+        ir_emit(g->fn, IR_STORE, off, 0, sz);
+    } else if (sz == 3) {
+        ir_emit(g->fn, IR_DUP, 1, 0, 0);
+        ir_emit(g->fn, IR_STORE, off, 0, 2);
+        ir_emit(g->fn, IR_PUSH_INT, 16, 0, 0);
+        ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_SHR);
+        ir_emit(g->fn, IR_STORE, off + 2, 0, 1);
+    } else if (sz == 5 || sz == 6) {
+        ir_emit(g->fn, IR_DUP, 1, 0, 0);
+        ir_emit(g->fn, IR_STORE, off + 4, 0, sz - 4);
+        ir_emit(g->fn, IR_POP, 0, 0, 0);
+        ir_emit(g->fn, IR_STORE, off, 0, 4);
+    } else if (sz == 7) {
+        ir_emit(g->fn, IR_DUP, 1, 0, 0);
+        ir_emit(g->fn, IR_STORE, off + 4, 0, 2);
+        ir_emit(g->fn, IR_PUSH_INT, 16, 0, 0);
+        ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_SHR);
+        ir_emit(g->fn, IR_STORE, off + 6, 0, 1);
+        ir_emit(g->fn, IR_STORE, off, 0, 4);
+    } else {
+        ir_emit(g->fn, IR_STORE, off, 0, 8);
+    }
+}
+
 static void irgen_stmt(IrGen *g, AstNode *node) {
     if (!node) return;
     g_ir_cur_line = node->line;
@@ -2520,14 +2560,42 @@ static void irgen_stmt(IrGen *g, AstNode *node) {
                         ir_emit(g->fn, IR_PUSH_ADDR, off, 0, 0);  /* push dst addr */
                         ir_emit(g->fn, IR_MEMCPY, struct_sz, 0, 0);
                     } else if (struct_sz <= 8) {
-                        /* Small struct (<=8B): irgen_expr pushes the 8-byte
-                         * value (covers AST_FUNC_CALL returning small struct
-                         * and AST_VAR struct-to-struct copy). Store directly
-                         * via IR_STORE; memcpy cannot be used because rvalues
-                         * have no address (treating the value as a pointer
-                         * caused STATUS_ACCESS_VIOLATION). */
-                        irgen_expr(g, iv);
-                        ir_emit(g->fn, IR_STORE, off, 0, 8);
+                        /* Small struct (<=8B).  Two shapes, and they are NOT
+                         * interchangeable:
+                         *   - a call returning a small struct leaves two
+                         *     words on the stack (r0 low, r1 high);
+                         *   - any other source is an lvalue, and
+                         *     irgen_expr() on an aggregate lvalue pushes only
+                         *     its FIRST word.  Storing that as an 8-byte value
+                         *     wrote (word0, whatever happened to be under it)
+                         *     -- measured: `struct pt q = p;` read q.y from an
+                         *     unrelated frame slot, `struct{char c[3];} b = a;`
+                         *     returned seed noise.
+                         * So lvalues are copied through their ADDRESS with
+                         * IR_MEMCPY, which is byte-exact for every width.  A
+                         * width-based IR_STORE cannot express 3-byte objects
+                         * (there is no 3-byte store) and a 4-byte store would
+                         * clobber the object behind the destination. */
+                        if (iv && iv->kind == AST_FUNC_CALL) {
+                            /* A small struct comes back in registers (r0, r1)
+                             * and the call leaves ceil(sz/4) words on the
+                             * stack, low word first -- measured: a 1-byte
+                             * struct leaves ONE word, an 8-byte one TWO.  So
+                             * there is nothing to pop, and the store width
+                             * has to be the object's real width; the old code
+                             * popped a word that was never pushed and then
+                             * wrote 8 bytes, which is why `struct S1 b =
+                             * f1();` returned 0xFFFFFFD0 instead of 0x11.
+                             * No store takes 3/5/6/7 bytes, so those are
+                             * composed from a duplicated word (a 7-byte one
+                             * shifts the high word down by 16 first). */
+                            irgen_expr(g, iv);
+                            irgen_store_small_agg(g, off, struct_sz);
+                        } else {
+                            irgen_lvalue_addr(g, iv);             /* src addr */
+                            ir_emit(g->fn, IR_PUSH_ADDR, off, 0, 0);  /* dst */
+                            ir_emit(g->fn, IR_MEMCPY, struct_sz, 0, 0);
+                        }
                     } else {
                         /* Large struct var-to-var copy: take source address. */
                         irgen_lvalue_addr(g, iv);                 /* push src addr */
@@ -4208,16 +4276,22 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                 if (L->type && (L->type->kind == TYPE_STRUCT || L->type->kind == TYPE_UNION)) {
                     int sz = type_size(L->type);
                     if (sz <= 0) sz = 4;
-                    if (sz <= 8) {
-                        /* Small struct (<=8B) -- value semantics, no memcpy:
-                         * push the destination address, then the value, then
-                         * IR_STORE_IDX with the value's width. The value has to
-                         * be read out of the source object for 5..8 bytes; a
-                         * plain irgen_expr() on a struct variable pushes only
-                         * the first word (measured: `arr[1] = a` stored the
-                         * array-element address as the second word and then
-                         * crashed in the next store). */
-                        int es = (sz > 4) ? 8 : 4;
+                    if (sz == 1 || sz == 2 || sz == 4 || sz == 8) {
+                        /* Widths that have an exact store: value semantics,
+                         * no memcpy.  Push the destination address, then the
+                         * value, then IR_STORE_IDX with the object's own
+                         * width.  The value has to be read out of the source
+                         * object for 5..8 bytes; a plain irgen_expr() on a
+                         * struct variable pushes only the first word
+                         * (measured: `arr[1] = a` stored the array-element
+                         * address as the second word and then crashed in the
+                         * next store).
+                         * The width is the OBJECT's width, not the next width
+                         * up: a 1-byte struct used to be stored with a 4-byte
+                         * STR, which overwrote the three bytes behind the
+                         * destination (measured with
+                         * `struct{char a;} b[3]; b[0] = a;` overwriting b[1]). */
+                        int es = sz;
                         AstNode *r = node->u.binary.right;
                         irgen_lvalue_addr(g, L);                  /* [dst_addr] */
                         if (r && r->kind == AST_FUNC_CALL) {
@@ -4230,6 +4304,45 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                             irgen_expr(g, r);
                         }
                         ir_emit(g->fn, IR_STORE_IDX, es, 0, 0);   /* [value] */
+                        break;
+                    }
+                    if (sz < 8 && node->u.binary.right &&
+                        node->u.binary.right->kind == AST_FUNC_CALL) {
+                        /* 3/5/6/7-byte struct returned in registers: it has no
+                         * address to copy from, but it still must not be
+                         * written with the next width up -- a 4-byte store
+                         * into `struct S3 v[3]` would clobber v[2].  Land it in
+                         * a temp slot with its exact width, then byte-copy the
+                         * temp to the destination so the store is exact. */
+                        int tmp = alloc_local(g, sz);
+                        irgen_expr(g, node->u.binary.right);
+                        irgen_store_small_agg(g, tmp, sz);
+                        /* IR_MEMCPY pops dst (top) then src, and leaves
+                         * nothing behind, so the dst address is pushed a
+                         * second time to keep it as the expression value --
+                         * an AST_EXPR_STMT pops exactly one word.  Pushing
+                         * only two words used to leave the statement popping
+                         * a word that was never there, and every later stack
+                         * access in the function was off by 4. */
+                        irgen_lvalue_addr(g, L);                  /* [dst] */
+                        ir_emit(g->fn, IR_PUSH_ADDR, tmp, 0, 0);  /* [dst,src] */
+                        irgen_lvalue_addr(g, L);                  /* [dst,src,dst] */
+                        ir_emit(g->fn, IR_MEMCPY, sz, 0, 0);      /* leaves [dst] */
+                        /* The expression value must be the aggregate VALUE,
+                         * not the destination address: irgen_discard_result
+                         * and every other consumer assume a 5..8-byte
+                         * composite arrives as a low/high word pair (and a
+                         * 3-byte one as a single word).  Leaving the address
+                         * here made a plain `z[1] = f();` statement pop one
+                         * word too many -- the frame cursor then sat four
+                         * bytes into slot 0, so the next pushed value landed
+                         * on the first local and `s` read back as 0/1
+                         * (measured with `{struct S5 z[3]; z[1]=f5();}
+                         * if (0) {}` returning 0 instead of 5). */
+                        ir_emit(g->fn, IR_POP, 0, 0, 0);          /* drop address */
+                        ir_emit(g->fn, IR_PUSH_ADDR, tmp, 0, 0);
+                        ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
+                        irgen_load_idx(g, 0, (sz > 4) ? 8 : 4, 0);
                         break;
                     }
                     /* Large struct: use IR_MEMCPY with addresses.
