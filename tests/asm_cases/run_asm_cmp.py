@@ -66,9 +66,15 @@ CASES = [
 # --asm-extra switch contract.  Each entry is (mnemonic, source line that must
 # assemble when the switch is on).  The target label `tgt` and the trailing nop
 # keep every operand form reachable.
+# Four mnemonics that used to live in this table are deliberately absent:
+# ADDS, SUBS, MRS and MSR.  All four became *unconditional* when the backend
+# started emitting flag-setting ALU forms and the PRIMASK critical sections
+# behind <stdatomic.h> (commits 18cd442 / 0e097ca).  The contract this table
+# checks is "off means unknown mnemonic", and for these four the off state no
+# longer exists -- listing them here would assert the opposite of the design.
+# They stay covered by the byte-for-byte comparison table above, which is the
+# part that matters for them.
 SWITCH_CASES = [
-    ("ADDS",   "adds r0, r1, #300"),
-    ("SUBS",   "subs.w r0, r1, #400"),
     ("ANDS",   "ands r0, r1"),
     ("ORRS",   "orrs r0, r1"),
     ("EORS",   "eors r0, r1"),
@@ -95,8 +101,6 @@ SWITCH_CASES = [
     ("MLS",    "mls r0, r1, r2, r3"),
     ("SMULL",  "smull r0, r1, r2, r3"),
     ("SMLAL",  "smlal r0, r1, r2, r3"),
-    ("MRS",    "mrs r0, msp"),
-    ("MSR",    "msr msp, r0"),
 ]
 
 
