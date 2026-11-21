@@ -54,12 +54,36 @@ difficulty of this pass comes from.
 | Candidate | Why not |
 | --- | --- |
 | r0-r3 | caller-saved; the value dies across `BL`, turning the win into a bug |
-| r4 | would make `sp` misaligned to 8 bytes mid-function (AAPCS), breaking floats and `ldrd` |
+| r4 | unused before, because it would make `sp` misaligned to 8 bytes mid-function (AAPCS), breaking floats and `ldrd`; now used **conditionally** as a third slot, see 3.1 |
 | r5, r7 | the prologue already does `PUSH {r5, r6, r7, lr}` => **zero frame change**; callee-saved => valid across `BL` |
 | r8-r11 | usable, but in this encoding they only have 32-bit forms, so instructions get bigger, fighting the P6 size weights |
 
 If the function body already mentions r5 or r7, the survey drops that register from the pool
 (better a smaller win than a changed meaning).
+
+### 3.1 r4 as a third slot (conditional)
+
+When two slots cannot hold three simultaneously live values, the third one falls back to a real
+`PUSH`.  r4 is callee-saved and this code generator **never uses it** (`ark_regalloc_function()`
+only goes up from r8), so it can be the third slot -- provided the cost is paid honestly:
+
+- **Gate**: the survey simulates the shadow depth and records the **peak number of values held on
+  the machine stack at once** (`sdmax`; a `BL` resets it, because a call consumes its argument
+  pushes).  r4 is only taken when `sdmax >= 3`: a function that never goes deeper than two saves
+  not one instruction, so an extra saved register is a pure loss.  On the HAL corpus only 59 of the
+  203 rewritable functions pass; the other 63 "deep enough" functions saved exactly -- 0
+  instructions each, so the gate is not a conservative guess but a measurement.
+- **The frame has to grow by one word**: `PUSH {r5, r6, r7, lr}` is 16 bytes, adding r4 makes 20,
+  so `sp` is 4 (mod 8) and the AAPCS 8-byte alignment is broken on the spot; therefore
+  `SUB sp, sp, #N` and `ADD sp, sp, #N` must both become `N+4` (`N` is a multiple of 8 by
+  construction, and `frame % 8 == 0` is one of the assertions).
+- **All or nothing**: the four lines (prologue, `SUB`, `ADD`, epilogue) are formatted first and only
+  replaced once all four allocations succeeded; if any step fails the whole path is abandoned, so
+  there is never a "pushed r4 but kept the old frame" half-state.
+- **One shape only**: the scan must find exactly one `PUSH {r5, r6, r7, lr}`, exactly one
+  `SUB sp, sp, #N` / `ADD sp, sp, #N` pair with the same `N`, exactly one `POP {r5, r6, r7, pc}`,
+  and no r4 anywhere in the body.  Functions whose big frame is split into several `SUB`/`ADD`
+  pieces (`nsub != 1 || nadd != 1`) fall out automatically.
 
 ## 4. The four rewrite rules
 
@@ -147,14 +171,18 @@ only eats pairs that were already adjacent.
 | Corpus | off | on | change |
 | --- | --- | --- | --- |
 | STM32F4 HAL (`examples/ark_test/ark_test_all.c`, `-O2 -mcpu Cortex-M4`, non-directive non-label lines) | 47,885 insns | 38,332 insns | **-20.0%** |
-| arith fixture, instructions | 171 | 128 | -25% |
-| same, `PUSH`/`POP` count | 88 | 22 | -75% |
-| same, image bytes | 1392 | 1306 | -6.2% |
-| loop fixture, instructions | 203 | 145 | -28% |
-| same, `PUSH`/`POP` count | 100 | 18 | -82% |
-| same, image bytes | 1480 | 1364 | -7.8% |
-| struct fixture, image bytes | 1400 | 1308 | -6.6% |
-| variadic fixture, image bytes | 1556 | 1460 | -6.2% |
+| same corpus, `-fopt-addr` on top of vstack (see `docs/ADDR_FOLD.md`) | 38,332 insns | 36,893 insns | -3.75% |
+| same corpus, the r4 third slot on top of `-fopt-vstack -fopt-addr` | 36,893 insns | 36,554 insns | -0.92% |
+| arith fixture, instructions | 171 | 121 | -29% |
+| same, `PUSH`/`POP` count | 88 | 14 | -84% |
+| same, image bytes | 1392 | 1292 | -7.2% |
+| loop fixture, instructions | 203 | 140 | -31% |
+| same, `PUSH`/`POP` count | 100 | 12 | -88% |
+| same, image bytes | 1480 | 1354 | -8.5% |
+| struct fixture, image bytes | 1400 | 1294 | -7.6% |
+| variadic fixture, image bytes | 1556 | 1458 | -6.3% |
+| deep fixture (three nested levels), image bytes | 1384 | 1354 | -2.2% |
+| shallow fixture (`a + b`), image bytes | 1274 | 1226 | -3.8% |
 
 The HAL row is the only reproducible headline (the corpus is in the repo, command at the end of
 this section); the `bench_opt/bench1.c` figures quoted earlier came from a temporary corpus in an
@@ -168,22 +196,37 @@ The command behind the HAL row (from the repository root):
 
 ```
 ./arkcc.exe -target arm -S -O2 -mcpu Cortex-M4 -D STM32F401xE \
-  -I examples/ark_test -I include -I src -I stdlib/include \
+  -I examples/ark_test \
+  -I examples/ark_test/Drivers/STM32F4xx_HAL_Driver/Inc \
+  -I examples/ark_test/Core/Inc \
+  -I examples/ark_test/Drivers/CMSIS/Device/ST/STM32F4xx/Include \
+  -I examples/ark_test/Drivers/CMSIS/Core/Include \
+  -I include -I src -I stdlib/include -D USE_HAL_DRIVER \
   examples/ark_test/ark_test_all.c -o hal.s
 # count lines that are neither '.' directives/labels nor ':' label lines
 ```
 
-Run it once more with `-fopt-vstack`; the difference between the two counts is the -20.0% in the table.
+Run it once more with `-fopt-vstack`; the difference between the two counts is the -20.0% in the
+table.  With `-fopt-vstack -fopt-addr` it is 36,893.  The r4 third slot is internal to the pass and
+has no flag of its own, so 36,554 is what that same command produces.  The r4 row is booked
+honestly: 59 functions each save one more word in the prologue and epilogue (about +472 bytes) for
+340 fewer instructions, and the **per-object byte size was not measured separately**, so only the
+instruction counts are reported.
 
 ## 8. What the gate actually says
 
-`make test-vstack` (17 checks):
+`make test-vstack` (23 checks):
 
 - **the default build ignores the pass**: `-O2` and `-O2 -fno-opt-vstack` objects are byte-identical (1392/1392);
 - **it really saves**: instruction and `PUSH`/`POP` counts drop, the image does not grow;
 - **no rewritten function keeps a lone PUSH/POP pair** (asserted per function, `leftovers none`);
 - **the answer is the same**: arith / loop / struct / variadic return 73 / 85 / 12 / 24 identically
   from the off, the on and the on+regalloc builds;
+- **the third slot is asked for, not assumed**: the `deep` fixture (three nested levels) must show
+  `PUSH {r4, r5, r6, r7, lr}` / `POP {r4, r5, r6, r7, pc}` and a frame `SUB sp, sp, #N` with
+  `N % 8 == 4` (16+8k has to become 20+8k+4 to stay 8-byte aligned), while the `shallow` fixture
+  (`a + b`) must **not** have r4 in its prologue -- a function that saves no instruction pays a
+  word for nothing;
 - **it can be cropped**: a `-DARKCC_FEATURE_OPT_VSTACK=0` build refuses `-fopt-vstack` with
   `C3900U`, and still compiles without the flag.
 
@@ -204,7 +247,8 @@ flag is byte-identical to 0.9.0.
 
 ## 10. Known cost
 
-The pool has two slots and a live `pend` mapping pins its slot; when the pool runs dry the pass
-falls back to a real `PUSH`. So it is **friendly to chained evaluation** and tends to zero on
+The pool has two slots, and r4 joins as a third one only when three values are alive at once and
+the function shape allows it; a live `pend` mapping pins its slot, and when the pool runs dry the
+pass falls back to a real `PUSH`. So it is **friendly to chained evaluation** and tends to zero on
 register-hungry expressions -- but it never produces worse code than the original sequence, which
 is the line the "image never grows" criterion guards.

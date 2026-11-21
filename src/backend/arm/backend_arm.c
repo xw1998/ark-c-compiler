@@ -1187,9 +1187,13 @@ static void ark_regalloc_function(AsmBuffer *b, int from, IrFunc *f, int local_e
  * mention of r0 and only retargets when that mention is a write.  That is what
  * keeps `IR_DUP` (`PUSH {r0}` with the copy deliberately left in r0) correct.
  *
- * Cost, measured on the corpus: 1024 instructions -> see docs/RA_VSTACK.md.
+ * The pool is two registers by default (r5, r7).  When the body keeps three or
+ * more values alive at once, the survey adds r4 -- this code generator never
+ * uses it -- and the frame grows by the same word so sp stays 8-byte aligned.
+ *
+ * Cost, measured on the STM32F4 HAL corpus: see docs/RA_VSTACK.md.
  */
-#define VS_MAX_POOL   2
+#define VS_MAX_POOL   3
 #define VS_MAX_DEPTH  24
 #define VS_MAX_OP     6
 #define VS_OPLEN      96
@@ -1635,6 +1639,25 @@ static int vs_read_before_write(VsLine *L, int nlines, int from, int reg)
     return 1;
 }
 
+/* Small helpers for the r4 pool extension: parse "#<n>" and replace a line's
+ * text (the text lives in the memory pool; the old copy is simply dropped). */
+static int vs_atou(const char *s) {
+    int v = 0;
+    if (*s == '#') s++;
+    while (vs_isdigit(*s)) { v = v * 10 + (*s - '0'); s++; }
+    return v;
+}
+
+static int vs_settext(VsLine *ln, const char *text)
+{
+    int n = (int)strlen(text);
+    char *t = (char *)mem_pool_alloc(n + 1);
+    if (!t) return 0;
+    memcpy(t, text, n + 1);
+    ln->t = t;
+    return 1;
+}
+
 static void ark_vstack_function(AsmBuffer *b, int from)
 {
     VsLine *L = 0;
@@ -1692,6 +1715,15 @@ static void ark_vstack_function(AsmBuffer *b, int from)
     /* ---- survey: pool availability and the bail conditions ---- */
     {
         int use5 = 0, use7 = 0, bad = 0;
+        int use4 = 0, r4_pro = -1, r4_sub = -1, r4_add = -1, r4_pop = -1;
+        int frame = -1, nsub = 0, nadd = 0;
+        /* Peak number of values the body keeps on the machine stack at once.
+         * With a two-register pool every value past the second one is spilled,
+         * so a body that never goes deeper than two cannot profit from a third
+         * pool register -- and r4 is not free: the prologue and epilogue each
+         * grow by one word.  A call consumes its argument pushes, so it resets
+         * the count instead of adding to it. */
+        int sdepth = 0, sdmax = 0;
         for (i = pro_end + 1; i < nlines; i++) {
             char mn[24];
             char ops[VS_MAX_OP][VS_OPLEN];
@@ -1703,6 +1735,12 @@ static void ark_vstack_function(AsmBuffer *b, int from)
                 if (nops == 1 && !strchr(ops[0], ',')) {
                     if (vs_txt_has(ops[0], 5)) use5 = 1;
                     if (vs_txt_has(ops[0], 7)) use7 = 1;
+                    if (vs_streq(mn, "PUSH")) {
+                        sdepth++;
+                        if (sdepth > sdmax) sdmax = sdepth;
+                    } else if (sdepth > 0) {
+                        sdepth--;
+                    }
                     continue;
                 }
                 /* multi-register: only the prologue PUSH and an epilogue POP
@@ -1715,12 +1753,62 @@ static void ark_vstack_function(AsmBuffer *b, int from)
             }
             if (vs_txt_has(L[i].t, 5)) use5 = 1;
             if (vs_txt_has(L[i].t, 7)) use7 = 1;
+            if (vs_txt_has(L[i].t, 4)) use4 = 1;
             f = vs_form(mn, nops, ops, &cnd);
             if (f < 0) { bad = 1; break; }
+            if (f == VS_F_CALL) sdepth = 0;
         }
         if (bad) return;
         if (!use5) { pool[npool] = 5; npool++; }
         if (!use7) { pool[npool] = 7; npool++; }
+        /* r4 is callee-saved, but this code generator saves only
+         * r5/r6/r7/lr.  When the body keeps more than two values alive on the
+         * stack -- so a third pool register actually saves a spill -- add r4
+         * to the frame: push it in the prologue and grow the frame by 4 so the
+         * total stays 8-byte aligned (16+8k becomes 20+8k+4).  Only with the
+         * exact expected prologue/epilogue shapes and a single frame
+         * allocation; otherwise the pass stays as it was and nothing grows. */
+        if (npool < VS_MAX_POOL && !use4 && sdmax >= 3) {
+            for (i = 0; i < nlines; i++) {
+                char mn[24];
+                char ops[VS_MAX_OP][VS_OPLEN];
+                int nops, isdot, islab;
+                if (!vs_parse(L[i].t, mn, sizeof mn, ops, &nops, &isdot, &islab)) continue;
+                if (isdot || islab) continue;
+                if (vs_streq(mn, "PUSH") && nops == 1 && vs_txt_has(ops[0], 5) &&
+                    vs_txt_has(ops[0], 6) && vs_txt_has(ops[0], 7) &&
+                    strstr(ops[0], "lr") && !vs_txt_has(ops[0], 4)) r4_pro = i;
+                else if (vs_streq(mn, "SUB") && nops == 3 && vs_streq(ops[0], "sp") &&
+                    vs_streq(ops[1], "sp") && ops[2][0] == '#') {
+                    r4_sub = i; frame = vs_atou(ops[2]); nsub++;
+                } else if (vs_streq(mn, "ADD") && nops == 3 && vs_streq(ops[0], "sp") &&
+                    vs_streq(ops[1], "sp") && ops[2][0] == '#') {
+                    r4_add = i; nadd++;
+                } else if (vs_streq(mn, "POP") && nops == 1 && vs_txt_has(ops[0], 5) &&
+                    vs_txt_has(ops[0], 6) && vs_txt_has(ops[0], 7) &&
+                    strstr(ops[0], "pc") && !vs_txt_has(ops[0], 4)) r4_pop = i;
+            }
+            if (r4_pro >= 0 && r4_sub >= 0 && r4_add >= 0 && r4_pop >= 0 &&
+                nsub == 1 && nadd == 1 && frame >= 0 && (frame % 8) == 0 &&
+                !vs_txt_has(L[r4_add].t, 0) /* ADD sp, sp, #frame only */) {
+                /* All-or-nothing: a half-rewritten prologue with an
+                 * unchanged frame size would break 8-byte alignment, so
+                 * the four lines are only replaced once every allocation
+                 * succeeded. */
+                char ptxt[64], stxt[64], atxt[64], qtxt[64];
+                if (vs_atou(strstr(L[r4_add].t, "#")) == frame) {
+                    snprintf(ptxt, sizeof ptxt, "    PUSH {r4, r5, r6, r7, lr}");
+                    snprintf(stxt, sizeof stxt, "    SUB sp, sp, #%d", frame + 4);
+                    snprintf(atxt, sizeof atxt, "    ADD sp, sp, #%d", frame + 4);
+                    snprintf(qtxt, sizeof qtxt, "    POP {r4, r5, r6, r7, pc}");
+                    if (vs_settext(&L[r4_pro], ptxt) &&
+                        vs_settext(&L[r4_sub], stxt) &&
+                        vs_settext(&L[r4_add], atxt) &&
+                        vs_settext(&L[r4_pop], qtxt))
+                        { pool[npool] = 4; npool++; }
+                }
+            }
+        }
     }
 
     /* ---- peephole: "PUSH {rN}" immediately followed by "POP {rN}" is a

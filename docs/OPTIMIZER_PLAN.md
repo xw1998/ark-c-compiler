@@ -198,14 +198,24 @@
   `cross`；`cross` 行强制发真 `PUSH`（有 `pend` 则从池寄存器 push），使机器栈与原码逐字
   一致；边界处若影子栈**全为 MEM** 则置 `verbf` 继续，之后整段 verbatim 输出，否则照旧
   bail。池寄存器不可重建，所以只有「值已在内存」才允许跨。
-- **判据**：`tests/run_vstack_tests.py`，17 项，`make test-vstack`：默认关闭逐字节相同、
-  指令与 `PUSH/POP` 下降、**镜像只减不增**、逐函数断言无孤立 PUSH/POP 对、四夹具
-  off/on/on+regalloc 同值、裁剪构建拒绝。另每次改动跑 `tests/arm_exec` 全语料
+- **第三槽 r4（续做）**：池从两槽扩到三槽，但 r4 是**有条件**取的——survey 用影子深度
+  模拟算出「同一节拍最多几个值压在机器栈上」（`sdmax`，遇 `BL` 归零），只有 `sdmax >= 3`
+  才动用 r4（深度到不了三的函数一个指令都省不下，多存一个寄存器是净亏；HAL 上 203 个
+  可改写函数只有 59 个过线，被挡掉的 63 个实测收益恰好为 0）。代价必须付清：prologue/epilogue
+  加 r4 会把 `sp` 变成 ≡4 (mod 8)，所以 `SUB`/`ADD sp, sp, #N` 同改 `N+4`；四行先各自格式化、
+  四次分配都成功才一次性替换，任何一步失败整条路放弃。
+- **判据**：`tests/run_vstack_tests.py`，23 项，`make test-vstack`：默认关闭逐字节相同、
+  指令与 `PUSH/POP` 下降、**镜像只减不增**、逐函数断言无孤立 PUSH/POP 对、六夹具
+  off/on/on+regalloc 同值、裁剪构建拒绝；另有两条专测第三槽——`deep` 必须出现
+  `PUSH {r4, r5, r6, r7, lr}` / `POP {r4, r5, r6, r7, pc}` 且帧 `N % 8 == 4`，`shallow`
+  的 prologue 里**不能**出现 r4。另每次改动跑 `tests/arm_exec` 全语料
   （`--extra=-fopt-vstack`，36 用例 0 失败）——**本 pass 的五处语义缺陷全部是它抓到的**。
-- **实测**（跨界版）：STM32F4 HAL 全语料（`-O2 -mcpu Cortex-M4`，非指示非标签行）
-  47,885 → 38,332 条（**−20.0%**）；arith 夹具 171 → 128 条、`PUSH/POP` 88 → 22、
-  镜像 1392 → 1306；loop 夹具 203 → 145、100 → 18、1480 → 1364；struct 1400 → 1308；
-  variadic 1556 → 1460。细节见 `docs/RA_VSTACK.md`。
+- **实测**（跨界 + 第三槽）：STM32F4 HAL 全语料（`-O2 -mcpu Cortex-M4`，非指示非标签行）
+  47,885 → 38,332 条（**−20.0%**）；再叠 `-fopt-addr` 到 36,893，再加 r4 第三槽到
+  36,554 条（−0.92%）。夹具：arith 171 → 121 条、`PUSH/POP` 88 → 14、镜像 1392 → 1292；
+  loop 203 → 140、100 → 12、1480 → 1354；struct 1400 → 1294；variadic 1556 → 1458；
+  deep 1384 → 1354；shallow 1274 → 1226。r4 的记账要诚实：59 个函数各多 push/pop 一个字
+  （约 +472 字节），换 340 条指令，逐字节对象大小未单独测量。细节见 `docs/RA_VSTACK.md`。
 
 ### P8 寻址折叠（`-fopt-addr`，**已落地 0.9.1-wip**）
 

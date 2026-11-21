@@ -30,6 +30,11 @@ implementation:
      branches, a call-free body and a live value stack across the back edge --
      i.e. the case where a wrong pass silently keeps a register aliased past a
      jump -- and it must still compute the loop's answer.
+  6. THE THIRD REGISTER IS ASKED FOR, NOT ASSUMED.  A body that keeps three
+     values alive gets r4 as a third pool register -- pushed and popped in the
+     frame shape, with the frame grown by one word so 16+8k stays 8-byte
+     aligned -- and a body that never goes past two values does not, because a
+     word of prologue for nothing is a loss on a microcontroller.
   5. CROPPED OUT, REFUSED.  A build with -DARKCC_FEATURE_OPT_VSTACK=0 refuses
      `-fopt-vstack` by name (C3900U) instead of accepting it and doing nothing,
      and still compiles the same file normally without the flag.
@@ -109,6 +114,21 @@ int main(void) { return vsum(3, 7, 8, 9) & 0xFF; }
 """
 
 
+DEEP = """\
+int va_pad_d;
+static int deep(int a, int b, int c, int d, int e)
+{
+    return a + (b * (c + (d * (e + a))));
+}
+int main(void) { return deep(2, 3, 4, 5, 6) & 0xFF; }
+"""
+
+SHALLOW = """\
+int va_pad_w;
+static int shallow(int a, int b) { return a + b; }
+int main(void) { return shallow(3, 4) & 0xFF; }
+"""
+
 def py_arith(a=5, b=7, c=9, d=3):
     x = a + b
     y = c - d
@@ -135,12 +155,20 @@ def py_variadic():
     return (7 + 8 + 9) & 0xFF
 
 
+def py_deep():
+    return (2 + (3 * (4 + (5 * (6 + 2))))) & 0xFF
+
+def py_shallow():
+    return (3 + 4) & 0xFF
+
 # name, body, python answer
 CASES = [
     ('arith',    ARITH,    py_arith()),
     ('loop',     LOOP,     py_loop()),
     ('struct',   STRUCT,   py_struct()),
     ('variadic', VARIADIC, py_variadic()),
+    ('deep',     DEEP,     py_deep()),
+    ('shallow',  SHALLOW,  py_shallow()),
 ]
 
 # the two fixtures whose instruction count the pass must actually reduce
@@ -334,6 +362,38 @@ def main():
                 check(all(v == want for v in got.values()),
                       '%s: off/on/on+regalloc all return %d' % (name, want),
                       'off=%s on=%s both=%s' % (got['off'], got['on'], got['both']))
+
+        # --- 4b. the third pool register only when the body needs it --------
+        # r4 is legal as a third pool register because this codegen never uses
+        # it, but it is not free: PUSH/POP each grow a word.  So it is taken
+        # only for bodies that keep three or more values alive at once, and
+        # then the frame has to grow by the same word to stay 8-byte aligned.
+        t_deep, _, e_deep = build(arkcc, work, 'deep', [FLAG], 'r4on')
+        t_shal, _, e_shal = build(arkcc, work, 'shallow', [FLAG], 'r4off')
+        if e_deep or e_shal:
+            check(False, 'the pool-size fixtures build', (e_deep or e_shal)[0][:120])
+        else:
+            deep_body = [v for k, v in split_functions(t_deep).items()
+                         if 'deep' in k and '{r4, r5, r6, r7' in v]
+            check(len(deep_body) == 1,
+                  'deep: a third value takes r4 and it is saved and restored',
+                  '%d function(s) with a five-register frame' % len(deep_body))
+            body = deep_body[0] if deep_body else ''
+            check('PUSH {r4, r5, r6, r7, lr}' in body and
+                  'POP {r4, r5, r6, r7, pc}' in body,
+                  'deep: r4 is pushed and popped in the frame shape',
+                  'push/pop ok' if body else 'no body')
+            sub = [int(l.split('#')[1]) for l in body.splitlines()
+                   if l.strip().startswith('SUB') and 'sp, sp, #' in l]
+            check(sub and all(n % 8 == 4 for n in sub),
+                  'deep: the frame grows by one word so the stack stays aligned',
+                  'SUB sp, sp, #%s' % (sub or 'none'))
+            grown = [l.strip() for l in t_shal.splitlines()
+                     if l.strip().startswith('PUSH') and 'r4' in l and
+                     'r5' in l]
+            check(not grown,
+                  'shallow: a body that never holds three values leaves r4 alone',
+                  'grown %s' % (grown[:1] if grown else 'none'))
 
         # --- 5. cropped out, refused ----------------------------------------
         trimmed, why = build_arkcc(work, ['-DARKCC_FEATURE_OPT_VSTACK=0'],

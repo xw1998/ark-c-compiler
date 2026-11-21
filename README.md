@@ -89,7 +89,7 @@
 | 复合字面量 | 是 | `(int[]){1,2,3}` / `(struct P){.x=1,.y=2}` |
 | 结构体按值传递 | 是 | 通过隐藏指针参数实现 |
 | 寄存器分配 | 可选 | `-fopt-regalloc`（`ARKCC_FEATURE_OPT_REGALLOC`，宿主/交叉 1、板端 0，默认关）：发射后的文本遍把最热的帧槽搬进 `r8-r11`，只搬"每一处提及都是 `LDR r0,[r6,#n]` / `STR r0,[r6,#n]`"的槽；取地址、`volatile`、8 位/16 位/64 位访问一律留在内存。热点用例（`char pad[200]` 把后面的局部压过 offset 124）`[r6,#]` 引用 22→13，两个负例逐字节不变。两档成本模型：默认档只搬远槽且**函数永不增大**（H743 自举工程 25 个 `.c`：−2 398 B、−0.21%，无文件变大）；`-fopt-regalloc-near` / `--fregalloc-near`（隐含打开基础档）连近槽一起搬，栈访问从 27 372 降到 15 108，比默认档多 150 字节、14 个文件变大；**帧几何**：保存块是锚点——保存块变宽时 `[r6, #N]`（N ≥ 局部区上界）与 `MOVW/ADD r6` 的立即数要同步平移，且保存块必须保持 8 的倍数（奇数个自动补一个空闲 `r8-r11`，零字节代价），否则变参函数的 `r0-r3` 镜像与调用者栈参数会整体错位；五档开关（默认 / `-O2` / regalloc / `-O2+regalloc` / `-O2+regtop+inline+regalloc`）由 `examples/run_va_gate.py --opt-suite` 一次跑完 |
-| 值栈 → 寄存器分配 | 可选 | `-fopt-vstack`（`ARKCC_FEATURE_OPT_VSTACK`，宿主 1、板端 0，默认关）：表达式求值的 `PUSH {r0}` / `POP {r0}` 改为留在 `r5`/`r7`（prologue 已保存 ⇒ 零帧变化），目的寄存器 retarget + 只读操作数文本替换，池槽引用计数、同行/跨操作数读写与 `ADC/SBC/MUL` 原地形先物化、`MOVW/MOVT` 永不 retarget；识别不了就整函数原样输出。边界（label/分支/调用）处若值已全部写回机器栈就继续往后优化（`cross` 预扫描 + 整段 verbatim），否则照旧整函数原样输出。STM32F4 HAL 全语料（Cortex-M4，`-O2`）47,885 → 38,332 条（−20.0%），arith 夹具 171 → 128 条、`PUSH/POP` 88 → 22，镜像只减不增，`tests/arm_exec` 全语料 36 用例 0 失败。详见 `docs/RA_VSTACK.md` |
+| 值栈 → 寄存器分配 | 可选 | `-fopt-vstack`（`ARKCC_FEATURE_OPT_VSTACK`，宿主 1、板端 0，默认关）：表达式求值的 `PUSH {r0}` / `POP {r0}` 改为留在 `r5`/`r7`（prologue 已保存 ⇒ 零帧变化），目的寄存器 retarget + 只读操作数文本替换，池槽引用计数、同行/跨操作数读写与 `ADC/SBC/MUL` 原地形先物化、`MOVW/MOVT` 永不 retarget；识别不了就整函数原样输出。边界（label/分支/调用）处若值已全部写回机器栈就继续往后优化（`cross` 预扫描 + 整段 verbatim），否则照旧整函数原样输出。池只有两槽，第三个值同时存活时才把 `r4` 加进来当第三槽（帧跟着涨一个字保住 8 字节对齐；深度到不了三的函数一律不动它，多存一个寄存器是净亏）。STM32F4 HAL 全语料（Cortex-M4，`-O2`）47,885 → 38,332 条（−20.0%），叠 `-fopt-addr` 36,893、再加第三槽 36,554 条；arith 夹具 171 → 121 条、`PUSH/POP` 88 → 14，镜像只减不增，`tests/arm_exec` 全语料 36 用例 0 失败。详见 `docs/RA_VSTACK.md` |
 | 寻址折叠 | 可选 | `-fopt-addr`（`ARKCC_FEATURE_OPT_ADDR`，宿主 1、板端 0，默认关）：把 `ADD` / `MOV` 算出来的地址折进 `LDR/STR` 的寻址方式（常量偏移、寄存器索引两种），删掉多余的地址算术；死值分析保证被折寄存器在本函数内不再被读，屏障指令 `DMB/DSB/ISB` 放行；两种写回形实测从不发射故不实现。HAL 全语料（STM32F401xE，`-O2`，基线为已过 vstack 的 38,332 条）38,332 → 36,893 条（−3.75%），寄存器索引形可折残差 1,075 → 0。详见 `docs/ADDR_FOLD.md` |
 | 汇编器覆盖面 | 是 | LDR/STR 全地址模式（`[Rn]`/`[Rn,#imm]`/`[Rn,Rm]`/`[Rn,Rm,LSL #0..3]`/`[Rn,#imm]!`/`[Rn],#imm`、`[sp,#imm]`、`[pc,#imm]`）、`VLDM/VSTM/VPUSH/VPOP`、`LDMFD/STMFD/LDMEA/STMEA` 别名、`ADDW/SUBW`；体系结构不存在的形态（`LDMIB/LDMDA/STMIB/STMDA`、寄存器索引写回）明确报错 |
 | 预处理 | 是 | 对象/函数宏（`#/##`）、`#if/#elif/#else/#endif/#ifdef/#ifndef/#undef/#error/#warning/#pragma`、嵌套 `#include`（<=8 层）、`__VA_ARGS__`、`-I` 路径、三字符组替换 |
@@ -542,7 +542,7 @@ ark c compiler/
 ├── docs/TAILCALL.md        尾调用变跳转（--tailcall）：两种可转形状、七条拒绝条件、发射序列为什么必须留 lr、三层裁剪、门禁与实测（中文，UTF-8）
 ├── docs/DIVCONST.md        除常数变乘魔数+移位（--divconst）：幅值法为何正确、三种无符号形状与 L==32 特例、五条拒绝、三层裁剪、45 项门禁与如实字节账（中文，UTF-8）
 ├── docs/XBLOCK.md          整块重复块消除（--xblock）：为什么条件分支收尾必须拒绝、跳转目标按块而非 label id 比较、只有标签的块如何归一化、改写形态、三层裁剪、26 项门禁与字节账（中文，UTF-8）
-├── docs/RA_VSTACK.md       值栈 → 寄存器分配（-fopt-vstack）：为什么做在发射后的文本层、影子值栈与 r5/r7 双槽池、引用计数与三种必须物化的形状、七条安全护栏、四项改写规则与一项 peephole、21 项门禁与 ARM 全语料执行对账（中文，UTF-8，另有 .en.md）
+├── docs/RA_VSTACK.md       值栈 → 寄存器分配（-fopt-vstack）：为什么做在发射后的文本层、影子值栈与 r5/r7 双槽池、引用计数与三种必须物化的形状、七条安全护栏、四项改写规则与一项 peephole、有条件的第三槽 r4、23 项门禁与 ARM 全语料执行对账（中文，UTF-8，另有 .en.md）
 ├── docs/SIZEWEIGHT.md     空间/速度连续权重（--size-weight 0..9）：四张门槛表、5 = 0.9.0 常量、为什么不给 -Oz/-Os/-Ot、派生宏与裁剪、31 项门禁、80 文件逐字节对账、以及「带参函数永不内联」这条已知欠账（中文，UTF-8）
 ├── docs/ADDR_FOLD.md        寻址折叠（-fopt-addr）：三条规则与安全性、为什么不实现两种写回形、四臂门禁与 HAL 全语料实测（中文，UTF-8，另有 .en.md）
 ├── docs/IPO_LTO.md         全程序编译（--ipo / -flto）与跨 TU 常量传播（--const-global）：为什么不是对象级 LTO、合并语义、拒绝的组合、裁剪与两条门禁（中文，UTF-8）
@@ -701,7 +701,7 @@ arkcc <file.c|file.s> [选项]
   --size-weight=N    空间/速度连续权重（0..9，默认 5）：同时移动内联上限、展开上限、
                      尾合并与整块合并的最小长度。0 = 速度优先，9 = 体积优先；5 的四张
                      表项等于 0.9.0 的常量，所以不写这个选项产物逐字节不变
-  -fopt-vstack       值栈留在 r5/r7：表达式求值的 PUSH/POP 成对消除，目的寄存器
+  -fopt-vstack       值栈留在 r5/r7（够深时再加 r4）：表达式求值的 PUSH/POP 成对消除，目的寄存器
                      retarget、只读操作数直接换成池寄存器；池槽引用计数、同行/跨操作数
                      读写与 ADC/SBC/MUL 原地形先物化、MOVW/MOVT 永不 retarget，识别
                      不了就整函数原样输出；-fno-opt-vstack 关（默认关）

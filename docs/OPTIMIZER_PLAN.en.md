@@ -256,16 +256,29 @@ aliasing is uncertain" plus ARM-specific instruction rewrites.**
   set) so the machine stack matches the original word for word; at the boundary, if the shadow stack
   is **entirely MEM**, `verbf` is set and the rest is emitted verbatim, otherwise it bails as before.
   Pool registers cannot be reconstructed, so only values already in memory may cross.
-- **Criteria**: `tests/run_vstack_tests.py`, 17 checks, `make test-vstack`: byte-identical when off,
+- **A third slot (r4), conditionally**: the pool grows from two slots to three, but r4 is taken
+  **only when it pays**. The survey simulates the shadow depth and records the peak number of values
+  on the machine stack at once (`sdmax`; a `BL` resets it because a call consumes its argument
+  pushes); only `sdmax >= 3` gets r4, because a function that never holds three values saves not one
+  instruction and an extra saved register is a pure loss -- on the HAL corpus 59 of 203 rewritable
+  functions qualify and the 63 that were blocked saved exactly 0. The cost is paid in full: adding
+  r4 to the prologue/epilogue makes `sp` 4 (mod 8), so `SUB`/`ADD sp, sp, #N` become `N+4`; the four
+  lines are formatted first and replaced only if all four allocations succeed.
+- **Criteria**: `tests/run_vstack_tests.py`, 23 checks, `make test-vstack`: byte-identical when off,
   fewer instructions and `PUSH`/`POP`s, **the image never grows**, no lone PUSH/POP pair left in a
-  rewritten function, identical results from the off/on/on+regalloc builds on four fixtures, and the
-  cropped build refuses the flag. Every change also runs the whole `tests/arm_exec` corpus
+  rewritten function, identical results from the off/on/on+regalloc builds on six fixtures, and the
+  cropped build refuses the flag; two of the checks are about the third slot only -- `deep` must
+  show `PUSH {r4, r5, r6, r7, lr}` / `POP {r4, r5, r6, r7, pc}` with `N % 8 == 4`, and `shallow`
+  must have no r4 in its prologue. Every change also runs the whole `tests/arm_exec` corpus
   (`--extra=-fopt-vstack`, 36 cases, 0 failures) -- **all five semantic defects this pass ever had
   were found by it**.
-- **Measurements** (crossing version): the whole STM32F4 HAL corpus (`-O2 -mcpu Cortex-M4`,
-  non-directive non-label lines) 47,885 -> 38,332 instructions (**-20.0%**); arith fixture
-  171 -> 128 instructions, `PUSH`/`POP` 88 -> 22, image 1392 -> 1306; loop fixture 203 -> 145,
-  100 -> 18, 1480 -> 1364; struct 1400 -> 1308; variadic 1556 -> 1460. Details in
+- **Measurements** (crossing + third slot): the whole STM32F4 HAL corpus (`-O2 -mcpu Cortex-M4`,
+  non-directive non-label lines) 47,885 -> 38,332 instructions (**-20.0%**); `-fopt-addr` on top
+  gives 36,893 and the r4 slot gives 36,554 (-0.92%). Fixtures: arith 171 -> 121 instructions,
+  `PUSH`/`POP` 88 -> 14, image 1392 -> 1292; loop 203 -> 140, 100 -> 12, 1480 -> 1354; struct
+  1400 -> 1294; variadic 1556 -> 1458; deep 1384 -> 1354; shallow 1274 -> 1226. The r4 row is
+  booked honestly: 59 functions each save one more word (about +472 bytes) for 340 fewer
+  instructions, and the per-object byte size was not measured separately. Details in
   `docs/RA_VSTACK.md`.
 
 ### P8 Addressing-mode folding (`-fopt-addr`, **landed in 0.9.1-wip**)
