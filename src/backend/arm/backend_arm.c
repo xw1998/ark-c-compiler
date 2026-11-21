@@ -2472,8 +2472,16 @@ static void ad_rw(const char *mn, int nops, char ops[AD_MAX_OP][AD_OPLEN],
         if (nops >= 2 && ad_txt_has(ops[1], r)) *rd = 1;
         return;
     }
-    if (ad_streq(base, "PUSH") || ad_streq(base, "POP")) {
+    if (ad_streq(base, "PUSH")) {
         for (k = 0; k < nops; k++) if (ad_txt_has(ops[k], r)) *rd = 1;
+        return;
+    }
+    if (ad_streq(base, "POP")) {
+        /* POP writes its register list; it never reads one.  Modelling it
+         * as a read (the old shared PUSH/POP branch) made every register
+         * that a later POP reloads count as live, which silently blocked
+         * the folds that only need "this value is not wanted again". */
+        for (k = 0; k < nops; k++) if (ad_txt_has(ops[k], r)) *wr = 1;
         return;
     }
     *rd = 1; *wr = 1;
@@ -2815,6 +2823,58 @@ static void ark_addr_function(AsmBuffer *b, int from)
                     L[i].del = 1; changed = 1; continue;
                 }
             }
+
+#if ARKCC_FEATURE_OPT_STRENGTH
+            /* ---- R4: LSL rS, rI, #n then an access indexed by rS ----
+             * -fopt-strength only, because that is the pass that turns an
+             * element index into a shift; with it off this shape never
+             * exists and the rule must stay inert.  R2 above is what brings
+             * the two lines together: the emitter writes
+             *
+             *      LSL r1, r1, #2      ; index * element size
+             *      ADD r0, r0, r1      ; base + index
+             *      LDR r0, [r0, #0]
+             *
+             * so first the ADD disappears into the operand and only then is
+             * the shift adjacent.  The round loop takes care of the order.
+             *
+             *      LSL rS, rI, #n (n = 1..3)      ->  LDR rT, [rB, rI, LSL #n]
+             *      LDR rT, [rB, rS]
+             *
+             * Why the conditions are what they are:
+             *   - only LDR/STR: a byte or halfword register offset has no
+             *     shift field at all, so the merged form would not encode;
+             *   - rI != rB: Thumb has no [Rn, Rn, LSL #n];
+             *   - rS dead afterwards: in the in-place form (rS == rI, the
+             *     emitted one) removing the LSL puts the *unscaled* index
+             *     back into the register, so anything that still reads it
+             *     would see a different value.  A load into rS makes it dead
+             *     by itself, exactly as in R1.
+             * Anything else is left alone: the worst case is a missed fold. */
+            if (g_config.enable_opt_strength && nex > 0 &&
+                ad_streq(mn, "LSL") && nops == 3) {
+                int s_dst, s_src, s_sh;
+                char abase[16];
+                if (ad_whole_reg(ops[0], &s_dst) && ad_whole_reg(ops[1], &s_src) &&
+                    s_dst <= 12 && s_src <= 12 &&
+                    ad_imm_of(ops[2], &s_sh) && s_sh >= 1 && s_sh <= 3) {
+                    mdst = -1; mbase = -1; moff = 0; midx = -1; msh = 0;
+                    if (ad_access(L[nex].t, nmn, sizeof nmn, &mdst, &mbase,
+                                  &moff, &midx, &msh)) {
+                        int sc = 0;
+                        ad_split_base(nmn, abase, &sc);
+                        (void)sc;
+                        if (midx == s_dst && msh == 0 && mbase != s_src &&
+                            (ad_streq(abase, "LDR") || ad_streq(abase, "STR")) &&
+                            ((mdst == s_dst && ad_is_load(nmn)) ||
+                             ad_dead_after(L, nlines, nex + 1, s_dst))) {
+                            L[nex].t = ad_mem_line(nmn, mdst, mbase, s_src, s_sh, 0);
+                            L[i].del = 1; changed = 1; continue;
+                        }
+                    }
+                }
+            }
+#endif /* ARKCC_FEATURE_OPT_STRENGTH */
 
         }
         if (!changed) break;

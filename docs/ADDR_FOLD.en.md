@@ -222,6 +222,26 @@ Those two are design reasons, not a four-way measured comparison -- that
 comparison was not run, so no "the order is worth N instructions" number is
 claimed here.
 
+**Relation to `-fopt-strength`**: after R2 folds, the shape
+
+```asm
+LSL  r1, r1, #2      ; -fopt-strength turned index * 4 into this
+LDR  r0, [r4, r1]    ; R2 already removed the ADD, so the shift is adjacent
+```
+
+leaves the shift right next to the access, which is exactly what the second half
+of `-fopt-strength` (R4) merges into a single `LDR r0, [r4, r1, LSL #2]`. So addr
+does not own that merge: it only deletes the `ADD` and exposes the shape. The
+merge belongs to strength, because strength is what emitted the shift. **addr on
+its own is unchanged** (`-fopt-vstack -fopt-addr` still measures 36,553 on this
+corpus, byte-for-byte what it was before R4).
+
+There is also one liveness fix shared with R1-R3: `ad_rw()` used to put `PUSH`
+and `POP` in the same branch and count `POP`'s operands as reads, so `POP {r1}`
+kept r1 alive forever and `ad_dead_after()` would never call it dead. The two
+branches are now split and `POP` counts as a write. This does not change addr's
+own instruction count on this corpus, but it is a prerequisite for R1-R4 alike.
+
 ## 10. Known cost
 
 The 64-line forward-scan cap in `ad_dead_after` means that if the intermediate

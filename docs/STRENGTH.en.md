@@ -86,6 +86,10 @@ them, and `ADD Rd, Rn, Rm, LSL #n` — the form that does ×3/×5/×(5·2^n) in 
 is **not emitted by this repository's internal assembler** yet, so it stays a debt instead
 of being forced in.
 
+As of 0.9.1-wip the power-of-two case goes one step further: the second half of
+`-fopt-strength` (R4, see §6.5) merges the adjacent `LSL` into the operand, producing
+`[Rn, Rm, LSL #n]`. Non-powers of two are still left completely untouched.
+
 ## 4. Stage position: why it must sit at the end of the pipeline
 
 `ir.strength` is listed in `src/pipeline.c` **after `ir.xblock` and before `ir.vectorize`**.
@@ -162,9 +166,14 @@ value-times-value (fixed-point/ratio arithmetic in the HAL). In other words, the
 | --- | --- | --- |
 | `-fopt-vstack` | 38,004 | (−20.64% vs plain `-O2`) |
 | `+ -fopt-addr` | 36,553 | −3.82% |
-| `+ -fopt-strength` | **35,453** | **−1,100 (−3.01%)** |
+| `+ -fopt-strength` | 35,453 | −1,100 (−3.01%) |
+| `+ -fopt-strength`, second half R4 active | **34,527** | **−926 (−2.61%)** |
 
-Full chain: **47,885 → 38,004 → 36,553 → 35,453 (−25.96% cumulative)**.
+Full chain: **47,885 → 38,004 → 36,553 → 35,453 → 34,527 (−27.90% cumulative)**.
+
+R4 gets its own row only to keep the accounting readable: it is the *same* switch as the
+row above. A user who passes `-fopt-strength` gets both halves; there is no second flag
+(same reasoning as "one switch, two landing points" in §1).
 
 ### 6.3 Object bytes (same TU, `-c`)
 
@@ -178,6 +187,12 @@ Full chain: **47,885 → 38,004 → 36,553 → 35,453 (−25.96% cumulative)**.
 The absolute sizes differ but the relative drop is similar, so the gain does not depend on
 the shape the previous two passes left behind.
 
+**R4 does not change the object bytes**: the `all` arm is **90,208 B** both before and after
+R4. That is not a no-op — every merge is "two 16-bit instructions become one 32-bit
+instruction". The instruction count drops by 926 while the byte count does not move by a
+single byte. The only honest way to state R4's gain is *instruction count*; it is not
+"smaller".
+
 ### 6.4 Fixtures
 
 | Fixture | Off | On | Note |
@@ -188,14 +203,68 @@ the shape the previous two passes left behind.
 
 The `odd` row is this pass's **boundary evidence**: non-powers of two are untouched to the byte.
 
+### 6.5 R4: fold the index scale into `[Rn, Rm, LSL #n]`
+
+Section §3 turns `index * 4` into `LSL r1, r1, #2`, but the access that follows is still
+`LDR r0, [r4, r1]` — two instructions. AC5 emits one. R4 closes that last step:
+
+```asm
+LSL  r1, r1, #2            LDR  r0, [r4, r1, LSL #2]
+LDR  r0, [r4, r1]    →
+```
+
+**This is not a `-fopt-addr` rule**; it is the second half of `-fopt-strength`. The shape
+only exists when strength is on (the shift is emitted there), and putting the rule in addr
+would make addr recognise a shape it never produces, breaking addr's "OFF IS OFF"
+invariant. It lives in `ark_addr_function()`'s round loop, after R2/R3, gated *both* by
+`ARKCC_FEATURE_OPT_STRENGTH` and by the runtime `g_config.enable_opt_strength`. With the
+default (off) the behaviour is unchanged — the `va` arm still measures 36,553, byte-for-byte
+what it was before this work.
+
+Four safety conditions, all required:
+
+| Condition | Why |
+| --- | --- |
+| only `LDR` / `STR` | the byte/halfword register-offset forms have **no shift field**, so the merged encoding does not exist |
+| `0 <= n <= 3` | the Thumb-2 register offset carries a 2-bit `LSL` |
+| `rI != rB` | Thumb has no `[Rn, Rn, LSL #n]` |
+| `rS` is dead after the access (or the load writes `rS`) | the emitted form is the in-place `LSL r1, r1, #2`; deleting it leaves the **unscaled** index in the register, and any later reader would see a different value |
+
+One **liveness-model defect had to be fixed alongside it**: `ad_rw()` used to handle `PUSH`
+and `POP` in the same branch and treat `POP`'s register list as a *read*. So `POP {r1}` kept
+r1 alive forever and `ad_dead_after()` could never call it dead. The fix splits the two
+branches and counts `POP`'s operands as **writes**. This one fix serves R1/R2/R3/R4 alike;
+patching only R4 would not cure the disease. Fold count on the HAL corpus before/after the
+fix: **243 → 926**.
+
+Measurements (HAL corpus, `all` arm = `-fopt-vstack -fopt-addr -fopt-strength`):
+
+| Quantity | Value |
+| --- | --- |
+| `LSL rX, rY, #1..3` count (`on` arm → `all` arm) | 1,052 → 126 |
+| folds into the addressing mode | **926**, every one of them `LSL #2` |
+| `[rB, rI, LSL #n]` operands | 0 → **926** |
+| residue | 158 lines in `all` (1 in the fixture), all from `ad_dead_after()` bailing out conservatively at a label/branch |
+
+The nine `#1` lines (byte/halfword accesses around LDRSH) have no shift field at all and are
+skipped correctly — that is not a missed fold. The 158 residue is **not** chased: widening
+`ad_dead_after()` across branches would turn the analysis into a guess. Missing 158 folds is
+preferable to an unsound fold.
+
+**The encoding is confirmed by a third party**: `tests/asm_cases/08_ldr_str_addr.s` contains
+`ldr r3, [r4, r5, lsl #2]`, and its output is byte-identical to GNU `arm-none-eabi-as`
+(39 instructions all identical), so this is not our assembler talking to itself.
+
 ## 7. Known gaps versus AC5
 
-1. **The index scale is not folded into the addressing mode**: AC5 emits
-   `LDR r4, [r3, r2, LSL #2]`, arkc currently emits `LSL r1, r1, #2` + `LDR r0, [r4, r1]`.
-   Closing this needs `-fopt-addr`'s R2 rule to recognise "an `LSL` followed by one access
-   through `[rB, rI]`" and merge them into `[rB, rI, LSL #n]`, which means the backend must
-   be able to emit that variant. It shortens the stream but adds an exception to
-   `-fopt-addr`'s "only delete, never rewrite" invariant. Recorded as debt.
+1. **The index scale is not folded into the addressing mode** — **resolved (0.9.1-wip)**.
+   The original wording was: AC5 emits `LDR r4, [r3, r2, LSL #2]` while arkc emitted
+   `LSL r1, r1, #2` + `LDR r0, [r4, r1]`, and the judgement at the time was that this
+   belonged to `-fopt-addr`'s R2 rule and would break its "only delete, never rewrite"
+   invariant. The actual fix differs: the rule sits in the second half of
+   `-fopt-strength` (R4), because the shape only exists when strength is on, so addr on its
+   own is unaffected. See §6.5. The cost is that the instruction stream gets shorter while
+   the byte count stays the same.
 2. **Non-powers of two**: AC5 has a full table for 3/5/9; arkc only has powers of two. The
    payoff depends on how much struct-array indexing the corpus has; `es = 12/20/24` accesses
    are rare in the HAL corpus.
@@ -203,7 +272,7 @@ The `odd` row is this pass's **boundary evidence**: non-powers of two are untouc
 
 ## 8. What the gate says
 
-`make test-strength` (`tests/run_strength_tests.py`), 14 checks over two fixtures and five arms:
+`make test-strength` (`tests/run_strength_tests.py`), **18 checks** over two fixtures and five arms:
 
 arms = `base` (`-O2`), `off` (`-O2 -fno-opt-strength`), `on` (`-O2 -fopt-strength`),
 `va` (`-fopt-vstack -fopt-addr`), `all` (`va` + strength).
@@ -225,6 +294,19 @@ arms = `base` (`-O2`), `off` (`-O2 -fno-opt-strength`), `on` (`-O2 -fopt-strengt
    "helpful" change from extending the rule to 3/5.
 10. **CROPPED OUT**: a `-DARKCC_FEATURE_OPT_STRENGTH=0` build refuses `-fopt-strength` with
     `C3900U`, yet still compiles the same program without the flag.
+11. **THE SCALE IS FOLDED INTO THE OPERAND**: on `pow2`, the `[rB, rI, LSL #n]` form is
+    `all=1`, `on=0` — an implementation that only does "shift instead of multiply" and skips
+    the later merge fails this.
+12. **THE FOLD NEEDS ADDR**: the same form must be **0** on the `on` arm
+    (`-O2 -fopt-strength`, no addr). This stops a later change from moving the rule outside
+    addr and letting strength alone rewrite addressing.
+13. **THE FOLD NEEDS STRENGTH**: the `va` arm (`-fopt-vstack -fopt-addr`, no strength) must
+    be **0**. Symmetric with check 12: it pins down where the shape comes from.
+14. **THE MERGE CONSUMES THE SHIFTS**: `LSL rX, rY, #1..3` is 3 on `on` and only 2 on `all`,
+    i.e. the merge really eats the scaling shift. The assertion is "strictly fewer", not
+    "zero": one shift in the fixture may still be reachable after a label, and
+    `ad_dead_after()` conservatively refuses to fold it — correct behaviour. The gate prints
+    the residue count, so it reads as an honest claim rather than a hidden one.
 
 Checks 3/4/5 are an inseparable trio: an implementation that only measures "fewer
 instructions" can pass through side effects. `MUL` at zero, `LSL` appearing and no residue

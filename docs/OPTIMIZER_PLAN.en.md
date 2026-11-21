@@ -332,6 +332,11 @@ aliasing is uncertain" plus ARM-specific instruction rewrites.**
   `PUSH k` + `MUL` (k a power of two) into `PUSH log2(k)` + `SHL`, deleting both when k==1;
   **B** `IR_LOAD_IDX` in `backend_arm.c` emits `LSL r1, r1, #n` instead of `MOV r2, #es` +
   `MUL r1, r2` when `es` is a power of two. Two flags would force users to enable both.
+  A later half, **R4** (same `-fopt-strength` switch, implemented in `ark_addr_function()`'s
+  round loop): once `-fopt-addr`'s R2 has removed the `ADD`, the `LSL` sits next to the access
+  and R4 merges the pair into one `[Rn, Rm, LSL #n]` (only `LDR`/`STR`, `n in 1..3`,
+  `rI != rB`, and `rS` dead afterwards). Alongside it, a liveness defect in `ad_rw()` was
+  fixed: `POP` was counted as a read, so `POP {r1}` kept r1 alive forever. Fold count 243 -> 926.
 - **Powers of two only**: `MUL` is one cycle on Cortex-M4 and an `LSL`+`ADD` chain is never
   shorter (measured, not assumed); `x*3` keeps its `MUL` and that is asserted in the gate, so a
   later "helpful" change cannot extend the rule into a shift/add chain.
@@ -344,15 +349,20 @@ aliasing is uncertain" plus ARM-specific instruction rewrites.**
 - **Cropping**: `ARKCC_FEATURE_OPT_STRENGTH` (0 under STM32_MIN, 1 on the host -- cropping it from
   the board is correct since the pass is off by default and would only sit in Flash). Off by
   default; `-fopt-strength` enables it; a cropped build refuses the flag with `C3900U`.
-- **Criteria**: `tests/run_strength_tests.py`, 14 checks, `make test-strength`: OFF IS OFF
+- **Criteria**: `tests/run_strength_tests.py`, **18 checks**, `make test-strength`: OFF IS OFF
   byte-identical, instruction count down, **`MUL` at zero**, **`LSL r1,r1,#n` appears** (an IR-only
   implementation fails this), **no `PUSH #2^k`+`MUL` residue**, the `odd` fixture byte-identical,
-  the image never grows, all five arms agree, and a cropped build refuses the flag.
+  the image never grows, all five arms agree, and a cropped build refuses the flag. R4 adds four:
+  the merged `[rB,rI,LSL #n]` exists on `all` (1), is 0 on `on`, is 0 on `va`, and `LSL #1..3`
+  strictly decreases (3 -> 2, with the 1 residue coming from `ad_dead_after` bailing out at a label).
 - **Measurements**: plain `-O2` 47,885 -> **46,779** (**-1,106 / -2.31%**), `MUL` **1,105 -> 12**
   (all 12 remaining are value x value, none constant); on top of the 36,553 of
-  `-fopt-vstack -fopt-addr` -> **35,453** (-1,100 / -3.01%). Full chain:
-  **47,885 -> 38,004 -> 36,553 -> 35,453 (-25.96%)**. Object bytes: 115,090 -> 112,878
-  (-2,212 B); 92,408 -> 90,208 (-2,200 B). Details in `docs/STRENGTH.en.md`.
+  `-fopt-vstack -fopt-addr` -> **35,453** (-1,100 / -3.01%); R4 then folds 926 more ->
+  **34,527** (-926 / -2.61%). Full chain:
+  **47,885 -> 38,004 -> 36,553 -> 35,453 -> 34,527 (-27.90%)**. Object bytes:
+  115,090 -> 112,878 (-2,212 B); 92,408 -> 90,208 (-2,200 B, **unchanged by R4**: each merge
+  trades two 16-bit instructions for one 32-bit one, so only the instruction count drops).
+  Details in `docs/STRENGTH.en.md`.
 
 ---
 

@@ -10,7 +10,21 @@ for those, so the IR peephole alone cannot reach them.  With the flag the HAL
 corpus goes 47,885 -> 46,779 instructions (-1,106, -2.3%) and the multiply
 count 1,105 -> 12.
 
-The rewrite happens in two places and both are covered here:
+A second fold belongs to the same flag because the same flag creates its
+input: `-fopt-addr` turns the emitted `ADD base, base, index` into the operand
+`[base, index]`, and only then is the `LSL index, index, #n` right in front of
+it.  So with both passes on, the shift goes into the operand too:
+
+    LSL r1, r1, #2                      LDR r0, [r0, r1, LSL #2]
+    LDR r0, [r0, r1]
+
+That rule lives in the same text pass as the address folding (R4 in
+ark_addr_function) but is gated by `-fopt-strength`, because without it the
+shape never occurs.  On the HAL corpus it removes another 926 instructions
+(35,453 -> 34,527) and 926 of the 1,084 shifts the strength pass introduced
+disappear into the addressing mode.
+
+The rewrite happens in three places and all are covered here:
 
   * IR level (src/opt.c, opt_strength_func): the constant sits immediately in
     front of IR_BINARY(TOK_MUL), which is the shape of `x * 4`, of the
@@ -173,6 +187,11 @@ INSN_RE = re.compile(r'^\s+[A-Za-z][A-Za-z0-9.]*\s')
 # the stride sits in (r1 in IR_LOAD_IDX); the IR one has no fixed register.
 SHIFT_IDX_RE = re.compile(r'^\s+LSL\s+r1\s*,\s*r1\s*,\s*#\d+\s*$')
 MUL_RE = re.compile(r'^\s+MUL\s')
+# The merged addressing mode R4 produces: [base, index, LSL #n].
+SHIFTED_MEM_RE = re.compile(
+    r'^\s+(?:LDR|STR)\s+r\d+\s*,\s*\[\s*r\d+\s*,\s*r\d+\s*,'
+    r'\s*LSL\s*#\d\s*\]')
+LSL_LINE_RE = re.compile(r'^\s+LSL\s+(r\d+)\s*,\s*(r\d+)\s*,\s*#(\d+)\s*$')
 # A scale that should have been folded away: MOV rX, #2^k followed by a MUL.
 MOV2K_MUL_RE = re.compile(
     r'^\s+MOV\s+r\d+\s*,\s*#(?:2|4|8|16|32|64|128|256)\s*$')
@@ -189,6 +208,35 @@ def count_mul(text):
 def count_shift_idx(text):
     return sum(1 for ln in text.splitlines() if SHIFT_IDX_RE.match(ln))
 
+
+def count_shifted_mem(text):
+    return sum(1 for ln in text.splitlines() if SHIFTED_MEM_RE.match(ln))
+
+def count_lsl_scale(text):
+    """Immediate shifts by 1..3: the only amounts a register offset can carry."""
+    n = 0
+    for ln in text.splitlines():
+        m = LSL_LINE_RE.match(ln.rstrip())
+        if m and 1 <= int(m.group(3)) <= 3:
+            n += 1
+    return n
+
+def leftover_scaled_index(text):
+    """`LSL rX, rI, #1..3` immediately followed by an access indexed by rX:
+    a merge R4 should have made and did not."""
+    lines = [ln.rstrip() for ln in text.splitlines()]
+    n = 0
+    for i in range(len(lines) - 1):
+        m = LSL_LINE_RE.match(lines[i])
+        if not m:
+            continue
+        dst, sh = m.group(1), int(m.group(3))
+        if sh < 1 or sh > 3:
+            continue
+        if re.match(r'^\s+(?:LDR|STR)\s+r\d+\s*,\s*\[\s*r\d+\s*,\s*'
+                    + dst + r'\s*\]$', lines[i + 1]):
+            n += 1
+    return n
 
 def leftover_scale_pairs(text):
     """MOV rX, #2^k  immediately followed by MUL: a fold the pass missed."""
@@ -293,6 +341,32 @@ def main():
                 check(n_all < n_va,
                       'pow2: it still pays on top of -fopt-vstack/-fopt-addr',
                       '%d -> %d' % (n_va, n_all))
+                # R4: the scale moves into the addressing mode, but only when
+                # the address fold has already put the access next to the
+                # shift.  `on` has the shift and no merge, `va` has the merge
+                # and no shift, `all` has both -- so the three arms pin the
+                # rule down from both sides.
+                check(count_shifted_mem(arms['all'][0]) > 0,
+                      'pow2: the index scale is folded into [base, index, LSL #n]',
+                      '[.., LSL #n]  all=%d' % count_shifted_mem(arms['all'][0]))
+                check(count_shifted_mem(arms['on'][0]) == 0,
+                      'pow2: no shifted operand without -fopt-addr to build it',
+                      'on=%d' % count_shifted_mem(arms['on'][0]))
+                check(count_shifted_mem(arms['va'][0]) == 0,
+                      'pow2: no shifted operand without -fopt-strength',
+                      'va=%d' % count_shifted_mem(arms['va'][0]))
+                # Not "zero leftovers": the rule needs the index register to
+                # be provably dead, and a branch or label inside the next 64
+                # lines ends that proof (a loop body always has one).  The
+                # honest claim is that the merge consumes most of the shifts
+                # and that whatever remains is the conservative residue.
+                check(count_lsl_scale(arms['all'][0]) <
+                      count_lsl_scale(arms['on'][0]),
+                      'pow2: the merge consumes the index shifts',
+                      'LSL rX,rY,#1..3  on=%d all=%d (residue %d)'
+                      % (count_lsl_scale(arms['on'][0]),
+                         count_lsl_scale(arms['all'][0]),
+                         leftover_scaled_index(arms['all'][0])))
             else:
                 check(m_on == m_base and m_all == m_base,
                       'odd: x*3 and x*5 keep their MUL',
