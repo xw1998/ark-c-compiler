@@ -268,6 +268,12 @@ preferable to an unsound fold.
 2. **Non-powers of two**: AC5 has a full table for 3/5/9; arkc only has powers of two. The
    payoff depends on how much struct-array indexing the corpus has; `es = 12/20/24` accesses
    are rare in the HAL corpus.
+   Checked one level further: **the premise does not hold, so this is not done (negative
+   result)**. `ADD Rd, Rn, Rm, LSL #n` can only compute `Rn + Rm·2^n`, so strides of the
+   `2^k ± 1` family (3/5/9) do fit in one scaled `ADD`, while 12/20/24 still need two
+   instructions (`LSL` + `ADD`) at the same cost as `MUL` -- and 12/20/24 are exactly what the
+   HAL corpus uses. Porting AC5's 3/5/9 table would cover only the rare sizes: a whole table
+   for 0.1%, so it is not done.
 3. **Left-hand constants**: `4 * x` is untouched (see §2).
 
 ## 8. What the gate says

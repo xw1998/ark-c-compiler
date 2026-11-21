@@ -64,6 +64,7 @@ void config_init(void) {
     g_config.enable_opt_vstack    = 0;
     g_config.enable_opt_addr      = 0;
     g_config.enable_opt_strength  = 0;
+    g_config.enable_opt_cbz       = 0;
     g_config.enable_opt_inline    = ARKCC_FEATURE_OPT_INLINE;
     g_config.enable_opt_vectorize = ARKCC_FEATURE_OPT_VECTORIZE;
     /* 0.8.0 的五个实验性开关：代码按 profile 编进来（见 arkcc_config.h），
@@ -462,6 +463,8 @@ void config_apply_args(int argc, char **argv) {
                 g_config.enable_opt_addr                = enable;
             else if (ark_streq(name, "opt-strength") || ark_streq(name, "strength"))
                 g_config.enable_opt_strength            = enable;
+            else if (ark_streq(name, "opt-cbz") || ark_streq(name, "cbz"))
+                g_config.enable_opt_cbz                 = enable;
             else if (ark_streq(name, "opt-inline") || ark_streq(name, "autoinline"))
                 g_config.enable_opt_inline              = enable;
             else if (ark_streq(name, "opt-vectorize") || ark_streq(name, "vectorize"))
@@ -489,6 +492,7 @@ void config_print(void) {
             g_config.enable_opt_inline, g_config.enable_opt_vectorize,
             g_config.enable_opt_vstack, g_config.enable_opt_addr,
             g_config.enable_opt_strength);
+    ark_log("  opt_cbz=%d\n", g_config.enable_opt_cbz);
     ark_log("  dce_cfg=%d reloc_data=%d reg_top=%d rt_lazy=%d asm_extra=%d\n",
             g_config.enable_dce_cfg, g_config.enable_reloc_data,
             g_config.enable_reg_top, g_config.enable_rt_lazy,

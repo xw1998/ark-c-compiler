@@ -45,7 +45,7 @@ aliasing is uncertain" plus ARM-specific instruction rewrites.**
 
 ---
 
-## 2 The line: six items, ordered by value per unit of work
+## 2 The line: ten items, ordered by value per unit of work
 
 ### P1 Block-tail merging (block-level cross-jump) -- **landed in 0.9.1**
 
@@ -363,6 +363,40 @@ aliasing is uncertain" plus ARM-specific instruction rewrites.**
   115,090 -> 112,878 (-2,212 B); 92,408 -> 90,208 (-2,200 B, **unchanged by R4**: each merge
   trades two 16-bit instructions for one 32-bit one, so only the instruction count drops).
   Details in `docs/STRENGTH.en.md`.
+
+### P10 Zero-compare branch folding (`-fopt-cbz`, **landed in 0.9.1-wip**)
+
+- **Evidence**: AC5 emits a single `CBZ`/`CBNZ` for a zero-compare branch such as
+  `if (!p)` (`armcc --c99 -O2 -c --cpu Cortex-M4` + `fromelf --text -c`), while arkc spent a
+  `CMP rX, #0` plus a 32-bit `B<cond>.W`.
+- **One rule**: a `CMP r0-r7, #0` immediately followed by `BEQ/BNE` (only metadata lines in
+  between) becomes `CBZ/CBNZ rX, .L_x` with the branch deleted. Four necessary conditions:
+  adjacency; narrow operands; a forward target whose upper bound is at most 64 bytes; and
+  **the flags are dead** (no flag reader before a flag writer, a return, or the function end;
+  an unconditional `B` is followed to its target).
+- **Offset derivation, written down**: after folding, `offset = region bytes - 2`, independent
+  of how far the label was from the `CMP` (the deleted `CMP` and the deleted branch sit at the
+  two ends and their shifts cancel).
+- **Conservative upper bound**: the text layer cannot see real widths, so each instruction
+  counts as 4 bytes and `LDR =sym` as 8; a data directive in the region drops the candidate.
+  The bound can only make the pass give up, never emit an out-of-range `CBZ`.
+- **Why it was tricky**: every `if` body ends with `B .L_end`; the first version called `B`
+  unsafe and fused nothing. Following the target fixed 5/5 in the fixture. The other real
+  defect was rebuilding from the trimmed lines, which erased the indentation of the whole
+  function.
+- **Cropping**: `ARKCC_FEATURE_OPT_CBZ` (0 under STM32_MIN, 1 on host), off by default; a
+  cropped build refuses the flag with `C3900U`. `CBZ`/`CBNZ` left the `--asm-extra` list (a
+  compiler has to assemble its own output, same as `ADDS`/`SUBS`).
+- **Gate**: `tests/run_cbz_tests.py`, **14 checks**, `make test-cbz`: OFF IS OFF byte for
+  byte; CBZ only with the flag; the count drops; the adjacent pairs are consumed; it still
+  pays on top; it runs after vstack/addr; the image never grows; all five arms agree; an
+  out-of-range body (upper bound 80 bytes) is never folded; nothing is rewritten when the
+  target is too far; the image is unchanged; a cropped build refuses the flag and still
+  compiles without it. Plus the whole `tests/arm_exec` corpus (0 failures).
+- **Measurements**: plain `-O2` 47,885 -> **47,489** (-396 / -1,584 B); full chain 34,527 ->
+  **34,107** (-420 / -1,680 B). Each fusion saves exactly 4 bytes (16-bit `CMP` + 32-bit
+  `Bcc` -> 16-bit `CBZ`). Of the 814 adjacent pairs in the HAL corpus 396 were fused; the rest
+  hit the 64-byte bound or still read the flags. Details in `docs/CBZ_FOLD.en.md`.
 
 ---
 

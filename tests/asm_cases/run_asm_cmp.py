@@ -5,8 +5,11 @@ instruction, plus the --asm-extra switch in both of its states.
 Why this exists
 ---------------
 The `--asm-extra` extension adds the mnemonics the backend itself never emits
-(ADDS/SUBS with flags, LDM/STM in all four of their shapes, TBB/TBH, LDRD/STRD,
-MLA/..., ADR, CBZ/CBNZ, MRS/MSR).  Those encoders are hand-written bit patterns,
+(LDM/STM in all four of their shapes, TBB/TBH, LDRD/STRD, MLA/..., ADR).  Some of
+the mnemonics that once needed the switch are emitted by the backend now
+(ADDS/SUBS for flag-setting ALU forms, CBZ/CBNZ for `-fopt-cbz`, MRS/MSR behind
+<stdatomic.h>), so they belong to the comparison table, not to the switch.
+Those encoders are hand-written bit patterns,
 and "the bit pattern looks like what the ARM ARM says" is exactly the argument
 that shipped the VFP nibble bug.  The only acceptable evidence is an independent
 encoder agreeing on the same source.
@@ -66,14 +69,17 @@ CASES = [
 # --asm-extra switch contract.  Each entry is (mnemonic, source line that must
 # assemble when the switch is on).  The target label `tgt` and the trailing nop
 # keep every operand form reachable.
-# Four mnemonics that used to live in this table are deliberately absent:
-# ADDS, SUBS, MRS and MSR.  All four became *unconditional* when the backend
-# started emitting flag-setting ALU forms and the PRIMASK critical sections
-# behind <stdatomic.h> (commits 18cd442 / 0e097ca).  The contract this table
-# checks is "off means unknown mnemonic", and for these four the off state no
-# longer exists -- listing them here would assert the opposite of the design.
-# They stay covered by the byte-for-byte comparison table above, which is the
-# part that matters for them.
+# Six mnemonics that used to live in this table are deliberately absent:
+# ADDS, SUBS, MRS, MSR, CBZ and CBNZ.  ADDS/SUBS/MRS/MSR became *unconditional*
+# when the backend started emitting flag-setting ALU forms and the PRIMASK
+# critical sections behind <stdatomic.h> (commits 18cd442 / 0e097ca).  CBZ/CBNZ
+# followed for a different reason: `-fopt-cbz` makes the compiler emit them, and
+# a compiler has to be able to assemble its own output, so the two are accepted
+# in every build (the feature macro gates the *pass*, not the encoder).  The
+# contract this table checks is "off means unknown mnemonic", and for these six
+# the off state no longer exists -- listing them here would assert the opposite
+# of the design.  They stay covered by the byte-for-byte comparison table above,
+# which is the part that matters for them.
 SWITCH_CASES = [
     ("ANDS",   "ands r0, r1"),
     ("ORRS",   "orrs r0, r1"),
@@ -85,8 +91,6 @@ SWITCH_CASES = [
     ("LSRS",   "lsrs r0, r1, r2"),
     ("ASRS",   "asrs r0, r1, #3"),
     ("ADR",    "adr r0, tgt"),
-    ("CBZ",    "cbz r0, tgt"),
-    ("CBNZ",   "cbnz r0, tgt"),
     ("LDM",    "ldm r0!, {r1, r2}"),
     ("LDMIA",  "ldmia r0!, {r1}"),
     ("STM",    "stm r0!, {r1}"),

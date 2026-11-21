@@ -2902,6 +2902,392 @@ static void ark_addr_function(AsmBuffer *b, int from)
 /* 16 for a variadic function: the prologue pushed r0-r3 in front of the saved
  * registers, so every epilogue of that function has 16 extra bytes to drop.
  * Zero for everything else, which keeps the non-variadic output byte-identical. */
+#if ARKCC_FEATURE_OPT_CBZ
+/* ------------------- CMP #0 + branch -> CBZ/CBNZ (-fopt-cbz) -------------
+ * The IR is a stack machine, so `if (x)` / `if (!x)` reaches this layer as
+ *
+ *      POP {r0}            ; or MOV r0, r5 under -fopt-vstack
+ *      CMP r0, #0
+ *      BEQ .L_fn_N         ; IR_JZ        (BNE for IR_JNZ)
+ *
+ * Cortex-M has one two-byte instruction that tests and branches:
+ * `CBZ rN, label` (CBNZ for the negated form).  This pass rewrites the pair
+ * in the emitted text, in the same layer as -fopt-vstack and -fopt-addr; the
+ * IR is untouched.
+ *
+ * Three conditions have to hold before a pair may be replaced:
+ *
+ *  1. the target is 0..62 bytes FORWARD of the CBZ.  T1 has nothing else:
+ *     Rn is a 3-bit field (so r0-r7 only) and imm5 = offset/2, with bit 5
+ *     carried into bit 9.  The pass runs on text, before the assembler has
+ *     placed a single byte, so it uses an UPPER BOUND on the size of the
+ *     region between the branch and the label: 4 bytes for an instruction,
+ *     8 for `LDR rt, =sym` (which expands to MOVW+MOVT), 0 for a metadata
+ *     directive.  A data directive inside the region -- `.word`, `.align`,
+ *     ... -- makes the pass decline instead of guessing a size.  An upper
+ *     bound can only make the pass decline more often; it can never let it
+ *     emit an out-of-range CBZ, which the assembler would turn into a hard
+ *     error.
+ *
+ *     The offset does not depend on how far the label is from the original
+ *     CMP in the final image: the CMP goes away, so both ends move two bytes
+ *     closer, and what is left is (region between branch and label) - 2.
+ *     That is why only the region is measured.
+ *
+ *  2. the flags that `CMP r0, #0` sets are not read before the next writer.
+ *     The backend emits every CMP for the branch that follows it, so in
+ *     practice this only has to catch hand-written inline asm.  The scan
+ *     walks forward from the branch -- through the region and past the label,
+ *     because both paths reach the label -- and accepts on the first flag
+ *     writer, declines on the first flag reader (a conditional instruction,
+ *     ADC/SBC/RSC), and declines on a call or an unconditional branch: not
+ *     because flags cannot survive one, but because the pass cannot prove
+ *     they do, and declining is always the safe answer.
+ *
+ *  3. the label is defined inside the slice this pass sees (one function).
+ *
+ * Everything else is left alone.  Numbers on the STM32F4 HAL corpus, the
+ * gate list and the GNU assembler cross-check are in docs/CBZ_FOLD.md.
+ */
+#define CBZ_MAX_REGION 64      /* offset = region - 2, so region <= 64 */
+
+typedef struct {
+    char *r;    /* the line exactly as it was, indentation included: the rebuild
+                 * writes this back, so an untouched line stays byte-for-byte the
+                 * line it was.  (Rebuilding from the trimmed copy made this pass
+                 * look like it had rewritten 53,000 lines when it fused a few
+                 * hundred, and it stripped the indentation of every instruction
+                 * in the file.) */
+    char *t;    /* r with the padding stripped: what the analysis reads */
+    int   del;  /* the branch half of a pair that was fused */
+} CbzLine;
+
+static int cbz_ieq(const char *a, const char *b)
+{
+    while (*a && *b) {
+        int x = (*a >= 'a' && *a <= 'z') ? *a - 32 : *a;
+        int y = (*b >= 'a' && *b <= 'z') ? *b - 32 : *b;
+        if (x != y) return 0;
+        a++; b++;
+    }
+    return *a == *b;
+}
+
+static void cbz_trim(char *s)
+{
+    char *p = s;
+    int n;
+    while (*p == ' ' || *p == '\t') p++;
+    if (p != s) { char *d = s; while (*p) *d++ = *p++; *d = 0; }
+    n = (int)strlen(s);
+    while (n > 0 && (s[n-1] == ' ' || s[n-1] == '\t' || s[n-1] == '\r')) s[--n] = 0;
+}
+
+/* "<MNEMONIC, uppercased>" + "<the rest, trimmed>".  0 means a blank line. */
+static int cbz_head(const char *t, char *mn, int mn_sz, char *rest, int rest_sz)
+{
+    int i = 0, j = 0;
+    while (t[i] && t[i] != ' ' && t[i] != '\t') {
+        int c = (t[i] >= 'a' && t[i] <= 'z') ? t[i] - 32 : t[i];
+        if (j < mn_sz - 1) mn[j++] = (char)c;
+        i++;
+    }
+    mn[j] = 0;
+    while (t[i] == ' ' || t[i] == '\t') i++;
+    j = 0;
+    while (t[i] && j < rest_sz - 1) rest[j++] = t[i++];
+    rest[j] = 0;
+    cbz_trim(rest);
+    return mn[0] != 0;
+}
+
+static void cbz_nospace(const char *in, char *out, int cap)
+{
+    int j = 0;
+    while (*in && j < cap - 1) {
+        if (*in != ' ' && *in != '\t') out[j++] = *in;
+        in++;
+    }
+    out[j] = 0;
+}
+
+/* "r<0..7>,#0" exactly.  CBZ T1 reaches r0-r7 only, so a wider CMP is
+ * declined rather than down-converted. */
+static int cbz_reg_zero(const char *ops, int *reg)
+{
+    int n = 0;
+    if (ops[0] != 'r' && ops[0] != 'R') return 0;
+    if (ops[1] < '0' || ops[1] > '9') return 0;
+    if (ops[2] >= '0' && ops[2] <= '9') return 0;
+    if (ops[1] > '7') return 0;
+    if (!cbz_ieq(ops + 2, ",#0")) return 0;
+    *reg = ops[1] - '0';
+    (void)n;
+    return 1;
+}
+
+/* "name:" -> name (without the colon).  0 when the line is not a label. */
+static int cbz_label_name(const char *t, char *name, int name_sz)
+{
+    int n = (int)strlen(t), i;
+    if (n < 2 || t[n-1] != ':') return 0;
+    if (t[0] == '\0') return 0;
+    for (i = 0; i < n - 1 && i < name_sz - 1; i++) name[i] = t[i];
+    name[i] = 0;
+    return 1;
+}
+
+static int cbz_dot_prefix(const char *mn, const char *pre)
+{
+    int i = 0;
+    while (pre[i]) {
+        int a = (mn[i] >= 'a' && mn[i] <= 'z') ? mn[i] - 32 : mn[i];
+        if (a != pre[i]) return 0;
+        i++;
+    }
+    return 1;
+}
+
+/* A directive that occupies no code bytes.  Anything else that starts with a
+ * dot (`.word`, `.align`, `.skip`, ...) has a size the pass would have to
+ * model, so a region containing one is declined. */
+static int cbz_dot_meta(const char *mn)
+{
+    static const char *const pre[] = {
+        ".CFI", ".LOC", ".FILE", ".TYPE", ".SIZE", ".GLOBAL", ".WEAK",
+        ".THUMB", ".SECTION", ".TEXT", ".DATA", ".BSS", ".SET", ".EQU",
+        ".SYMVER", ".IDENT", ".ARCH", ".CPU", ".FMX", ".EABI", ".CODE", 0
+    };
+    int i;
+    for (i = 0; pre[i]; i++) if (cbz_dot_prefix(mn, pre[i])) return 1;
+    return 0;
+}
+
+static int cbz_writes_flags(const char *mn)
+{
+    static const char *const w[] = {
+        "CMP", "CMN", "TST", "TEQ",
+        "ADDS", "SUBS", "ANDS", "ORRS", "EORS", "BICS", "MVNS",
+        "LSLS", "LSRS", "ASRS", "RORS", "MULS", "MOVS", "NEGS", 0
+    };
+    int i;
+    for (i = 0; w[i]; i++) if (cbz_ieq(mn, w[i])) return 1;
+    return 0;
+}
+
+/* Does this line consume the flags?  Checked after cbz_writes_flags(),
+ * because ADDS/MOVS/... end in a spelling that looks like a condition code. */
+static int cbz_reads_flags(const char *mn)
+{
+    static const char *const cc[] = {
+        "EQ", "NE", "CS", "HS", "CC", "LO", "MI", "PL",
+        "VS", "VC", "HI", "LS", "GE", "LT", "GT", "LE", "AL", 0
+    };
+    int n = (int)strlen(mn), i;
+    if (cbz_ieq(mn, "ADC") || cbz_ieq(mn, "SBC") || cbz_ieq(mn, "RSC")) return 1;
+    if (n >= 2 && (mn[0] == 'I' || mn[0] == 'i') && (mn[1] == 'T' || mn[1] == 't'))
+        return 1;              /* IT / ITE / ITT ... */
+    if (n < 3) return 0;
+    for (i = 0; cc[i]; i++) {
+        int a = (mn[n-2] >= 'a' && mn[n-2] <= 'z') ? mn[n-2] - 32 : mn[n-2];
+        int b = (mn[n-1] >= 'a' && mn[n-1] <= 'z') ? mn[n-1] - 32 : mn[n-1];
+        if (a == cc[i][0] && b == cc[i][1]) return 1;
+    }
+    return 0;
+}
+
+/* Index of `label:` (the first one at or after `from`), or -1. */
+static int cbz_find_label(CbzLine *L, int nlines, int from, const char *label)
+{
+    int k;
+    char name[128];
+    for (k = from; k < nlines; k++) {
+        if (L[k].del) continue;
+        if (cbz_label_name(L[k].t, name, sizeof name) && strcmp(name, label) == 0)
+            return k;
+    }
+    return -1;
+}
+
+/* Is the flags state left by the CMP still unread when a writer reaches it?
+ *
+ * The walk follows both the fall-through and the target of an unconditional
+ * `B` (bounded), because the emitted `if` body ends with `B .L_end` and the
+ * code after that label is reached from both sides.  A return ends the walk
+ * successfully: nothing in this function reads the flags after it.  A call
+ * ends it the other way -- the pass cannot prove the callee leaves the flags
+ * alone, and declining is the safe answer. */
+static int cbz_flags_dead(CbzLine *L, int nlines, int from)
+{
+    int i, steps = 0, jumps = 0;
+    for (i = from; i < nlines && steps < 64; i++, steps++) {
+        char mn[24], rest[128], name[128];
+        if (L[i].del) continue;
+        if (!cbz_head(L[i].t, mn, sizeof mn, rest, sizeof rest)) continue;
+        if (cbz_label_name(L[i].t, name, sizeof name)) continue;
+        if (mn[0] == '.') continue;
+        if (cbz_writes_flags(mn)) return 1;
+        if (cbz_reads_flags(mn)) return 0;
+        if (cbz_ieq(mn, "BX") || cbz_ieq(mn, "BLX")) return 1;  /* return / tail call */
+        if (cbz_ieq(mn, "BL")) return 0;
+        if (cbz_ieq(mn, "B")) {
+            int k = (rest[0] == '.') ? cbz_find_label(L, nlines, 0, rest) : -1;
+            if (k < 0 || ++jumps > 4) return 0;
+            i = k - 1;
+            continue;
+        }
+        if (cbz_ieq(mn, "POP") && rest[0]) {
+            int k = 0;
+            while (rest[k]) {
+                if ((rest[k] == 'p' || rest[k] == 'P') &&
+                    (rest[k+1] == 'c' || rest[k+1] == 'C') &&
+                    (rest[k+2] == 0 || rest[k+2] == ',' || rest[k+2] == '}' ||
+                     rest[k+2] == ' '))
+                    return 1;       /* POP {..., pc}: this is a return */
+                k++;
+            }
+        }
+    }
+    return steps >= 64 ? 0 : 1;
+}
+
+static char *cbz_dup(const char *s)
+{
+    int n = (int)strlen(s);
+    char *p = (char *)mem_pool_alloc(n + 1);
+    if (p) memcpy(p, s, n + 1);
+    return p;
+}
+
+static char *cbz_new_line(const char *op, int reg, const char *label)
+{
+    AsmBuffer t;
+    asmbuf_init(&t);
+    asmbuf_puts(&t, "    ");
+    asmbuf_puts(&t, op);
+    asmbuf_puts(&t, " r");
+    asmbuf_int(&t, reg);
+    asmbuf_puts(&t, ", ");
+    asmbuf_puts(&t, label);
+    return cbz_dup(t.buf);
+}
+
+static void ark_cbz_function(AsmBuffer *b, int from)
+{
+    CbzLine *L = 0;
+    int cap = 0, nlines = 0, i, pos, fused = 0;
+    int last_nl = (b->len > from && b->buf[b->len - 1] == '\n');
+    AsmBuffer out;
+
+    /* ---- slice the function text into trimmed lines ---- */
+    pos = from;
+    while (pos < b->len) {
+        int len = 0;
+        while (pos + len < b->len && b->buf[pos + len] != '\n') len++;
+        if (nlines >= cap) {
+            int ncap = cap ? cap * 2 : 128;
+            CbzLine *grown = (CbzLine *)mem_pool_alloc(ncap * (int)sizeof(CbzLine));
+            if (!grown) return;
+            for (i = 0; i < nlines; i++) grown[i] = L[i];
+            L = grown;
+            cap = ncap;
+        }
+        L[nlines].r = (char *)mem_pool_alloc(len + 1);
+        L[nlines].t = (char *)mem_pool_alloc(len + 1);
+        if (!L[nlines].r || !L[nlines].t) return;
+        for (i = 0; i < len; i++) {
+            L[nlines].r[i] = b->buf[pos + i];
+            L[nlines].t[i] = b->buf[pos + i];
+        }
+        L[nlines].r[len] = 0;
+        L[nlines].t[len] = 0;
+        cbz_trim(L[nlines].t);
+        L[nlines].del = 0;
+        nlines++;
+        pos += len + 1;
+    }
+
+    for (i = 0; i < nlines; i++) {
+        char mn[24], rest[128], tmn[24], trest[128], name[128], lab[128], ops[64];
+        int reg = 0, br = -1, lb = -1, k, bytes = 0, ninstr = 0, bad = 0;
+        const char *cemit;
+        char *nl;
+
+        if (L[i].del) continue;
+        if (!cbz_head(L[i].t, mn, sizeof mn, rest, sizeof rest)) continue;
+        if (!cbz_ieq(mn, "CMP")) continue;
+        cbz_nospace(rest, ops, sizeof ops);
+        if (!cbz_reg_zero(ops, &reg)) continue;
+
+        /* the very next live line has to be the branch half */
+        for (k = i + 1; k < nlines; k++) if (!L[k].del) { br = k; break; }
+        if (br < 0) continue;
+        if (!cbz_head(L[br].t, tmn, sizeof tmn, trest, sizeof trest)) continue;
+        if (cbz_ieq(tmn, "BEQ"))      cemit = "CBZ";
+        else if (cbz_ieq(tmn, "BNE")) cemit = "CBNZ";
+        else continue;
+        /* a single symbol, and one of ours (".L_..."): nothing else here is a
+         * label this function can resolve */
+        if (trest[0] != '.') continue;
+        for (k = 0; trest[k]; k++)
+            if (trest[k] == ' ' || trest[k] == ',' || trest[k] == '[') break;
+        if (trest[k]) continue;
+        if ((int)strlen(trest) >= (int)sizeof lab) continue;
+        for (k = 0; k <= (int)strlen(trest); k++) lab[k] = trest[k];
+
+        /* find the definition, forward only (T1 has no backward form) */
+        for (k = br + 1; k < nlines; k++) {
+            if (L[k].del) continue;
+            if (cbz_label_name(L[k].t, name, sizeof name) &&
+                strcmp(name, lab) == 0) { lb = k; break; }
+        }
+        if (lb < 0) continue;
+
+        /* upper bound on the bytes between the branch and the label */
+        for (k = br + 1; k < lb; k++) {
+            char m3[24], r3[128];
+            if (L[k].del) continue;
+            if (!cbz_head(L[k].t, m3, sizeof m3, r3, sizeof r3)) continue;
+            if (cbz_label_name(L[k].t, name, sizeof name)) continue;
+            if (m3[0] == '.') {
+                if (cbz_dot_meta(m3)) continue;   /* no code bytes */
+                bad = 1;                          /* data: size not modelled */
+                break;
+            }
+            ninstr++;
+            bytes += (cbz_ieq(m3, "LDR") && r3[0] && r3[1] == ',' && r3[2] == '=') ? 8 : 4;
+            if (bytes > CBZ_MAX_REGION) break;
+        }
+        if (bad || ninstr == 0 || bytes > CBZ_MAX_REGION) continue;
+        if (!cbz_flags_dead(L, nlines, br + 1)) continue;
+
+        nl = cbz_new_line(cemit, reg, lab);
+        if (!nl) continue;
+        L[i].t = nl;
+        L[i].r = nl;
+        L[br].del = 1;
+        fused++;
+    }
+    if (!fused) return;
+
+    /* ---- rebuild ---- */
+    asmbuf_init(&out);
+    for (i = 0; i < nlines; i++) {
+        if (L[i].del) continue;
+        asmbuf_puts(&out, L[i].r);
+        if (i + 1 < nlines || last_nl) asmbuf_putc(&out, '\n');
+    }
+    /* Nothing changed?  Then leave the buffer exactly as it was. */
+    if (out.len == b->len - from &&
+        memcmp(out.buf, b->buf + from, out.len) == 0) return;
+    asmbuf_reserve(b, from + out.len + 1);
+    if (from + out.len + 1 > b->cap) return;
+    for (i = 0; i < out.len; i++) b->buf[from + i] = out.buf[i];
+    b->buf[from + out.len] = 0;
+    b->len = from + out.len;
+}
+#endif /* ARKCC_FEATURE_OPT_CBZ */
+
 static int g_va_epilogue_pad;
 
 /* Frame adjustment that does not fit one encoding.  SUBW/ADDW take 0..4095 and
@@ -7236,6 +7622,12 @@ static char *codegen_arm(IrProgram *prog) {
          * shortened function; regalloc below then works on fewer instructions. */
         if (g_config.enable_opt_addr) ark_addr_function(&buf, fstart);
 #endif
+#if ARKCC_FEATURE_OPT_CBZ
+        /* `CMP r0, #0` + `BEQ/BNE` -> `CBZ/CBNZ`: one two-byte instruction
+         * instead of two.  Last of the three text passes, so it sees the
+         * shape vstack/addr left behind. */
+        if (g_config.enable_opt_cbz) ark_cbz_function(&buf, fstart);
+#endif
 #if ARKCC_FEATURE_OPT_REGALLOC
         /* The text of this function is complete: it is the last slice of the
          * buffer, so the rewrite sees exactly this function and nothing else. */
@@ -8319,9 +8711,13 @@ static int ark_asm_extra_name(const char *op) {
         /* ADDS/SUBS are deliberately NOT gated: the ARM backend emits them
          * for the 64-bit add/sub carry chain, so they have to assemble
          * without --asm-extra (otherwise the compiler cannot assemble its
-         * own output for `long long` arithmetic). */
+         * own output for `long long` arithmetic).
+         * CBZ/CBNZ are NOT gated either, now that -fopt-cbz emits them from
+         * `CMP #0` + `BEQ/BNE` (same rule as ADDS/SUBS: the compiler has to
+         * be able to assemble its own output).  Both are still covered by the
+         * byte-for-byte comparison in tests/asm_cases/run_asm_cmp.py. */
         "ANDS", "ORRS", "EORS", "BICS", "MVNS", "MULS",
-        "LSLS", "LSRS", "ASRS", "ADR", "CBZ", "CBNZ",
+        "LSLS", "LSRS", "ASRS", "ADR",
         "LDM", "LDMIA", "LDMDB", "STM", "STMIA", "STMDB",
         "TBB", "TBH", "LDRD", "STRD",
         "MLA", "MLS", "SMULL", "SMLAL"

@@ -182,6 +182,17 @@
 #   define ARKCC_FEATURE_OPT_STRENGTH  1   /* 宿主/交叉编译：-fopt-strength 才有得开 */
 # endif
 #endif
+/* ARKCC_FEATURE_OPT_CBZ: -fopt-cbz, fusing `CMP rX, #0` + `BEQ/BNE` into a
+ * single CBZ/CBNZ (src/backend/arm/backend_arm.c).  Same trimming rule as the
+ * other text-level passes: a board build ships the default configuration, in
+ * which the pass is off, so the code would only ever sit in Flash. */
+#ifndef ARKCC_FEATURE_OPT_CBZ
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_OPT_CBZ       0   /* 板上裁掉：条件分支融合只在宿主/交叉编译用 */
+# else
+#   define ARKCC_FEATURE_OPT_CBZ       1   /* 宿主/交叉编译：-fopt-cbz 才有得开 */
+# endif
+#endif
 #ifndef ARKCC_FEATURE_OPT_INLINE
 # if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
 #   define ARKCC_FEATURE_OPT_INLINE    0   /* Trim auto-inline on STM32 (costs Flash) */

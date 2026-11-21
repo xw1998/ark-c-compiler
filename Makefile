@@ -28,7 +28,7 @@ endif
         test-loop test-modern test-atomic test-ipo test-constglobal \
         test-objir test-partiallink test-deadinline test-softfloat test-tailmerge \
         test-tailcall test-divconst test-xblock test-sizeweight \
-        test-inline test-vstack test-addr test-strength install stm32
+        test-inline test-vstack test-addr test-strength test-cbz install stm32
 
 all: $(ARKCC)
 
@@ -43,7 +43,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -180,6 +180,17 @@ test-addr: $(ARKCC)
 # the flag by name while still compiling the same program without it.
 test-strength: $(ARKCC)
 	$(PYTHON) tests/run_strength_tests.py ./$(ARKCC)
+# Gate for -fopt-cbz: OFF IS OFF (byte-identical without the flag), `CMP rn,
+# #0` + `BEQ/CBNZ` collapses into one CBZ/CBNZ only when the flags are provably
+# dead, the CMP+branch pairs are consumed, instruction count drops, the image
+# never grows, the pass still pays on top of -fopt-vstack -fopt-addr and runs
+# after them, an out-of-range body (upper bound > 64 bytes) is left untouched,
+# and all five arms compute the same answer in the emulator.  A cropped build
+# (-DARKCC_FEATURE_OPT_CBZ=0) refuses the flag by name while still compiling
+# the same program without it.
+test-cbz: $(ARKCC)
+	$(PYTHON) tests/run_cbz_tests.py ./$(ARKCC)
+
 
 # Gate for --diag_style=modern: the header, the framed echo and the caret
 # column are checked against the token they point at (by display width, so a
