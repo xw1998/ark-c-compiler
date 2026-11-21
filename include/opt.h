@@ -39,6 +39,13 @@ void opt_licm_func(IrFunc *f);
  * is transformed; every other loop is left as it was. */
 void opt_unroll_func(IrFunc *f);
 
+/* Block-tail merging (--tailmerge): when several blocks end with the same
+ * instruction sequence, keep one copy and rewrite the others as a jump to a
+ * fresh label in front of the survivor (block-level cross-jump). Only tails
+ * whose evaluation-stack depth is 0 are considered; if the depth model cannot
+ * be established for the whole function it is left completely alone. */
+void opt_tailmerge_func(IrFunc *f);
+
 /* Auto vectorization: recognizes simple counted loops (a[i]=b[i] +/- c[i])
  * and parallelizes them with SIMD instructions.
  * Only truly accelerates on the ARM backend; C backend falls back to scalar. */

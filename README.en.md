@@ -627,6 +627,7 @@ ark c compiler/
 ├── docs/UNUSEDRESULT.md    Discarded return value (--warn-unused-result): rule, spellings, trimming, gate (Chinese, UTF-8)
 ├── docs/MIR_CFG.md         MIR/CFG and the three whole-program checks (unreachable / unused static / recursion): invariants, verdicts, deliberate non-reports, trimming, gate (Chinese, UTF-8)
 ├── docs/LOOPS.md           Loop optimisations (--licm / --unroll): what moves and what does not, zero iterations, the single accepted shape, limits, gate (Chinese, UTF-8)
+├── docs/TAILMERGE.md       Block-tail merging (--tailmerge): the five rules and their counter-examples, the algorithm, the two easy-to-miss points (labels, depth-0 start), three trimming layers, measured byte account (Chinese, UTF-8)
 ├── docs/IPO_LTO.md         Whole-program compilation (--ipo / -flto) and cross-TU constant propagation (--const-global): why it is not object-level LTO, merge semantics, refused combinations, cropping, gates (Chinese, UTF-8)
 ├── docs/OBJ_IR.md         An IR payload in the object and link-time recompilation (--obj-ir / -link --lto): payload format, pool remapping on merge, byte equivalence, refusals and diagnostics, cropping, gate (Chinese, UTF-8)
 ├── docs/PARTIAL_LINK.md   Partial link (-r): machine code wins, symbol/relocation rebasing, data never moved, three refusals, substitutability and idempotence, cropping, gate (Chinese, UTF-8)
@@ -780,6 +781,11 @@ arkcc <file.c|file.s> [options]
                      --no-licm turns it off)
   --unroll           completely unroll a canonical constant-bound for loop
                      (limit ARK_UNROLL_MAX, default 8); --no-unroll turns it off
+  --tailmerge        block-tail merging: when several basic blocks end in the
+                     same instruction run, keep one copy and branch to it from
+                     the others (needs -O1+; --no-tailmerge turns it off).  Only
+                     depth-0 tails are merged; an unprovable depth model
+                     abandons the whole function
   --ipo / -flto      whole-program compile: several .c files, one IR program, so
                      optimisation sees across files (cross-file inlining at -O2);
                      statics are renamed per unit, externals de-duplicated with

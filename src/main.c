@@ -749,6 +749,18 @@ int main(int argc, char **argv) {
         }
         else if (strcmp(a, "--no-unroll") == 0)     g_config.enable_unroll = 0;
 #endif
+#if ARKCC_FEATURE_TAILMERGE
+        else if (strcmp(a, "--tailmerge") == 0)      g_config.enable_tailmerge = 1;
+        else if (strcmp(a, "--no-tailmerge") == 0)   g_config.enable_tailmerge = 0;
+#else
+        else if (strcmp(a, "--tailmerge") == 0) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: --tailmerge is not compiled into this "
+                    "build (rebuild with -DARKCC_FEATURE_TAILMERGE=1)\n");
+            return 1;
+        }
+        else if (strcmp(a, "--no-tailmerge") == 0)   g_config.enable_tailmerge = 0;
+#endif
 #if ARKCC_FEATURE_CONST_GLOBAL
         else if (strcmp(a, "--const-global") == 0)    g_config.enable_const_global = 1;
         else if (strcmp(a, "--no-const-global") == 0) g_config.enable_const_global = 0;
@@ -914,6 +926,14 @@ int main(int argc, char **argv) {
         fprintf(stderr,
                 "Fatal error: C3900U: --unroll is not compiled into this build "
                 "(rebuild with -DARKCC_FEATURE_UNROLL=1)\n");
+        return 1;
+    }
+#endif
+#if !ARKCC_FEATURE_TAILMERGE
+    if (g_config.enable_tailmerge) {
+        fprintf(stderr,
+                "Fatal error: C3900U: --tailmerge is not compiled into this build "
+                "(rebuild with -DARKCC_FEATURE_TAILMERGE=1)\n");
         return 1;
     }
 #endif

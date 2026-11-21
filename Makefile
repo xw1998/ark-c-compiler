@@ -26,7 +26,7 @@ endif
         test-x86-64-selfhost test-riscv test-reloc-text test-memlint \
         test-enumcheck test-pipeline test-unusedresult test-mir \
         test-loop test-modern test-atomic test-ipo test-constglobal \
-        test-objir test-partiallink test-deadinline test-softfloat \
+        test-objir test-partiallink test-deadinline test-softfloat test-tailmerge \
         install stm32
 
 all: $(ARKCC)
@@ -42,7 +42,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -96,6 +96,13 @@ test-mir: $(ARKCC)
 # options instead of pretending to optimise.
 test-loop: $(ARKCC)
 	$(PYTHON) tests/run_loop_tests.py ./$(ARKCC)
+
+# Gate for --tailmerge: on/off byte identity, negative shapes that must not
+# merge, the same program still running to the same result through the ARM
+# executor, the byte account (merged image strictly smaller), and the trimmed
+# build refusing the option instead of pretending to optimise.
+test-tailmerge: $(ARKCC)
+	$(PYTHON) tests/run_tailmerge_tests.py ./$(ARKCC)
 
 # Gate for --diag_style=modern: the header, the framed echo and the caret
 # column are checked against the token they point at (by display width, so a

@@ -48,11 +48,19 @@ pipeline = full
 | --- | --- | --- | --- | --- |
 | 1 | `ast.memlint` | lite | `--warn-mem` | AST lint，无 `-O` 门；放在 enumcheck 前只为让诊断顺序可复现 |
 | 2 | `ast.enumcheck` | lite | `--warn-enum` | 同上，两条 lint 之间无交互 |
-| 3 | `ir.constfold` | lite | `-O1` 且开关 | 折叠先做，DCE 才能吃掉折叠之后才暴露的死代码 |
-| 4 | `ir.dce` | lite | `-O1` 且开关 | 廉价规则先清掉显眼的部分，CFG 可达性只需走剩下的 |
-| 5 | `ir.dce-cfg` | full | `-O1` 且 `--dce-cfg` | 建可达性图，比线性规则贵得多 |
-| 6 | `ir.inline` | full | `-O2` 且开关 | 内联之后紧接一遍线性 DCE 清扫（见下） |
-| 7 | `ir.vectorize` | full | `-O2` **或**开关 | 内联把 `a[i]=b[i]+c[i]` 展开到能识别的形状，所以排在最后 |
+| 3 | `ast.unusedresult` | lite | `--warn-unused-result` | 第三条 AST lint，同样不需要 CFG |
+| 4 | `ir.unreachable` | lite | `--warn-unreachable` | 只报警不改代码：MIR 建一次图就够，放在任何改写之前，报的是源码写下的形状 |
+| 5 | `ir.unused-static` | lite | `--warn-unused-static` | 同上，吃同一批 MIR 图 |
+| 6 | `ir.recursion` | lite | `--warn-recursion` | 调图上的环，同样在改写前 |
+| 7 | `ir.constfold` | lite | `-O1` 且开关 | 折叠先做，DCE 才能吃掉折叠之后才暴露的死代码 |
+| 8 | `ir.dce` | lite | `-O1` 且开关 | 廉价规则先清掉显眼的部分，CFG 可达性只需走剩下的 |
+| 9 | `ir.dce-cfg` | full | `-O1` 且 `--dce-cfg` | 建可达性图，比线性规则贵得多 |
+| 10 | `ir.licm` | full | `-O1` 且 `--licm` | 只搬东西不造死代码，放在 dce 之后即可；同样需要 MIR |
+| 11 | `ir.unroll` | full | `-O1` 且 `--unroll` | 展开会把循环头尾整个换掉，排在 dce-cfg 之前让后者顺手清掉不可达尾巴 |
+| 12 | `ir.inline` | full | `-O2` 且开关 | 内联之后紧接一遍线性 DCE 清扫（见下） |
+| 13 | `ir.const-global` | full | `-O1` 且 `--const-global` | 内联把被调函数体搬进来之后，`const` 全局的定义才第一次和读它的指令同处一个程序 |
+| 14 | `ir.tailmerge` | full | `-O1` 且 `--tailmerge` | 内联与常量传播造出「多块以同一串指令收尾」，块尾合并紧接着清掉这份重复；再往后没有会再造重复的 pass |
+| 15 | `ir.vectorize` | full | `-O2` **或**开关 | 内联把 `a[i]=b[i]+c[i]` 展开到能识别的形状，所以排在最后 |
 
 `ir.inline` 的 `cleanup_dce` 标志是**刻意绕开 `-fno-opt-dce`** 的：展开会把被调方的
 死尾巴留在调用点，而那是内联自己造出来的垃圾；如果这遍清扫还要看

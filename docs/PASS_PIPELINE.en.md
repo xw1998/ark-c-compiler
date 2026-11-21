@@ -55,11 +55,19 @@ would be deciding for the user.
 | --- | --- | --- | --- | --- |
 | 1 | `ast.memlint` | lite | `--warn-mem` | AST lint, no `-O` gate; before enumcheck only so the diagnostic order stays reproducible |
 | 2 | `ast.enumcheck` | lite | `--warn-enum` | ditto; the two lints do not interact |
-| 3 | `ir.constfold` | lite | `-O1` and switch | fold first, so DCE can eat the dead halves folding exposes |
-| 4 | `ir.dce` | lite | `-O1` and switch | the cheap rule clears the obvious cases, leaving less for the reachability walk |
-| 5 | `ir.dce-cfg` | full | `-O1` and `--dce-cfg` | builds a reachability graph: much more expensive than the linear rule |
-| 6 | `ir.inline` | full | `-O2` and switch | followed by a linear DCE sweep (see below) |
-| 7 | `ir.vectorize` | full | `-O2` **or** switch | inlining exposes `a[i]=b[i]+c[i]`, so this stage runs last |
+| 3 | `ast.unusedresult` | lite | `--warn-unused-result` | third AST lint, equally free of the CFG |
+| 4 | `ir.unreachable` | lite | `--warn-unreachable` | warns and rewrites nothing: one MIR graph, built before any rewrite so the report describes the shape the source wrote |
+| 5 | `ir.unused-static` | lite | `--warn-unused-static` | same graph, same reason |
+| 6 | `ir.recursion` | lite | `--warn-recursion` | cycles in the call graph, still before any rewrite |
+| 7 | `ir.constfold` | lite | `-O1` and switch | fold first, so DCE can eat the dead halves folding exposes |
+| 8 | `ir.dce` | lite | `-O1` and switch | the cheap rule clears the obvious cases, leaving less for the reachability walk |
+| 9 | `ir.dce-cfg` | full | `-O1` and `--dce-cfg` | builds a reachability graph: much more expensive than the linear rule |
+| 10 | `ir.licm` | full | `-O1` and `--licm` | moves work without creating dead code, so after `dce` is early enough; also needs MIR |
+| 11 | `ir.unroll` | full | `-O1` and `--unroll` | unrolling replaces the whole loop header and latch; before `dce-cfg` so that pass sweeps any unreachable tail it leaves |
+| 12 | `ir.inline` | full | `-O2` and switch | followed by a linear DCE sweep (see below) |
+| 13 | `ir.const-global` | full | `-O1` and `--const-global` | only once inlining has moved callee bodies in does a `const` global's definition share a program with the instruction that loads it |
+| 14 | `ir.tailmerge` | full | `-O1` and `--tailmerge` | inlining and constant propagation leave several blocks ending in the same instruction run; block-tail merging removes that duplication, and no later pass creates more |
+| 15 | `ir.vectorize` | full | `-O2` **or** switch | inlining exposes `a[i]=b[i]+c[i]`, so this stage runs last |
 
 `ir.inline`'s `cleanup_dce` flag deliberately **ignores `-fno-opt-dce`**:
 expansion leaves the callee's dead tail at the call site, and that garbage was

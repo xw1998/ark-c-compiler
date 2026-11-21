@@ -123,6 +123,7 @@ static int ir_wanted_inline(void)     { return g_config.enable_opt_inline; }
 static int ir_wanted_vectorize(void)  { return g_config.enable_opt_vectorize; }
 static int ir_wanted_licm(void)       { return g_config.enable_licm; }
 static int ir_wanted_unroll(void)     { return g_config.enable_unroll; }
+static int ir_wanted_tailmerge(void)  { return g_config.enable_tailmerge; }
 #if ARKCC_FEATURE_CONST_GLOBAL
 static int ir_wanted_const_global(void) { return g_config.enable_const_global; }
 /* opt_const_global reports how many loads it replaced; the table wants a void
@@ -197,6 +198,16 @@ static const IrStage g_ir_stages[] = {
       ir_wanted_const_global, PIPE_NAME("off (--const-global)"), 1, 0, 0, ir_const_global_run },
 #else
     { PIPE_NAME("ir.const-global"), ARK_PROFILE_FULL, 1, GATE_FLAG_AND_LEVEL, 0, 0, 0, 1, 0, 0, 0 },
+#endif
+    /* 块尾合并放在 inline / const-global 之后：这两者会把同一个函数体复制到
+     * 多个调用点、把常量折成立即数，于是造出「若干块以完全相同的指令序列收尾」
+     * 的形状；再往后就只剩 vectorize 与后端，没有别的 pass 会再造这种重复。
+     * 它只读 MIR 的块划分，因此不需要额外图结构。 */
+#if ARKCC_FEATURE_TAILMERGE
+    { PIPE_NAME("ir.tailmerge"), ARK_PROFILE_FULL, 1, GATE_FLAG_AND_LEVEL, 1,
+      ir_wanted_tailmerge, PIPE_NAME("off (--tailmerge)"),        0, 0, opt_tailmerge_func, 0 },
+#else
+    { PIPE_NAME("ir.tailmerge"), ARK_PROFILE_FULL, 1, GATE_FLAG_AND_LEVEL, 0, 0, 0, 0, 0, 0, 0 },
 #endif
     { PIPE_NAME("ir.vectorize"), ARK_PROFILE_FULL, 2, GATE_FLAG_OR_LEVEL,  ARKCC_FEATURE_OPT_VECTORIZE,
       ir_wanted_vectorize, PIPE_NAME("off (--vectorize / -O2)"),  1, 0, 0,                  opt_vectorize },

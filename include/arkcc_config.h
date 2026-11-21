@@ -790,7 +790,23 @@
 #ifndef ARK_UNROLL_MAX_BODY
 #   define ARK_UNROLL_MAX_BODY        64
 #endif
-
+/* ---------------------------------------------------------------------------
+ * 0.9.1 块尾合并（块级 cross-jump）
+ *
+ * 只需要 MIR 的基本块划分，所以 MIR 被裁掉时它也必须跟着裁掉。
+ * 运行时默认关：不开 --tailmerge 时产出的镜像与不含这个文件的构建逐字节相同。
+ * ------------------------------------------------------------------------- */
+#ifndef ARKCC_FEATURE_TAILMERGE
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN || !ARKCC_FEATURE_MIR
+#   define ARKCC_FEATURE_TAILMERGE     0   /* 板端/无 MIR：裁掉省 Flash */
+# else
+#   define ARKCC_FEATURE_TAILMERGE     1
+# endif
+#endif
+/* 块尾合并的最短尾部长度（指指令条数）。太短的尾部合并后省不回字节。 */
+#ifndef ARK_TAILMERGE_MIN_LEN
+#   define ARK_TAILMERGE_MIN_LEN       3
+#endif
 /* -MMD 依赖表的文件名数组：宿主按需翻倍扩容（没有人为条数上限），板端用
  * ARKCC_MAX_INC_FILES 的定长表并在越界时告警一次。 */
 #ifndef ARKCC_FEATURE_DEP_FILES_DYN
