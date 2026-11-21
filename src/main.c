@@ -476,6 +476,18 @@ int main(int argc, char **argv) {
             /* Already handled above, skip path argument */
             i++;
         }
+#if !ARKCC_FEATURE_OPT_VSTACK
+        /* A build cropped with -DARKCC_FEATURE_OPT_VSTACK=0 has no pass to
+         * run, so accepting -fopt-vstack there would be a silent no-op.
+         * Refuse the enabling spellings by name; the -fno- forms stay
+         * harmless, same convention as --autoinline above. */
+        else if (strcmp(a, "-fopt-vstack") == 0 || strcmp(a, "-fvstack") == 0) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: -fopt-vstack is not compiled into "
+                    "this build (rebuild with -DARKCC_FEATURE_OPT_VSTACK=1)\n");
+            return 1;
+        }
+#endif
         else if (a[0] == '-' && a[1] == 'f') {
             /* -fxxx / -fno-xxx: already handled by config_apply_args, silently accepted here */
         }

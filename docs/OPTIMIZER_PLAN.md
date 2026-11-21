@@ -178,6 +178,28 @@
   另留一条测量陷阱：内联是单遍的，夹带启动文件时被内联进 `Reset_Handler` 的那份 `main`
   副本仍带着未展开的 `BL h`。
 
+### P7 值栈 → 寄存器分配（`-fopt-vstack`，**已落地 0.9.1-wip**）
+
+- **证据**：IAR `08-backend-passes.md` 把「表达式求值的值栈」列为后端第一顺位的收益项，
+  ARMCC `13-regalloc-selection.md` / `14-regalloc-internals-and-open-items.md` 把「让中间值
+  在寄存器里活着」写成寄存器分配的**前置**（分配器再强，值已经落内存了也没得选）。
+- **做法**：不发新 IR opcode、不动 `gen_expr`，而是在**已发射的汇编文本上做函数级重建**
+  （与既有 `ark_regalloc_function()` 同范式）。影子值栈 + 双槽池（r5/r7，prologue 已保存
+  ⇒ 零帧变化）+ 目的寄存器 retarget + 只读操作数文本替换；池不够用就退回真 `PUSH`。
+- **池槽必须引用计数**：`POP r0; PUSH r0; PUSH r0`（5..8 字节结构体返回的存储序列）让同一个
+  槽被三处引用，「用完就还」会把别人的值递出去。
+- **必须物化的三种形状**：同行读写（`LDR r0,[r0,#0]`）、跨操作数读写（`ADD r0,r0,r1`）、
+  原地三操作数（`ADC/SBC/MUL` 要求 `Rd==Rn`）；`MOVW/MOVT` 一律不 retarget（成对构造一个值）。
+- **裁切**：`ARKCC_FEATURE_OPT_VSTACK`（STM32_MIN 0 / 宿主 1）；运行期默认**关**，`-fopt-vstack`
+  才开，裁剪构建以 `C3900U` 拒绝该旗标。
+- **判据**：`tests/run_vstack_tests.py`，21 项，`make test-vstack`：默认关闭逐字节相同、
+  指令与 `PUSH/POP` 下降、**镜像只减不增**、逐函数断言无孤立 PUSH/POP 对、四夹具
+  off/on/on+regalloc 同值、裁剪构建拒绝。另每次改动跑 `tests/arm_exec` 全语料
+  （`--extra=-fopt-vstack`，36 用例 0 失败）——**本 pass 的五处语义缺陷全部是它抓到的**。
+- **实测**：`bench_opt/bench1.c`（Cortex-M4，`-O2`）1024 → 813 条（−20.6%）；arith 夹具
+  171 → 137 条、`PUSH/POP` 88 → 36、镜像 1392 → 1324；loop 夹具 203 → 152、100 → 28、
+  1480 → 1378；struct 1400 → 1308；variadic 1556 → 1542。细节见 `docs/RA_VSTACK.md`。
+
 ---
 
 ## 3 与阶段表的关系（裁切的两个层次）

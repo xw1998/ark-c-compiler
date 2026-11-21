@@ -61,6 +61,7 @@ void config_init(void) {
      * 默认产物必须与旧版本逐字节相同，只有 -fopt-regalloc/--regalloc 才开。 */
     g_config.enable_opt_regalloc  = 0;
     g_config.enable_opt_regalloc_near = 0;
+    g_config.enable_opt_vstack    = 0;
     g_config.enable_opt_inline    = ARKCC_FEATURE_OPT_INLINE;
     g_config.enable_opt_vectorize = ARKCC_FEATURE_OPT_VECTORIZE;
     /* 0.8.0 的五个实验性开关：代码按 profile 编进来（见 arkcc_config.h），
@@ -453,6 +454,8 @@ void config_apply_args(int argc, char **argv) {
                  * keeps the pass on in the default tier. */
                 if (enable) g_config.enable_opt_regalloc = 1;
             }
+            else if (ark_streq(name, "opt-vstack") || ark_streq(name, "vstack"))
+                g_config.enable_opt_vstack              = enable;
             else if (ark_streq(name, "opt-inline") || ark_streq(name, "autoinline"))
                 g_config.enable_opt_inline              = enable;
             else if (ark_streq(name, "opt-vectorize") || ark_streq(name, "vectorize"))
@@ -476,8 +479,9 @@ void config_print(void) {
     ark_log("  opt_constfold=%d opt_dce=%d opt_regalloc=%d opt_regalloc_near=%d\n",
             g_config.enable_opt_constfold, g_config.enable_opt_dce,
             g_config.enable_opt_regalloc, g_config.enable_opt_regalloc_near);
-    ark_log("  opt_inline=%d opt_vectorize=%d\n",
-            g_config.enable_opt_inline, g_config.enable_opt_vectorize);
+    ark_log("  opt_inline=%d opt_vectorize=%d opt_vstack=%d\n",
+            g_config.enable_opt_inline, g_config.enable_opt_vectorize,
+            g_config.enable_opt_vstack);
     ark_log("  dce_cfg=%d reloc_data=%d reg_top=%d rt_lazy=%d asm_extra=%d\n",
             g_config.enable_dce_cfg, g_config.enable_reloc_data,
             g_config.enable_reg_top, g_config.enable_rt_lazy,

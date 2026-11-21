@@ -1143,6 +1143,828 @@ static void ark_regalloc_function(AsmBuffer *b, int from, IrFunc *f, int local_e
     }
 }
 #endif /* ARKCC_FEATURE_OPT_REGALLOC */
+#if ARKCC_FEATURE_OPT_VSTACK
+/* ------------------- value stack -> register allocation -------------------
+ * What this is: the IR is a stack machine, so the emitter spells every value
+ * that has to survive across another computation as a real memory round trip:
+ *
+ *      LDR r0, [r6, #24]      ; a
+ *      PUSH {r0}
+ *      LDR r0, [r6, #8]       ; b
+ *      PUSH {r0}
+ *      POP {r1}               ; r1 = b
+ *      POP {r0}               ; r0 = a
+ *      ADD r0, r0, r1
+ *
+ * Two of every three instructions in such a chain are stack traffic, and on
+ * the benchmark corpus (18 small embedded functions) PUSH+POP were 50% of the
+ * whole function.  This pass keeps the value stack in registers instead:
+ *
+ *      LDR r5, [r6, #24]      ; a     (producer retargeted to the pool)
+ *      LDR r7, [r6, #8]       ; b
+ *      ADD r0, r5, r7         ; consumer reads the pool directly
+ *
+ * How it is safe.  This is a text pass over an already emitted function, with
+ * a shadow model of the value stack (`skind`/`spool`) and of what each
+ * register currently holds (`pend` = "rN holds pool slot k").  It is all or
+ * nothing per function: any line whose shape is not in the table below, any
+ * branch/label/call with a non-empty value stack, any multi-register PUSH/POP
+ * that is not the prologue/epilogue, any "[sp" access, any use of a pool
+ * register as a data operand -- each of those abandons the function and the
+ * emitted text is spliced back untouched.  So the worst case of a bug is
+ * "the pass declines", never "the pass emits a wrong instruction".
+ *
+ * The pool is r5 and r7: the prologue already saves them for every function
+ * (`PUSH {r5, r6, r7, lr}`), so using them costs zero extra frame bytes and
+ * cannot disturb any frame offset.  r4 is not used: saving it would make the
+ * prologue save an odd number of words and break the 8-byte sp alignment that
+ * AAPCS requires at every call.  A function that names r5 or r7 in its body
+ * (struct-by-value and long-long return paths do) simply drops it from the
+ * pool; if both are taken the pass still runs the PUSH/POP-pair peephole.
+ *
+ * The producer retarget (writing the pool register instead of r0) is only
+ * taken when r0 is provably dead afterwards: the scan stops at the first
+ * mention of r0 and only retargets when that mention is a write.  That is what
+ * keeps `IR_DUP` (`PUSH {r0}` with the copy deliberately left in r0) correct.
+ *
+ * Cost, measured on the corpus: 1024 instructions -> see docs/RA_VSTACK.md.
+ */
+#define VS_MAX_POOL   2
+#define VS_MAX_DEPTH  24
+#define VS_MAX_OP     6
+#define VS_OPLEN      96
+#define VS_MAX_REG    16
+
+enum {
+    VS_F_NONE = 0,   /* no data effect: NOP, .loc, IT, sev ...                 */
+    VS_F_W0R12,      /* Rd, Rn, Rm          : read 1,2   write 0               */
+    VS_F_RW0R1,      /* Rd, Rm       (2-op) : read 0,1   write 0               */
+    VS_F_W0R1,       /* Rd, Rm              : read 1     write 0               */
+    VS_F_W0,         /* Rd, #imm            :            write 0               */
+    VS_F_R01,        /* Rn, Rm / Rn, #imm   : read 0,1   (nothing written)     */
+    VS_F_STR,        /* Rt, [Rn, #imm]      : read 0,1                         */
+    VS_F_LDR,        /* Rt, [Rn, #imm]      : read 1     write 0               */
+    VS_F_CALL,       /* BL / BLX            : barrier                          */
+    VS_F_BRANCH,     /* B / Bcc / BX        : barrier                          */
+    VS_F_IT          /* IT / ITE            : barrier for pending aliases       */
+};
+
+typedef struct {
+    char *t;    /* line text, '\n' stripped, owned by the memory pool */
+    int   del;  /* removed by the PUSH/POP-pair peephole */
+} VsLine;
+
+static int vs_streq(const char *a, const char *b) {
+    while (*a && *a == *b) { a++; b++; }
+    return *a == *b;
+}
+
+static int vs_isdigit(char c) { return c >= '0' && c <= '9'; }
+
+static int vs_isalnum(char c) {
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+}
+
+static void vs_trim(char *s) {
+    char *p = s;
+    int n;
+    while (*p == ' ' || *p == '\t') p++;
+    if (p != s) {
+        char *d = s;
+        while (*p) *d++ = *p++;
+        *d = 0;
+    }
+    n = (int)strlen(s);
+    while (n > 0 && (s[n-1] == ' ' || s[n-1] == '\t' || s[n-1] == '\r')) s[--n] = 0;
+}
+
+/* Strip the "{...}" of a PUSH/POP operand list so "PUSH {r0}" and
+ * "POP {r5, r6, r7, pc}" both end up with a bare register list. */
+static void vs_unbrace(char *s) {
+    int n, i;
+    vs_trim(s);
+    n = (int)strlen(s);
+    if (n >= 2 && s[0] == '{' && s[n-1] == '}') {
+        for (i = 1; i < n - 1; i++) s[i-1] = s[i];
+        s[n-2] = 0;
+        vs_trim(s);
+    }
+}
+
+/* Split one line into mnemonic + comma separated operands (commas inside
+ * "[...]" or "{...}" do not separate).  Returns 0 for a blank line. */
+static int vs_parse(const char *line, char *mn, int mn_sz,
+                    char ops[VS_MAX_OP][VS_OPLEN], int *nops,
+                    int *is_dot, int *is_label)
+{
+    const char *p = line;
+    int i;
+
+    *nops = 0;
+    *is_dot = 0;
+    *is_label = 0;
+    mn[0] = 0;
+    while (*p == ' ' || *p == '\t') p++;
+    if (!*p || *p == '\r') return 0;
+    if (*p == '.') *is_dot = 1;
+    {
+        const char *e = p + strlen(p);
+        while (e > p && (e[-1] == ' ' || e[-1] == '\t' || e[-1] == '\r')) e--;
+        if (e > p && e[-1] == ':') { *is_label = 1; return 1; }
+    }
+    i = 0;
+    while (*p && *p != ' ' && *p != '\t' && *p != '\r' && i < mn_sz - 1) mn[i++] = *p++;
+    mn[i] = 0;
+    while (*p == ' ' || *p == '\t') p++;
+    while (*p && *p != '\r' && *nops < VS_MAX_OP) {
+        int j = 0, br = 0;
+        while (*p && *p != '\r') {
+            if (*p == '[' || *p == '{') br++;
+            else if (*p == ']' || *p == '}') br--;
+            else if (*p == ',' && br == 0) break;
+            if (j < VS_OPLEN - 1) ops[*nops][j++] = *p;
+            p++;
+        }
+        ops[*nops][j] = 0;
+        vs_trim(ops[*nops]);
+        (*nops)++;
+        if (*p == ',') p++;
+        while (*p == ' ' || *p == '\t') p++;
+    }
+    if ((vs_streq(mn, "PUSH") || vs_streq(mn, "POP")) && *nops > 0)
+        vs_unbrace(ops[0]);
+    return 1;
+}
+
+/* Length of the "r<digits>" token at s, and its number; 0 if there is none. */
+static int vs_regtok(const char *s, int *reg) {
+    int i = 1, v = 0, n = 0;
+    if (s[0] != 'r') return 0;
+    if (!vs_isdigit(s[i])) return 0;
+    while (vs_isdigit(s[i])) { v = v * 10 + (s[i] - '0'); i++; n++; }
+    if (n > 2 || v >= VS_MAX_REG) return 0;
+    *reg = v;
+    return i;
+}
+
+static int vs_isboundary(char c) {
+    return !(vs_isalnum(c) || c == '_' || c == '.');
+}
+
+/* Does this text mention register `reg` as a whole token? */
+static int vs_txt_has(const char *s, int reg) {
+    int i = 0;
+    while (s[i]) {
+        int r, n;
+        int bnd = (i == 0) || vs_isboundary(s[i-1]);
+        if (bnd && (n = vs_regtok(s + i, &r)) > 0) {
+            char after = s[i + n];
+            if (!(vs_isalnum(after) || after == '_')) {
+                if (r == reg) return 1;
+            }
+            i += n;
+            continue;
+        }
+        i++;
+    }
+    return 0;
+}
+
+/* Replace the whole-token mention of `reg` with a two-character register
+ * name.  Only reg < 10, so the length never changes. */
+static void vs_subst(char *s, int reg, const char *name2) {
+    int i = 0;
+    if (reg >= 10) return;
+    while (s[i]) {
+        int r, n;
+        int bnd = (i == 0) || vs_isboundary(s[i-1]);
+        if (bnd && (n = vs_regtok(s + i, &r)) > 0) {
+            char after = s[i + n];
+            if (!(vs_isalnum(after) || after == '_')) {
+                if (r == reg) { s[i] = name2[0]; s[i+1] = name2[1]; return; }
+            }
+            i += n;
+            continue;
+        }
+        i++;
+    }
+}
+
+static int vs_whole_reg(const char *s, int *reg) {
+    int n = vs_regtok(s, reg);
+    return (n > 0 && s[n] == 0);
+}
+
+static void vs_rname(int reg, char *buf) {
+    if (reg >= 10) {
+        buf[0] = 'r'; buf[1] = (char)('0' + reg / 10);
+        buf[2] = (char)('0' + reg % 10); buf[3] = 0;
+    } else {
+        buf[0] = 'r'; buf[1] = (char)('0' + reg); buf[2] = 0;
+    }
+}
+
+static int vs_cc_suffix(const char *s) {
+    static const char *const cc[] = {
+        "EQ", "NE", "CS", "HS", "CC", "LO", "MI", "PL",
+        "VS", "VC", "HI", "LS", "GE", "LT", "GT", "LE", "AL", 0
+    };
+    int i;
+    for (i = 0; cc[i]; i++) if (vs_streq(s, cc[i])) return 1;
+    return 0;
+}
+
+/* ADC / SBC / MUL have no 16-bit three-register form in this assembler:
+ * they encode as Rd = Rd <op> Rm and refuse Rd != Rn.  A rewrite that puts
+ * the pool register in the Rn slot would therefore make the line
+ * unassemblable, so the pass copies the value into its own register there
+ * instead of substituting it. */
+static int vs_is_inplace3(const char *mn)
+{
+    char base[12];
+    int n = (int)strlen(mn);
+    if (n < 3 || n >= (int)sizeof base) return 0;
+    memcpy(base, mn, n);
+    base[n] = 0;
+    if (n > 3 && vs_cc_suffix(base + n - 2)) { base[n - 2] = 0; n -= 2; }
+    if (n > 3 && base[n - 1] == 'S') base[n - 1] = 0;
+    return vs_streq(base, "ADC") || vs_streq(base, "SBC") ||
+           vs_streq(base, "MUL");
+}
+
+static int vs_in(const char *m, const char *const *list) {
+    int i;
+    for (i = 0; list[i]; i++) if (vs_streq(m, list[i])) return 1;
+    return 0;
+}
+
+static int vs_base_form(const char *m, int nops, char ops[VS_MAX_OP][VS_OPLEN]);
+
+/* Instruction form of a mnemonic, condition suffix included.  Returns
+ * VS_F_BAIL for anything this pass must not touch. */
+static int vs_form(const char *mn, int nops, char ops[VS_MAX_OP][VS_OPLEN], int *cond)
+{
+    int n = (int)strlen(mn);
+    int k, f;
+    int i, j;
+
+    *cond = 0;
+    for (k = n - 2; k >= 1; k--) {
+        char base[16];
+        if (n - k > 4) continue;
+        if (k >= (int)sizeof base) continue;
+        if (!vs_cc_suffix(mn + k)) continue;
+        memcpy(base, mn, k);
+        base[k] = 0;
+        f = vs_base_form(base, nops, ops);
+        if (f >= 0) { *cond = 1; return f; }
+    }
+    f = vs_base_form(mn, nops, ops);
+    if (f >= 0) return f;
+    /* Unknown mnemonic: safe only when the line names no data register. */
+    for (i = 0; i < nops; i++)
+        for (j = 0; j < VS_MAX_REG; j++)
+            if (vs_txt_has(ops[i], j)) return -1;
+    return VS_F_NONE;
+}
+
+static int vs_base_form(const char *m, int nops, char ops[VS_MAX_OP][VS_OPLEN])
+{
+    static const char *const arith[] = {
+        "ADD", "SUB", "RSB", "ADC", "SBC", "AND", "ORR", "EOR", "BIC",
+        "LSL", "LSR", "ASR", "ROR", "MUL", "SDIV", "UDIV", 0
+    };
+    static const char *const movw[] = { "MOVW", "MOVT", 0 };
+    static const char *const cmpx[] = { "CMP", "CMN", "TST", "TEQ", 0 };
+    static const char *const ldrx[] = { "LDR", "LDRB", "LDRH", "LDRSB", "LDRSH", 0 };
+    static const char *const strx[] = { "STR", "STRB", "STRH", 0 };
+    static const char *const rw1[]  = { "UXTB", "SXTB", "UXTH", "SXTH", "NEG", "MVN", 0 };
+    static const char *const nothing[] = {
+        "NOP", "DSB", "ISB", "DMB", "SEV", "WFI", "YIELD",
+        "SVC", "CPSID", "CPSIE", "MRS", "MSR", 0
+    };
+    char low[16];
+
+    if (vs_in(m, arith)) {
+        if (nops == 3) return VS_F_W0R12;
+        if (nops == 2) return VS_F_RW0R1;
+        return -1;
+    }
+    if (vs_streq(m, "MOV")) {
+        if (nops != 2) return -1;
+        return (ops[1][0] == '#') ? VS_F_W0 : VS_F_W0R1;
+    }
+    if (vs_in(m, movw))  return (nops == 2) ? VS_F_W0 : -1;
+    if (vs_in(m, cmpx))  return VS_F_R01;
+    if (vs_in(m, ldrx))  return (nops == 2 && ops[1][0] == '[') ? VS_F_LDR : VS_F_W0R1;
+    if (vs_in(m, strx))  return (nops == 2 && ops[1][0] == '[') ? VS_F_STR : -1;
+    if (vs_in(m, rw1))   return (nops == 2) ? VS_F_RW0R1 : -1;
+    if (vs_in(m, nothing)) return VS_F_NONE;
+    if (vs_streq(m, "BL") || vs_streq(m, "BLX")) return VS_F_CALL;
+    if (vs_streq(m, "B")  || vs_streq(m, "BX"))  return VS_F_BRANCH;
+    if (m[0] == 'I' && m[1] == 'T' && nops <= 1) return VS_F_IT;
+    /* "ADDS"/"SUBS"/"LSLS"/"MOVS" ... : the S is a flag-setter, not a suffix
+     * we model, so retry with it removed. */
+    {
+        int n = (int)strlen(m);
+        if (n > 1 && m[n-1] == 'S' && n < (int)sizeof low) {
+            memcpy(low, m, n - 1);
+            low[n-1] = 0;
+            if (vs_in(low, arith) || vs_streq(low, "MOV") ||
+                vs_in(low, cmpx) || vs_in(low, rw1)) {
+                int f = vs_base_form(low, nops, ops);
+                if (f >= 0) return f;
+            }
+        }
+    }
+    return -1;
+}
+
+static void vs_masks(int form, int nops, int *rmask, int *wmask) {
+    int i;
+    for (i = 0; i < VS_MAX_OP; i++) { rmask[i] = 0; wmask[i] = 0; }
+    switch (form) {
+    case VS_F_W0R12:
+        if (nops > 0) wmask[0] = 1;
+        if (nops > 1) rmask[1] = 1;
+        if (nops > 2) rmask[2] = 1;
+        break;
+    case VS_F_RW0R1:
+        if (nops > 0) { rmask[0] = 1; wmask[0] = 1; }
+        if (nops > 1) rmask[1] = 1;
+        break;
+    case VS_F_W0R1:
+        if (nops > 0) wmask[0] = 1;
+        if (nops > 1) rmask[1] = 1;
+        break;
+    case VS_F_W0:
+        if (nops > 0) wmask[0] = 1;
+        break;
+    case VS_F_R01:
+        if (nops > 0) rmask[0] = 1;
+        if (nops > 1) rmask[1] = 1;
+        break;
+    case VS_F_STR:
+        if (nops > 0) rmask[0] = 1;
+        if (nops > 1) rmask[1] = 1;
+        break;
+    case VS_F_LDR:
+        if (nops > 0) wmask[0] = 1;
+        if (nops > 1) rmask[1] = 1;
+        break;
+    default:
+        break;
+    }
+}
+
+static void vs_put_line(AsmBuffer *o, const char *s) {
+    asmbuf_puts(o, s);
+    asmbuf_putc(o, '\n');
+}
+
+static void vs_put_ins(AsmBuffer *o, const char *mn,
+                       char ops[VS_MAX_OP][VS_OPLEN], int nops, int *dest_off)
+{
+    int i;
+    if (dest_off) *dest_off = -1;
+    asmbuf_puts(o, "    ");
+    asmbuf_puts(o, mn);
+    for (i = 0; i < nops; i++) {
+        asmbuf_puts(o, i == 0 ? " " : ", ");
+        if (i == 0 && dest_off) *dest_off = o->len;
+        asmbuf_puts(o, ops[i]);
+    }
+    asmbuf_putc(o, '\n');
+}
+
+static int vs_free_pool(const int *busy, int n) {
+    int i;
+    for (i = 0; i < n; i++) if (!busy[i]) return i;
+    return -1;
+}
+
+/* One pool slot can be referenced from several places at once: a value
+ * stack entry, the register mapping that the PUSH left behind, and the
+ * register mapping a POP created.  Releasing the first consumer must not
+ * hand the slot to somebody else while another reference is still alive
+ * (`POP r0; PUSH r0; PUSH r0` -- a 5..8-byte struct return -- puts the
+ * same slot on the stack twice), so slots are reference counted. */
+static void vs_ref_add(int p, int *pref, int *pbusy)
+{
+    pref[p]++;
+    pbusy[p] = 1;
+}
+
+static void vs_ref_rel(int p, int *pref, int *pbusy)
+{
+    if (p < 0) return;
+    if (--pref[p] <= 0) {
+        pref[p] = 0;
+        pbusy[p] = 0;
+    }
+}
+
+static void vs_flush_all(AsmBuffer *o, int *pend, int *pref, int *pbusy,
+                         const int *pool) {
+    char nm[8];
+    int j;
+    for (j = 0; j < VS_MAX_REG; j++) {
+        if (pend[j] < 0) continue;
+        vs_rname(pool[pend[j]], nm);
+        asmbuf_puts(o, "    MOV r");
+        asmbuf_int(o, j);
+        asmbuf_puts(o, ", ");
+        asmbuf_puts(o, nm);
+        asmbuf_putc(o, '\n');
+        vs_ref_rel(pend[j], pref, pbusy);
+        pend[j] = -1;
+    }
+}
+
+/* Is `reg` written before it is read, starting at line `from`?  Used to decide
+ * whether the producer's destination can be moved into the pool: only when
+ * nothing reads the old value first (IR_DUP keeps a live copy in r0). */
+static int vs_read_before_write(VsLine *L, int nlines, int from, int reg)
+{
+    int i;
+    for (i = from; i < nlines; i++) {
+        char mn[24];
+        char ops[VS_MAX_OP][VS_OPLEN];
+        int nops, isdot, islab, f, cnd;
+        int rmask[VS_MAX_OP], wmask[VS_MAX_OP];
+        int rd = 0, wr = 0, j;
+
+        if (L[i].del) continue;
+        if (!vs_parse(L[i].t, mn, sizeof mn, ops, &nops, &isdot, &islab)) continue;
+        if (isdot) continue;                 /* .loc / .cfi: no register effect */
+        if (islab) return 1;
+        if (vs_streq(mn, "PUSH") || vs_streq(mn, "POP")) {
+            int pr = -1;
+            if (nops == 1 && vs_whole_reg(ops[0], &pr)) {
+                if (vs_streq(mn, "PUSH")) { if (pr == reg) return 1; }
+                else { if (pr == reg) return 0; }   /* the value is overwritten */
+            }
+            continue;
+        }
+        f = vs_form(mn, nops, ops, &cnd);
+        if (f < 0) return 1;
+        if (f == VS_F_CALL) return (reg < 4 || reg == 12) ? 0 : 1;
+        if (f == VS_F_BRANCH || f == VS_F_IT) return 1;
+        vs_masks(f, nops, rmask, wmask);
+        for (j = 0; j < nops; j++) {
+            if (!vs_txt_has(ops[j], reg)) continue;
+            if (rmask[j]) rd = 1;
+            if (wmask[j]) wr = 1;
+        }
+        if (rd) return 1;
+        if (wr) return 0;
+    }
+    return 1;
+}
+
+static void ark_vstack_function(AsmBuffer *b, int from)
+{
+    VsLine *L = 0;
+    int cap = 0, nlines = 0;
+    int i, pos, pro_end = -1;
+    int pool[VS_MAX_POOL], pbusy[VS_MAX_POOL], npool = 0;
+    int skind[VS_MAX_DEPTH], spool[VS_MAX_DEPTH];
+    int depth = 0, nmem = 0;
+    int pend[VS_MAX_REG];      /* register -> pool slot holding its value */
+    int pref[VS_MAX_POOL];     /* references per slot: stack entries + pend */
+    int last_dest_off = -1, last_dest = -1;
+    AsmBuffer out;
+    int bail = 0;
+    char nm[8];
+
+    /* ---- slice the function text into lines ---- */
+    pos = from;
+    while (pos < b->len) {
+        int len = 0;
+        while (pos + len < b->len && b->buf[pos + len] != '\n') len++;
+        if (nlines >= cap) {
+            int ncap = cap ? cap * 2 : 256;
+            VsLine *grown = (VsLine *)mem_pool_alloc(ncap * (int)sizeof(VsLine));
+            if (!grown) return;
+            for (i = 0; i < nlines; i++) grown[i] = L[i];
+            L = grown;
+            cap = ncap;
+        }
+        L[nlines].t = (char *)mem_pool_alloc(len + 1);
+        if (!L[nlines].t) return;
+        for (i = 0; i < len; i++) L[nlines].t[i] = b->buf[pos + i];
+        L[nlines].t[len] = 0;
+        L[nlines].del = 0;
+        nlines++;
+        pos += len + 1;
+    }
+
+    /* ---- find the end of the prologue: the "MOV r6, sp" that anchors it ---- */
+    for (i = 0; i < nlines; i++) {
+        char mn[24];
+        char ops[VS_MAX_OP][VS_OPLEN];
+        int nops, isdot, islab;
+        if (!vs_parse(L[i].t, mn, sizeof mn, ops, &nops, &isdot, &islab)) continue;
+        if (isdot || islab) continue;
+        if (vs_streq(mn, "MOV") && nops == 2 &&
+            vs_streq(ops[0], "r6") && vs_streq(ops[1], "sp")) {
+            pro_end = i;
+            break;
+        }
+    }
+    if (pro_end < 0) return;   /* __naked or an unexpected prologue: leave it */
+
+    /* ---- survey: pool availability and the bail conditions ---- */
+    {
+        int use5 = 0, use7 = 0, bad = 0;
+        for (i = pro_end + 1; i < nlines; i++) {
+            char mn[24];
+            char ops[VS_MAX_OP][VS_OPLEN];
+            int nops, isdot, islab, f, cnd;
+            if (!vs_parse(L[i].t, mn, sizeof mn, ops, &nops, &isdot, &islab)) continue;
+            if (isdot || islab) continue;
+            if (strstr(L[i].t, "[sp")) { bad = 1; break; }
+            if (vs_streq(mn, "PUSH") || vs_streq(mn, "POP")) {
+                if (nops == 1 && !strchr(ops[0], ',')) {
+                    if (vs_txt_has(ops[0], 5)) use5 = 1;
+                    if (vs_txt_has(ops[0], 7)) use7 = 1;
+                    continue;
+                }
+                /* multi-register: only the prologue PUSH and an epilogue POP
+                 * (one that also pops pc or lr) are allowed through */
+                if (vs_streq(mn, "POP") &&
+                    (strstr(ops[0], "pc") || strstr(ops[0], "lr"))) continue;
+                if (vs_streq(mn, "PUSH") && strstr(ops[0], "lr")) continue;
+                bad = 1;
+                break;
+            }
+            if (vs_txt_has(L[i].t, 5)) use5 = 1;
+            if (vs_txt_has(L[i].t, 7)) use7 = 1;
+            f = vs_form(mn, nops, ops, &cnd);
+            if (f < 0) { bad = 1; break; }
+        }
+        if (bad) return;
+        if (!use5) { pool[npool] = 5; npool++; }
+        if (!use7) { pool[npool] = 7; npool++; }
+    }
+
+    /* ---- peephole: "PUSH {rN}" immediately followed by "POP {rN}" is a
+     * word stored and loaded straight back with sp and rN restored -- delete
+     * both.  Correct with no pool at all, and it is the single biggest win on
+     * expression-heavy code. ---- */
+    for (i = pro_end + 1; i + 1 < nlines; i++) {
+        char m1[24], m2[24];
+        char o1[VS_MAX_OP][VS_OPLEN], o2[VS_MAX_OP][VS_OPLEN];
+        int n1, n2, d1, d2, l1, l2, r1 = -1, r2 = -2;
+        if (L[i].del || L[i+1].del) continue;
+        if (!vs_parse(L[i].t, m1, sizeof m1, o1, &n1, &d1, &l1)) continue;
+        if (!vs_parse(L[i+1].t, m2, sizeof m2, o2, &n2, &d2, &l2)) continue;
+        if (d1 || l1 || d2 || l2) continue;
+        if (n1 != 1 || n2 != 1) continue;
+        if (!vs_streq(m1, "PUSH") || !vs_streq(m2, "POP")) continue;
+        if (!vs_whole_reg(o1[0], &r1) || !vs_whole_reg(o2[0], &r2)) continue;
+        if (r1 != r2) continue;
+        L[i].del = 1;
+        L[i+1].del = 1;
+        i++;
+    }
+
+    /* ---- rebuild ---- */
+    asmbuf_init(&out);
+    for (i = 0; i < VS_MAX_REG; i++) pend[i] = -1;
+    for (i = 0; i < VS_MAX_POOL; i++) { pbusy[i] = 0; pref[i] = 0; }
+
+    for (i = 0; i < nlines && !bail; i++) {
+        char mn[24];
+        char ops[VS_MAX_OP][VS_OPLEN];
+        int nops, isdot, islab, f, cnd, j;
+
+        if (i <= pro_end) { vs_put_line(&out, L[i].t); continue; }
+        if (L[i].del) continue;
+        if (!vs_parse(L[i].t, mn, sizeof mn, ops, &nops, &isdot, &islab)) {
+            vs_put_line(&out, L[i].t);
+            continue;
+        }
+        if (islab) {
+            if (depth != 0 || nmem != 0) { bail = 1; break; }
+            vs_flush_all(&out, pend, pref, pbusy, pool);
+            vs_put_line(&out, L[i].t);
+            last_dest = -1;
+            continue;
+        }
+        if (isdot) { vs_put_line(&out, L[i].t); continue; }
+
+        if (vs_streq(mn, "MOV") && nops == 2 && vs_streq(ops[0], "sp")) {
+            /* epilogue: everything after it until the next label is the
+             * restore sequence and is copied through untouched. */
+            if (depth != 0 || nmem != 0) { bail = 1; break; }
+            vs_flush_all(&out, pend, pref, pbusy, pool);
+            vs_put_line(&out, L[i].t);
+            last_dest = -1;
+            i++;
+            while (i < nlines) {
+                char m2[24];
+                char o2[VS_MAX_OP][VS_OPLEN];
+                int n2, d2, l2;
+                if (vs_parse(L[i].t, m2, sizeof m2, o2, &n2, &d2, &l2) && l2) break;
+                vs_put_line(&out, L[i].t);
+                i++;
+            }
+            i--;
+            continue;
+        }
+
+        if (vs_streq(mn, "PUSH")) {
+            int r = -1, p;
+            if (nops != 1 || !vs_whole_reg(ops[0], &r)) { bail = 1; break; }
+            if (depth >= VS_MAX_DEPTH) { bail = 1; break; }
+            if (pend[r] >= 0) {         /* the value already sits in a pool slot */
+                skind[depth] = 1;
+                spool[depth] = pend[r];
+                vs_ref_add(pend[r], pref, pbusy);
+                depth++;
+                last_dest = -1;
+                continue;
+            }
+            p = vs_free_pool(pbusy, npool);
+            if (p >= 0) {
+                vs_rname(pool[p], nm);
+                if (last_dest == r && last_dest_off >= 0 &&
+                    !vs_read_before_write(L, nlines, i + 1, r)) {
+                    out.buf[last_dest_off]     = nm[0];
+                    out.buf[last_dest_off + 1] = nm[1];
+                } else {
+                    asmbuf_puts(&out, "    MOV ");
+                    asmbuf_puts(&out, nm);
+                    asmbuf_puts(&out, ", r");
+                    asmbuf_int(&out, r);
+                    asmbuf_putc(&out, '\n');
+                }
+                vs_ref_add(p, pref, pbusy);            /* the value stack entry */
+                skind[depth] = 1;
+                spool[depth] = p;
+                /* The value now lives in the pool as well, so a second
+                 * `PUSH {r}` -- the same word on the stack twice, which is
+                 * what a 5..8-byte struct return store does -- is free.  The
+                 * mapping is dropped as soon as something writes r. */
+                pend[r] = p;
+                vs_ref_add(p, pref, pbusy);
+            } else {
+                asmbuf_puts(&out, "    PUSH {r");
+                asmbuf_int(&out, r);
+                asmbuf_puts(&out, "}\n");
+                nmem++;
+                skind[depth] = 0;
+                spool[depth] = -1;
+            }
+            depth++;
+            last_dest = -1;
+            continue;
+        }
+
+        if (vs_streq(mn, "POP")) {
+            int r = -1;
+            if (nops != 1 || !vs_whole_reg(ops[0], &r)) { bail = 1; break; }
+            if (depth <= 0) { bail = 1; break; }
+            if (pend[r] >= 0) { vs_ref_rel(pend[r], pref, pbusy); pend[r] = -1; }
+            depth--;
+            if (skind[depth] == 1) {
+                /* the entry's reference becomes the register's mapping: r
+                 * is now the name for that slot, and the register itself is
+                 * *not* written -- every later read has to be rewritten. */
+                pend[r] = spool[depth];
+            } else {
+                asmbuf_puts(&out, "    POP {r");
+                asmbuf_int(&out, r);
+                asmbuf_puts(&out, "}\n");
+                nmem--;
+            }
+            last_dest = -1;
+            continue;
+        }
+
+        f = vs_form(mn, nops, ops, &cnd);
+        if (f < 0) { bail = 1; break; }
+
+        if (f == VS_F_CALL) {
+            if (depth != 0 || nmem != 0) { bail = 1; break; }
+            vs_flush_all(&out, pend, pref, pbusy, pool);
+            vs_put_ins(&out, mn, ops, nops, 0);
+            last_dest = -1;
+            continue;
+        }
+        if (f == VS_F_BRANCH) {
+            if (depth != 0 || nmem != 0) { bail = 1; break; }
+            vs_flush_all(&out, pend, pref, pbusy, pool);
+            vs_put_ins(&out, mn, ops, nops, 0);
+            last_dest = -1;
+            continue;
+        }
+        if (f == VS_F_IT) {
+            vs_flush_all(&out, pend, pref, pbusy, pool);
+            vs_put_ins(&out, mn, ops, nops, 0);
+            last_dest = -1;
+            continue;
+        }
+
+        {
+            int rmask[VS_MAX_OP], wmask[VS_MAX_OP];
+            int dest_off = -1, cand = -1;
+
+            vs_masks(f, nops, rmask, wmask);
+
+            /* Consume the popped values.  A value that is read goes straight
+             * from the pool into the consumer; a value whose register is
+             * overwritten without being read is dead and the pool slot is
+             * released; a value read *and* written in the same operand (the
+             * 2-operand forms) is copied into its register first. */
+            for (j = 0; j < VS_MAX_REG; j++) {
+                int need_mov = 0, any_sub = 0, dead = 0, written = 0, k;
+                if (pend[j] < 0) continue;
+                for (k = 0; k < nops; k++) {
+                    if (!vs_txt_has(ops[k], j)) continue;
+                    if (wmask[k]) written = 1;
+                    if (rmask[k] && wmask[k]) need_mov = 1;
+                    else if (rmask[k]) any_sub = 1;
+                    else if (wmask[k]) dead = 1;
+                }
+                /* Read in one operand and written in another (`ADD r0, r0, r1`
+                 * with r0 in the pool): the slot is the only copy and the
+                 * consumer overwrites the register, so materialise first. */
+                if (!need_mov && written && any_sub) { need_mov = 1; any_sub = 0; }
+                if (!need_mov && any_sub && vs_is_inplace3(mn) && nops == 3 &&
+                    vs_txt_has(ops[1], j)) {
+                    need_mov = 1;
+                    any_sub = 0;
+                }
+                if (!need_mov && !any_sub && !dead) continue;
+                vs_rname(pool[pend[j]], nm);
+                if (need_mov) {
+                    asmbuf_puts(&out, "    MOV r");
+                    asmbuf_int(&out, j);
+                    asmbuf_puts(&out, ", ");
+                    asmbuf_puts(&out, nm);
+                    asmbuf_putc(&out, '\n');
+                } else if (any_sub) {
+                    for (k = 0; k < nops; k++)
+                        if (rmask[k] && !wmask[k] && vs_txt_has(ops[k], j))
+                            vs_subst(ops[k], j, nm);
+                }
+                /* Read-only keeps the mapping: the register itself may hold
+                 * nothing at all (a popped pool value is never copied back),
+                 * so the next line that reads it must be rewritten the same
+                 * way (`lo32` ends with STR r0,[r2,#0]; STR r1,[r2,#4] --
+                 * two separate stores of the same base).  A line that also
+                 * writes the register (`LDR r0,[r0,#0]`) makes the slot dead
+                 * after it. */
+                /* Nothing reads the register again before it is written --
+                 * not even a `PUSH {r}`, which vs_read_before_write counts as
+                 * a read -- so the mapping is dead and the slot can go back
+                 * to the pool without paying for a copy. */
+                if (need_mov || written || dead ||
+                    !vs_read_before_write(L, nlines, i + 1, j)) {
+                    vs_ref_rel(pend[j], pref, pbusy);
+                    pend[j] = -1;
+                }
+            }
+
+            /* A plain register destination that is not read can host the next
+             * pushed value; remember where that token is so PUSH can retarget
+             * it in place. */
+            /* MOVW/MOVT come in pairs that build one value in one register;
+             * retargeting just the second half would leave 0xFFFF in rN and
+             * the high half in the pool register, so never let PUSH rewrite
+             * either of them. */
+            if (vs_streq(mn, "MOVW") || vs_streq(mn, "MOVT")) cand = -1;
+            else if (!cnd && nops > 0 && wmask[0] && !rmask[0]) {
+                int rr, n = vs_regtok(ops[0], &rr);
+                if (n > 0 && ops[0][n] == 0 && rr < 10) cand = rr;
+            }
+            vs_put_ins(&out, mn, ops, nops, &dest_off);
+            if (cand >= 0) {
+                last_dest = cand;
+                last_dest_off = dest_off;
+            } else {
+                last_dest = -1;
+                last_dest_off = -1;
+            }
+        }
+    }
+    if (bail || depth != 0 || nmem != 0) {
+        return;
+    }
+    /* Nothing changed?  Then leave the buffer exactly as it was. */
+    if (out.len == b->len - from && memcmp(out.buf, b->buf + from, out.len) == 0) {
+        return;
+    }
+
+    asmbuf_reserve(b, from + out.len + 1);
+    if (from + out.len + 1 > b->cap) return;
+    for (i = 0; i < out.len; i++) b->buf[from + i] = out.buf[i];
+    b->buf[from + out.len] = 0;
+    b->len = from + out.len;
+}
+#endif /* ARKCC_FEATURE_OPT_VSTACK */
 
 /* 16 for a variadic function: the prologue pushed r0-r3 in front of the saved
  * registers, so every epilogue of that function has 16 extra bytes to drop.
@@ -5454,6 +6276,11 @@ static char *codegen_arm(IrProgram *prog) {
 #endif
         }
         asmbuf_putc(&buf, '\n');
+#if ARKCC_FEATURE_OPT_VSTACK
+        /* Keep the value stack in r5/r7 instead of memory.  Runs first, so the
+         * slot rewriter below sees the already shortened function. */
+        if (g_config.enable_opt_vstack) ark_vstack_function(&buf, fstart);
+#endif
 #if ARKCC_FEATURE_OPT_REGALLOC
         /* The text of this function is complete: it is the last slice of the
          * buffer, so the rewrite sees exactly this function and nothing else. */
