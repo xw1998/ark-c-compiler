@@ -28,7 +28,7 @@ endif
         test-loop test-modern test-atomic test-ipo test-constglobal \
         test-objir test-partiallink test-deadinline test-softfloat test-tailmerge \
         test-tailcall test-divconst test-xblock test-sizeweight \
-        test-inline test-vstack install stm32
+        test-inline test-vstack test-addr install stm32
 
 all: $(ARKCC)
 
@@ -43,7 +43,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -161,6 +161,14 @@ test-inline: $(ARKCC)
 # (-DARKCC_FEATURE_OPT_VSTACK=0) refuses the flag by name.
 test-vstack: $(ARKCC)
 	$(PYTHON) tests/run_vstack_tests.py ./$(ARKCC)
+
+# Gate for -fopt-addr: OFF IS OFF (byte-identical without the flag), the fold
+# really happens (instruction count down, index forms appear, no foldable pair
+# left behind, image never bigger than the no-flag baseline), every rewritten
+# operand is a form the assembler accepts, all four arms compute the same
+# answer in the emulator, and a cropped build refuses the flag by name.
+test-addr: $(ARKCC)
+	$(PYTHON) tests/run_addr_tests.py ./$(ARKCC)
 
 # Gate for --diag_style=modern: the header, the framed echo and the caret
 # column are checked against the token they point at (by display width, so a

@@ -259,6 +259,45 @@ aliasing is uncertain" plus ARM-specific instruction rewrites.**
   100 -> 28, 1480 -> 1378; struct 1400 -> 1308; variadic 1556 -> 1542. Details in
   `docs/RA_VSTACK.md`.
 
+### P8 Addressing-mode folding (`-fopt-addr`, **landed in 0.9.1-wip**)
+
+- **Evidence**: IAR's `08-backend-passes.md` list of peepholes ranks "fold address arithmetic into
+  the addressing mode" right after the value stack; ARMCC's `09-addressing-modes.md` shows AC5
+  letting `LDR/STR` consume `[Rn, #imm]` / `[Rn, Rm, LSL #n]` directly instead of emitting a
+  separate `ADD` for every subscript.
+- **How**: again a **function-level pass over the emitted assembly** (hooked between
+  `ark_vstack_function()` and `ark_regalloc_function()`). Fixed point, at most 6 rounds, three
+  rules: **R1** constant offset `ADD RD,RB,#imm` + `mem Rt,[RD(,#off)]` -> `mem Rt,[RB,#imm+off]`;
+  **R2** register index `ADD RD,RB,RI[,LSL #n]` + `mem Rt,[RD]` (`off` must be 0) ->
+  `mem Rt,[RB,RI[,LSL #n]]`; **R3** `MOV RB,RS` + an access through `RB` -> rebase onto `RS`,
+  drop the `MOV`.
+- **Safety comes from a dead-value analysis**: if the destination of the `ADD`/`MOV` is still read
+  later in the function the pair is not folded; the exception is the immediately following `mem`
+  that itself reads it (`ad_is_load`) -- the value is eaten by the address, so it folds
+  unconditionally. Barrier instructions `DMB/DSB/ISB` are skipped (they have no register operand,
+  and `ad_rw()`'s "unknown means read+write everything" fallback would otherwise block `volatile`
+  accesses forever; without this opening the HAL residue count stalled at 3).
+- **Deliberately not done**: the two ARMv7-M write-back forms (pre-index `[Rn,#imm]!` and post-index
+  `[Rn],#imm`) are measured to be **emitted zero times** by this code generator (`*p++` comes out as
+  "register add + store back to the frame slot"); the only occurrences in any object file are two
+  hand-written uses in `__arkcc_mcpy`, a function the pass does not visit. Implementing them would be
+  dead code, so they are left out (see the main document for the details).
+- **Cropping**: `ARKCC_FEATURE_OPT_ADDR` (0 under STM32_MIN, 1 on the host); off by default at
+  runtime, enabled by `-fopt-addr`, and a cropped build rejects the flag with `C3900U`.
+- **Criteria**: `tests/run_addr_tests.py`, `make test-addr`: byte-identical when off (OFF IS OFF),
+  all four arms (base/off/on/both) **never grow the image** and the indexed addressing form really
+  appears, **NO RESIDUE** (the three foldable in-place shapes must count zero in on/both -- an
+  implementation that only folds the first two cannot pass), every rewritten operand is a form on the
+  mnemonic whitelist, all four arms compute the same answer under unicorn, and a cropped build
+  refuses the flag.
+- **Measurements**: the whole HAL corpus `examples/ark_test/ark_test_all.c` (STM32F401xE, `-O2`)
+  42,372 -> 40,991 instructions (**-1,381 / -3.3%**); residue `ADD`+access 1084 -> 0 and
+  `MOV`+access 297 -> 0, with 1084+297 matching the total drop instruction for instruction; R1 fires
+  zero times on this corpus (the shape is real but this corpus has no adjacent constant subscripts),
+  kept in anticipation. Details in `docs/ADDR_FOLD.md`.
+
+---
+
 ---
 
 ## 3 How this relates to the stage table (two layers of trimming)

@@ -1966,6 +1966,698 @@ static void ark_vstack_function(AsmBuffer *b, int from)
 }
 #endif /* ARKCC_FEATURE_OPT_VSTACK */
 
+#if ARKCC_FEATURE_OPT_ADDR
+/* ------------------- addressing-mode folding (-fopt-addr) ----------------
+ * The IR is a stack machine, so one C array/pointer access is emitted as a
+ * chain of independent instructions:
+ *
+ *      MOV r0, r5             ; copy the base out of the value-stack pool
+ *      ADD r0, r0, r1         ; + index
+ *      LDR r0, [r0, #0]       ; *(base + index)
+ *
+ * ARMv7-M already has those address modes, so all three lines are one:
+ *
+ *      LDR r0, [r5, r1]
+ *
+ * Measured on the STM32F4 HAL corpus: 42,365 instructions -> 40,996, i.e.
+ * 1,369 fewer (-3.2%); before the pass 1,084 add-then-access pairs sit in
+ * the object and none is left after it.
+ * This pass is a text rewrite over an already emitted function -- the same
+ * layer as ark_vstack_function -- and recognises three local shapes:
+ *
+ *   R1  ADD RB, RB, #imm            R2  ADD RB, RB, RI[, LSL #n]
+ *       mem Rd, [RB(, #off)]             mem Rd, [RB]
+ *       -> mem Rd, [RB, #imm+off]        -> mem Rd, [RB, RI(, LSL #n)]
+ *
+ *   R3  MOV RB, RS
+ *       mem Rd, [RB(, #off)]
+ *       -> mem Rd, [RS(, #off)]
+ *
+ * R1/R2 fold address arithmetic into the operand, R3 removes the copy that
+ * puts the base into a low register.
+ *
+ * Both ARMv7-M write-back forms (`[Rn, #imm]!` and `[Rn], #imm`) are left out
+ * on purpose: this codegen never asks for them, so a rule for either would be
+ * dead and untested code.  `p++` stores the incremented pointer back into its
+ * frame slot (`MOV r0, #4` / `ADD r0, r0, r1` / `STR r0, [r6, #0]`), so there is
+ * no `ADD base, base, #imm` to fold; the only two such shapes in the HAL object
+ * sit inside the hand-written `__arkcc_mcpy` runtime helper, which this pass
+ * never visits.  Measured: 0 of each form emitted with the pass on.
+ *
+ * Every rule rewrites one line and deletes one line, and every rule only fires
+ * when the intermediate register's value is provably not needed any more
+ * (ad_dead_after) or when the write is folded into a write-back operand, so
+ * the data flow is preserved.  Anything not recognised is left untouched: the
+ * worst case of a mistake is a missed fold, never a wrong instruction.
+ *
+ * Never folded:
+ *   - a conditional instruction or an IT-block member -- merging two
+ *     conditional instructions would invalidate the IT mask;
+ *   - a flag-setting form (ADDS / MOVS): deleting it would drop the flags,
+ *     which ad_dead_after does not model;
+ *   - a non-zero memory offset with a live base: [Rn, #imm]! leaves the base
+ *     at Rn+imm, not Rn+imm+off, and Thumb has no register-indexed write-back;
+ *   - a write-back whose base is the destination register (UNPREDICTABLE in
+ *     ARMv7-M) or is r6/sp (frame pointer / stack);
+ *   - anything across a label, branch or call: ad_dead_after stops there.
+ *
+ * Not done here on purpose: LDRD/STRD pairing (frame slots are 8 bytes apart
+ * and need an even register pair plus 8-byte alignment; the assembler only
+ * accepts them on the --asm-extra path) and merging independent LDR/STR into
+ * LDM/STM (AC5 does not do it either, see docs/ADDR_FOLD.md).
+ */
+#define AD_MAX_OP   6
+#define AD_OPLEN    96
+#define AD_MAX_REG  16
+#define AD_SCAN_MAX 64          /* forward scan cap for ad_dead_after */
+
+typedef struct {
+    char *t;    /* line text, '\n' stripped, owned by the memory pool */
+    int   del;  /* removed by an earlier round */
+} AdLine;
+
+static int ad_streq(const char *a, const char *b)
+{
+    while (*a && *a == *b) { a++; b++; }
+    return *a == *b;
+}
+static int ad_isdigit(char c) { return c >= '0' && c <= '9'; }
+static int ad_isalnum(char c)
+{
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+}
+static int ad_isboundary(char c) { return !(ad_isalnum(c) || c == '_' || c == '.'); }
+
+static void ad_trim(char *s)
+{
+    char *p = s;
+    int n;
+    while (*p == ' ' || *p == '\t') p++;
+    if (p != s) {
+        char *d = s;
+        while (*p) *d++ = *p++;
+        *d = 0;
+    }
+    n = (int)strlen(s);
+    while (n > 0 && (s[n-1] == ' ' || s[n-1] == '\t' || s[n-1] == '\r')) s[--n] = 0;
+}
+
+/* Copy `in` to `out` with every space/tab removed, so the operand parsers
+ * below only have to deal with one spelling. */
+static void ad_nospace(const char *in, char *out, int cap)
+{
+    int j = 0;
+    while (*in && j < cap - 1) {
+        if (*in != ' ' && *in != '\t') out[j++] = *in;
+        in++;
+    }
+    out[j] = 0;
+}
+
+/* Split one line into mnemonic + comma separated operands.  Commas inside
+ * "[...]" or "{...}" do not separate.  Returns 0 for a blank line. */
+static int ad_parse(const char *line, char *mn, int mn_sz,
+                    char ops[AD_MAX_OP][AD_OPLEN], int *nops,
+                    int *is_dot, int *is_label)
+{
+    const char *p = line;
+    int i;
+
+    *nops = 0;
+    *is_dot = 0;
+    *is_label = 0;
+    mn[0] = 0;
+    while (*p == ' ' || *p == '\t') p++;
+    if (!*p || *p == '\r') return 0;
+    if (*p == '.') *is_dot = 1;
+    {
+        const char *e = p + strlen(p);
+        while (e > p && (e[-1] == ' ' || e[-1] == '\t' || e[-1] == '\r')) e--;
+        if (e > p && e[-1] == ':') { *is_label = 1; return 1; }
+    }
+    i = 0;
+    while (*p && *p != ' ' && *p != '\t' && *p != '\r' && i < mn_sz - 1) mn[i++] = *p++;
+    mn[i] = 0;
+    while (*p == ' ' || *p == '\t') p++;
+    while (*p && *p != '\r' && *nops < AD_MAX_OP) {
+        int j = 0, br = 0;
+        while (*p && *p != '\r') {
+            if (*p == '[' || *p == '{') br++;
+            else if (*p == ']' || *p == '}') br--;
+            else if (*p == ',' && br == 0) break;
+            if (j < AD_OPLEN - 1) ops[*nops][j++] = *p;
+            p++;
+        }
+        ops[*nops][j] = 0;
+        ad_trim(ops[*nops]);
+        (*nops)++;
+        if (*p == ',') p++;
+        while (*p == ' ' || *p == '\t') p++;
+    }
+    return 1;
+}
+
+/* Length of the "r<digits>" token at s and its number; 0 if there is none. */
+static int ad_regtok(const char *s, int *reg)
+{
+    int i = 1, v = 0, n = 0;
+    if (s[0] != 'r') return 0;
+    if (!ad_isdigit(s[i])) return 0;
+    while (ad_isdigit(s[i])) { v = v * 10 + (s[i] - '0'); i++; n++; }
+    if (n > 2 || v >= AD_MAX_REG) return 0;
+    *reg = v;
+    return i;
+}
+
+static int ad_whole_reg(const char *s, int *reg)
+{
+    int n = ad_regtok(s, reg);
+    return (n > 0 && s[n] == 0);
+}
+
+/* Does this text mention register `reg` as a whole token? */
+static int ad_txt_has(const char *s, int reg)
+{
+    int i = 0;
+    while (s[i]) {
+        int r, n;
+        int bnd = (i == 0) || ad_isboundary(s[i-1]);
+        if (bnd && (n = ad_regtok(s + i, &r)) > 0) {
+            char after = s[i + n];
+            if (!(ad_isalnum(after) || after == '_')) {
+                if (r == reg) return 1;
+            }
+            i += n;
+            continue;
+        }
+        i++;
+    }
+    return 0;
+}
+
+static void ad_rname(int reg, char *buf)
+{
+    if (reg >= 10) {
+        buf[0] = 'r'; buf[1] = (char)('0' + reg / 10);
+        buf[2] = (char)('0' + reg % 10); buf[3] = 0;
+    } else {
+        buf[0] = 'r'; buf[1] = (char)('0' + reg); buf[2] = 0;
+    }
+}
+
+static int ad_in(const char *m, const char *const *list)
+{
+    int i;
+    for (i = 0; list[i]; i++) if (ad_streq(m, list[i])) return 1;
+    return 0;
+}
+
+static const char *const ad_arith[] = {
+    "ADD", "SUB", "RSB", "ADC", "SBC", "AND", "ORR", "EOR", "BIC",
+    "LSL", "LSR", "ASR", "ROR", "MUL", "SDIV", "UDIV", 0
+};
+static const char *const ad_cmpx[] = { "CMP", "CMN", "TST", "TEQ", 0 };
+static const char *const ad_ldrx[] = { "LDR", "LDRB", "LDRH", "LDRSB", "LDRSH", 0 };
+static const char *const ad_strx[] = { "STR", "STRB", "STRH", 0 };
+static const char *const ad_rw1[]  = { "UXTB", "SXTB", "UXTH", "SXTH", "NEG", "MVN", 0 };
+
+static int ad_cc_suffix(const char *s)
+{
+    static const char *const cc[] = {
+        "EQ", "NE", "CS", "HS", "CC", "LO", "MI", "PL",
+        "VS", "VC", "HI", "LS", "GE", "LT", "GT", "LE", "AL", 0
+    };
+    int i;
+    for (i = 0; cc[i]; i++) if (ad_streq(s, cc[i])) return 1;
+    return 0;
+}
+
+/* A data mnemonic this pass reasons about (condition suffix or the flag-setting
+ * S already removed). */
+static int ad_known_base(const char *m)
+{
+    return ad_in(m, ad_arith) || ad_in(m, ad_cmpx) || ad_in(m, ad_ldrx) ||
+           ad_in(m, ad_strx) || ad_in(m, ad_rw1) ||
+           ad_streq(m, "MOV") || ad_streq(m, "MOVW") || ad_streq(m, "MOVT") ||
+           ad_streq(m, "PUSH") || ad_streq(m, "POP");
+}
+
+/* Strip a condition suffix (returns 1 if there was one) and then a trailing
+ * flag-setting S from the mnemonic. */
+static int ad_split_base(const char *mn, char *base, int *cond)
+{
+    int n = (int)strlen(mn), k = 0;
+    char tmp[16];
+    *cond = 0;
+    if (n <= 0 || n >= (int)sizeof tmp) { base[0] = 0; return 0; }
+    memcpy(tmp, mn, n + 1);
+    if (n >= 4 && ad_cc_suffix(tmp + n - 2)) {
+        char b[16];
+        memcpy(b, tmp, n - 2); b[n-2] = 0;
+        if (ad_known_base(b)) { tmp[n-2] = 0; *cond = 1; n -= 2; }
+    }
+    if (n > 2 && tmp[n-1] == 'S') {
+        char b[16];
+        memcpy(b, tmp, n - 1); b[n-1] = 0;
+        if (ad_known_base(b)) { tmp[n-1] = 0; n -= 1; }
+    }
+    while (tmp[k]) { base[k] = tmp[k]; k++; }
+    base[k] = 0;
+    return *cond;
+}
+
+static int ad_is_cond(const char *mn)
+{
+    char base[16];
+    int cond;
+    ad_split_base(mn, base, &cond);
+    return cond;
+}
+
+static int ad_is_load(const char *mn)
+{
+    char base[16];
+    int cond;
+    ad_split_base(mn, base, &cond);
+    return ad_in(base, ad_ldrx);
+}
+
+/* Read/write roles of register r in one instruction.  Anything not in the
+ * table counts as both, i.e. live, so ad_dead_after declines instead of
+ * guessing. */
+static void ad_rw(const char *mn, int nops, char ops[AD_MAX_OP][AD_OPLEN],
+                  int r, int *rd, int *wr)
+{
+    char base[16];
+    int cond, k;
+    *rd = 0; *wr = 0;
+    ad_split_base(mn, base, &cond);
+    if (ad_in(base, ad_arith)) {
+        if (nops == 3) {
+            if (ad_txt_has(ops[0], r)) *wr = 1;
+            for (k = 1; k < 3; k++) if (ad_txt_has(ops[k], r)) *rd = 1;
+        } else if (nops == 2) {
+            if (ad_txt_has(ops[0], r)) { *rd = 1; *wr = 1; }
+            if (ad_txt_has(ops[1], r)) *rd = 1;
+        } else {
+            *rd = 1; *wr = 1;
+        }
+        return;
+    }
+    if (ad_streq(base, "MOV")) {
+        if (nops >= 1 && ad_txt_has(ops[0], r)) *wr = 1;
+        if (nops >= 2 && ops[1][0] != '#' && ad_txt_has(ops[1], r)) *rd = 1;
+        return;
+    }
+    if (ad_streq(base, "MOVW") || ad_streq(base, "MOVT")) {
+        if (nops >= 1 && ad_txt_has(ops[0], r)) *wr = 1;
+        return;
+    }
+    if (ad_in(base, ad_cmpx)) {
+        for (k = 0; k < nops; k++) if (ad_txt_has(ops[k], r)) *rd = 1;
+        return;
+    }
+    if (ad_in(base, ad_ldrx)) {
+        if (nops >= 1 && ad_txt_has(ops[0], r)) *wr = 1;
+        for (k = 1; k < nops; k++) if (ad_txt_has(ops[k], r)) *rd = 1;
+        return;
+    }
+    if (ad_in(base, ad_strx)) {
+        for (k = 0; k < nops; k++) if (ad_txt_has(ops[k], r)) *rd = 1;
+        return;
+    }
+    if (ad_in(base, ad_rw1)) {
+        if (nops >= 1 && ad_txt_has(ops[0], r)) *wr = 1;
+        if (nops >= 2 && ad_txt_has(ops[1], r)) *rd = 1;
+        return;
+    }
+    if (ad_streq(base, "PUSH") || ad_streq(base, "POP")) {
+        for (k = 0; k < nops; k++) if (ad_txt_has(ops[k], r)) *rd = 1;
+        return;
+    }
+    *rd = 1; *wr = 1;
+}
+
+/* "[rB]" / "[rB, #off]" -> base/off.  A register index, a write-back or
+ * anything else declines. */
+static int ad_memop(const char *op, int *base, int *off)
+{
+    char b[AD_OPLEN];
+    const char *p;
+    int n;
+    ad_nospace(op, b, (int)sizeof b);
+    p = b;
+    if (*p != '[') return 0;
+    p++;
+    n = ad_regtok(p, base);
+    if (!n) return 0;
+    p += n;
+    *off = 0;
+    if (*p == ',') {
+        int neg = 0, v = 0;
+        p++;
+        if (*p != '#') return 0;         /* register index: not this form */
+        p++;
+        if (*p == '-') { neg = 1; p++; }
+        if (!ad_isdigit(*p)) return 0;
+        while (ad_isdigit(*p)) { v = v * 10 + (*p - '0'); p++; }
+        *off = neg ? -v : v;
+    }
+    if (*p != ']') return 0;
+    p++;
+    return *p == 0;
+}
+
+/* "LSL #<0..3>" -> shift. */
+static int ad_lsl_of(const char *op, int *shift)
+{
+    char b[AD_OPLEN];
+    const char *p;
+    int v = 0;
+    ad_nospace(op, b, (int)sizeof b);
+    p = b;
+    if (p[0] != 'L' || p[1] != 'S' || p[2] != 'L' || p[3] != '#') return 0;
+    p += 4;
+    if (!ad_isdigit(*p)) return 0;
+    while (ad_isdigit(*p)) { v = v * 10 + (*p - '0'); p++; }
+    if (*p || v > 3) return 0;
+    *shift = v;
+    return 1;
+}
+
+/* Parse "[rB]" / "[rB, #off]" / "[rB, rI]" / "[rB, rI, LSL #n]".  A
+ * write-back or anything else declines.  `idx` is -1 for the immediate form. */
+static int ad_memop2(const char *op, int *base, int *off, int *idx, int *shf)
+{
+    char b[AD_OPLEN];
+    const char *p;
+    int n;
+    ad_nospace(op, b, (int)sizeof b);
+    p = b;
+    *idx = -1; *shf = 0; *off = 0;
+    if (*p != '[') return 0;
+    p++;
+    n = ad_regtok(p, base);
+    if (!n) return 0;
+    p += n;
+    if (*p == ',') {
+        int neg = 0, v = 0;
+        p++;
+        if (*p == '#') {
+            p++;
+            if (*p == '-') { neg = 1; p++; }
+            if (!ad_isdigit(*p)) return 0;
+            while (ad_isdigit(*p)) { v = v * 10 + (*p - '0'); p++; }
+            *off = neg ? -v : v;
+        } else {
+            n = ad_regtok(p, idx);
+            if (!n) return 0;
+            p += n;
+            if (*p == ',') {
+                char sub[AD_OPLEN];
+                int j = 0;
+                p++;
+                while (*p && *p != ']' && j < AD_OPLEN - 1) sub[j++] = *p++;
+                sub[j] = 0;
+                if (!ad_lsl_of(sub, shf)) return 0;
+            }
+        }
+    }
+    if (*p != ']') return 0;
+    p++;
+    return *p == 0;
+}
+
+/* If line text `t` is a plain word/byte/half access, report its parts.  `idx`
+ * >= 0 selects the register-offset form and `off` is then unused; otherwise
+ * `off` is the immediate offset.  Conditional lines and write-backs decline. */
+static int ad_access(const char *t, char *mn, int mn_sz, int *dst, int *base,
+                     int *off, int *idx, int *shf)
+{
+    char ops[AD_MAX_OP][AD_OPLEN];
+    char b[16];
+    int nops, isdot, islab, cond;
+    if (!ad_parse(t, mn, mn_sz, ops, &nops, &isdot, &islab)) return 0;
+    if (isdot || islab || nops < 2) return 0;
+    if (ad_is_cond(mn)) return 0;
+    ad_split_base(mn, b, &cond);
+    if (!ad_in(b, ad_ldrx) && !ad_in(b, ad_strx)) return 0;
+    if (!ad_whole_reg(ops[0], dst)) return 0;
+    if (!ad_memop2(ops[1], base, off, idx, shf)) return 0;
+    if (*dst < 0 || *dst > 12 || *base < 0 || *base > 12) return 0;
+    if (*idx >= 0) {
+        if (*idx > 12 || *idx == *base) return 0;
+        /* only LDR/STR take a shifted index */
+        if (*shf > 0 && !ad_streq(b, "LDR") && !ad_streq(b, "STR")) return 0;
+    }
+    return 1;
+}
+
+/* Is register `r` provably not read again from line `from` on?  Stops at the
+ * first mention: a plain write there makes it dead, a read (or a label /
+ * branch / call before that mention) makes it live.  Capped so the cost stays
+ * linear-ish on very long straight-line bodies. */
+static int ad_dead_after(AdLine *L, int nlines, int from, int r)
+{
+    int i, seen = 0;
+    for (i = from; i < nlines && seen < AD_SCAN_MAX; i++, seen++) {
+        char mn[24];
+        char ops[AD_MAX_OP][AD_OPLEN];
+        int nops, isdot, islab, rd, wr;
+        if (L[i].del) continue;
+        if (!ad_parse(L[i].t, mn, sizeof mn, ops, &nops, &isdot, &islab)) continue;
+        if (islab) return 0;
+        if (isdot) continue;
+        if (ad_streq(mn, "B") || ad_streq(mn, "BL") ||
+            ad_streq(mn, "BX") || ad_streq(mn, "BLX")) return 0;
+        /* Barriers take no register operand; ad_rw() would otherwise treat an
+         * unknown mnemonic as "reads and writes everything".  Without this a
+         * volatile access (LDR ... / DMB / STR ...) never folds. */
+        if (ad_streq(mn, "DMB") || ad_streq(mn, "DSB") || ad_streq(mn, "ISB")) continue;
+        ad_rw(mn, nops, ops, r, &rd, &wr);
+        if (!rd && !wr) continue;
+        if (wr && !rd) return 1;
+        return 0;
+    }
+    return 1;
+}
+
+static char *ad_dup(const char *s)
+{
+    int n = (int)strlen(s);
+    char *p = (char *)mem_pool_alloc(n + 1);
+    if (p) memcpy(p, s, n + 1);
+    return p;
+}
+
+/* Rebuild one access line.  `index` >= 0 selects the register-offset form,
+ * otherwise the immediate form with `off`. */
+static char *ad_mem_line(const char *mn, int dst, int base,
+                         int index, int shift, int off)
+{
+    AsmBuffer t;
+    char nm[4];
+    asmbuf_init(&t);
+    asmbuf_puts(&t, "    ");
+    asmbuf_puts(&t, mn);
+    asmbuf_putc(&t, ' ');
+    ad_rname(dst, nm);
+    asmbuf_puts(&t, nm);
+    asmbuf_puts(&t, ", [");
+    ad_rname(base, nm);
+    asmbuf_puts(&t, nm);
+    if (index >= 0) {
+        asmbuf_puts(&t, ", ");
+        ad_rname(index, nm);
+        asmbuf_puts(&t, nm);
+        if (shift > 0) {
+            asmbuf_puts(&t, ", LSL #");
+            asmbuf_int(&t, shift);
+        }
+    } else {
+        asmbuf_puts(&t, ", #");
+        asmbuf_int(&t, off);
+    }
+    asmbuf_putc(&t, ']');
+    return ad_dup(t.buf);   /* the line table holds no newline */
+}
+
+/* "#<imm>" (optionally negative) exactly; 0 if it is not an immediate. */
+static int ad_imm_of(const char *op, int *imm)
+{
+    char b[AD_OPLEN];
+    const char *p;
+    int neg = 0, v = 0;
+    ad_nospace(op, b, (int)sizeof b);
+    p = b;
+    if (*p != '#') return 0;
+    p++;
+    if (*p == '-') { neg = 1; p++; }
+    if (!ad_isdigit(*p)) return 0;
+    while (ad_isdigit(*p)) { v = v * 10 + (*p - '0'); p++; }
+    if (*p) return 0;
+    *imm = neg ? -v : v;
+    return 1;
+}
+
+/* Immediate offsets the assembler encodes: 0..4095, or -255..-1. */
+static int ad_off_ok(int off)
+{
+    return (off >= 0 && off <= 4095) || (off >= -255 && off <= -1);
+}
+
+static void ark_addr_function(AsmBuffer *b, int from)
+{
+    AdLine *L = 0;
+    int cap = 0, nlines = 0, i, pos, pro_end = -1, round;
+    int last_nl = (b->len > from && b->buf[b->len - 1] == '\n');
+    AsmBuffer out;
+
+    /* ---- slice the function text into lines ---- */
+    pos = from;
+    while (pos < b->len) {
+        int len = 0;
+        while (pos + len < b->len && b->buf[pos + len] != '\n') len++;
+        if (nlines >= cap) {
+            int ncap = cap ? cap * 2 : 256;
+            AdLine *grown = (AdLine *)mem_pool_alloc(ncap * (int)sizeof(AdLine));
+            if (!grown) return;
+            for (i = 0; i < nlines; i++) grown[i] = L[i];
+            L = grown;
+            cap = ncap;
+        }
+        L[nlines].t = (char *)mem_pool_alloc(len + 1);
+        if (!L[nlines].t) return;
+        for (i = 0; i < len; i++) L[nlines].t[i] = b->buf[pos + i];
+        L[nlines].t[len] = 0;
+        L[nlines].del = 0;
+        nlines++;
+        pos += len + 1;
+    }
+
+    /* ---- nothing before "MOV r6, sp" is touched ---- */
+    for (i = 0; i < nlines; i++) {
+        char mn[24];
+        char ops[AD_MAX_OP][AD_OPLEN];
+        int nops, isdot, islab;
+        if (!ad_parse(L[i].t, mn, sizeof mn, ops, &nops, &isdot, &islab)) continue;
+        if (isdot || islab) continue;
+        if (ad_streq(mn, "MOV") && nops == 2 &&
+            ad_streq(ops[0], "r6") && ad_streq(ops[1], "sp")) {
+            pro_end = i;
+            break;
+        }
+    }
+    if (pro_end < 0) {
+        /* No frame pointer (a __naked body or one of the hand-emitted runtime
+         * helpers): start right after the function label instead.  Nothing in
+         * the prologue is foldable anyway, and every rule below stops at the
+         * next label, so this cannot walk into the following function. */
+        for (i = 0; i < nlines; i++) {
+            char mn[24];
+            char ops[AD_MAX_OP][AD_OPLEN];
+            int nops, isdot, islab;
+            if (!ad_parse(L[i].t, mn, sizeof mn, ops, &nops, &isdot, &islab)) continue;
+            if (islab) { pro_end = i; break; }
+        }
+    }
+    if (pro_end < 0) return;   /* nothing to anchor on: leave the function alone */
+
+    for (round = 0; round < 6; round++) {
+        int changed = 0;
+        for (i = pro_end + 1; i < nlines; i++) {
+            char mn[24], bmn[16], nmn[24];
+            char ops[AD_MAX_OP][AD_OPLEN];
+            int nops, isdot, islab, cond, nex, k;
+            int ab0, ab1, mdst, mbase, moff, midx, msh;
+
+            if (L[i].del) continue;
+            if (!ad_parse(L[i].t, mn, sizeof mn, ops, &nops, &isdot, &islab)) continue;
+            if (isdot || islab) continue;
+            if (nops < 1) continue;
+            if (ad_is_cond(mn)) continue;
+            ad_split_base(mn, bmn, &cond);
+
+            nex = -1;
+            for (k = i + 1; k < nlines; k++) {
+                if (!L[k].del) { nex = k; break; }
+            }
+
+            /* ---- R1/R2: ADD RD, RB, <#imm | RI> then an access through RD ----
+             * RB is the value being indexed; RD may be RB itself (the usual
+             * shape) or a third register. */
+            if (nex > 0 && ad_streq(mn, "ADD") && (nops == 3 || nops == 4) &&
+                ad_whole_reg(ops[0], &ab0) && ad_whole_reg(ops[1], &ab1) &&
+                ab0 <= 12 && ab1 <= 12) {
+                int form = 0, aimm = 0, aidx = -1, ash = 0;
+                if (nops == 3 && ad_imm_of(ops[2], &aimm)) form = 1;
+                else if (nops == 3 && ad_whole_reg(ops[2], &aidx) && aidx <= 12) form = 2;
+                else if (nops == 4 && ad_whole_reg(ops[2], &aidx) && aidx <= 12 &&
+                         ad_lsl_of(ops[3], &ash)) form = 2;
+                mdst = -1; mbase = -1; moff = 0; midx = -1; msh = 0;
+                if (form && ad_access(L[nex].t, nmn, sizeof nmn, &mdst, &mbase,
+                                      &moff, &midx, &msh) &&
+                    mbase == ab0 && midx < 0) {
+                    if (form == 1) {
+                        int s = aimm + moff;
+                        /* When the access writes into the base register, the
+                         * ADD's value is consumed by the address itself, so it
+                         * is dead whether or not the register is live after it. */
+                        if (ad_off_ok(s) &&
+                            ((mdst == ab0 && ad_is_load(nmn)) ||
+                             ad_dead_after(L, nlines, nex + 1, ab0))) {
+                            L[nex].t = ad_mem_line(nmn, mdst, ab1, -1, 0, s);
+                            L[i].del = 1; changed = 1; continue;
+                        }
+                    } else if ((mdst == ab0 && ad_is_load(nmn)) ||
+                               ad_dead_after(L, nlines, nex + 1, ab0)) {
+                        L[nex].t = ad_mem_line(nmn, mdst, ab1, aidx, ash, 0);
+                        L[i].del = 1; changed = 1; continue;
+                    }
+                }
+            }
+
+            /* ---- R3: MOV RB, RS then an access through RB ---- */
+            if (nex > 0 && ad_streq(mn, "MOV") && nops == 2 &&
+                ad_whole_reg(ops[0], &ab0) && ad_whole_reg(ops[1], &ab1) &&
+                ab0 <= 12 && ab1 <= 12 && ab0 != ab1) {
+                mdst = -1; mbase = -1; moff = 0; midx = -1; msh = 0;
+                if (ad_access(L[nex].t, nmn, sizeof nmn, &mdst, &mbase, &moff,
+                              &midx, &msh) &&
+                    mbase == ab0 &&
+                    ((mdst == ab0 && ad_is_load(nmn)) ||
+                     ad_dead_after(L, nlines, nex + 1, ab0))) {
+                    if (midx >= 0)
+                        L[nex].t = ad_mem_line(nmn, mdst, ab1, midx, msh, 0);
+                    else
+                        L[nex].t = ad_mem_line(nmn, mdst, ab1, -1, 0, moff);
+                    L[i].del = 1; changed = 1; continue;
+                }
+            }
+
+        }
+        if (!changed) break;
+    }
+
+    /* ---- rebuild ---- */
+    asmbuf_init(&out);
+    for (i = 0; i < nlines; i++) {
+        if (L[i].del) continue;
+        asmbuf_puts(&out, L[i].t);
+        if (i + 1 < nlines || last_nl) asmbuf_putc(&out, '\n');
+    }
+    /* Nothing changed?  Then leave the buffer exactly as it was. */
+    if (out.len == b->len - from && memcmp(out.buf, b->buf + from, out.len) == 0) {
+        return;
+    }
+    asmbuf_reserve(b, from + out.len + 1);
+    if (from + out.len + 1 > b->cap) return;
+    for (i = 0; i < out.len; i++) b->buf[from + i] = out.buf[i];
+    b->buf[from + out.len] = 0;
+    b->len = from + out.len;
+}
+#endif /* ARKCC_FEATURE_OPT_ADDR */
+
 /* 16 for a variadic function: the prologue pushed r0-r3 in front of the saved
  * registers, so every epilogue of that function has 16 extra bytes to drop.
  * Zero for everything else, which keeps the non-variadic output byte-identical. */
@@ -6280,6 +6972,12 @@ static char *codegen_arm(IrProgram *prog) {
         /* Keep the value stack in r5/r7 instead of memory.  Runs first, so the
          * slot rewriter below sees the already shortened function. */
         if (g_config.enable_opt_vstack) ark_vstack_function(&buf, fstart);
+#endif
+#if ARKCC_FEATURE_OPT_ADDR
+        /* Fold the address arithmetic into the operand: one access instead of
+         * ADD + access (and one copy fewer).  Runs after vstack, so it sees the
+         * shortened function; regalloc below then works on fewer instructions. */
+        if (g_config.enable_opt_addr) ark_addr_function(&buf, fstart);
 #endif
 #if ARKCC_FEATURE_OPT_REGALLOC
         /* The text of this function is complete: it is the last slice of the

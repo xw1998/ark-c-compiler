@@ -156,6 +156,13 @@
 #endif
 /* 运行期默认值仍然是 0（config.c: enable_opt_regalloc = ARKCC_FEATURE_...，
  * 但 --regalloc/-fopt-regalloc 才置 1）——见 config.c 的默认值设定 */
+#ifndef ARKCC_FEATURE_OPT_ADDR
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_OPT_ADDR      0   /* 板上裁掉：寻址折叠只在宿主/交叉编译用 */
+# else
+#   define ARKCC_FEATURE_OPT_ADDR      1   /* 宿主/交叉编译：-fopt-addr 才有得开 */
+# endif
+#endif
 #ifndef ARKCC_FEATURE_OPT_VSTACK
 # if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
 #   define ARKCC_FEATURE_OPT_VSTACK    0   /* 板上裁掉：值栈寄存器分配只在宿主/交叉编译用 */

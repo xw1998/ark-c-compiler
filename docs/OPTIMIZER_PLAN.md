@@ -200,6 +200,36 @@
   171 → 137 条、`PUSH/POP` 88 → 36、镜像 1392 → 1324；loop 夹具 203 → 152、100 → 28、
   1480 → 1378；struct 1400 → 1308；variadic 1556 → 1542。细节见 `docs/RA_VSTACK.md`。
 
+### P8 寻址折叠（`-fopt-addr`，**已落地 0.9.1-wip**）
+
+- **证据**：IAR `08-backend-passes.md` 的 peephole 清单把「地址算术折进寻址方式」列在
+  「值栈」之后的第二顺位；ARMCC `09-addressing-modes.md` 说明 AC5 让 `LDR/STR` 直接吃
+  `[Rn, #imm]` / `[Rn, Rm, LSL #n]`，不为每次下标另算一条 `ADD`。
+- **做法**：同样在**已发射的汇编文本上**做函数级 pass（调用点位于 `ark_vstack_function()`
+  与 `ark_regalloc_function()` 之间）。定点迭代 ≤6 轮，三条规则：**R1** 常量偏移
+  `ADD RD,RB,#imm` + `mem Rt,[RD(,#off)]` → `mem Rt,[RB,#imm+off]`；**R2** 寄存器索引
+  `ADD RD,RB,RI[,LSL #n]` + `mem Rt,[RD]`（`off` 必须 0）→ `mem Rt,[RB,RI[,LSL #n]]`；
+  **R3** `MOV RB,RS` + 经 `RB` 的访问 → 基址换成 `RS`，删 `MOV`。
+- **安全性靠死值分析**：`ADD/MOV` 写入的寄存器在本函数内若还被后续指令读就**不折**；
+  例外是紧跟的那条 `mem` 本身就读它（`ad_is_load`）——值被地址吃掉，无条件可折。
+  屏障 `DMB/DSB/ISB` 不参与（它们没有寄存器操作数，`ad_rw()` 的「未知=全读写」兜底会把
+  `volatile` 访问永久卡住；不加这条开口 HAL 语料残留计数停在 3）。
+- **明确不做**：ARMv7-M 的两种写回形（`[Rn,#imm]!` 前索引、`[Rn],#imm` 后索引）实测
+  本代码生成器**一次都没发射**（`*p++` 发射为「寄存器加法 + 存回帧槽」），全目标文件里
+  仅两处手写 `__arkcc_mcpy` 使用且 pass 不遍历；写进来也是死代码，故不实现（见文档正文明细）。
+- **裁切**：`ARKCC_FEATURE_OPT_ADDR`（STM32_MIN 0 / 宿主 1）；运行期默认**关**，
+  `-fopt-addr` 才开，裁剪构建以 `C3900U` 拒绝该旗标。
+- **判据**：`tests/run_addr_tests.py`，`make test-addr`：默认关闭逐字节相同（OFF IS OFF）、
+  四臂（base/off/on/both）**镜像只减不增**且索引寻址形态真的出现、**NO RESIDUE**
+  （on/both 里可折的三类就地模式计数必须为 0，只折前两处的错误实现过不了这关）、
+  改写后的操作数全在助记符白名单、四臂在 unicorn 上算出同一个答案、裁剪构建拒绝旗标。
+- **实测**：HAL 全语料 `examples/ark_test/ark_test_all.c`（STM32F401xE，`-O2`）
+  42,372 → 40,991 条（**−1,381 / −3.3%**）；残差 `ADD`+访问 1084 → 0、`MOV`+访问 297 → 0，
+  1084+297 与总减少量逐条对上；R1 在该语料 0 次触发（形状真实存在但此语料没有相邻常量
+  下标），保留以备后续。细节见 `docs/ADDR_FOLD.md`。
+
+---
+
 ---
 
 ## 3 与阶段表的关系（裁切的两个层次）

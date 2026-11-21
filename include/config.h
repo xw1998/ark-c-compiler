@@ -20,6 +20,7 @@ typedef struct {
     int enable_opt_regalloc;
     int enable_opt_regalloc_near;   /* -fopt-regalloc-near: 近槽也搬（每函数 +4 字节） */
     int enable_opt_vstack;          /* -fopt-vstack: 值栈留在 r5/r7，不落内存 */
+    int enable_opt_addr;            /* -fopt-addr: 把地址运算折进寻址方式 */
     int enable_opt_inline;   /* --autoinline / -O2 */
     int enable_opt_vectorize;/* --vectorize / -O2 */
     int opt_level;          /* 0=none, 1=basic, 2=aggressive */
