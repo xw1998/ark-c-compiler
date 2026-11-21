@@ -89,8 +89,9 @@
 | 复合字面量 | 是 | `(int[]){1,2,3}` / `(struct P){.x=1,.y=2}` |
 | 结构体按值传递 | 是 | 通过隐藏指针参数实现 |
 | 寄存器分配 | 可选 | `-fopt-regalloc`（`ARKCC_FEATURE_OPT_REGALLOC`，宿主/交叉 1、板端 0，默认关）：发射后的文本遍把最热的帧槽搬进 `r8-r11`，只搬"每一处提及都是 `LDR r0,[r6,#n]` / `STR r0,[r6,#n]`"的槽；取地址、`volatile`、8 位/16 位/64 位访问一律留在内存。热点用例（`char pad[200]` 把后面的局部压过 offset 124）`[r6,#]` 引用 22→13，两个负例逐字节不变。两档成本模型：默认档只搬远槽且**函数永不增大**（H743 自举工程 25 个 `.c`：−2 398 B、−0.21%，无文件变大）；`-fopt-regalloc-near` / `--fregalloc-near`（隐含打开基础档）连近槽一起搬，栈访问从 27 372 降到 15 108，比默认档多 150 字节、14 个文件变大；**帧几何**：保存块是锚点——保存块变宽时 `[r6, #N]`（N ≥ 局部区上界）与 `MOVW/ADD r6` 的立即数要同步平移，且保存块必须保持 8 的倍数（奇数个自动补一个空闲 `r8-r11`，零字节代价），否则变参函数的 `r0-r3` 镜像与调用者栈参数会整体错位；五档开关（默认 / `-O2` / regalloc / `-O2+regalloc` / `-O2+regtop+inline+regalloc`）由 `examples/run_va_gate.py --opt-suite` 一次跑完 |
-| 值栈 → 寄存器分配 | 可选 | `-fopt-vstack`（`ARKCC_FEATURE_OPT_VSTACK`，宿主 1、板端 0，默认关）：表达式求值的 `PUSH {r0}` / `POP {r0}` 改为留在 `r5`/`r7`（prologue 已保存 ⇒ 零帧变化），目的寄存器 retarget + 只读操作数文本替换，池槽引用计数、同行/跨操作数读写与 `ADC/SBC/MUL` 原地形先物化、`MOVW/MOVT` 永不 retarget；识别不了就整函数原样输出。边界（label/分支/调用）处若值已全部写回机器栈就继续往后优化（`cross` 预扫描 + 整段 verbatim），否则照旧整函数原样输出。池只有两槽，第三个值同时存活时才把 `r4` 加进来当第三槽（帧跟着涨一个字保住 8 字节对齐；深度到不了三的函数一律不动它，多存一个寄存器是净亏）。STM32F4 HAL 全语料（Cortex-M4，`-O2`）47,885 → 38,332 条（−20.0%），叠 `-fopt-addr` 36,893、再加第三槽 36,554 条；arith 夹具 171 → 121 条、`PUSH/POP` 88 → 14，镜像只减不增，`tests/arm_exec` 全语料 36 用例 0 失败。详见 `docs/RA_VSTACK.md` |
-| 寻址折叠 | 可选 | `-fopt-addr`（`ARKCC_FEATURE_OPT_ADDR`，宿主 1、板端 0，默认关）：把 `ADD` / `MOV` 算出来的地址折进 `LDR/STR` 的寻址方式（常量偏移、寄存器索引两种），删掉多余的地址算术；死值分析保证被折寄存器在本函数内不再被读，屏障指令 `DMB/DSB/ISB` 放行；两种写回形实测从不发射故不实现。HAL 全语料（STM32F401xE，`-O2`，基线为已过 vstack 的 38,332 条）38,332 → 36,893 条（−3.75%），寄存器索引形可折残差 1,075 → 0。详见 `docs/ADDR_FOLD.md` |
+| 值栈 → 寄存器分配 | 可选 | `-fopt-vstack`（`ARKCC_FEATURE_OPT_VSTACK`，宿主 1、板端 0，默认关）：表达式求值的 `PUSH {r0}` / `POP {r0}` 改为留在 `r5`/`r7`（prologue 已保存 ⇒ 零帧变化），目的寄存器 retarget + 只读操作数文本替换，池槽引用计数、同行/跨操作数读写与 `ADC/SBC/MUL` 原地形先物化、`MOVW/MOVT` 永不 retarget；识别不了就整函数原样输出。边界（label/分支/调用）处若值已全部写回机器栈就继续往后优化（`cross` 预扫描 + 整段 verbatim），否则照旧整函数原样输出。池只有两槽，第三个值同时存活时才把 `r4` 加进来当第三槽（帧跟着涨一个字保住 8 字节对齐；深度到不了三的函数一律不动它，多存一个寄存器是净亏）。STM32F4 HAL 全语料（Cortex-M4，`-O2`）47,885 → 38,004 条（−20.64%，已含 r4 第三槽），叠 `-fopt-addr` 到 36,553 条；arith 夹具 171 → 121 条、`PUSH/POP` 88 → 14，镜像只减不增，`tests/arm_exec` 全语料 36 用例 0 失败。详见 `docs/RA_VSTACK.md` |
+| 寻址折叠 | 可选 | `-fopt-addr`（`ARKCC_FEATURE_OPT_ADDR`，宿主 1、板端 0，默认关）：把 `ADD` / `MOV` 算出来的地址折进 `LDR/STR` 的寻址方式（常量偏移、寄存器索引两种），删掉多余的地址算术；死值分析保证被折寄存器在本函数内不再被读，屏障指令 `DMB/DSB/ISB` 放行；两种写回形实测从不发射故不实现。HAL 全语料（STM32F401xE，`-O2`，基线为已过 vstack（含 r4 第三槽）的 38,004 条）38,004 → 36,553 条（−3.82%），寄存器索引形可折残差 1,075 → 0。详见 `docs/ADDR_FOLD.md` |
+| 强度削减 | 可选 | `-fopt-strength`（`ARKCC_FEATURE_OPT_STRENGTH`，宿主 1、板端 0，默认关）：把乘 2 的幂换成左移，两个落点共用一个开关——IR 层把相邻 `PUSH k` + `MUL`（k 为 2 的幂）改成 `PUSH log2(k)` + `SHL`（k==1 时两条都删），后端把 `IR_LOAD_IDX` 的元素大小缩放 `MOV r2,#es` + `MUL` 改成一条 `LSL`（源码里的常量乘在 IR 里，索引缩放在 IR 之后，谁也看不见谁）。只做 2 的幂：Cortex-M4 的 `MUL` 一周期，`x*3` 保留 `MUL` 并写成门禁断言。阶段行必须排在 `ir.xblock` 之后，否则 `x*1` 的删除会改变内联决策、开了反而变大（实测 +42 B）。HAL 全语料 47,885 → 46,779 条（−2.31%），`MUL` 1,105 → 12（剩下的全是值×值）；在 `-fopt-vstack -fopt-addr` 的 36,553 之上 → 35,453 条（−3.01%）。详见 `docs/STRENGTH.md` |
 | 汇编器覆盖面 | 是 | LDR/STR 全地址模式（`[Rn]`/`[Rn,#imm]`/`[Rn,Rm]`/`[Rn,Rm,LSL #0..3]`/`[Rn,#imm]!`/`[Rn],#imm`、`[sp,#imm]`、`[pc,#imm]`）、`VLDM/VSTM/VPUSH/VPOP`、`LDMFD/STMFD/LDMEA/STMEA` 别名、`ADDW/SUBW`；体系结构不存在的形态（`LDMIB/LDMDA/STMIB/STMDA`、寄存器索引写回）明确报错 |
 | 预处理 | 是 | 对象/函数宏（`#/##`）、`#if/#elif/#else/#endif/#ifdef/#ifndef/#undef/#error/#warning/#pragma`、嵌套 `#include`（<=8 层）、`__VA_ARGS__`、`-I` 路径、三字符组替换 |
 | 注释 | 是 | `//` 和 `/* */` |
@@ -545,6 +546,7 @@ ark c compiler/
 ├── docs/RA_VSTACK.md       值栈 → 寄存器分配（-fopt-vstack）：为什么做在发射后的文本层、影子值栈与 r5/r7 双槽池、引用计数与三种必须物化的形状、七条安全护栏、四项改写规则与一项 peephole、有条件的第三槽 r4、23 项门禁与 ARM 全语料执行对账（中文，UTF-8，另有 .en.md）
 ├── docs/SIZEWEIGHT.md     空间/速度连续权重（--size-weight 0..9）：四张门槛表、5 = 0.9.0 常量、为什么不给 -Oz/-Os/-Ot、派生宏与裁剪、31 项门禁、80 文件逐字节对账、以及「带参函数永不内联」这条已知欠账（中文，UTF-8）
 ├── docs/ADDR_FOLD.md        寻址折叠（-fopt-addr）：三条规则与安全性、为什么不实现两种写回形、四臂门禁与 HAL 全语料实测（中文，UTF-8，另有 .en.md）
+├── docs/STRENGTH.md        强度削减（-fopt-strength）：为什么一个开关两个落点、AC5 的对照证据、阶段位置踩坑（放在 dce 之后会因改变内联决策而变大）、14 项门禁与 HAL 全语料实测（中文，UTF-8，另有 .en.md）
 ├── docs/IPO_LTO.md         全程序编译（--ipo / -flto）与跨 TU 常量传播（--const-global）：为什么不是对象级 LTO、合并语义、拒绝的组合、裁剪与两条门禁（中文，UTF-8）
 ├── docs/OBJ_IR.md          对象里的 IR 载荷与链接期重编（--obj-ir / -link --lto）：载荷格式、合并的池 remap、逐字节等价、拒绝与诊断、裁剪与门禁（中文，UTF-8）
 ├── docs/PARTIAL_LINK.md    部分链接（-r）：机器码作准、符号/重定位 rebase、数据段不搬、三类拒绝、可替换性与幂等、裁剪与门禁（中文，UTF-8）
@@ -709,6 +711,10 @@ arkcc <file.c|file.s> [选项]
                      （常量偏移、寄存器索引两种），删掉多余的地址算术；被折寄存器
                      在本函数内若还被后续指令读就不折，屏障指令放行；两种写回形
                      实测从不发射故不实现；-fno-opt-addr 关（默认关）
+  -fopt-strength     强度削减：把乘 2^k 换成左移（x*1 直接删），元素大小缩放
+                     p[i] 的 i*sizeof 同样换成一条 LSL；非 2 的幂保持 MUL
+                     （Cortex-M4 上 MUL 一周期，移位链不会更短）；
+                     -fno-opt-strength 关（默认关）
   --ipo / -flto      全程序编译：一次吃多个 .c，在同一个 IR program 上做跨文件
                      优化（-O2 下跨文件内联），static 按单元改名、外部名按链接器
                      规则去重、无引用的 static 剪掉；必须给 -o，

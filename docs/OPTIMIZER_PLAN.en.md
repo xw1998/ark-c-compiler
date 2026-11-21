@@ -273,8 +273,8 @@ aliasing is uncertain" plus ARM-specific instruction rewrites.**
   (`--extra=-fopt-vstack`, 36 cases, 0 failures) -- **all five semantic defects this pass ever had
   were found by it**.
 - **Measurements** (crossing + third slot): the whole STM32F4 HAL corpus (`-O2 -mcpu Cortex-M4`,
-  non-directive non-label lines) 47,885 -> 38,332 instructions (**-20.0%**); `-fopt-addr` on top
-  gives 36,893 and the r4 slot gives 36,554 (-0.92%). Fixtures: arith 171 -> 121 instructions,
+  non-directive non-label lines) 47,885 -> 38,004 instructions (**-20.64%**, third slot already
+  included); `-fopt-addr` on top gives 36,553 (-3.82%). Fixtures: arith 171 -> 121 instructions,
   `PUSH`/`POP` 88 -> 14, image 1392 -> 1292; loop 203 -> 140, 100 -> 12, 1480 -> 1354; struct
   1400 -> 1294; variadic 1556 -> 1458; deep 1384 -> 1354; shallow 1274 -> 1226. The r4 row is
   booked honestly: 59 functions each save one more word (about +472 bytes) for 340 fewer
@@ -313,11 +313,46 @@ aliasing is uncertain" plus ARM-specific instruction rewrites.**
   mnemonic whitelist, all four arms compute the same answer under unicorn, and a cropped build
   refuses the flag.
 - **Measurements**: the whole HAL corpus `examples/ark_test/ark_test_all.c` (STM32F401xE, `-O2`),
-  measured on the post-vstack baseline of 38,332 instructions: 38,332 -> 36,893 (**-1,439 /
-  -3.75%**); the register-index residue drops 1,075 -> 0 and the `MOV` form 0 -> 0. The total drop
-  is larger than 1,075, so R1 (the immediate-offset form) does fire on the new baseline; no per-rule
-  attribution was measured, so none is claimed. Stacked on plain `-O2`: 47,885 -> 38,332 -> 36,893.
-  Details in `docs/ADDR_FOLD.md`.
+  measured on the post-vstack baseline (third slot included) of 38,004 instructions:
+  38,004 -> 36,553 (**-1,451 / -3.82%**); the register-index residue drops 1,075 -> 0 and the
+  `MOV` form 0 -> 0. The total drop is larger than 1,075, so R1 (the immediate-offset form) does
+  fire on the new baseline; no per-rule attribution was measured, so none is claimed. Stacked on
+  plain `-O2`: 47,885 -> 38,004 -> 36,553. Details in `docs/ADDR_FOLD.md`.
+
+### P9 Strength reduction (`-fopt-strength`, **landed in 0.9.1-wip**)
+
+- **Evidence**: AC5 emits `LSLS` for `x * 4`, emits `LDR r4, [r3, r2, LSL #2]` directly for
+  `p[i]`, and emits one scaled `ADD` for `x * 3` (measured with
+  `armcc --c99 -O2 -c --cpu Cortex-M4` plus `fromelf --text -c`). A real compiler never routes a
+  constant multiply through `MUL`.
+- **Two landing points, one switch**: of the 1,105 `MUL` instructions in the HAL corpus, 1,052 are
+  `IR_LOAD_IDX` stride scaling (`i * sizeof(elem)`, `MOV r2,#4` 1,043 times and `#2` 9 times) and 53
+  are source-level constant multiplies. The IR **cannot see the former at all** (it only holds an
+  `IR_LOAD_IDX` node), so: **A** `opt_strength_func()` in `src/opt.c` rewrites an adjacent
+  `PUSH k` + `MUL` (k a power of two) into `PUSH log2(k)` + `SHL`, deleting both when k==1;
+  **B** `IR_LOAD_IDX` in `backend_arm.c` emits `LSL r1, r1, #n` instead of `MOV r2, #es` +
+  `MUL r1, r2` when `es` is a power of two. Two flags would force users to enable both.
+- **Powers of two only**: `MUL` is one cycle on Cortex-M4 and an `LSL`+`ADD` chain is never
+  shorter (measured, not assumed); `x*3` keeps its `MUL` and that is asserted in the gate, so a
+  later "helpful" change cannot extend the rule into a shift/add chain.
+- **The stage position was measured**: the first version sat after `ir.dce` and made the output
+  **bigger** (pow2 fixture 512 -> 533 instructions, image 2128 -> 2170 B) -- deleting `x*1`
+  dropped one function's IR from 12 to 10 instructions, under the `opt_inline` threshold, so it got
+  inlined. Moving the row after **`ir.xblock`** (before `ir.vectorize`) means inline /
+  const-global / tailmerge / xblock see the same IR shape as before, and the problem disappeared
+  (512 -> 503).
+- **Cropping**: `ARKCC_FEATURE_OPT_STRENGTH` (0 under STM32_MIN, 1 on the host -- cropping it from
+  the board is correct since the pass is off by default and would only sit in Flash). Off by
+  default; `-fopt-strength` enables it; a cropped build refuses the flag with `C3900U`.
+- **Criteria**: `tests/run_strength_tests.py`, 14 checks, `make test-strength`: OFF IS OFF
+  byte-identical, instruction count down, **`MUL` at zero**, **`LSL r1,r1,#n` appears** (an IR-only
+  implementation fails this), **no `PUSH #2^k`+`MUL` residue**, the `odd` fixture byte-identical,
+  the image never grows, all five arms agree, and a cropped build refuses the flag.
+- **Measurements**: plain `-O2` 47,885 -> **46,779** (**-1,106 / -2.31%**), `MUL` **1,105 -> 12**
+  (all 12 remaining are value x value, none constant); on top of the 36,553 of
+  `-fopt-vstack -fopt-addr` -> **35,453** (-1,100 / -3.01%). Full chain:
+  **47,885 -> 38,004 -> 36,553 -> 35,453 (-25.96%)**. Object bytes: 115,090 -> 112,878
+  (-2,212 B); 92,408 -> 90,208 (-2,200 B). Details in `docs/STRENGTH.en.md`.
 
 ---
 

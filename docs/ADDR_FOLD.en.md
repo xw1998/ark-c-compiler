@@ -129,18 +129,16 @@ Counts are the number of non-directive, non-label lines in the `.s`.
 
 | Corpus | `-fopt-vstack` | plus `-fopt-addr` | Change |
 | --- | --- | --- | --- |
-| STM32F4 HAL (`examples/ark_test/ark_test_all.c`, `-O2 -mcpu Cortex-M4`) | 38,332 instructions | 36,893 instructions | **−1,439 (−3.75%)** |
+| STM32F4 HAL (`examples/ark_test/ark_test_all.c`, `-O2 -mcpu Cortex-M4`) | 38,004 instructions | 36,553 instructions | **−1,451 (−3.82%)** |
 | same, "`ADD` immediately followed by an access through that register" | 1,075 | **0** | all folded by R2 |
 | same, "`MOV` immediately followed by an access through that register" | 0 | 0 | nothing foldable |
 
 The residual detector only recognises the adjacent shape "`ADD` then one `[rD]`
 with no offset", so 1,075 is a **lower bound for the register-index form**. The
-total reduction is larger, which means the immediate-offset form (R1,
-`ADD RD,RB,#imm` + `[RD(,#off)]`) does fire on this corpus -- it reported 0 before
-because that baseline did not have the vstack pass rewriting those lines yet.
-No per-rule attribution was measured, so none is claimed here. The baseline is
-the 38,332 instructions **after** `-fopt-vstack` (the crossing version), not the
-47,885 of plain `-O2`; do not mix the two.
+total reduction of 1,451 is larger; the remainder was not attributed rule by rule,
+so no claim is made about it. The baseline is the 38,004 instructions **after**
+`-fopt-vstack` (the crossing version, third slot included), not the 47,885 of
+plain `-O2`; do not mix the two.
 
 The HAL corpus is a floor for this layer, not a ceiling: it is almost entirely
 short functions such as `HAL_GPIO_WritePin` plus register writes, with little

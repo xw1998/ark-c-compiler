@@ -5249,8 +5249,24 @@ static char *codegen_arm(IrProgram *prog) {
                     emit_pop_r1(&buf);
                     emit_pop_r0(&buf);
                     if (es > 1) {
-                        emit_mov_imm(&buf, 2, es);
-                        emit_line(&buf, "MUL r1, r2");
+                        /* -fopt-strength: a power-of-two element size scales by
+                         * a shift, one instruction instead of the MOV/MUL pair.
+                         * The product is exact either way -- both forms keep the
+                         * low 32 bits of r1 * es -- so this cannot change an
+                         * answer.  Every size that is not a power of two keeps
+                         * the multiply (Cortex-M4 multiplies in one cycle, and a
+                         * shift/add chain for, say, 12 would be two instructions
+                         * as well). */
+                        if (g_config.enable_opt_strength && (es & (es - 1)) == 0) {
+                            int sh = 0;
+                            while ((1 << sh) < es) sh++;
+                            asmbuf_puts(&buf, "    LSL r1, r1, #");
+                            asmbuf_int(&buf, sh);
+                            asmbuf_putc(&buf, '\n');
+                        } else {
+                            emit_mov_imm(&buf, 2, es);
+                            emit_line(&buf, "MUL r1, r2");
+                        }
                     }
                     emit_line(&buf, "ADD r0, r0, r1");
                     if (es == 8 && (I->aux & IR_AUX_COMPLEX)) {

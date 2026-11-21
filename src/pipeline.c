@@ -125,6 +125,7 @@ static int ir_wanted_licm(void)       { return g_config.enable_licm; }
 static int ir_wanted_unroll(void)     { return g_config.enable_unroll; }
 static int ir_wanted_tailmerge(void)  { return g_config.enable_tailmerge; }
 static int ir_wanted_xblock(void)     { return g_config.enable_xblock; }
+static int ir_wanted_strength(void)   { return g_config.enable_opt_strength; }
 #if ARKCC_FEATURE_CONST_GLOBAL
 static int ir_wanted_const_global(void) { return g_config.enable_const_global; }
 /* opt_const_global reports how many loads it replaced; the table wants a void
@@ -218,6 +219,17 @@ static const IrStage g_ir_stages[] = {
       ir_wanted_xblock, PIPE_NAME("off (--xblock)"),             0, 0, opt_xblock_func,  0 },
 #else
     { PIPE_NAME("ir.xblock"), ARK_PROFILE_FULL, 1, GATE_FLAG_AND_LEVEL, 0, 0, 0, 0, 0, 0, 0 },
+#endif
+    /* 强度削减放在管线末尾：它只重写「常数紧跟乘法」这两条相邻指令，不造块、
+     * 不改块尾形态，所以越晚跑越不会改变别的 pass 看到的形状。这条顺序不是
+     * 风格问题——放在 inline 之前时，`x*1` 被删掉两条会让一个恰好卡在阈值上的
+     * 函数体变成「可内联」，于是同一个程序在开关打开后会多出一整个内联副本
+     * （实测 pow2 夹具 512 -> 533 条指令、镜像 +42 B，正是这个原因）。 */
+#if ARKCC_FEATURE_OPT_STRENGTH
+    { PIPE_NAME("ir.strength"),  ARK_PROFILE_LITE, 1, GATE_FLAG_AND_LEVEL, 1,
+      ir_wanted_strength,  PIPE_NAME("off (-fopt-strength)"),     0, 0, opt_strength_func, 0 },
+#else
+    { PIPE_NAME("ir.strength"),  ARK_PROFILE_LITE, 1, GATE_FLAG_AND_LEVEL, 0, 0, 0, 0, 0, 0, 0 },
 #endif
     { PIPE_NAME("ir.vectorize"), ARK_PROFILE_FULL, 2, GATE_FLAG_OR_LEVEL,  ARKCC_FEATURE_OPT_VECTORIZE,
       ir_wanted_vectorize, PIPE_NAME("off (--vectorize / -O2)"),  1, 0, 0,                  opt_vectorize },

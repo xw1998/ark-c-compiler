@@ -70,4 +70,13 @@ void opt_vectorize(IrProgram *prog);
 int  opt_const_global(IrProgram *prog);
 #endif
 
+/* Strength reduction (-fopt-strength): `x * 2^k` becomes `x << k`.  The
+ * constant must sit immediately in front of the multiply, which is exactly the
+ * shape irgen produces for `x * 4`, for the stride scaling in a subscript and
+ * for the sizeof(*p) scaling of pointer arithmetic; `x * 1` drops both
+ * instructions.  Everything else -- 0, negative factors, non-powers of two --
+ * is left as it was, because on this target a multiply is cheaper than the
+ * shift/add chain that would replace it. */
+void opt_strength_func(IrFunc *f);
+
 #endif /* ARK_OPT_H */

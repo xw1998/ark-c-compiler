@@ -170,9 +170,9 @@ only eats pairs that were already adjacent.
 
 | Corpus | off | on | change |
 | --- | --- | --- | --- |
-| STM32F4 HAL (`examples/ark_test/ark_test_all.c`, `-O2 -mcpu Cortex-M4`, non-directive non-label lines) | 47,885 insns | 38,332 insns | **-20.0%** |
-| same corpus, `-fopt-addr` on top of vstack (see `docs/ADDR_FOLD.md`) | 38,332 insns | 36,893 insns | -3.75% |
-| same corpus, the r4 third slot on top of `-fopt-vstack -fopt-addr` | 36,893 insns | 36,554 insns | -0.92% |
+| STM32F4 HAL (`examples/ark_test/ark_test_all.c`, `-O2 -mcpu Cortex-M4`, non-directive non-label lines) | 47,885 insns | 38,004 insns (third slot included) | **-20.64%** |
+| same corpus, `-fopt-addr` on top of vstack (see `docs/ADDR_FOLD.md`) | 38,004 insns | 36,553 insns | -3.82% |
+| same corpus, `-fopt-strength` on top (see `docs/STRENGTH.en.md`) | 36,553 insns | 35,453 insns | -3.01% |
 | arith fixture, instructions | 171 | 121 | -29% |
 | same, `PUSH`/`POP` count | 88 | 14 | -84% |
 | same, image bytes | 1392 | 1292 | -7.2% |
@@ -206,9 +206,10 @@ The command behind the HAL row (from the repository root):
 # count lines that are neither '.' directives/labels nor ':' label lines
 ```
 
-Run it once more with `-fopt-vstack`; the difference between the two counts is the -20.0% in the
-table.  With `-fopt-vstack -fopt-addr` it is 36,893.  The r4 third slot is internal to the pass and
-has no flag of its own, so 36,554 is what that same command produces.  The r4 row is booked
+Run it once more with `-fopt-vstack`; the difference between the two counts is the -20.64% in the
+table.  With `-fopt-vstack -fopt-addr` it is 36,553, and with all three flags (adding
+`-fopt-strength`) it is 35,453.  The r4 third slot is internal to the pass and has no flag of its
+own, so 38,004 is what that same `-fopt-vstack` command produces.  The r4 row is booked
 honestly: 59 functions each save one more word in the prologue and epilogue (about +472 bytes) for
 340 fewer instructions, and the **per-object byte size was not measured separately**, so only the
 instruction counts are reported.

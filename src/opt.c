@@ -141,6 +141,65 @@ void opt_constfold_func(IrFunc *f) {
     }
 }
 
+/* --- Strength reduction (-fopt-strength) ---------------------------------
+ * `x * k` with k = 2^sh is `x << sh`: a left shift keeps the same low 32 bits
+ * as the product does, so the rewrite is exact for signed and unsigned
+ * operands alike and cannot turn a correct answer into a different one.  irgen
+ * always emits the constant instruction immediately before the multiply, for
+ * every constant-multiply shape it has:
+ *
+ *     explicit      x * 4                PUSH x     PUSH_INT 4    BINARY MUL
+ *     subscript     a[i]                 PUSH a     PUSH i        PUSH_INT 4  BINARY MUL  BINARY +
+ *     pointer add   p + i                PUSH p     PUSH i        PUSH_INT 4  BINARY MUL  BINARY +
+ *     struct field  p->x  (offset scale) PUSH_INT 16  ...          BINARY MUL  BINARY +
+ *
+ * so the pattern is two adjacent instructions:
+ *
+ *     IR_PUSH_INT k  IR_BINARY (TOK_MUL)  ->  IR_PUSH_INT sh  IR_BINARY (TOK_SHL)
+ *     IR_PUSH_INT 1  IR_BINARY (TOK_MUL)  ->  both removed (net stack effect 0)
+ *
+ * Deliberately not handled:
+ *   - k == 0: the product is 0, but the multiplicand is already on the stack
+ *     and the stack IR has no neutral "drop" op to take it off again.
+ *   - k < 0 (x * -4): the factor also needs a negate, which this shape does
+ *     not have room for.
+ *   - a constant on the *left* (4 * x): the constant is then not adjacent to
+ *     the multiply, so it is out of reach of a two-instruction window.
+ * No shape gains an instruction, and the k == 1 case loses two, so the image
+ * cannot grow; the number of rewritten pairs is what the -v log reports.
+ */
+void opt_strength_func(IrFunc *f) {
+#if ARKCC_FEATURE_OPT_STRENGTH
+    int changed = 0;
+    int i;
+    for (i = 0; i + 1 < f->code_count; i++) {
+        IrInst *a = &f->code[i];
+        IrInst *b = &f->code[i + 1];
+        long long k;
+        int sh = 0;
+        if (a->op != IR_PUSH_INT || b->op != IR_BINARY) continue;
+        if ((b->aux & ~0x100) != (int)TOK_MUL) continue;
+        k = a->val;
+        if (k == 1) {                       /* x * 1: the pair is a no-op */
+            a->op = IR_NOP;
+            b->op = IR_NOP;
+            changed = 1;
+            continue;
+        }
+        if (k < 2 || k > 0x40000000LL) continue;
+        if ((k & (k - 1)) != 0) continue;   /* not a power of two */
+        while ((1LL << sh) < k) sh++;
+        a->val = (long long)sh;
+        b->aux = (int)TOK_SHL;              /* 0x100 would be the unsigned
+                                             * right shift flag; not set here */
+        changed = 1;
+    }
+    if (changed) compact_func(f);
+#else
+    (void)f;
+#endif
+}
+
 void opt_dce_func(IrFunc *f) {
     int i;
     int unreachable = 0;

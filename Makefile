@@ -28,7 +28,7 @@ endif
         test-loop test-modern test-atomic test-ipo test-constglobal \
         test-objir test-partiallink test-deadinline test-softfloat test-tailmerge \
         test-tailcall test-divconst test-xblock test-sizeweight \
-        test-inline test-vstack test-addr install stm32
+        test-inline test-vstack test-addr test-strength install stm32
 
 all: $(ARKCC)
 
@@ -43,7 +43,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -169,6 +169,17 @@ test-vstack: $(ARKCC)
 # answer in the emulator, and a cropped build refuses the flag by name.
 test-addr: $(ARKCC)
 	$(PYTHON) tests/run_addr_tests.py ./$(ARKCC)
+
+# Gate for -fopt-strength: OFF IS OFF (byte-identical without the flag), a
+# multiply by a power of two becomes a left shift (instruction count down,
+# MUL count down to the few odd constants, the new "LSL r1, r1, #n" index form
+# appears, no foldable PUSH #2^k + MUL pair left behind), a multiply by 3 or 5
+# keeps its MUL and costs nothing, the image never grows, the flag still pays
+# on top of -fopt-vstack -fopt-addr, and all five arms compute the same answer
+# in the emulator.  A cropped build (-DARKCC_FEATURE_OPT_STRENGTH=0) refuses
+# the flag by name while still compiling the same program without it.
+test-strength: $(ARKCC)
+	$(PYTHON) tests/run_strength_tests.py ./$(ARKCC)
 
 # Gate for --diag_style=modern: the header, the framed echo and the caret
 # column are checked against the token they point at (by display width, so a

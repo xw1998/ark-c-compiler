@@ -170,6 +170,18 @@
 #   define ARKCC_FEATURE_OPT_VSTACK    1   /* 宿主/交叉编译：-fopt-vstack 才有得开 */
 # endif
 #endif
+/* ARKCC_FEATURE_OPT_STRENGTH: -fopt-strength, the IR peephole that rewrites a
+ * multiplication by a power of two as a left shift (src/opt.c).  No table and no
+ * allocation, but it is trimmed from the STM32 profile all the same: a board
+ * build ships the behaviour of the default configuration, in which the pass is
+ * off, so the code would only ever sit in Flash. */
+#ifndef ARKCC_FEATURE_OPT_STRENGTH
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_OPT_STRENGTH  0   /* 板上裁掉：强度削减只在宿主/交叉编译用 */
+# else
+#   define ARKCC_FEATURE_OPT_STRENGTH  1   /* 宿主/交叉编译：-fopt-strength 才有得开 */
+# endif
+#endif
 #ifndef ARKCC_FEATURE_OPT_INLINE
 # if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
 #   define ARKCC_FEATURE_OPT_INLINE    0   /* Trim auto-inline on STM32 (costs Flash) */
