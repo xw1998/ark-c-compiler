@@ -87,6 +87,7 @@ void config_init(void) {
     g_config.enable_unroll             = 0;
     g_config.enable_tailmerge          = 0;
     g_config.enable_tailcall           = 0;
+    g_config.enable_divconst           = 0;
     g_config.enable_const_global       = 0;
     /* --pipeline: 默认 FULL = 历史行为（每个 pass 自己的开关/级别决定），
      * 因此不写这个选项时产物与 0.8.4 逐字节相同。 */
@@ -141,6 +142,8 @@ static void apply_kv(const char *section, const char *key, const char *val) {
             g_config.enable_tailmerge = parse_bool(val);
         else if (ark_streq(key, "tailcall") || ark_streq(key, "tail-call"))
             g_config.enable_tailcall = parse_bool(val);
+        else if (ark_streq(key, "divconst") || ark_streq(key, "div-const"))
+            g_config.enable_divconst = parse_bool(val);
         else if (ark_streq(key, "const_global") || ark_streq(key, "const-global"))
             g_config.enable_const_global = parse_bool(val);
         else if (ark_streq(key, "pipeline")) {
@@ -467,9 +470,9 @@ void config_print(void) {
     ark_log("  warn_unreachable=%d\n", g_config.enable_warn_unreachable);
     ark_log("  warn_unused_static=%d\n", g_config.enable_warn_unused_static);
     ark_log("  warn_recursion=%d\n", g_config.enable_warn_recursion);
-    ark_log("  licm=%d unroll=%d tailmerge=%d tailcall=%d\n",
+    ark_log("  licm=%d unroll=%d tailmerge=%d tailcall=%d divconst=%d\n",
             g_config.enable_licm, g_config.enable_unroll, g_config.enable_tailmerge,
-            g_config.enable_tailcall);
+            g_config.enable_tailcall, g_config.enable_divconst);
     ark_log("  const_global=%d\n", g_config.enable_const_global);
     ark_log("  pipeline=%s\n", pipeline_profile_name(g_config.pipeline_profile));
     ark_log("  opt_level=%d debug_info=%d split_sections=%d\n",

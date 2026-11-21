@@ -27,7 +27,7 @@ endif
         test-enumcheck test-pipeline test-unusedresult test-mir \
         test-loop test-modern test-atomic test-ipo test-constglobal \
         test-objir test-partiallink test-deadinline test-softfloat test-tailmerge \
-        test-tailcall install stm32
+        test-tailcall test-divconst install stm32
 
 all: $(ARKCC)
 
@@ -42,7 +42,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -111,6 +111,15 @@ test-tailmerge: $(ARKCC)
 # instead of silently ignoring it.
 test-tailcall: $(ARKCC)
 	$(PYTHON) tests/run_tailcall_tests.py ./$(ARKCC)
+
+# Gate for --divconst: every constant divide must lose its SDIV/UDIV and
+# gain the documented sequence, the refused constants must stay byte-identical,
+# a table of dividends must agree three ways (switch off / switch on / exact
+# Python model) on the ARM executor, --reg-top and --tailcall must not disturb
+# it, the pass must be off by default, and a cropped build
+# (-DARKCC_FEATURE_DIVCONST=0) must refuse the option by name.
+test-divconst: $(ARKCC)
+	$(PYTHON) tests/run_divconst_tests.py ./$(ARKCC)
 
 # Gate for --diag_style=modern: the header, the framed echo and the caret
 # column are checked against the token they point at (by display width, so a

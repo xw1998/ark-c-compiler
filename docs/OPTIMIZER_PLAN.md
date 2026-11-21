@@ -93,15 +93,29 @@
 - **未做**：栈参尾调用的搬移、其它后端（x86-64 / RISC-V 上 `--tailcall` 是无害空操作）。
   细节见 `docs/TAILCALL.md`。
 
-### P3 除常数 → 乘倒数（更快，`-O2`）
+### P3 除常数 → 乘魔数 + 移位（**已落地 0.9.1**）
 
 - **证据**：两侧都有（IAR `GoDivideByConstant`/`TaDivByConstant`；AC5 `constant_multiply.c` +
-  `no_constdiv`）。ARM 无硬件除法时 `/const` 走 `__aeabi_idiv`，20+ 周期变 3–5 周期。
-- **arkc 落点**：`ir.divconst`，`IR_DIV`/`IR_MOD` 的除数是指令流里的常量时，
-  用魔数乘法 + 移位（有符号用 round-up 修正）替换。
-- **裁切**：`ARKCC_FEATURE_DIVCONST`；运行期 `--divconst`。
-- **判据**：穷举 `n ∈ [-2^31, 2^31)` 抽样 + 边界（`INT_MIN / -1` 必须仍按 C 的 UB 处理而不是先崩），
-  与"原样调用 `__aeabi_idiv`"逐值比较。
+  `no_constdiv`）。ARM 无硬件除法时 `/const` 走 `__aeabi_idiv`，20+ 周期变 3–6 周期。
+- **arkc 落点（与初稿不同，已改）**：不是新的 IR pass，而在 **ARM 后端发射期**——
+  `IR_PUSH_INT c` 紧跟 `IR_DIV`/`IR_MOD` 即除数已知，丢掉那次 push 改发魔数序列。
+  前瞻要两步（`x / -5` 的 IR 是 `PUSH_INT 5` + 32 位取负的 `IR_UNARY` + `DIV`，
+  用计数器 `divconst_skip` 吞掉那条取负）。无符号三种形状（2 的幂 → `LSR`、
+  `m < 2^32` → `UMULL` + 移位、`m >= 2^32` → add 形，`L == 32` 时 `m = (2^64-1)/d + 1`）；
+  有符号走**幅值法**（符号保存/复原 + 无符号序列 + 余数 `n - q*c`），负除数只多一条
+  `MVN` 翻符号寄存器。拒绝：`c == 0`、`c == 1`、有符号 `c == -1`、有符号 `|c| == 2^31`、
+  无符号 `c == 1`（拒绝即逐字节不变）。
+- **裁切**：`ARKCC_FEATURE_DIVCONST`（STM32_MIN ⇒ 0，前瞻块与发射函数整块消失）；
+  运行期 `--divconst` 默认关（与 `--tailcall` 一致，不加 `-O` 级别闸门）。
+  此处以 `docs/DIVCONST.md` 为准。
+- **判据**：`tests/run_divconst_tests.py`，45 项，`make test-divconst`：静态形状（16 个用例
+  各自命中标记、`SDIV`/`UDIV` 归零）+ 单 TU 选择性 + 五种拒绝逐字节相同 + 执行三方一致
+  （16 除数 × 66 被除数，checksum `0x40F32C43`，含 `--reg-top`/`--tailcall` 组合）+
+  防假绿（默认关、`--no-divconst`、裁剪构建 `C3900U` 与 INI 守卫）+ 如实字节账。
+  数学先经 Python 全量验证：无符号 9,150,609 组、有符号 4,030,257 组 0 失败。
+- **实测**：对象 4293 → 4533 B（**+240 B**）、指令行 1743 → 1836（**+93 行**）；
+  换的是周期不是字节，只有无符号 2^k 的两个形状真的变短。特性代码体积（宿主 gcc -O2
+  只编 `backend_arm.c`）`.text` 93376 → 95056 B（+1680 B）、符号 186 → 189。
 
 ### P4 块级重复块消除（cross-jump 的整块形态）
 

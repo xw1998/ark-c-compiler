@@ -824,6 +824,23 @@
 #   define ARKCC_FEATURE_TAILCALL      1
 # endif
 #endif
+/* ---------------------------------------------------------------------------
+ * 0.9.1 除以常数 -> 乘魔数 + 移位（--divconst）
+ *
+ * 发射期优化：IR_PUSH_INT c 紧跟 IR_DIV/IR_MOD 时除数是编译期已知的，于是把
+ * 硬件除法换成「乘出高半 + 移位」（c 是 2 的幂时直接移位 / 取掩码）。IR 不变，
+ * 产物在开关关闭时逐字节等于上一版。
+ *
+ * 板端（STM32_MIN）这整段不驻留：裁掉后不引用任何新符号。运行时默认关
+ * （--divconst 才开）。
+ * ------------------------------------------------------------------------- */
+#ifndef ARKCC_FEATURE_DIVCONST
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_DIVCONST      0
+# else
+#   define ARKCC_FEATURE_DIVCONST      1
+# endif
+#endif
 /* -MMD 依赖表的文件名数组：宿主按需翻倍扩容（没有人为条数上限），板端用
  * ARKCC_MAX_INC_FILES 的定长表并在越界时告警一次。 */
 #ifndef ARKCC_FEATURE_DEP_FILES_DYN

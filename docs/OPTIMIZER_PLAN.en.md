@@ -117,18 +117,35 @@ aliasing is uncertain" plus ARM-specific instruction rewrites.**
 - **Not done**: moving stack arguments, and other backends (on x86-64 / RISC-V `--tailcall` is a
   harmless no-op). Details in `docs/TAILCALL.md`.
 
-### P3 Divide by constant -> multiply by reciprocal (faster, -O2)
+### P3 Divide by constant -> multiply by a magic number + shift (**landed in 0.9.1**)
 
 - **Evidence**: both sides have it (IAR `GoDivideByConstant`/`TaDivByConstant`; AC5
   `constant_multiply.c` + `no_constdiv`). Without hardware divide, `/const` calls
-  `__aeabi_idiv`: 20+ cycles become 3-5.
-- **Where**: `ir.divconst`, when the divisor of `IR_DIV`/`IR_MOD` is a constant in the
-  instruction stream; magic-number multiply + shift, with the round-up correction for signed
-  operands.
-- **Trimming**: `ARKCC_FEATURE_DIVCONST`; runtime `--divconst`.
-- **Verdict**: differential over a sampled `n` plus the boundaries (`INT_MIN / -1` must stay
-  as UB rather than crash inside the transform), compared value by value against the
-  `__aeabi_idiv` path.
+  `__aeabi_idiv`: 20+ cycles become 3-6.
+- **Where (changed from the first draft)**: not a new IR pass but **emission time in the ARM
+  backend** -- `IR_PUSH_INT c` immediately followed by `IR_DIV`/`IR_MOD` means the divisor is
+  known, so the push is dropped and the magic sequence is emitted instead. The lookahead is two
+  instructions deep (`x / -5` is `PUSH_INT 5` + the 32-bit negating `IR_UNARY` + `DIV`; the
+  counter `divconst_skip` swallows that negation). Three unsigned shapes (power of two -> `LSR`,
+  `m < 2^32` -> `UMULL` + shift, `m >= 2^32` -> the add form, with `m = (2^64-1)/d + 1` when
+  `L == 32`); signed goes through the **magnitude method** (save/restore the sign around the
+  unsigned sequence, remainder as `n - q*c`), and a negative divisor costs one `MVN`. Refused:
+  `c == 0`, `c == 1`, signed `c == -1`, signed `|c| == 2^31`, unsigned `c == 1` -- a refusal is
+  byte-identical output.
+- **Trimming**: `ARKCC_FEATURE_DIVCONST` (0 for STM32_MIN; the lookahead block and the emitter
+  disappear); runtime `--divconst`, off by default, and -- like `--tailcall` -- with no `-O`
+  gate. `docs/DIVCONST.md` is authoritative.
+- **Verdict**: `tests/run_divconst_tests.py`, 45 checks, `make test-divconst`: static shapes
+  (each of the 16 cases hits its own marker and `SDIV`/`UDIV` drops to zero), selectivity within
+  one TU, five byte-identical refusals, execution agreeing three ways (16 divisors x 66
+  dividends, checksum `0x40F32C43`, including the `--reg-top`/`--tailcall` combinations),
+  anti-false-green (off by default, `--no-divconst`, a trimmed build refusing with `C3900U`
+  plus the INI guard) and an honest byte account. The math was verified in Python first:
+  9,150,609 unsigned and 4,030,257 signed pairs, 0 failures.
+- **Measured**: object 4293 -> 4533 B (**+240 B**), instruction lines 1743 -> 1836 (+93). It
+  trades cycles, not bytes; only the two unsigned power-of-two shapes really get shorter. The
+  feature's own code size (host gcc -O2 on `backend_arm.c`) is `.text` 93376 -> 95056 B
+  (+1680 B), symbols 186 -> 189.
 
 ### P4 Duplicate block elimination (the whole-block form of cross-jump)
 

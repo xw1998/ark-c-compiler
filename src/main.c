@@ -773,6 +773,18 @@ int main(int argc, char **argv) {
         }
         else if (strcmp(a, "--no-tailcall") == 0)    g_config.enable_tailcall = 0;
 #endif
+#if ARKCC_FEATURE_DIVCONST
+        else if (strcmp(a, "--divconst") == 0)       g_config.enable_divconst = 1;
+        else if (strcmp(a, "--no-divconst") == 0)    g_config.enable_divconst = 0;
+#else
+        else if (strcmp(a, "--divconst") == 0) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: --divconst is not compiled into this "
+                    "build (rebuild with -DARKCC_FEATURE_DIVCONST=1)\n");
+            return 1;
+        }
+        else if (strcmp(a, "--no-divconst") == 0)    g_config.enable_divconst = 0;
+#endif
 #if ARKCC_FEATURE_CONST_GLOBAL
         else if (strcmp(a, "--const-global") == 0)    g_config.enable_const_global = 1;
         else if (strcmp(a, "--no-const-global") == 0) g_config.enable_const_global = 0;
@@ -955,6 +967,15 @@ int main(int argc, char **argv) {
         fprintf(stderr,
                 "Fatal error: C3900U: --tailcall is not compiled into this build "
                 "(rebuild with -DARKCC_FEATURE_TAILCALL=1)\n");
+        return 1;
+    }
+#endif
+#if !ARKCC_FEATURE_DIVCONST
+    /* Same rule for divconst=1 in the ini file. */
+    if (g_config.enable_divconst) {
+        fprintf(stderr,
+                "Fatal error: C3900U: --divconst is not compiled into this build "
+                "(rebuild with -DARKCC_FEATURE_DIVCONST=1)\n");
         return 1;
     }
 #endif
