@@ -807,6 +807,23 @@
 #ifndef ARK_TAILMERGE_MIN_LEN
 #   define ARK_TAILMERGE_MIN_LEN       3
 #endif
+/* ---------------------------------------------------------------------------
+ * 0.9.1 尾调用 -> 跳转（--tailcall）
+ *
+ * 只发生在 ARM 后端的发射阶段：IR_CALL 后面紧跟 IR_RETURN，且全部实参都装
+ * 进 r0-r3 时，本帧已经没有要保存的东西——恢复调用者的 sp、把返回地址留在
+ * lr、直接 B 过去。收益是每处一条指令加一整个栈帧（实测 4 B + 帧大小）。
+ *
+ * 板端（STM32_MIN）用不到这个优化就不驻留：裁掉后不会引用任何新符号，产物
+ * 与不含这段代码的构建逐字节相同。运行时默认关（--tailcall 才开）。
+ * ------------------------------------------------------------------------- */
+#ifndef ARKCC_FEATURE_TAILCALL
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_TAILCALL      0
+# else
+#   define ARKCC_FEATURE_TAILCALL      1
+# endif
+#endif
 /* -MMD 依赖表的文件名数组：宿主按需翻倍扩容（没有人为条数上限），板端用
  * ARKCC_MAX_INC_FILES 的定长表并在越界时告警一次。 */
 #ifndef ARKCC_FEATURE_DEP_FILES_DYN

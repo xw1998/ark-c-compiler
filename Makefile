@@ -27,7 +27,7 @@ endif
         test-enumcheck test-pipeline test-unusedresult test-mir \
         test-loop test-modern test-atomic test-ipo test-constglobal \
         test-objir test-partiallink test-deadinline test-softfloat test-tailmerge \
-        install stm32
+        test-tailcall install stm32
 
 all: $(ARKCC)
 
@@ -42,7 +42,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -103,6 +103,14 @@ test-loop: $(ARKCC)
 # build refusing the option instead of pretending to optimise.
 test-tailmerge: $(ARKCC)
 	$(PYTHON) tests/run_tailmerge_tests.py ./$(ARKCC)
+
+# Gate for --tailcall: the convertible shapes must branch instead of calling,
+# the refused shapes must come out untouched, the same program must return the
+# same value through the ARM executor, the pass must be off by default, and a
+# cropped build (-DARKCC_FEATURE_TAILCALL=0) must refuse the option by name
+# instead of silently ignoring it.
+test-tailcall: $(ARKCC)
+	$(PYTHON) tests/run_tailcall_tests.py ./$(ARKCC)
 
 # Gate for --diag_style=modern: the header, the framed echo and the caret
 # column are checked against the token they point at (by display width, so a

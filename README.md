@@ -537,6 +537,7 @@ ark c compiler/
 ├── docs/MIR_CFG.md         MIR/CFG 与三条跨函数检查（不可达 / 未用 static / 递归）：图不变量、判据、刻意不报的形态、裁剪与门禁（中文，UTF-8）
 ├── docs/LOOPS.md           循环优化（--licm / --unroll）：搬什么不搬什么、零次迭代、唯一接受形状、上限与门禁（中文，UTF-8）
 ├── docs/TAILMERGE.md       块尾合并（--tailmerge）：五条规则与各自反例、算法、标签与栈深两处易错点、三层裁剪、字节账实测（中文，UTF-8）
+├── docs/TAILCALL.md        尾调用变跳转（--tailcall）：两种可转形状、七条拒绝条件、发射序列为什么必须留 lr、三层裁剪、门禁与实测（中文，UTF-8）
 ├── docs/IPO_LTO.md         全程序编译（--ipo / -flto）与跨 TU 常量传播（--const-global）：为什么不是对象级 LTO、合并语义、拒绝的组合、裁剪与两条门禁（中文，UTF-8）
 ├── docs/OBJ_IR.md          对象里的 IR 载荷与链接期重编（--obj-ir / -link --lto）：载荷格式、合并的池 remap、逐字节等价、拒绝与诊断、裁剪与门禁（中文，UTF-8）
 ├── docs/PARTIAL_LINK.md    部分链接（-r）：机器码作准、符号/重定位 rebase、数据段不搬、三类拒绝、可替换性与幂等、裁剪与门禁（中文，UTF-8）
@@ -678,6 +679,10 @@ arkcc <file.c|file.s> [选项]
   --tailmerge        块尾合并：多个基本块以完全相同的指令序列收尾时只留一份，
                      其余改成跳到它前面（需 -O1 以上；--no-tailmerge 关）。
                      只合并求值栈深度为 0 的尾段；深度模型不成立就整函数放弃
+  --tailcall         尾调用变跳转：return g(args); 在实参全部走 r0-r3、且返回值原样
+                     交还调用者时，拆本帧后发 B g 而不是 BL（两帧并一帧）。
+                     有栈参 / 间接调用 / 结构体或 _Complex 返回 / __naked / __irq /
+                     可变参一律不动；--no-tailcall 关（默认关）
   --ipo / -flto      全程序编译：一次吃多个 .c，在同一个 IR program 上做跨文件
                      优化（-O2 下跨文件内联），static 按单元改名、外部名按链接器
                      规则去重、无引用的 static 剪掉；必须给 -o，

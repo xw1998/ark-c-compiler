@@ -87,17 +87,35 @@ aliasing is uncertain" plus ARM-specific instruction rewrites.**
   `-DARKCC_FEATURE_TAILMERGE=0` build refuses `--tailmerge` with `C3900U` while its default
   object stays byte-identical to the full build.
 
-### P2 Tail call -> jump (from -O1, 4 B each)
+### P2 Tail call -> jump (**landed in 0.9.1**, 4 B each)
 
 - **Evidence**: section 3.5, measured -- `f(x){return g(x+1);}` goes from
   `PUSH{lr}/BL/POP{pc}` to `B.W g`, while `h2/h3` cannot, because they use the result after
   the call; that is IAR's `PreservesLR` decision.
-- **Where**: IR recognises "`IR_CALL` immediately followed by `IR_RETURN` whose value nothing
-  else consumes" and marks it; the ARM backend emits `B` when the frame is balanced and no
-  locals need destroying.
-- **Trimming**: `ARKCC_FEATURE_TAILCALL`; runtime `--tailcall`.
-- **Verdict**: run on emulator/board plus "`PUSH {...,lr}` disappears from the assembly";
-  negative case (result used afterwards) must be unchanged.
+- **Where (changed from the first draft)**: no new `IR_TAILCALL` opcode. The decision is made
+  at **emission time in the ARM backend**: `IR_CALL` immediately followed by `IR_RETURN`, or --
+  for a void callee -- `IR_CALL` + the dummy `PUSH_INT 0` + `IR_RETURN`. That adjacency already
+  means "the call's value is this function's result", because every conversion (widening,
+  truncation, `_Complex` reseating, struct copy) inserts instructions in between. On top of it
+  the arguments must all fit in r0-r3 (`stack_args == 0`). Emitted text:
+  `MOV sp, r6` -> `ADD sp, sp, #local` -> `POP {r5, r6, r7, lr}` -> `B callee`; `lr` has to stay
+  live (the `lr` variant, not the epilogue's `pc`), so the callee's own `POP {.., pc}` returns
+  straight to our caller. Refused: stack arguments, indirect calls, sret, `_Complex`,
+  `__naked`, `__irq`, variadic.
+- **Trimming**: `ARKCC_FEATURE_TAILCALL` (0 for STM32_MIN; the whole decision block folds away);
+  runtime `--tailcall`, off by default. **No `-O` gate** (same as `--reg-top`: an explicit switch
+  is the intent); `docs/TAILCALL.md` is the normative description.
+- **Verdict**: `tests/run_tailcall_tests.py` -- 29 checks, `make test-tailcall`: the switch really
+  changes the assembly; three positive shapes assert an exact `B <callee>` line plus
+  `POP {r5, r6, r7, lr}` and **no** `BL`; tail recursion becomes a branch; six refused shapes stay
+  byte-identical; one TU with both shapes shows the pass is selective; the emulator returns the
+  same non-trivial value; off by default (byte-identical object); a cropped build refuses the
+  option with `C3900U` and its default object hashes the same as the full build's.
+- **Measured (0.9.1, host gcc/MinGW, Cortex-M7)**: `tc.c` assembly 424 -> 413 lines, object
+  1171 -> 1157 B; `tf`/`tf64`/`vt`/`tsum` 23->21, 23->19, 18->15, 55->53 instructions; emulator
+  `off=81 on=81`.
+- **Not done**: moving stack arguments, and other backends (on x86-64 / RISC-V `--tailcall` is a
+  harmless no-op). Details in `docs/TAILCALL.md`.
 
 ### P3 Divide by constant -> multiply by reciprocal (faster, -O2)
 

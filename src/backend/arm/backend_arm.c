@@ -2797,6 +2797,10 @@ static char *codegen_arm(IrProgram *prog) {
          * option is off, so the generated code is byte-identical. */
         int rtop = 0;
         int rtop_ret = 0;
+        /* P2: set when the instruction just emitted was a tail call, so the
+         * IR_RETURN immediately after it emits nothing.  Always 0 in a build
+         * without ARKCC_FEATURE_TAILCALL. */
+        int tail_return_pending = 0;
         for (i = 0; i < f->code_count; i++) {
             IrInst *I = &f->code[i];
 #if ARKCC_FEATURE_DWARF
@@ -2809,6 +2813,10 @@ static char *codegen_arm(IrProgram *prog) {
             }
 #endif
             rtop_ret = 0;
+            /* P2: the instructions verified to follow a tail call (the dummy
+             * PUSH_INT 0 and the IR_RETURN) emit nothing -- the branch is the
+             * return. */
+            if (tail_return_pending) { tail_return_pending--; continue; }
             if (ark_top_enabled() && ark_top_try(&buf, I, &rtop, &rtop_ret))
                 continue;
             switch (I->op) {
@@ -4295,6 +4303,54 @@ static char *codegen_arm(IrProgram *prog) {
                     const int cplx_ret = 0;
 #endif /* ARKCC_FEATURE_COMPLEX */
                     int sret_buf_off = 0;
+                    /* P2 tail call (--tailcall): `return g(args)` whose arguments
+                     * all fit in r0-r3.  IR_CALL is followed *directly* by
+                     * IR_RETURN only when nothing has to be converted in
+                     * between: an int->long long widening, a truncation and a
+                     * _Complex reseating all insert instructions there, so the
+                     * value left in r0/r1/r0-r3 is already this function's
+                     * result and can be handed back unchanged.
+                     * Excluded: indirect calls (the callee address itself sits
+                     * on the stack that is about to be torn down), sret and
+                     * _Complex results (the buffer lives in this frame),
+                     * __naked/__irq/variadic functions (their frame shape is not
+                     * the one restored below).  With ARKCC_FEATURE_TAILCALL
+                     * compiled out the block disappears and the emitted text is
+                     * byte-identical to a build without it. */
+#if ARKCC_FEATURE_TAILCALL
+                    int tail_call_ok = 0;
+                    int tail_call_skip = 0;   /* instructions after the call to suppress */
+                    if (g_config.enable_tailcall &&
+                        !is_indirect && !is_sret_call && cplx_ret == 0 &&
+                        !f->is_naked && !f->is_irq && !f->is_variadic &&
+                        g_va_epilogue_pad == 0) {
+                        if (i + 1 < f->code_count &&
+                            f->code[i + 1].op == IR_RETURN) {
+                            /* `return g(...)` -- the call's value IS the result. */
+                            tail_call_ok = 1;
+                        } else if (((I->val >> 33) & 1) && f->ret_type &&
+                                   f->ret_type->kind == TYPE_VOID &&
+                                   i + 2 < f->code_count &&
+                                   f->code[i + 1].op == IR_PUSH_INT &&
+                                   f->code[i + 1].val == 0 &&
+                                   f->code[i + 2].op == IR_RETURN) {
+                            /* `void f(void) { g(); }` -- irgen ends every body
+                             * with PUSH_INT 0 / RETURN, and a void callee
+                             * pushes nothing, so the shape is call, dummy word,
+                             * return.  bit 33 of val is irgen's own "the call
+                             * expression is void" stamp, taken from the
+                             * prototype, so a declaration-only callee is
+                             * covered too. */
+                            tail_call_ok = 1;
+                            tail_call_skip = 2;
+                        }
+                    }
+#else
+                    /* Trimmed build: the condition is a compile-time constant so
+                     * the branch below folds away and nothing new is emitted. */
+                    const int tail_call_ok = 0;
+                    const int tail_call_skip = 0;
+#endif
 
                     /* armcc intrinsic functions: emit inline instruction instead of BL.
                      * Arguments (if any) are already on the stack; pop and discard them. */
@@ -4531,6 +4587,27 @@ static char *codegen_arm(IrProgram *prog) {
                         }
                         stack_args = total_slots - reg_slots;
                         if (stack_args < 0) stack_args = 0;
+                        /* P2 tail call: every argument is in r0-r3 (the
+                         * stack_args path below was not taken), so this frame
+                         * has nothing left to contribute.  Restore the
+                         * caller's sp exactly as the epilogue would, keep the
+                         * return address in lr (a plain B does not overwrite
+                         * it), and branch.  The callee's own POP {.., pc}
+                         * returns straight to our caller, so two frames become
+                         * one -- measured: `PUSH {r5,r6,r7,lr} / SUB sp / ... /
+                         * BL / POP {pc}` collapses to `B g`.
+                         * The IR_RETURN that follows must emit nothing; the
+                         * branch above *is* the return. */
+                        if (tail_call_ok && stack_args == 0) {
+                            emit_line(&buf, "MOV sp, r6");
+                            if (local_size > 0) emit_sp_adjust(&buf, local_size, 0);
+                            emit_line(&buf, "POP {r5, r6, r7, lr}");
+                            asmbuf_puts(&buf, "    B ");
+                            asmbuf_puts(&buf, I->name);
+                            asmbuf_putc(&buf, '\n');
+                            tail_return_pending = tail_call_skip + 1;
+                            break;
+                        }
                         if (stack_args > 0) {
                             /* Build the block strictly below the pushed words
                              * and point sp at it.  r5 keeps the old sp and is

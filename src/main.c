@@ -761,6 +761,18 @@ int main(int argc, char **argv) {
         }
         else if (strcmp(a, "--no-tailmerge") == 0)   g_config.enable_tailmerge = 0;
 #endif
+#if ARKCC_FEATURE_TAILCALL
+        else if (strcmp(a, "--tailcall") == 0)       g_config.enable_tailcall = 1;
+        else if (strcmp(a, "--no-tailcall") == 0)    g_config.enable_tailcall = 0;
+#else
+        else if (strcmp(a, "--tailcall") == 0) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: --tailcall is not compiled into this "
+                    "build (rebuild with -DARKCC_FEATURE_TAILCALL=1)\n");
+            return 1;
+        }
+        else if (strcmp(a, "--no-tailcall") == 0)    g_config.enable_tailcall = 0;
+#endif
 #if ARKCC_FEATURE_CONST_GLOBAL
         else if (strcmp(a, "--const-global") == 0)    g_config.enable_const_global = 1;
         else if (strcmp(a, "--no-const-global") == 0) g_config.enable_const_global = 0;
@@ -934,6 +946,15 @@ int main(int argc, char **argv) {
         fprintf(stderr,
                 "Fatal error: C3900U: --tailmerge is not compiled into this build "
                 "(rebuild with -DARKCC_FEATURE_TAILMERGE=1)\n");
+        return 1;
+    }
+#endif
+#if !ARKCC_FEATURE_TAILCALL
+    /* Same rule for tailcall=1 in the ini file. */
+    if (g_config.enable_tailcall) {
+        fprintf(stderr,
+                "Fatal error: C3900U: --tailcall is not compiled into this build "
+                "(rebuild with -DARKCC_FEATURE_TAILCALL=1)\n");
         return 1;
     }
 #endif

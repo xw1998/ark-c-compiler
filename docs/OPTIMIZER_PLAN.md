@@ -71,14 +71,27 @@
   内联汇编用例整函数放弃、深度 1 后缀不合并、`-O0` 产物逐字节相同；
   `-DARKCC_FEATURE_TAILMERGE=0` 构建以 `C3900U` 拒绝 `--tailmerge` 且默认对象与完整构建逐字节相同。
 
-### P2 尾调用 → 跳转（`-O1` 起，省 4 B/处）
+### P2 尾调用 → 跳转（**已落地 0.9.1**，省 4 B/处）
 
 - **证据**：`07` §3.5 真跑——`f(x){return g(x+1);}` 从 `PUSH{lr}/BL/POP{pc}` 变 `B.W g`，
   `h2/h3` 因为返回后还要用返回值**不能**转；对应 IAR 的 `PreservesLR` 判定。
-- **arkc 落点**：IR 层识别「`IR_CALL` 紧跟 `IR_RETURN`，且返回值不参与任何后续计算」，
-  标成 `IR_TAILCALL`；ARM 后端在**帧已平衡 + 无待销毁 locals** 时发 `B`。
-- **裁切**：`ARKCC_FEATURE_TAILCALL`；运行期 `--tailcall`。
-- **判据**：真机/模拟器跑通 + 汇编里 `PUSH {...,lr}` 消失；负例（返回后还要用值）必须不变。
+- **arkc 落点（与初稿不同，已改）**：不新增 `IR_TAILCALL`，而在 **ARM 后端的发射期**判定
+  「`IR_CALL` 紧跟 `IR_RETURN`」（或 void 调用的「`IR_CALL` + 假值 `PUSH_INT 0` + `IR_RETURN`」），
+  再要求**实参全部装进 r0–r3**（`stack_args == 0`）。发射序列为
+  `MOV sp, r6` → `ADD sp, sp, #local` → `POP {r5, r6, r7, lr}` → `B callee`：
+  `lr` 必须留着（用 `POP {.., lr}` 而不是 epilogue 的 `pc` 变体），被调方的 `POP {.., pc}`
+  直接回到我们的调用者。拒绝：有栈参 / 间接调用 / sret / `_Complex` / `__naked` / `__irq` / 可变参。
+- **裁切**：`ARKCC_FEATURE_TAILCALL`（STM32_MIN ⇒ 0，判定块整个折叠）；运行期 `--tailcall`
+  默认关。**未加 `-O` 级别闸门**（与 `--reg-top` 一致：显式开关就是意图表达），
+  此处以 `docs/TAILCALL.md` 为准。
+- **判据**：`tests/run_tailcall_tests.py`（29 项检查，`make test-tailcall`）——开关真变汇编、
+  三个正向形状逐行断言 `B <callee>` 与 `POP {r5, r6, r7, lr}` 且**没有** `BL`、自递归转成分支、
+  六种拒绝形状逐字节不变、同 TU 选择性（一个改写一个不动）、模拟器同值且非平凡、
+  默认关闭产物逐字节相同、裁剪构建以 `C3900U` 拒绝选项且默认对象与完整构建哈希相同。
+- **实测（0.9.1，宿主 gcc/MinGW，Cortex-M7）**：`tc.c` 汇编 424 → 413 行、对象 1171 → 1157 B；
+  `tf`/`tf64`/`vt`/`tsum` 分别 23→21、23→19、18→15、55→53 条；模拟器 `off=81 on=81`。
+- **未做**：栈参尾调用的搬移、其它后端（x86-64 / RISC-V 上 `--tailcall` 是无害空操作）。
+  细节见 `docs/TAILCALL.md`。
 
 ### P3 除常数 → 乘倒数（更快，`-O2`）
 

@@ -54,6 +54,7 @@ typedef struct {
     int enable_licm;               /* --licm: move loop-invariant computations out of the loop */
     int enable_unroll;             /* --unroll: completely unroll a counted for-loop */
     int enable_tailmerge;          /* --tailmerge: merge identical block tails (block-level cross-jump) */
+    int enable_tailcall;           /* --tailcall: `return g(...)` with reg-only args becomes a branch */
     int enable_const_global;       /* --const-global: fold loads of const objects to immediates */
     /* 0.8.5: 可配置 Pass 管线（见 include/pipeline.h）。取 ARK_PROFILE_FULL 时
      * 每个 pass 仍由自己的开关与 -O 级别决定，即历史行为、产物逐字节不变；
