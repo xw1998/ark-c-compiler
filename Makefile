@@ -27,7 +27,7 @@ endif
         test-enumcheck test-pipeline test-unusedresult test-mir \
         test-loop test-modern test-atomic test-ipo test-constglobal \
         test-objir test-partiallink test-deadinline test-softfloat test-tailmerge \
-        test-tailcall test-divconst install stm32
+        test-tailcall test-divconst test-xblock install stm32
 
 all: $(ARKCC)
 
@@ -42,7 +42,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -120,6 +120,16 @@ test-tailcall: $(ARKCC)
 # (-DARKCC_FEATURE_DIVCONST=0) must refuse the option by name.
 test-divconst: $(ARKCC)
 	$(PYTHON) tests/run_divconst_tests.py ./$(ARKCC)
+
+# Gate for --xblock (whole-block cross-jump): the repeated body must survive
+# once with every other copy branching to it, every refused shape (conditional
+# branch with two fall-throughs, identical bodies leaving to different blocks,
+# a body below the length floor, inline asm) must stay byte-identical, the same
+# program must return the same value through the ARM executor, the pass must be
+# off by default, and a cropped build (-DARKCC_FEATURE_XBLOCK=0) must refuse
+# the option by name.
+test-xblock: $(ARKCC)
+	$(PYTHON) tests/run_xblock_tests.py ./$(ARKCC)
 
 # Gate for --diag_style=modern: the header, the framed echo and the caret
 # column are checked against the token they point at (by display width, so a

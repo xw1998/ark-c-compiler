@@ -124,6 +124,7 @@ static int ir_wanted_vectorize(void)  { return g_config.enable_opt_vectorize; }
 static int ir_wanted_licm(void)       { return g_config.enable_licm; }
 static int ir_wanted_unroll(void)     { return g_config.enable_unroll; }
 static int ir_wanted_tailmerge(void)  { return g_config.enable_tailmerge; }
+static int ir_wanted_xblock(void)     { return g_config.enable_xblock; }
 #if ARKCC_FEATURE_CONST_GLOBAL
 static int ir_wanted_const_global(void) { return g_config.enable_const_global; }
 /* opt_const_global reports how many loads it replaced; the table wants a void
@@ -208,6 +209,15 @@ static const IrStage g_ir_stages[] = {
       ir_wanted_tailmerge, PIPE_NAME("off (--tailmerge)"),        0, 0, opt_tailmerge_func, 0 },
 #else
     { PIPE_NAME("ir.tailmerge"), ARK_PROFILE_FULL, 1, GATE_FLAG_AND_LEVEL, 0, 0, 0, 0, 0, 0, 0 },
+#endif
+    /* 整块形态紧跟块尾形态：块尾合并本身会造出「两块只剩同一段尾」的形状，
+     * 但它们不会变成整块相同；反过来整块合并之后的块必然不再以各自独立的
+     * 尾部收场。两者都在 MIR 的块划分上工作，不需要额外图结构。 */
+#if ARKCC_FEATURE_XBLOCK
+    { PIPE_NAME("ir.xblock"), ARK_PROFILE_FULL, 1, GATE_FLAG_AND_LEVEL, 1,
+      ir_wanted_xblock, PIPE_NAME("off (--xblock)"),             0, 0, opt_xblock_func,  0 },
+#else
+    { PIPE_NAME("ir.xblock"), ARK_PROFILE_FULL, 1, GATE_FLAG_AND_LEVEL, 0, 0, 0, 0, 0, 0, 0 },
 #endif
     { PIPE_NAME("ir.vectorize"), ARK_PROFILE_FULL, 2, GATE_FLAG_OR_LEVEL,  ARKCC_FEATURE_OPT_VECTORIZE,
       ir_wanted_vectorize, PIPE_NAME("off (--vectorize / -O2)"),  1, 0, 0,                  opt_vectorize },

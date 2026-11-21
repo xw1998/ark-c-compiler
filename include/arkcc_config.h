@@ -808,6 +808,28 @@
 #   define ARK_TAILMERGE_MIN_LEN       3
 #endif
 /* ---------------------------------------------------------------------------
+ * 0.9.1 块级重复块消除（cross-jump 的整块形态，--xblock）
+ *
+ * 与块尾合并共用深度模型与指令匹配器，只是候选生成器不同：整块指令序列
+ * 完全相同就只留一份，其余改成跳过去。同样只需要 MIR，因此 MIR 被裁掉时
+ * 也一起裁掉。运行时默认关。
+ *
+ * 比块尾合并多三条硬条件（见 src/opt_tailmerge.c 顶部）：入口求值栈深度为 0、
+ * 块体里不能有标签、块必须以显式终结指令收尾——最后一条是「块体相同 ⇒ 后继
+ * 相同」成立的前提，fallthrough 的后继由块在指令表中的位置决定，不在块体里。
+ * ------------------------------------------------------------------------- */
+#ifndef ARKCC_FEATURE_XBLOCK
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN || !ARKCC_FEATURE_MIR
+#   define ARKCC_FEATURE_XBLOCK        0   /* 板端/无 MIR：裁掉省 Flash */
+# else
+#   define ARKCC_FEATURE_XBLOCK        1
+# endif
+#endif
+/* 可共享块的最短长度（指令条数）：替换成一条 JMP，太短的块省不回字节。 */
+#ifndef ARK_XBLOCK_MIN_LEN
+#   define ARK_XBLOCK_MIN_LEN          4
+#endif
+/* ---------------------------------------------------------------------------
  * 0.9.1 尾调用 -> 跳转（--tailcall）
  *
  * 只发生在 ARM 后端的发射阶段：IR_CALL 后面紧跟 IR_RETURN，且全部实参都装

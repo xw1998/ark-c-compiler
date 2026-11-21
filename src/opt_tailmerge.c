@@ -1,6 +1,8 @@
 /* Ark C Compiler - opt_tailmerge.c
  * ---------------------------------------------------------------------
- * Block-tail merging (block-level cross-jump), stage `ir.tailmerge`.
+ * Block-tail merging (block-level cross-jump), stage `ir.tailmerge`,
+ * and whole-block merging (`--xblock`, stage `ir.xblock`): one matcher,
+ * two candidate generators.
  *
  * Why this pass exists
  * --------------------
@@ -52,11 +54,13 @@
  *
  * Trimming
  * --------
- * ARKCC_FEATURE_TAILMERGE (include/arkcc_config.h) is 0 for the STM32_MIN
- * profile and for a build without MIR, because the pass needs the CFG. With
- * the feature on but the runtime switch (--tailmerge) off, this file is
- * linked but never entered, and the image is byte-identical to a build that
- * does not contain it.
+ * ARKCC_FEATURE_TAILMERGE / ARKCC_FEATURE_XBLOCK (include/arkcc_config.h) are
+ * 0 for the STM32_MIN profile and for a build without MIR, because both need
+ * the CFG. They are independent: the depth model and the instruction matcher
+ * are shared, each entry point is compiled on its own. With a feature on but
+ * its runtime switch (--tailmerge / --xblock) off, the code is linked but
+ * never entered, and the image is byte-identical to a build that does not
+ * contain it.
  * ---------------------------------------------------------------------
  */
 #include "opt.h"
@@ -66,7 +70,7 @@
 #include "config.h"
 #include "arkcc_config.h"
 
-#if ARKCC_FEATURE_TAILMERGE
+#if ARKCC_FEATURE_TAILMERGE || ARKCC_FEATURE_XBLOCK
 
 #include "mir.h"
 
@@ -245,6 +249,8 @@ static void tm_analyse_depth(const MirFunc *m, TmDepth *out) {
     /* Anything still at -1 is unreachable code (DCE normally ate it). Those
      * blocks are simply not candidates; they are not an error. */
 }
+
+#if ARKCC_FEATURE_TAILMERGE
 
 /* ------------------------------------------------------------------ */
 /* Candidates                                                          */
@@ -430,7 +436,265 @@ void opt_tailmerge_func(IrFunc *f) {
     }
 }
 
-#else  /* !ARKCC_FEATURE_TAILMERGE */
+#endif /* ARKCC_FEATURE_TAILMERGE */
+
+/* ------------------------------------------------------------------ */
+/* Whole blocks (--xblock)                                            */
+/* ------------------------------------------------------------------ */
+#if ARKCC_FEATURE_XBLOCK
+
+/* The whole-block form of the same idea: when two blocks are instruction-for-
+ * instruction identical, one copy is enough and the other becomes a jump to it.
+ * The matcher is the one above (tm_same_inst), the depth model is the same one,
+ * only the candidate generator and the rewriter differ -- exactly the split the
+ * roadmap describes (AC5 folds both forms into `zip`).
+ *
+ * Three extra conditions come from sharing a *whole* block instead of a tail:
+ *
+ * a) The evaluation stack must be empty on entry. A tail candidate always
+ *    starts at a point where the stack is empty, but a block can be entered
+ *    with values live; jumping to the shared copy would carry those values
+ *    across a control-flow edge, which no backend promises.
+ *
+ * b) The body must contain no label. Every label is somebody's jump target;
+ *    two copies of it would be two definitions of the same target, and the
+ *    jumps would silently all land on whichever copy came first.
+ *
+ * c) The body must end with a one-successor control transfer: an unconditional
+ *    jump or a return. This is what makes "identical body" *sufficient*. A
+ *    block that falls through has its continuation fixed by its position in the
+ *    instruction list, not by its contents, so two identical bodies sitting in
+ *    two places leave by two different doors. A conditional branch is refused
+ *    for exactly the same reason: its *taken* successor is named in the body,
+ *    but its fall-through successor is whatever block happens to follow it.
+ *    With an unconditional jump or a return there is only one successor and it
+ *    is named inside the body, so identical bodies really do continue the same
+ *    way.
+ *
+ * The jump target is compared as a *block*, not as a label id: irgen gives each
+ * `if`/`else if` its own merge label, so two arms that fall into the same place
+ * spell two different ids. Comparing the blocks they name is the same door with
+ * a different name on it, and the drop site keeps its own label for everybody
+ * else.
+ *
+ * IR_FUNC_BEGIN / IR_FUNC_END are refused as well: they only make sense once
+ * per function, and refusing them also keeps the entry block out of the pool
+ * without a special case. */
+
+typedef struct XbCand {
+    int block;
+    int body;       /* first instruction after the block's leading labels */
+    int len;        /* instructions in the body (leading labels excluded) */
+} XbCand;
+
+static int xb_body_of(const MirFunc *m, const TmDepth *d, int b, XbCand *out) {
+    const MirBlock *B = &m->blk[b];
+    int s = B->start;
+    int i;
+    int end_op;
+
+    if (d->blk[b] != 0) return 0;
+    while (s < B->end && tm_is_label(&m->f->code[s])) s++;
+    if (s >= B->end) return 0;
+    if (B->end - s < ARK_XBLOCK_MIN_LEN) return 0;
+
+    for (i = s; i < B->end; i++) {
+        IrOp op = m->f->code[i].op;
+        if (tm_is_label(&m->f->code[i])) return 0;
+        if (op == IR_FUNC_BEGIN || op == IR_FUNC_END) return 0;
+    }
+
+    end_op = m->f->code[B->end - 1].op;
+    if (end_op != IR_JMP && end_op != IR_JMP_NAMED && end_op != IR_RETURN)
+        return 0;
+
+    out->block = b;
+    out->body = s;
+    out->len = B->end - s;
+    return 1;
+}
+
+/* Block a one-successor terminator goes to, or -1 when the label is not in this
+ * function (a hand-edited or truncated IR, refused rather than guessed). */
+static int xb_target_block(const MirFunc *m, const IrInst *J) {
+    int i, n = m->f->code_count;
+    int named = (J->op == IR_JMP_NAMED);
+    for (i = 0; i < n; i++) {
+        const IrInst *L = &m->f->code[i];
+        if (named) {
+            if (L->op == IR_LABEL_NAMED && L->name && J->name &&
+                ark_streq(L->name, J->name))
+                return m->inst_blk[i];
+        } else if (L->op == IR_LABEL && L->val == J->val) {
+            return m->inst_blk[i];
+        }
+    }
+    return -1;
+}
+
+/* A label can open a block that holds nothing but labels and falls through to
+ * the code below it -- irgen puts the two merge labels of an if / else-if chain
+ * side by side. Jumping to either one lands in the same place, so the target is
+ * resolved past such blocks before it is compared. */
+static int xb_resolve_block(const MirFunc *m, int b) {
+    int guard;
+    for (guard = 0; guard <= m->blk_count; guard++) {
+        const MirBlock *B;
+        int s;
+        if (b < 0 || b >= m->blk_count) return -1;
+        B = &m->blk[b];
+        s = B->start;
+        while (s < B->end && tm_is_label(&m->f->code[s])) s++;
+        if (s < B->end) return b;          /* real code: this is the target */
+        if (B->succ_count != 1) return b;  /* nothing to follow: compare b    */
+        b = B->succ[0];
+    }
+    return -1;                             /* a cycle of labels: refuse */
+}
+
+/* Do two candidate bodies compute the same thing and leave by the same door? */
+static int xb_same_body(const MirFunc *m, const XbCand *a, const XbCand *b) {
+    const IrInst *c = m->f->code;
+    int j;
+
+    if (a->len != b->len) return 0;
+    for (j = 0; j + 1 < a->len; j++)
+        if (!tm_same_inst(&c[a->body + j], &c[b->body + j])) return 0;
+    {
+        const IrInst *ea = &c[a->body + a->len - 1];
+        const IrInst *eb = &c[b->body + b->len - 1];
+        int ta, tb;
+        if (ea->op != eb->op) return 0;
+        if (ea->op == IR_RETURN) return 1;
+        ta = xb_target_block(m, ea);
+        tb = xb_target_block(m, eb);
+        ta = ta >= 0 ? xb_resolve_block(m, ta) : -1;
+        tb = tb >= 0 ? xb_resolve_block(m, tb) : -1;
+        return ta >= 0 && ta == tb;
+    }
+}
+
+/* Put a fresh label in front of the kept body and replace every dropped body
+ * with one jump to it. The dropped blocks' *leading* labels stay where they
+ * were -- they are other blocks' jump targets, and the jump itself is the only
+ * thing that moves. */
+static void xb_apply(IrFunc *f, const XbCand *keep, const XbCand *drop, int ndrop) {
+    int new_label = f->label_count;
+    int cap = f->code_count + 1;
+    IrInst *nc = (IrInst *)mem_pool_alloc(cap * (int)sizeof(IrInst));
+    int i, k, w = 0;
+
+    for (i = 0; i < f->code_count; i++) {
+        int dropped = 0;
+        for (k = 0; k < ndrop; k++) {
+            if (i == drop[k].body) {
+                IrInst j;
+                j.op = IR_JMP;
+                j.val = new_label;
+                j.name = 0;
+                j.aux = 0;
+                j.aux2 = 0;
+                j.line = f->code[i].line;
+                nc[w++] = j;
+                i = drop[k].body + drop[k].len - 1;
+                dropped = 1;
+                break;
+            }
+        }
+        if (dropped) continue;
+        if (i == keep->body) {
+            IrInst lbl;
+            lbl.op = IR_LABEL;
+            lbl.val = new_label;
+            lbl.name = 0;
+            lbl.aux = 0;
+            lbl.aux2 = 0;
+            lbl.line = f->code[i].line;
+            nc[w++] = lbl;
+        }
+        nc[w++] = f->code[i];
+    }
+
+    f->code = nc;
+    f->code_count = w;
+    f->code_capacity = cap;
+    f->label_count = new_label + 1;
+}
+
+void opt_xblock_func(IrFunc *f) {
+    int guard;
+
+    if (!f || f->code_count < ARK_XBLOCK_MIN_LEN) return;
+    if (f->is_naked || f->is_asm_func) return;
+
+    /* Same shape as the tail pass: one merge per round, then the CFG is
+     * rebuilt. Every round removes at least one instruction (a body of at
+     * least ARK_XBLOCK_MIN_LEN instructions becomes one jump), so the loop
+     * terminates; the guard only keeps a bug from becoming a hang. */
+    for (guard = 0; guard <= f->code_count; guard++) {
+        MirFunc m;
+        TmDepth d;
+        XbCand *cands;
+        unsigned char *used;
+        int ncand = 0;
+        int best = -1, best_saving = 0, best_ndrop = 0;
+        int b, i;
+
+        if (mir_build(f, &m) != 0) return;
+        tm_analyse_depth(&m, &d);
+        if (!d.ok) { tm_depth_free(&d); return; }
+
+        cands = (XbCand *)mem_pool_alloc((m.blk_count + 1) * (int)sizeof(XbCand));
+        used = (unsigned char *)mem_pool_alloc(m.blk_count + 1);
+        for (b = 0; b < m.blk_count; b++) used[b] = 0;
+        for (b = 0; b < m.blk_count; b++) {
+            XbCand c;
+            if (xb_body_of(&m, &d, b, &c)) cands[ncand++] = c;
+        }
+
+        /* Group identical bodies. Saving per member is len - 1 (the body is
+         * replaced by one jump), so a group of k shares (k-1)*(len-1). Ties go
+         * to the earliest group so the result does not depend on hash order. */
+        for (i = 0; i < ncand; i++) {
+            int members[64], nmem = 0, saving, k;
+            if (used[i]) continue;
+            members[nmem++] = i;
+            used[i] = 1;
+            for (k = i + 1; k < ncand && nmem < 64; k++) {
+                if (used[k]) continue;
+                if (xb_same_body(&m, &cands[i], &cands[k])) {
+                    members[nmem++] = k;
+                    used[k] = 1;
+                }
+            }
+            if (nmem < 2) continue;
+            saving = (nmem - 1) * (cands[i].len - 1);
+            if (saving > best_saving) {
+                best_saving = saving;
+                best = i;
+                best_ndrop = nmem - 1;
+            }
+        }
+        if (best < 0) return;
+
+        /* Re-collect the winning group: `used` consumed the members above, so
+         * walk the candidates again with the same comparison. */
+        {
+            XbCand keep = cands[best];
+            XbCand drops[64];
+            int ndrop = 0;
+            for (i = 0; i < ncand && ndrop < 64; i++) {
+                if (i == best) continue;
+                if (xb_same_body(&m, &keep, &cands[i])) drops[ndrop++] = cands[i];
+            }
+            if (ndrop != best_ndrop) return;   /* inconsistent: refuse to guess */
+            xb_apply(f, &keep, drops, ndrop);
+        }
+    }
+}
+
+#endif /* ARKCC_FEATURE_XBLOCK */
+#else  /* !ARKCC_FEATURE_TAILMERGE && !ARKCC_FEATURE_XBLOCK */
 
 /* Nothing at all: the pipeline row is inert (built_in = 0) and the option is
  * refused in main.c, so a trimmed build never calls this symbol. */

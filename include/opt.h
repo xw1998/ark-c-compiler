@@ -46,6 +46,15 @@ void opt_unroll_func(IrFunc *f);
  * be established for the whole function it is left completely alone. */
 void opt_tailmerge_func(IrFunc *f);
 
+/* Whole-block merging (--xblock): the same matcher one level up. Two blocks that
+ * are instruction-for-instruction identical leave one copy and turn the other
+ * into a jump to a fresh label in front of the survivor. Extra conditions: the
+ * evaluation-stack depth on entry must be 0, the body may hold no label, and it
+ * must end with an explicit control transfer (a fall-through successor is fixed
+ * by layout, not by the body, so identical bodies could otherwise leave by
+ * different doors). */
+void opt_xblock_func(IrFunc *f);
+
 /* Auto vectorization: recognizes simple counted loops (a[i]=b[i] +/- c[i])
  * and parallelizes them with SIMD instructions.
  * Only truly accelerates on the ARM backend; C backend falls back to scalar. */

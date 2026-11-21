@@ -761,6 +761,18 @@ int main(int argc, char **argv) {
         }
         else if (strcmp(a, "--no-tailmerge") == 0)   g_config.enable_tailmerge = 0;
 #endif
+#if ARKCC_FEATURE_XBLOCK
+        else if (strcmp(a, "--xblock") == 0)         g_config.enable_xblock = 1;
+        else if (strcmp(a, "--no-xblock") == 0)      g_config.enable_xblock = 0;
+#else
+        else if (strcmp(a, "--xblock") == 0) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: --xblock is not compiled into this "
+                    "build (rebuild with -DARKCC_FEATURE_XBLOCK=1)\n");
+            return 1;
+        }
+        else if (strcmp(a, "--no-xblock") == 0)      g_config.enable_xblock = 0;
+#endif
 #if ARKCC_FEATURE_TAILCALL
         else if (strcmp(a, "--tailcall") == 0)       g_config.enable_tailcall = 1;
         else if (strcmp(a, "--no-tailcall") == 0)    g_config.enable_tailcall = 0;
@@ -958,6 +970,15 @@ int main(int argc, char **argv) {
         fprintf(stderr,
                 "Fatal error: C3900U: --tailmerge is not compiled into this build "
                 "(rebuild with -DARKCC_FEATURE_TAILMERGE=1)\n");
+        return 1;
+    }
+#endif
+#if !ARKCC_FEATURE_XBLOCK
+    /* Same rule for xblock=1 in the ini file. */
+    if (g_config.enable_xblock) {
+        fprintf(stderr,
+                "Fatal error: C3900U: --xblock is not compiled into this build "
+                "(rebuild with -DARKCC_FEATURE_XBLOCK=1)\n");
         return 1;
     }
 #endif

@@ -147,11 +147,36 @@ aliasing is uncertain" plus ARM-specific instruction rewrites.**
   feature's own code size (host gcc -O2 on `backend_arm.c`) is `.text` 93376 -> 95056 B
   (+1680 B), symbols 186 -> 189.
 
-### P4 Duplicate block elimination (the whole-block form of cross-jump)
+### P4 Duplicate block elimination (the whole-block form of cross-jump) -- **landed in 0.9.1**
 
 - Same matcher as P1 without the "tail" restriction: identical blocks become one copy plus
-  jumps. AC5's `zip` handles both forms in one place, so the matcher and rewriter are shared
-  and only the candidate generator differs. Scheduled after P1 settles.
+  jumps.
+- **Three decisions that had to be made while landing it** (each one prevents a specific
+  wrong answer):
+  1. **Blocks ending in a conditional branch are refused** -- the taken successor is named in
+     the body but the fall-through successor is decided by the block's position, so identical
+     bodies can walk into different code. Only a one-successor transfer named in the body is
+     safe.
+  2. **Jump targets are compared as blocks, not as label ids** -- `irgen` gives each arm of an
+     `if` / `else if` its own merge label (`.L_two_1` vs `.L_two_3`); comparing ids misses
+     exactly the most common duplicated block (the first implementation did this and the
+     switch produced literally no change).
+  3. **Label-only blocks are normalised first** -- adjacent merge labels each become a leader,
+     producing a block that holds nothing but labels and falls through; `xb_resolve_block()`
+     walks through those single-successor blocks before comparing block ids and refuses on a
+     cycle.
+  It also requires an empty entry stack, no label in the body, no `FUNC_BEGIN/FUNC_END`, and
+  a body of at least 4 instructions.
+- **Trimming**: `ARKCC_FEATURE_XBLOCK` (0 for STM32_MIN or without MIR), shared section under
+  `ARKCC_FEATURE_TAILMERGE || ARKCC_FEATURE_XBLOCK`; runtime `--xblock` off by default, stage
+  `ir.xblock` (allowed from -O1). `docs/XBLOCK.md` is authoritative.
+- **Gate**: `tests/run_xblock_tests.py`, 26 checks, `make test-xblock`: static shape and call
+  site count (`BL` 5 -> 2), four refused shapes byte-identical, same-TU selectivity, emulator
+  agreement with a non-trivial value, anti-false-green (default off, `--no-xblock`, cropped
+  build `C3900U` with an identical default object hash, ini key, stage table, `-O0`), and the
+  byte account.
+- **Measured**: 320 -> 272 assembly lines, object 869 -> 767 B (`BL g` 5 -> 2). Details in
+  `docs/XBLOCK.md`.
 
 ### P5 Cross-call (interprocedural sharing) -- **explicitly not scheduled**
 

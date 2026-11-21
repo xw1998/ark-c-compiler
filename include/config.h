@@ -54,6 +54,7 @@ typedef struct {
     int enable_licm;               /* --licm: move loop-invariant computations out of the loop */
     int enable_unroll;             /* --unroll: completely unroll a counted for-loop */
     int enable_tailmerge;          /* --tailmerge: merge identical block tails (block-level cross-jump) */
+    int enable_xblock;             /* --xblock: merge identical whole blocks (cross-jump, whole form) */
     int enable_tailcall;           /* --tailcall: `return g(...)` with reg-only args becomes a branch */
     int enable_divconst;           /* --divconst: divide by a constant -> multiply + shift */
     int enable_const_global;       /* --const-global: fold loads of const objects to immediates */

@@ -630,6 +630,7 @@ ark c compiler/
 ├── docs/TAILMERGE.md       Block-tail merging (--tailmerge): the five rules and their counter-examples, the algorithm, the two easy-to-miss points (labels, depth-0 start), three trimming layers, measured byte account (Chinese, UTF-8)
 ├── docs/TAILCALL.md        Tail call -> jump (--tailcall): the two convertible shapes, the seven refusal conditions, why lr must stay live, three trimming layers, gate and measurements (Chinese, UTF-8)
 ├── docs/DIVCONST.md        Divide by a constant -> magic multiply + shift (--divconst): why the magnitude method is correct, the three unsigned shapes and the L == 32 case, five refusals, three trimming layers, 45 gate items, an honest byte account (Chinese, UTF-8)
+├── docs/XBLOCK.md          Whole-block deduplication (--xblock): why a conditional-branch tail must be refused, why targets are compared as blocks and not label ids, how label-only blocks are normalised, the rewrite shape, three trimming layers, 26 gate items, byte account (Chinese, UTF-8)
 ├── docs/IPO_LTO.md         Whole-program compilation (--ipo / -flto) and cross-TU constant propagation (--const-global): why it is not object-level LTO, merge semantics, refused combinations, cropping, gates (Chinese, UTF-8)
 ├── docs/OBJ_IR.md         An IR payload in the object and link-time recompilation (--obj-ir / -link --lto): payload format, pool remapping on merge, byte equivalence, refusals and diagnostics, cropping, gate (Chinese, UTF-8)
 ├── docs/PARTIAL_LINK.md   Partial link (-r): machine code wins, symbol/relocation rebasing, data never moved, three refusals, substitutability and idempotence, cropping, gate (Chinese, UTF-8)
@@ -801,6 +802,13 @@ arkcc <file.c|file.s> [options]
                      2^31 keep the real divide. The image usually gets bigger;
                      only the unsigned 2^k shapes shrink. --no-divconst turns
                      it off (off by default)
+  --xblock           whole-block deduplication: when two basic blocks are
+                     instruction-for-instruction identical, enter with an empty
+                     evaluation stack and leave through one jump/return that
+                     names its destination, one copy stays and the others
+                     become jumps to it (needs -O1+; --no-xblock turns it off).
+                     Refused: conditional-branch tails, bodies leaving to
+                     different blocks, bodies below 4 instructions, inline asm
   --ipo / -flto      whole-program compile: several .c files, one IR program, so
                      optimisation sees across files (cross-file inlining at -O2);
                      statics are renamed per unit, externals de-duplicated with
