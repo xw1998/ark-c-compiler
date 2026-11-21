@@ -214,9 +214,13 @@ def read(path):
         return f.read()
 
 ARM = ['-target', 'arm', '--cpu', 'Cortex-M7']
-ASM = ARM + ['-O2', '-S']
-OBJ = ARM + ['-O2', '-c']
-IMG = ARM + ['-O2', '--vector-table']
+# --no_autoinline is part of every arm: the fixture's duplicated bodies are
+# *call sites* (two() and three() both call g() twice), so an inliner that is
+# allowed to run removes the very shape this pass is asked to merge.  Since
+# 0.9.1 expands parameterised callees, that is no longer hypothetical.
+ASM = ARM + ['-O2', '--no_autoinline', '-S']
+OBJ = ARM + ['-O2', '--no_autoinline', '-c']
+IMG = ARM + ['-O2', '--no_autoinline', '--vector-table']
 
 def as_body_lines(text):
     """Instruction lines: everything that is not a label, directive, comment or

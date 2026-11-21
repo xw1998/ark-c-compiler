@@ -502,6 +502,19 @@ int main(int argc, char **argv) {
                 return 1;
             }
         }
+#if !ARKCC_FEATURE_OPT_INLINE
+        /* A build without the pass must refuse the flag by name instead
+         * of accepting it and emitting calls.  Only the explicit option:
+         * -O2 also sets the flag, and a cropped build is allowed to
+         * compile at -O2 with the pass simply absent (same as every other
+         * trimmed pass). */
+        else if (strcmp(a, "--autoinline") == 0) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: --autoinline is not compiled into "
+                    "this build (rebuild with -DARKCC_FEATURE_OPT_INLINE=1)\n");
+            return 1;
+        }
+#endif
         else if (strcmp(a, "--enum_is_int") == 0 || strcmp(a, "-fenum-is-int") == 0 ||
                  strcmp(a, "--dollar") == 0 ||
                  strcmp(a, "--signed_chars") == 0 || strcmp(a, "--unsigned_chars") == 0 ||

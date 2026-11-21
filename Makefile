@@ -27,7 +27,8 @@ endif
         test-enumcheck test-pipeline test-unusedresult test-mir \
         test-loop test-modern test-atomic test-ipo test-constglobal \
         test-objir test-partiallink test-deadinline test-softfloat test-tailmerge \
-        test-tailcall test-divconst test-xblock test-sizeweight install stm32
+        test-tailcall test-divconst test-xblock test-sizeweight \
+        test-inline install stm32
 
 all: $(ARKCC)
 
@@ -42,7 +43,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -139,6 +140,18 @@ test-xblock: $(ARKCC)
 # 0) that refuses the option by name and prints no weight table at all.
 test-sizeweight: $(ARKCC)
 	$(PYTHON) tests/run_sizeweight_tests.py ./$(ARKCC)
+
+# Gate for inlining functions that take parameters (0.9.1): a small
+# parameterised callee is expanded at -O2 and not with --no_autoinline,
+# the size rule still refuses it at --size-weight=9, __forceinline still
+# bypasses that rule, two-word parameters (long long / double / 5..8-byte
+# structs) are copied word-accurately, the refused shapes (>8-byte struct
+# by address, five parameters, recursion, "...") keep their calls, the C
+# and x86-64 targets keep theirs too, the same program returns the same
+# value on the ARM executor, and a cropped build
+# (-DARKCC_FEATURE_OPT_INLINE=0) refuses --autoinline by name.
+test-inline: $(ARKCC)
+	$(PYTHON) tests/run_inline_tests.py ./$(ARKCC)
 
 # Gate for --diag_style=modern: the header, the framed echo and the caret
 # column are checked against the token they point at (by display width, so a

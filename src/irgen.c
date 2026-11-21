@@ -958,6 +958,44 @@ void irgen_set_complex_words(int words) {
     g_irgen_complex_words = (words > 0) ? words : 1;
 }
 
+/* Parameter width in IR stack words, mirroring the slot accounting in the
+ * AST_FUNC_DEF parameter loop below: a composite above 8 bytes travels as one
+ * address word, a 5..8-byte composite as two, an array decays to one pointer,
+ * a 64-bit scalar takes two words and everything else one. */
+static int irgen_param_words(Type *ptype) {
+    int sz;
+    if (!ptype) return 1;
+    sz = type_size(ptype);
+    if (sz <= 0) sz = 4;
+    if ((ptype->kind == TYPE_STRUCT || ptype->kind == TYPE_UNION) && sz > 8)
+        return 1;                                  /* passed by address */
+    if (ptype->kind == TYPE_STRUCT || ptype->kind == TYPE_UNION)
+        return (sz > 4) ? 2 : 1;                   /* by value, in words */
+    if (ptype->kind == TYPE_ARRAY) return 1;       /* decays to a pointer */
+    if (g_irgen_complex_words > 1 && ARK_IS_CX(ptype) && sz > 8)
+        return 1;   /* four-word value, passed as one address word */
+    if (g_irgen_slot64_ptrs && ptype->kind == TYPE_PTR)
+        return 1;   /* x86-64: one 8-byte address word */
+    return (sz >= 8) ? 2 : 1;                      /* long long / double */
+}
+
+int irgen_param_slots(Type *ptype) {
+    int sz;
+    if (!ptype) return -1;
+    /* The inline pass copies 4-byte words between frame slots.  Neither the C
+     * backend (8-byte slots) nor x86-64 (one 8-byte word per pointer) keeps
+     * that picture, so those targets never expand a parameterised call. */
+    if (g_irgen_64bit_slots || g_irgen_slot64_ptrs) return -1;
+    sz = type_size(ptype);
+    if (sz <= 0) sz = 4;
+    /* Carried by address: the callee memcpys the payload, the expansion only
+     * moves words. */
+    if ((ptype->kind == TYPE_STRUCT || ptype->kind == TYPE_UNION) && sz > 8)
+        return -1;
+    if (g_irgen_complex_words > 1 && ARK_IS_CX(ptype) && sz > 8) return -1;
+    return irgen_param_words(ptype);
+}
+
 /* Widen a real operand of a complex expression to a complex double: the
  * imaginary part is +0.0.  aux: 0x800 = source is a float, 0x800|0x200 =
  * source is already a double, 0x800|0x100 = source is an integer. */
@@ -1808,9 +1846,6 @@ static IrProgram *irgen_program_impl(AstNode *prog, IrProgram *out) {
                     Type *ptype = pp->u.var.var_type;
                     int sz = type_size(ptype);
                     int off;
-                    int is_struct_val = (ptype &&
-                        (ptype->kind == TYPE_STRUCT || ptype->kind == TYPE_UNION) &&
-                        sz > 8);
                     if (sz <= 0) sz = 4;
                     off = alloc_local(&g, sz);
                     {
@@ -1834,24 +1869,9 @@ static IrProgram *irgen_program_impl(AstNode *prog, IrProgram *out) {
                      * aapcs_soff[] had never filled (measured: the 5th argument
                      * of mixed(int, struct P, int, struct Q, int) was loaded
                      * from [r6, #63], i.e. soff == -1). */
-                    {
-                        int pwords;
-                        if (is_struct_val) pwords = 1;                 /* passed by pointer */
-                        else if (ptype && (ptype->kind == TYPE_STRUCT ||
-                                           ptype->kind == TYPE_UNION))
-                            pwords = (sz > 4) ? 2 : 1;                 /* by value in words */
-                        else if (ptype && ptype->kind == TYPE_ARRAY)
-                            pwords = 1;                                /* decays to a pointer */
-                        else if (g_irgen_complex_words > 1 && ptype &&
-                                 ARK_IS_CX(ptype) && sz > 8)
-                            pwords = 1;   /* four-word value, passed as one address word */
-                        else if (g_irgen_slot64_ptrs && ptype &&
-                                 ptype->kind == TYPE_PTR)
-                            pwords = 1;   /* x86-64: one 8-byte address word */
-                        else
-                            pwords = (sz >= 8) ? 2 : 1;   /* long long / double */
-                        slot += pwords;
-                    }
+                    /* One rule for the slot count and for what opt_inline()
+                     * may expand: irgen_param_words() above. */
+                    slot += irgen_param_words(ptype);
                 }
                 /* For variadic functions, also store all 8 args (a0..a7) at a
                  * fixed frame region (ARK_VA_ARG_BASE..+64) so va_start/va_arg

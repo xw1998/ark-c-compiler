@@ -18,11 +18,11 @@ questions:
      direction the table says (more inlining/unrolling at the low end, shorter
      tails/blocks merged at the high end).
      NOTE: the inline row is exercised with a *parameterless* callee on
-     purpose -- irgen stores the scalar parameter size in IR_GETARG's high
-     bits, and the inline pass reads those bits as "struct by value", so any
-     function with a parameter is skipped before the size rule is asked.  That
-     is a pre-existing limitation of the inliner, not of this switch; it is
-     recorded in docs/SIZEWEIGHT.md as an open item.
+     purpose.  A parameterised callee used to be skipped before the size rule
+     was asked (the inline pass misread IR_GETARG's aux bits as "struct by
+     value"; fixed in 0.9.1-wip and gated by tests/run_inline_tests.py).  The
+     fixture stays parameterless so this gate keeps comparing the 12/4 size
+     rule alone, with no argument copying in the picture.
   4. Refusals: --size-weight=10, =abc, ="" and a missing value are fatal
      (C3900U) and produce no output file; a build with the feature compiled out
      refuses the option and still compiles the same file normally.

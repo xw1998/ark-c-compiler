@@ -19,6 +19,7 @@
 #include "arkcc_config.h"
 #include "common.h"
 #include "memory.h"
+#include "irgen.h"      /* irgen_param_slots(): what a parameter costs on the wire */
 
 /* Remove the IR_NOP placeholders from code[] and update code_count. */
 static void compact_func(IrFunc *f) {
@@ -277,11 +278,13 @@ void opt_dce_cfg_func(IrFunc *f) {
  * Algorithm:
  *   1. Mark the inlinable functions: walk each function's IR and exclude the
  *      shapes that cannot be expanded (recursion, variadic, irq, naked, asm_func,
- *      constructor/destructor, struct-by-value parameters).
+ *      constructor/destructor).
  *        - size rule: instruction count <= ark_inline_threshold(), or forceinline
  *          which bypasses the limit;
- *        - param_count <= 4;
- *        - the expansion needs no memcpy for struct arguments.
+ *        - at most 4 parameter *words* (AAPCS register arguments, and the
+ *          expansion parks them in four temporary slots);
+ *        - every parameter must be reproducible by word copies
+ *          (irgen_param_slots()); a payload carried by address is not.
  *   2. Find every call site of an inlinable callee and expand it in place:
  *      the caller's code[] is rebuilt with the callee body spliced in.
  *   3. Expanding one site rebuilds code[] (no memmove, the whole array is written):
@@ -312,15 +315,11 @@ typedef struct {
 } InlineCandidate;
 
 /* Count real instructions (skipping FUNC_BEGIN/FUNC_END/LABEL/NOP) and detect
- * direct recursion. Also detects struct-by-value parameters via IR_GETARG's
- * aux encoding (high 24 bits = struct size > 0); such functions cannot be
- * inlined because the inline expansion would need to emit a memcpy from the
- * caller's argument slot, not the simple PUSH_VAR+STORE pattern used here. */
-static int count_insts_and_check_recursion(IrFunc *f, int *out_count, int *out_has_struct_byval) {
+ * direct recursion. */
+static int count_insts_and_check_recursion(IrFunc *f, int *out_count) {
     int i;
     int n = 0;
     int recursive = 0;
-    *out_has_struct_byval = 0;
     for (i = 0; i < f->code_count; i++) {
         IrOp op = f->code[i].op;
         if (op == IR_FUNC_BEGIN || op == IR_FUNC_END ||
@@ -329,13 +328,33 @@ static int count_insts_and_check_recursion(IrFunc *f, int *out_count, int *out_h
             ark_streq(f->code[i].name, f->name)) {
             recursive = 1;
         }
-        if (op == IR_GETARG && (f->code[i].aux >> 8) != 0) {
-            *out_has_struct_byval = 1;
-        }
         n++;
     }
     *out_count = n;
     return recursive;
+}
+
+/* Words the callee's parameters occupy on the wire, or -1 when the expansion
+ * below cannot reproduce the transfer.
+ *
+ * This question used to be answered by scanning for IR_GETARG with
+ * (aux >> 8) != 0 -- but irgen stamps every parameter's size into aux as
+ * (size << 8) | slot, so a plain `int` looked exactly like a struct-by-value
+ * parameter and *no function with a parameter was ever inlined* (measured:
+ * `static int add1(int x){return x+1;}` stayed a BL at -O2 on ARM, and
+ * __forceinline could not override it).  The answer now comes from the
+ * parameter types, through the same rule irgen used to lay the arguments out
+ * (irgen_param_slots). */
+static int inline_param_words(IrFunc *f) {
+    int j;
+    int total = 0;
+    if (f->param_count > 0 && !f->param_types) return -1;
+    for (j = 0; j < f->param_count; j++) {
+        int w = irgen_param_slots(f->param_types[j]);
+        if (w < 0) return -1;
+        total += w;
+    }
+    return total;
 }
 
 void opt_inline(IrProgram *prog) {
@@ -349,8 +368,9 @@ void opt_inline(IrProgram *prog) {
     for (i = 0; i < prog->func_count; i++) {
         IrFunc *f = prog->funcs[i];
         int cnt = 0;
-        int has_struct_byval = 0;
-        int recursive = count_insts_and_check_recursion(f, &cnt, &has_struct_byval);
+        int pwords;
+        int recursive = count_insts_and_check_recursion(f, &cnt);
+        pwords = inline_param_words(f);
         cands[i].func = f;
         cands[i].inst_count = cnt;
         cands[i].can_inline = 0;
@@ -359,11 +379,13 @@ void opt_inline(IrProgram *prog) {
         if (f->is_irq || f->is_naked || f->is_asm_func) continue;
         if (f->is_constructor || f->is_destructor) continue;
         if (f->param_count > 4) continue;
-        /* Struct-by-value parameters use IR_GETARG with (size<<8)|idx encoding
-         * and the callee receives a pointer to the struct (not the value).
-         * The inline expansion below cannot handle the required memcpy, so
-         * skip inlining such functions entirely. */
-        if (has_struct_byval) continue;
+        /* -1: some parameter is carried by address (the callee memcpys the
+         * payload) or the target's slots are not 4-byte words.  >4: the
+         * expansion parks the incoming words in four temporary slots, which is
+         * also the AAPCS register-argument limit.  Both refuse the expansion
+         * instead of writing code that copies the wrong words. */
+        if (pwords < 0) continue;
+        if (pwords > 4) continue;
         if (f->forceinline) {
             cands[i].can_inline = 1;  /* forceinline bypasses the size limit */
         } else if (cnt <= ark_inline_threshold()) {
@@ -426,6 +448,7 @@ void opt_inline(IrProgram *prog) {
             IrInst *I = &caller->code[j];
             IrFunc *callee = 0;
             int n_args, L0, L1, end_label;
+            int twords = 0;
             int body_begin = -1, body_end = -1;
             if (I->op != IR_CALL) {
                 new_code[new_count++] = *I;
@@ -445,11 +468,28 @@ void opt_inline(IrProgram *prog) {
                 continue;
             }
 
-            n_args = I->val;
+            n_args = I->val;   /* IR_CALL carries the *argument* count */
             if (n_args < 0) n_args = 0;
-            if (n_args > 4) n_args = 4;  /* AAPCS: only 4 arguments go in r0-r3 */
+            /* The expansion below stores one group of words per declared
+             * parameter, so the site has to agree with the callee's own
+             * signature.  A mismatch means the IR is not the shape this pass
+             * understands; keep the call instead of expanding it wrongly.
+             * (Variadic callees never get here -- they are refused above.) */
+            if (n_args != callee->param_count) {
+                new_code[new_count++] = *I;
+                continue;
+            }
+            /* Total words the arguments occupy: the temporary region is sized
+             * in words, not in arguments, because a long long / double / 5..8
+             * byte composite parameter travels as two.  The candidate filter
+             * already refused more than four. */
+            for (k = 0; k < n_args; k++) {
+                int w = irgen_param_slots(callee->param_types[k]);
+                if (w < 0) w = 1;   /* refused at candidate time; be defensive */
+                twords += w;
+            }
             L0 = caller->local_size;
-            L1 = L0 + n_args * 4;
+            L1 = L0 + twords * 4;
             end_label = caller->label_count + callee->label_count;
 
             /* Locate the callee body: everything between FUNC_BEGIN and FUNC_END. */
@@ -467,14 +507,28 @@ void opt_inline(IrProgram *prog) {
                 continue;
             }
 
-            /* a. Store the n arguments into temp slots (arg j at temp_off_j). */
-            for (k = 0; k < n_args; k++) {
-                IrInst *s = &new_code[new_count++];
-                s->op = IR_STORE;
-                s->val = L0 + k * 4;  /* temp_off_k holds arg0..arg{n-1} */
-                s->name = 0;
-                s->aux = 0;
-                s->line = I->line;
+            /* a. Store the arguments into the temporary word area: argument j
+             * owns words [base, base+w).  The IR pushes an argument's words low
+             * first (the high word ends up on top of the stack), so the stores
+             * walk q from w-1 down to 0 and land the low word at the lower
+             * offset -- the layout IR_GETARG and the backends expect. */
+            {
+                int base = 0;
+                int aj;
+                for (aj = 0; aj < n_args; aj++) {
+                    int w = irgen_param_slots(callee->param_types[aj]);
+                    int q;
+                    if (w < 0) w = 1;
+                    for (q = w - 1; q >= 0; q--) {
+                        IrInst *s = &new_code[new_count++];
+                        s->op = IR_STORE;
+                        s->val = L0 + (base + q) * 4;
+                        s->name = 0;
+                        s->aux = 0;
+                        s->line = I->line;
+                    }
+                    base += w;
+                }
             }
 
             /* b. Copy the body, remapping frame offsets / labels / GETARG / RETURN. */
@@ -490,21 +544,39 @@ void opt_inline(IrProgram *prog) {
                         dst->val = src->val + L1;
                         break;
                     case IR_GETARG: {
-                        /* GETARG r{j} targets callee frame offset off; load the value
-                         * from temp_off_j (argument store) and write it to L1+off.
-                         * aux low 8 bits = arg index; high 24 bits = struct
-                         * size (only present for struct-by-value params, which
-                         * are excluded from inlining above). Mask to be safe. */
+                        /* GETARG r{j} targets callee frame offset off; copy the
+                         * value from temp slot arg_j into L1+off.
+                         * aux low 8 bits = word slot, high 24 bits = the
+                         * parameter's size.  A size above 4 means two words
+                         * (long long, double, a 5..8-byte composite); sizes
+                         * above 8 (payload carried by address) were refused
+                         * when the candidate was marked, so 1 or 2 words is
+                         * the only shape that reaches this code. */
                         int callee_off = src->val;
                         int arg_j = src->aux & 0xFF;
-                        dst->op = IR_PUSH_VAR;
-                        dst->val = L0 + arg_j * 4;
-                        dst->name = 0;
-                        dst->aux = 0;
-                        {
-                            IrInst *st = &new_code[new_count++];
+                        int nwords = ((src->aux >> 8) > 4) ? 2 : 1;
+                        int q;
+                        for (q = 0; q < nwords; q++) {
+                            IrInst *pv;
+                            IrInst *st;
+                            if (q == 0) {
+                                dst->op = IR_PUSH_VAR;
+                                dst->val = L0 + arg_j * 4;
+                                dst->name = 0;
+                                dst->aux = 0;
+                                pv = dst;
+                            } else {
+                                pv = &new_code[new_count++];
+                                pv->op = IR_PUSH_VAR;
+                                pv->val = L0 + (arg_j + q) * 4;
+                                pv->name = 0;
+                                pv->aux = 0;
+                                pv->line = src->line;
+                            }
+                            (void)pv;
+                            st = &new_code[new_count++];
                             st->op = IR_STORE;
-                            st->val = L1 + callee_off;
+                            st->val = L1 + callee_off + q * 4;
                             st->name = 0;
                             st->aux = 0;
                             st->line = src->line;

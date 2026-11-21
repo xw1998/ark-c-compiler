@@ -205,18 +205,29 @@ aliasing is uncertain" plus ARM-specific instruction rewrites.**
 - **Gate**: `tests/run_sizeweight_tests.py`, 31 checks, `make test-sizeweight`: the four
   tables + "5 = historical constants" + monotonicity + non-flat ends; no-flag and `=5` objects
   byte-identical (6 fixtures + `hello.c`); each threshold reaching `-S` text and the emulator
-  (`BL h` 0/0/2 and 0/2/2, unroll 467/135/135 and 275/275/135, tail 289/278/244, block
-  168/159/137); six malformed values refused with no object; a cropped build refusing and
+  (`BL h` 0/0/2 and 0/2/2, unroll 467/135/135 and 275/275/135, tail 313/302/244, block
+  353/159/137); six malformed values refused with no object; a cropped build refusing and
   printing no table line; the ini key in both spellings plus an out-of-range warning; four
-  fixtures returning the same value at 0/5/9; corpus bytes 4544 -> 3094.
+  fixtures returning the same value at 0/5/9; corpus bytes 5040 -> 3094.
 - **Measured**: all 80 files of `examples/*.c`, HEAD versus this round: **0 differences**.
-- **Known debt (not fixed, see `docs/SIZEWEIGHT.md` section 6)**: `irgen` writes
-  `aux = (size<<8)|slot` for `IR_GETARG` (scalars included), while the inline decision reads
-  `(aux>>8)!=0` as struct-by-value => **any function with a parameter is never inlined**
-  (`forceinline` does not help either). Fixing it changes the default -O2 output, a separate
-  decision. So this round observes the inline dimension only on parameterless callees, and one
-  measurement trap is recorded too: inlining is single pass, so with a startup file the copy of
-  `main` inlined into `Reset_Handler` still carries its un-expanded `BL h`.
+- **Functions with parameters (fixed in 0.9.1-wip)**: the debt P6 recorded in
+  `docs/SIZEWEIGHT.md` section 6 was that `irgen` writes `aux = (size<<8)|slot` for
+  `IR_GETARG` (scalars included), while the inline decision read `(aux>>8)!=0` as
+  struct-by-value => **any function with a parameter was never inlined** (`forceinline` did not
+  help either). The decision now comes from the parameter types
+  (`irgen_param_slots()`); one- and two-word parameters inline, payloads carried by address and
+  the C (8-byte slots) / x86-64 (one pointer word) targets still refuse. Gate:
+  `tests/run_inline_tests.py` (`make test-inline`, 25 checks). Two notes: (1) P6's inline
+  dimension could only be observed on parameterless callees, and its "all 80 files of
+  `examples/*.c`, 0 differences" claim holds for that round only -- from 0.9.1-wip inlining a
+  parameterised callee changes the default `-O2` output; (2) the `--tailcall` and `--xblock`
+  gates now pass `--no_autoinline`: the former's fixtures are exactly the
+  parameterised-small-callee shape and the `B leaf` rewrite would be inlined away before the
+  pass ran, and the latter's duplicate blocks *are* the two calls to `g()` inside `two()` and
+  `three()` (the full `make test` caught it: seven checks failed at once, object 865 -> 763
+  bytes once isolated). One measurement trap
+  stays: inlining is single pass, so with a startup file the copy of `main` inlined into
+  `Reset_Handler` still carries its un-expanded `BL h`.
 
 ---
 

@@ -37,4 +37,14 @@ void irgen_set_slot64_ptrs(int enabled);
  * convention cannot carry them. */
 void irgen_set_complex_words(int words);
 
+/* Words one parameter occupies on the wire for the current target, or -1 when
+ * the IR inline expansion cannot reproduce the transfer.  Two shapes answer
+ * -1: a composite (or _Complex) wider than 8 bytes travels as one *address*
+ * word whose payload the callee memcpys, and the slot-image targets (C
+ * backend's 8-byte slots, x86-64's one-word pointer) do not keep 4-byte IR
+ * words at all.  src/opt.c asks this per parameter instead of reading
+ * IR_GETARG's size field, which irgen stamps for *every* parameter and which
+ * therefore made a plain `int` look exactly like a struct-by-value. */
+int irgen_param_slots(Type *ptype);
+
 #endif /* ARK_IRGEN_H */

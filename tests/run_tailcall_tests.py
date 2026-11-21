@@ -34,6 +34,10 @@ questions, each of which can fail alone:
   6. Byte account: the object is strictly smaller and the assembly has fewer
      instruction lines.
 
+Every compile passes --no_autoinline: 0.9.1 made the inliner expand calls to
+parameterised callees, and these fixtures are exactly that shape, so the call
+sites would disappear before the tail-call rewrite could replace them.
+
 Usage: run_tailcall_tests.py [path-to-arkcc]
 Exit 0 = every check behaved, 1 = a check failed, 2 = setup problem.
 """
@@ -157,9 +161,14 @@ def read(path):
         return f.read()
 
 ARM = ['-target', 'arm', '--cpu', 'Cortex-M7']
-ASM = ARM + ['-O2', '-S']
-OBJ = ARM + ['-O2', '-c']
-IMG = ARM + ['-O2', '--vector-table']
+# --no_autoinline on every compile below: since 0.9.1 the inliner expands calls
+# to *parameterised* callees, so the small `leaf`-style fixtures would be gone
+# before this pass ever sees them and "B leaf" could never appear.  This gate is
+# about the branch rewrite, so inlining is switched off and the call sites stay.
+NOINL = ['--no_autoinline']
+ASM = ARM + ['-O2', '-S'] + NOINL
+OBJ = ARM + ['-O2', '-c'] + NOINL
+IMG = ARM + ['-O2', '--vector-table'] + NOINL
 
 def as_body_lines(text):
     n = 0

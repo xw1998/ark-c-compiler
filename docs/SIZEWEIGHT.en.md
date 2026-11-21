@@ -110,15 +110,15 @@ keeping the switch there would be a knob that "turns on but never moves".
    ARM executor):
    - inline `BL h` counts: small fixture 0/0/2, mid fixture 0/2/2 (at 0/5/9)
    - unroll: a 12-trip loop 467/135/135 lines; a 6-trip loop 275/275/135
-   - tail merge: 289/278/244 lines
-   - block merge: 168/159/137 lines
+   - tail merge: 313/302/244 lines
+   - block merge: 353/159/137 lines
 4. **Refusals**: `=10`, `=abc`, `=`, no value, `=-1`, `=5x` all exit 1 with
    `C3900U` and **write no object**; a cropped build refuses with
    `not compiled into` and prints no threshold line at all.
 5. **Ini**: `size_weight=9` and `size-weight=9` both reach the table; an
    out-of-range 42 warns, keeps 5 and exits 0.
 6. **Semantics**: `tail.c` / `xblock.c` / `unroll6.c` / `inline_mid_rt.c` return
-   the same value at 0/5/9; the corpus shrinks 4544 → 3094 object bytes from the
+   the same value at 0/5/9; the corpus shrinks 5040 → 3094 object bytes from the
    speed end to the size end.
 
 Two anti-false-green guards: the gate first proves the table does not collapse to
@@ -134,51 +134,87 @@ all (otherwise item 4 could just be reading a default).
   default.
 - **Board**: see §7 (UV4 rebuild of `mdk/STM32H743_ArkCC`, Program Size account).
 
-## 6. Known debt: functions with parameters are never inlined
+## 6. Functions with parameters inline (fixed in 0.9.1-wip)
 
-This is an existing defect; P6 does **not** fix it, because fixing it changes the
-default `-O2` output (a separate decision). It is recorded here because anyone
-reading `-O` output will otherwise misread it:
+This section used to be the debt: `src/irgen.c` writes `aux = (size << 8) | slot` for
+`IR_GETARG` (**scalars included**), and `count_insts_and_check_recursion()` in `src/opt.c`
+read `(aux >> 8) != 0` as "has a struct-by-value parameter", so **every function with a
+parameter was considered un-inlinable** -- `forceinline` included. It was left alone because
+fixing it changes the default `-O2` output.
 
-- `src/irgen.c` writes `aux = (size << 8) | slot` for `IR_GETARG`, **including
-  scalars** (an `int` parameter gets `1 << 8`).
-- `count_insts_and_check_recursion()` in `src/opt.c` treats `(aux >> 8) != 0` as
-  "has a struct-by-value parameter", so **every function with a parameter is
-  considered un-inlinable**.
+The decision now comes from the parameter *types*:
 
-Minimal reproduction (`arkcc -target arm -O2 -S`):
+- `irgen_param_slots(Type *)` (`include/irgen.h` / `src/irgen.c`) uses the same rule irgen
+  lays the arguments out with (`irgen_param_words()`): a composite above 8 bytes or a 16-byte
+  `_Complex` travels by address => `-1`; a 5..8-byte composite, `long long` or `double` => two
+  words; everything else one word. The C backend (8-byte slots) and x86-64 (a pointer is one
+  word) always answer `-1`.
+- `inline_param_words()` in `src/opt.c` sums that per parameter; `-1` or `> 4` means no
+  expansion. The expansion stores the arguments **grouped per parameter and in reverse word
+  order** (the IR stack keeps a parameter's high word on top), and `IR_GETARG` copies one or
+  two words by `aux >> 8 > 4`. `IR_CALL.val` is the *argument count*, not the word count: a
+  site whose count disagrees with `param_count` keeps its call.
 
-```c
-int v;
-static int g(int x) { int y = x + v; return y; }   /* byval=1 => no inlining */
-int main(void) { return (g(1) + g(2)) & 0x7F; }    /* the output still has 2 BL g */
-```
+| shape | result |
+| --- | --- |
+| one-word parameter (`int`, pointer) | inlined |
+| two-word parameter (`long long`, `double`, 5..8-byte composite) | inlined (word offsets accumulate per parameter) |
+| `__forceinline` with parameters, body above the limit | inlined (the size bypass is unchanged) |
+| composite above 8 bytes (carried by address) | call kept |
+| five or more parameters, recursion, `...` | call kept |
+| `-target c` (8-byte slots), `-target x86_64` (pointer in one word) | call kept |
 
-Drop the parameter (`static int g(void)`) and it inlines. `forceinline` does not
-help either: it only bypasses the size rule, not the `has_struct_byval`
-`continue`.
+Gate: `tests/run_inline_tests.py` (`make test-inline`, 25 checks). At `-O2`
+`static int add1(int)` has no `BL add1` while `--no_autoinline` keeps both calls (so "the pass
+did not run" cannot pass as "inlined"); the same fixture at `--size-weight=9` (inline<=4) is a
+call again; a `__forceinline` body with parameters above the size limit inlines while the
+identical body without the attribute does not; a two-word parameter followed by a one-word
+parameter and a 5-byte struct whose *second* word is read both land correctly (the `long long`
+fixture returns 7 and the struct fixture 9 on the emulator, in both arms); the four refused
+shapes and the two refused targets keep their calls; nine fixtures return the same value in all
+three arms (default / `--no_autoinline` / `--size-weight=9`); and a build cropped with
+`-DARKCC_FEATURE_OPT_INLINE=0` refuses `--autoinline` with `C3900U` while still compiling the
+same file to plain calls when the flag is absent.
 
-**Consequence for P6**: the inline dimension of the weight can only be observed on
-**parameterless** callees, so the inline fixtures are parameterless
-(`inline_small.c` / `inline_mid.c`) and the script says why. This is not evidence
-that inlining is broken — instrumentation shows `can_inline=1` and
-`inline h -> main` firing.
+Three things worth remembering: (1) P6's "all 80 files of `examples/*.c`, 0 differences" holds
+for that round only -- inlining a parameterised callee changes the default `-O2` output from
+0.9.1-wip on; (2) the `--tailcall` gate now always passes `--no_autoinline`, because its
+fixtures are exactly the parameterised-small-callee shape and `B leaf` would be inlined away
+before the rewrite could happen; (3) the `--xblock` gate needs it for the same reason -- the
+full `make test` caught exactly that: its fixture calls `g()` twice from `two()` and twice from
+`three()`, inlining erases the duplicate blocks, all seven checks failed at once, and with
+`--no_autoinline` they return (object 865 -> 763 bytes).
 
-One related measurement trap: inlining is **single pass**. With a startup file
-attached, the copy of `main` that was inlined into `Reset_Handler` still carries
-its un-expanded `BL h`, so counting `BL h` over the whole file yields 2 and looks
-like "not inlined". Count sites inside one specific function body, or use a
-fixture with no second entry point.
+One related measurement trap stays: inlining is **single pass**. With a startup file attached,
+the copy of `main` inlined into `Reset_Handler` still carries its un-expanded `BL h`, so
+counting `BL h` over the whole file yields 2 and looks like "not inlined". Count sites inside
+one specific function body, or use a fixture with no second entry point.
 
 ## 7. Board
 
-`mdk/STM32H743_ArkCC` is rebuilt with UV4 (`UV4 -b ArkCC.uvprojx -j0`) and gives
-`Code=182828 RO-data=23740 RW-data=3431972 ZI-data=37144` — **identical** to the
-P4 (`--xblock`) baseline, `0 Error(s)`.
+`mdk/STM32H743_ArkCC` is rebuilt with UV4 (`UV4 -r ArkCC.uvprojx -j0`), `0 Error(s)`:
 
-That identity was earned, not accidental: the first version wrote the `#else`
-branch as four functions returning the constants, and the board `Code` grew by
-8 B at once (182828 -> 182836) — nobody calls them in a cropped build, but they
-are global symbols and the linker does not drop those for you. With macros it
-is 182828 again. So "switched off equals 0.9.0" is provable by size on the
-board, not just by "it does not seem to run".
+| build | Code | RO-data | RW-data | ZI-data |
+| --- | --- | --- | --- | --- |
+| P4 baseline (`--xblock`) | 182828 | 23740 | 3431972 | 37144 |
+| `--size-weight` only (`ae3dd8c`, built in a separate worktree) | **182828** | 23740 | 3431972 | 37144 |
+| plus the parameterised-inline fix (this work tree) | 183064 | 23740 | 3431972 | 37144 |
+
+**Rows one and two are byte-identical, and that identity was earned.** The first
+version wrote the `#else` branch as four functions returning the constants and
+the board `Code` grew by 8 B at once (182828 -> 182836) — nobody calls them in a
+cropped build, but they are global symbols and the linker does not drop those for
+you. As **macros** in `#else` it is 182828 again. So "switched off equals 0.9.0"
+is provable by size on the board, not just by "it does not seem to run".
+
+**The +236 bytes in row three all come from the parameterised-inline fix**
+(section 6) and none from the weight: under `STM32_MIN` the four passes are
+already 0 (`ARKCC_FEATURE_OPT_INLINE/UNROLL/TAILMERGE/XBLOCK` all cropped), so
+the weight tables, the `-v` line and the usage text never reach the board. But
+the expansion code in `src/opt.c` and `irgen_param_slots()` in `src/irgen.c` are
+**not** cropped by those flags (the passes are only left out of the stage
+table), so a cropped build still links them. Making those 236 bytes disappear
+as well means wrapping the body of `opt_inline()` in
+`#if ARKCC_FEATURE_OPT_INLINE` — a separate decision, recorded as debt and not
+done in this round: first make the fix fully usable on the host, then talk about
+0.13% of board Flash.
