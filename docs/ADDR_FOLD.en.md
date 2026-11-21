@@ -129,16 +129,18 @@ Counts are the number of non-directive, non-label lines in the `.s`.
 
 | Corpus | `-fopt-vstack` | plus `-fopt-addr` | Change |
 | --- | --- | --- | --- |
-| STM32F4 HAL (`examples/ark_test/ark_test_all.c`, `-O2 -mcpu Cortex-M4`) | 42,372 instructions | 40,991 instructions | **−1,381 (−3.3%)** |
-| same, "`ADD` immediately followed by an access through that register" | 1,084 | **0** | all folded by R2 |
-| same, "`MOV` immediately followed by an access through that register" | 297 (only adjacent after folding) | 0 | all folded by R3 |
+| STM32F4 HAL (`examples/ark_test/ark_test_all.c`, `-O2 -mcpu Cortex-M4`) | 38,332 instructions | 36,893 instructions | **−1,439 (−3.75%)** |
+| same, "`ADD` immediately followed by an access through that register" | 1,075 | **0** | all folded by R2 |
+| same, "`MOV` immediately followed by an access through that register" | 0 | 0 | nothing foldable |
 
-1,084 + 297 = 1,381, which matches the total reduction line for line: R2 deletes
-one `ADD`, R3 deletes one `MOV`, nothing else. R1 (immediate offset) **never
-fired** on this corpus -- frame address computations such as
-`ADD r5, r6, #24` are followed by a `MOV`, not by an access (0 occurrences). The
-rule stays because the shape is real (an adjacent constant subscript such as
-`a[4]` produces it); the HAL corpus just has none.
+The residual detector only recognises the adjacent shape "`ADD` then one `[rD]`
+with no offset", so 1,075 is a **lower bound for the register-index form**. The
+total reduction is larger, which means the immediate-offset form (R1,
+`ADD RD,RB,#imm` + `[RD(,#off)]`) does fire on this corpus -- it reported 0 before
+because that baseline did not have the vstack pass rewriting those lines yet.
+No per-rule attribution was measured, so none is claimed here. The baseline is
+the 38,332 instructions **after** `-fopt-vstack` (the crossing version), not the
+47,885 of plain `-O2`; do not mix the two.
 
 The HAL corpus is a floor for this layer, not a ceiling: it is almost entirely
 short functions such as `HAL_GPIO_WritePin` plus register writes, with little

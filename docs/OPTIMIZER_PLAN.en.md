@@ -248,15 +248,24 @@ aliasing is uncertain" plus ARM-specific instruction rewrites.**
   (`ADC/SBC/MUL` need `Rd==Rn`); `MOVW`/`MOVT` are never retargeted (the pair builds one value).
 - **Cropping**: `ARKCC_FEATURE_OPT_VSTACK` (0 under STM32_MIN, 1 on the host); off by default at
   runtime, enabled by `-fopt-vstack`, and a cropped build rejects the flag with `C3900U`.
-- **Criteria**: `tests/run_vstack_tests.py`, 21 checks, `make test-vstack`: byte-identical when off,
+- **Crossing boundaries**: a label / `B` / `Bcc` / `BX` / `BL` / `IT` used to bail the whole
+  function whenever the shadow stack or the memory stack was non-empty, which is too tight -- many
+  functions have already written every value back to the machine stack there. Now a pre-scan from
+  `pro_end+1` counts `PUSH`/`POP` as open brackets and tags every unclosed `PUSH` line `cross` at a
+  label/call/branch; a `cross` line emits a real `PUSH` (out of the pool register when `pend` is
+  set) so the machine stack matches the original word for word; at the boundary, if the shadow stack
+  is **entirely MEM**, `verbf` is set and the rest is emitted verbatim, otherwise it bails as before.
+  Pool registers cannot be reconstructed, so only values already in memory may cross.
+- **Criteria**: `tests/run_vstack_tests.py`, 17 checks, `make test-vstack`: byte-identical when off,
   fewer instructions and `PUSH`/`POP`s, **the image never grows**, no lone PUSH/POP pair left in a
   rewritten function, identical results from the off/on/on+regalloc builds on four fixtures, and the
   cropped build refuses the flag. Every change also runs the whole `tests/arm_exec` corpus
   (`--extra=-fopt-vstack`, 36 cases, 0 failures) -- **all five semantic defects this pass ever had
   were found by it**.
-- **Measurements**: `bench_opt/bench1.c` (Cortex-M4, `-O2`) 1024 -> 813 instructions (-20.6%); arith
-  fixture 171 -> 137 instructions, `PUSH`/`POP` 88 -> 36, image 1392 -> 1324; loop fixture 203 -> 152,
-  100 -> 28, 1480 -> 1378; struct 1400 -> 1308; variadic 1556 -> 1542. Details in
+- **Measurements** (crossing version): the whole STM32F4 HAL corpus (`-O2 -mcpu Cortex-M4`,
+  non-directive non-label lines) 47,885 -> 38,332 instructions (**-20.0%**); arith fixture
+  171 -> 128 instructions, `PUSH`/`POP` 88 -> 22, image 1392 -> 1306; loop fixture 203 -> 145,
+  100 -> 18, 1480 -> 1364; struct 1400 -> 1308; variadic 1556 -> 1460. Details in
   `docs/RA_VSTACK.md`.
 
 ### P8 Addressing-mode folding (`-fopt-addr`, **landed in 0.9.1-wip**)
@@ -290,11 +299,12 @@ aliasing is uncertain" plus ARM-specific instruction rewrites.**
   implementation that only folds the first two cannot pass), every rewritten operand is a form on the
   mnemonic whitelist, all four arms compute the same answer under unicorn, and a cropped build
   refuses the flag.
-- **Measurements**: the whole HAL corpus `examples/ark_test/ark_test_all.c` (STM32F401xE, `-O2`)
-  42,372 -> 40,991 instructions (**-1,381 / -3.3%**); residue `ADD`+access 1084 -> 0 and
-  `MOV`+access 297 -> 0, with 1084+297 matching the total drop instruction for instruction; R1 fires
-  zero times on this corpus (the shape is real but this corpus has no adjacent constant subscripts),
-  kept in anticipation. Details in `docs/ADDR_FOLD.md`.
+- **Measurements**: the whole HAL corpus `examples/ark_test/ark_test_all.c` (STM32F401xE, `-O2`),
+  measured on the post-vstack baseline of 38,332 instructions: 38,332 -> 36,893 (**-1,439 /
+  -3.75%**); the register-index residue drops 1,075 -> 0 and the `MOV` form 0 -> 0. The total drop
+  is larger than 1,075, so R1 (the immediate-offset form) does fire on the new baseline; no per-rule
+  attribution was measured, so none is claimed. Stacked on plain `-O2`: 47,885 -> 38,332 -> 36,893.
+  Details in `docs/ADDR_FOLD.md`.
 
 ---
 

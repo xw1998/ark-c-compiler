@@ -192,13 +192,20 @@
   原地三操作数（`ADC/SBC/MUL` 要求 `Rd==Rn`）；`MOVW/MOVT` 一律不 retarget（成对构造一个值）。
 - **裁切**：`ARKCC_FEATURE_OPT_VSTACK`（STM32_MIN 0 / 宿主 1）；运行期默认**关**，`-fopt-vstack`
   才开，裁剪构建以 `C3900U` 拒绝该旗标。
-- **判据**：`tests/run_vstack_tests.py`，21 项，`make test-vstack`：默认关闭逐字节相同、
+- **跨界（续做）**：原先 label / `B` / `Bcc` / `BX` / `BL` / `IT` 处**影子栈不空或内存栈
+  不空**就整函数 bail，太紧——大量函数在边界处已经把值全部写回机器栈。现改为：从
+  `pro_end+1` 起按 `PUSH/POP` 开括号预扫描，遇 label/调用/分支把未闭合的 `PUSH` 行标
+  `cross`；`cross` 行强制发真 `PUSH`（有 `pend` 则从池寄存器 push），使机器栈与原码逐字
+  一致；边界处若影子栈**全为 MEM** 则置 `verbf` 继续，之后整段 verbatim 输出，否则照旧
+  bail。池寄存器不可重建，所以只有「值已在内存」才允许跨。
+- **判据**：`tests/run_vstack_tests.py`，17 项，`make test-vstack`：默认关闭逐字节相同、
   指令与 `PUSH/POP` 下降、**镜像只减不增**、逐函数断言无孤立 PUSH/POP 对、四夹具
   off/on/on+regalloc 同值、裁剪构建拒绝。另每次改动跑 `tests/arm_exec` 全语料
   （`--extra=-fopt-vstack`，36 用例 0 失败）——**本 pass 的五处语义缺陷全部是它抓到的**。
-- **实测**：`bench_opt/bench1.c`（Cortex-M4，`-O2`）1024 → 813 条（−20.6%）；arith 夹具
-  171 → 137 条、`PUSH/POP` 88 → 36、镜像 1392 → 1324；loop 夹具 203 → 152、100 → 28、
-  1480 → 1378；struct 1400 → 1308；variadic 1556 → 1542。细节见 `docs/RA_VSTACK.md`。
+- **实测**（跨界版）：STM32F4 HAL 全语料（`-O2 -mcpu Cortex-M4`，非指示非标签行）
+  47,885 → 38,332 条（**−20.0%**）；arith 夹具 171 → 128 条、`PUSH/POP` 88 → 22、
+  镜像 1392 → 1306；loop 夹具 203 → 145、100 → 18、1480 → 1364；struct 1400 → 1308；
+  variadic 1556 → 1460。细节见 `docs/RA_VSTACK.md`。
 
 ### P8 寻址折叠（`-fopt-addr`，**已落地 0.9.1-wip**）
 
@@ -223,10 +230,11 @@
   四臂（base/off/on/both）**镜像只减不增**且索引寻址形态真的出现、**NO RESIDUE**
   （on/both 里可折的三类就地模式计数必须为 0，只折前两处的错误实现过不了这关）、
   改写后的操作数全在助记符白名单、四臂在 unicorn 上算出同一个答案、裁剪构建拒绝旗标。
-- **实测**：HAL 全语料 `examples/ark_test/ark_test_all.c`（STM32F401xE，`-O2`）
-  42,372 → 40,991 条（**−1,381 / −3.3%**）；残差 `ADD`+访问 1084 → 0、`MOV`+访问 297 → 0，
-  1084+297 与总减少量逐条对上；R1 在该语料 0 次触发（形状真实存在但此语料没有相邻常量
-  下标），保留以备后续。细节见 `docs/ADDR_FOLD.md`。
+- **实测**：HAL 全语料 `examples/ark_test/ark_test_all.c`（STM32F401xE，`-O2`），基线是
+  已过 vstack 的 38,332 条：38,332 → 36,893 条（**−1,439 / −3.75%**）；寄存器索引形残差
+  1,075 → 0，`MOV` 形 0 → 0；总减少量大于 1,075，说明 R1（常量偏移形）在新基线上确实会
+  触发（逐条归因未做，不报数字）。与纯 `-O2` 的 47,885 叠加看：47,885 → 38,332 → 36,893。
+  细节见 `docs/ADDR_FOLD.md`。
 
 ---
 

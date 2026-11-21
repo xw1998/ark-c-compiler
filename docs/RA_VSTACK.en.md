@@ -109,6 +109,33 @@ everything is materialised unconditionally).
 only the second half leaves `0xFFFF` in the low half (really happened: `__aeabi_lmul(-3, 7)`
 returned 0).
 
+### 5.1 Crossing boundaries when the live values are already in memory
+
+The rule above ("any non-empty stack at a boundary bails the whole function") was too tight: many
+functions have already written **every** value back to the machine stack by the time they reach a
+label (every shadow-stack entry is `MEM`), so there is no private register convention to protect.
+The rule is relaxed as follows -- **cross only when the condition holds, otherwise bail as before**:
+
+1. **A pre-scan tags `cross`**: starting at the function body (`pro_end + 1`), count `PUSH`/`POP`
+   as open brackets; on a label / `VS_F_CALL` / `VS_F_BRANCH`, tag every currently **unclosed**
+   `PUSH` line with `cross`. This is a lexical approximation (it may over-tag, never under-tag),
+   and over-tagging only makes the result more conservative.
+2. **A `cross` line emits a real `PUSH`**: while rebuilding, such a line does not keep the value in
+   a pool register but emits a genuine `PUSH {r}` (if `pend[r] >= 0` for that slot, it pushes the
+   value out of that pool register), then `nmem++` and the slot returns to the pool. **Why**: a value
+   still on the shadow stack must physically be in memory -- when several paths rejoin at a label,
+   the machine stack has to match the original code word for word, and pool registers cannot be
+   reconstructed (the other path does not know what they hold).
+3. **Check `vs_all_mem()` at the boundary**: at a label / epilogue / `CALL` / `BRANCH`, if
+   `depth != 0` or `nmem != 0`, set `verbf = 1` and continue only when the shadow stack is
+   **entirely `MEM`**; otherwise bail.
+4. **After `verbf` the rest is emitted verbatim**: once set, depth is no longer tracked and every
+   following line is passed through -- after the boundary we assume nothing about the shadow stack.
+
+The final check therefore went from "bail if `depth != 0 || nmem != 0`" to
+"`bail || (!verbf && (depth != 0 || nmem != 0))`". This is where the gain comes from: most
+functions had their values back in memory at the boundary all along, nobody just checked.
+
 ## 6. One peephole
 
 Before the rebuild there is a **strictly adjacent pair** elimination: `PUSH {rN}` immediately
@@ -119,22 +146,38 @@ only eats pairs that were already adjacent.
 
 | Corpus | off | on | change |
 | --- | --- | --- | --- |
-| `bench_opt/bench1.c` (18 small embedded functions, Cortex-M4, `-O2`) | 1024 insns | 813 insns | **-20.6%** |
-| arith fixture, instructions | 171 | 137 | -19% |
-| same, `PUSH`/`POP` count | 88 | 36 | -59% |
-| same, image bytes | 1392 | 1324 | -4.9% |
-| loop fixture, instructions | 203 | 152 | -25% |
-| same, `PUSH`/`POP` count | 100 | 28 | -72% |
+| STM32F4 HAL (`examples/ark_test/ark_test_all.c`, `-O2 -mcpu Cortex-M4`, non-directive non-label lines) | 47,885 insns | 38,332 insns | **-20.0%** |
+| arith fixture, instructions | 171 | 128 | -25% |
+| same, `PUSH`/`POP` count | 88 | 22 | -75% |
+| same, image bytes | 1392 | 1306 | -6.2% |
+| loop fixture, instructions | 203 | 145 | -28% |
+| same, `PUSH`/`POP` count | 100 | 18 | -82% |
+| same, image bytes | 1480 | 1364 | -7.8% |
 | struct fixture, image bytes | 1400 | 1308 | -6.6% |
-| variadic fixture, image bytes | 1556 | 1542 | -0.9% |
+| variadic fixture, image bytes | 1556 | 1460 | -6.2% |
+
+The HAL row is the only reproducible headline (the corpus is in the repo, command at the end of
+this section); the `bench_opt/bench1.c` figures quoted earlier came from a temporary corpus in an
+old session that is **not in this repository**, so they are no longer listed as evidence.
 
 **The image never grows** is a hard criterion (asserted fixture by fixture in
 `tests/run_vstack_tests.py`): retargeting and substitution each express the same work in fewer or
 equal bytes.
 
+The command behind the HAL row (from the repository root):
+
+```
+./arkcc.exe -target arm -S -O2 -mcpu Cortex-M4 -D STM32F401xE \
+  -I examples/ark_test -I include -I src -I stdlib/include \
+  examples/ark_test/ark_test_all.c -o hal.s
+# count lines that are neither '.' directives/labels nor ':' label lines
+```
+
+Run it once more with `-fopt-vstack`; the difference between the two counts is the -20.0% in the table.
+
 ## 8. What the gate actually says
 
-`make test-vstack` (21 checks):
+`make test-vstack` (17 checks):
 
 - **the default build ignores the pass**: `-O2` and `-O2 -fno-opt-vstack` objects are byte-identical (1392/1392);
 - **it really saves**: instruction and `PUSH`/`POP` counts drop, the image does not grow;

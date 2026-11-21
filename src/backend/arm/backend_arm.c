@@ -1212,6 +1212,9 @@ enum {
 typedef struct {
     char *t;    /* line text, '\n' stripped, owned by the memory pool */
     int   del;  /* removed by the PUSH/POP-pair peephole */
+    int   cross;/* value is still on the shadow stack at a label/branch/call:
+                 * it must stay in memory so the machine state matches the
+                 * original on every path into that boundary */
 } VsLine;
 
 static int vs_streq(const char *a, const char *b) {
@@ -1581,6 +1584,16 @@ static void vs_flush_all(AsmBuffer *o, int *pend, int *pref, int *pbusy,
     }
 }
 
+/* Every value still on the shadow stack already has its word in memory?
+ * Then the machine stack matches the unoptimised code word for word, so a
+ * label / call / branch can be crossed: flush the register mappings and copy
+ * the rest of the function through unchanged. */
+static int vs_all_mem(const int *skind, int depth) {
+    int k;
+    for (k = 0; k < depth; k++) if (skind[k] != 0) return 0;
+    return 1;
+}
+
 /* Is `reg` written before it is read, starting at line `from`?  Used to decide
  * whether the producer's destination can be moved into the pool: only when
  * nothing reads the old value first (IR_DUP keeps a live copy in r0). */
@@ -1633,6 +1646,7 @@ static void ark_vstack_function(AsmBuffer *b, int from)
     int pend[VS_MAX_REG];      /* register -> pool slot holding its value */
     int pref[VS_MAX_POOL];     /* references per slot: stack entries + pend */
     int last_dest_off = -1, last_dest = -1;
+    int verbf = 0;   /* boundary crossed with values live: copy the rest */
     AsmBuffer out;
     int bail = 0;
     char nm[8];
@@ -1655,6 +1669,7 @@ static void ark_vstack_function(AsmBuffer *b, int from)
         for (i = 0; i < len; i++) L[nlines].t[i] = b->buf[pos + i];
         L[nlines].t[len] = 0;
         L[nlines].del = 0;
+        L[nlines].cross = 0;
         nlines++;
         pos += len + 1;
     }
@@ -1729,6 +1744,48 @@ static void ark_vstack_function(AsmBuffer *b, int from)
         i++;
     }
 
+    /* ---- pre-scan: a value still on the shadow stack when control reaches a
+     * label, a call or a branch must be physically in memory -- the machine
+     * stack has to look exactly like the unoptimised one on every path into
+     * that boundary, and a value left in a pool register cannot be
+     * reconstructed there.  Mark the `PUSH {r}` that created such a value so
+     * the rebuild below emits a real push for it. ---- */
+    {
+        int open[VS_MAX_DEPTH], nopen = 0, k;
+        for (i = pro_end + 1; i < nlines; i++) {
+            char mn[24];
+            char ops[VS_MAX_OP][VS_OPLEN];
+            int nops, isdot, islab, f, cnd;
+            if (L[i].del) continue;
+            if (!vs_parse(L[i].t, mn, sizeof mn, ops, &nops, &isdot, &islab)) continue;
+            if (isdot) continue;
+            if (islab) {
+                for (k = 0; k < nopen; k++) L[open[k]].cross = 1;
+                continue;
+            }
+            if (vs_streq(mn, "PUSH") || vs_streq(mn, "POP")) {
+                int pr = -1;
+                if (nops == 1 && vs_whole_reg(ops[0], &pr)) {
+                    if (vs_streq(mn, "PUSH")) {
+                        if (nopen < VS_MAX_DEPTH) open[nopen++] = i;
+                    } else if (nopen > 0) {
+                        nopen--;
+                    }
+                } else if (vs_streq(mn, "POP") &&
+                           (strstr(ops[0], "pc") || strstr(ops[0], "lr"))) {
+                    nopen = 0;   /* epilogue POP: nothing of the frame is left */
+                }
+                continue;
+            }
+            if (vs_streq(mn, "MOV") && nops == 2 && vs_streq(ops[0], "sp"))
+                continue;    /* epilogue: the rebuild checks the depth there */
+            f = vs_form(mn, nops, ops, &cnd);
+            if (f == VS_F_CALL || f == VS_F_BRANCH) {
+                for (k = 0; k < nopen; k++) L[open[k]].cross = 1;
+            }
+        }
+    }
+
     /* ---- rebuild ---- */
     asmbuf_init(&out);
     for (i = 0; i < VS_MAX_REG; i++) pend[i] = -1;
@@ -1741,12 +1798,16 @@ static void ark_vstack_function(AsmBuffer *b, int from)
 
         if (i <= pro_end) { vs_put_line(&out, L[i].t); continue; }
         if (L[i].del) continue;
+        if (verbf) { vs_put_line(&out, L[i].t); continue; }
         if (!vs_parse(L[i].t, mn, sizeof mn, ops, &nops, &isdot, &islab)) {
             vs_put_line(&out, L[i].t);
             continue;
         }
         if (islab) {
-            if (depth != 0 || nmem != 0) { bail = 1; break; }
+            if (depth != 0 || nmem != 0) {
+                if (!vs_all_mem(skind, depth)) { bail = 1; break; }
+                verbf = 1;
+            }
             vs_flush_all(&out, pend, pref, pbusy, pool);
             vs_put_line(&out, L[i].t);
             last_dest = -1;
@@ -1757,7 +1818,10 @@ static void ark_vstack_function(AsmBuffer *b, int from)
         if (vs_streq(mn, "MOV") && nops == 2 && vs_streq(ops[0], "sp")) {
             /* epilogue: everything after it until the next label is the
              * restore sequence and is copied through untouched. */
-            if (depth != 0 || nmem != 0) { bail = 1; break; }
+            if (depth != 0 || nmem != 0) {
+                if (!vs_all_mem(skind, depth)) { bail = 1; break; }
+                verbf = 1;
+            }
             vs_flush_all(&out, pend, pref, pbusy, pool);
             vs_put_line(&out, L[i].t);
             last_dest = -1;
@@ -1778,6 +1842,29 @@ static void ark_vstack_function(AsmBuffer *b, int from)
             int r = -1, p;
             if (nops != 1 || !vs_whole_reg(ops[0], &r)) { bail = 1; break; }
             if (depth >= VS_MAX_DEPTH) { bail = 1; break; }
+            if (L[i].cross) {
+                /* still live at a label/branch/call: the word has to be
+                 * in memory there, so push it for real.  A value that
+                 * only exists in the pool is pushed from the pool.
+                 * register -- the register itself may never have held
+                 * it. */
+                if (pend[r] >= 0) {
+                    vs_rname(pool[pend[r]], nm);
+                    asmbuf_puts(&out, "    PUSH {");
+                    asmbuf_puts(&out, nm);
+                    asmbuf_puts(&out, "}\n");
+                } else {
+                    asmbuf_puts(&out, "    PUSH {r");
+                    asmbuf_int(&out, r);
+                    asmbuf_puts(&out, "}\n");
+                }
+                nmem++;
+                skind[depth] = 0;
+                spool[depth] = -1;
+                depth++;
+                last_dest = -1;
+                continue;
+            }
             if (pend[r] >= 0) {         /* the value already sits in a pool slot */
                 skind[depth] = 1;
                 spool[depth] = pend[r];
@@ -1847,14 +1934,20 @@ static void ark_vstack_function(AsmBuffer *b, int from)
         if (f < 0) { bail = 1; break; }
 
         if (f == VS_F_CALL) {
-            if (depth != 0 || nmem != 0) { bail = 1; break; }
+            if (depth != 0 || nmem != 0) {
+                if (!vs_all_mem(skind, depth)) { bail = 1; break; }
+                verbf = 1;
+            }
             vs_flush_all(&out, pend, pref, pbusy, pool);
             vs_put_ins(&out, mn, ops, nops, 0);
             last_dest = -1;
             continue;
         }
         if (f == VS_F_BRANCH) {
-            if (depth != 0 || nmem != 0) { bail = 1; break; }
+            if (depth != 0 || nmem != 0) {
+                if (!vs_all_mem(skind, depth)) { bail = 1; break; }
+                verbf = 1;
+            }
             vs_flush_all(&out, pend, pref, pbusy, pool);
             vs_put_ins(&out, mn, ops, nops, 0);
             last_dest = -1;
@@ -1950,7 +2043,7 @@ static void ark_vstack_function(AsmBuffer *b, int from)
             }
         }
     }
-    if (bail || depth != 0 || nmem != 0) {
+    if (bail || (!verbf && (depth != 0 || nmem != 0))) {
         return;
     }
     /* Nothing changed?  Then leave the buffer exactly as it was. */
