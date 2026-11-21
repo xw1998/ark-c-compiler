@@ -27,7 +27,7 @@ endif
         test-enumcheck test-pipeline test-unusedresult test-mir \
         test-loop test-modern test-atomic test-ipo test-constglobal \
         test-objir test-partiallink test-deadinline test-softfloat test-tailmerge \
-        test-tailcall test-divconst test-xblock install stm32
+        test-tailcall test-divconst test-xblock test-sizeweight install stm32
 
 all: $(ARKCC)
 
@@ -42,7 +42,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -130,6 +130,15 @@ test-divconst: $(ARKCC)
 # the option by name.
 test-xblock: $(ARKCC)
 	$(PYTHON) tests/run_xblock_tests.py ./$(ARKCC)
+
+# Gate for --size-weight (0..9, 5 = the 0.9.0 constants): the four threshold
+# tables, the "weight 5 and no flag are byte-identical" account over the corpus,
+# each threshold reaching real code at 0/5/9, every malformed value refused
+# without writing an object, the ini key in both spellings, the same return
+# value through the ARM executor, and a cropped build (the four pass macros at
+# 0) that refuses the option by name and prints no weight table at all.
+test-sizeweight: $(ARKCC)
+	$(PYTHON) tests/run_sizeweight_tests.py ./$(ARKCC)
 
 # Gate for --diag_style=modern: the header, the framed echo and the caret
 # column are checked against the token they point at (by display width, so a

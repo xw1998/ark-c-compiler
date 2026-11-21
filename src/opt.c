@@ -278,7 +278,7 @@ void opt_dce_cfg_func(IrFunc *f) {
  *   1. Mark the inlinable functions: walk each function's IR and exclude the
  *      shapes that cannot be expanded (recursion, variadic, irq, naked, asm_func,
  *      constructor/destructor, struct-by-value parameters).
- *        - size rule: instruction count <= ARK_INLINE_THRESHOLD, or forceinline
+ *        - size rule: instruction count <= ark_inline_threshold(), or forceinline
  *          which bypasses the limit;
  *        - param_count <= 4;
  *        - the expansion needs no memcpy for struct arguments.
@@ -302,7 +302,8 @@ void opt_dce_cfg_func(IrFunc *f) {
  *      the end label leaves the same number of slots, keeping the stack balanced
  *      for the code that follows the call. 4) opt_run finally runs opt_dce_func.
  */
-#define ARK_INLINE_THRESHOLD 12
+/* 内联体积上限不再是常量：0.9.1 --size-weight 会移动它
+ * （ark_inline_threshold()，权重 5 = 历史值 12）。 */
 
 typedef struct {
     IrFunc *func;
@@ -365,7 +366,7 @@ void opt_inline(IrProgram *prog) {
         if (has_struct_byval) continue;
         if (f->forceinline) {
             cands[i].can_inline = 1;  /* forceinline bypasses the size limit */
-        } else if (cnt <= ARK_INLINE_THRESHOLD) {
+        } else if (cnt <= ark_inline_threshold()) {
             cands[i].can_inline = 1;
         }
     }

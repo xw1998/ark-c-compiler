@@ -58,6 +58,11 @@ typedef struct {
     int enable_tailcall;           /* --tailcall: `return g(...)` with reg-only args becomes a branch */
     int enable_divconst;           /* --divconst: divide by a constant -> multiply + shift */
     int enable_const_global;       /* --const-global: fold loads of const objects to immediates */
+#if ARKCC_FEATURE_SIZEWEIGHT
+    /* 0.9.1 --size-weight=N (0..9): 连续地调四个门槛，5 = 历史常量。
+     * 只在宿主优化 pass 存在时编进来，见 include/arkcc_config.h。 */
+    int size_weight;
+#endif
     /* 0.8.5: 可配置 Pass 管线（见 include/pipeline.h）。取 ARK_PROFILE_FULL 时
      * 每个 pass 仍由自己的开关与 -O 级别决定，即历史行为、产物逐字节不变；
      * 取 ARK_PROFILE_LITE 时只允许 min_profile 为 lite 的阶段跑，其余阶段
@@ -77,5 +82,25 @@ void config_load_file(const char *path);
 void config_apply_args(int argc, char **argv);
 /* Debug print of current g_config contents (to stderr) */
 void config_print(void);
+
+#if ARKCC_FEATURE_SIZEWEIGHT
+/* 0.9.1 --size-weight: 四个门槛作为 g_config.size_weight 的函数。
+ * 每张表的下标 5 都是历史常量（12 / 8 / 3 / 4），所以从不写 --size-weight 的
+ * 构建产物与 0.9.0 逐字节相同。
+ * 两个分支都必须能解析四处调用点：四个 pass 的代码不按开关裁，只是不注册到
+ * 管线里（见 src/pipeline.c）；裁剪构建用宏退回历史常量，不留任何符号。 */
+int ark_inline_threshold(void);
+int ark_unroll_max(void);
+int ark_tailmerge_min_len(void);
+int ark_xblock_min_len(void);
+#else
+/* 四个 pass 被裁掉的构建（STM32_MIN，或显式 -DARKCC_FEATURE_OPT_INLINE=0 等）：
+ * pass 的代码仍然要编译（只是不进阶段表），所以这四处调用仍要能解析。这里用
+ * 宏退回历史常量而不是函数——宏不留下任何符号，板端体积因此零变化。 */
+# define ark_inline_threshold()   12
+# define ark_unroll_max()         8
+# define ark_tailmerge_min_len()  3
+# define ark_xblock_min_len()     4
+#endif
 
 #endif /* ARK_CONFIG_H */

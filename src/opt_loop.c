@@ -426,7 +426,7 @@ void opt_licm_func(IrFunc *f) {
  *     block that dominates the header -- and by the latch, plus nothing else
  *     anywhere. Its address is never taken (so the copies may substitute the
  *     induction value with a constant);
- *   - `N - c` is between 1 and ARK_UNROLL_MAX, and the body is short enough
+ *   - `N - c` is between 1 and ark_unroll_max(), and the body is short enough
  *     that the expansion stays within ARK_UNROLL_MAX_BODY words;
  *   - the body contains no inline asm or alloca (neither is modelled).
  *
@@ -629,7 +629,7 @@ static int unroll_try_func(IrFunc *f) {
             if (lp->in_loop[init_block]) continue;
         }
 
-        if (n_end - c < 1 || n_end - c > ARK_UNROLL_MAX) continue;
+        if (n_end - c < 1 || n_end - c > ark_unroll_max()) continue;
 
         /* --- rewrite: replace [hdr.start, latch.end) --- */
         prefix_len = m.blk[hdr].start;

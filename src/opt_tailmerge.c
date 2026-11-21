@@ -35,7 +35,7 @@
  *    backends have not made. Depth 0 is the statement boundary and costs
  *    nothing to require.
  *
- * 3. A tail is merged only when it is at least ARK_TAILMERGE_MIN_LEN
+ * 3. A tail is merged only when it is at least ark_tailmerge_min_len()
  *    instructions long: every extra entry pays one JMP, so a two-instruction
  *    tail would buy one instruction and could cost more once the jump has to
  *    widen. The gate measures the real byte account instead of trusting this
@@ -285,7 +285,7 @@ static int tm_tail_of(const MirFunc *m, const TmDepth *d, int b, TmCand *out) {
     if (s >= B->end) return 0;
     for (i = s; i < B->end; i++)
         if (tm_is_label(&m->f->code[i])) return 0;
-    if (B->end - s < ARK_TAILMERGE_MIN_LEN) return 0;
+    if (B->end - s < ark_tailmerge_min_len()) return 0;
 
     out->block = b;
     out->start = s;
@@ -347,7 +347,7 @@ static int tm_apply(IrFunc *f, const TmCand *keep, const TmCand *drop, int ndrop
 void opt_tailmerge_func(IrFunc *f) {
     int guard;
 
-    if (!f || f->code_count < ARK_TAILMERGE_MIN_LEN) return;
+    if (!f || f->code_count < ark_tailmerge_min_len()) return;
     /* An asm body or an SMC is opaque to the depth model; the per-round
      * analysis would refuse the function anyway, this just skips the walk. */
     if (f->is_naked || f->is_asm_func) return;
@@ -356,7 +356,7 @@ void opt_tailmerge_func(IrFunc *f) {
      * tail into a jump, which changes the blocks around it, and re-deriving
      * the graph is far cheaper to get right than patching it. Every round
      * strictly shrinks the instruction list (a tail of at least
-     * ARK_TAILMERGE_MIN_LEN instructions becomes one jump), so the loop
+     * ark_tailmerge_min_len() instructions becomes one jump), so the loop
      * terminates; the guard only keeps a bug from turning into a hang. */
     for (guard = 0; guard <= f->code_count; guard++) {
         MirFunc m;
@@ -496,7 +496,7 @@ static int xb_body_of(const MirFunc *m, const TmDepth *d, int b, XbCand *out) {
     if (d->blk[b] != 0) return 0;
     while (s < B->end && tm_is_label(&m->f->code[s])) s++;
     if (s >= B->end) return 0;
-    if (B->end - s < ARK_XBLOCK_MIN_LEN) return 0;
+    if (B->end - s < ark_xblock_min_len()) return 0;
 
     for (i = s; i < B->end; i++) {
         IrOp op = m->f->code[i].op;
@@ -624,12 +624,12 @@ static void xb_apply(IrFunc *f, const XbCand *keep, const XbCand *drop, int ndro
 void opt_xblock_func(IrFunc *f) {
     int guard;
 
-    if (!f || f->code_count < ARK_XBLOCK_MIN_LEN) return;
+    if (!f || f->code_count < ark_xblock_min_len()) return;
     if (f->is_naked || f->is_asm_func) return;
 
     /* Same shape as the tail pass: one merge per round, then the CFG is
      * rebuilt. Every round removes at least one instruction (a body of at
-     * least ARK_XBLOCK_MIN_LEN instructions becomes one jump), so the loop
+     * least ark_xblock_min_len() instructions becomes one jump), so the loop
      * terminates; the guard only keeps a bug from becoming a hang. */
     for (guard = 0; guard <= f->code_count; guard++) {
         MirFunc m;

@@ -185,16 +185,38 @@ aliasing is uncertain" plus ARM-specific instruction rewrites.**
   2.3). arkc has no unwinder and no cross-TU IR pool today, so it could only work within one
   TU -- cost out of proportion to the gain. **Recorded, not scheduled.**
 
-### P6 Continuous size/speed weight (`-Oz` / `-Os` / `-Ot`)
+### P6 Continuous size/speed weight (`--size-weight` 0..9, **landed in 0.9.1**)
 
 - **Evidence**: IAR makes `-z0..9` / `-s0..9` a continuous weight (0-2 Debug / 3 Low /
   4-6 Medium / 7-9 High); AC5 is the binary `-Ospace`/`-Otime`.
-- **Where**: not a new parameter per pass -- first a **single global weight**
-  (`g_config.size_weight`, 0..9) read by the inline threshold, the unroll factor and the merge
-  threshold. That is what makes the "smaller but not much slower" middle ground reachable.
-- **Note**: this is an interface-level change that moves every pass reading it. It must be its
-  own round, after P1/P3 settle, and it owes the verdict "weight not set = byte-identical to
-  0.9.x".
+- **Shape**: one global weight `g_config.size_weight` (0..9, default 5) moves **four
+  thresholds**: inline ceiling, unroll ceiling, tail-merge minimum length, block-merge minimum
+  length. At 5 the four entries equal the 0.9.0 compile-time constants (12 / 8 / 3 / 4), so
+  "not writing the option = byte-identical to 0.9.0". The four old macros
+  (`ARK_INLINE_THRESHOLD` etc.) are deleted: one value, one source.
+- **Different from the draft; changed**: no `-Oz/-Os/-Ot`. `-O` decides which passes run,
+  these four limits only tune the trade-off inside one pass, and a `-Oz` would be read as
+  changing the `-O` level too. One numeric weight, orthogonal to `-O`.
+- **Trimming**: `ARKCC_FEATURE_SIZEWEIGHT` is **derived** (OR of the four pass macros) and
+  `#undef`'d before deriving -- cropping only it leaves the accessors undefined (took an
+  `ld returned 1` to learn). The four passes' code is not cropped by their flags, they only
+  leave the stage table, so in a cropped build the accessors fall back to the historical
+  constants.
+- **Gate**: `tests/run_sizeweight_tests.py`, 31 checks, `make test-sizeweight`: the four
+  tables + "5 = historical constants" + monotonicity + non-flat ends; no-flag and `=5` objects
+  byte-identical (6 fixtures + `hello.c`); each threshold reaching `-S` text and the emulator
+  (`BL h` 0/0/2 and 0/2/2, unroll 467/135/135 and 275/275/135, tail 289/278/244, block
+  168/159/137); six malformed values refused with no object; a cropped build refusing and
+  printing no table line; the ini key in both spellings plus an out-of-range warning; four
+  fixtures returning the same value at 0/5/9; corpus bytes 4544 -> 3094.
+- **Measured**: all 80 files of `examples/*.c`, HEAD versus this round: **0 differences**.
+- **Known debt (not fixed, see `docs/SIZEWEIGHT.md` section 6)**: `irgen` writes
+  `aux = (size<<8)|slot` for `IR_GETARG` (scalars included), while the inline decision reads
+  `(aux>>8)!=0` as struct-by-value => **any function with a parameter is never inlined**
+  (`forceinline` does not help either). Fixing it changes the default -O2 output, a separate
+  decision. So this round observes the inline dimension only on parameterless callees, and one
+  measurement trap is recorded too: inlining is single pass, so with a startup file the copy of
+  `main` inlined into `Reset_Handler` still carries its un-expanded `BL h`.
 
 ---
 

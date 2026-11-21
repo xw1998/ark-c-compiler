@@ -26,7 +26,8 @@ void opt_dce_func(IrFunc *f);
 void opt_dce_cfg_func(IrFunc *f);
 
 /* Auto inlining: inlines small function bodies into call sites.
- * Threshold: IR instruction count <= ARK_INLINE_THRESHOLD (default 12).
+ * Threshold: IR instruction count <= ark_inline_threshold() (12 at the default
+ * --size-weight=5).
  * Excludes: recursion, variadic, irq, naked, asm_func, >4 params. */
 void opt_inline(IrProgram *prog);
 

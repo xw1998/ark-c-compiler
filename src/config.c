@@ -90,6 +90,10 @@ void config_init(void) {
     g_config.enable_tailcall           = 0;
     g_config.enable_divconst           = 0;
     g_config.enable_const_global       = 0;
+#if ARKCC_FEATURE_SIZEWEIGHT
+    /* --size-weight: 5 是四个历史常量所在的位置（12 / 8 / 3 / 4）。 */
+    g_config.size_weight               = 5;
+#endif
     /* --pipeline: 默认 FULL = 历史行为（每个 pass 自己的开关/级别决定），
      * 因此不写这个选项时产物与 0.8.4 逐字节相同。 */
     g_config.pipeline_profile     = ARK_PROFILE_FULL;
@@ -174,6 +178,18 @@ static void apply_kv(const char *section, const char *key, const char *val) {
             g_config.debug_info = parse_bool(val) ? 1 : 0;
         } else if (ark_streq(key, "split_sections") || ark_streq(key, "function-sections")) {
             g_config.split_sections = parse_bool(val) ? 1 : 0;
+#if ARKCC_FEATURE_SIZEWEIGHT
+        } else if (ark_streq(key, "size_weight") || ark_streq(key, "size-weight")) {
+            /* 越界不夹紧：把 42 静默当成 9 等于替用户改了他写的配置。 */
+            int v = 0;
+            if (!parse_int(val, &v) || v < 0 || v > 9) {
+                diag_tool(DIAG_SEV_WARNING, g_config.config_file,
+                          "size_weight \"%s\" is not 0..9; the value is ignored",
+                          val, 0,0,0,0,0);
+            } else {
+                g_config.size_weight = v;
+            }
+#endif
         }
     }
 }
@@ -478,9 +494,36 @@ void config_print(void) {
             g_config.enable_xblock, g_config.enable_tailcall,
             g_config.enable_divconst);
     ark_log("  const_global=%d\n", g_config.enable_const_global);
+#if ARKCC_FEATURE_SIZEWEIGHT
+    ark_log("  size_weight=%d inline<=%d unroll<=%d tailmerge>=%d xblock>=%d\n",
+            g_config.size_weight, ark_inline_threshold(), ark_unroll_max(),
+            ark_tailmerge_min_len(), ark_xblock_min_len());
+#endif
     ark_log("  pipeline=%s\n", pipeline_profile_name(g_config.pipeline_profile));
     ark_log("  opt_level=%d debug_info=%d split_sections=%d\n",
             g_config.opt_level, g_config.debug_info, g_config.split_sections);
     ark_log("  config_file=%s\n",
             g_config.config_file ? g_config.config_file : "(none)");
 }
+#if ARKCC_FEATURE_SIZEWEIGHT
+/* 0.9.1 --size-weight: 0 = 速度优先（最多内联/展开），9 = 体积优先，5 = 历史
+ * 常量。每张表的下标 5 必须与 0.9.0 的常量逐一相等（12 / 8 / 3 / 4）——这是
+ * 「不写 --size-weight 产物逐字节不变」的全部依据，tests/run_sizeweight_tests.py
+ * 会把这条对账直接打出来。 */
+static const unsigned char ark_inline_thr[10]     = { 28, 24, 20, 17, 14, 12, 10, 8, 6, 4 };
+static const unsigned char ark_unroll_max_tbl[10] = { 16, 14, 12, 10,  9,  8,  7, 6, 5, 4 };
+static const unsigned char ark_tailmerge_len[10]  = {  6,  6,  5,  5,  4,  3,  3, 2, 2, 2 };
+static const unsigned char ark_xblock_len[10]     = {  7,  7,  6,  6,  5,  4,  4, 3, 3, 3 };
+
+static int ark_weight_index(void) {
+    int w = g_config.size_weight;
+    if (w < 0) w = 0;
+    if (w > 9) w = 9;
+    return w;
+}
+
+int ark_inline_threshold(void)  { return ark_inline_thr[ark_weight_index()]; }
+int ark_unroll_max(void)        { return ark_unroll_max_tbl[ark_weight_index()]; }
+int ark_tailmerge_min_len(void) { return ark_tailmerge_len[ark_weight_index()]; }
+int ark_xblock_min_len(void)    { return ark_xblock_len[ark_weight_index()]; }
+#endif

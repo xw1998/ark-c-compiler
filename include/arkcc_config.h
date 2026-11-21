@@ -782,11 +782,9 @@
 #   define ARKCC_FEATURE_UNROLL        1
 # endif
 #endif
-/* 完全展开的规模上限：展开份数、以及被复制的循环体指令数。超过任何一条
+/* 完全展开的规模上限：展开份数由 --size-weight 的表格给出（src/config.c，
+ * 默认权重 5 对应历史值 8），被复制的循环体指令数仍由常量决定。超过任何一条
  * 都不展开——宁可保留循环，也不把函数膨胀成看不懂的样子。 */
-#ifndef ARK_UNROLL_MAX
-#   define ARK_UNROLL_MAX             8
-#endif
 #ifndef ARK_UNROLL_MAX_BODY
 #   define ARK_UNROLL_MAX_BODY        64
 #endif
@@ -803,10 +801,8 @@
 #   define ARKCC_FEATURE_TAILMERGE     1
 # endif
 #endif
-/* 块尾合并的最短尾部长度（指指令条数）。太短的尾部合并后省不回字节。 */
-#ifndef ARK_TAILMERGE_MIN_LEN
-#   define ARK_TAILMERGE_MIN_LEN       3
-#endif
+/* 块尾合并的最短尾部长度（指令条数）由 --size-weight 的表格给出
+ * （src/config.c，默认权重 5 对应历史值 3）：太短的尾部合并后省不回字节。 */
 /* ---------------------------------------------------------------------------
  * 0.9.1 块级重复块消除（cross-jump 的整块形态，--xblock）
  *
@@ -825,9 +821,25 @@
 #   define ARKCC_FEATURE_XBLOCK        1
 # endif
 #endif
-/* 可共享块的最短长度（指令条数）：替换成一条 JMP，太短的块省不回字节。 */
-#ifndef ARK_XBLOCK_MIN_LEN
-#   define ARK_XBLOCK_MIN_LEN          4
+/* 可共享块的最短长度（指令条数）由 --size-weight 的表格给出（src/config.c，
+ * 默认权重 5 对应历史值 4）：替换成一条 JMP，太短的块省不回字节。 */
+/* ---------------------------------------------------------------------------
+ * 0.9.1 体积/速度连续权重（--size-weight=N）
+ *
+ * 0 = 速度优先（尽量内联、尽量展开），9 = 体积优先（保守），5 = 历史常量。
+ * 这个开关只调四个「门槛」数值，不改变任何 pass 的正确性前提；四个门槛都属于
+ * 宿主上的优化 pass，所以 STM32_MIN 或没有 MIR 时它们一起被裁掉——留着只会
+ * 编出一个「开关能开、但永远不动」的假选项。
+ * ------------------------------------------------------------------------- */
+#ifdef ARKCC_FEATURE_SIZEWEIGHT
+/* 派生开关，不接受 -D 直接设定：单独裁掉它会让访问器没有定义 */
+# undef ARKCC_FEATURE_SIZEWEIGHT
+#endif
+#if ARKCC_FEATURE_OPT_INLINE || ARKCC_FEATURE_UNROLL || \
+    ARKCC_FEATURE_TAILMERGE || ARKCC_FEATURE_XBLOCK
+#  define ARKCC_FEATURE_SIZEWEIGHT   1
+#else
+#  define ARKCC_FEATURE_SIZEWEIGHT   0
 #endif
 /* ---------------------------------------------------------------------------
  * 0.9.1 尾调用 -> 跳转（--tailcall）

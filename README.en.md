@@ -631,6 +631,7 @@ ark c compiler/
 ├── docs/TAILCALL.md        Tail call -> jump (--tailcall): the two convertible shapes, the seven refusal conditions, why lr must stay live, three trimming layers, gate and measurements (Chinese, UTF-8)
 ├── docs/DIVCONST.md        Divide by a constant -> magic multiply + shift (--divconst): why the magnitude method is correct, the three unsigned shapes and the L == 32 case, five refusals, three trimming layers, 45 gate items, an honest byte account (Chinese, UTF-8)
 ├── docs/XBLOCK.md          Whole-block deduplication (--xblock): why a conditional-branch tail must be refused, why targets are compared as blocks and not label ids, how label-only blocks are normalised, the rewrite shape, three trimming layers, 26 gate items, byte account (Chinese, UTF-8)
+├── docs/SIZEWEIGHT.md      Continuous size/speed weight (--size-weight 0..9): the four threshold tables, 5 = the 0.9.0 constants, why there is no -Oz/-Os/-Ot, the derived macro and trimming, 31 gate items, the 80-file byte account, and the known debt "functions with parameters are never inlined" (Chinese, UTF-8)
 ├── docs/IPO_LTO.md         Whole-program compilation (--ipo / -flto) and cross-TU constant propagation (--const-global): why it is not object-level LTO, merge semantics, refused combinations, cropping, gates (Chinese, UTF-8)
 ├── docs/OBJ_IR.md         An IR payload in the object and link-time recompilation (--obj-ir / -link --lto): payload format, pool remapping on merge, byte equivalence, refusals and diagnostics, cropping, gate (Chinese, UTF-8)
 ├── docs/PARTIAL_LINK.md   Partial link (-r): machine code wins, symbol/relocation rebasing, data never moved, three refusals, substitutability and idempotence, cropping, gate (Chinese, UTF-8)
@@ -809,6 +810,10 @@ arkcc <file.c|file.s> [options]
                      become jumps to it (needs -O1+; --no-xblock turns it off).
                      Refused: conditional-branch tails, bodies leaving to
                      different blocks, bodies below 4 instructions, inline asm
+  --size-weight=N    continuous size/speed weight (0..9, default 5): moves the inline
+                     ceiling, the unroll ceiling and the tail/block merge minimum lengths
+                     at once. 0 favours speed, 9 favours size; the four entries at 5 equal
+                     the 0.9.0 constants, so not writing it is byte-identical to 0.9.0
   --ipo / -flto      whole-program compile: several .c files, one IR program, so
                      optimisation sees across files (cross-file inlining at -O2);
                      statics are renamed per unit, externals de-duplicated with

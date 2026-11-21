@@ -75,6 +75,12 @@ static void usage(void) {
         "                     were skipped\n"
         "  --print-pipeline   print the resolved stage table (run/skip + reason)\n"
         "                     and exit\n"
+#if ARKCC_FEATURE_SIZEWEIGHT
+        "  --size-weight=N    size/speed balance for the four optimiser thresholds,\n"
+        "                     N = 0..9: 0 favours speed (more inlining, more\n"
+        "                     unrolling), 9 favours size, 5 (default) is the\n"
+        "                     historical behaviour.  The -O level is not touched.\n"
+#endif
         "  -g                 emit DWARF debug sections (implies --dwarf2;\n"
         "                     use --dwarf3 for DWARF 3)\n"
         "  -Wno-unused        suppress unused warnings\n"
@@ -646,6 +652,37 @@ int main(int argc, char **argv) {
             g_config.pipeline_profile = prof;
         }
         else if (strcmp(a, "--print-pipeline") == 0) opts.print_pipeline = 1;
+#if ARKCC_FEATURE_SIZEWEIGHT
+        else if (strcmp(a, "--size-weight") == 0 ||
+                 strncmp(a, "--size-weight=", 14) == 0) {
+            /* 不夹紧、不猜：把 42 或 fast 静默当成 5 会让调用方以为已经按某个
+             * 平衡编译过了，而实际上一个字都没变。 */
+            const char *v = (a[13] == '=') ? a + 14 : "";
+            const char *p = v;
+            int w = 0;
+            int ok = (*p != 0);
+            while (ok && *p) {
+                if (*p < '0' || *p > '9') { ok = 0; break; }
+                w = w * 10 + (*p - '0');
+                if (w > 99) { ok = 0; break; }
+                p++;
+            }
+            if (!ok || w > 9) {
+                fprintf(stderr,
+                        "Fatal error: C3900U: --size-weight expects 0..9 "
+                        "(got \"%s\")\n", v);
+                return 1;
+            }
+            g_config.size_weight = w;
+        }
+#else
+        else if (strncmp(a, "--size-weight", 13) == 0) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: --size-weight is not compiled into "
+                    "this build (no host optimisation pass is enabled)\n");
+            return 1;
+        }
+#endif
         else if (strcmp(a, "--dce-cfg") == 0)       g_config.enable_dce_cfg = 1;
         else if (strcmp(a, "--no-dce-cfg") == 0)    g_config.enable_dce_cfg = 0;
         else if (strcmp(a, "--reloc-data") == 0)    g_config.enable_reloc_data = 1;
