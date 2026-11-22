@@ -97,6 +97,7 @@
 | 常量折进立即数 | 可选 | `-fopt-imm`（`ARKCC_FEATURE_OPT_IMM`，宿主 1、板端 0，默认关）：发射期把「`PUSH k` 紧跟一次算术/比较」折成指令的立即数字段，常量不再走值栈。每个算子先过编码闸门：`+`/`-` 限 ±4095（ADDW/SUBW）、`&\|^` 与 >255 的 `CMP` 必须过 `thumb_imm12_a`、移位限 0..31、比较只认右常量；装不下就原样保留。判定与发射共用 `emit_binary_imm()`，所以结构上不可能「吞了 push 却发不出立即数」；与 `--reg-top` 互斥。HAL 全语料基线 35,211 → 27,716 条（−7,495 / −21.29%）。详见 `docs/IMM_FOLD.md` |
 | 栈往返清理 | 可选 | `-fopt-peep`（`ARKCC_FEATURE_OPT_PEEP`，宿主 1、板端 0，默认关）：文本层删掉两类经内存的往返——`PUSH {rX}` 紧跟 `POP {rY}` 变成一条 `MOV`（同一个寄存器则两条全删），`STR rX, [r6, #o]` 紧跟同槽 `LDR` 时只保留 `STR`。跨标签一律不配、多寄存器帧 `PUSH` 不匹配、`DMB SY` 天然挡下 volatile。基线 35,211 → 33,730 条（−1,481 / −4.21%），与 `-fopt-imm` 同开 26,316 条（−8,895 / −25.26%）。详见 `docs/PEEPHOLE.md` |
 | 比较结果直连分支 | 可选 | `-fopt-cbranch`（`ARKCC_FEATURE_OPT_CBRANCH`，宿主 1、板端 0，默认关）：IR 发射期，`IR_BINARY(比较)` 的下一条正好是 `IR_JZ` / `IR_JNZ` 时，直接发 `CMP` + `B<cond>`，不再把比较物化成 0/1 再 `CMP r0, #0` 复测一遍。有符号 / 无符号两套条件码（`BLT/BGE` 对 `BLO/BHS`），`<=`/`>=` 的取反用 `BGT`/`BLT` 而不是 `>`/`>=`；立即数路径附 `MOV r1,#k` + `CMP r0,r1` 兜底；与 `--reg-top` 互斥，与 `-fopt-cbz` 叠加（`CMP r0,#0`+`BNE` 再折成 `CBNZ`）；比较结果有第二个消费者（`int x = (a<b); if (x)`）时不折。基线 35,211 → 32,610 条（−2,601 / −7.39%）、82,404 → 74,166 字节（−8,238 / −10.0%）；与 `-fopt-imm -fopt-peep` 同开 23,692 条 / 56,384 字节（−11,519 / −32.7%）。详见 `docs/CBRANCH.md` |
+| 寄存器拷贝清理 | 可选 | `-fopt-copyprop`（`ARKCC_FEATURE_OPT_COPYPROP`，宿主 1、板端 0，默认关）：照 IAR `ECT CopyPropagation candidate` / `DefIntoMove` / `Dead MOV` 逆向下放的两条**纯文本**规则，都不需要活跃性分析。A 死拷贝：`MOV rD, rS` 或 `MOV rD, #imm` 在同一个**直线块内**、任何读取之前被完全覆写 ⇒ 删除（`MOV` 不写标志，值与标志都不变）；直线块在标签、任何分支、`PUSH/POP/LDM/STM`、`IT` 系列、`CPS/BKPT`、函数尾结束。B 拷贝推进：`MOV rD, rS` 紧跟 `OP rD, rD, X` ⇒ `OP rD, rS, X`（`rD≠rS`、`X≠rD`，`OP` 限三操作数 ALU，**排除 `CMP/CMN/TST`**）。读判定必须是「第一个操作数也读，除非它是纯写目标」，否则会连 `MOV` + `STR`/`CMP` 一起删（emulator 抓出 9 个错答案）。八开关基线 23,692 → 23,304 条（−388 / −1.64%）、56,384 → 55,608 字节（−1.38%），`MOV` 6,180 → 5,792、其余助记符一条不动；分解为 147（规则 A）+ 241（规则 B）。详见 `docs/COPYPROP.md` |
 | 汇编器覆盖面 | 是 | LDR/STR 全地址模式（`[Rn]`/`[Rn,#imm]`/`[Rn,Rm]`/`[Rn,Rm,LSL #0..3]`/`[Rn,#imm]!`/`[Rn],#imm`、`[sp,#imm]`、`[pc,#imm]`）、`VLDM/VSTM/VPUSH/VPOP`、`LDMFD/STMFD/LDMEA/STMEA` 别名、`ADDW/SUBW`；体系结构不存在的形态（`LDMIB/LDMDA/STMIB/STMDA`、寄存器索引写回）明确报错 |
 | 预处理 | 是 | 对象/函数宏（`#/##`）、`#if/#elif/#else/#endif/#ifdef/#ifndef/#undef/#error/#warning/#pragma`、嵌套 `#include`（<=8 层）、`__VA_ARGS__`、`-I` 路径、三字符组替换 |
 | 注释 | 是 | `//` 和 `/* */` |
@@ -557,7 +558,8 @@ ark c compiler/
 ├── docs/IMM_FOLD.md         常量折进立即数（-fopt-imm）：为什么必须做在发射期、两种形状、每个算子的编码守卫与拒绝清单、与 --reg-top 互斥、33 项门禁与 HAL 全语料实测（中文，UTF-8，另有 .en.md）
 ├── docs/PEEPHOLE.md         栈往返清理（-fopt-peep）：R1/R3 两条纯文本等价规则、为什么 volatile 不被误伤、放弃 R2/R4 的理由、pass 顺序、12 项门禁与 HAL 全语料实测（中文，UTF-8，另有 .en.md）
 ├── docs/CBRANCH.md          比较结果直连分支（-fopt-cbranch）：IR 相邻判据、条件码表、两条注入路径与立即数兜底、与 --reg-top / -fopt-cbz 的关系、不折的情形、13 项门禁与 HAL 全语料实测（中文，UTF-8，另有 .en.md）
-├── docs/COMPARISON.md       与 armcc / armclang 的横向对比：语料与口径、9 行结果表与相对比值、八个优化开关、四条结构性差距与逐项实测、复现脚本、三种「不该读成」（中文，UTF-8，另有 .en.md）
+├── docs/COPYPROP.md         寄存器拷贝清理（-fopt-copyprop）：照 IAR ECT 逆向下放的两条规则、为什么不需要活跃性、「第一个操作数也读」这条被 emulator 抓出的修正、与 peep 的分工、147+241 分解与旧 1,141 估算的错因、17 项门禁（中文，UTF-8，另有 .en.md）
+├── docs/COMPARISON.md       与 armcc / armclang 的横向对比：语料与口径、9 行结果表与相对比值、九个优化开关、四条结构性差距与逐项实测、复现脚本、三种「不该读成」（中文，UTF-8，另有 .en.md）
 ├── docs/IPO_LTO.md         全程序编译（--ipo / -flto）与跨 TU 常量传播（--const-global）：为什么不是对象级 LTO、合并语义、拒绝的组合、裁剪与两条门禁（中文，UTF-8）
 ├── docs/OBJ_IR.md          对象里的 IR 载荷与链接期重编（--obj-ir / -link --lto）：载荷格式、合并的池 remap、逐字节等价、拒绝与诊断、裁剪与门禁（中文，UTF-8）
 ├── docs/PARTIAL_LINK.md    部分链接（-r）：机器码作准、符号/重定位 rebase、数据段不搬、三类拒绝、可替换性与幂等、裁剪与门禁（中文，UTF-8）
@@ -744,6 +746,9 @@ arkcc <file.c|file.s> [选项]
   -fopt-cbranch      比较结果直连分支：比较的下一条正好是条件跳转时直接
                      CMP + B<cond>，不再物化成 0/1 再复测；值另有消费者时不折；
                      -fno-opt-cbranch 关（默认关）
+  -fopt-copyprop     寄存器拷贝清理：删掉被完全覆写却没被读的 MOV，把
+                     MOV rD,rS 推进到紧邻的 OP rD,rD,X 里；跨标签/分支/PUSH
+                     不判；-fno-opt-copyprop 关（默认关）
   --ipo / -flto      全程序编译：一次吃多个 .c，在同一个 IR program 上做跨文件
                      优化（-O2 下跨文件内联），static 按单元改名、外部名按链接器
                      规则去重、无引用的 static 剪掉；必须给 -o，

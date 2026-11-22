@@ -2,7 +2,7 @@
 
 [English](COMPARISON.en.md) | 中文
 
-> 一句话：**在 STM32F4 HAL 全语料上，arkc 打开全部优化后是 armcc `-O2` 的 4.2 倍指令数、
+> 一句话：**在 STM32F4 HAL 全语料上，arkc 打开全部优化后是 armcc `-O2` 的 4.1 倍指令数、
 > 4.0 倍代码字节；差距不是编码质量问题，是结构性的——值栈机、没有活跃性分析、
 > 中间结果仍要落帧。**
 >
@@ -27,8 +27,8 @@
 这套口径只比「编译这一批 `.c` 产生的代码」，不含链接期优化（LTO）、不含库函数。
 **arkc 每一份 TU 自带运行时助手**（`__aeabi_memcpy`、`__arkcc_init_globals`、浮点胶水等），
 armcc/armclang 则从 C 库取同名例程——在「全部优化」那份产物里，按 `__aeabi_*` /
-`__arkcc_*` / `__REV16` / `__REVSH` / `__RRX` 这些符号统计是 **1,799 条 / 7.6%**，
-去掉它 arkc 的用户代码是 **21,893 条**。下表不做这个扣减，因为它是真实占用的 Flash。
+`__arkcc_*` / `__REV16` / `__REVSH` / `__RRX` 这些符号统计是 **1,799 条 / 7.7%**，
+去掉它 arkc 的用户代码是 **21,505 条**。下表不做这个扣减，因为它是真实占用的 Flash。
 
 ## 2. 结果
 
@@ -37,7 +37,7 @@ armcc/armclang 则从 C 库取同名例程——在「全部优化」那份产�
 | 编译器 | 选项 | 指令数 | 代码字节 |
 | --- | --- | ---: | ---: |
 | **arkc** | `-O2` | 51,463 | 116,480 |
-| **arkc** | `-O2` + 全部 `-fopt-*`（见 §3） | **23,692** | **56,384** |
+| **arkc** | `-O2` + 全部 `-fopt-*`（见 §3） | **23,304** | **55,608** |
 | armcc | `-O0` | 7,969 | 18,788 |
 | armcc | `-O1` | 6,061 | 14,910 |
 | armcc | `-O2` | 5,629 | 13,942 |
@@ -51,24 +51,29 @@ armcc/armclang 则从 C 库取同名例程——在「全部优化」那份产�
 | 比较 | 指令数 | 代码字节 |
 | --- | ---: | ---: |
 | arkc `-O2`（无 `-fopt-*`） | 9.1× | 8.4× |
-| arkc `-O2` + 全部 `-fopt-*` | **4.2×** | **4.0×** |
+| arkc `-O2` + 全部 `-fopt-*` | **4.1×** | **4.0×** |
 
-**0.9.1 的八个优化开关把差距从 9.1× 压到 4.2×**（指令数 −54.0%，代码字节 −51.6%）。
+**0.9.1 的九个优化开关把差距从 9.1× 压到 4.1×**（指令数 −54.7%，代码字节 −52.3%）。
 
-**IAR 未参与**：本机没有 `iccarm.exe`（`/c/Program Files*/IAR Systems`、`/d/IAR*` 均无）。
-**不估 IAR 的数字**——没有编译出来的字节就没有可比的东西。
+**IAR 未参与**：本机装了 IAR EWARM 9.70（`D:\tools\IAR_EWARM_9.70\arm\bin\iccarm.exe`，
+V9.70.1.475/W64），但**没有 license**——任何编译都停在
+`Fatal error[LMS001]: License check failed`，拿不到一行字节。
+**因此不估 IAR 的数字**：没有编译出来的字节就没有可比的东西。对照 IAR 的方式是照
+`D:/工作/git_project/c_compiler/iar/docs/` 里逆向出的机制去实现（`-fopt-cbranch`、
+`-fopt-copyprop` 就是这么来的），不是去编一个数出来。
 
-## 3. 表里「全部 `-fopt-*`」是哪八个
+## 3. 表里「全部 `-fopt-*`」是哪九个
 
 ```
 -fopt-tailmerge -fopt-tailcall -fopt-divconst -fopt-xblock -fopt-sizeweight
 -fopt-inline   -fopt-vstack    -fopt-addr     -fopt-strength -fopt-cbz
--fopt-branch   -fopt-imm       -fopt-peep     -fopt-regalloc
+-fopt-branch   -fopt-imm       -fopt-peep     -fopt-cbranch -fopt-copyprop
+-fopt-regalloc
 ```
 
-上表实际使用的是**对本语料有作用**的那八个：
+上表实际使用的是**对本语料有作用**的那九个：
 `-fopt-vstack -fopt-addr -fopt-strength -fopt-cbz -fopt-branch -fopt-imm -fopt-peep
--fopt-cbranch`。
+-fopt-cbranch -fopt-copyprop`。
 
 `-fopt-regalloc` 也在这一轮测了，但它在**本语料上一条指令都没改**（两种构型的指令数
 与代码字节完全相同）。原因写在它的选择规则里：默认模式只收「访问宽度超过 16 位
@@ -98,7 +103,8 @@ armcc `-O2` 是 336 条。看开头那段 `if (RCC_OscInitStruct == 0)`：
 
 1. **值栈机：每个值都真的进栈。** `-fopt-vstack` 把相邻的 `PUSH/POP` 折成寄存器搬运，
    但「一个表达式的中间结果」在这里仍然经常落回帧（`STR r0, [r6, #8]` / `LDR r0, [r6, #8]`）。
-   真正的修法是**局部变量寄存器分配**（要活跃性分析），不是文本 pass。
+   寄存器之间那一层「搬了又没用」的拷贝已由 `-fopt-copyprop` 清掉（见 `docs/COPYPROP.md`），
+   剩下的是内存往返。真正的修法是**局部变量寄存器分配**（要活跃性分析），不是文本 pass。
 2. ~~布尔值先物化成 0/1，再复测一次~~ ——**已由 `-fopt-cbranch` 修掉**（0.9.1）。
    HAL 语料上 `ITE` 从 824 个降到 69 个、`CMP r0,#0` 从 409 条降到 73 条，
    共省 2,601 条指令 / 8,238 字节（见 `docs/CBRANCH.md`）。残下的 69 个是
@@ -124,14 +130,15 @@ armcc `-O2` 是 336 条。看开头那段 `if (RCC_OscInitStruct == 0)`：
 | + `-fopt-peep` | 33,730 | −1,481（−4.2%） |
 | + `-fopt-imm` | 27,716 | −7,495（−21.3%） |
 | + imm + peep | 26,316 | −8,895（−25.3%） |
-| + imm + peep + cbranch | **23,692** | **−11,519（−32.7%）** |
+| + imm + peep + cbranch | 23,692 | −11,519（−32.7%） |
+| + imm + peep + cbranch + copyprop | **23,304** | **−11,907（−33.8%）** |
 
 （各行是各自相对基线的单项/组合效果，不是累加关系：`-fopt-cbranch` 与 `-fopt-imm`
 都动 `IR_BINARY`，叠起来看最后一行走廊。）
 
 单独 `-fopt-imm` 一项就占 0.9.1 全部收益的一半以上（见 `docs/IMM_FOLD.md`），
-`-fopt-peep`（见 `docs/PEEPHOLE.md`）与 `-fopt-cbranch`（见 `docs/CBRANCH.md`）
-各是一块。更早五块的数字见
+`-fopt-peep`（见 `docs/PEEPHOLE.md`）、`-fopt-cbranch`（见 `docs/CBRANCH.md`）与
+`-fopt-copyprop`（见 `docs/COPYPROP.md`）各是一块。更早五块的数字见
 `docs/OPTIMIZER_PLAN.md` 与各 `docs/*_FOLD.md` / `docs/STRENGTH.md` / `docs/RV...`。
 
 ## 6. 怎么复现

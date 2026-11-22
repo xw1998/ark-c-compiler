@@ -29,7 +29,7 @@ endif
         test-objir test-partiallink test-deadinline test-softfloat test-tailmerge \
         test-tailcall test-divconst test-xblock test-sizeweight \
         test-inline test-vstack test-addr test-strength test-cbz test-branch \
-        test-imm test-peep test-cbranch install stm32
+        test-imm test-peep test-cbranch test-copyprop install stm32
 
 all: $(ARKCC)
 
@@ -44,7 +44,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch test-imm test-peep test-cbranch
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch test-imm test-peep test-cbranch test-copyprop
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -232,6 +232,18 @@ test-peep: $(ARKCC)
 # refuses the flag by name.
 test-cbranch: $(ARKCC)
 	$(PYTHON) tests/run_cbranch_tests.py ./$(ARKCC)
+# Gate for -fopt-copyprop: the IAR "ECT" copy rules reduced to the two that
+# are safe without liveness -- a dead register copy inside one straight-line
+# block, and a copy forwarded into its only consumer.  The gate checks OFF IS
+# OFF, that the four unread barrier arguments vanish while the barriers stay,
+# that both pool copies in the fuse fixture fold into their ADD, that a
+# control fixture full of *read* copies is left byte-identical (anti-over-
+# deletion), that instruction counts and image sizes drop by exactly the
+# expected amount, that labels survive, that all three fixtures return the
+# Python answer in the emulator, and that a cropped build
+# (-DARKCC_FEATURE_OPT_COPYPROP=0) refuses the flag by name.
+test-copyprop: $(ARKCC)
+	$(PYTHON) tests/run_copyprop_tests.py ./$(ARKCC)
 
 
 

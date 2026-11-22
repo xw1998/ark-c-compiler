@@ -233,6 +233,16 @@
 #   define ARKCC_FEATURE_OPT_CBRANCH    1
 # endif
 #endif
+/* ARKCC_FEATURE_OPT_COPYPROP: -fopt-copyprop, the IAR "ECT" family -- drop a
+ * register copy whose destination is overwritten before any read, and forward
+ * one that feeds a single three-operand ALU consumer. */
+#ifndef ARKCC_FEATURE_OPT_COPYPROP
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_OPT_COPYPROP   0
+# else
+#   define ARKCC_FEATURE_OPT_COPYPROP   1
+# endif
+#endif
 #ifndef ARKCC_FEATURE_OPT_INLINE
 # if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
 #   define ARKCC_FEATURE_OPT_INLINE    0   /* Trim auto-inline on STM32 (costs Flash) */

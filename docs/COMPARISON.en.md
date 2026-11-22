@@ -3,9 +3,10 @@
 English | [中文](COMPARISON.md)
 
 > In one sentence: **on the full STM32F4 HAL corpus, arkc with every
-> optimization on is 4.7× the instruction count and 4.6× the code bytes of
+> optimization on is 4.1× the instruction count and 4.0× the code bytes of
 > armcc `-O2`; the gap is not encoding quality, it is structural -- a value-stack
-> machine, no liveness analysis, and booleans materialised and then re-tested.**
+> machine, no liveness analysis, and intermediate results still going through the
+> frame.**
 >
 > Measurement script: `D:/tmp/cmp_final.py` (not in the repository). The whole
 > table below comes from one run of it, on the same source files with the same
@@ -35,8 +36,8 @@ This method only compares "the code produced by compiling this batch of `.c`": n
 link-time optimization (LTO), no library functions. **Each arkc translation unit
 carries its own run-time helpers** (`__aeabi_memcpy`, `__arkcc_init_globals`,
 floating-point glue, ...), whereas armcc/armclang take the same routines from the C
-library -- on the arkc side that item is **1,325 instructions / 5.0%**, and without
-it arkc's user code is **24,991 instructions**. The table does not deduct it,
+library -- on the arkc side that item is **1,799 instructions / 7.7%**, and without
+it arkc's user code is **21,505 instructions**. The table does not deduct it,
 because that is Flash really occupied.
 
 ## 2. Results
@@ -46,7 +47,7 @@ Totals over the 96 effective translation units:
 | Compiler | Options | Instructions | Code bytes |
 | --- | --- | ---: | ---: |
 | **arkc** | `-O2` | 51,463 | 116,480 |
-| **arkc** | `-O2` + all `-fopt-*` (see §3) | **23,692** | **56,384** |
+| **arkc** | `-O2` + all `-fopt-*` (see §3) | **23,304** | **55,608** |
 | armcc | `-O0` | 7,969 | 18,788 |
 | armcc | `-O1` | 6,061 | 14,910 |
 | armcc | `-O2` | 5,629 | 13,942 |
@@ -60,26 +61,32 @@ Relative to armcc `-O2`:
 | Comparison | Instructions | Code bytes |
 | --- | ---: | ---: |
 | arkc `-O2` (no `-fopt-*`) | 9.1× | 8.4× |
-| arkc `-O2` + all `-fopt-*` | **4.2×** | **4.0×** |
+| arkc `-O2` + all `-fopt-*` | **4.1×** | **4.0×** |
 
-**The eight optimization switches of 0.9.1 take the gap from 9.1× down to 4.2×**
-(−54.0% instructions, −51.6% code bytes).
+**The nine optimization switches of 0.9.1 take the gap from 9.1× down to 4.1×**
+(−54.7% instructions, −52.3% code bytes).
 
-**IAR does not take part**: there is no `iccarm.exe` on this machine (neither
-under `/c/Program Files*/IAR Systems` nor `/d/IAR*`). **No IAR numbers are
-estimated** -- without compiled bytes there is nothing to compare.
+**IAR does not take part**: IAR EWARM 9.70 is installed
+(`D:\tools\IAR_EWARM_9.70\arm\bin\iccarm.exe`, V9.70.1.475/W64), but it has
+**no license** -- every compile stops at
+`Fatal error[LMS001]: License check failed` and not a single byte comes out.
+**So no IAR numbers are estimated**: without compiled bytes there is nothing to
+compare. The way to align with IAR is to implement the mechanisms reverse-
+engineered in `D:/工作/git_project/c_compiler/iar/docs/` (that is where
+`-fopt-cbranch` and `-fopt-copyprop` come from), not to invent a number.
 
-## 3. Which eight switches "all `-fopt-*`" means
+## 3. Which nine switches "all `-fopt-*`" means
 
 ```
 -fopt-tailmerge -fopt-tailcall -fopt-divconst -fopt-xblock -fopt-sizeweight
 -fopt-inline   -fopt-vstack    -fopt-addr     -fopt-strength -fopt-cbz
--fopt-branch   -fopt-imm       -fopt-peep     -fopt-regalloc
+-fopt-branch   -fopt-imm       -fopt-peep     -fopt-cbranch -fopt-copyprop
+-fopt-regalloc
 ```
 
-The table actually uses the eight **that do something on this corpus**:
+The table actually uses the nine **that do something on this corpus**:
 `-fopt-vstack -fopt-addr -fopt-strength -fopt-cbz -fopt-branch -fopt-imm -fopt-peep
--fopt-cbranch`.
+-fopt-cbranch -fopt-copyprop`.
 
 `-fopt-regalloc` was also measured this round, but it **changes not a single
 instruction on this corpus** (identical instruction count and code bytes in both
@@ -116,8 +123,10 @@ What remains is not that item any more; it is the shape of the code generator:
 1. **Value-stack machine: every value really enters the stack.** `-fopt-vstack`
    folds adjacent `PUSH/POP` into register moves, but "the intermediate result of
    an expression" still often lands back in the frame (`STR r0, [r6, #8]` /
-   `LDR r0, [r6, #8]`). The real fix is **local-variable register allocation**
-   (needs liveness analysis), not a text pass.
+   `LDR r0, [r6, #8]`). The register-to-register layer of copies that are written
+   and never used has already been removed by `-fopt-copyprop` (see
+   `docs/COPYPROP.md`); what is left is the memory round trip. The real fix is
+   **local-variable register allocation** (needs liveness analysis), not a text pass.
 2. ~~Booleans are materialised to 0/1 and then re-tested~~ -- **fixed by
    `-fopt-cbranch`** (0.9.1). On the HAL corpus `ITE` went from 824 to 69 and
    `CMP r0,#0` from 409 to 73, worth 2,601 instructions / 8,238 bytes (see
@@ -128,7 +137,7 @@ What remains is not that item any more; it is the shape of the code generator:
    access; there is no notion of "this value is still in `r3`", and no reordering
    of independent instructions into pipeline slots.
 4. **Each translation unit carries its own run-time helpers.** 1,799 instructions
-   / 7.6% (§1). armcc uses the library.
+   / 7.7% (§1). armcc uses the library.
 
 Two further ceilings that were **quantified and judged not worth doing**:
 
@@ -151,15 +160,17 @@ Baseline = `-fopt-vstack -fopt-addr -fopt-strength -fopt-cbz -fopt-branch`,
 | + `-fopt-peep` | 33,730 | −1,481 (−4.2%) |
 | + `-fopt-imm` | 27,716 | −7,495 (−21.3%) |
 | + imm + peep | 26,316 | −8,895 (−25.3%) |
-| + imm + peep + cbranch | **23,692** | **−11,519 (−32.7%)** |
+| + imm + peep + cbranch | 23,692 | −11,519 (−32.7%) |
+| + imm + peep + cbranch + copyprop | **23,304** | **−11,907 (−33.8%)** |
 
 (Each row is that arm's own effect against the baseline, not a running sum:
 `-fopt-cbranch` and `-fopt-imm` both touch `IR_BINARY`, so the combination is
 what the last row shows.)
 
 `-fopt-imm` alone accounts for more than half of the whole 0.9.1 gain
-(see `docs/IMM_FOLD.md`); `-fopt-peep` (see `docs/PEEPHOLE.md`) and
-`-fopt-cbranch` (see `docs/CBRANCH.md`) are the other two blocks. Figures for the
+(see `docs/IMM_FOLD.md`); `-fopt-peep` (see `docs/PEEPHOLE.md`),
+`-fopt-cbranch` (see `docs/CBRANCH.md`) and `-fopt-copyprop` (see
+`docs/COPYPROP.md`) are the other blocks. Figures for the
 five earlier passes are in
 `docs/OPTIMIZER_PLAN.md` and the individual `docs/*_FOLD.md` / `docs/STRENGTH.md`.
 
@@ -188,5 +199,6 @@ hard-coded in the scripts; change the `srcs` line to use another corpus.
   it was pure code generation with no liveness involved. What is left is reason 1
   (intermediate results spilling to the frame), which does need liveness and is
   real engineering work.
-- **Not "IAR is worse or better"**: it was not measured, there are no numbers,
-  so there is nothing to say here.
+- **Not "IAR is worse or better"**: it is installed but unlicensed, so it cannot
+  be measured; there are no numbers, so there is nothing to say here. Its
+  reverse-engineered mechanisms are what the newer passes follow.

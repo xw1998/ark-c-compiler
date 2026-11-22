@@ -831,7 +831,7 @@ static void ark_fix_far_offset(AsmBuffer *b, int from) {
     }
 }
 
-#if ARKCC_FEATURE_OPT_PEEP
+#if ARKCC_FEATURE_OPT_PEEP || ARKCC_FEATURE_OPT_COPYPROP
 /* --------------------------- peephole cleanup ----------------------------
  * Two copy-elimination rules over one function's emitted text.  Neither needs
  * liveness analysis, because each rule only turns a store/load round trip into
@@ -1068,7 +1068,271 @@ static void ark_peep_function(AsmBuffer *b, int from) {
     pp_r1(b, from);
     pp_r3(b, from);
 }
-#endif /* ARKCC_FEATURE_OPT_PEEP */
+
+#if ARKCC_FEATURE_OPT_COPYPROP
+/* ------------------------ copy propagation (ECT family) ------------------
+ * Two rules over one function's emitted text.  Both are the ones IAR ships
+ * under "ECT CopyPropagation candidate" / "DefIntoMove" / "Dead MOV"
+ * (see c_compiler/iar/docs/08-backend-passes.md and 06-optimizer.md):
+ *
+ *   A  `MOV rD, rS` (or `MOV rD, #imm`) whose rD is completely overwritten
+ *      before anything reads it, inside one straight-line block, is dead.
+ *      Deleting it cannot change any value or flag: MOV writes no flags.
+ *      The block ends at a label, any branch, PUSH/POP, LDM/STM, an IT
+ *      (its inner instructions are conditional), or the end of the function.
+ *      A load, a store, a compare, an address ([r6, ...]) and a call all
+ *      count as reads, so nothing that consumes the value is crossed.
+ *
+ *   B  `MOV rD, rS` followed (padding directives only in between) by
+ *      `OP rD, rD, X` with rD != rS and X != rD becomes `OP rD, rS, X`.
+ *      One instruction instead of two; the flags set are identical because
+ *      the surviving OP keeps its own suffix and reads the same values.
+ *      OP must write its first operand and must be a plain three-operand
+ *      ALU op -- CMP/CMN/TST are excluded because they write no register,
+ *      so deleting the MOV would leave rD holding a different value.
+ *
+ * Neither rule needs liveness analysis: A only removes writes that are
+ * provably overwritten, B only forwards a value into its single consumer.
+ */
+typedef struct {
+    char mn[16];
+    int nops;
+    char op[4][40];
+} cp_ins;
+
+/* "rN" and nothing else -> register number. */
+static int cp_reg(const char *s, int *out) {
+    int n = 0;
+    if (s[0] != 'r' || !s[1]) return 0;
+    s++;
+    if (*s < '0' || *s > '9') return 0;
+    while (*s >= '0' && *s <= '9') { n = n * 10 + (*s - '0'); s++; }
+    if (*s) return 0;
+    *out = n;
+    return 1;
+}
+
+/* Is rN mentioned anywhere in this text as a whole token? */
+static int cp_mentions(const char *t, int r) {
+    const char *p = t;
+    while (*p) {
+        if (*p == 'r' && p[1] >= '0' && p[1] <= '9' &&
+            !(p > t && ((p[-1] >= 'a' && p[-1] <= 'z') ||
+                        (p[-1] >= 'A' && p[-1] <= 'Z') ||
+                        (p[-1] >= '0' && p[-1] <= '9') || p[-1] == '_'))) {
+            int n = 0;
+            const char *q = p + 1;
+            while (*q >= '0' && *q <= '9') { n = n * 10 + (*q - '0'); q++; }
+            if (n == r) return 1;
+            p = q;
+            continue;
+        }
+        p++;
+    }
+    return 0;
+}
+
+static int cp_writes(const cp_ins *o, int *r);   /* defined below */
+
+/* Is the first operand of this op write-only?  A three-operand ALU/load form
+ * names its destination there; a two-operand form may well read it as well
+ * (`UXTB r0, r0`, `MUL r0, r1`), so only the shapes the emitter is known to
+ * emit with a bare destination may skip the read test. */
+static int cp_dest_only(const cp_ins *o) {
+    static const char *D[] = {
+        "MOV", "MOVW", "MVN", "LDR", "LDRB", "LDRH", "LDRSB", "LDRSH",
+        "REV", "REV16", "REVSH", "RRX", "CLZ",
+        "UXTB", "UXTH", "SXTB", "SXTH", NULL
+    };
+    int i = 0;
+    if (o->nops >= 3) return 1;
+    while (D[i] && strcmp(o->mn, D[i])) i++;
+    return D[i] != NULL;
+}
+
+/* Does this line read rR?  Every operand except a write-only destination is
+ * a read: a store reads the register it stores (`STR r0, [r6, #8]`), a
+ * compare reads both, and a copy reads its source. */
+static int cp_reads(const cp_ins *o, int r) {
+    int i, w;
+    for (i = 1; i < o->nops; i++)
+        if (cp_mentions(o->op[i], r)) return 1;
+    if (o->nops > 0 && cp_mentions(o->op[0], r)) {
+        if (!(cp_writes(o, &w) && w == r && cp_dest_only(o))) return 1;
+    }
+    return 0;
+}
+
+static void cp_trim_range(char *s) {
+    int a = 0, b = 0, k = 0;
+    while (s[a] == ' ' || s[a] == '\t') a++;
+    while (s[b]) b++;
+    while (b > a && (s[b - 1] == ' ' || s[b - 1] == '\t')) b--;
+    while (a < b) s[k++] = s[a++];
+    s[k] = 0;
+}
+
+static int cp_parse(const char *t, cp_ins *o) {
+    int i = 0, n = 0, k, depth;
+    while (t[i] && ((t[i] >= 'A' && t[i] <= 'Z') || (t[i] >= 'a' && t[i] <= 'z'))) {
+        if (n < 15) o->mn[n++] = t[i];
+        i++;
+    }
+    o->mn[n] = 0;
+    if (!n || t[i] != ' ') return 0;
+    i++;
+    o->nops = 0;
+    while (t[i] && o->nops < 4) {
+        k = 0; depth = 0;
+        while (t[i] && !(depth == 0 && t[i] == ',')) {
+            if (t[i] == '[') depth++;
+            else if (t[i] == ']') depth--;
+            if (k < 39) o->op[o->nops][k++] = t[i];
+            i++;
+        }
+        o->op[o->nops][k] = 0;
+        cp_trim_range(o->op[o->nops]);
+        o->nops++;
+        if (t[i] == ',') { i++; while (t[i] == ' ') i++; }
+    }
+    return 1;
+}
+
+/* Anything that ends the straight-line block the two rules reason about. */
+static int cp_is_boundary(const cp_ins *o) {
+    const char *m = o->mn;
+    if (!strcmp(m, "B") || !strcmp(m, "BL") || !strcmp(m, "BX") ||
+        !strcmp(m, "BLX") || !strcmp(m, "PUSH") || !strcmp(m, "POP") ||
+        !strcmp(m, "LDM") || !strcmp(m, "STM") || !strcmp(m, "LDMIA") ||
+        !strcmp(m, "STMIA") || !strcmp(m, "CPS") || !strcmp(m, "BKPT"))
+        return 1;
+    if (m[0] == 'I' && m[1] == 'T') return 1;      /* IT, ITE, ITT, ITTE, ... */
+    if (m[0] == 'B' && m[2] && !m[3] && strchr("NEGTLOSH", m[1]))
+        return 1;                                   /* BNE BEQ BGT BGE BLT BLE BLO BHI BHS BLS */
+    return 0;
+}
+
+/* Does this line fully overwrite its first operand?  MOVT is excluded: it
+ * writes only the top half, so it does not kill the low half MOVW produced. */
+static int cp_writes(const cp_ins *o, int *r) {
+    static const char *W[] = {
+        "MOV", "MOVW", "MVN", "ADD", "SUB", "AND", "ORR", "EOR", "BIC", "ORN",
+        "LSL", "LSR", "ASR", "RSB", "SBC", "ADC", "RSC", "MUL", "UDIV", "SDIV",
+        "UXTB", "UXTH", "SXTB", "SXTH", "REV", "REV16", "REVSH", "RRX", "CLZ",
+        "LDR", "LDRB", "LDRH", "LDRSB", "LDRSH", "LDRD", NULL
+    };
+    int i = 0, n;
+    if (o->nops < 1) return 0;
+    while (W[i] && strcmp(o->mn, W[i])) i++;
+    if (!W[i]) return 0;
+    if (!cp_reg(o->op[0], &n)) return 0;
+    *r = n;
+    return 1;
+}
+
+/* Three-operand ALU ops that may absorb the copy.  CMP/CMN/TST are left out
+ * on purpose (see rule B above). */
+static int cp_op_ok(const char *m) {
+    static const char *OK[] = {
+        "LSL", "LSR", "ASR", "ADD", "SUB", "AND", "ORR", "EOR", "RSB",
+        "SBC", "ADC", "MUL", "UDIV", "SDIV", "BIC", NULL
+    };
+    int i = 0;
+    while (OK[i] && strcmp(m, OK[i])) i++;
+    return OK[i] != NULL;
+}
+
+/* One walk over the function.  Returns the number of rewrites; the caller
+ * repeats until it reaches zero, because a fold can expose another one. */
+static int cp_pass(AsmBuffer *b, int from) {
+    static int ls[PP_MAX_LINES], ll[PP_MAX_LINES];
+    static char t[256], u[256];
+    AsmBuffer out;
+    int n, i, changed = 0;
+    n = pp_split_lines(b, from, ls, ll, PP_MAX_LINES);
+    if (n < 0) return 0;
+    asmbuf_init(&out);
+    i = 0;
+    while (i < n) {
+        cp_ins cu;
+        int d, s, done = 0;
+        if (ll[i] < (int)sizeof t &&
+            pp_trim(b->buf + ls[i], ll[i], t, sizeof t) >= 0 &&
+            cp_parse(t, &cu) && !strcmp(cu.mn, "MOV") && cu.nops == 2 &&
+            cp_reg(cu.op[0], &d) && d <= 12) {
+            /* Rule B first: the MOV the OP consumes is not dead. */
+            if (cp_reg(cu.op[1], &s) && d != s) {
+                int j = i + 1, hit = 0;
+                cp_ins cv;
+                while (j < n) {
+                    if (ll[j] >= (int)sizeof u) break;
+                    if (pp_trim(b->buf + ls[j], ll[j], u, sizeof u) < 0) break;
+                    if (pp_pad(u)) { j++; continue; }      /* .loc / comment */
+                    hit = 1;
+                    break;
+                }
+                if (hit && cp_parse(u, &cv) && cv.nops == 3 && cp_op_ok(cv.mn)) {
+                    int a, bb, xr;
+                    if (cp_reg(cv.op[0], &a) && cp_reg(cv.op[1], &bb) &&
+                        a == d && bb == d &&
+                        !(cp_reg(cv.op[2], &xr) && xr == d)) {
+                        int k;
+                        char nw[128];
+                        for (k = i + 1; k < j; k++)
+                            pp_copy_line(&out, b->buf + ls[k], ll[k]);
+                        snprintf(nw, sizeof nw, "    %s r%d, r%d, %s\n",
+                                 cv.mn, d, s, cv.op[2]);
+                        asmbuf_puts(&out, nw);
+                        i = j + 1;
+                        changed++;
+                        done = 1;
+                    }
+                }
+            }
+            /* Rule A: dead copy, plain register or immediate alike. */
+            if (!done) {
+                int src_ok = 0;
+                if (cp_reg(cu.op[1], &s) || cu.op[1][0] == '#') src_ok = 1;
+                if (src_ok) {
+                    int j;
+                    for (j = i + 1; j < n; j++) {
+                        cp_ins cv;
+                        int w;
+                        if (ll[j] >= (int)sizeof u) break;
+                        if (pp_trim(b->buf + ls[j], ll[j], u, sizeof u) < 0) break;
+                        if (!u[0]) continue;
+                        if (u[0] == ';' || u[0] == '@') continue;
+                        if (u[0] == '.') {
+                            int m = ark_strlen(u);
+                            if (m == 0 || u[m - 1] == ':') break;   /* label */
+                            continue;                               /* directive */
+                        }
+                        if (!cp_parse(u, &cv)) break;
+                        if (cp_is_boundary(&cv)) break;
+                        if (cp_reads(&cv, d)) break;
+                        if (cp_writes(&cv, &w) && w == d) { done = 2; break; }
+                    }
+                }
+            }
+        }
+        if (done == 2) { changed++; i++; continue; }   /* drop the dead MOV */
+        if (done == 1) continue;                        /* already emitted */
+        pp_copy_line(&out, b->buf + ls[i], ll[i]);
+        i++;
+    }
+    if (changed) pp_splice(b, from, &out);
+    return changed;
+}
+
+static void ark_copyprop_function(AsmBuffer *b, int from) {
+    int round;
+    if (!g_config.enable_opt_copyprop) return;
+    for (round = 0; round < 4; round++) {
+        if (cp_pass(b, from) == 0) break;
+    }
+}
+#endif /* ARKCC_FEATURE_OPT_COPYPROP */
+#endif /* ARKCC_FEATURE_OPT_PEEP || ARKCC_FEATURE_OPT_COPYPROP */
 
 #if ARKCC_FEATURE_OPT_REGALLOC
 /* --------------------------- register allocation -------------------------
@@ -8336,6 +8600,12 @@ static char *codegen_arm(IrProgram *prog) {
          * adjacent PUSH/POP pairs and a load of the slot just written.  Runs
          * before regalloc so the slot rewriter sees the shorter text. */
         if (g_config.enable_opt_peep) ark_peep_function(&buf, fstart);
+#endif
+#if ARKCC_FEATURE_OPT_COPYPROP
+        /* IAR's ECT family: drop dead register copies and forward a copy into
+         * its single consumer.  Runs on the text peep left behind, still
+         * before regalloc so the slot rewriter sees fewer instructions. */
+        if (g_config.enable_opt_copyprop) ark_copyprop_function(&buf, fstart);
 #endif
 #if ARKCC_FEATURE_OPT_REGALLOC
         /* The text of this function is complete: it is the last slice of the
