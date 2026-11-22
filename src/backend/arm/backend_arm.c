@@ -1166,19 +1166,28 @@ static void ark_regalloc_function(AsmBuffer *b, int from, IrFunc *f, int local_e
  *
  * How it is safe.  This is a text pass over an already emitted function, with
  * a shadow model of the value stack (`skind`/`spool`) and of what each
- * register currently holds (`pend` = "rN holds pool slot k").  It is all or
- * nothing per function: any line whose shape is not in the table below, any
- * branch/label/call with a non-empty value stack, any multi-register PUSH/POP
- * that is not the prologue/epilogue, any "[sp" access, any use of a pool
- * register as a data operand -- each of those abandons the function and the
- * emitted text is spliced back untouched.  So the worst case of a bug is
- * "the pass declines", never "the pass emits a wrong instruction".
+ * register currently holds (`pend` = "rN holds pool slot k").  A value still
+ * on the shadow stack at a label, a call or a branch is *pinned*: the
+ * `PUSH {rN}` that created it is emitted for real, so the machine stack is
+ * word for word the unoptimised one on every path into the boundary (a local
+ * label such as `.L3:` counts as a label, not as a directive), the register
+ * mappings are flushed, and the block after the boundary is optimised again
+ * from an empty register state.
+ *
+ * A line whose shape is not in the table below, a multi-register PUSH/POP
+ * that is not the prologue/epilogue, or a "[sp" access ends the rewrite at
+ * that line: every value still in a pool register is pushed in stack order,
+ * the pending register copies are spelled out, and the rest of the function
+ * is copied through verbatim, so what was already rewritten is kept.  (That
+ * needs the words already in memory to sit *below* the pooled ones; any other
+ * shape, and a survey hit before the first line, still abandons the whole
+ * function.)  A function can therefore never come out larger than it did
+ * before the pass, and the worst case of a bug is "the pass declines", never
+ * "the pass emits a wrong instruction".
  *
  * The pool is r5 and r7: the prologue already saves them for every function
  * (`PUSH {r5, r6, r7, lr}`), so using them costs zero extra frame bytes and
- * cannot disturb any frame offset.  r4 is not used: saving it would make the
- * prologue save an odd number of words and break the 8-byte sp alignment that
- * AAPCS requires at every call.  A function that names r5 or r7 in its body
+ * cannot disturb any frame offset.  A function that names r5 or r7 in its body
  * (struct-by-value and long-long return paths do) simply drops it from the
  * pool; if both are taken the pass still runs the PUSH/POP-pair peephole.
  *
@@ -1602,6 +1611,45 @@ static int vs_all_mem(const int *skind, int depth) {
     return 1;
 }
 
+/* Stop the rewrite in the middle of a function without giving up what has
+ * already been emitted.  Before the rest is copied through verbatim the
+ * machine stack has to look exactly like the unoptimised one at this
+ * point: every value the shadow stack holds only in a pool register is
+ * pushed for real, in stack order, and the register mappings are spelled
+ * out.  A `POP` in the copied tail then finds its word, and a value read
+ * from its register finds the copy.  The optimised prefix stays, so a
+ * function can never come out larger than it did before this pass. */
+/* Returns 1 when the shadow stack can be restored by pushing the pooled
+ * entries on top, i.e. when no word already in memory sits above a pooled
+ * one (`00..011..1`).  Any other shape would need the live words to be
+ * pulled off and pushed back below the new ones, so the caller gives the
+ * whole function up instead -- exactly the old behaviour, never worse. */
+static int vs_cut_shape_ok(const int *skind, int depth)
+{
+    int k, seen_pool = 0;
+    for (k = 0; k < depth; k++) {
+        if (skind[k] == 1) seen_pool = 1;
+        else if (seen_pool) return 0;
+    }
+    return 1;
+}
+
+static void vs_cut_verbatim(AsmBuffer *o, int depth, const int *skind,
+                            const int *spool, const int *pool,
+                            int *pend, int *pref, int *pbusy)
+{
+    char nm[8];
+    int k;
+    for (k = 0; k < depth; k++) {
+        if (skind[k] != 1) continue;
+        vs_rname(pool[spool[k]], nm);
+        asmbuf_puts(o, "    PUSH {");
+        asmbuf_puts(o, nm);
+        asmbuf_puts(o, "}\n");
+    }
+    vs_flush_all(o, pend, pref, pbusy, pool);
+}
+
 /* Is `reg` written before it is read, starting at line `from`?  Used to decide
  * whether the producer's destination can be moved into the pool: only when
  * nothing reads the old value first (IR_DUP keeps a live copy in r0). */
@@ -1899,11 +1947,15 @@ static void ark_vstack_function(AsmBuffer *b, int from)
             int nops, isdot, islab, f, cnd;
             if (L[i].del) continue;
             if (!vs_parse(L[i].t, mn, sizeof mn, ops, &nops, &isdot, &islab)) continue;
-            if (isdot) continue;
+            /* A local label such as `.L3:` is both a label and a line that
+             * starts with a dot; test the label form first, exactly like the
+             * rebuild does, or every branch target would be taken for a
+             * directive and the values live across it never pinned to memory. */
             if (islab) {
                 for (k = 0; k < nopen; k++) L[open[k]].cross = 1;
                 continue;
             }
+            if (isdot) continue;             /* .loc / .cfi / .word: no effect */
             if (vs_streq(mn, "PUSH") || vs_streq(mn, "POP")) {
                 int pr = -1;
                 if (nops == 1 && vs_whole_reg(ops[0], &pr)) {
@@ -1949,9 +2001,22 @@ static void ark_vstack_function(AsmBuffer *b, int from)
             continue;
         }
         if (islab) {
+            /* A label can be reached from more than one path, so nothing
+             * may be assumed about the registers here: every value still
+             * live must be physically in memory, else the pass gives up.
+             * Once it is, the machine stack matches the unoptimised code on
+             * every path into the label, the register mappings are flushed
+             * and the block after the label is optimised from an empty
+             * register state -- no need to copy the rest of the function
+             * through verbatim. */
             if (depth != 0 || nmem != 0) {
-                if (!vs_all_mem(skind, depth)) { bail = 1; break; }
-                verbf = 1;
+                if (!vs_all_mem(skind, depth)) {
+                    if (!vs_cut_shape_ok(skind, depth)) { bail = 1; break; }
+                    vs_cut_verbatim(&out, depth, skind, spool, pool, pend, pref, pbusy);
+                    verbf = 1;
+                    vs_put_line(&out, L[i].t);
+                    continue;
+                }
             }
             vs_flush_all(&out, pend, pref, pbusy, pool);
             vs_put_line(&out, L[i].t);
@@ -1964,7 +2029,13 @@ static void ark_vstack_function(AsmBuffer *b, int from)
             /* epilogue: everything after it until the next label is the
              * restore sequence and is copied through untouched. */
             if (depth != 0 || nmem != 0) {
-                if (!vs_all_mem(skind, depth)) { bail = 1; break; }
+                if (!vs_all_mem(skind, depth)) {
+                    if (!vs_cut_shape_ok(skind, depth)) { bail = 1; break; }
+                    vs_cut_verbatim(&out, depth, skind, spool, pool, pend, pref, pbusy);
+                    verbf = 1;
+                    vs_put_line(&out, L[i].t);
+                    continue;
+                }
                 verbf = 1;
             }
             vs_flush_all(&out, pend, pref, pbusy, pool);
@@ -1985,8 +2056,20 @@ static void ark_vstack_function(AsmBuffer *b, int from)
 
         if (vs_streq(mn, "PUSH")) {
             int r = -1, p;
-            if (nops != 1 || !vs_whole_reg(ops[0], &r)) { bail = 1; break; }
-            if (depth >= VS_MAX_DEPTH) { bail = 1; break; }
+            if (nops != 1 || !vs_whole_reg(ops[0], &r)) {
+                if (!vs_cut_shape_ok(skind, depth)) { bail = 1; break; }
+                vs_cut_verbatim(&out, depth, skind, spool, pool, pend, pref, pbusy);
+                verbf = 1;
+                vs_put_line(&out, L[i].t);
+                continue;
+            }
+            if (depth >= VS_MAX_DEPTH) {
+                if (!vs_cut_shape_ok(skind, depth)) { bail = 1; break; }
+                vs_cut_verbatim(&out, depth, skind, spool, pool, pend, pref, pbusy);
+                verbf = 1;
+                vs_put_line(&out, L[i].t);
+                continue;
+            }
             if (L[i].cross) {
                 /* still live at a label/branch/call: the word has to be
                  * in memory there, so push it for real.  A value that
@@ -2056,8 +2139,20 @@ static void ark_vstack_function(AsmBuffer *b, int from)
 
         if (vs_streq(mn, "POP")) {
             int r = -1;
-            if (nops != 1 || !vs_whole_reg(ops[0], &r)) { bail = 1; break; }
-            if (depth <= 0) { bail = 1; break; }
+            if (nops != 1 || !vs_whole_reg(ops[0], &r)) {
+                if (!vs_cut_shape_ok(skind, depth)) { bail = 1; break; }
+                vs_cut_verbatim(&out, depth, skind, spool, pool, pend, pref, pbusy);
+                verbf = 1;
+                vs_put_line(&out, L[i].t);
+                continue;
+            }
+            if (depth <= 0) {
+                if (!vs_cut_shape_ok(skind, depth)) { bail = 1; break; }
+                vs_cut_verbatim(&out, depth, skind, spool, pool, pend, pref, pbusy);
+                verbf = 1;
+                vs_put_line(&out, L[i].t);
+                continue;
+            }
             if (pend[r] >= 0) { vs_ref_rel(pend[r], pref, pbusy); pend[r] = -1; }
             depth--;
             if (skind[depth] == 1) {
@@ -2076,12 +2171,30 @@ static void ark_vstack_function(AsmBuffer *b, int from)
         }
 
         f = vs_form(mn, nops, ops, &cnd);
-        if (f < 0) { bail = 1; break; }
+        if (f < 0) {
+            if (!vs_cut_shape_ok(skind, depth)) { bail = 1; break; }
+            vs_cut_verbatim(&out, depth, skind, spool, pool, pend, pref, pbusy);
+            verbf = 1;
+            vs_put_line(&out, L[i].t);
+            continue;
+        }
 
         if (f == VS_F_CALL) {
+            /* Same rule as a label: the callee may not clobber the words
+             * already pushed above sp, and it must preserve the pool
+             * registers (they are all callee-saved), so once every live
+             * value is in memory the block after the call is optimised
+             * normally.  Argument pushes cleaned up by a later
+             * `ADD sp, sp, #N` simply stay in the shadow stack as pinned
+             * entries, which keeps every later PUSH/POP pair aligned. */
             if (depth != 0 || nmem != 0) {
-                if (!vs_all_mem(skind, depth)) { bail = 1; break; }
-                verbf = 1;
+                if (!vs_all_mem(skind, depth)) {
+                    if (!vs_cut_shape_ok(skind, depth)) { bail = 1; break; }
+                    vs_cut_verbatim(&out, depth, skind, spool, pool, pend, pref, pbusy);
+                    verbf = 1;
+                    vs_put_line(&out, L[i].t);
+                    continue;
+                }
             }
             vs_flush_all(&out, pend, pref, pbusy, pool);
             vs_put_ins(&out, mn, ops, nops, 0);
@@ -2089,9 +2202,18 @@ static void ark_vstack_function(AsmBuffer *b, int from)
             continue;
         }
         if (f == VS_F_BRANCH) {
+            /* The taken path leaves the same machine stack (the original
+             * program is sp-consistent at the target), and the fall-through
+             * path continues from pinned entries only, so a branch is just
+             * a flush, not the end of the optimisation. */
             if (depth != 0 || nmem != 0) {
-                if (!vs_all_mem(skind, depth)) { bail = 1; break; }
-                verbf = 1;
+                if (!vs_all_mem(skind, depth)) {
+                    if (!vs_cut_shape_ok(skind, depth)) { bail = 1; break; }
+                    vs_cut_verbatim(&out, depth, skind, spool, pool, pend, pref, pbusy);
+                    verbf = 1;
+                    vs_put_line(&out, L[i].t);
+                    continue;
+                }
             }
             vs_flush_all(&out, pend, pref, pbusy, pool);
             vs_put_ins(&out, mn, ops, nops, 0);

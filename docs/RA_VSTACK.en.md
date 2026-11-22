@@ -70,9 +70,11 @@ only goes up from r8), so it can be the third slot -- provided the cost is paid 
 - **Gate**: the survey simulates the shadow depth and records the **peak number of values held on
   the machine stack at once** (`sdmax`; a `BL` resets it, because a call consumes its argument
   pushes).  r4 is only taken when `sdmax >= 3`: a function that never goes deeper than two saves
-  not one instruction, so an extra saved register is a pure loss.  On the HAL corpus only 59 of the
-  203 rewritable functions pass; the other 63 "deep enough" functions saved exactly -- 0
-  instructions each, so the gate is not a conservative guess but a measurement.
+  not one instruction, so an extra saved register is a pure loss.  In a HAL count taken before
+  crossing was introduced, only 59 of the 203 rewritable functions passed; the other 63 "deep
+  enough" functions saved exactly -- 0 instructions each, so the gate is not a conservative guess
+  but a measurement.  (Crossing changes which functions reach the pass, so this count only answers
+  "should the gate exist at all"; it is not meant to be added to the later totals.)
 - **The frame has to grow by one word**: `PUSH {r5, r6, r7, lr}` is 16 bytes, adding r4 makes 20,
   so `sp` is 4 (mod 8) and the AAPCS 8-byte alignment is broken on the spot; therefore
   `SUB sp, sp, #N` and `ADD sp, sp, #N` must both become `N+4` (`N` is a multiple of 8 by
@@ -91,8 +93,9 @@ A function with no parameters and no locals gets no frame at all from the code g
 prologue is `PUSH {r5, r6, r7, lr}` followed by `MOV r6, sp` (there is no `SUB sp`), and the
 epilogue is `MOV sp, r6` followed by `POP {r5, r6, r7, pc}`.  The first r4 implementation in 0.9.1
 could not reach them, because the whole path hinged on rewriting `SUB sp, sp, #N` to `#N+4` -- and
-there is no `SUB` to rewrite.  81 of the 203 rewritable functions in the HAL corpus are frame-less;
-closing this gap puts 28 more functions over the depth threshold.
+there is no `SUB` to rewrite.  In the same pre-crossing HAL count, 81 of the 203 rewritable
+functions were frame-less; closing this gap put 28 more functions over the depth threshold (that
+count exists to justify the path, not as a figure to quote next to the later totals).
 
 The frame-less path touches three things: `PUSH`/`POP` become five-register forms, and **one**
 `SUB sp, sp, #4` is added.
@@ -141,17 +144,23 @@ The canonical case is the return-and-store sequence of a 5..8-byte struct (`POP 
 PUSH r0` -- the same word must appear twice on the stack). `pref[p]` counts every reference and
 the slot is only freed at zero; `vs_ref_add()` / `vs_ref_rel()` are the only entry points.
 
-## 5. Safety rails: any hit leaves the whole function untouched
+## 5. Safety rails: any hit cuts the rewrite at that line
 
 - an unknown mnemonic with a register token (`vs_form()` returns `VS_F_UNKNOWN`)
 - `[sp` appears in the body, or `sp` is used as an operand
 - multi-register `PUSH`/`POP` (except the prologue's `PUSH {r5,r6,r7,lr}` and the epilogue's `POP {..,pc}`)
-- at a label / `B` / `Bcc` / `BX` / `BL` / `IT`: the shadow stack or the memory stack is not empty
+- at a label / `B` / `Bcc` / `BX` / `BL` / `IT`: the shadow stack is not empty **and** cannot be
+  materialised entirely into memory (§5.1)
 - `MOV sp, r6` with a non-empty shadow stack
 
 Whatever `pend` mappings are still alive at those boundaries are materialised by `vs_flush_all()`
 with `MOV rN, p` before being dropped (a conditional instruction before `IT` may not execute, so
 everything is materialised unconditionally).
+
+**A hit no longer abandons the whole function** (since 0.9.1): it copies everything from that line
+to the end of the function through verbatim and keeps the already rewritten prefix; see §5.2.  The
+whole function falls back only when the optimised prefix cannot be turned back into the original
+machine stack.
 
 `MOVW`/`MOVT` are **never retargeted**: the pair builds one value in one register, and rewriting
 only the second half leaves `0xFFFF` in the low half (really happened: `__aeabi_lmul(-3, 7)`
@@ -174,15 +183,48 @@ The rule is relaxed as follows -- **cross only when the condition holds, otherwi
    still on the shadow stack must physically be in memory -- when several paths rejoin at a label,
    the machine stack has to match the original code word for word, and pool registers cannot be
    reconstructed (the other path does not know what they hold).
-3. **Check `vs_all_mem()` at the boundary**: at a label / epilogue / `CALL` / `BRANCH`, if
-   `depth != 0` or `nmem != 0`, set `verbf = 1` and continue only when the shadow stack is
-   **entirely `MEM`**; otherwise bail.
-4. **After `verbf` the rest is emitted verbatim**: once set, depth is no longer tracked and every
-   following line is passed through -- after the boundary we assume nothing about the shadow stack.
+3. **Check `vs_all_mem()` at the boundary**: at a label / `CALL` / `BRANCH`, if `depth != 0` or
+   `nmem != 0`, only an **entirely `MEM`** shadow stack lets the pass `vs_flush_all()` and then
+   **keep optimising the next basic block from an empty register state**; anything else is cut
+   per §5.2.  The epilogue (`MOV sp, r6`) is different: when everything is `MEM` it sets
+   `verbf = 1` and the rest of the function is copied through (there is nothing to optimise
+   between the restore sequence and the next label).
+4. **The pre-scan must test the label form before the directive form**: `.L3:` is both a label and
+   a line starting with a dot.  The pre-scan once skipped it as `isdot` first, so no `B`/`Bcc`
+   target was ever tagged `cross`, the values live across those boundaries were never pinned to
+   memory, and 18 HAL functions fell back entirely (a net loss of 2,659 instructions).  The test
+   order now matches the rebuild side.
 
 The final check therefore went from "bail if `depth != 0 || nmem != 0`" to
-"`bail || (!verbf && (depth != 0 || nmem != 0))`". This is where the gain comes from: most
-functions had their values back in memory at the boundary all along, nobody just checked.
+"`bail || (!verbf && (depth != 0 || nmem != 0))`".
+
+Most functions had their values back in memory at the boundary all along; nobody just checked.
+Checking is only half of it: the pass now also keeps optimising after the boundary and keeps the
+prefix when it later meets a shape it cannot rebuild (§5.2).  Together those two changes save a
+further 1,445 instructions on the HAL corpus (37,977 → 36,532, -3.8%): 30 functions change and
+none grows.
+
+### 5.2 Keeping the optimised prefix when the pass gives up
+
+Relaxing the boundary is not enough: a few functions still cannot continue past a `POP {ip}`, a
+`PUSH` depth overflow or an unparsable instruction.  The old behaviour bailed the whole function
+and threw away hundreds of already rewritten instructions -- `HAL_DMA_IRQHandler` ended up 262
+instructions *larger* than the untransformed code (the rewritten prologue saved r4 but the gain
+was never collected).  The pass now **cuts** instead:
+
+- `vs_cut_shape_ok(skind, depth)` requires the shadow-stack shape to be `00...011...1`, i.e. every
+  `MEM` word sits **below** every pool-register word.  Then a single run of `PUSH {pool reg}` in
+  shadow-stack order reconstructs the machine stack word for word, with no pop-then-push dance.
+- `vs_cut_verbatim()` materialises the pool-resident shadow entries in stack order, then
+  `vs_flush_all()` emits the remaining register mappings; from there the line and everything after
+  it are copied through verbatim.
+- Only when the shape fails (`MEM` and pool words interleaved) does the pass `bail` and emit the
+  whole function untouched.
+
+That gives the pass its **never-worse guarantee**: a function can only end up (a) fully rewritten
+with fewer or equally many instructions, (b) rewritten up to some line and copied verbatim after
+it (the prefix only ever has fewer instructions), or (c) emitted unchanged.  The per-function HAL
+diff is therefore "30 functions change, 0 grow".
 
 ## 6. One peephole
 
@@ -194,9 +236,9 @@ only eats pairs that were already adjacent.
 
 | Corpus | off | on | change |
 | --- | --- | --- | --- |
-| STM32F4 HAL (`examples/ark_test/ark_test_all.c`, `-O2 -mcpu Cortex-M4`, non-directive non-label lines) | 47,884 insns | 37,976 insns (third slot included) | **-20.71%** |
-| same corpus, `-fopt-addr` on top of vstack (see `docs/ADDR_FOLD.md`) | 37,976 insns | 36,524 insns | -3.82% |
-| same corpus, `-fopt-strength` on top (see `docs/STRENGTH.en.md`) | 36,524 insns | 35,424 insns | -3.01% |
+| STM32F4 HAL (`examples/ark_test/ark_test_all.c`, `-O2 -mcpu Cortex-M4`, non-directive non-label lines) | 47,885 insns | 36,532 insns (third slot, crossing and cut-prefix included) | **-23.71%** |
+| same corpus, `-fopt-addr` on top of vstack (see `docs/ADDR_FOLD.md`) | 36,532 insns | 34,915 insns | -4.44% |
+| same corpus, `-fopt-strength` on top (see `docs/STRENGTH.en.md`) | 34,915 insns | 32,901 insns | -5.77% |
 | arith fixture, instructions | 171 | 121 | -29% |
 | same, `PUSH`/`POP` count | 88 | 14 | -84% |
 | same, image bytes | 1392 | 1292 | -7.2% |
@@ -230,19 +272,20 @@ The command behind the HAL row (from the repository root):
 # count lines that are neither '.' directives/labels nor ':' label lines
 ```
 
-Run it once more with `-fopt-vstack`; the difference between the two counts is the -20.71% in the
-table.  With `-fopt-vstack -fopt-addr` it is 36,524, and with all three flags (adding
-`-fopt-strength`) it is 35,424.  The r4 third slot is internal to the pass and has no flag of its
-own, so 37,976 is what that same `-fopt-vstack` command produces: 47,884 -> 38,004 on the
-frame-resident path, then -> 37,976 once the frame-less path lands (28 functions, each paying one
-`SUB sp, sp, #4` and saving more than that).  The r4 row is booked
-honestly: 59 functions each save one more word in the prologue and epilogue (about +472 bytes) for
-340 fewer instructions, and the **per-object byte size was not measured separately**, so only the
-instruction counts are reported.
+Run it once more with `-fopt-vstack`; the difference between the two counts is the -23.71% in the
+table.  With `-fopt-vstack -fopt-addr` it is 34,915, and with all three flags (adding
+`-fopt-strength`) it is 32,901.  The r4 third slot, crossing and the cut-prefix are all internal
+to the pass, so 36,532 is what that same `-fopt-vstack` command produces.  The per-function diff
+(functions split on `name:`) shows 30 functions changing and **none growing**: the biggest drops
+are `HAL_GPIO_Init` 1,281 -> 1,011, `HAL_DMA_IRQHandler` 2,264 -> 2,069 (before crossing and the
+cut it was the one function that got *worse*, 2,264 -> 2,526) and `HAL_DMA_Init` 943 -> 761.
+The r4 row is booked honestly: 59 functions each save one more word in the prologue and epilogue
+(about +472 bytes) for 340 fewer instructions, and the **per-object byte size was not measured
+separately**, so only the instruction counts are reported.
 
 ## 8. What the gate actually says
 
-`make test-vstack` (31 checks):
+`make test-vstack` (45 checks):
 
 - **the default build ignores the pass**: `-O2` and `-O2 -fno-opt-vstack` objects are byte-identical (1392/1392);
 - **it really saves**: instruction and `PUSH`/`POP` counts drop, the image does not grow;
@@ -259,6 +302,13 @@ instruction counts are reported.
   `MOV sp, r6` and `POP {r4, r5, r6, r7, pc}` -- **in exactly that order** (the `SUB` after
   `MOV r6, sp`, see 3.2) -- while `frameless_shallow` (two values) must not have r4 in its
   prologue; both arms (off/on) return 29;
+- **optimising continues past a boundary**: the `branch` fixture (two `?:` with the value already
+  in memory at the label) must drop both instructions and `PUSH/POP` (82 -> 58, 46 -> 8) and never
+  grow the image;
+- **the prefix survives a cut**: the `callptr` fixture (`PUSH {r}; POP {ip}; BLX ip`; `POP {ip}` is
+  a shape the pass cannot name) must keep `POP {ip}` verbatim, must have no leftover adjacent
+  PUSH/POP pair before it, and must still return 70 -- all three together separate "keep the
+  prefix" from "fall back for the whole function";
 - **it can be cropped**: a `-DARKCC_FEATURE_OPT_VSTACK=0` build refuses `-fopt-vstack` with
   `C3900U`, and still compiles without the flag.
 
@@ -279,7 +329,7 @@ flag is byte-identical to 0.9.0.
 
 ## 10. Known cost
 
-The pool has two slots, and r4 joins as a third one only when three values are alive at once and
+The pool has two slots by default, and r4 joins as a third one only when three values are alive at once and
 the function shape allows it; a live `pend` mapping pins its slot, and when the pool runs dry the
 pass falls back to a real `PUSH`. So it is **friendly to chained evaluation** and tends to zero on
 register-hungry expressions -- but it never produces worse code than the original sequence, which

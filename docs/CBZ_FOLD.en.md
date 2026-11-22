@@ -102,7 +102,7 @@ bytes" and nothing about them is guessed.
 Missing a fold beats emitting a wrong one; that is this pass's first design
 constraint. The price is that a region made entirely of 16-bit instructions is
 over-estimated by 2× and some sites that would have fitted are refused (hence
-396 out of 814 in §6).
+394 out of 814 in §6).
 
 ## 5. The flag scan (C4): why "the compiler never reads stale flags" is not enough
 
@@ -137,17 +137,20 @@ symbol table is small).
 
 | Corpus | plain `-O2` | `+ -fopt-cbz` | Change |
 | --- | --- | --- | --- |
-| STM32F4 HAL (`examples/ark_test/ark_test_all.c`, `-O2 -mcpu Cortex-M4`) | 47,884 | **47,489** | **−396** |
-| same, on top of `-fopt-vstack -fopt-addr -fopt-strength` | 34,500 | **34,080** | **−420** |
+| STM32F4 HAL (`examples/ark_test/ark_test_all.c`, `-O2 -mcpu Cortex-M4`) | 47,885 | **47,491** | **−394** |
+| same, on top of `-fopt-vstack -fopt-addr -fopt-strength` | 32,901 | **32,478** | **−423** |
 | same, object bytes (plain `-O2`) | 115,090 B | **113,506 B** | **−1,584 B** |
-| same, object bytes (full chain) | 90,208 B | **88,528 B** | **−1,680 B** |
+| same, object bytes (full chain) | 86,940 B | **85,240 B** | **−1,700 B** |
 
-Each fusion saves exactly 4 bytes, matching `-396 × 4 = -1,584` and
-`-420 × 4 = -1,680`. The four bytes come from the combination in §1: a 16-bit
+The byte columns are measured, not `count × 4`: the deleted pair varies in width
+(16-bit `CMP` + 16-bit `B` saves 2 bytes, 16-bit `CMP` + 32-bit `B` saves 4, and a
+wide `CMP.W` with a wide branch saves 6), so the average lands just above four bytes
+per fusion. The instruction-count column is the reproducible criterion. §1 explains
+why the pair costs what it costs: a 16-bit
 `CMP` plus a 32-bit conditional branch is 6 bytes, `CBZ` is 2.
 
-**Why 396 and not all of them**: the HAL corpus contains **814** adjacent
-"`CMP rX,#0` followed by `BEQ/BNE`, local label, register in r0--r7" pairs; 396
+**Why 394 and not all of them**: the HAL corpus contains **814** adjacent
+"`CMP rX,#0` followed by `BEQ/BNE`, local label, register in r0--r7" pairs; 394
 were fused. The rest fall into three bounds:
 
 - **the 64-byte upper bound**: a large `if` body does not fit (T1 has ±62 bytes
@@ -205,7 +208,7 @@ had to compile.
 
 The defect actually hit during development was **rebuilding from the trimmed
 lines**: the indentation of the whole function vanished and it looked as if
-fifty thousand lines had changed (the instruction count fell from 47,884 to
+fifty thousand lines had changed (the instruction count fell from 47,885 to
 13,966). Each line now keeps both the original text (what the rebuild writes)
 and the trimmed text (what the analysis reads); only the fused line is
 replaced.

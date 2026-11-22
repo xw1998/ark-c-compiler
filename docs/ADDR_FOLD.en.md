@@ -81,7 +81,10 @@ them would emit a wrong instruction. Hence the exemption requires
 
 In practice criterion 2 is where most of the win comes from: with criterion 1
 alone the HAL corpus loses 484 instructions; with criterion 2 as well it loses
-1,369.
+1,369. Both figures were measured on the compiler from **before** `-fopt-vstack`
+learned to continue past a label/call/branch; that change rewrote the very
+adjacency this rule feeds on, so the two sub-figures can no longer be reconciled
+with the current totals and are kept only to explain the mechanism.
 
 ## 4. Never folded
 
@@ -129,15 +132,17 @@ Counts are the number of non-directive, non-label lines in the `.s`.
 
 | Corpus | `-fopt-vstack` | plus `-fopt-addr` | Change |
 | --- | --- | --- | --- |
-| STM32F4 HAL (`examples/ark_test/ark_test_all.c`, `-O2 -mcpu Cortex-M4`) | 37,976 instructions | 36,524 instructions | **−1,452 (−3.82%)** |
-| same, "`ADD` immediately followed by an access through that register" | 1,075 | **0** | all folded by R2 |
+| STM32F4 HAL (`examples/ark_test/ark_test_all.c`, `-O2 -mcpu Cortex-M4`) | 36,532 instructions | 34,915 instructions | **−1,617 (−4.44%)** |
+| same, "`ADD` immediately followed by an access through that register" | 1,084 | **0** | all folded by R2 |
 | same, "`MOV` immediately followed by an access through that register" | 0 | 0 | nothing foldable |
 
-The residual detector only recognises the adjacent shape "`ADD` then one `[rD]`
-with no offset", so 1,075 is a **lower bound for the register-index form**. The
-total reduction of 1,452 is larger; the remainder was not attributed rule by rule,
-so no claim is made about it. The baseline is the 37,976 instructions **after**
-`-fopt-vstack` (the crossing version, third slot included), not the 47,884 of
+The residual detector recognises the adjacent shape "`ADD rD, ...` followed by
+one access through `[rD ...]`", so 1,084 is the direct count. The total reduction of 1,617 is larger; the
+remainder was not attributed rule by rule, so no claim is made about it. Note that
+these 1,084 sites are **independent of `-fopt-vstack`** — the plain `-O2` baseline
+measures the same 1,084, so the table compares the same vstack output with and
+without `-fopt-addr`. The baseline is the 36,532 instructions **after**
+`-fopt-vstack` (crossing continuation and third slot included), not the 47,885 of
 plain `-O2`; do not mix the two.
 
 The HAL corpus is a floor for this layer, not a ceiling: it is almost entirely
@@ -233,7 +238,7 @@ leaves the shift right next to the access, which is exactly what the second half
 of `-fopt-strength` (R4) merges into a single `LDR r0, [r4, r1, LSL #2]`. So addr
 does not own that merge: it only deletes the `ADD` and exposes the shape. The
 merge belongs to strength, because strength is what emitted the shift. **addr on
-its own is unchanged** (`-fopt-vstack -fopt-addr` still measures 36,524 on this
+its own is unchanged** (`-fopt-vstack -fopt-addr` measures 34,915 on this
 corpus, byte-for-byte what it was before R4).
 
 There is also one liveness fix shared with R1-R3: `ad_rw()` used to put `PUSH`

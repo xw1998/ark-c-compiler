@@ -147,6 +147,38 @@ static int flat(void) { return f1a + f1b; }
 int main(void) { return flat() & 0xFF; }
 """
 
+# Two boundaries the pass has to cross.  `branchy` is the shape every `?:`
+# emits -- `PUSH {r0}` / `B .Lend` / `.Lelse: PUSH {r0}` / `.Lend: POP {r0}` --
+# so a value is live at a label that a branch jumps to.  Local labels start
+# with a dot *and* are labels; a pass that reads `.Lelse:` as a directive never
+# pins the value and has to give the whole function up.
+BRANCH = """\
+int va_pad_b;
+static int branchy(int n)
+{
+    int t = (n & 3) ? 1 : 0;
+    int u = (n & 4) ? 2 : 3;
+    return (t * 10 + u) * (n + 1) + (n ^ t);
+}
+int main(void) { return branchy(5) & 0xFF; }
+"""
+
+# A call through a function pointer ends in `PUSH {r}` / `POP {ip}` /
+# `BLX ip`.  The pass does not model the pop into ip, so it has to stop
+# rewriting there -- but what it already rewrote must stay, otherwise one
+# unmodelled instruction at the end of a function costs the whole body.
+CALLPTR = """\
+int va_pad_p;
+static int inc(int a) { return a + 1; }
+static int callit(int (*fp)(int), int a, int b)
+{
+    int s = a * 3 + b;
+    s = fp(s);
+    return s * (a - b + 2);
+}
+int main(void) { return callit(inc, 4, 1) & 0xFF; }
+"""
+
 def py_arith(a=5, b=7, c=9, d=3):
     x = a + b
     y = c - d
@@ -179,6 +211,16 @@ def py_deep():
 def py_shallow():
     return (3 + 4) & 0xFF
 
+def py_branch(n=5):
+    t = 1 if (n & 3) else 0
+    u = 2 if (n & 4) else 3
+    return (((t * 10 + u) * (n + 1)) + (n ^ t)) & 0xFF
+
+def py_callptr(a=4, b=1):
+    s = a * 3 + b
+    s = s + 1
+    return (s * (a - b + 2)) & 0xFF
+
 # name, body, python answer
 CASES = [
     ('arith',    ARITH,    py_arith()),
@@ -187,10 +229,12 @@ CASES = [
     ('variadic', VARIADIC, py_variadic()),
     ('deep',     DEEP,     py_deep()),
     ('shallow',  SHALLOW,  py_shallow()),
+    ('branch',   BRANCH,   py_branch()),
+    ('callptr',  CALLPTR,  py_callptr()),
 ]
 
 # the two fixtures whose instruction count the pass must actually reduce
-PAYS = ('arith', 'loop')
+PAYS = ('arith', 'loop', 'branch', 'callptr')
 
 INSN_RE = re.compile(r'^\s+[A-Za-z][A-Za-z0-9.]*\s')
 STKP_RE = re.compile(r'^\s+(PUSH|POP)\b')
@@ -471,6 +515,49 @@ def main():
                 check(got['off'] == got['on'] == 29,
                   'frame-less: off/on return the same value',
                   'off=%s on=%s' % (got['off'], got['on']))
+
+        # --- 4d. a boundary keeps what was already rewritten ----------------
+        # Two different boundaries.  At a label (`branch`) a value is live
+        # where a branch jumps in, so the pass has to pin it to memory and go
+        # on rewriting the block after the label.  At a `POP {ip}` (`callptr`)
+        # the shape is not modelled at all, so the pass has to stop -- but the
+        # part it already rewrote has to be emitted anyway, or one unmodelled
+        # instruction near the end of a function costs the whole body.
+        def body_of(text, name):
+            out, on = [], False
+            for ln in text.splitlines():
+                if re.match(r'^%s:\s*$' % re.escape(name), ln):
+                    on = True
+                    continue
+                if on and ln.strip().startswith('.size'):
+                    break
+                if on:
+                    out.append(ln)
+            return '\n'.join(out)
+
+        t_bn, _, e_bn = build(arkcc, work, 'branch', [FLAG], 'bnon')
+        t_bno, _, e_bno = build(arkcc, work, 'branch', [], 'bnoff')
+        t_cp, _, e_cp = build(arkcc, work, 'callptr', [FLAG], 'cuton')
+        t_cpo, _, e_cpo = build(arkcc, work, 'callptr', [], 'cutoff')
+        if e_bn or e_bno or e_cp or e_cpo:
+            check(False, 'the boundary fixtures build',
+                  (e_bn or e_bno or e_cp or e_cpo)[0][:120])
+        else:
+            b_on, b_off = body_of(t_bn, 'branchy'), body_of(t_bno, 'branchy')
+            check(b_on and b_off and insn_count(b_on) < insn_count(b_off),
+                  'branch: the block after a branch target is rewritten too',
+                  '%d -> %d instruction(s)' % (insn_count(b_off), insn_count(b_on)))
+            check(stack_ops(b_on) < stack_ops(b_off),
+                  'branch: the value live at the label is pinned, not spilled',
+                  '%d -> %d PUSH/POP' % (stack_ops(b_off), stack_ops(b_on)))
+            c_on = body_of(t_cp, 'callit')
+            head = c_on.split('POP {ip}')[0] if 'POP {ip}' in c_on else c_on
+            check('POP {ip}' in c_on,
+                  'callptr: the unmodelled pop is copied through verbatim',
+                  'POP {ip} present' if 'POP {ip}' in c_on else 'missing')
+            check(not stack_pairs(head),
+                  'callptr: the rewritten prefix survives the cut',
+                  '%d leftover pair(s)' % stack_pairs(head))
 
         # --- 5. cropped out, refused ----------------------------------------
         trimmed, why = build_arkcc(work, ['-DARKCC_FEATURE_OPT_VSTACK=0'],

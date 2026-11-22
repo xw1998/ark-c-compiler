@@ -149,7 +149,7 @@ Corpus: `examples/ark_test/ark_test_all.c` (STM32F401xE + HAL + CMSIS, `-O2 -mcp
 
 | Build | Instructions | Delta | `MUL` | `LSL` |
 | --- | --- | --- | --- | --- |
-| `-O2` | 47,884 | — | 1,105 | 125 |
+| `-O2` | 47,885 | — | 1,105 | 125 |
 | `-O2 -fopt-strength` | **46,779** | **−1,105 (−2.31%)** | **12** | 1,209 |
 
 Breaking the 1,105 down: the 1,052 `LOAD_IDX` stride scales × 2 instructions = 2,104
@@ -164,16 +164,19 @@ value-times-value (fixed-point/ratio arithmetic in the HAL). In other words, the
 
 | Build | Instructions | Delta |
 | --- | --- | --- |
-| `-fopt-vstack` | 37,976 | (−20.71% vs plain `-O2`) |
-| `+ -fopt-addr` | 36,524 | −3.82% |
-| `+ -fopt-strength` | 35,424 | −1,100 (−3.01%) |
-| `+ -fopt-strength`, second half R4 active | **34,500** | **−924 (−2.61%)** |
+| `-fopt-vstack` | 36,532 | (−23.71% vs plain `-O2`) |
+| `+ -fopt-addr` | 34,915 | −1,617 (−4.44%) |
+| `+ -fopt-strength` (including the R4 half) | **32,901** | **−2,014 (−5.77%)** |
 
-Full chain: **47,884 → 37,976 → 36,524 → 35,424 → 34,500 (−27.95% cumulative)**.
+Full chain: **47,885 → 36,532 → 34,915 → 32,901 (−31.29% cumulative)**.
 
-R4 gets its own row only to keep the accounting readable: it is the *same* switch as the
-row above. A user who passes `-fopt-strength` gets both halves; there is no second flag
-(same reasoning as "one switch, two landing points" in §1).
+R4 is the *same* switch as the IR-level rewrite in the row above: a user who passes
+`-fopt-strength` gets both halves, there is no second flag (same reasoning as "one switch,
+two landing points" in §1), so they share one row here. The "924 folds into the addressing
+mode" figure belongs to the version where R4 landed (before `-fopt-vstack` learned to
+continue past a label/call/branch) and is not reconciled with the totals above; what can be
+checked directly on the current chain is the shape count: 918 `[rB, rI, LSL #n]` operands in
+the `all` arm, 134 residual `LSL #1..3` (see §6.5).
 
 ### 6.3 Object bytes (same TU, `-c`)
 
@@ -181,17 +184,17 @@ row above. A user who passes `-fopt-strength` gets both halves; there is no seco
 | --- | --- | --- |
 | `-O2` | 115,090 | — |
 | `-O2 -fopt-strength` | 112,878 | **−2,212 B (−1.92%)** |
-| `-fopt-vstack -fopt-addr` | 92,408 | — |
-| `+ -fopt-strength` | 90,208 | **−2,200 B (−2.38%)** |
+| `-fopt-vstack -fopt-addr` | 89,132 | — |
+| `+ -fopt-strength` | 86,940 | **−2,192 B (−2.46%)** |
 
 The absolute sizes differ but the relative drop is similar, so the gain does not depend on
 the shape the previous two passes left behind.
 
-**R4 does not change the object bytes**: the `all` arm is **90,208 B** both before and after
-R4. That is not a no-op — every merge is "two 16-bit instructions become one 32-bit
-instruction". The instruction count drops by 924 while the byte count does not move by a
-single byte. The only honest way to state R4's gain is *instruction count*; it is not
-"smaller".
+**R4 does not change the object bytes**: when it landed the `all` arm measured **90,208 B**
+both before and after it. That is not a no-op — every merge is "two 16-bit instructions
+become one 32-bit instruction", and 16 + 16 = 32. So the instruction count drops while the
+byte count stays put. The struct argument holds for the current chain too; the only honest
+way to state R4's gain is *instruction count*, it is not "smaller".
 
 ### 6.4 Fixtures
 
@@ -218,7 +221,7 @@ only exists when strength is on (the shift is emitted there), and putting the ru
 would make addr recognise a shape it never produces, breaking addr's "OFF IS OFF"
 invariant. It lives in `ark_addr_function()`'s round loop, after R2/R3, gated *both* by
 `ARKCC_FEATURE_OPT_STRENGTH` and by the runtime `g_config.enable_opt_strength`. With the
-default (off) the behaviour is unchanged — the `va` arm still measures 36,524, byte-for-byte
+default (off) the behaviour is unchanged — the `va` arm still measures 34,915, byte-for-byte
 what it was before this work.
 
 Four safety conditions, all required:
@@ -241,14 +244,18 @@ Measurements (HAL corpus, `all` arm = `-fopt-vstack -fopt-addr -fopt-strength`):
 
 | Quantity | Value |
 | --- | --- |
-| `LSL rX, rY, #1..3` count (`on` arm → `all` arm) | 1,052 → 126 |
-| folds into the addressing mode | **924**, every one of them `LSL #2` |
-| `[rB, rI, LSL #n]` operands | 0 → **924** |
-| residue | 158 lines in `all` (1 in the fixture), all from `ad_dead_after()` bailing out conservatively at a label/branch |
+| `[rB, rI, LSL #n]` operands (`all` arm) | **918** |
+| residual `LSL rX, rY, #1..3` (`all` arm) | 134 = 125 `#2` + 9 `#1`; the `#2` ones come from `ad_dead_after()` bailing out conservatively at a label/branch, the `#1` ones are byte/halfword accesses with no shift field |
+
+The per-arm comparison (`on` → `all` 1,052 → 126, 924 folds, 158 residue) is the statistic of
+the version where R4 landed, before `-fopt-vstack` learned to continue past a label/call/
+branch. That change rewrote the input of `-fopt-strength`, so the per-arm figures no longer
+reproduce; the table above therefore uses absolute values that can be re-measured on the
+current chain.
 
 The nine `#1` lines (byte/halfword accesses around LDRSH) have no shift field at all and are
-skipped correctly — that is not a missed fold. The 158 residue is **not** chased: widening
-`ad_dead_after()` across branches would turn the analysis into a guess. Missing 158 folds is
+skipped correctly — that is not a missed fold. The 125 `#2` lines are **not** chased: widening
+`ad_dead_after()` across branches would turn the analysis into a guess. Missing those folds is
 preferable to an unsound fold.
 
 **The encoding is confirmed by a third party**: `tests/asm_cases/08_ldr_str_addr.s` contains
