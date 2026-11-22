@@ -2595,7 +2595,7 @@ static void ark_regalloc_function(AsmBuffer *b, int from, IrFunc *f, int local_e
  * Cost, measured on the STM32F4 HAL corpus: see docs/RA_VSTACK.md.
  */
 #define VS_MAX_POOL   3
-#define VS_MAX_DEPTH  24
+#define VS_MAX_DEPTH  256
 #define VS_MAX_OP     6
 #define VS_OPLEN      96
 #define VS_MAX_REG    16

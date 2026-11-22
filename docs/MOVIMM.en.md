@@ -147,7 +147,7 @@ A shape census over the same corpus at `-O2` splits the 451 exactly:
   linker patches with an address. They must stay.
 - Because no switch is involved, the `-O2` row moves even with every `-fopt-*` off, and
   the all-ten-switches row moves with it; the authoritative step-by-step chain is
-  `docs/COMPARISON.md` section 5 (current end point: 20,234 instructions / 48,466 bytes).
+  `docs/COMPARISON.md` section 5 (current end point: 19,112 instructions / 45,760 bytes).
 
 ## 6. Gate: `tests/run_movimm_tests.py` (20 checks)
 

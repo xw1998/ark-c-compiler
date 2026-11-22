@@ -232,7 +232,7 @@ In the earlier form of §5.1, once a boundary set `verbf`, **everything after it
 function** was copied through for good -- labels included, and the restore sequence after
 `MOV sp, r6` too. There is work left to do there: tracing the whole corpus shows only one site
 ever sets `verbf` (the `epi-all` case on `MOV sp, r6`), while the loss is spread over every
-instruction after it (1,066 instructions / 2,182 bytes on the ten-switch arm alone).
+instruction after it (1,066 instructions / 2,182 bytes on the ten-switch arm when it landed).
 
 `verbf` now only becomes permanent when the tail cannot be modelled; two places **resume**:
 
@@ -258,6 +258,31 @@ instruction after it (1,066 instructions / 2,182 bytes on the ten-switch arm alo
 conservative: **the worst case is no worse than before**. Even if the shadow stack is off, a
 later `POP` hitting `depth <= 0` falls back to `cut_verbatim`, which is fail-safe.
 
+### 5.4 Shadow-stack depth cap: 24 -> 256
+
+`VS_MAX_DEPTH` used to be just **24**: the moment the shadow stack hit the cap the pass took the
+`push-deep` cut (the same cut as §5.2) and the whole suffix fell back to verbatim copying. The
+clearest HAL case is `HAL_DMAEx_MultiBufferStart_IT`, which hits the cap four times. The cap has
+nothing to do with the register pool (that is still r5/r7 plus an optional r4); it only limits
+**how many levels the shadow stack can remember**, so hitting it is a modelling limit, not a
+resource limit.
+
+Measured per step (95 TUs, all ten switches, instructions / code bytes):
+
+| `VS_MAX_DEPTH` | instructions | code bytes |
+| ---: | ---: | ---: |
+| 24 (old) | 20,234 | 48,466 |
+| 40 | 20,138 | 48,242 |
+| 64 | 19,994 | 47,906 |
+| 128 | 19,623 | 47,036 |
+| **256 (current)** | **19,112** | **45,760** |
+| 1024 | 19,068 | 45,662 |
+
+24 -> 256 is **-1,122 instructions / -2,706 bytes**; going on to 1024 buys only 44 / 98 more,
+i.e. it has flattened out. 256 it is: three `int` arrays (`skind` / `spool` / `open`) of 256
+entries each, about 3 KB of **host** stack. The on-board profile crops the whole pass (§9), so
+it costs the MCU nothing.
+
 ## 6. One peephole
 
 Before the rebuild there is a **strictly adjacent pair** elimination: `PUSH {rN}` immediately
@@ -268,9 +293,9 @@ only eats pairs that were already adjacent.
 
 | Corpus | off | on | change |
 | --- | --- | --- | --- |
-| STM32F4 HAL (`examples/ark_test/ark_test_all.c`, `-O2 -mcpu Cortex-M4`, non-directive non-label lines) | 47,449 insns | 34,672 insns (third slot, crossing, per-block resume and cut-prefix included) | **-26.93%** |
-| same corpus, `-fopt-addr` on top of vstack (see `docs/ADDR_FOLD.md`) | 34,672 insns | 32,838 insns | -5.29% |
-| same corpus, `-fopt-strength` on top (see `docs/STRENGTH.en.md`) | 32,838 insns | 30,824 insns | -6.13% |
+| STM32F4 HAL (`examples/ark_test/ark_test_all.c`, `-O2 -mcpu Cortex-M4`, non-directive non-label lines) | 47,449 insns | 33,284 insns (third slot, crossing, per-block resume, a 256-deep shadow stack and cut-prefix included) | **-29.85%** |
+| same corpus, `-fopt-addr` on top of vstack (see `docs/ADDR_FOLD.md`) | 33,284 insns | 31,218 insns | -6.21% |
+| same corpus, `-fopt-strength` on top (see `docs/STRENGTH.en.md`) | 31,218 insns | 29,204 insns | -6.45% |
 | arith fixture, instructions | 170 | 120 | -29% |
 | same, `PUSH`/`POP` count | 88 | 12 | -86% |
 | same, image bytes | 1,388 | 1,288 | -7.2% |
@@ -307,14 +332,14 @@ The command behind the HAL row (from the repository root):
 # count lines that are neither '.' directives/labels nor ':' label lines
 ```
 
-Run it once more with `-fopt-vstack`; the difference between the two counts is the -26.93% in the
-table.  With `-fopt-vstack -fopt-addr` it is 32,838, and with all three flags (adding
-`-fopt-strength`) it is 30,824.  The r4 third slot, crossing, per-block resume and the cut-prefix
-are all internal to the pass, so 34,672 is what that same `-fopt-vstack` command produces.  The
-per-function diff (functions split on `name:`, 208 shared functions) shows **203 functions
-changing and none growing**: the biggest drops are `HAL_RCC_OscConfig` 4,902 -> 3,742,
-`HAL_DMAEx_MultiBufferStart_IT` 9,266 -> 8,445, `HAL_GPIO_Init` 1,560 -> 999 and
-`HAL_DMA_IRQHandler` 2,518 -> 2,055.  The byte accounting for the r4 third slot and the frame-less
+Run it once more with `-fopt-vstack`; the difference between the two counts is the -29.85% in the
+table.  With `-fopt-vstack -fopt-addr` it is 31,218, and with all three flags (adding
+`-fopt-strength`) it is 29,204.  The r4 third slot, crossing, per-block resume, the shadow-stack
+cap and the cut-prefix are all internal to the pass, so 33,284 is what that same `-fopt-vstack`
+command produces.  The per-function diff (functions split on `name:`, 208 shared functions) shows
+**203 functions changing and none growing**: the biggest drops are
+`HAL_DMAEx_MultiBufferStart_IT` 9,266 -> 7,057, `HAL_RCC_OscConfig` 4,902 -> 3,742,
+`HAL_GPIO_Init` 1,560 -> 999 and `HAL_DMA_IRQHandler` 2,518 -> 2,055.  The byte accounting for the r4 third slot and the frame-less
 `SUB sp, sp, #4` was measured when those features landed (see 3.1 / 3.2) and was not re-measured
 here.
 
