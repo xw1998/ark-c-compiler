@@ -26,6 +26,7 @@ typedef struct {
     int enable_opt_branch;          /* -fopt-branch: 能放进 16 位范围的分支缩成短跳 */
     int enable_opt_imm;             /* -fopt-imm: 常量操作数折进指令立即数 */
     int enable_opt_peep;            /* -fopt-peep: 消除经栈的寄存器拷贝与回读 */
+    int enable_opt_cbranch;         /* -fopt-cbranch: 比较结果直接喂给条件跳转 */
     int enable_opt_inline;   /* --autoinline / -O2 */
     int enable_opt_vectorize;/* --vectorize / -O2 */
     int opt_level;          /* 0=none, 1=basic, 2=aggressive */

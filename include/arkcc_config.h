@@ -223,6 +223,16 @@
 #   define ARKCC_FEATURE_OPT_PEEP       1
 # endif
 #endif
+/* ARKCC_FEATURE_OPT_CBRANCH: -fopt-cbranch, feeding a comparison result
+ * straight into the conditional branch that consumes it instead of
+ * materialising the 0/1 value and testing it again. */
+#ifndef ARKCC_FEATURE_OPT_CBRANCH
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_OPT_CBRANCH    0
+# else
+#   define ARKCC_FEATURE_OPT_CBRANCH    1
+# endif
+#endif
 #ifndef ARKCC_FEATURE_OPT_INLINE
 # if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
 #   define ARKCC_FEATURE_OPT_INLINE    0   /* Trim auto-inline on STM32 (costs Flash) */

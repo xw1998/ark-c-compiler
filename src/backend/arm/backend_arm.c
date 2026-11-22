@@ -513,6 +513,41 @@ static void emit_cmp_result(AsmBuffer *b, int base_op, int is_unsigned) {
     }
 }
 
+#if ARKCC_FEATURE_OPT_CBRANCH
+/* --- -fopt-cbranch: the branch mnemonic for a comparison -------------------
+ *
+ * `if (a == b)` reaches the backend as IR_BINARY(TOK_EQ) followed by IR_JZ, so
+ * the emitted code materialises the 0/1 result (ITE + two MOVs) and then tests
+ * it again (CMP r0, #0 + BEQ) -- six instructions for something the flags left
+ * by the first CMP can already answer.  When the comparison's result is
+ * consumed by the very next conditional branch, the value is dead, so the
+ * emitter can branch on the original condition directly.
+ *
+ * want_true = 1 means "branch when the comparison is true" (IR_JNZ), 0 means
+ * "branch when it is false" (IR_JZ).  The six conditions are simply inverted
+ * for the second case, with the unsigned forms LO/LS/HI/HS substituted for
+ * LT/LE/GT/GE.  A non-comparison returns NULL and nothing changes. */
+static const char *cbranch_mnemonic(int base_op, int is_unsigned, int want_true) {
+    switch (base_op) {
+        case (int)TOK_EQ: return want_true ? "BEQ" : "BNE";
+        case (int)TOK_NE: return want_true ? "BNE" : "BEQ";
+        case (int)TOK_LT:
+            return want_true ? (is_unsigned ? "BLO" : "BLT")
+                             : (is_unsigned ? "BHS" : "BGE");
+        case (int)TOK_GT:
+            return want_true ? (is_unsigned ? "BHI" : "BGT")
+                             : (is_unsigned ? "BLS" : "BLE");
+        case (int)TOK_LE:
+            return want_true ? (is_unsigned ? "BLS" : "BLE")
+                             : (is_unsigned ? "BHI" : "BGT");
+        case (int)TOK_GE:
+            return want_true ? (is_unsigned ? "BHS" : "BGE")
+                             : (is_unsigned ? "BLO" : "BLT");
+    }
+    return 0;
+}
+#endif
+
 static void emit_binary(AsmBuffer *b, int op) {
     int is_unsigned = (op & 0x100) != 0;
     int base_op = op & ~0x100;
@@ -6552,11 +6587,69 @@ static char *codegen_arm(IrProgram *prog) {
                     if (imm_live) {
                         /* the constant is gone; one real operand is on the stack */
                         imm_live = 0;
+#if ARKCC_FEATURE_OPT_CBRANCH
+                        /* -fopt-cbranch on the immediate path: the 0/1 result is
+                         * consumed by the next branch, so compare against the
+                         * constant and branch, with no materialisation at all.
+                         * The constant cannot be the left operand here: that
+                         * shape is only folded for commutative operators and a
+                         * comparison is not one. */
+                        if (g_config.enable_opt_cbranch && !ark_top_enabled() &&
+                            !imm_left && i + 1 < f->code_count &&
+                            (f->code[i + 1].op == IR_JZ ||
+                             f->code[i + 1].op == IR_JNZ)) {
+                            const char *mn = cbranch_mnemonic(
+                                imm_op & ~0x100, (imm_op & 0x100) != 0,
+                                f->code[i + 1].op == IR_JNZ);
+                            if (mn) {
+                                unsigned d_i, d_imm3, d_imm8;
+                                int enc;
+                                emit_pop_r0(&buf);
+                                enc = imm_val >= 0 &&
+                                      (imm_val <= 255 ||
+                                       thumb_imm12_a((unsigned)imm_val, &d_i,
+                                                     &d_imm3, &d_imm8));
+                                if (enc) {
+                                    asmbuf_puts(&buf, "    CMP r0, #");
+                                    asmbuf_int(&buf, imm_val);
+                                    asmbuf_putc(&buf, '\n');
+                                } else {
+                                    emit_mov_imm(&buf, 1, imm_val);
+                                    emit_line(&buf, "CMP r0, r1");
+                                }
+                                emit_b_label(&buf, mn, f->name, f->code[i + 1].val);
+                                i++;   /* the IR_JZ/IR_JNZ is emitted */
+                                break;
+                            }
+                        }
+#endif
                         emit_pop_r0(&buf);
                         if (!emit_binary_imm(&buf, imm_op, imm_val, imm_left, 1))
                             emit_line(&buf, "; imm fold inconsistent");
                         emit_push_r0(&buf);
                         break;
+                    }
+#endif
+#if ARKCC_FEATURE_OPT_CBRANCH
+                    /* -fopt-cbranch, register path: `if (a < b)` arrives as
+                     * IR_BINARY(TOK_LT) / IR_JZ.  The result is dead, so branch
+                     * on the comparison itself instead of building 0/1 and
+                     * testing it again -- six instructions become three. */
+                    if (g_config.enable_opt_cbranch && !ark_top_enabled() &&
+                        i + 1 < f->code_count &&
+                        (f->code[i + 1].op == IR_JZ ||
+                         f->code[i + 1].op == IR_JNZ)) {
+                        const char *mn = cbranch_mnemonic(
+                            (int)(I->aux & ~0x100), (I->aux & 0x100) != 0,
+                            f->code[i + 1].op == IR_JNZ);
+                        if (mn) {
+                            emit_pop_r1(&buf);
+                            emit_pop_r0(&buf);
+                            emit_line(&buf, "CMP r0, r1");
+                            emit_b_label(&buf, mn, f->name, f->code[i + 1].val);
+                            i++;   /* the IR_JZ/IR_JNZ is emitted */
+                            break;
+                        }
                     }
 #endif
                     emit_pop_r1(&buf);

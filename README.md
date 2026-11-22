@@ -96,6 +96,7 @@
 | 短分支收缩 | 可选 | `-fopt-branch`（`ARKCC_FEATURE_OPT_BRANCH`，宿主 1、板端 0，默认关）：汇编器内部先把整个文件按「每分支 4 字节」量一遍，记录每个 `B`/`B<cond>` 的 `pc`、条件与目标名以及每条 `.align` 的位置；`off = target − (pc+4)`，条件跳转 `−256..254`（T1 imm8）、无条件 `−2048..2046`（T2 imm11），奇数偏移拒绝，前向目标再减 2 作上界，**跨度跨 `.align` 一律拒绝**（padding 非线性会振荡）。任何一个决策变了就再跑一轮 pass1（此时按 2/4 字节真实布局，对齐填充精确），pass2 按序数表发 2 字节形式，条件/目标名不匹配就回退 32 位；发射前再自检一次偏移，越界报 hard error 而不是编码。夹具 `near` 1,386 → 1,368 B（−18，条数 160 不变），叠 `-fopt-vstack -fopt-addr` 1,294 → 1,276 B；STM32F4 HAL 96 个单元代码段 116,480 → 113,058 B（−3,422 B / −2.94%），96/96 全部缩小、无一变大（符号表不变 ⇒ 省的全是代码）。详见 `docs/BRANCH_SHRINK.md` |
 | 常量折进立即数 | 可选 | `-fopt-imm`（`ARKCC_FEATURE_OPT_IMM`，宿主 1、板端 0，默认关）：发射期把「`PUSH k` 紧跟一次算术/比较」折成指令的立即数字段，常量不再走值栈。每个算子先过编码闸门：`+`/`-` 限 ±4095（ADDW/SUBW）、`&\|^` 与 >255 的 `CMP` 必须过 `thumb_imm12_a`、移位限 0..31、比较只认右常量；装不下就原样保留。判定与发射共用 `emit_binary_imm()`，所以结构上不可能「吞了 push 却发不出立即数」；与 `--reg-top` 互斥。HAL 全语料基线 35,211 → 27,716 条（−7,495 / −21.29%）。详见 `docs/IMM_FOLD.md` |
 | 栈往返清理 | 可选 | `-fopt-peep`（`ARKCC_FEATURE_OPT_PEEP`，宿主 1、板端 0，默认关）：文本层删掉两类经内存的往返——`PUSH {rX}` 紧跟 `POP {rY}` 变成一条 `MOV`（同一个寄存器则两条全删），`STR rX, [r6, #o]` 紧跟同槽 `LDR` 时只保留 `STR`。跨标签一律不配、多寄存器帧 `PUSH` 不匹配、`DMB SY` 天然挡下 volatile。基线 35,211 → 33,730 条（−1,481 / −4.21%），与 `-fopt-imm` 同开 26,316 条（−8,895 / −25.26%）。详见 `docs/PEEPHOLE.md` |
+| 比较结果直连分支 | 可选 | `-fopt-cbranch`（`ARKCC_FEATURE_OPT_CBRANCH`，宿主 1、板端 0，默认关）：IR 发射期，`IR_BINARY(比较)` 的下一条正好是 `IR_JZ` / `IR_JNZ` 时，直接发 `CMP` + `B<cond>`，不再把比较物化成 0/1 再 `CMP r0, #0` 复测一遍。有符号 / 无符号两套条件码（`BLT/BGE` 对 `BLO/BHS`），`<=`/`>=` 的取反用 `BGT`/`BLT` 而不是 `>`/`>=`；立即数路径附 `MOV r1,#k` + `CMP r0,r1` 兜底；与 `--reg-top` 互斥，与 `-fopt-cbz` 叠加（`CMP r0,#0`+`BNE` 再折成 `CBNZ`）；比较结果有第二个消费者（`int x = (a<b); if (x)`）时不折。基线 35,211 → 32,610 条（−2,601 / −7.39%）、82,404 → 74,166 字节（−8,238 / −10.0%）；与 `-fopt-imm -fopt-peep` 同开 23,692 条 / 56,384 字节（−11,519 / −32.7%）。详见 `docs/CBRANCH.md` |
 | 汇编器覆盖面 | 是 | LDR/STR 全地址模式（`[Rn]`/`[Rn,#imm]`/`[Rn,Rm]`/`[Rn,Rm,LSL #0..3]`/`[Rn,#imm]!`/`[Rn],#imm`、`[sp,#imm]`、`[pc,#imm]`）、`VLDM/VSTM/VPUSH/VPOP`、`LDMFD/STMFD/LDMEA/STMEA` 别名、`ADDW/SUBW`；体系结构不存在的形态（`LDMIB/LDMDA/STMIB/STMDA`、寄存器索引写回）明确报错 |
 | 预处理 | 是 | 对象/函数宏（`#/##`）、`#if/#elif/#else/#endif/#ifdef/#ifndef/#undef/#error/#warning/#pragma`、嵌套 `#include`（<=8 层）、`__VA_ARGS__`、`-I` 路径、三字符组替换 |
 | 注释 | 是 | `//` 和 `/* */` |
@@ -555,6 +556,7 @@ ark c compiler/
 ├── docs/BRANCH_SHRINK.md    短分支收缩（-fopt-branch）：汇编器内的测量轮/决策/重排轮、T1/T2 范围与 .align 拒绝、pass1 必须按最终宽度量的那个坑、18 项门禁（含远目标差分判据）与 HAL 全语料实测（中文，UTF-8，另有 .en.md）
 ├── docs/IMM_FOLD.md         常量折进立即数（-fopt-imm）：为什么必须做在发射期、两种形状、每个算子的编码守卫与拒绝清单、与 --reg-top 互斥、33 项门禁与 HAL 全语料实测（中文，UTF-8，另有 .en.md）
 ├── docs/PEEPHOLE.md         栈往返清理（-fopt-peep）：R1/R3 两条纯文本等价规则、为什么 volatile 不被误伤、放弃 R2/R4 的理由、pass 顺序、12 项门禁与 HAL 全语料实测（中文，UTF-8，另有 .en.md）
+├── docs/CBRANCH.md          比较结果直连分支（-fopt-cbranch）：IR 相邻判据、条件码表、两条注入路径与立即数兜底、与 --reg-top / -fopt-cbz 的关系、不折的情形、13 项门禁与 HAL 全语料实测（中文，UTF-8，另有 .en.md）
 ├── docs/COMPARISON.md       与 armcc / armclang 的横向对比：语料与口径、9 行结果表与相对比值、八个优化开关、四条结构性差距与逐项实测、复现脚本、三种「不该读成」（中文，UTF-8，另有 .en.md）
 ├── docs/IPO_LTO.md         全程序编译（--ipo / -flto）与跨 TU 常量传播（--const-global）：为什么不是对象级 LTO、合并语义、拒绝的组合、裁剪与两条门禁（中文，UTF-8）
 ├── docs/OBJ_IR.md          对象里的 IR 载荷与链接期重编（--obj-ir / -link --lto）：载荷格式、合并的池 remap、逐字节等价、拒绝与诊断、裁剪与门禁（中文，UTF-8）
@@ -739,6 +741,9 @@ arkcc <file.c|file.s> [选项]
   -fopt-peep         栈往返清理：PUSH/POP 变成一条 MOV、同槽 STR 后的 LDR
                      删掉；跨标签不配、多寄存器帧 PUSH 不匹配；
                      -fno-opt-peep 关（默认关）
+  -fopt-cbranch      比较结果直连分支：比较的下一条正好是条件跳转时直接
+                     CMP + B<cond>，不再物化成 0/1 再复测；值另有消费者时不折；
+                     -fno-opt-cbranch 关（默认关）
   --ipo / -flto      全程序编译：一次吃多个 .c，在同一个 IR program 上做跨文件
                      优化（-O2 下跨文件内联），static 按单元改名、外部名按链接器
                      规则去重、无引用的 static 剪掉；必须给 -o，

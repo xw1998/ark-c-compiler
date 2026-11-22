@@ -46,7 +46,7 @@ Totals over the 96 effective translation units:
 | Compiler | Options | Instructions | Code bytes |
 | --- | --- | ---: | ---: |
 | **arkc** | `-O2` | 51,463 | 116,480 |
-| **arkc** | `-O2` + all `-fopt-*` (see §3) | **26,316** | **64,682** |
+| **arkc** | `-O2` + all `-fopt-*` (see §3) | **23,692** | **56,384** |
 | armcc | `-O0` | 7,969 | 18,788 |
 | armcc | `-O1` | 6,061 | 14,910 |
 | armcc | `-O2` | 5,629 | 13,942 |
@@ -60,10 +60,10 @@ Relative to armcc `-O2`:
 | Comparison | Instructions | Code bytes |
 | --- | ---: | ---: |
 | arkc `-O2` (no `-fopt-*`) | 9.1× | 8.4× |
-| arkc `-O2` + all `-fopt-*` | **4.7×** | **4.6×** |
+| arkc `-O2` + all `-fopt-*` | **4.2×** | **4.0×** |
 
-**The eight optimization switches of 0.9.1 take the gap from 9.1× down to 4.7×**
-(−48.9% instructions, −44.5% code bytes).
+**The eight optimization switches of 0.9.1 take the gap from 9.1× down to 4.2×**
+(−54.0% instructions, −51.6% code bytes).
 
 **IAR does not take part**: there is no `iccarm.exe` on this machine (neither
 under `/c/Program Files*/IAR Systems` nor `/d/IAR*`). **No IAR numbers are
@@ -77,8 +77,9 @@ estimated** -- without compiled bytes there is nothing to compare.
 -fopt-branch   -fopt-imm       -fopt-peep     -fopt-regalloc
 ```
 
-The table actually uses the ones **that do something on this corpus**:
-`-fopt-vstack -fopt-addr -fopt-strength -fopt-cbz -fopt-branch -fopt-imm -fopt-peep`.
+The table actually uses the eight **that do something on this corpus**:
+`-fopt-vstack -fopt-addr -fopt-strength -fopt-cbz -fopt-branch -fopt-imm -fopt-peep
+-fopt-cbranch`.
 
 `-fopt-regalloc` was also measured this round, but it **changes not a single
 instruction on this corpus** (identical instruction count and code bytes in both
@@ -93,17 +94,13 @@ and does change these functions).
 
 ## 4. Where the gap comes from: four structural reasons
 
-Take `HAL_RCC_OscConfig()` (`stm32f4xx_hal_rcc.c`): 4,853 instructions with arkc
+Take `HAL_RCC_OscConfig()` (`stm32f4xx_hal_rcc.c`): 3,676 instructions with arkc
 fully optimized, 336 with armcc `-O2`. Look at the opening
 `if (RCC_OscInitStruct == 0)`:
 
 ```asm
-; arkc, fully optimized
-    CMP  r0, #0
-    ITE  EQ
-    MOVEQ  r0, #1
-    MOVNE  r0, #0
-    CBZ  r0, .L_HAL_RCC_OscConfig_0
+; arkc, fully optimized (with -fopt-cbranch -fopt-cbz)
+    CBNZ r0, .L_HAL_RCC_OscConfig_0
 ```
 
 ```asm
@@ -112,23 +109,26 @@ fully optimized, 336 with armcc `-O2`. Look at the opening
     BEQ  .L
 ```
 
-**Six instructions against two.** That is not a gap register allocation can close;
-it is the shape of the code generator:
+**One instruction against two** -- the materialisation block is gone thanks to
+`-fopt-cbranch`, and `-fopt-cbz` then folds `CMP r0, #0` + `BNE` into `CBNZ`.
+What remains is not that item any more; it is the shape of the code generator:
 
 1. **Value-stack machine: every value really enters the stack.** `-fopt-vstack`
    folds adjacent `PUSH/POP` into register moves, but "the intermediate result of
    an expression" still often lands back in the frame (`STR r0, [r6, #8]` /
    `LDR r0, [r6, #8]`). The real fix is **local-variable register allocation**
    (needs liveness analysis), not a text pass.
-2. **Booleans are materialised to 0/1 and then re-tested.** `x == y` first does
-   `CMP` + `ITE/MOVcc` to produce 0 or 1, and then `if` does `CMP r0, #0` + branch.
-   One comparison paid for twice -- **the single largest item today**;
-   `if (a == b)`, `if (p)` and `while (n)` all hit it.
+2. ~~Booleans are materialised to 0/1 and then re-tested~~ -- **fixed by
+   `-fopt-cbranch`** (0.9.1). On the HAL corpus `ITE` went from 824 to 69 and
+   `CMP r0,#0` from 409 to 73, worth 2,601 instructions / 8,238 bytes (see
+   `docs/CBRANCH.md`). The 69 survivors are the "comparison stored in a variable"
+   case where the value has two consumers, which needs liveness analysis to push
+   further.
 3. **No liveness, no scheduling.** Every access to a slot is an independent memory
    access; there is no notion of "this value is still in `r3`", and no reordering
    of independent instructions into pipeline slots.
-4. **Each translation unit carries its own run-time helpers.** 1,325 instructions
-   / 5.0% (§1). armcc uses the library.
+4. **Each translation unit carries its own run-time helpers.** 1,799 instructions
+   / 7.6% (§1). armcc uses the library.
 
 Two further ceilings that were **quantified and judged not worth doing**:
 
@@ -147,13 +147,20 @@ Baseline = `-fopt-vstack -fopt-addr -fopt-strength -fopt-cbz -fopt-branch`,
 | Build | Instructions | Change |
 | --- | ---: | ---: |
 | baseline | 35,211 | — |
+| + `-fopt-cbranch` | 32,610 | −2,601 (−7.4%) |
 | + `-fopt-peep` | 33,730 | −1,481 (−4.2%) |
 | + `-fopt-imm` | 27,716 | −7,495 (−21.3%) |
-| + both | **26,316** | **−8,895 (−25.3%)** |
+| + imm + peep | 26,316 | −8,895 (−25.3%) |
+| + imm + peep + cbranch | **23,692** | **−11,519 (−32.7%)** |
 
-`-fopt-imm` alone accounts for more than sixty percent of the whole 0.9.1 gain
-(see `docs/IMM_FOLD.md`), `-fopt-peep` is the second block (see
-`docs/PEEPHOLE.md`). Figures for the five earlier passes are in
+(Each row is that arm's own effect against the baseline, not a running sum:
+`-fopt-cbranch` and `-fopt-imm` both touch `IR_BINARY`, so the combination is
+what the last row shows.)
+
+`-fopt-imm` alone accounts for more than half of the whole 0.9.1 gain
+(see `docs/IMM_FOLD.md`); `-fopt-peep` (see `docs/PEEPHOLE.md`) and
+`-fopt-cbranch` (see `docs/CBRANCH.md`) are the other two blocks. Figures for the
+five earlier passes are in
 `docs/OPTIMIZER_PLAN.md` and the individual `docs/*_FOLD.md` / `docs/STRENGTH.md`.
 
 ## 6. How to reproduce
@@ -162,8 +169,8 @@ Baseline = `-fopt-vstack -fopt-addr -fopt-strength -fopt-cbz -fopt-branch`,
 # 1) three arkc arms + five armcc arms + two armclang arms, all in one run
 python D:/tmp/cmp_final.py          # prints the summary, detail goes to D:/tmp/cmp_final.json
 
-# 2) just arkc's four steps (base / peep / imm / imm+peep)
-python D:/tmp/peep_total.py
+# 2) just arkc's four arms (base / cbranch / imm+peep / all three)
+python D:/tmp/cbr_bytes.py
 ```
 
 Both scripts assume: current directory is the repository root, `./arkcc.exe` is a
@@ -177,9 +184,9 @@ hard-coded in the scripts; change the `srcs` line to use another corpus.
   verified instruction by instruction by `tests/arm_exec` under unicorn. The table
   is **size / instruction count** only, one dimension.
 - **Not "armcc's advantage is out of reach"**: reason 2 in §4 (feeding a
-  comparison result straight into a branch) is a pure code-generation change and
-  should remove several thousand instructions from the HAL corpus whether or not
-  liveness analysis exists; reason 1 does need liveness and is real engineering
-  work.
+  comparison result straight into a branch) is done and removed 2,601 instructions;
+  it was pure code generation with no liveness involved. What is left is reason 1
+  (intermediate results spilling to the frame), which does need liveness and is
+  real engineering work.
 - **Not "IAR is worse or better"**: it was not measured, there are no numbers,
   so there is nothing to say here.

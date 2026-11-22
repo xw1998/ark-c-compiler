@@ -29,7 +29,7 @@ endif
         test-objir test-partiallink test-deadinline test-softfloat test-tailmerge \
         test-tailcall test-divconst test-xblock test-sizeweight \
         test-inline test-vstack test-addr test-strength test-cbz test-branch \
-        test-imm test-peep install stm32
+        test-imm test-peep test-cbranch install stm32
 
 all: $(ARKCC)
 
@@ -44,7 +44,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch test-imm test-peep
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch test-imm test-peep test-cbranch
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -221,6 +221,17 @@ test-imm: $(ARKCC)
 # refuses the flag by name.
 test-peep: $(ARKCC)
 	$(PYTHON) tests/run_peep_tests.py ./$(ARKCC)
+# Gate for -fopt-cbranch: a comparison whose only consumer is the very next
+# conditional jump is branched on directly instead of being materialised as 0/1
+# and compared again.  The gate checks OFF IS OFF, that ITE materialisations and
+# the redundant "CMP r0, #0" disappear, that instruction count and image size
+# shrink while the label set is untouched, that a comparison stored in a
+# variable keeps its materialisation, that all four arms compute the expected
+# answer in the emulator, that the unsigned and the large-immediate shapes take
+# the right path, and that a cropped build (-DARKCC_FEATURE_OPT_CBRANCH=0)
+# refuses the flag by name.
+test-cbranch: $(ARKCC)
+	$(PYTHON) tests/run_cbranch_tests.py ./$(ARKCC)
 
 
 
