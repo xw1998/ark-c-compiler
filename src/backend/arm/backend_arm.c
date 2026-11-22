@@ -8339,6 +8339,19 @@ typedef struct AsmRef   { int pc; char *name; int type; } AsmRef;
 /* Literal pool entry: LDR rd,=label at ldr_pc needs a 4-byte literal at pool_offset */
 typedef struct AsmLiteral { int ldr_pc; char *name; int pool_offset; } AsmLiteral;
 
+#if ARKCC_FEATURE_OPT_BRANCH
+/* -fopt-branch: one branch site as measured in the all-32-bit layout.
+ * `pc` is where the branch sits in that layout, `cond` is -1 for B and the
+ * 4-bit condition code otherwise, and `shrink` is the decision taken by
+ * arm_decide_branches().  pass 2 walks this list by ordinal. */
+typedef struct AsmBranch {
+    int   pc;
+    int   cond;
+    char *name;
+    int   shrink;
+} AsmBranch;
+#endif
+
 typedef struct {
     const char    *src;
     unsigned char *out;
@@ -8367,6 +8380,16 @@ typedef struct {
     /* 1 while pass2_a runs.  Register-list diagnostics are reported
      * there only: pass 1 just measures instruction sizes, and reporting
      * from both passes would print every error twice. */
+#if ARKCC_FEATURE_OPT_BRANCH
+    /* -fopt-branch planning state (see arm_decide_branches). */
+    AsmBranch     *branches;
+    int            branch_count, branch_cap;
+    int            branch_decided;  /* how many entries carry a decision */
+    int            plan_branches;   /* 1 = pass 1 records and pass 2 shrinks */
+    int            branch_ord;      /* pass-2 cursor into branches[] */
+    int           *align_pcs;
+    int            align_count, align_cap;
+#endif
     int            pass2;
 } ArmAsm;
 
@@ -8635,6 +8658,139 @@ static void add_ref_a(ArmAsm *a, int pc, const char *name, int type) {
     a->refs[a->ref_count].type = type;
     a->ref_count++;
 }
+
+#if ARKCC_FEATURE_OPT_BRANCH
+/* ============ short-branch shrinking (-fopt-branch) ============
+ * op_size_a() sizes every B/B<cond> at 4 bytes on purpose: a 16-bit branch
+ * whose offset does not fit truncates silently, and that silent truncation is
+ * how a loop back-edge once jumped into the middle of an instruction.  The
+ * price is two wasted bytes at each branch that does fit.  This pass measures
+ * the assembled function once at 4 bytes per branch, marks the sites whose
+ * target is inside the 16-bit range, and has pass 2 emit the short form for
+ * exactly those sites.
+ *
+ * One measuring round is enough because a shrink only ever shortens the span
+ * between a branch and its target.  An `.align` directive inside the span
+ * breaks that argument -- the padding absorbs the saving, so the distance can
+ * even grow -- and such a branch is refused outright.  The final pass-1 run
+ * re-lays every label with the chosen widths, which keeps alignment padding
+ * exact.
+ *
+ * Encodings (offset is relative to pc+4 and must be even):
+ *   B   T2 : 11100 imm11     , -2048..2046
+ *   Bcc T1 : 1101 cond imm8  ,  -256.. 254
+ */
+static int branch_cond_a(const char *m) {
+    if (strieq_a(m, "B"))   return -1;
+    if (strieq_a(m, "BEQ")) return 0;
+    if (strieq_a(m, "BNE")) return 1;
+    if (strieq_a(m, "BCS") || strieq_a(m, "BHS")) return 2;
+    if (strieq_a(m, "BCC") || strieq_a(m, "BLO")) return 3;
+    if (strieq_a(m, "BHI")) return 8;
+    if (strieq_a(m, "BLS")) return 9;
+    if (strieq_a(m, "BGE")) return 10;
+    if (strieq_a(m, "BLT")) return 11;
+    if (strieq_a(m, "BGT")) return 12;
+    if (strieq_a(m, "BLE")) return 13;
+    return -2;   /* not a branch this pass knows how to shrink */
+}
+
+/* Returns the shrink flag this ordinal already carries (0 on the first
+ * recording run), so pass 1 can lay the branch out at its final width. */
+static int add_branch_a(ArmAsm *a, int pc, int cond, const char *name) {
+    int idx = a->branch_count;
+    int keep = 0;
+    if (idx >= a->branch_cap) {
+        int nc = a->branch_cap == 0 ? 32 : a->branch_cap * 2;
+        a->branches = (AsmBranch *)mem_realloc(a->branches,
+            a->branch_cap * (int)sizeof(AsmBranch),
+            nc * (int)sizeof(AsmBranch));
+        a->branch_cap = nc;
+    }
+    /* The list is rebuilt by every pass-1 run; the decision attached to an
+     * ordinal must survive the rebuild, or the final run would erase it. */
+    if (idx < a->branch_decided) keep = a->branches[idx].shrink;
+    a->branches[idx].pc = pc;
+    a->branches[idx].cond = cond;
+    a->branches[idx].name = mem_strdup(name);
+    a->branches[idx].shrink = keep;
+    a->branch_count = idx + 1;
+    return keep;
+}
+
+static void add_align_a(ArmAsm *a, int pc) {
+    if (a->align_count >= a->align_cap) {
+        int nc = a->align_cap == 0 ? 16 : a->align_cap * 2;
+        a->align_pcs = (int *)mem_realloc(a->align_pcs,
+            a->align_cap * (int)sizeof(int), nc * (int)sizeof(int));
+        a->align_cap = nc;
+    }
+    a->align_pcs[a->align_count++] = pc;
+}
+
+/* Decide, from the all-32-bit layout, which branches fit.  Returns the number
+ * of entries whose flag changed (0 means the plan is settled). */
+static int arm_decide_branches(ArmAsm *a) {
+    int i, changed = 0;
+    for (i = 0; i < a->branch_count; i++) {
+        AsmBranch *b = &a->branches[i];
+        int tgt = find_label_a(a, b->name);
+        int fit = 0;
+        if (tgt >= 0) {
+            int base = b->pc + 4;
+            int off = tgt - base;
+            int blocked = 0;
+            int j;
+            /* A forward target moves two bytes closer because this branch
+             * itself is about to shrink; every other shrink between the two
+             * shortens the span further, so this is an upper bound. */
+            if (tgt >= base) off -= 2;
+            for (j = 0; j < a->align_count; j++) {
+                int ap = a->align_pcs[j];
+                int lo = b->pc < tgt ? b->pc : tgt;
+                int hi = b->pc < tgt ? tgt : b->pc;
+                if (ap > lo && ap <= hi) { blocked = 1; break; }
+            }
+            if (!blocked && (off & 1) == 0) {
+                if (b->cond < 0) fit = (off >= -2048 && off <= 2046);
+                else             fit = (off >= -256 && off <= 254);
+            }
+        }
+        if (fit != b->shrink) { b->shrink = fit; changed++; }
+    }
+    a->branch_decided = a->branch_count;
+    return changed;
+}
+
+/* Emit the 16-bit form.  arm_decide_branches() guarantees the range; a
+ * violation here means the plan and the layout disagree, which would be a
+ * wrong branch, so it is reported instead of encoded. */
+static void emit_b16_a(ArmAsm *a, int cond, int target) {
+    int off = target - a->pc - 4;
+    if (cond < 0) {
+        if (off < -2048 || off > 2046 || (off & 1)) {
+            diag_tool(DIAG_SEV_ERROR, "arkcc",
+                      "internal layout error: shrunk B does not fit its "
+                      "16-bit range", 0,0,0,0,0,0);
+            a->hard_errors++;
+            out16(a, 0xBF00);
+            return;
+        }
+        out16(a, 0xE000u | (unsigned)((off >> 1) & 0x7FF));
+    } else {
+        if (off < -256 || off > 254 || (off & 1)) {
+            diag_tool(DIAG_SEV_ERROR, "arkcc",
+                      "internal layout error: shrunk Bcc does not fit its "
+                      "16-bit range", 0,0,0,0,0,0);
+            a->hard_errors++;
+            out16(a, 0xBF00);
+            return;
+        }
+        out16(a, 0xD000u | (unsigned)((cond & 0xF) << 8) |
+                   (unsigned)((off >> 1) & 0xFF));
+    }
+}
+#endif
 
 /* .set symbol management (absolute addresses) */
 static void add_set_a(ArmAsm *a, const char *name, int addr) {
@@ -9197,6 +9353,8 @@ static void emit_ldr_str_a(ArmAsm *a, int kind, int is_load, int rt,
 
 /* Forward declaration: needed in pass1 to decide whether PUSH/POP is T1 or T2 encoded */
 static int parse_reglist_a(ArmAsm *a, const char **p, int *has_lr, int *has_pc);
+/* Forward declaration: pass 1 records branch targets for -fopt-branch. */
+static int read_label_name_a(const char **p, char *buf, int cap);
 
 static void pass1_a(ArmAsm *a) {
     a->pass2 = 0;
@@ -9208,6 +9366,10 @@ static void pass1_a(ArmAsm *a) {
     a->label_count = 0;
     a->set_count = 0;
     a->literal_count = 0;
+#if ARKCC_FEATURE_OPT_BRANCH
+    a->branch_count = 0;
+    a->align_count = 0;
+#endif
     while (*p) {
         char first[64];
         int n;
@@ -9311,6 +9473,10 @@ static void pass1_a(ArmAsm *a) {
                 if (*p == '#') p++;
                 while (*p >= '0' && *p <= '9') { align = align * 10 + (*p - '0'); p++; }
                 if (align > 1) {
+#if ARKCC_FEATURE_OPT_BRANCH
+                    /* -fopt-branch: remember where padding may appear. */
+                    if (a->plan_branches) add_align_a(a, pc);
+#endif
                     int rem = pc % align;
                     if (rem != 0) pc += align - rem;
                 }
@@ -9567,7 +9733,22 @@ static void pass1_a(ArmAsm *a) {
                     pc += 2;
                 else
                     pc += 4;
-            } else {
+            }
+#if ARKCC_FEATURE_OPT_BRANCH
+            else if (a->plan_branches && branch_cond_a(first) >= -1) {
+                /* -fopt-branch: remember the site in the all-32-bit
+                 * layout; the decision is taken after this pass. */
+                char bname[64];
+                int bcond = branch_cond_a(first);
+                read_label_name_a(&p, bname, sizeof(bname));
+                /* The second recording round sees the decided flags and
+                 * must lay the branch out at its final width, or every
+                 * label after it would keep an address pass 2 no longer
+                 * matches. */
+                pc += add_branch_a(a, pc, bcond, bname) ? 2 : 4;
+            }
+#endif
+            else {
                 pc += op_size_a(first);
             }
         }
@@ -11467,6 +11648,23 @@ static void pass2_a(ArmAsm *a) {
             read_label_name_a(&p, name, sizeof(name));
             {
                 int addr = find_label_a(a, name);
+#if ARKCC_FEATURE_OPT_BRANCH
+                /* -fopt-branch: the plan was recorded by pass 1 in the
+                 * same text order.  When an entry does not line up, fall
+                 * back to the 32-bit encoding: a short branch the layout
+                 * never reserved would shift every later instruction. */
+                int shrink = 0;
+                if (a->plan_branches) {
+                    if (a->branch_ord < a->branch_count) {
+                        AsmBranch *pl = &a->branches[a->branch_ord];
+                        if (pl->cond == cond && ark_streq(pl->name, name))
+                            shrink = pl->shrink;
+                    }
+                    a->branch_ord++;
+                }
+#else
+                int shrink = 0;
+#endif
                 if (addr < 0) {
                     /* Forward reference: emit placeholder, resolve later.
                      * type=2: 32-bit B.W (T4, +-1MB), type=3: 32-bit B<cond>.W (T3, +-1MB).
@@ -11485,13 +11683,20 @@ static void pass2_a(ArmAsm *a) {
                         out16(a, 0xF000u | (unsigned)(cond << 6));
                         out16(a, 0x8000);
                     }
-                } else {
-                    /* Backward reference: target known, emit directly */
+                }
+#if ARKCC_FEATURE_OPT_BRANCH
+                else if (shrink) {
+                    /* -fopt-branch: 16-bit form, range guaranteed by the
+                     * plan (both directions; local labels are all known
+                     * here because pass 1 collected the whole file). */
+                    emit_b16_a(a, cond, addr);
+                }
+#endif
+                else {
+                    /* 32-bit form: 1MB range, no truncation */
                     if (is_uncond) {
-                        /* 32-bit B.W (T4): +-1MB range, no truncation */
                         emit_b_w_a(a, addr);
                     } else {
-                        /* 32-bit B<cond>.W (T3): +-1MB range, no truncation */
                         emit_bcond_w_a(a, cond, addr);
                     }
                 }
@@ -12379,6 +12584,12 @@ static int arm_assemble(const char *asm_text, unsigned char *out, int cap) {
     a.literal_pool_start = -1;
     a.pending_weak = 0;
     a.cur_section = 0;
+#if ARKCC_FEATURE_OPT_BRANCH
+    a.branches = 0; a.branch_count = 0; a.branch_cap = 0;
+    a.branch_decided = 0; a.branch_ord = 0;
+    a.align_pcs = 0; a.align_count = 0; a.align_cap = 0;
+    a.plan_branches = g_config.enable_opt_branch ? 1 : 0;
+#endif
     /* --vector-table: hand the emitter a buffer whose first ARM_VT_SIZE bytes
      * are already claimed, zeroed.  The linker only fills the table in. */
     if (g_arm_vt_reserve) {
@@ -12386,7 +12597,21 @@ static int arm_assemble(const char *asm_text, unsigned char *out, int cap) {
         if (ARM_VT_SIZE > cap) return -1;
         for (k = 0; k < ARM_VT_SIZE; k++) out[k] = 0;
     }
+#if ARKCC_FEATURE_OPT_BRANCH
+    if (a.plan_branches) {
+        /* Round 1 measures every branch at 4 bytes and decides which ones
+         * fit.  Round 2 re-lays the labels with the chosen widths so that
+         * alignment padding is exact; the decisions are kept because they
+         * can only become more valid as spans shrink. */
+        pass1_a(&a);
+        if (arm_decide_branches(&a) != 0)
+            pass1_a(&a);
+    } else {
+        pass1_a(&a);
+    }
+#else
     pass1_a(&a);
+#endif
     a.pc = g_arm_vt_reserve ? ARM_VT_SIZE : 0;
     pass2_a(&a);
     resolve_refs_a(&a);

@@ -193,6 +193,17 @@
 #   define ARKCC_FEATURE_OPT_CBZ       1   /* 宿主/交叉编译：-fopt-cbz 才有得开 */
 # endif
 #endif
+/* ARKCC_FEATURE_OPT_BRANCH: -fopt-branch, shrinking a B/B<cond> that fits
+ * the 16-bit range to its two-byte form (src/backend/arm/backend_arm.c).
+ * Same trimming rule as the other text-level passes: a board build ships
+ * the default configuration, in which the pass is off. */
+#ifndef ARKCC_FEATURE_OPT_BRANCH
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_OPT_BRANCH     0   /* 板上裁掉：短分支只在宿主/交叉编译用 */
+# else
+#   define ARKCC_FEATURE_OPT_BRANCH     1   /* 宿主/交叉编译：-fopt-branch 才有得开 */
+# endif
+#endif
 #ifndef ARKCC_FEATURE_OPT_INLINE
 # if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
 #   define ARKCC_FEATURE_OPT_INLINE    0   /* Trim auto-inline on STM32 (costs Flash) */

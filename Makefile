@@ -28,7 +28,7 @@ endif
         test-loop test-modern test-atomic test-ipo test-constglobal \
         test-objir test-partiallink test-deadinline test-softfloat test-tailmerge \
         test-tailcall test-divconst test-xblock test-sizeweight \
-        test-inline test-vstack test-addr test-strength test-cbz install stm32
+        test-inline test-vstack test-addr test-strength test-cbz test-branch install stm32
 
 all: $(ARKCC)
 
@@ -43,7 +43,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -190,6 +190,15 @@ test-strength: $(ARKCC)
 # the same program without it.
 test-cbz: $(ARKCC)
 	$(PYTHON) tests/run_cbz_tests.py ./$(ARKCC)
+# Gate for -fopt-branch: OFF IS OFF (byte-identical without the flag), a
+# branch that fits the 16-bit range becomes 2 bytes while one that does not
+# keeps its 4-byte form, instruction count is unchanged (this is a width
+# change, not a rewrite), the image never grows, the pass still pays on top
+# of -fopt-vstack/-fopt-addr, alignment-sensitive spans are refused, and all
+# five arms compute the same answer in the emulator.  A cropped build
+# (-DARKCC_FEATURE_OPT_BRANCH=0) refuses the flag by name.
+test-branch: $(ARKCC)
+	$(PYTHON) tests/run_branch_tests.py ./$(ARKCC)
 
 
 # Gate for --diag_style=modern: the header, the framed echo and the caret

@@ -398,6 +398,44 @@ aliasing is uncertain" plus ARM-specific instruction rewrites.**
   `Bcc` -> 16-bit `CBZ`). Of the 814 adjacent pairs in the HAL corpus 396 were fused; the rest
   hit the 64-byte bound or still read the flags. Details in `docs/CBZ_FOLD.en.md`.
 
+### P11 Short-branch shrinking (`-fopt-branch`, **landed in 0.9.1-wip**)
+
+- **Evidence**: this backend has always emitted 32-bit `B` / `B<cond>` (`B.W` T4 +-1MB,
+  `B<cond>.W` T3 +-1MB), because the `op_size_a()` sizing round does not know label
+  addresses yet and a 16-bit form that does not fit is truncated silently -- which
+  actually happened once after `-fopt-vstack` (a truncated loop back-edge,
+  `UC_ERR_WRITE_UNMAPPED`).
+- **How**: it lives **inside the assembler**. The measuring round lays every branch out
+  at four bytes and records `(pc, cond, target name)` plus the `.align` positions;
+  `arm_decide_branches()` tests `off = target - (pc+4)`, `-256..254` for a conditional
+  (T1 imm8) and `-2048..2046` for an unconditional one (T2 imm11), rejecting odd offsets;
+  a forward target is reduced by another 2 (the upper bound from this branch's own 4 -> 2);
+  **any span crossing `.align` is refused** (non-linear padding would oscillate). If any
+  decision changed, pass 1 runs again (now at real 2/4-byte widths, so alignment padding is
+  exact), then pass 2 emits the two-byte form by ordinal, falling back to 32 bits when
+  `cond` or the target name does not match.
+- **The big trap**: the second pass-1 round must lay out the final widths. The first
+  version still sized at four bytes while pass 2 emitted two, so labels were never re-laid
+  and **every following instruction moved two bytes earlier** -- branches landed in the
+  middle of instructions (`addr=0`, `pc=0x8000C2A`). `add_branch_a()` now returns the
+  width it reserved and pass 1 advances `pc` with it.
+- **Fail rather than lie**: `emit_b16_a()` recomputes the offset and raises a hard error
+  (`internal layout error`) plus a `NOP` instead of encoding a truncated offset.
+- **Cropping**: `ARKCC_FEATURE_OPT_BRANCH` (STM32_MIN 0 / host 1), off by default; at 0 the
+  plan fields and call sites disappear entirely (no fields, no code, no size change) and a
+  cropped build refuses the flag with `C3900U`.
+- **Gate**: `tests/run_branch_tests.py`, **18 checks**, `make test-branch`: OFF IS OFF
+  byte-identical, instruction count unchanged, whole-2-byte shrink, still pays on top of
+  vstack/addr, the image never grows, five arms agree, **far targets (200- and 300-statement
+  loop bodies) keep their 32-bit form**, the cropped build refuses the flag and still
+  compiles without it. "Far" uses a **differential test**: a minimal reference program
+  measures what the runtime helpers save on their own (10 B) and far/vfar must save exactly
+  that -- one extra byte would mean a long branch had been squeezed into 16 bits.
+- **Measured**: `near` fixture 1,386 -> 1,368 B (-18, count stays 160), `va` arm
+  1,294 -> 1,276 B; STM32F4 HAL, 96 units, code sections 116,480 -> **113,058 B
+  (-3,422 B / -2.94%)**, 96/96 shrink with nothing growing (the symbol table is unchanged,
+  so every saved byte is code). Details in `docs/BRANCH_SHRINK.en.md`.
+
 ---
 
 ---

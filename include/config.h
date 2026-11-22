@@ -23,6 +23,7 @@ typedef struct {
     int enable_opt_addr;            /* -fopt-addr: 把地址运算折进寻址方式 */
     int enable_opt_strength;        /* -fopt-strength: 乘 2^k 换成左移 */
     int enable_opt_cbz;             /* -fopt-cbz: CMP #0 + 条件跳转 合成 CBZ/CBNZ */
+    int enable_opt_branch;          /* -fopt-branch: 能放进 16 位范围的分支缩成短跳 */
     int enable_opt_inline;   /* --autoinline / -O2 */
     int enable_opt_vectorize;/* --vectorize / -O2 */
     int opt_level;          /* 0=none, 1=basic, 2=aggressive */
