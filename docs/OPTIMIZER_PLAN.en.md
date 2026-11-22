@@ -332,8 +332,8 @@ aliasing is uncertain" plus ARM-specific instruction rewrites.**
   refuses the flag.
 - **Measurements**: the whole HAL corpus `examples/ark_test/ark_test_all.c` (STM32F401xE, `-O2`),
   measured on the post-vstack baseline (third slot, crossing and cut included) of 36,532
-  instructions: 36,532 -> 34,915 (**-1,617 / -4.44%**); the register-index residue drops 1,075 -> 0
-  and the `MOV` form 0 -> 0. The total drop is larger than 1,075, so R1 (the immediate-offset form)
+  instructions: 36,532 -> 34,915 (**-1,617 / -4.44%**); the register-index residue drops 1,084 -> 0
+  and the `MOV` form 0 -> 0. The total drop is larger than 1,084, so R1 (the immediate-offset form)
   does fire on the new baseline; no per-rule attribution was measured, so none is claimed. Stacked
   on plain `-O2`: 47,885 -> 36,532 -> 34,915. Details in `docs/ADDR_FOLD.md`.
 
