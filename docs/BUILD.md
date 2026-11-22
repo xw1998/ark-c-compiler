@@ -83,21 +83,21 @@ make stm32-check
 # --- layout: sram ---
 # PASS  every STM32 profile source compiles  [34 file(s), 0 failed]
 # PASS  .ark_buf fits its sram region  [475192 / 520192 bytes (91%)]
-# PASS  code + rodata fits the 2 MB flash  [375904 / 2097152 bytes (17.9%)]
+# PASS  code + rodata fits the 2 MB flash  [375916 / 2097152 bytes (17.9%)]
 # PASS  ordinary .data/.bss fits SRAM1-3 (288 KB)  [30908 / 294912 bytes (10%)]
 # --- layout: sdram ---
-# PASS  .ark_buf fits its sdram region  [1298768 / 33554432 bytes (4%)]
+# PASS  .ark_buf fits its sdram region  [29434192 / 33554432 bytes (88%)]
 # ...
 # all checks passed (2 layout(s))
 ```
 
 | 布局 | `.ark_buf` 放哪 | 实测 | 说明 |
 |------|-----------------|------|------|
-| `sdram`（部署档） | `0xC0000000` UNINIT 32 MB | 1,298,768 B（4%） | 用 profile 默认尺寸，不裁；SDRAM 由 `SystemInit()` 起 |
+| `sdram`（部署档） | `0xC0000000` UNINIT 32 MB | 29,434,192 B（88%） | 15 项实测覆盖（§5.1），profile 默认尺寸远不够；SDRAM 由 `SystemInit()` 起 |
 | `sram`（无 SDRAM 回退档） | `0x24000000` 起 508 KB | 475,192 B（91%） | 必须裁，见 §5 |
 
-代码 + 只读数据 **375,904 B / 17.9%**，两种布局几乎一样——因为裁的是**零初始化的
-工作区**，不是代码。`.ark_buf` 在 SDRAM 布局里是 `UNINIT`，所以 1.3 MB 的工作区
+代码 + 只读数据 **375,888–375,916 B / 17.9%**，两种布局几乎一样——因为裁的是**零初始化的
+工作区**，不是代码。`.ark_buf` 在 SDRAM 布局里是 `UNINIT`，所以 29.4 MB 的工作区
 **不进 flash 镜像**；这一条也在门禁里（`the arena is not loaded as initialised data`）。
 
 ### 4.1 板级固件（Keil）
@@ -130,16 +130,51 @@ mdk/STM32H743_ArkCC/ArkCC.uvprojx
 | `PP_BUF_SIZE` | 4 MB | 64 KB | 24 KB | 预处理输出 |
 | `PP_INC_BUF` × `PP_MAX_INC_DEPTH` | 1 MB × 32 | 16 KB × 8 | 8 KB × 4 | 每层 include 缓冲 |
 
-两条不能乱动的硬墙：
+三条不能乱动的硬墙：
 
 - **`ARK_ASM_BUF_SIZE` ≥ 96 KB**：板上要自己编 `stdlib/src/arm/aeabi.c`，它的 `-O0`
   汇编是 92,259 B。缓冲不够时旧版本是**静默截断**（汇编器答 "unknown mnemonic P"），
   现在 `*_emit` 直接拒绝。
 - **`ARK_SRC_BUF_SIZE` ≥ 32 KB**：同一份 `aeabi.c` 是 17,847 B，16 KB 档的回答是
   "input file is 17847 bytes, larger than the 16384-byte source buffer"。
+- **`PP_BUF_SIZE` 必须装得下预处理后的整个 TU**：它以前溢出时**静默丢字节**（真实事故：
+  `stm32f4xx_hal_gpio.c` 只产出 537 B 汇编、退出码 0），现在直接报
+  "preprocessed output does not fit the N-byte PP_BUF_SIZE; ... refused" 并失败。
 
 `RAMFS_SLOTS` / `RAMFS_SLOT_SIZE` 本轮才变成可覆盖的宏（原来写死在
 `port/stm32/flash_fs_stm32.c` 里），这样 AXI 档才有得裁。
+
+### 5.1 SDRAM 部署档（实测）
+
+SDRAM 档不是"默认尺寸就够"，而是**必须显式给齐**：STM32 默认档是按 64 KB arena 定的，
+连一个 HAL 单元都编不动。`tools/stm32_build_check.py` 的 `LAYOUTS["sdram"]` 里这 15 项
+都是量出来的，不是向上取整：
+
+| 宏 | 部署档 | 依据（实测） |
+|----|--------|--------------|
+| `ARK_POOL_SIZE` | 8 MB | 95 个 HAL/Core TU 的 arena peak 7,664 – 4,292,040 B；最贵 `stm32f4xx_ll_utils.c` 4.29 MB |
+| `ARK_SRC_BUF_SIZE` | 512 KB | 最大源文件 `stm32f4xx_hal_fmpi2c.c` 267,050 B |
+| `ARK_ASM_BUF_SIZE` | 1 MB | 单个 TU 的汇编文本 |
+| `ARK_CODE_BUF_SIZE` | 256 KB | 机器码缓冲 |
+| `ARK_OBJ_BUF_SIZE` | 64 KB | 单目标文件镜像 |
+| `ARK_LINK_BUF_SIZE` | 64 KB | 链接输入（arena ≥ 2×） |
+| `PP_BUF_SIZE` | 4 MB | `stm32f4xx_hal_gpio.c` 预处理后远超 256 KB（汇编 44,888 B） |
+| `PP_INC_BUF` | 768 KB | `stm32f4xx.h` 预处理后 644,303 B |
+| `PP_MAX_INC_DEPTH` | 16 | CMSIS 头链超过 8 层 |
+| `ARK_LINK_MAX_SYMS` / `_RELOCS` | 4096 / 4096 | 链接符号/重定位表 |
+| `ARM_MAX_SYMBOLS` / `_RELOCS` / `_GVARS` | 4096 / 4096 / 2048 | ARM 后端符号表 |
+| `ARKCC_FEATURE_OPT_INLINE` | 1 | **保留内联**：裁掉它后 95 个 TU 里有 8 个与宿主 `-O2` 不同 |
+
+`.ark_buf` 合计 **29,434,192 / 33,554,432 B（88%）**，代码 + 只读 375,888 B（17.9%），
+普通 RW/ZI 86,208 B（29%，在另一块 288 KB SRAM1-3 上）。
+
+arena 取 8 MB 而不是 4.5 MB：peak 4.29 MB 之外还要给 `--ipo` 这类"一次装多个 TU"的
+用法留头；SDRAM 有 32 MB，把 arena 压到 4.5 MB 只能让 `.ark_buf` 从 88% 降到 76%，这点收益抵不上一次重量的风险。
+
+**逐字节一致性**：用这套尺寸编出的宿主可执行文件（`-DARKCC_PROFILE_STM32_MIN` + 上表）
+对 **95 个 HAL/Core TU** 做 `-O2` 对拍，去掉 `.file/.loc/.type/.size/.cfi_*` 行后
+**95/95 完全相同**，最大 arena peak 4,292,040 B。板上编出来的汇编与工作站一致，
+板端 bug 能在工作站复现。
 
 ---
 
@@ -160,6 +195,9 @@ mdk/STM32H743_ArkCC/ArkCC.uvprojx
 - `ordinary .data/.bss fits SRAM1-3`：真正的 RW/ZI 只有 30,908 B，但它在
   **另一块** 288 KB 的 SRAM1-3 上，不能拿 AXI 的余量去抵。
 
+`tests/run_buffer_tests.py` 现在也盯 `PP_BUF_SIZE`（4 KB 档必须**拒绝**而不是截断），
+加上原有的 arena/源/汇编/链接缓冲案例共 10 项。
+
 工具链不存在时门禁打印 `SKIP` 并返回 0——**"没有交叉工具链"不是"通过"**，
 所以它把结论写在屏幕上，而不是悄悄过关。要指定路径：
 
@@ -175,7 +213,12 @@ python tools/stm32_build_check.py --layout both \
 - `make stm32`（arm-none-eabi-gcc 路径）仍然保留，但**本机没装 gcc 交叉工具链**，
   本轮没有验证过；已验证的是 armclang 路径。两者源码集相同，差别只在链接器脚本
   （`.sct` vs `.ld`）。
-- 无 SDRAM 档只证明了"装得下"，没有证明"编得动 aeabi.c"：64 KB arena 是否够，
-  要在板上跑一次 `runtime` 才有答案。这条留在 `docs/BOARD_VALIDATION.md` 的欠账里。
+- 无 SDRAM 档能编多大的 TU，现在有定量答案：它**编不动任何 HAL 单元**。第一道墙是
+  `ARK_SRC_BUF_SIZE`（32 KB vs `stm32f4xx_ll_adc.c` 的 42,704 B）和 `PP_INC_BUF`
+  （8 KB vs `stm32f4xx_hal_gpio.c` 触到的 12,683 B 头文件），过了这两道还有 arena 墙
+  （95 个 TU 的 peak 7,664–4,292,040 B，多数远超 64 KB）。它能编的是 ≤1 KB 的纯应用 TU：
+  `examples/hello.c`（162 B 源）peak 10,816 B、`tests/stm32_board/tmp_pai.c`（422 B）
+  peak 63,344 B（几乎顶满 64 KB）。**AEABI 自举必须走 SDRAM 档**：
+  `stdlib/src/arm/aeabi.c`（17,351 B 源）需要 495,728（`-O0`）/ 496,032（`-O2`）B arena。
 - AXI 档没有把 `.ark_buf` 拆到 SRAM1-3 的富余空间（那里只用了 10%）。真要更宽，
   应该按访问频率分段，而不是继续挤 AXI。

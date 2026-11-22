@@ -452,6 +452,9 @@ void preproc_reset(void) {
 #endif
     g_macro_depth = 0;
     g_blue_top = 0;
+    /* The output-truncation flag belongs to one translation unit: clearing it
+     * here is what lets the caller below trust a set flag after process(). */
+    g_buf_dropped = 0;
     type_pack_reset();
 }
 
@@ -2113,6 +2116,23 @@ char *preproc_process(const char *src) {
 #endif
     process(src_ptr, out, &out_len, PP_BUF_SIZE - 1, 1);
     out[out_len] = 0;
+    /* buf_putc() drops the byte that does not fit and sets g_buf_dropped.  The
+     * macro-expansion paths already report their own overflow, but a plain line,
+     * a #include body or a string literal that runs past the buffer used to be
+     * cut MID-TRANSLATION-UNIT with no diagnostic at all: the parser then saw a
+     * truncated function list and the build reported success on an incomplete
+     * unit (measured on STM32F401 HAL gpio.c at PP_BUF_SIZE=256 KB: 537 bytes
+     * of assembly and exit code 0).  A truncated unit is a wrong answer, so it
+     * is an error here, exactly like the include buffer overrun one level up. */
+    if (g_buf_dropped) {
+        char cap_s[12];
+        g_buf_dropped = 0;
+        pp_diag_msg(g_pp_line, 0, DIAG_SEV_ERROR,
+                    "preprocessed output does not fit the %s-byte PP_BUF_SIZE; "
+                    "the translation unit would be compiled truncated, so it is "
+                    "refused -- rebuild arkcc with a bigger PP_BUF_SIZE",
+                    diag_num(cap_s, PP_BUF_SIZE), 0);
+    }
     return out;
 }
 

@@ -93,22 +93,22 @@ make stm32-check
 # --- layout: sram ---
 # PASS  every STM32 profile source compiles  [34 file(s), 0 failed]
 # PASS  .ark_buf fits its sram region  [475192 / 520192 bytes (91%)]
-# PASS  code + rodata fits the 2 MB flash  [375904 / 2097152 bytes (17.9%)]
+# PASS  code + rodata fits the 2 MB flash  [375916 / 2097152 bytes (17.9%)]
 # PASS  ordinary .data/.bss fits SRAM1-3 (288 KB)  [30908 / 294912 bytes (10%)]
 # --- layout: sdram ---
-# PASS  .ark_buf fits its sdram region  [1298768 / 33554432 bytes (4%)]
+# PASS  .ark_buf fits its sdram region  [29434192 / 33554432 bytes (88%)]
 # ...
 # all checks passed (2 layout(s))
 ```
 
 | Layout | Where `.ark_buf` goes | Measured | Note |
 |--------|----------------------|----------|------|
-| `sdram` (deployed) | `0xC0000000` UNINIT, 32 MB | 1,298,768 B (4%) | profile defaults, no trimming; SDRAM is brought up by `SystemInit()` |
+| `sdram` (deployed) | `0xC0000000` UNINIT, 32 MB | 29,434,192 B (88%) | 15 measured overrides (sec. 5.1); the profile defaults are far too small; SDRAM is brought up by `SystemInit()` |
 | `sram` (no-SDRAM fallback) | from `0x24000000`, 508 KB | 475,192 B (91%) | has to be trimmed, see §5 |
 
-Code plus read-only data is **375,904 B / 17.9%** and barely differs between the
+Code plus read-only data is **375,888--375,916 B / 17.9%** and barely differs between the
 two layouts, because what gets trimmed is the **zero-initialised working set**,
-not code. In the SDRAM layout `.ark_buf` is `UNINIT`, so 1.3 MB of working set
+not code. In the SDRAM layout `.ark_buf` is `UNINIT`, so 29.4 MB of working set
 **never enters the flash image**; that is asserted by the gate too
 (`the arena is not loaded as initialised data`).
 
@@ -144,7 +144,7 @@ STM32 profile default, and the no-SDRAM fallback (the one the gate uses).
 | `PP_BUF_SIZE` | 4 MB | 64 KB | 24 KB | preprocessed output |
 | `PP_INC_BUF` x `PP_MAX_INC_DEPTH` | 1 MB x 32 | 16 KB x 8 | 8 KB x 4 | per-include buffer |
 
-Two walls that must not be lowered:
+Three walls that must not be lowered:
 
 - **`ARK_ASM_BUF_SIZE` >= 96 KB**: the board compiles `stdlib/src/arm/aeabi.c`
   itself, and its `-O0` assembly is 92,259 B. When the buffer was short the old
@@ -153,10 +153,52 @@ Two walls that must not be lowered:
 - **`ARK_SRC_BUF_SIZE` >= 32 KB**: the same `aeabi.c` is 17,847 B, and the 16 KB
   setting answered "input file is 17847 bytes, larger than the 16384-byte source
   buffer".
+- **`PP_BUF_SIZE` must hold the whole preprocessed TU**: overflow used to drop
+  bytes **silently** (a real incident: `stm32f4xx_hal_gpio.c` produced 537 B of
+  assembly and exit code 0); it now fails with
+  "preprocessed output does not fit the N-byte PP_BUF_SIZE; ... refused".
 
 `RAMFS_SLOTS` / `RAMFS_SLOT_SIZE` only became overridable in this round (they
 used to be hard-coded in `port/stm32/flash_fs_stm32.c`), which is what makes the
 AXI tier trimmable at all.
+
+### 5.1 The SDRAM deployment profile (measured)
+
+The SDRAM tier is not "the defaults are enough"; the sizes have to be **given
+explicitly** -- the STM32 defaults are budgeted for a 64 KB arena and cannot
+compile a single HAL unit. The 15 values in `LAYOUTS["sdram"]` of
+`tools/stm32_build_check.py` are all measured, not rounded up:
+
+| Macro | Deployment | Basis (measured) |
+|-------|-----------|------------------|
+| `ARK_POOL_SIZE` | 8 MB | arena peak over 95 HAL/Core TUs is 7,664 -- 4,292,040 B; the dearest is `stm32f4xx_ll_utils.c` at 4.29 MB |
+| `ARK_SRC_BUF_SIZE` | 512 KB | largest source is `stm32f4xx_hal_fmpi2c.c`, 267,050 B |
+| `ARK_ASM_BUF_SIZE` | 1 MB | assembler text for one TU |
+| `ARK_CODE_BUF_SIZE` | 256 KB | machine code |
+| `ARK_OBJ_BUF_SIZE` | 64 KB | one object image |
+| `ARK_LINK_BUF_SIZE` | 64 KB | link input (arena >= 2x) |
+| `PP_BUF_SIZE` | 4 MB | `stm32f4xx_hal_gpio.c` preprocesses to well over 256 KB (44,888 B of assembly) |
+| `PP_INC_BUF` | 768 KB | `stm32f4xx.h` preprocesses to 644,303 B |
+| `PP_MAX_INC_DEPTH` | 16 | the CMSIS header chain nests deeper than 8 |
+| `ARK_LINK_MAX_SYMS` / `_RELOCS` | 4096 / 4096 | link symbol/relocation tables |
+| `ARM_MAX_SYMBOLS` / `_RELOCS` / `_GVARS` | 4096 / 4096 / 2048 | ARM backend tables |
+| `ARKCC_FEATURE_OPT_INLINE` | 1 | **keep the inliner**: with it compiled out, 8 of the 95 TUs differ from the host `-O2` build |
+
+`.ark_buf` totals **29,434,192 / 33,554,432 B (88%)**, code + read-only is
+375,888 B (17.9%), and ordinary RW/ZI is 86,208 B (29%, on the separate 288 KB
+SRAM1-3 block).
+
+The arena is 8 MB rather than 4.5 MB because the 4.29 MB peak still has to leave
+headroom for "several TUs at once" uses such as `--ipo`; the SDRAM has 32 MB, so
+shrinking the arena to 4.5 MB would only take `.ark_buf` from 88% to 76%, which
+buys nothing against the risk of one more refit.
+
+**Byte-for-byte agreement**: a host executable built with exactly these settings
+(`-DARKCC_PROFILE_STM32_MIN` plus the table above) was compared against the full
+host `-O2` build over **95 HAL/Core TUs**; after dropping the
+`.file/.loc/.type/.size/.cfi_*` lines, **95/95 are identical**, with a maximum
+arena peak of 4,292,040 B. The board therefore emits the same assembly as the
+workstation, which is what makes a board bug reproducible locally.
 
 ---
 
@@ -181,6 +223,10 @@ Two more assertions that are easy to miss:
 - `ordinary .data/.bss fits SRAM1-3`: real RW/ZI is only 30,908 B, but it lives
   in the **other** 288 KB SRAM1-3 block, so AXI headroom cannot pay for it.
 
+`tests/run_buffer_tests.py` now also watches `PP_BUF_SIZE` (a 4 KB setting must
+**refuse** rather than truncate), which brings it to 10 cases together with the
+existing arena/source/assembly/link buffer cases.
+
 When the toolchain is absent the gate prints `SKIP` and returns 0 -- "no cross
 toolchain" is not "passed", so it says so instead of passing quietly. To point it
 at a toolchain:
@@ -198,10 +244,16 @@ python tools/stm32_build_check.py --layout both \
   toolchain is installed here**, so it was not verified this round; the verified
   path is armclang. Both build the same source set and differ only in the linker
   script (`.sct` vs `.ld`).
-- The no-SDRAM tier only proves it **fits**; it does not prove it can compile
-  `aeabi.c` on the board. Whether a 64 KB arena is enough needs one `runtime`
-  round on the hardware. That stays on the debt list in
-  `docs/BOARD_VALIDATION.md`.
+- How big a TU the no-SDRAM tier can compile now has a quantitative answer: it
+  **cannot compile any HAL unit**. The first walls are `ARK_SRC_BUF_SIZE`
+  (32 KB vs the 42,704 B of `stm32f4xx_ll_adc.c`) and `PP_INC_BUF` (8 KB vs the
+  12,683 B header reached by `stm32f4xx_hal_gpio.c`); past those the arena wall
+  follows (arena peak over the 95 TUs is 7,664--4,292,040 B, mostly far above
+  64 KB). What it does compile is application TUs up to ~1 KB:
+  `examples/hello.c` (162 B source) peaks at 10,816 B and
+  `tests/stm32_board/tmp_pai.c` (422 B) at 63,344 B, i.e. right up against the
+  64 KB. **An AEABI self-build has to use the SDRAM tier**: `stdlib/src/arm/aeabi.c`
+  (17,351 B source) needs 495,728 (`-O0`) / 496,032 (`-O2`) B of arena.
 - The AXI tier does not split `.ark_buf` across the spare SRAM1-3 space (10%
   used). Doing that properly means splitting by access frequency, not squeezing
   AXI harder.

@@ -12,6 +12,13 @@ way -- the tool answered something plausible instead of "buffer too small":
     `unknown mnemonic "P" at code offset 8906` -- a frontend-looking error for
     a buffer that was simply 64 KB.  That cost an hour on the H743; the fix is
     to refuse, and this gate is what keeps it refused.
+  * PP_BUF_SIZE: buf_putc() dropped the byte that did not fit and set a flag
+    that only the two macro-expansion paths ever read.  A plain #include body
+    that ran past the buffer was therefore cut MID-TRANSLATION-UNIT with no
+    diagnostic: measured on STM32F401 HAL stm32f4xx_hal_gpio.c at
+    PP_BUF_SIZE=256 KB, arkcc emitted 537 bytes of assembly (the runtime
+    helpers only) and exited 0 -- a silently incomplete object, which is the
+    one failure mode this project refuses.  It is an error now.
 
 Each check builds a cropped arkcc (the buffer macros are compile-time sizes,
 so there is no way to reach the limit from a normal build) and requires:
@@ -114,6 +121,24 @@ def main():
                   'rc=%d %s' % (rc, log.strip()[:160]))
             check('ARK_SRC_BUF_SIZE' in log,
                   'the refusal names ARK_SRC_BUF_SIZE', log.strip()[:160])
+            check(not os.path.exists(out),
+                  'no object is left behind by the refusal',
+                  'wrote %s' % out)
+
+        # ---- 2b. a 4 KB preprocessed-output buffer must refuse ----------
+        # BIG_SRC expands to well over 4 KB, so the truncated text would parse
+        # as a shorter unit; the point of the check is that it does not.
+        small3, why = build_arkcc(work, ['-DPP_BUF_SIZE=4096'], 'arkcc_pp4k')
+        if not small3:
+            check(False, 'a 4 KB preprocessed-output buffer refuses', why)
+        else:
+            out = os.path.join(work, 'pp4k.o')
+            rc, log = run([small3, '-c', src, '-o', out, '--cpu', 'Cortex-M7',
+                           '--thumb', '-O0'], work)
+            check(rc != 0, 'a 4 KB preprocessed-output buffer refuses',
+                  'rc=%d %s' % (rc, log.strip()[:160]))
+            check('PP_BUF_SIZE' in log,
+                  'the refusal names PP_BUF_SIZE', log.strip()[:160])
             check(not os.path.exists(out),
                   'no object is left behind by the refusal',
                   'wrote %s' % out)

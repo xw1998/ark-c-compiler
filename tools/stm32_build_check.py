@@ -20,7 +20,7 @@ Two layouts, because the board has two:
 
   sram   no SDRAM.  .ark_buf lives in the 512 KB AXI block next to the code and
          heap windows.  The working set has to be trimmed for this one:
-         a 128 KB arena, smaller buffers, four RAM file slots.
+         a 64 KB arena, smaller buffers, two RAM file slots.
   sdram  the deployed layout.  .ark_buf is UNINIT in the 32 MB SDRAM, so the
          profile defaults fit with room to spare, and the flash image stays
          small because none of those zero bytes are loaded.
@@ -128,8 +128,41 @@ LR_ROM 0x08000000 0x00200000 {{
 """,
     },
     "sdram": {
-        # Profile defaults: the SDRAM layout does not have to trim anything.
-        "defs": [],
+        # The SDRAM layout is the deployed one, so it is the tier that has to be
+        # able to compile a real translation unit -- and the STM32_MIN profile
+        # defaults are sized for a 64 KB arena, which cannot compile any
+        # hal_*.c unit (measured: those 69 units need 1,959,248 bytes of arena
+        # at the cheapest and 3,468,552 at the dearest; over all 95 HAL/Core
+        # units the range is 7,664 -- 4,292,040).  These overrides
+        # are what make the board tier actually work; every number below is
+        # measured, not rounded up for comfort.
+        "defs": [
+            "-DARK_POOL_SIZE=8388608",       #   8 MB arena (peak measured 4.29 MB)
+            "-DARK_SRC_BUF_SIZE=524288",     # 512 KB source text (largest HAL unit is
+                                              #   267,050 bytes: stm32f4xx_hal_fmpi2c.c)
+            "-DARK_ASM_BUF_SIZE=1048576",    #   1 MB assembler text
+            "-DARK_CODE_BUF_SIZE=262144",    # 256 KB machine code
+            "-DARK_OBJ_BUF_SIZE=65536",      #  64 KB object image
+            "-DARK_LINK_BUF_SIZE=65536",     #  64 KB link input (arena >= 2x)
+            "-DPP_BUF_SIZE=4194304",         #   4 MB preprocessed text: HAL gpio.c needs
+                                              #   >256 KB of it, and the overflow is now a
+                                              #   hard error instead of a silent truncation
+            "-DPP_INC_BUF=786432",           # 768 KB per include level: stm32f4xx.h alone
+                                              #   preprocesses to 644,303 bytes
+            "-DPP_MAX_INC_DEPTH=16",         # CMSIS needs more than 8 levels
+            "-DARK_LINK_MAX_SYMS=4096",
+            "-DARK_LINK_MAX_RELOCS=4096",
+            "-DARM_MAX_SYMBOLS=4096",
+            "-DARM_MAX_RELOCS=4096",
+            "-DARM_MAX_GVARS=2048",
+            # Keep the inliner.  With it compiled out the board tier still
+            # produces correct code, but 8 of the 95 HAL units then differ from
+            # the host -O2 build (the inliner folds a few blocks and reorders
+            # the frame traffic).  Keeping it makes the board tier reproduce the
+            # host assembly byte for byte, which is what makes a board bug
+            # reproducible on a workstation.
+            "-DARKCC_FEATURE_OPT_INLINE=1",
+        ],
         "ark_buf_budget": 0x02000000,
         "axi_base": 0xC0000000,
         "scatter": """\
