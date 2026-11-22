@@ -186,9 +186,9 @@ The rule is relaxed as follows -- **cross only when the condition holds, otherwi
 3. **Check `vs_all_mem()` at the boundary**: at a label / `CALL` / `BRANCH`, if `depth != 0` or
    `nmem != 0`, only an **entirely `MEM`** shadow stack lets the pass `vs_flush_all()` and then
    **keep optimising the next basic block from an empty register state**; anything else is cut
-   per §5.2.  The epilogue (`MOV sp, r6`) is different: when everything is `MEM` it sets
-   `verbf = 1` and the rest of the function is copied through (there is nothing to optimise
-   between the restore sequence and the next label).
+   per §5.2.  The epilogue (`MOV sp, r6`) is different: the shadow stack is reset to empty and
+   optimisation continues -- provided the restore sequence really leaves the function (a `pop`
+   containing `pc`, `BX*`, `MOV pc, ...` or a bare `B`); otherwise it stays verbatim per §5.3.
 4. **The pre-scan must test the label form before the directive form**: `.L3:` is both a label and
    a line starting with a dot.  The pre-scan once skipped it as `isdot` first, so no `B`/`Bcc`
    target was ever tagged `cross`, the values live across those boundaries were never pinned to
@@ -224,7 +224,39 @@ was never collected).  The pass now **cuts** instead:
 That gives the pass its **never-worse guarantee**: a function can only end up (a) fully rewritten
 with fewer or equally many instructions, (b) rewritten up to some line and copied verbatim after
 it (the prefix only ever has fewer instructions), or (c) emitted unchanged.  The per-function HAL
-diff is therefore "30 functions change, 0 grow".
+diff is therefore "203 functions change, 0 grow".
+
+### 5.3 Per-block resume: `verbf` is no longer a function-wide permanent flag
+
+In the earlier form of §5.1, once a boundary set `verbf`, **everything after it in that
+function** was copied through for good -- labels included, and the restore sequence after
+`MOV sp, r6` too. There is work left to do there: tracing the whole corpus shows only one site
+ever sets `verbf` (the `epi-all` case on `MOV sp, r6`), while the loss is spread over every
+instruction after it (1,066 instructions / 2,182 bytes on the ten-switch arm alone).
+
+`verbf` now only becomes permanent when the tail cannot be modelled; two places **resume**:
+
+1. **At a label**: the rebuild loop parses first; if the line is a label and `verbf` is not
+   stuck, `verbf` is cleared and optimisation continues from an empty register state.
+   `vs_cut_verbatim()` has already `PUSH`ed the pool values into the machine stack and flushed
+   every mapping, so the machine stack at the label is word-for-word what the unoptimised code
+   produces; continuing from "all MEM" is therefore equivalent to the original (the same
+   state the `vs_all_mem()` path produces). Materialising a pool entry also sets `skind[k]=0`
+   and `nmem++`, i.e. "that word is already in memory".
+2. **After an epilogue that really leaves the function**: `MOV sp, <reg>` no longer sets
+   `verbf` directly. It does `vs_flush_all` + emit + drain up to the next label, and while
+   draining checks whether the restore sequence `leaves` (a `pop` containing `pc`, `BX*`,
+   `MOV pc, ...`, a bare `B`). `leaves` => `depth = 0; nmem = 0;` -- the frame is gone, body
+   values die with it, and the restore pops the words the prologue saved (never modelled by
+   this pass) -- so optimisation continues after the next label. Not `leaves` =>
+   `verbf = 1; verbf_stuck = 1`, i.e. stay verbatim.
+
+**The shadow stack is tracked during the verbatim tail** (`vs_tail_track`): a single-register
+`PUSH`/`POP` adjusts `depth`/`nmem`; `LDM`/`STM`, any instruction that **writes `sp`** (per the
+`vs_masks` write mask), an unknown form (`vs_form() < 0`) or a parse failure => return 0 =>
+`verbf_stuck = 1` and the old verbatim behaviour for the rest of the function. This is
+conservative: **the worst case is no worse than before**. Even if the shadow stack is off, a
+later `POP` hitting `depth <= 0` falls back to `cut_verbatim`, which is fail-safe.
 
 ## 6. One peephole
 
@@ -236,19 +268,22 @@ only eats pairs that were already adjacent.
 
 | Corpus | off | on | change |
 | --- | --- | --- | --- |
-| STM32F4 HAL (`examples/ark_test/ark_test_all.c`, `-O2 -mcpu Cortex-M4`, non-directive non-label lines) | 47,885 insns | 36,532 insns (third slot, crossing and cut-prefix included) | **-23.71%** |
-| same corpus, `-fopt-addr` on top of vstack (see `docs/ADDR_FOLD.md`) | 36,532 insns | 34,915 insns | -4.44% |
-| same corpus, `-fopt-strength` on top (see `docs/STRENGTH.en.md`) | 34,915 insns | 32,901 insns | -5.77% |
-| arith fixture, instructions | 171 | 121 | -29% |
-| same, `PUSH`/`POP` count | 88 | 14 | -84% |
-| same, image bytes | 1392 | 1292 | -7.2% |
-| loop fixture, instructions | 203 | 140 | -31% |
+| STM32F4 HAL (`examples/ark_test/ark_test_all.c`, `-O2 -mcpu Cortex-M4`, non-directive non-label lines) | 47,449 insns | 34,672 insns (third slot, crossing, per-block resume and cut-prefix included) | **-26.93%** |
+| same corpus, `-fopt-addr` on top of vstack (see `docs/ADDR_FOLD.md`) | 34,672 insns | 32,838 insns | -5.29% |
+| same corpus, `-fopt-strength` on top (see `docs/STRENGTH.en.md`) | 32,838 insns | 30,824 insns | -6.13% |
+| arith fixture, instructions | 170 | 120 | -29% |
+| same, `PUSH`/`POP` count | 88 | 12 | -86% |
+| same, image bytes | 1,388 | 1,288 | -7.2% |
+| loop fixture, instructions | 200 | 137 | -31% |
 | same, `PUSH`/`POP` count | 100 | 12 | -88% |
-| same, image bytes | 1480 | 1354 | -8.5% |
-| struct fixture, image bytes | 1400 | 1294 | -7.6% |
-| variadic fixture, image bytes | 1556 | 1458 | -6.3% |
-| deep fixture (three nested levels), image bytes | 1384 | 1354 | -2.2% |
-| shallow fixture (`a + b`), image bytes | 1274 | 1226 | -3.8% |
+| same, image bytes | 1,468 | 1,342 | -8.6% |
+| struct fixture, image bytes | 1,396 | 1,290 | -7.6% |
+| variadic fixture, image bytes | 1,552 | 1,418 | -8.6% |
+| deep fixture (three nested levels), image bytes | 1,380 | 1,350 | -2.2% |
+| shallow fixture (`a + b`), image bytes | 1,270 | 1,220 | -3.9% |
+| branch fixture (resume past a label), instructions / `PUSH`/`POP` | 151 / 74 | 115 / 18 | -23% / -76% |
+| callptr fixture (`POP {ip}` cut-prefix), instructions / `PUSH`/`POP` | 157 / 78 | 126 / 30 | -19% / -62% |
+| retpaths fixture (multiple return paths), instructions / `PUSH`/`POP` | 218 / 118 | 147 / 20 | -32% / -83% |
 
 The HAL row is the only reproducible headline (the corpus is in the repo, command at the end of
 this section); the `bench_opt/bench1.c` figures quoted earlier came from a temporary corpus in an
@@ -272,20 +307,20 @@ The command behind the HAL row (from the repository root):
 # count lines that are neither '.' directives/labels nor ':' label lines
 ```
 
-Run it once more with `-fopt-vstack`; the difference between the two counts is the -23.71% in the
-table.  With `-fopt-vstack -fopt-addr` it is 34,915, and with all three flags (adding
-`-fopt-strength`) it is 32,901.  The r4 third slot, crossing and the cut-prefix are all internal
-to the pass, so 36,532 is what that same `-fopt-vstack` command produces.  The per-function diff
-(functions split on `name:`) shows 30 functions changing and **none growing**: the biggest drops
-are `HAL_GPIO_Init` 1,281 -> 1,011, `HAL_DMA_IRQHandler` 2,264 -> 2,069 (before crossing and the
-cut it was the one function that got *worse*, 2,264 -> 2,526) and `HAL_DMA_Init` 943 -> 761.
-The r4 row is booked honestly: 59 functions each save one more word in the prologue and epilogue
-(about +472 bytes) for 340 fewer instructions, and the **per-object byte size was not measured
-separately**, so only the instruction counts are reported.
+Run it once more with `-fopt-vstack`; the difference between the two counts is the -26.93% in the
+table.  With `-fopt-vstack -fopt-addr` it is 32,838, and with all three flags (adding
+`-fopt-strength`) it is 30,824.  The r4 third slot, crossing, per-block resume and the cut-prefix
+are all internal to the pass, so 34,672 is what that same `-fopt-vstack` command produces.  The
+per-function diff (functions split on `name:`, 208 shared functions) shows **203 functions
+changing and none growing**: the biggest drops are `HAL_RCC_OscConfig` 4,902 -> 3,742,
+`HAL_DMAEx_MultiBufferStart_IT` 9,266 -> 8,445, `HAL_GPIO_Init` 1,560 -> 999 and
+`HAL_DMA_IRQHandler` 2,518 -> 2,055.  The byte accounting for the r4 third slot and the frame-less
+`SUB sp, sp, #4` was measured when those features landed (see 3.1 / 3.2) and was not re-measured
+here.
 
 ## 8. What the gate actually says
 
-`make test-vstack` (45 checks):
+`make test-vstack` (53 checks):
 
 - **the default build ignores the pass**: `-O2` and `-O2 -fno-opt-vstack` objects are byte-identical (1392/1392);
 - **it really saves**: instruction and `PUSH`/`POP` counts drop, the image does not grow;
@@ -309,6 +344,11 @@ separately**, so only the instruction counts are reported.
   a shape the pass cannot name) must keep `POP {ip}` verbatim, must have no leftover adjacent
   PUSH/POP pair before it, and must still return 70 -- all three together separate "keep the
   prefix" from "fall back for the whole function";
+- **it keeps going after a return**: the `retpaths` fixture (three return paths) must (a) rewrite
+  the block after the first `return` (85 -> 52 instructions), (b) leave no `PUSH`/`POP` pair on
+  any return path (0 pairs) and (c) return 65 on all three arms.  The old code copied everything
+  verbatim after the first `MOV sp, r6`; only these three together separate "per-block resume"
+  from "stops at the first return";
 - **it can be cropped**: a `-DARKCC_FEATURE_OPT_VSTACK=0` build refuses `-fopt-vstack` with
   `C3900U`, and still compiles without the flag.
 

@@ -3026,9 +3026,9 @@ static int vs_cut_shape_ok(const int *skind, int depth)
     return 1;
 }
 
-static void vs_cut_verbatim(AsmBuffer *o, int depth, const int *skind,
+static void vs_cut_verbatim(AsmBuffer *o, int depth, int *skind,
                             const int *spool, const int *pool,
-                            int *pend, int *pref, int *pbusy)
+                            int *pend, int *pref, int *pbusy, int *nmem)
 {
     char nm[8];
     int k;
@@ -3038,8 +3038,74 @@ static void vs_cut_verbatim(AsmBuffer *o, int depth, const int *skind,
         asmbuf_puts(o, "    PUSH {");
         asmbuf_puts(o, nm);
         asmbuf_puts(o, "}\n");
+        skind[k] = 0;              /* the word is in memory from here on */
+        (*nmem)++;
     }
     vs_flush_all(o, pend, pref, pbusy, pool);
+}
+
+/* Keep the shadow stack exact while a cut tail is copied through.  The
+ * cut made every live value a real push, so from there on the machine stack
+ * is the unoptimised one and a single-register PUSH/POP is all it takes to
+ * stay in step.  Returns 0 for a line this cannot model -- a register list,
+ * anything that moves sp, or an instruction the pass does not know -- and the
+ * caller then leaves the rest of the function verbatim, exactly as before. */
+static int vs_txt_sp(const char *s)
+{
+    int i = 0;
+    while (s[i]) {
+        if ((i == 0 || vs_isboundary(s[i-1])) && s[i] == 's' && s[i+1] == 'p' &&
+            !(vs_isalnum(s[i+2]) || s[i+2] == '_'))
+            return 1;
+        i++;
+    }
+    return 0;
+}
+
+static int vs_txt_pc(const char *s)
+{
+    int i = 0;
+    while (s[i]) {
+        if ((i == 0 || vs_isboundary(s[i-1])) && s[i] == 'p' && s[i+1] == 'c' &&
+            !(vs_isalnum(s[i+2]) || s[i+2] == '_'))
+            return 1;
+        i++;
+    }
+    return 0;
+}
+
+static int vs_tail_track(const char *t, int *skind, int *pdepth, int *pnmem)
+{
+    char mn[24];
+    char ops[VS_MAX_OP][VS_OPLEN];
+    int nops, isdot, islab, f, cnd, j, r = -1;
+    int rmask[VS_MAX_OP], wmask[VS_MAX_OP];
+
+    if (!vs_parse(t, mn, sizeof mn, ops, &nops, &isdot, &islab)) return 0;
+    if (isdot || islab) return 1;
+    if (strncmp(mn, "LDM", 3) == 0 || strncmp(mn, "STM", 3) == 0) return 0;
+    if (vs_streq(mn, "PUSH")) {
+        if (nops != 1 || !vs_whole_reg(ops[0], &r)) return 0;
+        if (*pdepth >= VS_MAX_DEPTH) return 0;
+        skind[*pdepth] = 0;
+        (*pdepth)++;
+        (*pnmem)++;
+        return 1;
+    }
+    if (vs_streq(mn, "POP")) {
+        if (nops != 1 || !vs_whole_reg(ops[0], &r)) return 0;
+        if (*pdepth <= 0) return 0;
+        (*pdepth)--;
+        (*pnmem)--;
+        return 1;
+    }
+    f = vs_form(mn, nops, ops, &cnd);
+    if (f < 0) return 0;
+    if (f == VS_F_CALL || f == VS_F_BRANCH || f == VS_F_IT) return 1;
+    vs_masks(f, nops, rmask, wmask);
+    for (j = 0; j < nops; j++)
+        if (wmask[j] && vs_txt_sp(ops[j])) return 0;
+    return 1;
 }
 
 /* Is `reg` written before it is read, starting at line `from`?  Used to decide
@@ -3139,6 +3205,7 @@ static void ark_vstack_function(AsmBuffer *b, int from)
     int pref[VS_MAX_POOL];     /* references per slot: stack entries + pend */
     int last_dest_off = -1, last_dest = -1;
     int verbf = 0;   /* boundary crossed with values live: copy the rest */
+    int verbf_stuck = 0;  /* ... and the copied tail left an unmodelled stack */
     AsmBuffer out;
     int bail = 0;
     char nm[8];
@@ -3387,8 +3454,23 @@ static void ark_vstack_function(AsmBuffer *b, int from)
             continue;
         }
         if (L[i].del) continue;
-        if (verbf) { vs_put_line(&out, L[i].t); continue; }
         if (!vs_parse(L[i].t, mn, sizeof mn, ops, &nops, &isdot, &islab)) {
+            if (verbf) verbf_stuck = 1;
+            vs_put_line(&out, L[i].t);
+            continue;
+        }
+        if (verbf && islab) {
+            /* A label whose stack model is still exact: the cut already put
+             * every live value in memory and the copied tail only pushed and
+             * popped single registers, so the block after the label is
+             * optimised again instead of dragging the rest of the function
+             * through verbatim.  Without the exact model the tail stays
+             * verbatim, which is the old behaviour. */
+            if (verbf_stuck) { vs_put_line(&out, L[i].t); continue; }
+            verbf = 0;
+        }
+        if (verbf) {
+            if (!vs_tail_track(L[i].t, skind, &depth, &nmem)) verbf_stuck = 1;
             vs_put_line(&out, L[i].t);
             continue;
         }
@@ -3404,7 +3486,7 @@ static void ark_vstack_function(AsmBuffer *b, int from)
             if (depth != 0 || nmem != 0) {
                 if (!vs_all_mem(skind, depth)) {
                     if (!vs_cut_shape_ok(skind, depth)) { bail = 1; break; }
-                    vs_cut_verbatim(&out, depth, skind, spool, pool, pend, pref, pbusy);
+                    vs_cut_verbatim(&out, depth, skind, spool, pool, pend, pref, pbusy, &nmem);
                     verbf = 1;
                     vs_put_line(&out, L[i].t);
                     continue;
@@ -3419,17 +3501,10 @@ static void ark_vstack_function(AsmBuffer *b, int from)
 
         if (vs_streq(mn, "MOV") && nops == 2 && vs_streq(ops[0], "sp")) {
             /* epilogue: everything after it until the next label is the
-             * restore sequence and is copied through untouched. */
-            if (depth != 0 || nmem != 0) {
-                if (!vs_all_mem(skind, depth)) {
-                    if (!vs_cut_shape_ok(skind, depth)) { bail = 1; break; }
-                    vs_cut_verbatim(&out, depth, skind, spool, pool, pend, pref, pbusy);
-                    verbf = 1;
-                    vs_put_line(&out, L[i].t);
-                    continue;
-                }
-                verbf = 1;
-            }
+             * restore sequence and is copied through untouched.  sp is put
+             * back to the frame base here, so every value the body kept on
+             * the stack is dropped with the frame and the mappings can go. */
+            int leaves = 0;
             vs_flush_all(&out, pend, pref, pbusy, pool);
             vs_put_line(&out, L[i].t);
             last_dest = -1;
@@ -3439,10 +3514,26 @@ static void ark_vstack_function(AsmBuffer *b, int from)
                 char o2[VS_MAX_OP][VS_OPLEN];
                 int n2, d2, l2;
                 if (vs_parse(L[i].t, m2, sizeof m2, o2, &n2, &d2, &l2) && l2) break;
+                if (vs_parse(L[i].t, m2, sizeof m2, o2, &n2, &d2, &l2) &&
+                    !d2 && (vs_txt_pc(L[i].t) ||
+                            strncmp(m2, "BX", 2) == 0 ||
+                            (vs_streq(m2, "MOV") && n2 == 2 && vs_streq(o2[0], "pc")) ||
+                            vs_streq(m2, "B")))
+                    leaves = 1;        /* the restore sequence leaves for good */
                 vs_put_line(&out, L[i].t);
                 i++;
             }
             i--;
+            /* Once the sequence really leaves the function, the shadow stack
+             * after the next label is the plain post-prologue one again: the
+             * body values are gone with the frame and the restores pop the
+             * prologue's words, which this pass never modelled.  So the model
+             * is reset and the following block is optimised instead of being
+             * dragged through verbatim.  A sequence that does not leave the
+             * function (an sp move that is not an epilogue) still pins the
+             * rest of the text, as before. */
+            if (leaves) { depth = 0; nmem = 0; }
+            else { verbf = 1; verbf_stuck = 1; }
             continue;
         }
 
@@ -3450,14 +3541,14 @@ static void ark_vstack_function(AsmBuffer *b, int from)
             int r = -1, p;
             if (nops != 1 || !vs_whole_reg(ops[0], &r)) {
                 if (!vs_cut_shape_ok(skind, depth)) { bail = 1; break; }
-                vs_cut_verbatim(&out, depth, skind, spool, pool, pend, pref, pbusy);
+                vs_cut_verbatim(&out, depth, skind, spool, pool, pend, pref, pbusy, &nmem);
                 verbf = 1;
                 vs_put_line(&out, L[i].t);
                 continue;
             }
             if (depth >= VS_MAX_DEPTH) {
                 if (!vs_cut_shape_ok(skind, depth)) { bail = 1; break; }
-                vs_cut_verbatim(&out, depth, skind, spool, pool, pend, pref, pbusy);
+                vs_cut_verbatim(&out, depth, skind, spool, pool, pend, pref, pbusy, &nmem);
                 verbf = 1;
                 vs_put_line(&out, L[i].t);
                 continue;
@@ -3533,14 +3624,14 @@ static void ark_vstack_function(AsmBuffer *b, int from)
             int r = -1;
             if (nops != 1 || !vs_whole_reg(ops[0], &r)) {
                 if (!vs_cut_shape_ok(skind, depth)) { bail = 1; break; }
-                vs_cut_verbatim(&out, depth, skind, spool, pool, pend, pref, pbusy);
+                vs_cut_verbatim(&out, depth, skind, spool, pool, pend, pref, pbusy, &nmem);
                 verbf = 1;
                 vs_put_line(&out, L[i].t);
                 continue;
             }
             if (depth <= 0) {
                 if (!vs_cut_shape_ok(skind, depth)) { bail = 1; break; }
-                vs_cut_verbatim(&out, depth, skind, spool, pool, pend, pref, pbusy);
+                vs_cut_verbatim(&out, depth, skind, spool, pool, pend, pref, pbusy, &nmem);
                 verbf = 1;
                 vs_put_line(&out, L[i].t);
                 continue;
@@ -3565,7 +3656,7 @@ static void ark_vstack_function(AsmBuffer *b, int from)
         f = vs_form(mn, nops, ops, &cnd);
         if (f < 0) {
             if (!vs_cut_shape_ok(skind, depth)) { bail = 1; break; }
-            vs_cut_verbatim(&out, depth, skind, spool, pool, pend, pref, pbusy);
+            vs_cut_verbatim(&out, depth, skind, spool, pool, pend, pref, pbusy, &nmem);
             verbf = 1;
             vs_put_line(&out, L[i].t);
             continue;
@@ -3582,7 +3673,7 @@ static void ark_vstack_function(AsmBuffer *b, int from)
             if (depth != 0 || nmem != 0) {
                 if (!vs_all_mem(skind, depth)) {
                     if (!vs_cut_shape_ok(skind, depth)) { bail = 1; break; }
-                    vs_cut_verbatim(&out, depth, skind, spool, pool, pend, pref, pbusy);
+                    vs_cut_verbatim(&out, depth, skind, spool, pool, pend, pref, pbusy, &nmem);
                     verbf = 1;
                     vs_put_line(&out, L[i].t);
                     continue;
@@ -3601,7 +3692,7 @@ static void ark_vstack_function(AsmBuffer *b, int from)
             if (depth != 0 || nmem != 0) {
                 if (!vs_all_mem(skind, depth)) {
                     if (!vs_cut_shape_ok(skind, depth)) { bail = 1; break; }
-                    vs_cut_verbatim(&out, depth, skind, spool, pool, pend, pref, pbusy);
+                    vs_cut_verbatim(&out, depth, skind, spool, pool, pend, pref, pbusy, &nmem);
                     verbf = 1;
                     vs_put_line(&out, L[i].t);
                     continue;

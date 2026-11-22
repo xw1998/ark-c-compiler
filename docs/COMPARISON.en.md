@@ -3,7 +3,7 @@
 English | [中文](COMPARISON.md)
 
 > In one sentence: **on the full STM32F4 HAL corpus, arkc with every
-> optimization on is 3.8× the instruction count and 3.6× the code bytes of
+> optimization on is 3.6× the instruction count and 3.5× the code bytes of
 > armcc `-O2`; the gap is not encoding quality, it is structural -- a value-stack
 > machine, liveness used only to delete copies, and intermediate results still
 > going through the frame.**
@@ -36,9 +36,9 @@ This method only compares "the code produced by compiling this batch of `.c`": n
 link-time optimization (LTO), no library functions. **Each arkc translation unit
 carries its own run-time helpers** (`__aeabi_memcpy`, `__arkcc_init_globals`,
 floating-point glue, ...), whereas armcc/armclang take the same routines from the C
-library -- on the arkc side that item is **920 instructions / 4.3%**
+library -- on the arkc side that item is **920 instructions / 4.5%**
 (`__aeabi_memcpy` 380, `__REV16`/`__REVSH`/`__RRX` 156 each,
-`__arkcc_init_globals` 72), and without it arkc's user code is **20,380
+`__arkcc_init_globals` 72), and without it arkc's user code is **19,314
 instructions**. The table does not deduct it, because that is Flash really
 occupied.
 
@@ -49,7 +49,7 @@ Totals over the 96 effective translation units:
 | Compiler | Options | Instructions | Code bytes |
 | --- | --- | ---: | ---: |
 | **arkc** | `-O2` | 50,965 | 114,576 |
-| **arkc** | `-O2` + all `-fopt-*` (see §3) | **21,300** | **50,648** |
+| **arkc** | `-O2` + all `-fopt-*` (see §3) | **20,234** | **48,466** |
 | armcc | `-O0` | 7,969 | 18,788 |
 | armcc | `-O1` | 6,061 | 14,910 |
 | armcc | `-O2` | 5,629 | 13,942 |
@@ -63,10 +63,10 @@ Relative to armcc `-O2`:
 | Comparison | Instructions | Code bytes |
 | --- | ---: | ---: |
 | arkc `-O2` (no `-fopt-*`) | 9.1× | 8.2× |
-| arkc `-O2` + all `-fopt-*` | **3.8×** | **3.6×** |
+| arkc `-O2` + all `-fopt-*` | **3.6×** | **3.5×** |
 
-**The ten optimization switches of 0.9.1 take the gap from 9.1× down to 3.8×**
-(−58.2% instructions, −55.8% code bytes).
+**The ten optimization switches of 0.9.1 take the gap from 9.1× down to 3.6×**
+(−60.3% instructions, −57.7% code bytes).
 
 **IAR does not take part**: IAR EWARM 9.70 is installed
 (`D:\tools\IAR_EWARM_9.70\arm\bin\iccarm.exe`, V9.70.1.475/W64), but it has
@@ -139,7 +139,7 @@ What remains is not that item any more; it is the shape of the code generator:
    access; there is no notion of "this value is still in `r3`", and no reordering
    of independent instructions into pipeline slots.
 4. **Each translation unit carries its own run-time helpers.** 920 instructions
-   / 4.3% (§1). armcc uses the library.
+   / 4.5% (§1). armcc uses the library.
 
 Two further ceilings that were **quantified and judged not worth doing**:
 
@@ -158,25 +158,25 @@ Two further ceilings that were **quantified and judged not worth doing**:
 | Build (cumulative) | Instructions | Code bytes |
 | --- | ---: | ---: |
 | `-O2` (no `-fopt-*`) | 50,965 | 114,576 |
-| + `-fopt-vstack` | 38,847 | 90,340 |
-| + `-fopt-addr` | 37,152 | 86,932 |
-| + `-fopt-strength` | 35,060 | 84,652 |
-| + `-fopt-cbz` | 34,625 | 82,912 |
-| + `-fopt-branch` | 34,625 | 80,320 |
-| + `-fopt-imm` | 27,392 | 66,286 |
-| + `-fopt-peep` | 25,992 | 63,476 |
-| + `-fopt-cbranch` | 23,369 | 55,184 |
-| + `-fopt-copyprop` | 22,980 | 54,406 |
-| + `-fopt-live` | **21,300** | **50,648** |
+| + `-fopt-vstack` | 37,489 | 87,624 |
+| + `-fopt-addr` | 35,577 | 83,782 |
+| + `-fopt-strength` | 33,485 | 81,502 |
+| + `-fopt-cbz` | 33,041 | 79,726 |
+| + `-fopt-branch` | 33,041 | 77,146 |
+| + `-fopt-imm` | 26,592 | 64,758 |
+| + `-fopt-peep` | 25,500 | 62,572 |
+| + `-fopt-cbranch` | 22,901 | 54,330 |
+| + `-fopt-copyprop` | 22,378 | 53,284 |
+| + `-fopt-live` | **20,234** | **48,466** |
 
-The ten switches together: **−29,665 instructions (−58.2%)**,
-**−63,928 code bytes (−55.8%)**. Note that `-fopt-branch` only changes encoding
+The ten switches together: **−30,731 instructions (−60.3%)**,
+**−66,110 code bytes (−57.7%)**. Note that `-fopt-branch` only changes encoding
 width, not the number of instructions, so its row is flat in the instruction
 column and −2,592 in the byte column.
 
-Per step: `-fopt-vstack` −12,118, `-fopt-imm` −7,233, `-fopt-cbranch` −2,623,
-`-fopt-live` −1,680, `-fopt-peep` −1,400, `-fopt-addr` −1,695,
-`-fopt-strength` −2,092, `-fopt-cbz` −435, `-fopt-copyprop` −389. Designs and
+Per step: `-fopt-vstack` −13,476, `-fopt-imm` −6,449, `-fopt-cbranch` −2,599,
+`-fopt-live` −2,144, `-fopt-peep` −1,092, `-fopt-addr` −1,912,
+`-fopt-strength` −2,092, `-fopt-cbz` −444, `-fopt-copyprop` −523. Designs and
 criteria are in `docs/RA_VSTACK.md`, `docs/IMM_FOLD.md`, `docs/CBRANCH.md`,
 `docs/LIVE.md`, `docs/PEEPHOLE.md`, `docs/ADDR_FOLD.md`, `docs/STRENGTH.md`,
 `docs/CBZ_FOLD.md`, `docs/COPYPROP.md`. Constant materialisation itself (on with

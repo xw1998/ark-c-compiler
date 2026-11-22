@@ -7,8 +7,8 @@ English | [中文](LIVE.md)
 > that materialise an address into a scratch register only to copy it into a
 > variable. `-fopt-live` builds a control-flow graph per function, iterates
 > register liveness to a fixed point, and then applies four rewrite rules. On
-> the full HAL corpus it removes another **1,680 instructions (−7.31%)** and
-> **3,758 bytes (−6.91%)**.
+> the full HAL corpus it removes another **2,144 instructions (−9.58%)** and
+> **4,818 bytes (−9.04%)**.
 
 ---
 
@@ -270,12 +270,12 @@ function).
 
 Baseline = the nine 0.9.1 switches
 (`vstack addr strength cbz branch imm peep cbranch copyprop`),
-22,980 instructions / 54,406 bytes:
+22,378 instructions / 53,284 bytes:
 
 | Build | Instructions | Code bytes | Change |
 | --- | ---: | ---: | ---: |
-| Baseline (nine switches) | 22,980 | 54,406 | — |
-| + `-fopt-live` | **21,300** | **50,648** | **−1,680 (−7.31%) / −3,758 (−6.91%)** |
+| Baseline (nine switches) | 22,378 | 53,284 | — |
+| + `-fopt-live` | **20,234** | **48,466** | **−2,144 (−9.58%) / −4,818 (−9.04%)** |
 
 Against the original five-switch baseline (34,625 / 80,320) the cumulative
 figure is −13,325 (−38.5%) / −29,672 (−36.9%).

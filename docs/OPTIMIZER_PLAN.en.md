@@ -7,6 +7,11 @@
 **where the evidence comes from, which stage it lives in, how it is trimmed away, and how
 we prove it actually helps.**
 
+> **Note on figures**: the numbers quoted inside each item are **historical**, taken when that
+> optimisation landed (constant materialisation was still in its old form and vstack had no
+> per-block resume yet). The authoritative per-step table for the current binary is in
+> `docs/COMPARISON.md` section 5; where the two disagree, that table wins.
+
 ---
 
 ## 0 Four rules, stated first

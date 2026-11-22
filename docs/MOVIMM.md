@@ -131,7 +131,7 @@ else                                  { /* MOVW+MOVT  */ }
 - 残余的 29 条 `MOVT rd, #0` **不是**浪费：它们全部紧跟在 `.arkdatasym` 之后，
   是 `--reloc-data` 的重定位对（链接器把地址填进这两条指令），必须保留。
 - 不开任何开关的 `-O2` 都受益，因此全开十开关的那一行也一起下移；逐级累加的权威口径在
-  `docs/COMPARISON.md` §5（当前终点 21,300 条 / 50,648 字节）。
+  `docs/COMPARISON.md` §5（当前终点 20,234 条 / 48,466 字节）。
 
 ## 6. 门禁：`tests/run_movimm_tests.py`（20 条）
 

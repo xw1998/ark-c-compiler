@@ -163,6 +163,31 @@ static int branchy(int n)
 int main(void) { return branchy(5) & 0xFF; }
 """
 
+# A function with several return paths.  Each `return` ends with the
+# epilogue `MOV sp, r6` / `ADD sp, sp, #N` / `POP {..., pc}`, and the compiler
+# emits the following paths one after another -- so before 0.9.1 every block
+# after the first `return` was copied through verbatim.  The exact tie between
+# what is live above the frame and the words the epilogue's restore pops is
+# what makes this the hardest resumption point in the pass.
+RETPATHS = """\
+int va_pad_r;
+static int retpaths(int a, int b)
+{
+    int t;
+    if (a & 1) {
+        t = a * 3 + b;
+        return t ^ b;
+    }
+    if (a & 2) {
+        t = b * 5 - a;
+        return t + (a & 7);
+    }
+    t = (a + b) * (a - b);
+    return t + 1;
+}
+int main(void) { return (retpaths(5, 3) + retpaths(2, 7) + retpaths(4, 2)) & 0xFF; }
+"""
+
 # A call through a function pointer ends in `PUSH {r}` / `POP {ip}` /
 # `BLX ip`.  The pass does not model the pop into ip, so it has to stop
 # rewriting there -- but what it already rewrote must stay, otherwise one
@@ -216,6 +241,18 @@ def py_branch(n=5):
     u = 2 if (n & 4) else 3
     return (((t * 10 + u) * (n + 1)) + (n ^ t)) & 0xFF
 
+def py_retpaths():
+    def one(a, b):
+        if a & 1:
+            t = a * 3 + b
+            return t ^ b
+        if a & 2:
+            t = b * 5 - a
+            return t + (a & 7)
+        t = (a + b) * (a - b)
+        return t + 1
+    return (one(5, 3) + one(2, 7) + one(4, 2)) & 0xFF
+
 def py_callptr(a=4, b=1):
     s = a * 3 + b
     s = s + 1
@@ -231,10 +268,11 @@ CASES = [
     ('shallow',  SHALLOW,  py_shallow()),
     ('branch',   BRANCH,   py_branch()),
     ('callptr',  CALLPTR,  py_callptr()),
+    ('retpaths', RETPATHS, py_retpaths()),
 ]
 
 # the two fixtures whose instruction count the pass must actually reduce
-PAYS = ('arith', 'loop', 'branch', 'callptr')
+PAYS = ('arith', 'loop', 'branch', 'callptr', 'retpaths')
 
 INSN_RE = re.compile(r'^\s+[A-Za-z][A-Za-z0-9.]*\s')
 STKP_RE = re.compile(r'^\s+(PUSH|POP)\b')
@@ -558,6 +596,48 @@ def main():
             check(not stack_pairs(head),
                   'callptr: the rewritten prefix survives the cut',
                   '%d leftover pair(s)' % stack_pairs(head))
+
+        # --- 4e. a return path does not end the pass ------------------------
+        # The epilogue puts sp back on the frame base, so the values the body
+        # held above it are gone and the restores pop the prologue's words,
+        # which the pass never modelled.  That makes the block after a `return`
+        # a clean restart: everything after the first epilogue has to be
+        # rewritten, not copied through.
+        t_rp, _, e_rp = build(arkcc, work, 'retpaths', [FLAG], 'rpon')
+        t_rpo, _, e_rpo = build(arkcc, work, 'retpaths', [], 'rpoff')
+        if e_rp or e_rpo:
+            check(False, 'the multi-return fixture builds',
+                  (e_rp or e_rpo)[0][:120])
+        else:
+            rp_on, rp_off = body_of(t_rp, 'retpaths'), body_of(t_rpo, 'retpaths')
+
+            def tail_after_first_return(t):
+                ls = t.splitlines()
+                for k, ln in enumerate(ls):
+                    if re.match(r'^\s+POP\s+\{.*\bpc\}', ln):
+                        return '\n'.join(ls[k + 1:])
+                return ''
+            tail_on = tail_after_first_return(rp_on)
+            tail_off = tail_after_first_return(rp_off)
+            check(tail_on and insn_count(tail_on) < insn_count(tail_off),
+                  'retpaths: the block after the first return is rewritten too',
+                  '%d -> %d instruction(s)' % (insn_count(tail_off),
+                                               insn_count(tail_on)))
+            check(not stack_pairs(rp_on),
+                  'retpaths: no leftover PUSH/POP pair in any return path',
+                  '%d pair(s)' % stack_pairs(rp_on))
+            if not HAVE_UNICORN:
+                skip('retpaths: emulator value', 'python package unicorn missing')
+            else:
+                _, b_rp, _ = build(arkcc, work, 'retpaths', [FLAG], 'rpimg')
+                _, b_rpo, _ = build(arkcc, work, 'retpaths', [], 'rpimgoff')
+                got = {}
+                for tag, blob in (('off', b_rpo), ('on', b_rp)):
+                    st, val, _ = run_image(blob)
+                    got[tag] = val if st == 'returned' else st
+                check(got['off'] == got['on'] == 65,
+                      'retpaths: off/on return the same value (65)',
+                      'off=%s on=%s' % (got['off'], got['on']))
 
         # --- 5. cropped out, refused ----------------------------------------
         trimmed, why = build_arkcc(work, ['-DARKCC_FEATURE_OPT_VSTACK=0'],
