@@ -204,6 +204,25 @@
 #   define ARKCC_FEATURE_OPT_BRANCH     1   /* 宿主/交叉编译：-fopt-branch 才有得开 */
 # endif
 #endif
+/* ARKCC_FEATURE_OPT_IMM: -fopt-imm, folding a constant operand into the
+ * instruction's immediate field instead of materialising it through the value
+ * stack.  Same trimming rule as the other code-size passes. */
+#ifndef ARKCC_FEATURE_OPT_IMM
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_OPT_IMM        0   /* 板上裁掉：立即数折叠只在宿主/交叉编译用 */
+# else
+#   define ARKCC_FEATURE_OPT_IMM        1
+# endif
+#endif
+/* ARKCC_FEATURE_OPT_PEEP: -fopt-peep, removing register copies that travel
+ * through the value stack (PUSH/POP pairs, pool constants, store/reload). */
+#ifndef ARKCC_FEATURE_OPT_PEEP
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_OPT_PEEP       0
+# else
+#   define ARKCC_FEATURE_OPT_PEEP       1
+# endif
+#endif
 #ifndef ARKCC_FEATURE_OPT_INLINE
 # if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
 #   define ARKCC_FEATURE_OPT_INLINE    0   /* Trim auto-inline on STM32 (costs Flash) */

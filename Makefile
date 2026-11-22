@@ -28,7 +28,8 @@ endif
         test-loop test-modern test-atomic test-ipo test-constglobal \
         test-objir test-partiallink test-deadinline test-softfloat test-tailmerge \
         test-tailcall test-divconst test-xblock test-sizeweight \
-        test-inline test-vstack test-addr test-strength test-cbz test-branch install stm32
+        test-inline test-vstack test-addr test-strength test-cbz test-branch \
+        test-imm test-peep install stm32
 
 all: $(ARKCC)
 
@@ -43,7 +44,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch test-imm test-peep
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -199,6 +200,28 @@ test-cbz: $(ARKCC)
 # (-DARKCC_FEATURE_OPT_BRANCH=0) refuses the flag by name.
 test-branch: $(ARKCC)
 	$(PYTHON) tests/run_branch_tests.py ./$(ARKCC)
+
+# Gate for -fopt-imm: a constant operand pushed by IR_PUSH_INT and consumed by
+# the next IR_BINARY is folded into the instruction's immediate field, so the
+# value never travels through the value stack.  The gate checks OFF IS OFF
+# (byte-identical without the flag), that the immediate really appears and the
+# `MOV r0, #k` really disappears, that all four arms compute the same answer in
+# the emulator, that a constant the encoding cannot carry (AND 0x12345678,
+# ADD 70000, MUL 5, DIV 3) falls back byte-identically and never leaves the
+# "; imm fold inconsistent" marker, the combination with --reg-top still works,
+# and a cropped build (-DARKCC_FEATURE_OPT_IMM=0) refuses the flag by name.
+test-imm: $(ARKCC)
+	$(PYTHON) tests/run_imm_tests.py ./$(ARKCC)
+# Gate for -fopt-peep: register copies that travel through the value stack are
+# removed (PUSH {rX} ... POP {rY} -> MOV rY, rX, and a store followed by a
+# reload of the same pool slot keeps only the store).  The gate checks OFF IS
+# OFF, that the copy pairs really go to zero, that instruction count and image
+# size shrink, that all four arms compute the same answer in the emulator, that
+# labels are preserved, and that a cropped build (-DARKCC_FEATURE_OPT_PEEP=0)
+# refuses the flag by name.
+test-peep: $(ARKCC)
+	$(PYTHON) tests/run_peep_tests.py ./$(ARKCC)
+
 
 
 # Gate for --diag_style=modern: the header, the framed echo and the caret

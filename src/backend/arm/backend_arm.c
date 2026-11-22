@@ -477,6 +477,42 @@ static void emit_b_label(AsmBuffer *b, const char *op, const char *fn, int n) {
  *   - TOK_LT/GT/LE/GE: when unsigned, use LO/HI/LS/HS conditions instead of LT/GT/LE/GE
  *   - TOK_SHR: when unsigned, use LSR (logical shift right) instead of ASR (arithmetic shift right)
  * ARM Thumb-2 condition codes: LO=CC(3), HI(8), LS(9), HS=CS(2) */
+/* The conditional-move tail shared by the six comparison ops: after CMP has
+ * set the flags, produce 1 or 0 in r0.  Factored out because -fopt-imm needs
+ * the same sequence behind "CMP r0, #imm" (see emit_binary_imm). */
+static void emit_cmp_result(AsmBuffer *b, int base_op, int is_unsigned) {
+    switch (base_op) {
+        case (int)TOK_EQ:
+            emit_line(b, "ITE EQ");
+            emit_line(b, "MOVEQ r0, #1");
+            emit_line(b, "MOVNE r0, #0");
+            break;
+        case (int)TOK_NE:
+            emit_line(b, "ITE NE");
+            emit_line(b, "MOVNE r0, #1");
+            emit_line(b, "MOVEQ r0, #0");
+            break;
+        case (int)TOK_LT:
+            if (is_unsigned) { emit_line(b, "ITE LO"); emit_line(b, "MOVLO r0, #1"); emit_line(b, "MOVHS r0, #0"); }
+            else             { emit_line(b, "ITE LT"); emit_line(b, "MOVLT r0, #1"); emit_line(b, "MOVGE r0, #0"); }
+            break;
+        case (int)TOK_GT:
+            if (is_unsigned) { emit_line(b, "ITE HI"); emit_line(b, "MOVHI r0, #1"); emit_line(b, "MOVLS r0, #0"); }
+            else             { emit_line(b, "ITE GT"); emit_line(b, "MOVGT r0, #1"); emit_line(b, "MOVLE r0, #0"); }
+            break;
+        case (int)TOK_LE:
+            if (is_unsigned) { emit_line(b, "ITE LS"); emit_line(b, "MOVLS r0, #1"); emit_line(b, "MOVHI r0, #0"); }
+            else             { emit_line(b, "ITE LE"); emit_line(b, "MOVLE r0, #1"); emit_line(b, "MOVGT r0, #0"); }
+            break;
+        case (int)TOK_GE:
+            if (is_unsigned) { emit_line(b, "ITE HS"); emit_line(b, "MOVHS r0, #1"); emit_line(b, "MOVLO r0, #0"); }
+            else             { emit_line(b, "ITE GE"); emit_line(b, "MOVGE r0, #1"); emit_line(b, "MOVLT r0, #0"); }
+            break;
+        default:
+            break;
+    }
+}
+
 static void emit_binary(AsmBuffer *b, int op) {
     int is_unsigned = (op & 0x100) != 0;
     int base_op = op & ~0x100;
@@ -498,43 +534,113 @@ static void emit_binary(AsmBuffer *b, int op) {
             /* Unsigned uses LSR (logical shift right), signed uses ASR (arithmetic shift right) */
             emit_line(b, is_unsigned ? "LSR r0, r1" : "ASR r0, r1");
             break;
-        case (int)TOK_EQ:
+        case (int)TOK_EQ: case (int)TOK_NE:
+        case (int)TOK_LT: case (int)TOK_GT:
+        case (int)TOK_LE: case (int)TOK_GE:
             emit_line(b, "CMP r0, r1");
-            emit_line(b, "ITE EQ");
-            emit_line(b, "MOVEQ r0, #1");
-            emit_line(b, "MOVNE r0, #0");
-            break;
-        case (int)TOK_NE:
-            emit_line(b, "CMP r0, r1");
-            emit_line(b, "ITE NE");
-            emit_line(b, "MOVNE r0, #1");
-            emit_line(b, "MOVEQ r0, #0");
-            break;
-        case (int)TOK_LT:
-            emit_line(b, "CMP r0, r1");
-            if (is_unsigned) { emit_line(b, "ITE LO"); emit_line(b, "MOVLO r0, #1"); emit_line(b, "MOVHS r0, #0"); }
-            else             { emit_line(b, "ITE LT"); emit_line(b, "MOVLT r0, #1"); emit_line(b, "MOVGE r0, #0"); }
-            break;
-        case (int)TOK_GT:
-            emit_line(b, "CMP r0, r1");
-            if (is_unsigned) { emit_line(b, "ITE HI"); emit_line(b, "MOVHI r0, #1"); emit_line(b, "MOVLS r0, #0"); }
-            else             { emit_line(b, "ITE GT"); emit_line(b, "MOVGT r0, #1"); emit_line(b, "MOVLE r0, #0"); }
-            break;
-        case (int)TOK_LE:
-            emit_line(b, "CMP r0, r1");
-            if (is_unsigned) { emit_line(b, "ITE LS"); emit_line(b, "MOVLS r0, #1"); emit_line(b, "MOVHI r0, #0"); }
-            else             { emit_line(b, "ITE LE"); emit_line(b, "MOVLE r0, #1"); emit_line(b, "MOVGT r0, #0"); }
-            break;
-        case (int)TOK_GE:
-            emit_line(b, "CMP r0, r1");
-            if (is_unsigned) { emit_line(b, "ITE HS"); emit_line(b, "MOVHS r0, #1"); emit_line(b, "MOVLO r0, #0"); }
-            else             { emit_line(b, "ITE GE"); emit_line(b, "MOVGE r0, #1"); emit_line(b, "MOVLT r0, #0"); }
+            emit_cmp_result(b, base_op, is_unsigned);
             break;
         default:
             emit_line(b, "; unknown binary op");
             break;
     }
 }
+
+#if ARKCC_FEATURE_OPT_IMM
+/* ThumbExpandImm() representability, defined with the assembler far below. */
+static int thumb_imm12_a(unsigned val, unsigned *out_i, unsigned *out_imm3,
+                         unsigned *out_imm8);
+
+/* --- -fopt-imm: fold a constant operand into the instruction --------------
+ *
+ * The IR is a stack machine, so `a + 16` arrives as PUSH a / PUSH 16 / BINARY.
+ * Emitting that literally puts 16 through the value stack (a MOV, a PUSH, a
+ * POP and a register copy) before the ADD; on the HAL corpus that is where
+ * most of the 5.7k "MOV rN, #imm" instructions go.  Nearly every ARM
+ * data-processing instruction has an immediate form, so the constant push can
+ * be dropped and the consumer emitted as `ADD r0, r0, #16`.
+ *
+ * Nothing about the value stack's shape changes on the refused paths: a
+ * constant that is not encodable (or an op with no immediate form: MUL, DIV,
+ * MOD, float) keeps the push and the register form exactly as before.
+ *
+ * `left` says the constant was the *left* operand (`16 + a`): only the
+ * commutative ops are folded then, because the immediate always becomes the
+ * right-hand one.  Comparisons are therefore excluded on that path.
+ *
+ * Returns 1 when the op has a foldable immediate form.  With emit == 0 it only
+ * decides; the caller uses that to decide whether to swallow the push, so the
+ * decision and the emission cannot disagree. */
+static int emit_binary_imm(AsmBuffer *b, int op, int v, int left, int emit) {
+    int is_unsigned = (op & 0x100) != 0;
+    int base_op = op & ~0x100;
+    char t[64];
+    switch (base_op) {
+    case (int)TOK_PLUS:
+        if (!left && v >= 0 && v <= 4095) {
+            if (emit) { snprintf(t, sizeof t, "ADD r0, r0, #%d", v); emit_line(b, t); }
+            return 1;
+        }
+        /* a + (-k) is a - k: the same instruction with the sign moved into
+         * the mnemonic, so -1 folds as readily as 1. */
+        if (v < 0 && v >= -4095) {
+            if (emit) { snprintf(t, sizeof t, "SUB r0, r0, #%d", -v); emit_line(b, t); }
+            return 1;
+        }
+        return 0;
+    case (int)TOK_MINUS:
+        if (!left && v >= 0 && v <= 4095) {
+            if (emit) { snprintf(t, sizeof t, "SUB r0, r0, #%d", v); emit_line(b, t); }
+            return 1;
+        }
+        if (!left && v < 0 && v >= -4095) {
+            if (emit) { snprintf(t, sizeof t, "ADD r0, r0, #%d", -v); emit_line(b, t); }
+            return 1;
+        }
+        return 0;
+    case (int)TOK_BAND:
+    case (int)TOK_BOR:
+    case (int)TOK_BXOR:
+        if (v < 0) return 0;
+        {
+            unsigned a, c, d;
+            if (!thumb_imm12_a((unsigned)v, &a, &c, &d)) return 0;
+        }
+        if (emit) {
+            snprintf(t, sizeof t, "%s r0, r0, #%d",
+                     base_op == (int)TOK_BAND ? "AND" : base_op == (int)TOK_BOR ? "ORR" : "EOR", v);
+            emit_line(b, t);
+        }
+        return 1;
+    case (int)TOK_SHL:
+        if (v < 0 || v > 31) return 0;
+        if (emit) { snprintf(t, sizeof t, "LSL r0, r0, #%d", v); emit_line(b, t); }
+        return 1;
+    case (int)TOK_SHR:
+        if (v < 0 || v > 31) return 0;
+        if (emit) { snprintf(t, sizeof t, "%s r0, r0, #%d", is_unsigned ? "LSR" : "ASR", v); emit_line(b, t); }
+        return 1;
+    case (int)TOK_EQ: case (int)TOK_NE:
+    case (int)TOK_LT: case (int)TOK_GT:
+    case (int)TOK_LE: case (int)TOK_GE: {
+        unsigned a, c, d;
+        if (left) return 0;                    /* not commutative */
+        if (v < 0) return 0;
+        /* CMP rn, #imm: the 16-bit form takes 0..255, the 32-bit form a
+         * modified immediate.  Anything else would be an assembler error. */
+        if (v > 255 && !thumb_imm12_a((unsigned)v, &a, &c, &d)) return 0;
+        if (emit) {
+            snprintf(t, sizeof t, "CMP r0, #%d", v);
+            emit_line(b, t);
+            emit_cmp_result(b, base_op, is_unsigned);
+        }
+        return 1;
+    }
+    default:
+        return 0;
+    }
+}
+#endif /* ARKCC_FEATURE_OPT_IMM */
 
 static void emit_unary(AsmBuffer *b, int op) {
     switch (op) {
@@ -689,6 +795,245 @@ static void ark_fix_far_offset(AsmBuffer *b, int from) {
         }
     }
 }
+
+#if ARKCC_FEATURE_OPT_PEEP
+/* --------------------------- peephole cleanup ----------------------------
+ * Two copy-elimination rules over one function's emitted text.  Neither needs
+ * liveness analysis, because each rule only turns a store/load round trip into
+ * the register move it already was:
+ *
+ *   R1  PUSH {rX} <padding> POP {rY}   ->  MOV rY, rX   (nothing at all if X==Y)
+ *       The stack machine materialises every intermediate with a PUSH and
+ *       consumes it with a POP; with nothing in between the pair is a plain
+ *       register copy routed through memory.  Padding (blank lines, comments,
+ *       directives, .loc) may sit between the two; a label may not, because a
+ *       branch could reach it with the value stack in a different state.  The
+ *       pair is balanced (sp is unchanged) so deleting it is free of side
+ *       effects on the frame.
+ *
+ *   R3  STR rX, [r6, #o] / LDR rX, [r6, #o]   ->  keep the STR, drop the LDR
+ *       A load of the slot just written from the same register only repeats a
+ *       value rX already holds.  The offset, the width and the register must
+ *       all match, and the two lines must be adjacent: a volatile access is
+ *       separated from its partner by a DMB SY, so it never matches, and the
+ *       store itself is kept, so no memory write is ever removed.
+ */
+#define PP_MAX_LINES 8192
+
+static int pp_enabled(void) {
+    return g_config.enable_opt_peep ? 1 : 0;
+}
+
+/* Copy one line without leading blanks and without a trailing CR.  Returns the
+ * length, or -1 when it does not fit in dst. */
+static int pp_trim(const char *ln, int len, char *dst, int cap) {
+    int i = 0, o = 0;
+    while (i < len && (ln[i] == ' ' || ln[i] == '\t')) i++;
+    while (i < len) {
+        char c = ln[i++];
+        if (c == '\r') continue;
+        if (o + 1 >= cap) return -1;
+        dst[o++] = c;
+    }
+    dst[o] = 0;
+    return o;
+}
+
+/* Exact "PUSH {rN}" / "POP {rN}" naming a single low register. */
+static int pp_pushpop(const char *t, int *is_push, int *reg) {
+    int i, r = 0;
+    if (!((t[0] == 'P' && t[1] == 'U' && t[2] == 'S' && t[3] == 'H') ||
+          (t[0] == 'P' && t[1] == 'O' && t[2] == 'P')))
+        return 0;
+    i = (t[1] == 'U') ? 4 : 3;      /* PUSH is four letters, POP is three */
+    if (t[i] != ' ' || t[i + 1] != '{') return 0;
+    i += 2;
+    if (t[i] != 'r' || !t[i + 1]) return 0;
+    i++;
+    if (t[i] < '0' || t[i] > '9') return 0;
+    while (t[i] >= '0' && t[i] <= '9') { r = r * 10 + (t[i] - '0'); i++; }
+    if (r > 12 || t[i] != '}' || t[i + 1] != 0) return 0;
+    *is_push = (t[1] == 'U');
+    *reg = r;
+    return 1;
+}
+
+/* A line that carries no code: blank, comment, or directive.  A label also
+ * starts with '.' but ends with ':' and must not be treated as padding. */
+static int pp_pad(const char *t) {
+    int n;
+    if (!t[0]) return 1;
+    if (t[0] == ';' || t[0] == '@') return 1;
+    if (t[0] == '.') {
+        n = ark_strlen(t);
+        if (n > 0 && t[n - 1] == ':') return 0;
+        return 1;
+    }
+    return 0;
+}
+
+/* Exact "LDR|STR[BH] rN, [r6, #off]".  Returns 1 on a match.  Width is 1 for
+ * byte, 2 for half, 4 for word; forms with no plain load/store twin (LDRD,
+ * LDRSB, LDRSH, pre/post-indexed) are rejected. */
+static int pp_mem(const char *t, int *is_ldr, int *width, int *reg, int *off) {
+    int i = 3, w = 4, r = 0, o = 0, ld;
+    if (t[0] == 'L' && t[1] == 'D' && t[2] == 'R') ld = 1;
+    else if (t[0] == 'S' && t[1] == 'T' && t[2] == 'R') ld = 0;
+    else return 0;
+    if (t[i] == 'B') { w = 1; i++; }
+    else if (t[i] == 'H') { w = 2; i++; }
+    if (t[i] != ' ' || t[i + 1] != 'r') return 0;
+    i += 2;
+    if (t[i] < '0' || t[i] > '9') return 0;
+    while (t[i] >= '0' && t[i] <= '9') { r = r * 10 + (t[i] - '0'); i++; }
+    if (!(t[i] == ',' && t[i + 1] == ' ' && t[i + 2] == '[' && t[i + 3] == 'r' &&
+          t[i + 4] == '6' && t[i + 5] == ',' && t[i + 6] == ' ' && t[i + 7] == '#'))
+        return 0;
+    i += 8;
+    if (t[i] < '0' || t[i] > '9') return 0;
+    while (t[i] >= '0' && t[i] <= '9') { o = o * 10 + (t[i] - '0'); i++; }
+    if (t[i] != ']' || t[i + 1] != 0) return 0;
+    *is_ldr = ld; *width = w; *reg = r; *off = o;
+    return 1;
+}
+
+static int pp_split_lines(AsmBuffer *b, int from, int *ls, int *ll, int cap) {
+    int n = 0, pos = from, len;
+    while (pos < b->len) {
+        len = 0;
+        while (pos + len < b->len && b->buf[pos + len] != '\n') len++;
+        if (n >= cap) return -1;      /* function too large: leave it alone */
+        ls[n] = pos;
+        ll[n] = len;
+        n++;
+        pos += len + 1;
+    }
+    return n;
+}
+
+static void pp_copy_line(AsmBuffer *out, const char *p, int len) {
+    int i;
+    for (i = 0; i < len; i++) asmbuf_putc(out, p[i]);
+    asmbuf_putc(out, '\n');
+}
+
+static void pp_splice(AsmBuffer *b, int from, AsmBuffer *out) {
+    int i;
+    asmbuf_reserve(b, from + out->len + 1);
+    for (i = 0; i < out->len; i++) b->buf[from + i] = out->buf[i];
+    b->buf[from + out->len] = 0;
+    b->len = from + out->len;
+}
+
+static void pp_r1(AsmBuffer *b, int from) {
+    static int ls[PP_MAX_LINES], ll[PP_MAX_LINES];
+    AsmBuffer out;
+    char t[256], u[256], mv[32];
+    int n, i, changed = 0;
+    n = pp_split_lines(b, from, ls, ll, PP_MAX_LINES);
+    if (n < 0) return;
+    asmbuf_init(&out);
+    i = 0;
+    while (i < n) {
+        int isp = 0, reg = 0;
+        if (ll[i] < (int)sizeof t &&
+            pp_trim(b->buf + ls[i], ll[i], t, sizeof t) >= 0 &&
+            pp_pushpop(t, &isp, &reg) && isp) {
+            int j = i + 1, reg2 = 0;
+            while (j < n) {
+                if (ll[j] >= (int)sizeof u) break;
+                if (pp_trim(b->buf + ls[j], ll[j], u, sizeof u) < 0) break;
+                if (!pp_pad(u)) break;
+                j++;
+            }
+            if (j < n && ll[j] < (int)sizeof u &&
+                pp_trim(b->buf + ls[j], ll[j], u, sizeof u) >= 0) {
+                int isp2 = 0;
+                if (pp_pushpop(u, &isp2, &reg2) && !isp2) {
+                    int k;
+                    if (reg != reg2) {
+                        snprintf(mv, sizeof mv, "    MOV r%d, r%d\n", reg2, reg);
+                        asmbuf_puts(&out, mv);
+                    }
+                    for (k = i + 1; k < j; k++)
+                        pp_copy_line(&out, b->buf + ls[k], ll[k]);
+                    i = j + 1;
+                    changed++;
+                    continue;
+                }
+            }
+        }
+        pp_copy_line(&out, b->buf + ls[i], ll[i]);
+        i++;
+    }
+    if (changed) pp_splice(b, from, &out);
+}
+
+static void pp_r3(AsmBuffer *b, int from) {
+    static int ls[PP_MAX_LINES], ll[PP_MAX_LINES];
+    AsmBuffer out;
+    char t[256], u[256];
+    int n, i, changed = 0;
+    n = pp_split_lines(b, from, ls, ll, PP_MAX_LINES);
+    if (n < 0) return;
+    asmbuf_init(&out);
+    i = 0;
+    while (i < n) {
+        int ld1, w1, r1, o1;
+        if (ll[i] < (int)sizeof t &&
+            pp_trim(b->buf + ls[i], ll[i], t, sizeof t) >= 0 &&
+            pp_mem(t, &ld1, &w1, &r1, &o1) && !ld1) {
+            int j = i + 1, match = 0;
+            while (j < n) {
+                int ld2, w2, r2, o2;
+                if (ll[j] >= (int)sizeof u) break;
+                if (pp_trim(b->buf + ls[j], ll[j], u, sizeof u) < 0) break;
+                if (pp_pad(u)) { j++; continue; }   /* .loc etc. separates nothing */
+                if (pp_mem(u, &ld2, &w2, &r2, &o2) && ld2 &&
+                    w1 == w2 && o1 == o2 && r1 == r2) match = 1;
+                break;
+            }
+            if (match) {
+                int k;
+                pp_copy_line(&out, b->buf + ls[i], ll[i]);   /* keep the store */
+                for (k = i + 1; k < j; k++)
+                    pp_copy_line(&out, b->buf + ls[k], ll[k]);
+                k = j + 1;
+                /* Repeat loads of the same slot are equally dead: only padding
+                 * may separate them, so nothing can have overwritten it. */
+                while (k < n) {
+                    int ld2, w2, r2, o2;
+                    if (ll[k] >= (int)sizeof u) break;
+                    if (pp_trim(b->buf + ls[k], ll[k], u, sizeof u) < 0) break;
+                    if (pp_pad(u)) {
+                        pp_copy_line(&out, b->buf + ls[k], ll[k]);
+                        k++;
+                        continue;
+                    }
+                    if (pp_mem(u, &ld2, &w2, &r2, &o2) && ld2 &&
+                        w1 == w2 && o1 == o2 && r1 == r2) {
+                        k++;
+                        continue;
+                    }
+                    break;
+                }
+                i = k;
+                changed++;
+                continue;
+            }
+        }
+        pp_copy_line(&out, b->buf + ls[i], ll[i]);
+        i++;
+    }
+    if (changed) pp_splice(b, from, &out);
+}
+
+static void ark_peep_function(AsmBuffer *b, int from) {
+    if (!pp_enabled()) return;
+    pp_r1(b, from);
+    pp_r3(b, from);
+}
+#endif /* ARKCC_FEATURE_OPT_PEEP */
 
 #if ARKCC_FEATURE_OPT_REGALLOC
 /* --------------------------- register allocation -------------------------
@@ -3861,6 +4206,35 @@ static int gvar_find_size(const char *name) {
     return 4;  /* default 4 bytes */
 }
 
+#if ARKCC_FEATURE_OPT_IMM
+/* 1 when this IR instruction pushes exactly one word back on the value stack.
+ * -fopt-imm uses it for the "constant is the left operand" shape: when the
+ * push after the constant is one of these, the constant can be swallowed and
+ * the consumer's immediate form used instead.  Anything that pushes two words
+ * (64-bit, struct) or nothing at all is refused, because then the binary op
+ * would not see the operand pairing this fold assumes. */
+static int ir_pushes_one_word(IrInst *I) {
+    if (!I) return 0;
+    switch (I->op) {
+    case IR_PUSH_INT:
+        return 1;
+    case IR_PUSH_VAR:
+        /* width in the low byte; volatile reads fall back in the emitter and a
+         * 64-bit value is two words */
+        if ((I->aux & 0xFF) >= 8) return 0;
+        return 1;
+    case IR_PUSH_ADDR:
+        return 1;
+    case IR_PUSH_GLOBAL_ADDR:
+        return 1;
+    case IR_PUSH_GLOBAL:
+        return gvar_find_size(I->name) < 8;
+    default:
+        return 0;
+    }
+}
+#endif
+
 /* 1 = defined in this translation unit (`addr` valid), 2 = declared only,
  * 0 = unknown to this unit. */
 static int gvar_kind(const char *name, unsigned *addr, int *size) {
@@ -5309,6 +5683,18 @@ static char *codegen_arm(IrProgram *prog) {
         int divconst_skip = 0;
         DivConst divconst_st;
 #endif
+#if ARKCC_FEATURE_OPT_IMM
+        /* -fopt-imm: 1 while a constant push has been swallowed and the binary
+         * op that consumes it (immediately next, or next after one more push
+         * when the constant is the left operand) has not been emitted yet.
+         * imm_left marks the left-operand shape so only commutative ops fold.
+         * Always 0 in a build without ARKCC_FEATURE_OPT_IMM, and never set when
+         * the switch is off, so the image is unchanged. */
+        int imm_live = 0;
+        int imm_left = 0;
+        int imm_val = 0;
+        int imm_op = 0;
+#endif
         for (i = 0; i < f->code_count; i++) {
             IrInst *I = &f->code[i];
 #if ARKCC_FEATURE_DWARF
@@ -5359,6 +5745,40 @@ static char *codegen_arm(IrProgram *prog) {
                     ark_top_drain(&buf, &rtop);
                     divconst_live = 1;
                     divconst_skip = at - 1;
+                    continue;
+                }
+            }
+#endif
+#if ARKCC_FEATURE_OPT_IMM
+            /* -fopt-imm: swallow a constant that the very next binary op can
+             * take as an immediate, so it never travels through the value
+             * stack.  Two shapes:
+             *   PUSH k / BINARY           -> `POP r0 ; OP r0, r0, #k`
+             *   PUSH k / <one push> / BINARY -> the same, k on the right
+             *                                 (only commutative ops)
+             * ir_pushes_one_word() and emit_binary_imm() decide; both refuse
+             * everything they are not sure about, and then this block leaves
+             * the push alone and the register form is emitted as before.
+             * Not combined with --reg-top: that mode models the same pairing
+             * itself and the two would double-skip a value. */
+            if (g_config.enable_opt_imm && !ark_top_enabled() && !imm_live &&
+                I->op == IR_PUSH_INT) {
+                IrInst *n1 = (i + 1 < f->code_count) ? &f->code[i + 1] : 0;
+                if (n1 && n1->op == IR_BINARY &&
+                    emit_binary_imm(&buf, n1->aux, (int)I->val, 0, 0)) {
+                    imm_live = 1;
+                    imm_left = 0;
+                    imm_val = (int)I->val;
+                    imm_op = n1->aux;
+                    continue;
+                }
+                if (n1 && ir_pushes_one_word(n1) && i + 2 < f->code_count &&
+                    f->code[i + 2].op == IR_BINARY &&
+                    emit_binary_imm(&buf, f->code[i + 2].aux, (int)I->val, 1, 0)) {
+                    imm_live = 1;
+                    imm_left = 1;
+                    imm_val = (int)I->val;
+                    imm_op = f->code[i + 2].aux;
                     continue;
                 }
             }
@@ -6128,6 +6548,17 @@ static char *codegen_arm(IrProgram *prog) {
                     break;
                 }
                 case IR_BINARY:
+#if ARKCC_FEATURE_OPT_IMM
+                    if (imm_live) {
+                        /* the constant is gone; one real operand is on the stack */
+                        imm_live = 0;
+                        emit_pop_r0(&buf);
+                        if (!emit_binary_imm(&buf, imm_op, imm_val, imm_left, 1))
+                            emit_line(&buf, "; imm fold inconsistent");
+                        emit_push_r0(&buf);
+                        break;
+                    }
+#endif
                     emit_pop_r1(&buf);
                     emit_pop_r0(&buf);
                     emit_binary(&buf, I->aux);
@@ -7806,6 +8237,12 @@ static char *codegen_arm(IrProgram *prog) {
          * instead of two.  Last of the three text passes, so it sees the
          * shape vstack/addr left behind. */
         if (g_config.enable_opt_cbz) ark_cbz_function(&buf, fstart);
+#endif
+#if ARKCC_FEATURE_OPT_PEEP
+        /* Copy cleanup over the text the three structural passes left behind:
+         * adjacent PUSH/POP pairs and a load of the slot just written.  Runs
+         * before regalloc so the slot rewriter sees the shorter text. */
+        if (g_config.enable_opt_peep) ark_peep_function(&buf, fstart);
 #endif
 #if ARKCC_FEATURE_OPT_REGALLOC
         /* The text of this function is complete: it is the last slice of the

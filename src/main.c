@@ -520,6 +520,22 @@ int main(int argc, char **argv) {
             return 1;
         }
 #endif
+#if !ARKCC_FEATURE_OPT_IMM
+        else if (strcmp(a, "-fopt-imm") == 0) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: -fopt-imm is not compiled into "
+                    "this build (rebuild with -DARKCC_FEATURE_OPT_IMM=1)\n");
+            return 1;
+        }
+#endif
+#if !ARKCC_FEATURE_OPT_PEEP
+        else if (strcmp(a, "-fopt-peep") == 0) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: -fopt-peep is not compiled into "
+                    "this build (rebuild with -DARKCC_FEATURE_OPT_PEEP=1)\n");
+            return 1;
+        }
+#endif
         else if (a[0] == '-' && a[1] == 'f') {
             /* -fxxx / -fno-xxx: already handled by config_apply_args, silently accepted here */
         }
