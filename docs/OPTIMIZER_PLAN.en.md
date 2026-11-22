@@ -263,18 +263,23 @@ aliasing is uncertain" plus ARM-specific instruction rewrites.**
   instruction and an extra saved register is a pure loss -- on the HAL corpus 59 of 203 rewritable
   functions qualify and the 63 that were blocked saved exactly 0. The cost is paid in full: adding
   r4 to the prologue/epilogue makes `sp` 4 (mod 8), so `SUB`/`ADD sp, sp, #N` become `N+4`; the four
-  lines are formatted first and replaced only if all four allocations succeed.
-- **Criteria**: `tests/run_vstack_tests.py`, 23 checks, `make test-vstack`: byte-identical when off,
+  lines are formatted first and replaced only if all four allocations succeed.  **Frame-less
+  functions** (no parameters, no locals -- the prologue has no `SUB sp` at all) take a second path:
+  `PUSH`/`POP` become five-register forms plus one `SUB sp, sp, #4` emitted **after** `MOV r6, sp`
+  (no `ADD`: the epilogue's `MOV sp, r6` discards the padding; put it before the `MOV` and every
+  call leaks one word of the caller's stack).  28 of the 81 frame-less functions in the HAL corpus
+  cross the threshold this way, worth 28 more instructions.
+- **Criteria**: `tests/run_vstack_tests.py`, 31 checks, `make test-vstack`: byte-identical when off,
   fewer instructions and `PUSH`/`POP`s, **the image never grows**, no lone PUSH/POP pair left in a
   rewritten function, identical results from the off/on/on+regalloc builds on six fixtures, and the
   cropped build refuses the flag; two of the checks are about the third slot only -- `deep` must
   show `PUSH {r4, r5, r6, r7, lr}` / `POP {r4, r5, r6, r7, pc}` with `N % 8 == 4`, and `shallow`
   must have no r4 in its prologue. Every change also runs the whole `tests/arm_exec` corpus
-  (`--extra=-fopt-vstack`, 36 cases, 0 failures) -- **all five semantic defects this pass ever had
+  (`--extra=-fopt-vstack`, 39 cases, 0 failures) -- **all five semantic defects this pass ever had
   were found by it**.
 - **Measurements** (crossing + third slot): the whole STM32F4 HAL corpus (`-O2 -mcpu Cortex-M4`,
-  non-directive non-label lines) 47,885 -> 38,004 instructions (**-20.64%**, third slot already
-  included); `-fopt-addr` on top gives 36,553 (-3.82%). Fixtures: arith 171 -> 121 instructions,
+  non-directive non-label lines) 47,884 -> 37,976 instructions (**-20.71%**, third slot already
+  included); `-fopt-addr` on top gives 36,524 (-3.82%). Fixtures: arith 171 -> 121 instructions,
   `PUSH`/`POP` 88 -> 14, image 1392 -> 1292; loop 203 -> 140, 100 -> 12, 1480 -> 1354; struct
   1400 -> 1294; variadic 1556 -> 1458; deep 1384 -> 1354; shallow 1274 -> 1226. The r4 row is
   booked honestly: 59 functions each save one more word (about +472 bytes) for 340 fewer
@@ -313,11 +318,11 @@ aliasing is uncertain" plus ARM-specific instruction rewrites.**
   mnemonic whitelist, all four arms compute the same answer under unicorn, and a cropped build
   refuses the flag.
 - **Measurements**: the whole HAL corpus `examples/ark_test/ark_test_all.c` (STM32F401xE, `-O2`),
-  measured on the post-vstack baseline (third slot included) of 38,004 instructions:
-  38,004 -> 36,553 (**-1,451 / -3.82%**); the register-index residue drops 1,075 -> 0 and the
+  measured on the post-vstack baseline (third slot included) of 37,976 instructions:
+  37,976 -> 36,524 (**-1,452 / -3.82%**); the register-index residue drops 1,075 -> 0 and the
   `MOV` form 0 -> 0. The total drop is larger than 1,075, so R1 (the immediate-offset form) does
   fire on the new baseline; no per-rule attribution was measured, so none is claimed. Stacked on
-  plain `-O2`: 47,885 -> 38,004 -> 36,553. Details in `docs/ADDR_FOLD.md`.
+  plain `-O2`: 47,884 -> 37,976 -> 36,524. Details in `docs/ADDR_FOLD.md`.
 
 ### P9 Strength reduction (`-fopt-strength`, **landed in 0.9.1-wip**)
 
@@ -336,7 +341,7 @@ aliasing is uncertain" plus ARM-specific instruction rewrites.**
   round loop): once `-fopt-addr`'s R2 has removed the `ADD`, the `LSL` sits next to the access
   and R4 merges the pair into one `[Rn, Rm, LSL #n]` (only `LDR`/`STR`, `n in 1..3`,
   `rI != rB`, and `rS` dead afterwards). Alongside it, a liveness defect in `ad_rw()` was
-  fixed: `POP` was counted as a read, so `POP {r1}` kept r1 alive forever. Fold count 243 -> 926.
+  fixed: `POP` was counted as a read, so `POP {r1}` kept r1 alive forever. Fold count 243 -> 924.
 - **Powers of two only**: `MUL` is one cycle on Cortex-M4 and an `LSL`+`ADD` chain is never
   shorter (measured, not assumed); `x*3` keeps its `MUL` and that is asserted in the gate, so a
   later "helpful" change cannot extend the rule into a shift/add chain.
@@ -355,11 +360,11 @@ aliasing is uncertain" plus ARM-specific instruction rewrites.**
   the image never grows, all five arms agree, and a cropped build refuses the flag. R4 adds four:
   the merged `[rB,rI,LSL #n]` exists on `all` (1), is 0 on `on`, is 0 on `va`, and `LSL #1..3`
   strictly decreases (3 -> 2, with the 1 residue coming from `ad_dead_after` bailing out at a label).
-- **Measurements**: plain `-O2` 47,885 -> **46,779** (**-1,106 / -2.31%**), `MUL` **1,105 -> 12**
-  (all 12 remaining are value x value, none constant); on top of the 36,553 of
-  `-fopt-vstack -fopt-addr` -> **35,453** (-1,100 / -3.01%); R4 then folds 926 more ->
-  **34,527** (-926 / -2.61%). Full chain:
-  **47,885 -> 38,004 -> 36,553 -> 35,453 -> 34,527 (-27.90%)**. Object bytes:
+- **Measurements**: plain `-O2` 47,884 -> **46,779** (**-1,105 / -2.31%**), `MUL` **1,105 -> 12**
+  (all 12 remaining are value x value, none constant); on top of the 36,524 of
+  `-fopt-vstack -fopt-addr` -> **35,424** (-1,100 / -3.01%); R4 then folds 924 more ->
+  **34,500** (-924 / -2.61%). Full chain:
+  **47,884 -> 37,976 -> 36,524 -> 35,424 -> 34,500 (-27.95%)**. Object bytes:
   115,090 -> 112,878 (-2,212 B); 92,408 -> 90,208 (-2,200 B, **unchanged by R4**: each merge
   trades two 16-bit instructions for one 32-bit one, so only the instruction count drops).
   Details in `docs/STRENGTH.en.md`.
@@ -393,8 +398,8 @@ aliasing is uncertain" plus ARM-specific instruction rewrites.**
   out-of-range body (upper bound 80 bytes) is never folded; nothing is rewritten when the
   target is too far; the image is unchanged; a cropped build refuses the flag and still
   compiles without it. Plus the whole `tests/arm_exec` corpus (0 failures).
-- **Measurements**: plain `-O2` 47,885 -> **47,489** (-396 / -1,584 B); full chain 34,527 ->
-  **34,107** (-420 / -1,680 B). Each fusion saves exactly 4 bytes (16-bit `CMP` + 32-bit
+- **Measurements**: plain `-O2` 47,884 -> **47,489** (-396 / -1,584 B); full chain 34,500 ->
+  **34,080** (-420 / -1,680 B). Each fusion saves exactly 4 bytes (16-bit `CMP` + 32-bit
   `Bcc` -> 16-bit `CBZ`). Of the 814 adjacent pairs in the HAL corpus 396 were fused; the rest
   hit the 64-byte bound or still read the flags. Details in `docs/CBZ_FOLD.en.md`.
 

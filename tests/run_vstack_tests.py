@@ -129,6 +129,24 @@ static int shallow(int a, int b) { return a + b; }
 int main(void) { return shallow(3, 4) & 0xFF; }
 """
 
+# A function with no parameters and no locals gets no frame from the code
+# generator, so before 0.9.1 the third slot was unreachable for it: the pass
+# keyed on a `SUB sp` to grow.  Both fixtures below are frame-less; only the
+# first one ever holds three values at once.
+FRAMELESS_DEEP = """\
+int va_pad_f0;
+int f0a = 50, f0b = 30, f0c = 12, f0d = 4, f0e = 1;
+static int frameless(void) { return f0a - (f0b - (f0c - (f0d - f0e))); }
+int main(void) { return frameless() & 0xFF; }
+"""
+
+FRAMELESS_SHALLOW = """\
+int va_pad_f1;
+int f1a, f1b;
+static int flat(void) { return f1a + f1b; }
+int main(void) { return flat() & 0xFF; }
+"""
+
 def py_arith(a=5, b=7, c=9, d=3):
     x = a + b
     y = c - d
@@ -394,6 +412,65 @@ def main():
             check(not grown,
                   'shallow: a body that never holds three values leaves r4 alone',
                   'grown %s' % (grown[:1] if grown else 'none'))
+
+        # --- 4c. a frame-less function can take r4 too ----------------------
+        # No parameters and no locals means the prologue is `PUSH {.., lr}` /
+        # `MOV r6, sp` with no `SUB sp`, and the epilogue is `MOV sp, r6` /
+        # `POP {.., pc}`.  There is no frame size to grow, so the pass instead
+        # inserts one `SUB sp, sp, #4` -- and it has to sit *after*
+        # `MOV r6, sp`, because the epilogue restores sp from r6: padding
+        # before the MOV would leave sp 4 bytes low after the POP and bleed
+        # the caller's stack by one word per call.
+        write(os.path.join(work, 'frameless_deep.c'), FRAMELESS_DEEP)
+        write(os.path.join(work, 'frameless_shallow.c'), FRAMELESS_SHALLOW)
+        t_fd, b_fd, e_fd = build(arkcc, work, 'frameless_deep', [FLAG], 'r4on')
+        _, b_fdo, e_fdo = build(arkcc, work, 'frameless_deep', [], 'off')
+        t_fs, _, e_fs = build(arkcc, work, 'frameless_shallow', [FLAG], 'r4on')
+        if e_fd or e_fdo or e_fs:
+            check(False, 'the frame-less fixtures build',
+                  (e_fd or e_fdo or e_fs)[0][:120])
+        else:
+            chunk = [v for k, v in split_functions(t_fd).items()
+                     if k == 'frameless']
+            body = chunk[0] if chunk else ''
+            lines = [l.strip() for l in body.splitlines()]
+            order = []
+            for want in ('PUSH {r4, r5, r6, r7, lr}', 'MOV r6, sp',
+                         'SUB sp, sp, #4', 'MOV sp, r6',
+                         'POP {r4, r5, r6, r7, pc}'):
+                try:
+                    order.append(lines.index(want))
+                except ValueError:
+                    order.append(-1)
+            check(all(i >= 0 for i in order),
+                  'frame-less: the five-register frame and its padding exist',
+                  'missing %s' % ([w for w, i in zip(
+                      ('PUSH', 'MOV r6,sp', 'SUB', 'MOV sp,r6', 'POP'), order)
+                      if i < 0],))
+            check(order == sorted(order),
+                  'frame-less: the padding sits after `MOV r6, sp`, not before',
+                  'order %s' % (order,))
+            uses = [l for l in lines if 'r4' in l and not l.startswith(('PUSH', 'POP'))]
+            check(uses, 'frame-less: r4 is really used as the third slot',
+                  '%d instruction(s)' % len(uses))
+            check(len(b_fd) <= len(b_fdo),
+                  'frame-less: the image never grows',
+                  '%d -> %d bytes' % (len(b_fdo), len(b_fd)))
+            flat_chunk = [v for k, v in split_functions(t_fs).items() if k == 'flat']
+            flat_body = flat_chunk[0] if flat_chunk else ''
+            check('{r4' not in flat_body,
+                  'frame-less: two live values still leave r4 alone',
+                  'grown' if '{r4' in flat_body else 'none')
+            if not HAVE_UNICORN:
+                skip('frame-less: emulator value', 'python package unicorn missing')
+            else:
+                got = {}
+                for tag, blob in (('off', b_fdo), ('on', b_fd)):
+                    st, val, _ = run_image(blob)
+                    got[tag] = val if st == 'returned' else st
+                check(got['off'] == got['on'] == 29,
+                  'frame-less: off/on return the same value',
+                  'off=%s on=%s' % (got['off'], got['on']))
 
         # --- 5. cropped out, refused ----------------------------------------
         trimmed, why = build_arkcc(work, ['-DARKCC_FEATURE_OPT_VSTACK=0'],

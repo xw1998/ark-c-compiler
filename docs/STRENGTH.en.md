@@ -149,12 +149,12 @@ Corpus: `examples/ark_test/ark_test_all.c` (STM32F401xE + HAL + CMSIS, `-O2 -mcp
 
 | Build | Instructions | Delta | `MUL` | `LSL` |
 | --- | --- | --- | --- | --- |
-| `-O2` | 47,885 | — | 1,105 | 125 |
-| `-O2 -fopt-strength` | **46,779** | **−1,106 (−2.31%)** | **12** | 1,209 |
+| `-O2` | 47,884 | — | 1,105 | 125 |
+| `-O2 -fopt-strength` | **46,779** | **−1,105 (−2.31%)** | **12** | 1,209 |
 
-Breaking the 1,106 down: the 1,052 `LOAD_IDX` stride scales × 2 instructions = 2,104
+Breaking the 1,105 down: the 1,052 `LOAD_IDX` stride scales × 2 instructions = 2,104
 replaced by 1,052 `LSL`s (net −1,052); the 41 IR constant multiplies × 2 = 82 replaced by
-41 `LSL`s (net −41); deleting `x * 1` contributes the rest. Total −1,106.
+41 `LSL`s (net −41); deleting `x * 1` contributes the rest. Total −1,105.
 
 **`MUL` goes 1,105 → 12**, and not one of those 12 is a constant multiply: they are all
 value-times-value (fixed-point/ratio arithmetic in the HAL). In other words, the
@@ -164,12 +164,12 @@ value-times-value (fixed-point/ratio arithmetic in the HAL). In other words, the
 
 | Build | Instructions | Delta |
 | --- | --- | --- |
-| `-fopt-vstack` | 38,004 | (−20.64% vs plain `-O2`) |
-| `+ -fopt-addr` | 36,553 | −3.82% |
-| `+ -fopt-strength` | 35,453 | −1,100 (−3.01%) |
-| `+ -fopt-strength`, second half R4 active | **34,527** | **−926 (−2.61%)** |
+| `-fopt-vstack` | 37,976 | (−20.71% vs plain `-O2`) |
+| `+ -fopt-addr` | 36,524 | −3.82% |
+| `+ -fopt-strength` | 35,424 | −1,100 (−3.01%) |
+| `+ -fopt-strength`, second half R4 active | **34,500** | **−924 (−2.61%)** |
 
-Full chain: **47,885 → 38,004 → 36,553 → 35,453 → 34,527 (−27.90% cumulative)**.
+Full chain: **47,884 → 37,976 → 36,524 → 35,424 → 34,500 (−27.95% cumulative)**.
 
 R4 gets its own row only to keep the accounting readable: it is the *same* switch as the
 row above. A user who passes `-fopt-strength` gets both halves; there is no second flag
@@ -189,7 +189,7 @@ the shape the previous two passes left behind.
 
 **R4 does not change the object bytes**: the `all` arm is **90,208 B** both before and after
 R4. That is not a no-op — every merge is "two 16-bit instructions become one 32-bit
-instruction". The instruction count drops by 926 while the byte count does not move by a
+instruction". The instruction count drops by 924 while the byte count does not move by a
 single byte. The only honest way to state R4's gain is *instruction count*; it is not
 "smaller".
 
@@ -218,7 +218,7 @@ only exists when strength is on (the shift is emitted there), and putting the ru
 would make addr recognise a shape it never produces, breaking addr's "OFF IS OFF"
 invariant. It lives in `ark_addr_function()`'s round loop, after R2/R3, gated *both* by
 `ARKCC_FEATURE_OPT_STRENGTH` and by the runtime `g_config.enable_opt_strength`. With the
-default (off) the behaviour is unchanged — the `va` arm still measures 36,553, byte-for-byte
+default (off) the behaviour is unchanged — the `va` arm still measures 36,524, byte-for-byte
 what it was before this work.
 
 Four safety conditions, all required:
@@ -235,15 +235,15 @@ and `POP` in the same branch and treat `POP`'s register list as a *read*. So `PO
 r1 alive forever and `ad_dead_after()` could never call it dead. The fix splits the two
 branches and counts `POP`'s operands as **writes**. This one fix serves R1/R2/R3/R4 alike;
 patching only R4 would not cure the disease. Fold count on the HAL corpus before/after the
-fix: **243 → 926**.
+fix: **243 → 924**.
 
 Measurements (HAL corpus, `all` arm = `-fopt-vstack -fopt-addr -fopt-strength`):
 
 | Quantity | Value |
 | --- | --- |
 | `LSL rX, rY, #1..3` count (`on` arm → `all` arm) | 1,052 → 126 |
-| folds into the addressing mode | **926**, every one of them `LSL #2` |
-| `[rB, rI, LSL #n]` operands | 0 → **926** |
+| folds into the addressing mode | **924**, every one of them `LSL #2` |
+| `[rB, rI, LSL #n]` operands | 0 → **924** |
 | residue | 158 lines in `all` (1 in the fixture), all from `ad_dead_after()` bailing out conservatively at a label/branch |
 
 The nine `#1` lines (byte/halfword accesses around LDRSH) have no shift field at all and are

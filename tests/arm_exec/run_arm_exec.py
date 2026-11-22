@@ -1131,6 +1131,66 @@ int main(void)
         "expect": 7,
     },
     {
+        "name": "frameless_r4_off",
+        "why": "Control arm for frameless_r4: the same source built without "
+               "-fopt-vstack must return the same 29, so the third pool slot is "
+               "a pure size/instruction change and never an answer change",
+        "files": {
+            "fr.c": STARTUP + """\
+int fa = 50, fb = 30, fc = 12, fd = 4, fe = 1;
+int f0(void) { return fa - (fb - (fc - (fd - fe))); }
+int main(void) { return f0(); }
+""",
+        },
+        "build": [(["fr.c", "-target", "arm", "-O2", "--vector-table",
+                    "-o", "out.bin"], "out.bin")],
+        "expect": 29,
+    },
+    {
+        "name": "frameless_r4",
+        "why": "A function with no parameters and no locals has no frame, so "
+               "before 0.9.1 it never got the r4 third pool slot: the pass needed "
+               "a `SUB sp` to grow.  The body here keeps three values live "
+               "(sdmax 3), so r4 must be taken and the 4 padding bytes must be "
+               "added *after* `MOV r6, sp` -- the epilogue restores sp from r6, "
+               "which throws the padding away.  The value 29 is only reachable "
+               "if the third slot really holds the third value; the sp probe "
+               "returning the same address before and after the call is only "
+               "reachable if the padding is discarded on the way out",
+        "files": {
+            "fr.c": STARTUP + """\
+int fa = 50, fb = 30, fc = 12, fd = 4, fe = 1;
+int f0(void) { return fa - (fb - (fc - (fd - fe))); }
+extern unsigned ark_sp_read(void);
+int main(void)
+{
+    unsigned before = ark_sp_read();
+    int r = f0();
+    unsigned after = ark_sp_read();
+    if (r != 29) return 1;
+    if (before != after) return 2;
+    return r;
+}
+""",
+            "sp_probe.s": """\
+        .text
+        .global ark_sp_read
+        .thumb
+ark_sp_read:
+        MOV     r0, sp
+        BX      lr
+""",
+        },
+        "build": [
+            (["sp_probe.s", "-target", "arm", "-c", "-o", "sp_probe.obj"], None),
+            (["fr.c", "-target", "arm", "-O2", "-fopt-vstack", "-c",
+              "--vector-table", "-o", "fr.obj"], None),
+            (["-link", "fr.obj", "sp_probe.obj", "--vector-table", "-o", "out.bin"],
+             "out.bin"),
+        ],
+        "expect": 29,
+    },
+    {
         "name": "atomic_reject",
         "why": "_Atomic is parsed, not ignored: an array, a function, a struct and a "
                "parenthesised specifier after '*' are four separate diagnostics and "

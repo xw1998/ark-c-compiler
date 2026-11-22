@@ -129,15 +129,15 @@ Counts are the number of non-directive, non-label lines in the `.s`.
 
 | Corpus | `-fopt-vstack` | plus `-fopt-addr` | Change |
 | --- | --- | --- | --- |
-| STM32F4 HAL (`examples/ark_test/ark_test_all.c`, `-O2 -mcpu Cortex-M4`) | 38,004 instructions | 36,553 instructions | **−1,451 (−3.82%)** |
+| STM32F4 HAL (`examples/ark_test/ark_test_all.c`, `-O2 -mcpu Cortex-M4`) | 37,976 instructions | 36,524 instructions | **−1,452 (−3.82%)** |
 | same, "`ADD` immediately followed by an access through that register" | 1,075 | **0** | all folded by R2 |
 | same, "`MOV` immediately followed by an access through that register" | 0 | 0 | nothing foldable |
 
 The residual detector only recognises the adjacent shape "`ADD` then one `[rD]`
 with no offset", so 1,075 is a **lower bound for the register-index form**. The
-total reduction of 1,451 is larger; the remainder was not attributed rule by rule,
-so no claim is made about it. The baseline is the 38,004 instructions **after**
-`-fopt-vstack` (the crossing version, third slot included), not the 47,885 of
+total reduction of 1,452 is larger; the remainder was not attributed rule by rule,
+so no claim is made about it. The baseline is the 37,976 instructions **after**
+`-fopt-vstack` (the crossing version, third slot included), not the 47,884 of
 plain `-O2`; do not mix the two.
 
 The HAL corpus is a floor for this layer, not a ceiling: it is almost entirely
@@ -233,7 +233,7 @@ leaves the shift right next to the access, which is exactly what the second half
 of `-fopt-strength` (R4) merges into a single `LDR r0, [r4, r1, LSL #2]`. So addr
 does not own that merge: it only deletes the `ADD` and exposes the shape. The
 merge belongs to strength, because strength is what emitted the shift. **addr on
-its own is unchanged** (`-fopt-vstack -fopt-addr` still measures 36,553 on this
+its own is unchanged** (`-fopt-vstack -fopt-addr` still measures 36,524 on this
 corpus, byte-for-byte what it was before R4).
 
 There is also one liveness fix shared with R1-R3: `ad_rw()` used to put `PUSH`

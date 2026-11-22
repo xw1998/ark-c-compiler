@@ -137,8 +137,8 @@ symbol table is small).
 
 | Corpus | plain `-O2` | `+ -fopt-cbz` | Change |
 | --- | --- | --- | --- |
-| STM32F4 HAL (`examples/ark_test/ark_test_all.c`, `-O2 -mcpu Cortex-M4`) | 47,885 | **47,489** | **−396** |
-| same, on top of `-fopt-vstack -fopt-addr -fopt-strength` | 34,527 | **34,107** | **−420** |
+| STM32F4 HAL (`examples/ark_test/ark_test_all.c`, `-O2 -mcpu Cortex-M4`) | 47,884 | **47,489** | **−396** |
+| same, on top of `-fopt-vstack -fopt-addr -fopt-strength` | 34,500 | **34,080** | **−420** |
 | same, object bytes (plain `-O2`) | 115,090 B | **113,506 B** | **−1,584 B** |
 | same, object bytes (full chain) | 90,208 B | **88,528 B** | **−1,680 B** |
 
@@ -205,7 +205,7 @@ had to compile.
 
 The defect actually hit during development was **rebuilding from the trimmed
 lines**: the indentation of the whole function vanished and it looked as if
-fifty thousand lines had changed (the instruction count fell from 47,885 to
+fifty thousand lines had changed (the instruction count fell from 47,884 to
 13,966). Each line now keeps both the original text (what the rebuild writes)
 and the trimmed text (what the analysis reads); only the fused line is
 replaced.

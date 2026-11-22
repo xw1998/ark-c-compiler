@@ -1219,6 +1219,10 @@ typedef struct {
     int   cross;/* value is still on the shadow stack at a label/branch/call:
                  * it must stay in memory so the machine state matches the
                  * original on every path into that boundary */
+    const char *after; /* one extra line emitted immediately after this one
+                 * (NULL = none).  Only the r4 prologue uses it: a frame-less
+                 * function has no SUB/ADD sp, sp, #N to grow, so the 4-byte
+                 * realignment after the bigger PUSH has to be inserted. */
 } VsLine;
 
 static int vs_streq(const char *a, const char *b) {
@@ -1641,6 +1645,31 @@ static int vs_read_before_write(VsLine *L, int nlines, int from, int reg)
 
 /* Small helpers for the r4 pool extension: parse "#<n>" and replace a line's
  * text (the text lives in the memory pool; the old copy is simply dropped). */
+/* A frame-less function has no locals, so nothing may use r6 as a base.
+ * This is the defensive half of the zero-frame r4 path: if any instruction
+ * in the body mentions r6, the 4-byte realignment is only safe under
+ * offsets this pass does not reason about, so the third slot is not taken.
+ * `from` starts just past `MOV r6, sp` and `to` is the epilogue POP (which
+ * itself lists r6, because r6 is callee-saved here), so the range is the body
+ * only.  The epilogue's `MOV sp, r6` is the one expected r6 reference inside
+ * that range and is skipped; every other one bails. */
+static int vs_zero_frame_r6_used(VsLine *L, int from, int to) {
+    int i;
+    for (i = from; i < to; i++) {
+        char mn[24];
+        char ops[VS_MAX_OP][VS_OPLEN];
+        int nops, isdot, islab;
+        if (L[i].del) continue;
+        if (!strstr(L[i].t, "r6")) continue;
+        if (vs_parse(L[i].t, mn, sizeof mn, ops, &nops, &isdot, &islab) &&
+            !isdot && !islab && vs_streq(mn, "MOV") && nops == 2 &&
+            vs_streq(ops[0], "sp") && vs_streq(ops[1], "r6"))
+            continue;               /* the frame epilogue, not a body use */
+        return 1;
+    }
+    return 0;
+}
+
 static int vs_atou(const char *s) {
     int v = 0;
     if (*s == '#') s++;
@@ -1693,6 +1722,7 @@ static void ark_vstack_function(AsmBuffer *b, int from)
         L[nlines].t[len] = 0;
         L[nlines].del = 0;
         L[nlines].cross = 0;
+        L[nlines].after = 0;
         nlines++;
         pos += len + 1;
     }
@@ -1788,7 +1818,30 @@ static void ark_vstack_function(AsmBuffer *b, int from)
                     vs_txt_has(ops[0], 6) && vs_txt_has(ops[0], 7) &&
                     strstr(ops[0], "pc") && !vs_txt_has(ops[0], 4)) r4_pop = i;
             }
-            if (r4_pro >= 0 && r4_sub >= 0 && r4_add >= 0 && r4_pop >= 0 &&
+            if (r4_pro >= 0 && r4_pop >= 0 && nsub == 0 && nadd == 0 &&
+                !vs_zero_frame_r6_used(L, pro_end + 1, r4_pop)) {
+                /* Frame-less function: the generator emitted no `SUB sp` /
+                 * `ADD sp` at all (nothing to allocate), so there is no frame
+                 * size to grow.  The epilogue restores sp with `MOV sp, r6`,
+                 * which throws any padding away, so one inserted
+                 * `SUB sp, sp, #4` right after `MOV r6, sp` is enough: with the
+                 * 20-byte PUSH the incoming sp is 4 mod 8, and the body (which
+                 * has no locals, hence no r6-relative offsets) sees an aligned
+                 * sp again.  Same all-or-nothing rule as below. */
+                char ptxt[64], qtxt[64];
+                snprintf(ptxt, sizeof ptxt, "    PUSH {r4, r5, r6, r7, lr}");
+                snprintf(qtxt, sizeof qtxt, "    POP {r4, r5, r6, r7, pc}");
+                if (vs_settext(&L[r4_pro], ptxt) &&
+                        vs_settext(&L[r4_pop], qtxt)) {
+                    /* After `MOV r6, sp`, not before: the epilogue does
+                     * `MOV sp, r6` and then pops 20 bytes, so r6 must hold
+                     * the post-PUSH sp.  Padding before the MOV would leave
+                     * sp 4 bytes below its entry value after the POP. */
+                    L[pro_end].after = "    SUB sp, sp, #4";
+                    pool[npool] = 4;
+                    npool++;
+                }
+            } else if (r4_pro >= 0 && r4_sub >= 0 && r4_add >= 0 && r4_pop >= 0 &&
                 nsub == 1 && nadd == 1 && frame >= 0 && (frame % 8) == 0 &&
                 !vs_txt_has(L[r4_add].t, 0) /* ADD sp, sp, #frame only */) {
                 /* All-or-nothing: a half-rewritten prologue with an
@@ -1884,7 +1937,11 @@ static void ark_vstack_function(AsmBuffer *b, int from)
         char ops[VS_MAX_OP][VS_OPLEN];
         int nops, isdot, islab, f, cnd, j;
 
-        if (i <= pro_end) { vs_put_line(&out, L[i].t); continue; }
+        if (i <= pro_end) {
+            vs_put_line(&out, L[i].t);
+            if (L[i].after) vs_put_line(&out, L[i].after);
+            continue;
+        }
         if (L[i].del) continue;
         if (verbf) { vs_put_line(&out, L[i].t); continue; }
         if (!vs_parse(L[i].t, mn, sizeof mn, ops, &nops, &isdot, &islab)) {

@@ -85,6 +85,30 @@ only goes up from r8), so it can be the third slot -- provided the cost is paid 
   and no r4 anywhere in the body.  Functions whose big frame is split into several `SUB`/`ADD`
   pieces (`nsub != 1 || nadd != 1`) fall out automatically.
 
+### 3.2 Frame-less functions (`frame == 0`)
+
+A function with no parameters and no locals gets no frame at all from the code generator: the
+prologue is `PUSH {r5, r6, r7, lr}` followed by `MOV r6, sp` (there is no `SUB sp`), and the
+epilogue is `MOV sp, r6` followed by `POP {r5, r6, r7, pc}`.  The first r4 implementation in 0.9.1
+could not reach them, because the whole path hinged on rewriting `SUB sp, sp, #N` to `#N+4` -- and
+there is no `SUB` to rewrite.  81 of the 203 rewritable functions in the HAL corpus are frame-less;
+closing this gap puts 28 more functions over the depth threshold.
+
+The frame-less path touches three things: `PUSH`/`POP` become five-register forms, and **one**
+`SUB sp, sp, #4` is added.
+
+- **No `ADD`.**  The epilogue's `MOV sp, r6` already restores sp to its post-`PUSH` value, so the
+  4 padding bytes are simply discarded there.  An `ADD` after it would move sp 4 bytes *above*
+  where it started.
+- **The `SUB` must sit after `MOV r6, sp`, never before.**  r6 has to hold the post-`PUSH` sp;
+  padding before the `MOV` would leave sp 4 bytes below its entry value after the `POP`, so every
+  call would leak one word of the caller's stack.  The `VsLine::after` field exists to emit one
+  extra line after a chosen one.
+- **r6 is no longer a base.**  A frame-less function has no locals, hence no `[r6, #off]`, so
+  turning sp into 4 (mod 8) changes no addressing.  Defensively, if the body (`MOV r6, sp` up to
+  the epilogue `POP`) still mentions r6 -- the epilogue's `MOV sp, r6` excepted -- the whole path
+  is abandoned.
+
 ## 4. The four rewrite rules
 
 | Input | Rewrite | Condition |
@@ -170,9 +194,9 @@ only eats pairs that were already adjacent.
 
 | Corpus | off | on | change |
 | --- | --- | --- | --- |
-| STM32F4 HAL (`examples/ark_test/ark_test_all.c`, `-O2 -mcpu Cortex-M4`, non-directive non-label lines) | 47,885 insns | 38,004 insns (third slot included) | **-20.64%** |
-| same corpus, `-fopt-addr` on top of vstack (see `docs/ADDR_FOLD.md`) | 38,004 insns | 36,553 insns | -3.82% |
-| same corpus, `-fopt-strength` on top (see `docs/STRENGTH.en.md`) | 36,553 insns | 35,453 insns | -3.01% |
+| STM32F4 HAL (`examples/ark_test/ark_test_all.c`, `-O2 -mcpu Cortex-M4`, non-directive non-label lines) | 47,884 insns | 37,976 insns (third slot included) | **-20.71%** |
+| same corpus, `-fopt-addr` on top of vstack (see `docs/ADDR_FOLD.md`) | 37,976 insns | 36,524 insns | -3.82% |
+| same corpus, `-fopt-strength` on top (see `docs/STRENGTH.en.md`) | 36,524 insns | 35,424 insns | -3.01% |
 | arith fixture, instructions | 171 | 121 | -29% |
 | same, `PUSH`/`POP` count | 88 | 14 | -84% |
 | same, image bytes | 1392 | 1292 | -7.2% |
@@ -206,17 +230,19 @@ The command behind the HAL row (from the repository root):
 # count lines that are neither '.' directives/labels nor ':' label lines
 ```
 
-Run it once more with `-fopt-vstack`; the difference between the two counts is the -20.64% in the
-table.  With `-fopt-vstack -fopt-addr` it is 36,553, and with all three flags (adding
-`-fopt-strength`) it is 35,453.  The r4 third slot is internal to the pass and has no flag of its
-own, so 38,004 is what that same `-fopt-vstack` command produces.  The r4 row is booked
+Run it once more with `-fopt-vstack`; the difference between the two counts is the -20.71% in the
+table.  With `-fopt-vstack -fopt-addr` it is 36,524, and with all three flags (adding
+`-fopt-strength`) it is 35,424.  The r4 third slot is internal to the pass and has no flag of its
+own, so 37,976 is what that same `-fopt-vstack` command produces: 47,884 -> 38,004 on the
+frame-resident path, then -> 37,976 once the frame-less path lands (28 functions, each paying one
+`SUB sp, sp, #4` and saving more than that).  The r4 row is booked
 honestly: 59 functions each save one more word in the prologue and epilogue (about +472 bytes) for
 340 fewer instructions, and the **per-object byte size was not measured separately**, so only the
 instruction counts are reported.
 
 ## 8. What the gate actually says
 
-`make test-vstack` (23 checks):
+`make test-vstack` (31 checks):
 
 - **the default build ignores the pass**: `-O2` and `-O2 -fno-opt-vstack` objects are byte-identical (1392/1392);
 - **it really saves**: instruction and `PUSH`/`POP` counts drop, the image does not grow;
@@ -228,11 +254,16 @@ instruction counts are reported.
   `N % 8 == 4` (16+8k has to become 20+8k+4 to stay 8-byte aligned), while the `shallow` fixture
   (`a + b`) must **not** have r4 in its prologue -- a function that saves no instruction pays a
   word for nothing;
+- **frame-less functions get it too**: the `frameless_deep` fixture (no parameters, no locals,
+  three nested levels) must show `PUSH {r4, r5, r6, r7, lr}`, `MOV r6, sp`, `SUB sp, sp, #4`,
+  `MOV sp, r6` and `POP {r4, r5, r6, r7, pc}` -- **in exactly that order** (the `SUB` after
+  `MOV r6, sp`, see 3.2) -- while `frameless_shallow` (two values) must not have r4 in its
+  prologue; both arms (off/on) return 29;
 - **it can be cropped**: a `-DARKCC_FEATURE_OPT_VSTACK=0` build refuses `-fopt-vstack` with
   `C3900U`, and still compiles without the flag.
 
 Every change also runs the **whole ARM execution corpus**:
-`tests/arm_exec/run_arm_exec.py --arkcc ./arkcc.exe "--extra=-fopt-vstack"` -- 36 cases, 0
+`tests/arm_exec/run_arm_exec.py --arkcc ./arkcc.exe "--extra=-fopt-vstack"` -- 39 cases, 0
 failures. That one is not optional: **all five** semantic defects this pass ever had (cross-operand
 read+write, same-operand read+write, releasing a slot after a read-only use, half-retargeting
 `MOVW`/`MOVT`, and `PUSH`ing a stale register twice) were found by it. Fixture-by-fixture byte
