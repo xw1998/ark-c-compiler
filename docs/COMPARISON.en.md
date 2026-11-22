@@ -3,10 +3,10 @@
 English | [中文](COMPARISON.md)
 
 > In one sentence: **on the full STM32F4 HAL corpus, arkc with every
-> optimization on is 3.9× the instruction count and 3.8× the code bytes of
+> optimization on is 3.8× the instruction count and 3.6× the code bytes of
 > armcc `-O2`; the gap is not encoding quality, it is structural -- a value-stack
-> machine, no liveness analysis, and intermediate results still going through the
-> frame.**
+> machine, liveness used only to delete copies, and intermediate results still
+> going through the frame.**
 >
 > Measurement script: `D:/tmp/cmp_final.py` (not in the repository). The whole
 > table below comes from one run of it, on the same source files with the same
@@ -36,9 +36,11 @@ This method only compares "the code produced by compiling this batch of `.c`": n
 link-time optimization (LTO), no library functions. **Each arkc translation unit
 carries its own run-time helpers** (`__aeabi_memcpy`, `__arkcc_init_globals`,
 floating-point glue, ...), whereas armcc/armclang take the same routines from the C
-library -- on the arkc side that item is **1,799 instructions / 7.7%**, and without
-it arkc's user code is **21,505 instructions**. The table does not deduct it,
-because that is Flash really occupied.
+library -- on the arkc side that item is **920 instructions / 4.3%**
+(`__aeabi_memcpy` 380, `__REV16`/`__REVSH`/`__RRX` 156 each,
+`__arkcc_init_globals` 72), and without it arkc's user code is **20,380
+instructions**. The table does not deduct it, because that is Flash really
+occupied.
 
 ## 2. Results
 
@@ -46,8 +48,8 @@ Totals over the 96 effective translation units:
 
 | Compiler | Options | Instructions | Code bytes |
 | --- | --- | ---: | ---: |
-| **arkc** | `-O2` | 51,463 | 116,480 |
-| **arkc** | `-O2` + all `-fopt-*` (see §3) | **21,975** | **52,608** |
+| **arkc** | `-O2` | 50,965 | 114,576 |
+| **arkc** | `-O2` + all `-fopt-*` (see §3) | **21,300** | **50,648** |
 | armcc | `-O0` | 7,969 | 18,788 |
 | armcc | `-O1` | 6,061 | 14,910 |
 | armcc | `-O2` | 5,629 | 13,942 |
@@ -60,11 +62,11 @@ Relative to armcc `-O2`:
 
 | Comparison | Instructions | Code bytes |
 | --- | ---: | ---: |
-| arkc `-O2` (no `-fopt-*`) | 9.1× | 8.4× |
-| arkc `-O2` + all `-fopt-*` | **3.9×** | **3.8×** |
+| arkc `-O2` (no `-fopt-*`) | 9.1× | 8.2× |
+| arkc `-O2` + all `-fopt-*` | **3.8×** | **3.6×** |
 
-**The ten optimization switches of 0.9.1 take the gap from 9.1× down to 3.9×**
-(−57.3% instructions, −54.8% code bytes).
+**The ten optimization switches of 0.9.1 take the gap from 9.1× down to 3.8×**
+(−58.2% instructions, −55.8% code bytes).
 
 **IAR does not take part**: IAR EWARM 9.70 is installed
 (`D:\tools\IAR_EWARM_9.70\arm\bin\iccarm.exe`, V9.70.1.475/W64), but it has
@@ -101,8 +103,8 @@ and does change these functions).
 
 ## 4. Where the gap comes from: four structural reasons
 
-Take `HAL_RCC_OscConfig()` (`stm32f4xx_hal_rcc.c`): 2,173 instructions with arkc
-fully optimized (2,183 before `-fopt-live`), 336 with armcc `-O2`. Look at the opening
+Take `HAL_RCC_OscConfig()` (`stm32f4xx_hal_rcc.c`): 2,166 instructions with arkc
+fully optimized (2,177 before `-fopt-live`), 336 with armcc `-O2`. Look at the opening
 `if (RCC_OscInitStruct == 0)`:
 
 ```asm
@@ -136,8 +138,8 @@ What remains is not that item any more; it is the shape of the code generator:
 3. **No liveness, no scheduling.** Every access to a slot is an independent memory
    access; there is no notion of "this value is still in `r3`", and no reordering
    of independent instructions into pipeline slots.
-4. **Each translation unit carries its own run-time helpers.** 1,799 instructions
-   / 7.7% (§1). armcc uses the library.
+4. **Each translation unit carries its own run-time helpers.** 920 instructions
+   / 4.3% (§1). armcc uses the library.
 
 Two further ceilings that were **quantified and judged not worth doing**:
 
@@ -150,30 +152,43 @@ Two further ceilings that were **quantified and judged not worth doing**:
 
 ## 5. Per-optimization measurements (same corpus)
 
-Baseline = `-fopt-vstack -fopt-addr -fopt-strength -fopt-cbz -fopt-branch`,
-35,211 instructions:
+**Cumulative** (each row adds one switch on top of the row above), 95 valid TUs,
+`-O2 --reloc-data -mcpu Cortex-M4`:
 
-| Build | Instructions | Change |
+| Build (cumulative) | Instructions | Code bytes |
 | --- | ---: | ---: |
-| baseline | 35,211 | — |
-| + `-fopt-cbranch` | 32,610 | −2,601 (−7.4%) |
-| + `-fopt-peep` | 33,730 | −1,481 (−4.2%) |
-| + `-fopt-imm` | 27,716 | −7,495 (−21.3%) |
-| + imm + peep | 26,316 | −8,895 (−25.3%) |
-| + imm + peep + cbranch | 23,692 | −11,519 (−32.7%) |
-| + imm + peep + cbranch + copyprop | 23,304 | −11,907 (−33.8%) |
-| + imm + peep + cbranch + copyprop + live | **21,975** | **−13,236 (−37.6%)** |
+| `-O2` (no `-fopt-*`) | 50,965 | 114,576 |
+| + `-fopt-vstack` | 38,847 | 90,340 |
+| + `-fopt-addr` | 37,152 | 86,932 |
+| + `-fopt-strength` | 35,060 | 84,652 |
+| + `-fopt-cbz` | 34,625 | 82,912 |
+| + `-fopt-branch` | 34,625 | 80,320 |
+| + `-fopt-imm` | 27,392 | 66,286 |
+| + `-fopt-peep` | 25,992 | 63,476 |
+| + `-fopt-cbranch` | 23,369 | 55,184 |
+| + `-fopt-copyprop` | 22,980 | 54,406 |
+| + `-fopt-live` | **21,300** | **50,648** |
 
-(Each row is that arm's own effect against the baseline, not a running sum:
-`-fopt-cbranch` and `-fopt-imm` both touch `IR_BINARY`, so the combination is
-what the last row shows.)
+The ten switches together: **−29,665 instructions (−58.2%)**,
+**−63,928 code bytes (−55.8%)**. Note that `-fopt-branch` only changes encoding
+width, not the number of instructions, so its row is flat in the instruction
+column and −2,592 in the byte column.
 
-`-fopt-imm` alone accounts for more than half of the whole 0.9.1 gain
-(see `docs/IMM_FOLD.md`); `-fopt-peep` (see `docs/PEEPHOLE.md`),
-`-fopt-cbranch` (see `docs/CBRANCH.md`) and `-fopt-copyprop` (see
-`docs/COPYPROP.md`) are the other blocks. Figures for the
-five earlier passes are in
-`docs/OPTIMIZER_PLAN.md` and the individual `docs/*_FOLD.md` / `docs/STRENGTH.md`.
+Per step: `-fopt-vstack` −12,118, `-fopt-imm` −7,233, `-fopt-cbranch` −2,623,
+`-fopt-live` −1,680, `-fopt-peep` −1,400, `-fopt-addr` −1,695,
+`-fopt-strength` −2,092, `-fopt-cbz` −435, `-fopt-copyprop` −389. Designs and
+criteria are in `docs/RA_VSTACK.md`, `docs/IMM_FOLD.md`, `docs/CBRANCH.md`,
+`docs/LIVE.md`, `docs/PEEPHOLE.md`, `docs/ADDR_FOLD.md`, `docs/STRENGTH.md`,
+`docs/CBZ_FOLD.md`, `docs/COPYPROP.md`. Constant materialisation itself (on with
+no switch at all, see `docs/MOVIMM.md`) moved the `-O2` row from
+51,416 instructions / 116,380 bytes down to 50,965 / 114,576 (-451 instructions /
+-0.88%, -1,804 bytes / -1.55%).
+
+**A note on the measurement basis**: the table inside each `-fopt-*` document is
+the reading taken the day that pass landed (when constant materialisation still
+emitted `MOVW` + `MOVT` + `MOVT #0`), so its absolute numbers differ from this
+table; every difference comes from that one shared change. **This table is the
+authoritative reading for the current binary.**
 
 ## 6. How to reproduce
 

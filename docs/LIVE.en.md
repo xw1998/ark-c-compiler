@@ -7,8 +7,8 @@ English | [中文](LIVE.md)
 > that materialise an address into a scratch register only to copy it into a
 > variable. `-fopt-live` builds a control-flow graph per function, iterates
 > register liveness to a fixed point, and then applies four rewrite rules. On
-> the full HAL corpus it removes another **1,329 instructions (−5.70%)** and
-> **3,000 bytes (−5.40%)**.
+> the full HAL corpus it removes another **1,680 instructions (−7.31%)** and
+> **3,758 bytes (−6.91%)**.
 
 ---
 
@@ -64,18 +64,32 @@ which is what lets it delete staging that crosses a label or a branch:
 
 ### L2 Fold the copy into its consumer
 
-> `MOV rD, rS` followed (padding only) by the single instruction that reads
-> `rD`, where `rD` is not live after it and the instruction does not write
-> `rD` ⇒ that instruction reads `rS` instead and the copy disappears.
+> `MOV rD, rS` followed **within a window** (`LV_WINDOW` = 4, the next
+> instruction included) by the instruction that reads `rD`; nothing in the
+> window writes `rD` or `rS`, the window stays inside one basic block, the
+> consumer does not write `rD`, and `rD` is not live after it ⇒ the consumer
+> reads `rS` instead and the copy disappears.
 
 Unlike copyprop rule B this does **not** require a three-operand ALU form; it
 only requires "reads `rD`, does not write `rD`". So `LDR rD, [rD, ...]` (with
-`rD` as the address base), `CMP rD, X` and `STR rD, [...]` all qualify.
+`rD` as the address base), `CMP rD, X` and `STR rD, [...]` all qualify. Nor does
+the consumer have to be the very next instruction.
+
+The window exists because constant materialisation and frame-address loads
+routinely sit between a copy and its only consumer:
 
 ```asm
     MOV r1, r4
+    MOVW r2, #14384          ; the two lines in between
+    MOVT r2, #16386
     LDR r7, [r7, r1, LSL #2]     →     LDR r7, [r7, r4, LSL #2]
 ```
+
+Three conditions abandon the rewrite at that site: (1) the window contains a
+write to `rD` or `rS` (`rS` rewritten is no longer that value); (2) the window
+leaves the basic block; (3) the window fills up without a read of `rD`. The
+window length is the macro `LV_WINDOW`; the gate is calibrated against
+`LV_WINDOW` = 4.
 
 ### L3 Drop a zero index from the addressing mode
 
@@ -91,8 +105,7 @@ only requires "reads `rD`, does not write `rD`". So `LDR rD, [rD, ...]` (with
 
 In the corpus the two rules always fire together: L2 folds `MOV r1, r7` into
 `LDR ..., [r5, r7, ...]` and L3 then removes the zero index entirely. That is
-why the `zero` fixture of the gate loses four instructions (two per staged
-zero) rather than two.
+why the `zero` fixture of the gate loses five instructions rather than two.
 
 ### L4 Materialise a constant straight into its destination
 
@@ -106,8 +119,17 @@ zero) rather than two.
                                  MOVT r5, #16386
 ```
 
-This is the biggest single block in the corpus: the baseline text contains
-**712** such triples, each worth one instruction.
+A single line materialisation folds too: `MOVW rD, #k` (or `MVN rD, #k`)
+immediately followed by `MOV rX, rD`, with `rD` not live after the copy, becomes
+the same instruction with `rX` as the destination. Both are four bytes, neither
+writes the flags and every register is allowed, so the size and the meaning are
+unchanged. **`MOV rD, #imm` is not in this class**: replacing a 16-bit `MOVS`
+with `MOVW` would grow the line and drop the flag write.
+
+This is the biggest single block in the corpus: the nine-switch baseline
+contains **681** such triples plus **21** `MOVW`/`MVN` + `MOV` pairs, each worth
+one instruction; afterwards 2 triples and 1 pair are left (there `rD` is still
+live after the consumer).
 
 ## 3. How the analysis works
 
@@ -147,6 +169,7 @@ backwards to get "which registers are live after line j", i.e. the per-line
 | anything inside an `IT` block | never rewritten | conditional execution: "not live" would have to hold on the not-taken path |
 | rewrite target | never `r6` / `sp` / `lr` / `pc` | `r6` is this backend's frame pointer and the frame relies on it |
 | two-operand ALU forms | the first operand is **also a read** | see §4.1 |
+| a write inside the L2 window | the site is abandoned | `rS` rewritten is no longer that value |
 | every rewritten line | compared byte-for-byte with the original first (`lv_same`) | a truncated operand can never reach the output |
 
 ### 3.4 `LV_MAX_BLOCKS` and memory
@@ -154,6 +177,12 @@ backwards to get "which registers are live after line j", i.e. the per-line
 The `LvBlock` table, the line table and the label table are `static` arrays
 totalling roughly **1.5 MB**, so `ARKCC_PROFILE_STM32_MIN` sets
 `ARKCC_FEATURE_OPT_LIVE` to 0 (see §9).
+
+The window length and the table bounds are compile-time constants:
+`LV_WINDOW` = 4 (the L2 scan window), `PP_MAX_LINES` = 8192,
+`LV_MAX_BLOCKS` = 1024 and `LV_MAX_LABELS` = 256. Crossing any bound abandons
+the **whole function**, which is then emitted unchanged -- a half-rewritten
+function can never reach the output.
 
 ## 4. Three real defects the tests found
 
@@ -237,23 +266,24 @@ Order: copyprop first, live second. copyprop resolves what one look can resolve,
 live then sees cleaner text and converges faster (at most four rounds per
 function).
 
-## 6. Measurements (full HAL corpus, 96 TUs / 93 valid, Cortex-M4, `-O2 --reloc-data`)
+## 6. Measurements (full HAL corpus, 95 valid TUs, Cortex-M4, `-O2 --reloc-data`)
 
 Baseline = the nine 0.9.1 switches
 (`vstack addr strength cbz branch imm peep cbranch copyprop`),
-23,304 instructions / 55,608 bytes:
+22,980 instructions / 54,406 bytes:
 
 | Build | Instructions | Code bytes | Change |
 | --- | ---: | ---: | ---: |
-| Baseline (nine switches) | 23,304 | 55,608 | — |
-| + `-fopt-live` | **21,975** | **52,608** | **−1,329 (−5.70%) / −3,000 (−5.40%)** |
+| Baseline (nine switches) | 22,980 | 54,406 | — |
+| + `-fopt-live` | **21,300** | **50,648** | **−1,680 (−7.31%) / −3,758 (−6.91%)** |
 
-Against the original five-switch baseline (35,211 / 82,404) the cumulative
-figure is −13,236 (−37.6%) / −29,796 (−36.2%).
+Against the original five-switch baseline (34,625 / 80,320) the cumulative
+figure is −13,325 (−38.5%) / −29,672 (−36.9%).
 
-Shape accounting: the baseline text contains **712** `MOVW/MOVT/MOV` triples
-(all hit by L4, one instruction each); the remaining 617 instructions come from
-L2 forwarding and the L3 zero-index folds it triggers.
+Shape accounting: the baseline text contains **681** `MOVW/MOVT/MOV` triples and
+**21** `MOVW`/`MVN` + `MOV` pairs (all hit by L4, one instruction each); the
+remaining 978 instructions come from L2 forwarding and the L3 zero-index folds
+it triggers.
 
 The same function before and after (`D:/tmp/cbrLV/all_000.s` vs `lv_000.s`):
 
@@ -301,13 +331,14 @@ common guard).
 
 | Group | Assertion |
 | --- | --- |
-| 1 | **OFF IS OFF**: `-O2` and `-O2 -fno-opt-live` are byte-identical (1,220/1,220 B) |
-| 2 | `dead` (L1): −2 instructions, `MOV rX, rY` 8 → 6, `MOVT` unchanged, labels 8/8 |
-| 3 | `fwd` (L2): −2 instructions, `MOV rX, rY` 4 → 2, still one indexed `LDR` (base changed, form unchanged) |
-| 4 | `zero` (L3): −4 instructions, indexed `LDR` 2 → 0, plain `LDR rX, [rB]` 0 → 2, `MOV rX, rY` 5 → 3 |
-| 5 | `addr` (L4): −2 instructions, `MOV rX, rY` 3 → 1, `MOVT` 7/7 unchanged |
-| 6 | **anti-over-deletion**: `shift` (`MOV r0, r5` + `LSL r0, r7`) stays byte-identical, 123 lines -- the permanent control for §4.1 |
-| 7 | five fixtures × three arms (off / on / on-alone with no other pass) return the Python answer on the emulator (0 / 7 / 12 / 0 / 35) |
+| 1 | **OFF IS OFF**: `-O2` and `-O2 -fno-opt-live` are byte-identical (1,208/1,208 B, identical text) |
+| 2 | `dead` (L1): 81 → 76 instructions, `MOV rX, rY` 8 → 3, `MOVT` 1/1, plain `LDR` 3/3, labels 8/8 |
+| 3 | `fwd` (L2): 85 → 83, `MOV rX, rY` 4 → 3, indexed `LDR` 1 → 0, plain `LDR` 0 → 1 (the consumer sits two instructions later) |
+| 4 | `zero` (L3): 75 → 70, indexed `LDR` 2 → 0, plain `LDR rX, [rB]` 0 → 2, `MOV rX, rY` 5 → 2 |
+| 5 | `addr` (L4): 66 → 63, `MOV rX, rY` 3 → 1, `MOVT` 4/4 unchanged |
+| 6 | **anti-over-deletion**: `shift` (`MOV r0, r5` + `LSL r0, r7`) 71 → 69 removes only two pieces of *non-return* compare staging; `MOV rX, rY` 7 → 5 and `LSL rX, rY` 2/2 unchanged -- the permanent control for §4.1 |
+| 6b | **the return mask follows the return type**: `vstage` compares two arguments in a `void` and in an `int` function; the `void` side must lose its compare staging 3 → 0 (`MOV rX, rY` 14 → 4, 121 → 110 instructions) while the value the `int` function really returns survives |
+| 7 | six fixtures × three arms (off / on / on-alone with no other pass) return the Python answer on the emulator (0 / 7 / 12 / 0 / 35 / 1) |
 | 8 | label counts unchanged on every fixture |
 | 9 | a cropped build (`-DARKCC_FEATURE_OPT_LIVE=0`) refuses `-fopt-live` by name (`C3900U`, rc=1) |
 | 10 | the same cropped build still compiles without the flag (rc=0) |

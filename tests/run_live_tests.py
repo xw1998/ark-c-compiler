@@ -22,21 +22,32 @@ implementation:
 
   1. OFF IS OFF.  The default build and `-fno-opt-live` are byte-identical.
   2. L1 FIRES ALONE.  `dead` keeps a value in a scratch register across a loop
-     back edge and never reads it: two `MOV rX, rY` disappear, no other line
-     changes, and the instruction count drops by exactly two.
+     back edge and never reads it: the dead `MOV rX, rY` copies disappear, no
+     other line changes, and the instruction count drops by exactly five (the
+     loop copies plus the dead return staging the pass now sees).
   3. L2 FIRES ALONE.  `fwd` indexes an array through a pointer that was copied
-     one instruction earlier: both `MOV rD, rS` fold into their consumer, the
-     copy count drops by two, nothing else moves.
+     one instruction earlier: the copies fold into their consumer (the consumer
+     may sit two or three instructions later, so the staged zero index and the
+     pointer copy both go), the instruction count drops by two, the indexed
+     load becomes a plain one, and nothing else moves.
   4. L3 FIRES ALONE.  `zero` reads element 0: two `[rB, rX, LSL #2]` become
-     `[rB]`, two `MOV rX, rY` (the staged zero) go with them.
+     `[rB]`, the staged-zero copies go with them, and the count drops by five.
   5. L4 FIRES ALONE.  `addr` stores `&global`: two three-line address
-     materialisations become two-line ones without growing anything.
+     materialisations become two-line ones without growing anything; the count
+     drops by three.
   6. NOTHING ELSE IS TOUCHED.  `shift` is built around `MOV r0, r5 / LSL r0, r7`
      -- a two-operand ALU instruction whose real source *is* its destination.
      A pass that treats the first operand as a pure destination deletes the
-     copy and silently produces a different answer, so this fixture must come
-     out byte-identical.  (This is the check that caught the real defect while
-     the pass was being written.)
+     copy and silently produces a different answer, so the `MOV rX, rY / LSL
+     rX, rY` pair must survive untouched.  Only the two copies that stage a
+     *non-return* register for a function that returns in r0 may go, and every
+     removed line must be one of those.
+  6b. THE RETURN MASK IS THE RETURN TYPE.  `vstage` compares two arguments in a
+     void function and in an int one.  The arguments are staged through r0..r3;
+     in a void function none of them is live out, so the staging copies must
+     disappear, while the value the int function really returns must survive.
+     Reading the return mask as a constant `0xF` leaves all three staged copies
+     in place.
   7. THE ANSWER IS THE SAME.  Five fixtures, three arms (off / on / on alone,
      no other pass), values checked on the emulator against Python.
   8. LABELS SURVIVE.  The pass rewrites lines, never labels.
@@ -116,12 +127,22 @@ int f(int x) { return (1 << (x & 31)) + lv_shift_v; }
 int main(void) { return f(5); }
 """
 
+# Regression for the return-register mask: the compare staging copies of the
+# arguments in a void function are dead, the ones in an int function are not.
+VSTAGE = """\
+int lv_vstage_g;
+void fv(int a, int b) { if (a > b) lv_vstage_g = 1; else lv_vstage_g = 2; }
+int fi(int a, int b) { if (a > b) return 1; return 2; }
+int main(void) { fv(3, 2); return fi(3, 2); }
+"""
+
 CASES = [
     ('dead', DEAD, 0),
     ('fwd', FWD, 7),
     ('zero', ZERO, 12),
     ('addr', ADDR, 0),
     ('shift', SHIFT, 35),
+    ('vstage', VSTAGE, 1),
 ]
 
 check = V.check
@@ -137,10 +158,20 @@ MOVT_RE = re.compile(r'^\s+MOVT\s')
 IDXLDR_RE = re.compile(r'^\s+LDR\s+r\d+,\s*\[r\d+,\s*r\d+,\s*LSL #2\]\s*$')
 PLAINLDR_RE = re.compile(r'^\s+LDR\s+r\d+,\s*\[r\d+\]\s*$')
 LSLRR_RE = re.compile(r'^\s+LSL\s+r\d+,\s*r\d+\s*$')
+# `MOV r0..r3, rX` right after a compare: the comparison is staged into the
+# argument registers before the branch.
+CMPSTAGE_RE = re.compile(r'^\s+MOV\s+r[0-3],\s*r\d+\s*$')
 
 
 def count(re_, text):
     return sum(1 for ln in text.splitlines() if re_.match(ln))
+
+
+def cmp_stage_count(text):
+    lines = text.splitlines()
+    return sum(1 for i, ln in enumerate(lines)
+               if CMPSTAGE_RE.match(ln) and i and
+               lines[i - 1].strip().startswith('CMP'))
 
 
 def label_count(text):
@@ -214,14 +245,14 @@ def main():
                   '%d/%d bytes' % (len(b_a), len(b_b)))
 
         # --- 2..5. one rule each -------------------------------------------
-        rule_check(arkcc, work, 'dead', 'd', 2, 6, 0, 3,
-                   'the two dead copies are gone')
-        rule_check(arkcc, work, 'fwd', 'f', 2, 2, 1, 0,
-                   'both copies fold into their consumer')
-        rule_check(arkcc, work, 'zero', 'z', 4, 3, 0, 2,
-                   'the two staged zero indices fold away')
-        rule_check(arkcc, work, 'addr', 'a', 2, 1, 0, 0,
-                   'both address copies are gone')
+        rule_check(arkcc, work, 'dead', 'd', 5, 3, 0, 3,
+                   'the dead copies are gone')
+        rule_check(arkcc, work, 'fwd', 'f', 2, 3, 0, 1,
+                   'the copies fold into their consumer')
+        rule_check(arkcc, work, 'zero', 'z', 5, 2, 0, 2,
+                   'the staged zero indices fold away')
+        rule_check(arkcc, work, 'addr', 'a', 3, 1, 0, 0,
+                   'the address copies are gone')
 
         # --- 6. nothing else is touched ------------------------------------
         pair = both(arkcc, work, 'shift', 's')
@@ -231,10 +262,31 @@ def main():
                   'shift: the control fixture really has MOV+two-operand LSL',
                   '%d MOV rX, rY, %d LSL rX, rY'
                   % (count(MOVRR_RE, t_off), count(LSLRR_RE, t_off)))
-            check(t_off == t_on,
+            gone = [ln for ln in t_off.splitlines()
+                    if ln not in t_on.splitlines()]
+            stray = [ln for ln in gone if not CMPSTAGE_RE.match(ln)
+                     and not re.match(r'^\s+MOV\s+r[1-3],\s*r\d+\s*$', ln)]
+            check(not stray,
+                  'shift: only the dead non-return staging copies are removed',
+                  ('removed: %s' % '; '.join(l.strip() for l in gone))
+                  if gone else 'nothing removed')
+            check(count(MOVRR_RE, t_on) == 5 and count(LSLRR_RE, t_on)
+                  == count(LSLRR_RE, t_off),
                   'shift: a two-operand ALU destination is not a dead copy',
-                  '%d/%d line(s)' % (len(t_off.splitlines()),
-                                     len(t_on.splitlines())))
+                  'MOV rX, rY %d -> %d, LSL %d -> %d'
+                  % (count(MOVRR_RE, t_off), count(MOVRR_RE, t_on),
+                     count(LSLRR_RE, t_off), count(LSLRR_RE, t_on)))
+
+        # --- 6b. the return mask follows the return type ---------------------
+        pair = both(arkcc, work, 'vstage', 'v')
+        if pair is not None:
+            (t_off, _, _), (t_on, _, _) = pair
+            check(cmp_stage_count(t_off) >= 3,
+                  'vstage: the void function really stages its compare',
+                  '%d staged copy/copies' % cmp_stage_count(t_off))
+            check(cmp_stage_count(t_on) == 0,
+                  'vstage: the compare staging in a void function is dead',
+                  '%d -> %d' % (cmp_stage_count(t_off), cmp_stage_count(t_on)))
 
         # --- 7. the answers stay the same -----------------------------------
         for name, _body, want in CASES:

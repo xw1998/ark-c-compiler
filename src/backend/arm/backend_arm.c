@@ -46,29 +46,60 @@ static void emit_add_sp(AsmBuffer *b, int amount) {
     asmbuf_putc(b, '\n');
 }
 
+/* ThumbExpandImm() representability; the assembler far below defines it. */
+static int thumb_imm12_a(unsigned val, unsigned *out_i, unsigned *out_imm3,
+                         unsigned *out_imm8);
+
+/* Materialise a 32-bit constant in rd, with the fewest instructions that
+ * actually carry the whole value:
+ *
+ *   0..255       `MOV rd, #imm`   (16-bit MOVS for r0-r7, MOVW for r8-r15)
+ *   <= 0xFFFF    `MOVW rd, #imm`  (one 32-bit insn; MOVW zero-extends)
+ *   encodable    `MOV rd, #imm`   as a modified immediate (8 bits, rotated)
+ *   ~encodable   `MVN rd, #imm`   (one insn: the complement *is* the value)
+ *   otherwise    `MOVW` + `MOVT`  pair
+ *
+ * MOVW writes imm16 and zero-fills bits[31:16] (ARM ARM "MOV (immediate)",
+ * T3), so the unconditional `MOVT rd, #0` this used to emit never changed a
+ * bit -- it was one instruction of pure waste on every constant below 64 KiB.
+ * The old comment claimed MOVW left the upper half stale and that the pair
+ * was needed to *clear* it; that is not the architecture, and the 0x40022000
+ * case it cites came from a MOVW whose low half was 0x2000 with a *later*
+ * MOVT overwriting the high half -- not from MOVW itself.
+ *
+ * What each form does to the flags is unchanged: 0..255 still goes through the
+ * 16-bit MOVS and sets them (every existing caller already sees that), and
+ * MOVW / MOV.W / MVN set no flags, exactly like the pair they replace.  The
+ * assembler encodes `MOV rd,#imm` for a modified immediate and `MVN rd,#imm`
+ * as ORN with Rn = 1111, and pass 1 sizes both as 4 bytes, so the two passes
+ * cannot disagree about a label offset. */
 static void emit_mov_imm(AsmBuffer *b, int rd, int imm) {
+    unsigned u = (unsigned)imm;
+    unsigned i = 0, imm3 = 0, imm8 = 0;
+    char t[64];
     if (imm >= 0 && imm <= 255) {
-        asmbuf_puts(b, "    MOV r");
-        asmbuf_int(b, rd);
-        asmbuf_puts(b, ", #");
-        asmbuf_int(b, imm);
-        asmbuf_putc(b, '\n');
-    } else {
-        /* Always emit MOVW + MOVT pair. MOVW only sets bits[15:0];
-         * without MOVT, bits[31:16] retain stale values from previous
-         * operations, causing incorrect constants (e.g., 0x40022000
-         * instead of 0x00002000 for 1u<<13). */
-        asmbuf_puts(b, "    MOVW r");
-        asmbuf_int(b, rd);
-        asmbuf_puts(b, ", #");
-        asmbuf_int(b, imm & 0xFFFF);
-        asmbuf_putc(b, '\n');
-        asmbuf_puts(b, "    MOVT r");
-        asmbuf_int(b, rd);
-        asmbuf_puts(b, ", #");
-        asmbuf_int(b, (imm >> 16) & 0xFFFF);
-        asmbuf_putc(b, '\n');
+        snprintf(t, sizeof t, "    MOV r%d, #%d\n", rd, imm);
+        asmbuf_puts(b, t);
+        return;
     }
+    if (u <= 0xFFFFu) {
+        snprintf(t, sizeof t, "    MOVW r%d, #%u\n", rd, u);
+        asmbuf_puts(b, t);
+        return;
+    }
+    if (thumb_imm12_a(u, &i, &imm3, &imm8)) {
+        snprintf(t, sizeof t, "    MOV r%d, #0x%08X\n", rd, u);
+        asmbuf_puts(b, t);
+        return;
+    }
+    if (thumb_imm12_a(~u, &i, &imm3, &imm8)) {
+        snprintf(t, sizeof t, "    MVN r%d, #0x%08X\n", rd, ~u);
+        asmbuf_puts(b, t);
+        return;
+    }
+    snprintf(t, sizeof t, "    MOVW r%d, #%u\n    MOVT r%d, #%u\n",
+             rd, u & 0xFFFFu, rd, (u >> 16) & 0xFFFFu);
+    asmbuf_puts(b, t);
 }
 
 static void emit_push_r0(AsmBuffer *b) { emit_line(b, "PUSH {r0}"); }
@@ -1374,6 +1405,11 @@ static void ark_copyprop_function(AsmBuffer *b, int from) {
  * can see, most of them operand staging around branches and the address of a
  * global being materialised into a scratch register and then copied.
  */
+/* How far L2 will look for the consumer of a staged copy.  Two or three
+ * instructions is the useful range (a constant materialisation or a frame
+ * address in between); further than that a rewrite is unlikely and the
+ * scan is not free. */
+#define LV_WINDOW 4
 #define LV_MAX_BLOCKS 1024
 #define LV_MAX_LABELS 256
 
@@ -1655,13 +1691,14 @@ static int lv_same(AsmBuffer *b, const int *ls, const int *ll,
     return !strcmp(r, t);
 }
 
-static int lv_pass(AsmBuffer *b, int from) {
+static int lv_pass(AsmBuffer *b, int from, unsigned retmask) {
     static int ls[PP_MAX_LINES], ll[PP_MAX_LINES];
     static cp_ins iv[PP_MAX_LINES];
     static unsigned char kd[PP_MAX_LINES];      /* 0 other, 1 instruction, 2 label */
     static unsigned char it[PP_MAX_LINES];
     static unsigned la[PP_MAX_LINES];
     static int bof[PP_MAX_LINES];
+    static unsigned char bsx[LV_MAX_BLOCKS];   /* 1 = returns here, 2 = branch target lost */
     static LvBlock blk[LV_MAX_BLOCKS];
     static char lab[LV_MAX_LABELS][40];
     static int labline[LV_MAX_LABELS];
@@ -1714,6 +1751,7 @@ static int lv_pass(AsmBuffer *b, int from) {
             blk[nb].first = blk[nb].last = i;
             blk[nb].succ[0] = blk[nb].succ[1] = -1;
             blk[nb].use = blk[nb].def = blk[nb].in = blk[nb].out = 0;
+            bsx[nb] = 0;
             nb++;
         } else {
             blk[nb - 1].last = i;
@@ -1746,15 +1784,23 @@ static int lv_pass(AsmBuffer *b, int from) {
         }
         if (k == 1) {
             blk[i].succ[0] = tgt;
+            /* A branch whose label this pass could not find must not be read
+             * as "the function returns here": nothing is known about where it
+             * goes, so every register has to be treated as read. */
+            bsx[i] = (tgt < 0) ? 2 : 0;
         } else if (k == 2) {
             blk[i].succ[0] = tgt;
             blk[i].succ[1] = (i + 1 < nb) ? i + 1 : -1;
+            bsx[i] = (tgt < 0) ? 2 : 0;
         } else if (k == 4) {
             blk[i].succ[0] = -1;                /* BX lr / BX rM leaves */
+            bsx[i] = 1;
         } else if (lv_ends_block(o)) {
             blk[i].succ[0] = -1;                /* POP {..., pc} returns */
+            bsx[i] = 1;
         } else {
             blk[i].succ[0] = (i + 1 < nb) ? i + 1 : -1;
+            bsx[i] = (i + 1 < nb) ? 0 : 1;
         }
     }
     /* use / def */
@@ -1766,7 +1812,17 @@ static int lv_pass(AsmBuffer *b, int from) {
             u |= rd & ~d;
             d |= wr;
         }
-        blk[i].use = u;
+        /* `u` is accumulated with `u |= rd & ~d` where `d` is what is written
+         * *below* the current point, so a register that the block both reads
+         * and writes earlier in the block stays in `u`.  Standard live-in is
+         * `use | (out & ~def)`, and a register the block defines before every
+         * read is not live-in however it got into `u`: mask it off.  Without
+         * this mask the liveness of everything a block defines leaked out of
+         * it, and `in` claimed r0..r3 were live-in to almost every block --
+         * measured on HAL_Delay, a dead "MOV r0, r5" staged for a comparison
+         * stayed because the exit block's own "MOV r0, #..." was counted as a
+         * read of r0. */
+        blk[i].use = u & ~d;
         blk[i].def = d;
     }
     /* Liveness to a fixed point. */
@@ -1776,7 +1832,8 @@ static int lv_pass(AsmBuffer *b, int from) {
             unsigned o = 0, u;
             if (blk[i].succ[0] >= 0) o |= blk[blk[i].succ[0]].in;
             if (blk[i].succ[1] >= 0) o |= blk[blk[i].succ[1]].in;
-            if (blk[i].succ[0] < 0) o |= 0xFu;   /* returns r0-r3 to the caller */
+            if (blk[i].succ[0] < 0)
+                o |= (bsx[i] == 2) ? 0xFu : retmask;  /* caller reads these on return */
             u = blk[i].use | (o & ~blk[i].def);
             if (u != blk[i].in || o != blk[i].out) {
                 blk[i].in = u;
@@ -1789,7 +1846,7 @@ static int lv_pass(AsmBuffer *b, int from) {
     /* Live-after per instruction. */
     for (i = 0; i < nb; i++) {
         unsigned live = blk[i].out;
-        if (blk[i].succ[0] < 0) live |= 0xFu;
+        if (blk[i].succ[0] < 0) live |= (bsx[i] == 2) ? 0xFu : retmask;
         for (j = blk[i].last; j >= blk[i].first; j--) {
             unsigned rd, wr;
             lv_rw(&iv[j], &rd, &wr);
@@ -1816,9 +1873,17 @@ static int lv_pass(AsmBuffer *b, int from) {
             i++;
             continue;
         }
-        /* L4: MOVW/MOVT pair, then a copy out of it. */
-        if (!strcmp(iv[i].mn, "MOVW") && cp_reg(iv[i].op[0], &d) &&
-            d >= 0 && d <= 12 && d != 6) {
+        /* L4: a constant materialisation, then a copy out of it.  Three
+         * shapes, because -fopt-imm's emit_mov_imm now materialises many
+         * constants with one instruction:
+         *   MOVW rD,#lo / MOVT rD,#hi / MOV rX,rD  -> both halves into rX
+         *   MOVW rD,#lo / MOV rX,rD                -> one MOVW into rX
+         *   MVN  rD,#imm / MOV rX,rD               -> one MVN into rX
+         * Retargeting a MOVW or an MVN keeps the width (4 bytes) and writes no
+         * flags, so the single-instruction shapes are a pure win. */
+        if ((!strcmp(iv[i].mn, "MOVW") || !strcmp(iv[i].mn, "MVN")) &&
+            iv[i].nops == 2 && iv[i].op[1][0] == '#' &&
+            cp_reg(iv[i].op[0], &d) && d >= 0 && d <= 12 && d != 6) {
             int j1 = -1, j2 = -1, dd, xx, ss;
             for (j = i + 1; j < n; j++) {
                 if (kd[j] == 2) break;
@@ -1857,17 +1922,60 @@ static int lv_pass(AsmBuffer *b, int from) {
                     }
                 }
             }
+            if (!done && iv[i].nops == 2) {
+                /* Single-instruction materialisation followed by a copy out. */
+                int j1 = -1, xx = -1, ss = -1;
+                cp_ins tmp;
+                for (j = i + 1; j < n; j++) {
+                    if (kd[j] == 2) break;
+                    if (kd[j] == 1) { j1 = j; break; }
+                }
+                if (j1 >= 0 && !strcmp(iv[j1].mn, "MOV") && iv[j1].nops == 2 &&
+                    cp_reg(iv[j1].op[0], &xx) && xx != d && xx >= 0 && xx <= 12 &&
+                    xx != 6 && cp_reg(iv[j1].op[1], &ss) && ss == d &&
+                    !(la[j1] & lv_bit(d)) && !it[i] && !it[j1] &&
+                    !lv_has_writeback(&iv[i]) && !lv_has_writeback(&iv[j1]) &&
+                    lv_same(b, ls, ll, &iv[i], i) &&
+                    lv_same(b, ls, ll, &iv[j1], j1)) {
+                    tmp = iv[i];
+                    snprintf(tmp.op[0], sizeof tmp.op[0], "r%d", xx);
+                    if (lv_rebuild(nw, sizeof nw, &tmp)) {
+                        for (j = i + 1; j < j1; j++)
+                            pp_copy_line(&out, b->buf + ls[j], ll[j]);
+                        asmbuf_puts(&out, "    ");
+                        asmbuf_puts(&out, nw);
+                        asmbuf_putc(&out, '\n');
+                        changed++;
+                        i = j1 + 1;
+                        done = 1;
+                    }
+                }
+            }
             if (done) continue;
         }
         /* L2 / L3: the very next instruction consumes the copy. */
         if (!strcmp(iv[i].mn, "MOV") && iv[i].nops == 2 &&
             cp_reg(iv[i].op[0], &d) && d >= 0 && d <= 12 && d != 6) {
-            int j = -1, v, hasbrace = 0;
-            for (j = i + 1; j < n; j++) {
-                if (kd[j] == 2) { j = -1; break; }
-                if (kd[j] == 1) break;
+            int j = -1, v, hasbrace = 0, gap_ok = 1, src2 = -1;
+            unsigned src_bit = 0;
+            if (cp_reg(iv[i].op[1], &src2) && src2 >= 0) src_bit = lv_bit(src2);
+            /* Look past a short run of instructions that leave rD and rS alone
+             * (`MOVW r1,#lo / MOVT r1,#hi` between a staged value and the store
+             * that consumes it, for instance).  The consumer is the first
+             * instruction that reads rD; the run in between must not write rD
+             * (that would clobber the value), must not write rS (that would
+             * change what the consumer sees), and must stay inside the same
+             * basic block.  Anything else gives up and the copy stays. */
+            for (j = i + 1; j < n && j <= i + LV_WINDOW; j++) {
+                unsigned gr, gw;
+                if (kd[j] == 2) break;               /* label: block boundary */
+                if (kd[j] != 1) continue;            /* directive / blank line */
+                if (bof[j] != bof[i]) break;
+                lv_rw(&iv[j], &gr, &gw);
+                if (gw & (lv_bit(d) | src_bit)) { gap_ok = 0; break; }
+                if (gr & lv_bit(d)) break;           /* first reader of rD */
             }
-            if (j < 0 || j >= n) j = -1;
+            if (j >= n || j > i + LV_WINDOW || !gap_ok || kd[j] != 1) j = -1;
             /* A register list (`{...}`) is never a simple operand to retarget. */
             for (v = 0; j >= 0 && v < iv[j].nops; v++)
                 if (strchr(iv[j].op[v], '{')) hasbrace = 1;
@@ -1945,11 +2053,29 @@ static int lv_pass(AsmBuffer *b, int from) {
     return changed;
 }
 
-static void ark_live_function(AsmBuffer *b, int from) {
+/* Which registers the caller actually reads when this function returns.
+ *
+ * Forcing r0-r3 live at every exit was the old rule, and it is wrong in the
+ * direction that costs code: a value staged in r1-r3 anywhere in the function
+ * looked live at the return, and that use propagated backwards through the
+ * whole body (measured on HAL_Delay: the dead "MOV r0, r5" that stages a
+ * comparison operand survived the loop because r0 was "live" out of it).
+ * A void function returns nothing at all; a long long / double comes back in
+ * r0:r1; a struct comes back as a hidden pointer in r0. */
+static int ret_is_two_words(Type *t);   /* defined with the return paths below */
+
+static unsigned ark_ret_mask(Type *rt) {
+    if (!rt) return 0xFu;                      /* unknown: stay conservative */
+    if (rt->kind == TYPE_VOID) return 0;
+    if (ret_is_two_words(rt)) return 0x3u;
+    return 0x1u;
+}
+
+static void ark_live_function(AsmBuffer *b, int from, unsigned retmask) {
     int round;
     if (!g_config.enable_opt_live) return;
     for (round = 0; round < 4; round++) {
-        if (lv_pass(b, from) == 0) break;
+        if (lv_pass(b, from, retmask) == 0) break;
     }
 }
 #endif /* ARKCC_FEATURE_OPT_LIVE */
@@ -9233,7 +9359,7 @@ static char *codegen_arm(IrProgram *prog) {
         /* With the control-flow graph and liveness in hand the copies that
          * only liveness can see -- a value staged around a branch, an address
          * copied out of a scratch register -- are finally removable. */
-        if (g_config.enable_opt_live) ark_live_function(&buf, fstart);
+        if (g_config.enable_opt_live) ark_live_function(&buf, fstart, ark_ret_mask(f->ret_type));
 #endif
 #if ARKCC_FEATURE_OPT_REGALLOC
         /* The text of this function is complete: it is the last slice of the
@@ -10175,6 +10301,44 @@ static int parse_imm_a(const char **p) {
     return neg ? -v : v;
 }
 
+/* 32-bit immediate (`#0xFFFFFFFF`, `#-1`, `#4294967295`) for the operands that
+ * can hold a whole word: MOV/MVN modified immediates.  parse_imm_a() returns an
+ * int and computes its magnitude in int, so it cannot represent 0x80000000 and
+ * overflows on any constant above 0x7FFFFFFF; unsigned arithmetic is
+ * well-defined (it wraps), which is exactly the bit pattern we want. */
+static int parse_imm_u32_a(const char **p, unsigned *out) {
+    unsigned v = 0;
+    int neg = 0, digits = 0;
+    skip_space_a(p);
+    if (**p != '#') return 0;
+    (*p)++;
+    skip_space_a(p);
+    if (**p == '-') { neg = 1; (*p)++; }
+    if (**p == '0' && ((*p)[1] == 'x' || (*p)[1] == 'X')) {
+        (*p) += 2;
+        for (;;) {
+            char c = **p;
+            unsigned d;
+            if (c >= '0' && c <= '9') d = (unsigned)(c - '0');
+            else if (c >= 'a' && c <= 'f') d = (unsigned)(c - 'a' + 10);
+            else if (c >= 'A' && c <= 'F') d = (unsigned)(c - 'A' + 10);
+            else break;
+            v = v * 16u + d;
+            digits++;
+            (*p)++;
+        }
+    } else {
+        while (**p >= '0' && **p <= '9') {
+            v = v * 10u + (unsigned)(**p - '0');
+            digits++;
+            (*p)++;
+        }
+    }
+    if (!digits) return 0;
+    *out = neg ? (unsigned)(0u - v) : v;
+    return 1;
+}
+
 /* Immediate operand where the '#' is optional (armasm accepts both
  * "SVC 0xAB" and "SVC #0xAB"). Returns 0 and clears *ok when no number is
  * present: parse_imm_a() would return 0 in that case as well, which turns a
@@ -10554,14 +10718,15 @@ static int logic_dp_a(ArmAsm *a, const char *op, const char **pp, int emit) {
     rd = parse_reg_a(&p);
     eat_comma_a(&p);
     if (*p == '#') {
-        int imm = parse_imm_a(&p);
+        unsigned imm = 0;
         unsigned i = 0, imm3 = 0, imm8 = 0;
-        if (!thumb_imm12_a((unsigned)imm, &i, &imm3, &imm8)) {
+        (void)parse_imm_u32_a(&p, &imm);
+        if (!thumb_imm12_a(imm, &i, &imm3, &imm8)) {
             if (emit) {
                 char b1[12];
                 diag_tool(DIAG_SEV_ERROR, "arkcc",
                           "%sq immediate %s cannot be encoded as a modified "
-                          "immediate", op, diag_num(b1, imm), 0,0,0,0);
+                          "immediate", op, diag_num(b1, (int)imm), 0,0,0,0);
                 a->hard_errors++;
                 out16(a, 0xBF00);
                 out16(a, 0xBF00);
@@ -10583,14 +10748,15 @@ static int logic_dp_a(ArmAsm *a, const char *op, const char **pp, int emit) {
         int rm;
         p++; skip_space_a(&p);
         if (*p == '#') {
-            int imm = parse_imm_a(&p);
+            unsigned imm = 0;
             unsigned i = 0, imm3 = 0, imm8 = 0;
-            if (!thumb_imm12_a((unsigned)imm, &i, &imm3, &imm8)) {
+            (void)parse_imm_u32_a(&p, &imm);
+            if (!thumb_imm12_a(imm, &i, &imm3, &imm8)) {
                 if (emit) {
                     char b1[12];
                     diag_tool(DIAG_SEV_ERROR, "arkcc",
                               "%sq immediate %s cannot be encoded as a "
-                              "modified immediate", op, diag_num(b1, imm),
+                              "modified immediate", op, diag_num(b1, (int)imm),
                               0,0,0,0);
                     a->hard_errors++;
                     out16(a, 0xBF00);
@@ -11160,8 +11326,11 @@ static void pass1_a(ArmAsm *a) {
                 skip_space_a(&p);
                 if (*p == ',') { p++; skip_space_a(&p); }
                 if (*p == '#') {
-                    int imm1 = parse_imm_a(&p);
-                    pc += (rd1 >= 0 && rd1 <= 7 && imm1 >= 0 && imm1 <= 255) ? 2 : 4;
+                    unsigned u1 = 0;
+                    (void)parse_imm_u32_a(&p, &u1);
+                    /* Same rule as pass 2: MOVS r0-r7,#imm8 is 2 bytes, every
+                     * other immediate shape (MOVW, MOV.W, MVN) is 4. */
+                    pc += (rd1 >= 0 && rd1 <= 7 && u1 <= 255u) ? 2 : 4;
                 } else {
                     (void)parse_reg_a(&p);
                     pc += 2;
@@ -12126,18 +12295,26 @@ static void pass2_a(ArmAsm *a) {
             int rd = parse_reg_a(&p);
             eat_comma_a(&p);
             if (*p == '#') {
-                int imm = parse_imm_a(&p);
-                if (rd >= 0 && rd <= 7 && imm >= 0 && imm <= 255) {
-                    out16(a, 0x2000 | ((rd & 7) << 8) | imm);  /* MOVS rd, #imm8 */
-                } else if (rd >= 0 && imm >= 0 && imm <= 0xFFFF) {
+                unsigned u = 0, i = 0, imm3 = 0, imm8 = 0;
+                (void)parse_imm_u32_a(&p, &u);
+                if (rd >= 0 && rd <= 7 && u <= 255u) {
+                    out16(a, 0x2000 | ((rd & 7) << 8) | (int)u);  /* MOVS rd, #imm8 */
+                } else if (u <= 0xFFFFu) {
                     /* 16-bit MOVS cannot name r8-r15 and its imm8 would turn
                      * "MOV r0, #300" into 44.  MOVW carries the whole value
                      * into any register (and does not touch the flags). */
-                    emit_movw_a(a, rd, imm);
+                    emit_movw_a(a, rd, (int)u);
+                } else if (thumb_imm12_a(u, &i, &imm3, &imm8)) {
+                    /* MOV.W rd, #modified-imm: 11110 i 0 0010 0 S 1111 |
+                     * 0 imm3 Rd imm8, S = 0 so it is safe inside an IT block
+                     * (a 16-bit MOVS there is UNPREDICTABLE on ARMv7-M). */
+                    out16(a, 0xF04Fu | ((i & 1u) << 10));
+                    out16(a, ((imm3 & 7u) << 12) | ((unsigned)(rd & 0xF) << 8) | imm8);
                 } else {
                     char b1[12];
                     diag_tool(DIAG_SEV_ERROR, "arkcc",
-                              "MOV immediate is out of range (0..65535) at code offset %s",
+                              "MOV immediate is out of range (a 16-bit value or "
+                              "a modified immediate) at code offset %s",
                               diag_num(b1, a->pc), 0,0,0,0,0);
                     a->hard_errors++;
                     emit_movw_a(a, rd < 0 ? 0 : rd, 0);
