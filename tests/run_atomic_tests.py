@@ -220,8 +220,36 @@ class Gate:
         elif text.count("Error:") != 1:
             self.bad("%-8s specifier-after-'*' produced %d errors (expected 1, no cascade)"
                      % (target, text.count("Error:")))
+        # d. the other direction: an atomic *pointee* reached through a pointer
+        #    is still a read-modify-write, while an atomic pointer's pointee is
+        #    a plain object and must not be refused.  Without this pair the
+        #    check above would also pass if is_atomic were ignored everywhere.
+        src = os.path.join(work, "pqual_pointee.c")
+        write(src, "#include <stdatomic.h>\n"
+                   "atomic_int g;\n"
+                   "int f(void) { atomic_int *p = &g; *p += 1; return 0; }\n")
+        proc = self.run([src, "-target", target, "-I", self.incdir, "-S",
+                         "-o", os.path.join(work, "pqual_pointee.s")], work)
+        text = proc.stderr + proc.stdout
+        if proc.returncode == 0:
+            self.bad("%-8s `*p += 1` through an atomic pointee compiled" % target)
+        elif "read-modify-write" not in text:
+            self.bad("%-8s atomic pointee RMW refused for the wrong reason: %s"
+                     % (target, text.strip()[:160]))
+
+        src = os.path.join(work, "pqual_plain.c")
+        write(src, "int v;\n"
+                   "int f(void) { int *_Atomic p = &v; *p += 1; return *p; }\n")
+        proc = self.run([src, "-target", target, "-S",
+                         "-o", os.path.join(work, "pqual_plain.s")], work)
+        if proc.returncode != 0:
+            self.bad("%-8s an atomic pointer's pointee is a plain int, so `*p += 1` "
+                     "must compile: %s"
+                     % (target, (proc.stderr + proc.stdout).strip()[:200]))
+
         print("ok   ptr-qual   %-8s `*_Atomic` parses, p++ refused as RMW, "
-              "specifier form refused once" % target)
+              "specifier form refused once, pointee RMW refused / plain pointee ok"
+              % target)
 
     # -- 5: anti-false-green -------------------------------------------------
     def selfcheck(self, work):

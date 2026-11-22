@@ -209,8 +209,11 @@ python tests/arm_exec/run_arm_exec.py            # 需 unicorn，共 37 个用�
    `int *_Atomic p` 是"原子指针、普通 int"——load/store 普通访问，`p++` 按 C11 仍是
    读-改-写、sema 拒绝；而 `int *_Atomic(long) p` 仍报错，因为 `_Atomic( ... )` 是
    **类型说明符**不是限定符，不能跟在 `*` 后面（只报一条，不级联）。
-2. **经指针的读-改-写不拦**：`*p += 1` 里 `p` 指向 `_Atomic` 对象时，sema 看的是
-   `*p` 的表达式类型，`is_atomic` 不沿解引用传播，因此不会报错。用 `atomic_fetch_add(p, 1)`。
+2. ~~**经指针的读-改-写不拦**~~ **0.9.1 复核为已拦**（此前登记不准）：`is_atomic` 挂在
+   pointee 类型上，`*p` 的表达式类型就是那个原子 pointee，于是 `atomic_int *p; *p += 1;`
+   `p[0] += 1;` `(*p)++;` `++*(p + 1);` 四种写法都按读-改-写拒绝。反向也已钉住：
+   `int *_Atomic p; *p += 1;` 是**普通 int**，必须编译通过（否则就是过度拒绝）。
+   门禁 `run_atomic_tests.py` 的 `ptr-qual` 阶段把这两向都跑了五个目标。
 3. **复合体原子类型不支持**：`_Atomic struct` 需要锁，当场报错而不是假装能原子访问。
 4. **没有 `<threads.h>`**：`thrd_create` 之类不在范围内；`_Atomic` 的价值在本项目里是
    中断级同步，不是多线程。

@@ -233,9 +233,12 @@ python tests/arm_exec/run_arm_exec.py            # needs unicorn; 37 cases in to
    `int`: load/store are ordinary accesses, while `p++` stays a C11 read-modify-write and sema
    refuses it. `int *_Atomic(long) p` is still refused, because `_Atomic( ... )` is a **type
    specifier**, not a qualifier, and may not follow `*` (one error, no cascade).
-2. **Read-modify-write through a pointer is not intercepted**: in `*p += 1` where `p` points at an
-   `_Atomic` object, sema looks at the expression type of `*p` and `is_atomic` does not propagate
-   through the dereference, so no error is reported. Use `atomic_fetch_add(p, 1)`.
+2. ~~**Read-modify-write through a pointer is not intercepted**~~ **re-checked in 0.9.1: it is
+   intercepted** (the old note was wrong): `is_atomic` lives on the pointee type, and the type of
+   `*p` *is* that atomic pointee, so `atomic_int *p; *p += 1;`, `p[0] += 1;`, `(*p)++;` and
+   `++*(p + 1);` are all refused as read-modify-writes. The converse is pinned too:
+   `int *_Atomic p; *p += 1;` is an ordinary `int` and must compile (otherwise it is over-rejection).
+   The `ptr-qual` stage of `run_atomic_tests.py` runs both directions on all five targets.
 3. **Aggregate atomic types are unsupported**: `_Atomic struct` needs a lock, and it is rejected on
    the spot instead of pretending the access can be atomic.
 4. **There is no `<threads.h>`**: `thrd_create` and friends are out of scope; `_Atomic`'s value in
