@@ -552,6 +552,14 @@ int main(int argc, char **argv) {
             return 1;
         }
 #endif
+#if !ARKCC_FEATURE_OPT_LIVE
+        else if (strcmp(a, "-fopt-live") == 0) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: -fopt-live is not compiled into "
+                    "this build (rebuild with -DARKCC_FEATURE_OPT_LIVE=1)\n");
+            return 1;
+        }
+#endif
         else if (a[0] == '-' && a[1] == 'f') {
             /* -fxxx / -fno-xxx: already handled by config_apply_args, silently accepted here */
         }

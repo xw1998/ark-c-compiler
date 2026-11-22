@@ -37,8 +37,17 @@ static int       s_table_loaded = 0;
  * is 384 KB of SDRAM, and these slots are read once per compile, not per
  * instruction.  fs_ram_put() refuses an oversized payload instead of truncating
  * it, so this limit is a wall and can never be a silent cut. */
-#define RAMFS_SLOTS     12
-#define RAMFS_SLOT_SIZE 32768
+/* Both are overridable so a trimmed build can fit them into on-chip RAM:
+ * the SDRAM layout above keeps 12 x 32 KB, and the 512 KB AXI-only layout
+ * (Linker/STM32H743VITx_FLASH_sram.sct) passes -DRAMFS_SLOTS=4
+ * -DRAMFS_SLOT_SIZE=16384.  A slot is a wall, not a suggestion: fs_ram_put()
+ * refuses a payload that does not fit instead of truncating it. */
+#ifndef RAMFS_SLOTS
+#  define RAMFS_SLOTS     12
+#endif
+#ifndef RAMFS_SLOT_SIZE
+#  define RAMFS_SLOT_SIZE 32768
+#endif
 typedef struct {
     char name[24];
     int  len;

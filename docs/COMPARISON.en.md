@@ -3,7 +3,7 @@
 English | [中文](COMPARISON.md)
 
 > In one sentence: **on the full STM32F4 HAL corpus, arkc with every
-> optimization on is 4.1× the instruction count and 4.0× the code bytes of
+> optimization on is 3.9× the instruction count and 3.8× the code bytes of
 > armcc `-O2`; the gap is not encoding quality, it is structural -- a value-stack
 > machine, no liveness analysis, and intermediate results still going through the
 > frame.**
@@ -47,7 +47,7 @@ Totals over the 96 effective translation units:
 | Compiler | Options | Instructions | Code bytes |
 | --- | --- | ---: | ---: |
 | **arkc** | `-O2` | 51,463 | 116,480 |
-| **arkc** | `-O2` + all `-fopt-*` (see §3) | **23,304** | **55,608** |
+| **arkc** | `-O2` + all `-fopt-*` (see §3) | **21,975** | **52,608** |
 | armcc | `-O0` | 7,969 | 18,788 |
 | armcc | `-O1` | 6,061 | 14,910 |
 | armcc | `-O2` | 5,629 | 13,942 |
@@ -61,10 +61,10 @@ Relative to armcc `-O2`:
 | Comparison | Instructions | Code bytes |
 | --- | ---: | ---: |
 | arkc `-O2` (no `-fopt-*`) | 9.1× | 8.4× |
-| arkc `-O2` + all `-fopt-*` | **4.1×** | **4.0×** |
+| arkc `-O2` + all `-fopt-*` | **3.9×** | **3.8×** |
 
-**The nine optimization switches of 0.9.1 take the gap from 9.1× down to 4.1×**
-(−54.7% instructions, −52.3% code bytes).
+**The ten optimization switches of 0.9.1 take the gap from 9.1× down to 3.9×**
+(−57.3% instructions, −54.8% code bytes).
 
 **IAR does not take part**: IAR EWARM 9.70 is installed
 (`D:\tools\IAR_EWARM_9.70\arm\bin\iccarm.exe`, V9.70.1.475/W64), but it has
@@ -75,18 +75,18 @@ compare. The way to align with IAR is to implement the mechanisms reverse-
 engineered in `D:/工作/git_project/c_compiler/iar/docs/` (that is where
 `-fopt-cbranch` and `-fopt-copyprop` come from), not to invent a number.
 
-## 3. Which nine switches "all `-fopt-*`" means
+## 3. Which ten switches "all `-fopt-*`" means
 
 ```
 -fopt-tailmerge -fopt-tailcall -fopt-divconst -fopt-xblock -fopt-sizeweight
 -fopt-inline   -fopt-vstack    -fopt-addr     -fopt-strength -fopt-cbz
 -fopt-branch   -fopt-imm       -fopt-peep     -fopt-cbranch -fopt-copyprop
--fopt-regalloc
+-fopt-live     -fopt-regalloc
 ```
 
-The table actually uses the nine **that do something on this corpus**:
+The table actually uses the ten **that do something on this corpus**:
 `-fopt-vstack -fopt-addr -fopt-strength -fopt-cbz -fopt-branch -fopt-imm -fopt-peep
--fopt-cbranch -fopt-copyprop`.
+-fopt-cbranch -fopt-copyprop -fopt-live`.
 
 `-fopt-regalloc` was also measured this round, but it **changes not a single
 instruction on this corpus** (identical instruction count and code bytes in both
@@ -101,8 +101,8 @@ and does change these functions).
 
 ## 4. Where the gap comes from: four structural reasons
 
-Take `HAL_RCC_OscConfig()` (`stm32f4xx_hal_rcc.c`): 3,676 instructions with arkc
-fully optimized, 336 with armcc `-O2`. Look at the opening
+Take `HAL_RCC_OscConfig()` (`stm32f4xx_hal_rcc.c`): 2,173 instructions with arkc
+fully optimized (2,183 before `-fopt-live`), 336 with armcc `-O2`. Look at the opening
 `if (RCC_OscInitStruct == 0)`:
 
 ```asm
@@ -161,7 +161,8 @@ Baseline = `-fopt-vstack -fopt-addr -fopt-strength -fopt-cbz -fopt-branch`,
 | + `-fopt-imm` | 27,716 | −7,495 (−21.3%) |
 | + imm + peep | 26,316 | −8,895 (−25.3%) |
 | + imm + peep + cbranch | 23,692 | −11,519 (−32.7%) |
-| + imm + peep + cbranch + copyprop | **23,304** | **−11,907 (−33.8%)** |
+| + imm + peep + cbranch + copyprop | 23,304 | −11,907 (−33.8%) |
+| + imm + peep + cbranch + copyprop + live | **21,975** | **−13,236 (−37.6%)** |
 
 (Each row is that arm's own effect against the baseline, not a running sum:
 `-fopt-cbranch` and `-fopt-imm` both touch `IR_BINARY`, so the combination is

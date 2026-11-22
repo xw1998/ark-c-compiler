@@ -831,7 +831,7 @@ static void ark_fix_far_offset(AsmBuffer *b, int from) {
     }
 }
 
-#if ARKCC_FEATURE_OPT_PEEP || ARKCC_FEATURE_OPT_COPYPROP
+#if ARKCC_FEATURE_OPT_PEEP || ARKCC_FEATURE_OPT_COPYPROP || ARKCC_FEATURE_OPT_LIVE
 /* --------------------------- peephole cleanup ----------------------------
  * Two copy-elimination rules over one function's emitted text.  Neither needs
  * liveness analysis, because each rule only turns a store/load round trip into
@@ -1069,7 +1069,7 @@ static void ark_peep_function(AsmBuffer *b, int from) {
     pp_r3(b, from);
 }
 
-#if ARKCC_FEATURE_OPT_COPYPROP
+#if ARKCC_FEATURE_OPT_COPYPROP || ARKCC_FEATURE_OPT_LIVE
 /* ------------------------ copy propagation (ECT family) ------------------
  * Two rules over one function's emitted text.  Both are the ones IAR ships
  * under "ECT CopyPropagation candidate" / "DefIntoMove" / "Dead MOV"
@@ -1198,6 +1198,7 @@ static int cp_parse(const char *t, cp_ins *o) {
     return 1;
 }
 
+#if ARKCC_FEATURE_OPT_COPYPROP  /* rules below are copy propagation only */
 /* Anything that ends the straight-line block the two rules reason about. */
 static int cp_is_boundary(const cp_ins *o) {
     const char *m = o->mn;
@@ -1231,11 +1232,14 @@ static int cp_writes(const cp_ins *o, int *r) {
 }
 
 /* Three-operand ALU ops that may absorb the copy.  CMP/CMN/TST are left out
- * on purpose (see rule B above). */
+ * on purpose (see rule B above), and so are ADC and SBC: their 16-bit forms
+ * *require* Rd == Rn, so `ADC rD, rD, X` cannot become `ADC rD, rS, X` -- the
+ * result is a three-distinct-register encoding this assembler does not emit.
+ * (Found by the ARM execution gate on the 64-bit add in stdlib aeabi.c.) */
 static int cp_op_ok(const char *m) {
     static const char *OK[] = {
         "LSL", "LSR", "ASR", "ADD", "SUB", "AND", "ORR", "EOR", "RSB",
-        "SBC", "ADC", "MUL", "UDIV", "SDIV", "BIC", NULL
+        "MUL", "UDIV", "SDIV", "BIC", NULL
     };
     int i = 0;
     while (OK[i] && strcmp(m, OK[i])) i++;
@@ -1331,8 +1335,626 @@ static void ark_copyprop_function(AsmBuffer *b, int from) {
         if (cp_pass(b, from) == 0) break;
     }
 }
+#endif /* ARKCC_FEATURE_OPT_COPYPROP (rules) */
+#if ARKCC_FEATURE_OPT_LIVE
+/* ------------------ liveness-driven register cleanup (-fopt-live) --------
+ * The copy passes above are deliberately local: neither looks past a label or
+ * a branch, because without liveness a register can look dead when it is not.
+ * This pass pays for the analysis once and then prunes what only liveness can
+ * see.  It builds the control-flow graph of the already emitted function,
+ * computes register liveness to a fixed point, and afterwards applies four
+ * rewrite rules that are each proved by the live-out set:
+ *
+ *   L1  `MOV rD, rS|#imm` with rD not live afterwards            -> delete
+ *       (MOV writes no flags, so nothing observable changes)
+ *   L2  `MOV rD, rS` followed by the instruction that reads rD, with rD not
+ *       live after it and not written by it                      -> that
+ *       instruction reads rS instead, the copy disappears.  Same values, same
+ *       flags, one instruction fewer.
+ *   L3  `MOV rT, #0` followed by an instruction that uses rT only as the index
+ *       of an address, with rT not live afterwards               -> drop the
+ *       index: `[rB, rT]` / `[rB, rT, LSL #n]` becomes `[rB]`
+ *   L4  `MOVW rD,#lo` / `MOVT rD,#hi` / `MOV rX, rD` with rD not live after
+ *       the copy                                                -> materialise
+ *       the constant straight into rX (IAR's "DefIntoMove")
+ *
+ * What makes the analysis trustworthy is what it refuses:
+ *   - a call reads r0-r3 (they are the arguments) and writes r0-r3, r12, lr;
+ *   - a block with no successor returns r0-r3, because the caller reads them;
+ *   - CBZ/CBNZ read their first operand, unlike every other `B...`;
+ *   - `pc`, `lr`, `sp` are registers 15, 14, 13, so `POP {..., pc}` is an exit
+ *     and `BX lr` is too;
+ *   - nothing is rewritten inside an IT block (its instructions are
+ *     conditional, so "not live" would have to hold on the not-taken path);
+ *   - r6 (the frame pointer), sp, lr and pc are never a rewrite target;
+ *   - every rewritten line is rebuilt and compared with the original text, so
+ *     a parse that truncated an operand can never reach the output.
+ *
+ * Measured on the HAL corpus it removes ~900 instructions that no local rule
+ * can see, most of them operand staging around branches and the address of a
+ * global being materialised into a scratch register and then copied.
+ */
+#define LV_MAX_BLOCKS 1024
+#define LV_MAX_LABELS 256
+
+typedef struct {
+    unsigned use, def, in, out;
+    int first, last;
+    int succ[2];
+} LvBlock;
+
+static unsigned lv_bit(int r) {
+    return (r >= 0 && r < 16) ? (1u << r) : 0u;
+}
+
+/* Register mask of one operand text.  Whole tokens only: "lr" is r14, "pc" is
+ * r15, "sp" is r13, and "str0" or "r0x" are none of them. */
+static unsigned lv_regs(const char *s) {
+    unsigned m = 0;
+    int i = 0;
+    while (s[i]) {
+        if ((s[i] >= 'a' && s[i] <= 'z') || (s[i] >= 'A' && s[i] <= 'Z')) {
+            int j = i, L;
+            char tok[8];
+            while (s[j] && ((s[j] >= 'a' && s[j] <= 'z') ||
+                            (s[j] >= 'A' && s[j] <= 'Z') ||
+                            (s[j] >= '0' && s[j] <= '9') || s[j] == '_')) j++;
+            L = j - i;
+            if (L > 7) L = 7;
+            memcpy(tok, s + i, L);
+            tok[L] = 0;
+            if ((tok[0] == 'r' || tok[0] == 'R') && tok[1] >= '0' && tok[1] <= '9') {
+                /* "r0".."r15" only: one or two digits, then end of token. */
+                int v = tok[1] - '0', nd = 1;
+                if (tok[2] >= '0' && tok[2] <= '9') { v = v * 10 + (tok[2] - '0'); nd = 2; }
+                if (v >= 0 && v < 16 && tok[nd + 1] == 0) m |= lv_bit(v);
+            } else if (!strcmp(tok, "pc")) {
+                m |= lv_bit(15);
+            } else if (!strcmp(tok, "lr")) {
+                m |= lv_bit(14);
+            } else if (!strcmp(tok, "sp")) {
+                m |= lv_bit(13);
+            }
+            i = j;
+        } else {
+            i++;
+        }
+    }
+    return m;
+}
+
+/* 0 none, 1 unconditional branch, 2 conditional branch, 3 call, 4 BX/BLX r. */
+static int lv_branch_kind(const char *m) {
+    size_t L = strlen(m);
+    if (m[0] != 'B') return 0;
+    if (L == 1) return 1;
+    if (L == 2 && m[1] == 'L') return 3;
+    if (L == 2 && m[1] == 'X') return 4;
+    if (L == 3 && m[1] == 'L' && m[2] == 'X') return 3;
+    if (L == 3) return 2;
+    return 0;
+}
+
+/* Mnemonics whose first operand is a pure destination: the write does not
+ * also read the old value.  Everything else follows the "Rd is also a
+ * source" convention of the 16-bit ALU/load-store forms. */
+static int lv_dest_only(const char *m) {
+    if (!strncmp(m, "MOV", 3)) return 1;        /* MOV/MOVW/MOVT/MOVcc */
+    if (!strcmp(m, "MVN") || !strcmp(m, "NEG")) return 1;
+    if (!strcmp(m, "UXTB") || !strcmp(m, "UXTH") ||
+        !strcmp(m, "SXTB") || !strcmp(m, "SXTH")) return 1;
+    if (!strcmp(m, "REV") || !strcmp(m, "REV16") ||
+        !strcmp(m, "REVSH") || !strcmp(m, "RBIT")) return 1;
+    if (!strcmp(m, "CLZ")) return 1;
+    return 0;
+}
+
+/* Mnemonics whose 16-bit encoding requires Rd == Rn, so retargeting a
+ * consumer onto another source register would ask for a 32-bit form this
+ * assembler does not emit. */
+static int lv_rd_eq_rn(const char *m) {
+    return !strcmp(m, "ADC") || !strcmp(m, "SBC") || !strcmp(m, "RSC");
+}
+
+/* Registers read and written by one instruction. */
+static void lv_rw(const cp_ins *o, unsigned *rd, unsigned *wr) {
+    const char *m = o->mn;
+    unsigned r = 0, w = 0;
+    int i;
+    *rd = *wr = 0;
+    if (!strcmp(m, "BL") || !strcmp(m, "BLX")) {
+        /* The callee reads its arguments out of r0-r3 even though no operand
+         * names them.  Missing this is how a "dead" copy before a call gets
+         * deleted -- the emulator catches it immediately. */
+        r = 0xFu;
+        for (i = 0; i < o->nops; i++) r |= lv_regs(o->op[i]);
+        *rd = r;
+        *wr = 0xFu | lv_bit(12) | lv_bit(14);
+        return;
+    }
+    if (!strcmp(m, "B") || !strcmp(m, "BX")) {
+        for (i = 0; i < o->nops; i++) r |= lv_regs(o->op[i]);
+        *rd = r;
+        return;
+    }
+    if (m[0] == 'B' && strlen(m) == 3) {        /* BEQ BNE ... : no operands */
+        for (i = 0; i < o->nops; i++) r |= lv_regs(o->op[i]);
+        *rd = r;
+        return;
+    }
+    if (!strcmp(m, "CBZ") || !strcmp(m, "CBNZ")) {
+        *rd = lv_regs(o->op[0]);
+        return;
+    }
+    if (!strcmp(m, "CMP") || !strcmp(m, "CMN") || !strcmp(m, "TST") ||
+        !strcmp(m, "TEQ")) {
+        for (i = 0; i < o->nops; i++) r |= lv_regs(o->op[i]);
+        *rd = r;
+        return;
+    }
+    if (!strcmp(m, "PUSH") || !strncmp(m, "STM", 3) ||
+        !strncmp(m, "STR", 3) || !strncmp(m, "VSTR", 4)) {
+        for (i = 0; i < o->nops; i++) r |= lv_regs(o->op[i]);
+        *rd = r;
+        return;
+    }
+    if (!strcmp(m, "POP")) {
+        for (i = 0; i < o->nops; i++) w |= lv_regs(o->op[i]);
+        *wr = w;
+        return;
+    }
+    if (!strncmp(m, "LDM", 3)) {
+        if (o->nops > 0) r |= lv_regs(o->op[0]);
+        for (i = 1; i < o->nops; i++) w |= lv_regs(o->op[i]);
+        *rd = r;
+        *wr = w;
+        return;
+    }
+    if (!strncmp(m, "LDR", 3) || !strncmp(m, "VLDR", 4)) {
+        if (o->nops > 0) w |= lv_regs(o->op[0]);
+        for (i = 1; i < o->nops; i++) r |= lv_regs(o->op[i]);
+        *rd = r;
+        *wr = w;
+        return;
+    }
+    if (o->nops > 0) {                          /* generic: op0 is the result */
+        w = lv_regs(o->op[0]);
+        for (i = 1; i < o->nops; i++) r |= lv_regs(o->op[i]);
+        /* Two-operand ALU forms read their destination as well:
+         *   `LSL r0, r4`  is  r0 = r0 << r4
+         *   `AND r0, r1`  is  r0 = r0 & r1
+         *   `MUL r0, r1`  is  r0 = r0 * r1
+         * Missing this read is how a live `MOV r0, r7` ahead of
+         * `LSL r0, r4` gets deleted -- a wrong answer, not a folding.
+         * Only the ops whose destination is a pure output are exempt;
+         * over-approximating a read can only cost a missed rewrite. */
+        if (!lv_dest_only(m)) r |= w;
+    }
+    *rd = r;
+    *wr = w;
+}
+
+/* Does this instruction end the block it sits in? */
+static int lv_ends_block(const cp_ins *o) {
+    int k = lv_branch_kind(o->mn);
+    int i;
+    if (k == 1 || k == 2 || k == 4) return 1;
+    if (!strcmp(o->mn, "POP")) {
+        for (i = 0; i < o->nops; i++)
+            if (lv_regs(o->op[i]) & lv_bit(15)) return 1;
+    }
+    return 0;
+}
+
+/* An op that may appear with a '!' writeback (`LDR r0, [r1, #4]!`). */
+static int lv_has_writeback(const cp_ins *o) {
+    int i;
+    for (i = 0; i < o->nops; i++) {
+        const char *p = o->op[i];
+        size_t L = strlen(p);
+        if (L > 0 && p[L - 1] == '!') return 1;
+    }
+    return 0;
+}
+
+/* Rewrite one line from its parsed form; returns 0 if the rebuild would not
+ * reproduce the original text exactly (a truncated or odd parse). */
+static int lv_rebuild(char *dst, int cap, const cp_ins *o) {
+    int k = 0, i;
+    k += snprintf(dst + k, (size_t)(cap - k), "%s", o->mn);
+    for (i = 0; i < o->nops && k < cap; i++)
+        k += snprintf(dst + k, (size_t)(cap - k), "%s%s", i ? ", " : " ", o->op[i]);
+    if (k < cap) dst[k] = 0;
+    return k < cap;
+}
+
+/* Replace whole-token `rS` with `rD` inside one operand text. */
+static int lv_repl_reg(char *dst, int cap, const char *src, int from, int to) {
+    int k = 0, i = 0;
+    while (src[i]) {
+        if ((src[i] >= 'a' && src[i] <= 'z') || (src[i] >= 'A' && src[i] <= 'Z')) {
+            int j = i, L;
+            char tok[8];
+            while (src[j] && ((src[j] >= 'a' && src[j] <= 'z') ||
+                              (src[j] >= 'A' && src[j] <= 'Z') ||
+                              (src[j] >= '0' && src[j] <= '9') || src[j] == '_')) j++;
+            L = j - i;
+            if (L > 7) L = 7;
+            memcpy(tok, src + i, L);
+            tok[L] = 0;
+            if (!strcmp(tok, "r0") || !strcmp(tok, "r1") || !strcmp(tok, "r2") ||
+                !strcmp(tok, "r3") || !strcmp(tok, "r4") || !strcmp(tok, "r5") ||
+                !strcmp(tok, "r6") || !strcmp(tok, "r7") || !strcmp(tok, "r8") ||
+                !strcmp(tok, "r9") || !strcmp(tok, "r10") || !strcmp(tok, "r11") ||
+                !strcmp(tok, "r12")) {
+                int v = (L == 2) ? (tok[1] - '0') : (10 + tok[2] - '0');
+                if (v == from) {
+                    k += snprintf(dst + k, (size_t)(cap - k), "r%d", to);
+                    i = j;
+                    continue;
+                }
+            }
+            if (k + L >= cap) return 0;
+            memcpy(dst + k, src + i, L);
+            k += L;
+            i = j;
+        } else {
+            if (k + 1 >= cap) return 0;
+            dst[k++] = src[i++];
+        }
+    }
+    if (k < cap) { dst[k] = 0; return 1; }
+    return 0;
+}
+
+/* Drop ", rT" (and an optional ", LSL #n") that indexes an address operand.
+ * Returns 1 when the operand was rewritten. */
+static int lv_drop_index(char *dst, int cap, const char *src, int t) {
+    char pat[16];
+    const char *p;
+    snprintf(pat, sizeof pat, ", r%d", t);
+    p = strstr(src, pat);
+    while (p) {
+        const char *q = p + strlen(pat);
+        char tail[64];
+        int tl = 0;
+        if (*q == ']') {
+            /* [rB, rT] -> [rB] */
+        } else if (!strncmp(q, ", LSL #", 7)) {
+            const char *e = q + 7;
+            while (*e >= '0' && *e <= '9') e++;
+            if (*e != ']') { p = strstr(p + 1, pat); continue; }
+            tl = (int)(e - q);
+            if (tl >= (int)sizeof tail) return 0;
+            memcpy(tail, q, (size_t)tl);
+            tail[tl] = 0;
+            q += tl;
+        } else {
+            p = strstr(p + 1, pat);
+            continue;
+        }
+        if (*q == ']' && strlen(src) + 1 <= (size_t)cap) {
+            int pre = (int)(p - src);
+            memcpy(dst, src, (size_t)pre);
+            strcpy(dst + pre, q);
+            return 1;
+        }
+        p = strstr(p + 1, pat);
+    }
+    return 0;
+}
+
+/* Does the parse of line `idx` rebuild to exactly that line's text?  This is
+ * the anti-truncation guard: if a parse dropped or mangled an operand it can
+ * never reach the output.  It must be called BEFORE any operand is modified. */
+static int lv_same(AsmBuffer *b, const int *ls, const int *ll,
+                   const cp_ins *o, int idx) {
+    char t[256], r[256];
+    if (pp_trim(b->buf + ls[idx], ll[idx], t, sizeof t) < 0) return 0;
+    if (!lv_rebuild(r, sizeof r, o)) return 0;
+    return !strcmp(r, t);
+}
+
+static int lv_pass(AsmBuffer *b, int from) {
+    static int ls[PP_MAX_LINES], ll[PP_MAX_LINES];
+    static cp_ins iv[PP_MAX_LINES];
+    static unsigned char kd[PP_MAX_LINES];      /* 0 other, 1 instruction, 2 label */
+    static unsigned char it[PP_MAX_LINES];
+    static unsigned la[PP_MAX_LINES];
+    static int bof[PP_MAX_LINES];
+    static LvBlock blk[LV_MAX_BLOCKS];
+    static char lab[LV_MAX_LABELS][40];
+    static int labline[LV_MAX_LABELS];
+    static char t[256], nw[256], o2[256], o3[256];
+    AsmBuffer out;
+    int n, i, j, nb, nlab, changed = 0, prev_end, seen_label, iter;
+    n = pp_split_lines(b, from, ls, ll, PP_MAX_LINES);
+    if (n < 0) return 0;
+    nlab = 0;
+    for (i = 0; i < n; i++) {
+        int L;
+        kd[i] = 0; it[i] = 0; la[i] = 0; bof[i] = -1;
+        if (ll[i] >= (int)sizeof t) continue;
+        if (pp_trim(b->buf + ls[i], ll[i], t, sizeof t) < 0) continue;
+        if (!t[0] || t[0] == ';' || t[0] == '@') continue;
+        L = ark_strlen(t);
+        if (L > 0 && t[L - 1] == ':') {
+            if (nlab < LV_MAX_LABELS) {
+                int k = 0;
+                while (k < L - 1 && k < 39) { lab[nlab][k] = t[k]; k++; }
+                lab[nlab][k] = 0;
+                labline[nlab] = i;
+                nlab++;
+            }
+            kd[i] = 2;
+            continue;
+        }
+        if (t[0] == '.') continue;              /* directive */
+        if (cp_parse(t, &iv[i])) kd[i] = 1;
+    }
+    /* Instructions under an IT: conditional, so never a rewrite candidate. */
+    for (i = 0; i < n; i++) {
+        if (kd[i] != 1) continue;
+        if (iv[i].mn[0] == 'I' && iv[i].mn[1] == 'T' &&
+            (iv[i].mn[2] == 0 || iv[i].mn[2] == 'T' || iv[i].mn[2] == 'E')) {
+            int cnt = ark_strlen(iv[i].mn) - 1, c = 0;
+            for (j = i + 1; j < n && c < cnt; j++) {
+                if (kd[j] == 2) break;
+                if (kd[j] == 1) { it[j] = 1; c++; }
+            }
+        }
+    }
+    /* Basic blocks. */
+    nb = 0; prev_end = 1; seen_label = 0;
+    for (i = 0; i < n; i++) {
+        if (kd[i] == 2) { seen_label = 1; continue; }
+        if (kd[i] != 1) continue;
+        if (nb == 0 || prev_end || seen_label) {
+            if (nb >= LV_MAX_BLOCKS) return 0;
+            blk[nb].first = blk[nb].last = i;
+            blk[nb].succ[0] = blk[nb].succ[1] = -1;
+            blk[nb].use = blk[nb].def = blk[nb].in = blk[nb].out = 0;
+            nb++;
+        } else {
+            blk[nb - 1].last = i;
+        }
+        bof[i] = nb - 1;
+        seen_label = 0;
+        prev_end = lv_ends_block(&iv[i]);
+    }
+    if (nb <= 0) return 0;
+    /* Successors. */
+    for (i = 0; i < nb; i++) {
+        const cp_ins *o = &iv[blk[i].last];
+        int k = lv_branch_kind(o->mn), tgt = -1, q;
+        if (k == 1 || k == 2) {
+            for (q = 0; q < o->nops; q++) {
+                const char *p = o->op[q];
+                int m2;
+                if (!p[0] || p[0] == '#' || p[0] == '[') continue;
+                if (lv_regs(p)) continue;
+                for (m2 = 0; m2 < nlab; m2++)
+                    if (!strcmp(lab[m2], p)) { tgt = labline[m2]; break; }
+                if (tgt >= 0) break;
+            }
+            if (tgt >= 0) {
+                int L2;
+                for (L2 = tgt; L2 < n; L2++)
+                    if (bof[L2] >= 0) { tgt = bof[L2]; break; }
+                if (L2 >= n) tgt = -1;
+            }
+        }
+        if (k == 1) {
+            blk[i].succ[0] = tgt;
+        } else if (k == 2) {
+            blk[i].succ[0] = tgt;
+            blk[i].succ[1] = (i + 1 < nb) ? i + 1 : -1;
+        } else if (k == 4) {
+            blk[i].succ[0] = -1;                /* BX lr / BX rM leaves */
+        } else if (lv_ends_block(o)) {
+            blk[i].succ[0] = -1;                /* POP {..., pc} returns */
+        } else {
+            blk[i].succ[0] = (i + 1 < nb) ? i + 1 : -1;
+        }
+    }
+    /* use / def */
+    for (i = 0; i < nb; i++) {
+        unsigned u = 0, d = 0;
+        for (j = blk[i].last; j >= blk[i].first; j--) {
+            unsigned rd, wr;
+            lv_rw(&iv[j], &rd, &wr);
+            u |= rd & ~d;
+            d |= wr;
+        }
+        blk[i].use = u;
+        blk[i].def = d;
+    }
+    /* Liveness to a fixed point. */
+    for (iter = 0; iter < 64; iter++) {
+        int ch = 0;
+        for (i = nb - 1; i >= 0; i--) {
+            unsigned o = 0, u;
+            if (blk[i].succ[0] >= 0) o |= blk[blk[i].succ[0]].in;
+            if (blk[i].succ[1] >= 0) o |= blk[blk[i].succ[1]].in;
+            if (blk[i].succ[0] < 0) o |= 0xFu;   /* returns r0-r3 to the caller */
+            u = blk[i].use | (o & ~blk[i].def);
+            if (u != blk[i].in || o != blk[i].out) {
+                blk[i].in = u;
+                blk[i].out = o;
+                ch = 1;
+            }
+        }
+        if (!ch) break;
+    }
+    /* Live-after per instruction. */
+    for (i = 0; i < nb; i++) {
+        unsigned live = blk[i].out;
+        if (blk[i].succ[0] < 0) live |= 0xFu;
+        for (j = blk[i].last; j >= blk[i].first; j--) {
+            unsigned rd, wr;
+            lv_rw(&iv[j], &rd, &wr);
+            la[j] = live;
+            live = (live & ~wr) | rd;
+        }
+    }
+    /* Rewrite walk. */
+    asmbuf_init(&out);
+    i = 0;
+    while (i < n) {
+        int d = -1, s = -1, done = 0;
+        if (kd[i] != 1 || it[i] || lv_has_writeback(&iv[i])) {
+            pp_copy_line(&out, b->buf + ls[i], ll[i]);
+            i++;
+            continue;
+        }
+        /* L1: the copy is dead. */
+        if (!strcmp(iv[i].mn, "MOV") && iv[i].nops == 2 &&
+            cp_reg(iv[i].op[0], &d) && d >= 0 && d <= 12 && d != 6 &&
+            (cp_reg(iv[i].op[1], &s) || iv[i].op[1][0] == '#') &&
+            !(la[i] & lv_bit(d))) {
+            changed++;
+            i++;
+            continue;
+        }
+        /* L4: MOVW/MOVT pair, then a copy out of it. */
+        if (!strcmp(iv[i].mn, "MOVW") && cp_reg(iv[i].op[0], &d) &&
+            d >= 0 && d <= 12 && d != 6) {
+            int j1 = -1, j2 = -1, dd, xx, ss;
+            for (j = i + 1; j < n; j++) {
+                if (kd[j] == 2) break;
+                if (kd[j] == 1) { j1 = j; break; }
+            }
+            if (j1 >= 0 && !strcmp(iv[j1].mn, "MOVT") &&
+                cp_reg(iv[j1].op[0], &dd) && dd == d) {
+                for (j = j1 + 1; j < n; j++) {
+                    if (kd[j] == 2) break;
+                    if (kd[j] == 1) { j2 = j; break; }
+                }
+                if (j2 >= 0 && !strcmp(iv[j2].mn, "MOV") && iv[j2].nops == 2 &&
+                    cp_reg(iv[j2].op[0], &xx) && xx != d && xx <= 12 && xx != 6 &&
+                    cp_reg(iv[j2].op[1], &ss) && ss == d &&
+                    !(la[j2] & lv_bit(d))) {
+                    if (lv_same(b, ls, ll, &iv[i], i) &&
+                        lv_same(b, ls, ll, &iv[j1], j1) &&
+                        lv_same(b, ls, ll, &iv[j2], j2)) {
+                        snprintf(iv[i].op[0], sizeof iv[i].op[0], "r%d", xx);
+                        snprintf(iv[j1].op[0], sizeof iv[j1].op[0], "r%d", xx);
+                        lv_rebuild(nw, sizeof nw, &iv[i]);
+                        lv_rebuild(o2, sizeof o2, &iv[j1]);
+                        for (j = i + 1; j < j1; j++)
+                            pp_copy_line(&out, b->buf + ls[j], ll[j]);
+                        asmbuf_puts(&out, "    ");
+                        asmbuf_puts(&out, nw);
+                        asmbuf_putc(&out, '\n');
+                        asmbuf_puts(&out, "    ");
+                        asmbuf_puts(&out, o2);
+                        asmbuf_putc(&out, '\n');
+                        for (j = j1 + 1; j < j2; j++)
+                            pp_copy_line(&out, b->buf + ls[j], ll[j]);
+                        changed++;
+                        i = j2 + 1;
+                        done = 1;
+                    }
+                }
+            }
+            if (done) continue;
+        }
+        /* L2 / L3: the very next instruction consumes the copy. */
+        if (!strcmp(iv[i].mn, "MOV") && iv[i].nops == 2 &&
+            cp_reg(iv[i].op[0], &d) && d >= 0 && d <= 12 && d != 6) {
+            int j = -1, v, hasbrace = 0;
+            for (j = i + 1; j < n; j++) {
+                if (kd[j] == 2) { j = -1; break; }
+                if (kd[j] == 1) break;
+            }
+            if (j < 0 || j >= n) j = -1;
+            /* A register list (`{...}`) is never a simple operand to retarget. */
+            for (v = 0; j >= 0 && v < iv[j].nops; v++)
+                if (strchr(iv[j].op[v], '{')) hasbrace = 1;
+            if (j >= 0 && !it[j] && !lv_has_writeback(&iv[j]) && !hasbrace) {
+                unsigned rd, wr;
+                int touched = 0, done2 = 0, samej = 0;
+                char save[4][40];
+                cp_ins origj = iv[j];
+                lv_rw(&iv[j], &rd, &wr);
+                /* Snapshot the operand texts and note whether rD is read at
+                 * all -- both must be captured before anything is rewritten. */
+                for (v = 0; v < iv[j].nops; v++) {
+                    memcpy(save[v], iv[j].op[v], sizeof save[0]);
+                    if (cp_mentions(iv[j].op[v], d)) touched = 1;
+                }
+                samej = lv_same(b, ls, ll, &origj, j);
+                if (!(la[j] & lv_bit(d)) && !(wr & lv_bit(d))) {
+                    /* L3 first: a zero index disappears from the address. */
+                    if (iv[i].op[1][0] == '#' && !strcmp(iv[i].op[1], "#0") &&
+                        rd & lv_bit(d)) {
+                        int hits = 0, other = 0;
+                        for (v = 0; v < iv[j].nops; v++) {
+                            if (v > 0 && lv_drop_index(o3, sizeof o3, iv[j].op[v], d)) {
+                                hits++;
+                                memcpy(iv[j].op[v], o3, sizeof iv[j].op[v]);
+                            } else if (cp_mentions(iv[j].op[v], d)) {
+                                other = 1;
+                            }
+                        }
+                        if (hits && !other && samej &&
+                            lv_rebuild(nw, sizeof nw, &iv[j])) {
+                            for (v = i + 1; v < j; v++)
+                                pp_copy_line(&out, b->buf + ls[v], ll[v]);
+                            asmbuf_puts(&out, "    ");
+                            asmbuf_puts(&out, nw);
+                            asmbuf_putc(&out, '\n');
+                            changed++;
+                            i = j + 1;
+                            done2 = 1;
+                        }
+                        /* Restore the operands before L2 tries them. */
+                        for (v = 0; v < iv[j].nops; v++)
+                            memcpy(iv[j].op[v], save[v], sizeof save[0]);
+                    }
+                    /* L2: retarget the consumer onto the copy's source. */
+                    if (!done2 && touched && cp_reg(iv[i].op[1], &s) && s != d &&
+                        (rd & lv_bit(d)) && !lv_rd_eq_rn(iv[j].mn)) {
+                        int ok = 1;
+                        for (v = 0; ok && v < iv[j].nops; v++) {
+                            if (!lv_repl_reg(o2, sizeof o2, iv[j].op[v], d, s)) ok = 0;
+                            else memcpy(iv[j].op[v], o2, sizeof iv[j].op[v]);
+                        }
+                        if (ok && samej && lv_rebuild(nw, sizeof nw, &iv[j])) {
+                            for (v = i + 1; v < j; v++)
+                                pp_copy_line(&out, b->buf + ls[v], ll[v]);
+                            asmbuf_puts(&out, "    ");
+                            asmbuf_puts(&out, nw);
+                            asmbuf_putc(&out, '\n');
+                            changed++;
+                            i = j + 1;
+                            done2 = 1;
+                        } else {
+                            for (v = 0; v < iv[j].nops; v++)
+                                memcpy(iv[j].op[v], save[v], sizeof save[0]);
+                        }
+                    }
+                    if (done2) continue;
+                }
+            }
+        }
+        pp_copy_line(&out, b->buf + ls[i], ll[i]);
+        i++;
+    }
+    if (changed) pp_splice(b, from, &out);
+    return changed;
+}
+
+static void ark_live_function(AsmBuffer *b, int from) {
+    int round;
+    if (!g_config.enable_opt_live) return;
+    for (round = 0; round < 4; round++) {
+        if (lv_pass(b, from) == 0) break;
+    }
+}
+#endif /* ARKCC_FEATURE_OPT_LIVE */
 #endif /* ARKCC_FEATURE_OPT_COPYPROP */
-#endif /* ARKCC_FEATURE_OPT_PEEP || ARKCC_FEATURE_OPT_COPYPROP */
+#endif /* ARKCC_FEATURE_OPT_PEEP || ARKCC_FEATURE_OPT_COPYPROP || ARKCC_FEATURE_OPT_LIVE */
 
 #if ARKCC_FEATURE_OPT_REGALLOC
 /* --------------------------- register allocation -------------------------
@@ -8606,6 +9228,12 @@ static char *codegen_arm(IrProgram *prog) {
          * its single consumer.  Runs on the text peep left behind, still
          * before regalloc so the slot rewriter sees fewer instructions. */
         if (g_config.enable_opt_copyprop) ark_copyprop_function(&buf, fstart);
+#endif
+#if ARKCC_FEATURE_OPT_LIVE
+        /* With the control-flow graph and liveness in hand the copies that
+         * only liveness can see -- a value staged around a branch, an address
+         * copied out of a scratch register -- are finally removable. */
+        if (g_config.enable_opt_live) ark_live_function(&buf, fstart);
 #endif
 #if ARKCC_FEATURE_OPT_REGALLOC
         /* The text of this function is complete: it is the last slice of the

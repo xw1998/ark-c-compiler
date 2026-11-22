@@ -70,6 +70,7 @@ void config_init(void) {
     g_config.enable_opt_peep      = 0;
     g_config.enable_opt_cbranch   = 0;
     g_config.enable_opt_copyprop  = 0;
+    g_config.enable_opt_live      = 0;
     g_config.enable_opt_inline    = ARKCC_FEATURE_OPT_INLINE;
     g_config.enable_opt_vectorize = ARKCC_FEATURE_OPT_VECTORIZE;
     /* 0.8.0 的五个实验性开关：代码按 profile 编进来（见 arkcc_config.h），
@@ -480,6 +481,8 @@ void config_apply_args(int argc, char **argv) {
                 g_config.enable_opt_cbranch             = enable;
             else if (ark_streq(name, "opt-copyprop") || ark_streq(name, "copyprop"))
                 g_config.enable_opt_copyprop            = enable;
+            else if (ark_streq(name, "opt-live") || ark_streq(name, "live"))
+                g_config.enable_opt_live                = enable;
             else if (ark_streq(name, "opt-inline") || ark_streq(name, "autoinline"))
                 g_config.enable_opt_inline              = enable;
             else if (ark_streq(name, "opt-vectorize") || ark_streq(name, "vectorize"))
@@ -509,9 +512,10 @@ void config_print(void) {
             g_config.enable_opt_strength);
     ark_log("  opt_cbz=%d opt_branch=%d\n",
             g_config.enable_opt_cbz, g_config.enable_opt_branch);
-    ark_log("  opt_imm=%d opt_peep=%d opt_cbranch=%d opt_copyprop=%d\n",
+    ark_log("  opt_imm=%d opt_peep=%d opt_cbranch=%d opt_copyprop=%d opt_live=%d\n",
             g_config.enable_opt_imm, g_config.enable_opt_peep,
-            g_config.enable_opt_cbranch, g_config.enable_opt_copyprop);
+            g_config.enable_opt_cbranch, g_config.enable_opt_copyprop,
+            g_config.enable_opt_live);
     ark_log("  dce_cfg=%d reloc_data=%d reg_top=%d rt_lazy=%d asm_extra=%d\n",
             g_config.enable_dce_cfg, g_config.enable_reloc_data,
             g_config.enable_reg_top, g_config.enable_rt_lazy,

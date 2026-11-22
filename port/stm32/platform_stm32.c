@@ -257,7 +257,19 @@ void ark_get_date_time(char *date_buf, char *time_buf) {
 #if defined(__CC_ARM) || defined(__ARMCC_VERSION)
 
 /* armcc5 / armclang: use __value_in_regs for multi-register struct return.
- * This is the standard ARM C library retargeting contract. */
+ * This is the standard ARM C library retargeting contract.
+ *
+ * armcc5 spells it as a keyword, armclang (AC6) as an attribute, and any
+ * other compiler (arm-none-eabi-gcc) has no such hook at all -- the plain
+ * struct return below keeps this translation unit portable, which matters
+ * because the same file is compiled by all three toolchains. */
+#if defined(__CC_ARM)
+#  define ARK_VALUE_IN_REGS __value_in_regs
+#elif defined(__ARMCC_VERSION) && (__ARMCC_VERSION >= 6010050)
+#  define ARK_VALUE_IN_REGS __attribute__((value_in_regs))
+#else
+#  define ARK_VALUE_IN_REGS
+#endif
 struct __heap_extent {
     void *heap_base;
     void *heap_limit;
@@ -269,7 +281,7 @@ struct __heap_extent {
  * system_stm32h7xx.c) to override this default. If the project
  * does not provide one, this default is used instead. */
 __attribute__((weak))
-__value_in_regs struct __heap_extent
+ARK_VALUE_IN_REGS struct __heap_extent
 __user_initial_stackheap(unsigned requested_heap,
                           void *heap_base,
                           void *stack_base,

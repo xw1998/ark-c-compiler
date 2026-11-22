@@ -243,6 +243,16 @@
 #   define ARKCC_FEATURE_OPT_COPYPROP   1
 # endif
 #endif
+/* ARKCC_FEATURE_OPT_LIVE: -fopt-live, liveness-driven register cleanup.  It
+ * builds a control-flow graph and a ~1.5 MB static workspace, so it is kept
+ * off the STM32 profile; MCU builds simply cannot afford the tables. */
+#ifndef ARKCC_FEATURE_OPT_LIVE
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_OPT_LIVE      0
+# else
+#   define ARKCC_FEATURE_OPT_LIVE      1
+# endif
+#endif
 #ifndef ARKCC_FEATURE_OPT_INLINE
 # if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
 #   define ARKCC_FEATURE_OPT_INLINE    0   /* Trim auto-inline on STM32 (costs Flash) */

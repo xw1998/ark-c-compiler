@@ -29,7 +29,8 @@ endif
         test-objir test-partiallink test-deadinline test-softfloat test-tailmerge \
         test-tailcall test-divconst test-xblock test-sizeweight \
         test-inline test-vstack test-addr test-strength test-cbz test-branch \
-        test-imm test-peep test-cbranch test-copyprop install stm32
+        test-imm test-peep test-cbranch test-copyprop test-live install stm32 \
+        stm32-check
 
 all: $(ARKCC)
 
@@ -44,7 +45,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch test-imm test-peep test-cbranch test-copyprop
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch test-imm test-peep test-cbranch test-copyprop test-live
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -244,6 +245,19 @@ test-cbranch: $(ARKCC)
 # (-DARKCC_FEATURE_OPT_COPYPROP=0) refuses the flag by name.
 test-copyprop: $(ARKCC)
 	$(PYTHON) tests/run_copyprop_tests.py ./$(ARKCC)
+
+# Gate for the liveness pass: a control-flow graph plus in/out sets per basic
+# block, on top of which four rules fire -- dead copies (L1), copies folded into
+# a consumer (L2), a staged zero index dropped from an addressing mode (L3), and
+# an address materialised straight into its destination (L4).  Each rule owns a
+# fixture and must change exactly the lines it claims: instruction deltas, copy
+# counts, indexed/plain load counts and label counts are all pinned.  A control
+# fixture built around `MOV r0, r5 / LSL r0, r7` -- where the two-operand ALU
+# form reads its own destination -- must come out byte-identical, which is the
+# anti-over-deletion half.  A cropped build (-DARKCC_FEATURE_OPT_LIVE=0) refuses
+# the flag by name (C3900U) and still compiles without it.
+test-live: $(ARKCC)
+	$(PYTHON) tests/run_live_tests.py ./$(ARKCC)
 
 
 
@@ -461,6 +475,16 @@ arkcc_stm32.elf: $(STM32_SRC)
 	$(ARM_GCC) $(STM32_CFLAGS) -o $@ $^ -lgcc
 
 stm32: arkcc_stm32.elf
+
+# ===== STM32 trimmed-profile fit check =====
+# `make stm32` cross-compiles the trimmed profile, but it links a bare ELF with
+# no memory layout, so it can only say "it compiles".  This target links the
+# same source set through a scatter file that encodes the real STM32H743
+# memory -- 512 KB AXI with no SDRAM, and the 32 MB SDRAM layout with it -- and
+# asserts that the compiler actually fits.  It skips loudly (and exits 0) when
+# no armclang/armlink/fromelf is installed.  See docs/BUILD.md.
+stm32-check:
+	$(PYTHON) tools/stm32_build_check.py --layout both
 
 clean:
 	-$(RM) $(ARKCC) arkcc arkcc.exe *.bin *.gen.c
