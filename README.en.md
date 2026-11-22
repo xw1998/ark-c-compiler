@@ -151,14 +151,17 @@ equality. Memory order is always `seq_cst` (critical section + the compiler barr
 `__memory_changed`), and **this is single-core interrupt-level mutual exclusion**: cross-core and
 cross-DMA visibility is not its job — DMB orders accesses but does not fix cache coherency. On
 non-ARM targets (x86 / x86_64 / riscv32 / c) everything except `atomic_init` (which is just an
-assignment) and the typedefs is a compile-time error, with the reason written into the name. Three
-explicitly stated gaps: `int *_Atomic p` (qualifier after the `*`) is unsupported; read-modify-write
+assignment) and the typedefs is a compile-time error, with the reason written into the name. Two
+explicitly stated gaps (`int *_Atomic p` is supported since 0.9.1: the qualifier lands on the
+**pointer itself**, load/store stay ordinary accesses, and `p++` is still refused as a C11
+read-modify-write; `_Atomic(long)` is a type specifier and is refused after a `*`): read-modify-write
 through a pointer such as `*p += 1` is not caught (`is_atomic` does not propagate through
 dereference — use `atomic_fetch_add(p, 1)`); `lock xadd` / `cmpxchg16b` on `x86_64` are not wired
 up. Gates: `tests/run_atomic_tests.py` runs five targets × (target-identity macros, 11 atomic
 operations that must be rejected, `atomic_init` that must compile), and
 `tests/arm_exec/run_arm_exec.py`'s `atomic_rmw` / `atomic_nested_mask` / `atomic_wide` /
-`atomic_reject` really execute the critical sections and the 64-bit path on unicorn.
+`atomic_ptr` / `atomic_reject` really execute the critical sections, the 64-bit path and atomic
+pointer accesses on unicorn.
 
 ### ARM Compiler 5 (armcc) compatibility extensions
 

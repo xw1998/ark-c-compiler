@@ -57,6 +57,7 @@ static AstNode *parse_initializer(Parser *p);
 static void     parse_attribute(Parser *p, Type *attach_type);
 static AstNode *parse_asm_statement(Parser *p);
 static AstNode *parse_init_list(Parser *p);
+static void     decl_skip_group(Parser *p);
 
 /* Storage class bits */
 #define STO_STATIC   1
@@ -235,12 +236,26 @@ AstNode *parse_program(Lexer *lex) {
 
 /* Skip all type qualifiers (const/volatile/restrict).
  * If saw_volatile/saw_const are non-NULL, report what was seen (F2). */
-static void skip_qualifiers(Parser *p, int *saw_volatile, int *saw_const) {
+static void skip_qualifiers(Parser *p, int *saw_volatile, int *saw_const,
+                            int *saw_atomic) {
     for (;;) {
         TokenKind k = lexer_peek(p->lex).kind;
-        if (k == TOK_CONST || k == TOK_VOLATILE || k == TOK_RESTRICT || k == TOK_INLINE) {
+        if (k == TOK_CONST || k == TOK_VOLATILE || k == TOK_RESTRICT || k == TOK_INLINE ||
+            k == TOK_ATOMIC) {
             if (k == TOK_VOLATILE && saw_volatile) *saw_volatile = 1;
             if (k == TOK_CONST && saw_const) *saw_const = 1;
+            if (k == TOK_ATOMIC) {
+                if (saw_atomic) *saw_atomic = 1;
+                /* `int *_Atomic(long) p` cannot mean anything: the
+                 * parenthesised form is a type specifier, and a specifier
+                 * may not follow `*`.  Say that instead of misparsing. */
+                if (lexer_peek2(p->lex).kind == TOK_LPAREN) {
+                    perror_at(p, "_Atomic( ... ) is a type specifier and cannot appear after '*'");
+                    lexer_advance(p->lex);   /* consume _Atomic */
+                    decl_skip_group(p);      /* drop the whole ( type-name ) */
+                    continue;
+                }
+            }
             lexer_advance(p->lex);
         } else if (k == TOK_ATTRIBUTE) {
             parse_attribute(p, 0);
@@ -1638,6 +1653,7 @@ typedef struct DeclNode {
     unsigned char pvol[DECL_MAX_PTR_LEVELS];
     unsigned char pconst[DECL_MAX_PTR_LEVELS];
     unsigned char ppacked[DECL_MAX_PTR_LEVELS];
+    unsigned char patomic[DECL_MAX_PTR_LEVELS];
     int           suffix;                   /* DECL_SK_NONE / ARRAY / FUNC */
     int           dims[ARK_MAX_ARRAY_DIMS];
     int           ndims;
@@ -1858,9 +1874,9 @@ static DeclNode *decl_parse(Parser *p, int top) {
     DeclNode *n = (DeclNode *)mem_pool_alloc((int)sizeof(DeclNode));
     n->vla_dim = -1;
     while (lexer_peek(p->lex).kind == TOK_MUL) {
-        int ptr_vol = 0, ptr_const = 0;
+        int ptr_vol = 0, ptr_const = 0, ptr_atomic = 0;
         lexer_advance(p->lex);
-        skip_qualifiers(p, &ptr_vol, &ptr_const);
+        skip_qualifiers(p, &ptr_vol, &ptr_const, &ptr_atomic);
         if (n->nptr >= DECL_MAX_PTR_LEVELS) {
             /* Dropping a pointer level silently changes the type of everything
              * that follows, so this is an error rather than a truncation. */
@@ -1870,6 +1886,7 @@ static DeclNode *decl_parse(Parser *p, int top) {
         n->pvol[n->nptr]    = (unsigned char)(ptr_vol ? 1 : 0);
         n->pconst[n->nptr]  = (unsigned char)(ptr_const ? 1 : 0);
         n->ppacked[n->nptr] = (unsigned char)(g_decl_packed_ptr ? 1 : 0);
+        n->patomic[n->nptr] = (unsigned char)(ptr_atomic ? 1 : 0);
         n->nptr++;
     }
     /* `(` starts a parenthesized declarator -- but only when what follows can
@@ -1912,6 +1929,10 @@ static Type *decl_apply(Parser *p, DeclNode *n, Type *T, char **out_name) {
         if (n->pvol[i])    T->is_volatile = 1;
         if (n->pconst[i])  T->is_const = 1;
         if (n->ppacked[i]) T->is_packed = 1;
+        /* `int *_Atomic p`: the qualifier belongs to the pointer level just
+         * created by this '*', so it marks that pointer type (freshly
+         * allocated by type_pointer, never a singleton). */
+        if (n->patomic[i]) T->is_atomic = 1;
     }
     if (n->suffix == DECL_SK_ARRAY) {
         /* Construct nested arrays from right to left; keep size==0 for

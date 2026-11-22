@@ -63,7 +63,8 @@ C 编译器最容易在生产线上留下静默错答案的地方，就是把原
 
 - **位置决定语义**：`type_atomic(base)` 在 `parse_declspec()` 末尾、解析声明符**之前**应用。
   于是 `_Atomic int *p` 里原子性落在 pointee（`p` 是普通指针），符合 C11；
-  `int *_Atomic p`（限定符写在 `*` 之后）本轮未支持，见 §7。
+  `int *_Atomic p`（限定符写在 `*` 之后）把原子性落在**指针本身**（C11 6.7.3p2：限定符
+  修饰它紧跟的那个 `*` 造出的类型），由 `skip_qualifiers()` 在星号后接收，见 §2.1。
 
 - `check_atomic_type()` 在三处（成员 / 声明符 / 复位）调用，三类拒绝：
 
@@ -197,13 +198,17 @@ ARM 上另有 `__dmb()` 供 `atomic_thread_fence` 使用。明确写进文档的
 ```
 make test-atomic PYTHON="<path-to-python>"
 python tests/run_atomic_tests.py --arkcc ./arkcc.exe
-python tests/arm_exec/run_arm_exec.py            # 需 unicorn，共 34 个用例
+python tests/arm_exec/run_arm_exec.py            # 需 unicorn，共 37 个用例
 ```
 
 ## 7. 已登记的限制（不是 TODO，是明写的边界）
 
-1. **`int *_Atomic p`（限定符在 `*` 之后）不支持**：`_Atomic` 只在 declspec 里识别，
-   写法只覆盖 `_Atomic type` 与 `_Atomic(type-name)` 两种。
+1. ~~`int *_Atomic p`（限定符在 `*` 之后）不支持~~ **已在 0.9.1 支持**：`skip_qualifiers()`
+   接受星号后的 `_Atomic`，并记在该指针层的 `patomic[]` 上，`decl_apply()` 落到
+   `type_pointer()` 新分配的那个指针类型（绝不落在单例上）。因此：
+   `int *_Atomic p` 是"原子指针、普通 int"——load/store 普通访问，`p++` 按 C11 仍是
+   读-改-写、sema 拒绝；而 `int *_Atomic(long) p` 仍报错，因为 `_Atomic( ... )` 是
+   **类型说明符**不是限定符，不能跟在 `*` 后面（只报一条，不级联）。
 2. **经指针的读-改-写不拦**：`*p += 1` 里 `p` 指向 `_Atomic` 对象时，sema 看的是
    `*p` 的表达式类型，`is_atomic` 不沿解引用传播，因此不会报错。用 `atomic_fetch_add(p, 1)`。
 3. **复合体原子类型不支持**：`_Atomic struct` 需要锁，当场报错而不是假装能原子访问。
@@ -221,7 +226,7 @@ python tests/arm_exec/run_arm_exec.py            # 需 unicorn，共 34 个用�
 | `include/common.h` | `TOK_ATOMIC` |
 | `include/type.h` · `src/type.c` | `Type::is_atomic`、`type_atomic()` |
 | `src/lexer.c` | `_Atomic` 关键字 |
-| `src/parser.c` | `g_decl_is_atomic`、`check_atomic_type()`、declspec 末尾 `type_atomic(base)` |
+| `src/parser.c` | `g_decl_is_atomic`、`check_atomic_type()`、declspec 末尾 `type_atomic(base)`；0.9.1 起 `skip_qualifiers()` 收星号后的 `_Atomic`，`DeclNode::patomic[]` 让 `decl_apply()` 按指针层打 `is_atomic` |
 | `src/sema.c` | `err_atomic_rmw()` + 复合赋值 / 自增减拒绝 |
 | `src/backend/arm/backend_arm.c` | `MRS`/`MSR` 脱 `--asm-extra` 闸门；`__arkcc_crit_save` / `__arkcc_crit_restore` 内建 |
 | `include/preproc.h` · `src/preproc.c` · `src/compiler.c` | `preproc_set_target()`、`__ARKCC_TARGET_*` 身份宏、非 arm 目标 undef 整套 armcc 宏 |

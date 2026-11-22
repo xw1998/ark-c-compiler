@@ -1100,15 +1100,49 @@ int main(void)
         "expect": 6,
     },
     {
+        "name": "atomic_ptr",
+        "why": "`int *_Atomic p` qualifies the pointer level, not the pointee: the "
+               "pointer itself is one word, so store and load are ordinary accesses "
+               "while *p stays a plain int.  Expected 4+3=7 is reachable only if the "
+               "store really wrote the pointer, the pointee read back unchanged, and "
+               "p+1 advanced by exactly sizeof(int).",
+        "include": ["stdlib/include"],
+        "files": {
+            "ap.c": STARTUP + """\
+int v[2];
+int *_Atomic p;
+
+int main(void)
+{
+    v[0] = 3;
+    v[1] = 4;
+    p = &v[0];
+    if (*p != 3) return 1;
+    p = p + 1;
+    if (*p != 4) return 2;
+    if (p != &v[1]) return 3;
+    if (*(p - 1) != 3) return 4;
+    return *p + *(p - 1);
+}
+""",
+        },
+        "build": link_with_runtime("ap.c", "ap.obj"),
+        "runtime": True,
+        "expect": 7,
+    },
+    {
         "name": "atomic_reject",
-        "why": "_Atomic is parsed, not ignored: an array, a function and a struct are "
-               "three separate diagnostics and none may leave an image behind",
+        "why": "_Atomic is parsed, not ignored: an array, a function, a struct and a "
+               "parenthesised specifier after '*' are four separate diagnostics and "
+               "none may leave an image behind",
         "include": ["stdlib/include"],
         "files": {
             "bad1.c": "_Atomic int arr[3];\nint main(void) { return 0; }\n",
             "bad2.c": "_Atomic int f(void);\nint main(void) { return 0; }\n",
             "bad3.c": "struct S { int x; };\n_Atomic struct S s;\n"
                       "int main(void) { return 0; }\n",
+            "bad4.c": "int f(void) { int *_Atomic(long) p; (void)p; return 0; }\n"
+                      "int main(void) { return f(); }\n",
         },
         "build": [],
         "reject": [
@@ -1118,6 +1152,8 @@ int main(void)
              "expect_error": "_Atomic cannot be applied to a function type"},
             {"argv": ["bad3.c", "-target", "arm", "--vector-table", "-o", "o3.bin"],
              "expect_error": "atomic struct/union types are not supported"},
+            {"argv": ["bad4.c", "-target", "arm", "--vector-table", "-o", "o4.bin"],
+             "expect_error": "type specifier and cannot appear after '*'"},
         ],
     },
 ]

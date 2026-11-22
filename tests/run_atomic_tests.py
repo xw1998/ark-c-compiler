@@ -15,6 +15,10 @@ What this proves -- and what it deliberately does not:
   * atomic_init stays portable: it is a plain assignment, and it is the one
     thing that must keep compiling everywhere, including targets with no
     atomics at all.
+  * A qualifier after '*' -- `int *_Atomic p` -- is a qualifier on the pointer
+    level, so it parses on every target, p++ on it is refused as a
+    read-modify-write, and the `_Atomic(type)` specifier form is refused once
+    (no error cascade) because a type specifier may not follow '*'.
 
 Correct behaviour on the arm target (real PRIMASK critical sections, the
 64-bit path, compare_exchange writing the expected operand back on failure) is
@@ -168,7 +172,58 @@ class Gate:
             return
         print("ok   init       %-8s atomic_init (and the typedefs) compile" % target)
 
-    # -- 4: anti-false-green -------------------------------------------------
+    # -- 4: qualifier after '*' (documents the old gap) ----------------------
+    def check_ptr_qualifier(self, work, target):
+        """`int *_Atomic p` -- the qualifier on the pointer level itself.
+
+        Three separate claims, because only the first one is "accept":
+          a. the declaration parses and *p is an ordinary int load/store;
+          b. p++ is a read-modify-write on the atomic pointer => refused, with
+             the RMW wording, on every target (this is sema-level, so it does
+             not depend on the target having atomics);
+          c. the parenthesised type-specifier form cannot follow '*', and the
+             refusal is one error rather than a cascade of 'expected ;'.
+        """
+        src = os.path.join(work, "pqual_ok.c")
+        write(src, "int v;\n"
+                   "int *_Atomic p;\n"
+                   "int f(void) { p = &v; return *p; }\n")
+        proc = self.run([src, "-target", target, "-S",
+                         "-o", os.path.join(work, "pqual_ok.s")], work)
+        if proc.returncode != 0:
+            self.bad("%-8s `int *_Atomic p` must parse: %s"
+                     % (target, (proc.stderr + proc.stdout).strip()[:200]))
+
+        src = os.path.join(work, "pqual_rmw.c")
+        write(src, "int v;\n"
+                   "int f(void) { int *_Atomic p = &v; p++; return 0; }\n")
+        proc = self.run([src, "-target", target, "-S",
+                         "-o", os.path.join(work, "pqual_rmw.s")], work)
+        text = proc.stderr + proc.stdout
+        if proc.returncode == 0:
+            self.bad("%-8s p++ on an atomic pointer compiled (silent wrong answer)"
+                     % target)
+        elif "read-modify-write" not in text:
+            self.bad("%-8s p++ refused for the wrong reason: %s"
+                     % (target, text.strip()[:160]))
+
+        src = os.path.join(work, "pqual_spec.c")
+        write(src, "int f(void) { int *_Atomic(long) p; (void)p; return 0; }\n")
+        proc = self.run([src, "-target", target, "-S",
+                         "-o", os.path.join(work, "pqual_spec.s")], work)
+        text = proc.stderr + proc.stdout
+        if proc.returncode == 0:
+            self.bad("%-8s `int *_Atomic(long) p` compiled" % target)
+        elif "type specifier and cannot appear after '*'" not in text:
+            self.bad("%-8s specifier-after-'*' refused for the wrong reason: %s"
+                     % (target, text.strip()[:160]))
+        elif text.count("Error:") != 1:
+            self.bad("%-8s specifier-after-'*' produced %d errors (expected 1, no cascade)"
+                     % (target, text.count("Error:")))
+        print("ok   ptr-qual   %-8s `*_Atomic` parses, p++ refused as RMW, "
+              "specifier form refused once" % target)
+
+    # -- 5: anti-false-green -------------------------------------------------
     def selfcheck(self, work):
         """The refusal detector must not fire on the arm target."""
         src = os.path.join(work, "sc.c")
@@ -210,6 +265,8 @@ def main(argv=None):
             gate.check_refusal(work, target)
         for target in TARGETS:
             gate.check_init(work, target)
+        for target in TARGETS:
+            gate.check_ptr_qualifier(work, target)
         if not gate.selfcheck(work):
             gate.fail += 1
     finally:

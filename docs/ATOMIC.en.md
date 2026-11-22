@@ -72,8 +72,9 @@ This project therefore follows "rather an error than a wrong answer":
 
 - **Position decides meaning**: `type_atomic(base)` is applied at the end of `parse_declspec()`,
   **before** the declarator is parsed. So in `_Atomic int *p` the atomicity lands on the pointee
-  (`p` is an ordinary pointer), which matches C11; `int *_Atomic p` (qualifier written after the `*`)
-  is not supported in this round — see §7.
+  (`p` is an ordinary pointer), which matches C11; `int *_Atomic p` (qualifier written after the
+  `*`) puts the atomicity on the **pointer itself** (C11 6.7.3p2: a qualifier applies to the type
+  built by the `*` it follows), accepted by `skip_qualifiers()` — see §2.1.
 
 - `check_atomic_type()` is called in three places (members / declarators / resets) and produces three
   kinds of refusal:
@@ -220,13 +221,18 @@ implementation truncated it to `0x004CA300` here.
 ```
 make test-atomic PYTHON="<path-to-python>"
 python tests/run_atomic_tests.py --arkcc ./arkcc.exe
-python tests/arm_exec/run_arm_exec.py            # needs unicorn; 34 cases in total
+python tests/arm_exec/run_arm_exec.py            # needs unicorn; 37 cases in total
 ```
 
 ## 7. Registered limitations (written boundaries, not TODOs)
 
-1. **`int *_Atomic p` (qualifier after the `*`) is unsupported**: `_Atomic` is only recognised in
-   declspec, so only `_Atomic type` and `_Atomic(type-name)` are covered.
+1. ~~**`int *_Atomic p` (qualifier after the `*`) is unsupported**~~ **supported since 0.9.1**:
+   `skip_qualifiers()` accepts `_Atomic` after a `*` and records it per pointer level in
+   `patomic[]`; `decl_apply()` sets `is_atomic` on the pointer type freshly allocated by
+   `type_pointer()` (never on a singleton). So `int *_Atomic p` is an atomic pointer to a plain
+   `int`: load/store are ordinary accesses, while `p++` stays a C11 read-modify-write and sema
+   refuses it. `int *_Atomic(long) p` is still refused, because `_Atomic( ... )` is a **type
+   specifier**, not a qualifier, and may not follow `*` (one error, no cascade).
 2. **Read-modify-write through a pointer is not intercepted**: in `*p += 1` where `p` points at an
    `_Atomic` object, sema looks at the expression type of `*p` and `is_atomic` does not propagate
    through the dereference, so no error is reported. Use `atomic_fetch_add(p, 1)`.
