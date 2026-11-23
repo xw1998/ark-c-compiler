@@ -73,6 +73,7 @@ void config_init(void) {
     g_config.enable_opt_prop      = 0;
     g_config.enable_opt_deadpush  = 0;
     g_config.enable_opt_cmat      = 0;
+    g_config.enable_opt_slotreg   = 0;
     g_config.enable_opt_copyprop  = 0;
     g_config.enable_opt_live      = 0;
     g_config.enable_opt_inline    = ARKCC_FEATURE_OPT_INLINE;
@@ -491,6 +492,8 @@ void config_apply_args(int argc, char **argv) {
                 g_config.enable_opt_deadpush            = enable;
             else if (ark_streq(name, "opt-cmat") || ark_streq(name, "cmat"))
                 g_config.enable_opt_cmat                = enable;
+            else if (ark_streq(name, "opt-slotreg") || ark_streq(name, "slotreg"))
+                g_config.enable_opt_slotreg             = enable;
             else if (ark_streq(name, "opt-copyprop") || ark_streq(name, "copyprop"))
                 g_config.enable_opt_copyprop            = enable;
             else if (ark_streq(name, "opt-live") || ark_streq(name, "live"))
@@ -528,8 +531,9 @@ void config_print(void) {
             g_config.enable_opt_imm, g_config.enable_opt_peep,
             g_config.enable_opt_cbranch, g_config.enable_opt_copyprop,
             g_config.enable_opt_live, g_config.enable_opt_pair);
-    ark_log("  opt_prop=%d opt_deadpush=%d opt_cmat=%d\n", g_config.enable_opt_prop,
-            g_config.enable_opt_deadpush, g_config.enable_opt_cmat);
+    ark_log("  opt_prop=%d opt_deadpush=%d opt_cmat=%d opt_slotreg=%d\n",
+            g_config.enable_opt_prop, g_config.enable_opt_deadpush,
+            g_config.enable_opt_cmat, g_config.enable_opt_slotreg);
     ark_log("  dce_cfg=%d reloc_data=%d reg_top=%d rt_lazy=%d asm_extra=%d\n",
             g_config.enable_dce_cfg, g_config.enable_reloc_data,
             g_config.enable_reg_top, g_config.enable_rt_lazy,

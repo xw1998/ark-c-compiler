@@ -674,6 +674,8 @@ drops.
 - **Deferred (2026-11-23)**: measure before building paid off once more here -- see P16: the
   "duplicated constant materialisation" family measures 1.77% on its own, an order of magnitude more
   than the 0.7% text-layer room estimated on this page, so S2a is sequenced after P16.
+- **Landed and archived (2026-11-23)**: after measurement S2a became delete-only and was
+  archived; see **P17**.
 
 ---
 
@@ -711,6 +713,34 @@ drops.
   pre-registration's assumption (repeated loads and same-slot round trips really are 0.7%, but duplicated
   constant materialisation is another 1.77%). Every new pass should therefore start by scanning the whole
   corpus for the shape distribution instead of extrapolating P15's table.
+
+---
+
+### P17 Slot-level register allocation (`-fopt-slotreg`, **measured and archived in 0.9.1-wip**)
+
+- **What it does**: measurement overturned P15's shadow-register model (`MOV rC, r0` for
+  `LDR r0, [r6, #o]`) -- that is a 1-for-1 substitution with an unchanged count. It became
+  **delete-only, never insert**: delete a reload where `r0` already holds the slot (R1), and delete
+  a store that is never observed (R2(a): zero reads in the whole function and no address escape;
+  R2(b): overwritten later in the same block). No register is introduced and the frame layout is
+  untouched, so "only ever smaller" is a structural guarantee rather than a cost trade-off.
+- **The safety boundary was bought with yield**: without the address-escape test it deleted up to
+  -340 (-1.82%), but with 5 `arm_exec` semantic failures (`c = k ? a : b` writes two `STR`s that
+  `memcpy` reads internally, invisible to the text layer). With the test it is -64 (-0.34%) and
+  0 failures.
+- **Measured** (on top of the twelve switches + `-fopt-cmat`): 18,729 -> **18,665 (-64, -0.34%)**,
+  `LDR -35`, `STR -29`, every other mnemonic unchanged; none of the 95 TUs grew, 85 are
+  byte-identical.
+- **Verdict: archived.** By the falsifier frozen in `docs/SLOT_REGISTERS.md` §5 (a drop below 0.5%
+  closes the line), -0.34% does not clear it; the seven gates and four falsifiers were left word for
+  word, only §9 "design revision and measurement" was appended.
+- **Why the code stays**: off by default, byte-zero when off, semantics unchanged on 41
+  execution-level cases, no TU grew out of 95 -- a **proven-safe -0.34%**; precedent:
+  `-fopt-regalloc-near` ships with zero gain too.
+- **The real lesson**: frame accesses are 18.8% of the corpus, but **only 0.34% can be safely
+  deleted** -- the headroom is not in the text layer. The remaining 3,500-odd frame accesses each do
+  something useful; making them disappear needs computation directly in registers (P12's S3 operand
+  allocation), which is a new model, not more rules.
 
 ---
 

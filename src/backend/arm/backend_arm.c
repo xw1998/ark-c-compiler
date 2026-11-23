@@ -3106,6 +3106,385 @@ static void ark_cmat_function(AsmBuffer *b, int from) {
     b->len = from + out.len;
 }
 #endif /* ARKCC_FEATURE_OPT_CMAT */
+#if ARKCC_FEATURE_OPT_SLOTREG
+/* ------------------ redundant frame access removal (-fopt-slotreg) ------
+ * docs/SLOT_REGISTERS.md (section 3, amended 2026-11-23) pre-registered this
+ * slice as "keep a slot in r8-r11".  The cost model was then measured before
+ * the code was written, and the register half turned out to be worth nothing
+ * in instruction count: replacing "LDR r0,[r6,#o]" with "MOV r0,r8" is one
+ * instruction either way, which is exactly what the older -fopt-regalloc-near
+ * had already measured (19,066 -> 19,066, only LDR/STR turned into MOV).  What
+ * does remove instructions is the fact the model was built on: in a straight
+ * line, r0 *is* the slot's register between a store and the next read.  So the
+ * slice that was implemented deletes, inside one basic block:
+ *
+ *   R1  "LDR r0, [r6,#o]" when r0 provably already holds the value of slot o,
+ *       i.e. the last mention of o on this straight-line path was a kept load
+ *       or store of o and nothing since has written r0.  Flags are untouched
+ *       by LDR, so the deletion is flag-neutral.
+ *   R2  "STR r0, [r6,#o]" when the value can never be observed:
+ *       (a) slot o is never loaded anywhere in the function, or
+ *       (b) a later store to o in the same block reaches every exit before any
+ *           load of o does (the block has one entry, so the earlier value is
+ *           dead on every path through it).
+ *
+ * Selection is the same taint proof -fopt-regalloc already relies on, and it is
+ * the whole safety argument: slot o is handled only if *every* mention of o in
+ * the whole function is exactly "LDR r0, [r6,#o]" or "STR r0, [r6,#o]" with an
+ * offset below the local frame.  One mention in any other shape (a byte/half
+ * access, "ADD rX, r6, #o" taking the address, an indexed "[r6, rX]", a 64-bit
+ * half, a caller argument above the locals, a volatile local the IR flags)
+ * leaves the slot in memory.  With no address escaping, only these very
+ * instructions can observe the slot, so R1 and R2 cannot change what the
+ * function computes.
+ *
+ * No extra register, therefore no wider PUSH/POP and no frame-offset shift:
+ * every deletion is a strict instruction win, which is why the pass has no
+ * cost model to reason about.  Unmodelled text is left alone rather than
+ * guessed at: a line that names r6 in a shape this pass does not recognise
+ * abandons the whole function.
+ */
+#define SR_MAX_SLOTS 128
+#define SR_MAX_LINES 3000
+
+typedef struct {
+    int off;
+    int reads;    /* "LDR r0, [r6,#off]" count in the whole function    */
+    int taint;    /* mentioned in any other shape: stays in memory      */
+    int indirect; /* a frame address at or below this slot escaped:
+                   * a callee may read it, so "no LDR" proves nothing    */
+} SrSlot;
+
+static SrSlot        sr_slots[SR_MAX_SLOTS];
+static unsigned short sr_ll[SR_MAX_LINES];   /* line length                */
+static short         sr_lo[SR_MAX_LINES];    /* slot index, -1 when none   */
+static unsigned char sr_lk[SR_MAX_LINES];    /* 0 other, 1 LDR, 2 STR,
+                                                3 barrier, 4 writes r0     */
+static unsigned char sr_drop[SR_MAX_LINES];
+static int           sr_esc_lo;             /* lowest escaped frame offset  */
+static int           sr_ptr[SR_MAX_LINES];   /* line start in the buffer   */
+
+static int sr_pre8(const char *s, const char *pat) {
+    int i;
+    for (i = 0; i < 8; i++)
+        if (s[i] != pat[i]) return 0;
+    return 1;
+}
+
+/* Classify one line against the frame pointer.
+ *   0  no "r6, #<n>" mention at all
+ *   1  exactly "LDR r0, [r6,#n]"          (*off)
+ *   2  exactly "STR r0, [r6,#n]"          (*off)
+ *   3  "r6, #<n>" in another shape        (*off when the number parses, else -1)
+ *   4  "MOV r6, sp" -- the frame pointer being set up, not a slot use
+ *   5  cannot be modelled (indexed access, write-back, no parseable offset)
+ *
+ * A "3" line also gets its own "does it write r0" answer, folded into the line
+ * kind in pass 1: `LDR r0, [r6, #96]` and `ADD r0, r6, #16` both leave r0 with
+ * something that is not the cached slot value, and forgetting that is exactly
+ * how "r0 already holds slot 0" stops being true.
+ */
+static int sr_scan_line(const char *ln, int *off) {
+    const char *p = ln, *br;
+    int n = 0;
+    *off = -1;
+    {
+        const char *s = ln;
+        while (*s == ' ' || *s == '\t') s++;
+        if (s[0] == 'M' && s[1] == 'O' && s[2] == 'V' && s[3] == ' ' &&
+            s[4] == 'r' && s[5] == '6' && s[6] == ',' && s[7] == ' ')
+            return 4;
+    }
+    while (p[0] && !(p[0] == 'r' && p[1] == '6' && p[2] == ',' && p[3] == ' '))
+        p++;
+    if (!p[0]) return 0;
+    if (p == ln || p[-1] != '[') {
+        const char *q = p + 4;
+        if (*q == '#') {
+            q++;
+            if (*q >= '0' && *q <= '9') {
+                while (*q >= '0' && *q <= '9') { n = n * 10 + (*q - '0'); q++; }
+                *off = n;
+                return 3;
+            }
+        }
+        return 5;                     /* "[r6, rX]" or garbage */
+    }
+    br = p - 1;
+    p = br + 5;
+    if (*p != '#') return 5;
+    p++;
+    if (*p < '0' || *p > '9') return 5;
+    while (*p >= '0' && *p <= '9') { n = n * 10 + (*p - '0'); p++; }
+    *off = n;
+    if (*p != ']') return 5;
+    p++;
+    while (*p == ' ' || *p == '\t' || *p == '\r') p++;
+    if (*p) return 3;
+    {
+        const char *s = ln;
+        while (*s == ' ' || *s == '\t') s++;
+        if (s + 8 == br && sr_pre8(s, "LDR r0, ")) return 1;
+        if (s + 8 == br && sr_pre8(s, "STR r0, ")) return 2;
+    }
+    return 3;
+}
+
+/* A label, or any instruction with more than one exit: after it the block
+ * state is dropped, because the value in r0 is only known on this path. */
+static int sr_barrier(const char *ln) {
+    const char *s = ln;
+    char mn[8];
+    int n = 0, i, sp = 0;
+    static const char *const br_mn[] = {
+        "B", "BEQ", "BNE", "BCC", "BCS", "BHS", "BLO", "BMI", "BPL", "BVS",
+        "BVC", "BHI", "BLS", "BGE", "BLT", "BGT", "BLE", "BAL", "BX", "BL",
+        "BLX", "CBZ", "CBNZ", "IT", "POP", "PUSH", "LDM", "LDMIA", "LDMFD",
+        "STM", "STMIA", "STMDB", "STMFD", 0
+    };
+    while (*s == ' ' || *s == '\t') s++;
+    if (!*s) return 0;
+    if (*s == '.') {
+        /* .L...: and $d:/$t: are labels; .loc/.cfi/.type/.size are directives
+         * and say nothing about the state. */
+        const char *t = s;
+        while (*t) { if (*t == ' ' || *t == '\t') sp = 1; t++; }
+        if (!sp && t > s && t[-1] == ':') return 1;
+        return 0;
+    }
+    if (*s == '$') return 1;
+    while ((*s >= 'A' && *s <= 'Z') || (*s >= 'a' && *s <= 'z')) {
+        if (n < 7) mn[n++] = (char)((*s >= 'a' && *s <= 'z') ? *s - 32 : *s);
+        s++;
+    }
+    mn[n] = 0;
+    for (i = 0; br_mn[i]; i++)
+        if (strcmp(mn, br_mn[i]) == 0) return 1;
+    return 0;
+}
+
+/* Does this instruction write r0?  First operand is the destination for every
+ * mnemonic that is not in the list below. */
+static int sr_writes_r0(const char *ln) {
+    const char *s = ln;
+    char mn[8];
+    int n = 0, i;
+    static const char *const nodst[] = {
+        "STR", "STRB", "STRH", "CMP", "CMN", "TST", "TEQ", "PUSH", "POP",
+        "NOP", "DMB", "DSB", "ISB", "IT", "BX", "BL", "BLX", "CBZ", "CBNZ",
+        "LDM", "LDMIA", "LDMFD", "STM", "STMIA", "STMDB", "STMFD", "B",
+        "BEQ", "BNE", "BCC", "BCS", "BHS", "BLO", "BMI", "BPL", "BVS",
+        "BVC", "BHI", "BLS", "BGE", "BLT", "BGT", "BLE", "BAL", 0
+    };
+    while (*s == ' ' || *s == '\t') s++;
+    if (*s == '.' || *s == '$' || !*s) return 0;
+    while ((*s >= 'A' && *s <= 'Z') || (*s >= 'a' && *s <= 'z')) {
+        if (n < 7) mn[n++] = (char)((*s >= 'a' && *s <= 'z') ? *s - 32 : *s);
+        s++;
+    }
+    mn[n] = 0;
+    for (i = 0; nodst[i]; i++)
+        if (strcmp(mn, nodst[i]) == 0) return 0;
+    while (*s == ' ' || *s == '\t') s++;
+    if (s[0] == 'r' && s[1] == '0' &&
+        (s[2] == ',' || s[2] == ' ' || s[2] == '\0' || s[2] == '\r'))
+        return 1;
+    return 0;
+}
+
+static int sr_slot(int *n, int off) {
+    int i;
+    for (i = 0; i < *n; i++)
+        if (sr_slots[i].off == off) return i;
+    if (*n >= SR_MAX_SLOTS) return -1;
+    sr_slots[*n].off = off;
+    sr_slots[*n].reads = 0;
+    sr_slots[*n].taint = 0;
+    sr_slots[*n].indirect = (off >= sr_esc_lo);
+    return (*n)++;
+}
+
+/* Rewrite the last slice of the buffer.  Nothing is ever added, so the splice
+ * cannot overflow; the pass only removes lines. */
+static void ark_slotreg_function(AsmBuffer *b, int from, IrFunc *f, int local_size) {
+    int nslots = 0, nlines = 0, pos, i, k;
+    int base = local_size;
+    AsmBuffer out;
+    char line[256];
+
+    if (!g_config.enable_opt_slotreg) return;
+
+    sr_esc_lo = 0x7fffffff;
+
+    /* Pass 1: classify every line and count the loads of every slot. */
+    for (pos = from; pos < b->len; ) {
+        int len = 0, off = 0, t, s;
+        while (pos + len < b->len && b->buf[pos + len] != '\n') len++;
+        if (nlines >= SR_MAX_LINES) return;      /* too big: leave it alone */
+        sr_ptr[nlines] = pos;
+        sr_ll[nlines] = (unsigned short)len;
+        sr_lo[nlines] = -1;
+        sr_lk[nlines] = 0;
+        sr_drop[nlines] = 0;
+        if (len < (int)sizeof(line) - 1) {
+            for (i = 0; i < len; i++) line[i] = b->buf[pos + i];
+            line[len] = 0;
+            if (sr_barrier(line)) {
+                sr_lk[nlines] = 3;
+            } else {
+                t = sr_scan_line(line, &off);
+                if (t == 1 || t == 2) {
+                    if (off < base) {
+                        s = sr_slot(&nslots, off);
+                        if (s < 0) return;
+                        sr_lo[nlines] = (short)s;
+                        sr_lk[nlines] = (unsigned char)(t == 1 ? 1 : 2);
+                        if (t == 1) sr_slots[s].reads++;
+                    }
+                } else if (t == 3 || t == 4) {
+                    if (t == 3 && off < 0) return;  /* offset not parseable */
+                    if (sr_writes_r0(line)) sr_lk[nlines] = 6;
+                    else if (t == 4) sr_lk[nlines] = 4;
+                    if (t == 3 && off < base) {
+                        s = sr_slot(&nslots, off);
+                        if (s < 0) return;
+                        sr_slots[s].taint = 1;
+                        /* The address of a local is now in a register and can
+                         * be handed to a callee (memcpy, a by-value struct
+                         * argument, an out-parameter).  That callee reaches
+                         * every byte from `off` upwards, so for slots at or
+                         * above it "no LDR reads this slot" stops being
+                         * evidence of "no reader at all": dead-store removal
+                         * must not fire there.  Redundant-load removal is
+                         * unaffected -- computing an address does not write
+                         * memory, and the only indirect writer the emitter can
+                         * produce is a call, which is a block boundary. */
+                        if (off < sr_esc_lo) {
+                            int s3;
+                            sr_esc_lo = off;
+                            for (s3 = 0; s3 < nslots; s3++)
+                                if (sr_slots[s3].off >= off)
+                                    sr_slots[s3].indirect = 1;
+                        }
+                        if (sr_writes_r0(line)) sr_lk[nlines] = 6;
+                    }
+                } else if (t == 5) {
+                    return;                      /* shape not modelled */
+                } else if (t == 0) {
+                    if (sr_writes_r0(line)) sr_lk[nlines] = 4;
+                }
+            }
+        } else {
+            sr_lk[nlines] = 3;                   /* absurdly long: boundary */
+        }
+        nlines++;
+        pos += len + 1;
+    }
+    /* Volatile locals go through the same two instruction shapes as ordinary
+     * ones, so the text cannot tell them apart -- but deleting one of their
+     * accesses is exactly what the keyword exists to forbid.  The IR knows, so
+     * ask it rather than guess from the listing (same rule as -fopt-regalloc). */
+    if (f) {
+        int k2;
+        for (k2 = 0; k2 < f->code_count; k2++) {
+            IrInst *I2 = &f->code[k2];
+            int s2;
+            if (!(I2->aux & IR_AUX_VOLATILE)) continue;
+            if (I2->op != IR_PUSH_VAR && I2->op != IR_STORE &&
+                I2->op != IR_PUSH_ADDR)
+                continue;
+            s2 = sr_slot(&nslots, (int)I2->val);
+            if (s2 >= 0) sr_slots[s2].taint = 1;
+        }
+    }
+    if (nslots == 0) return;
+    /* A function with a frame pointer prints "MOV r6, sp" right after the
+     * callee-saved PUSH, whatever list that PUSH names -- __naked functions and
+     * leaf helpers without a frame have neither, and are left alone.  (The
+     * saved list here is not rewritten, so unlike -fopt-regalloc this pass does
+     * not care whether it starts at r5.) */
+    {
+        int have_frame = 0;
+        for (i = 0; i < nlines; i++) {
+            int len = sr_ll[i];
+            if (len < (int)sizeof(line) - 1) {
+                for (k = 0; k < len; k++) line[k] = b->buf[sr_ptr[i] + k];
+                line[len] = 0;
+                if (line[0] == ' ' && line[1] == ' ' && line[2] == ' ' &&
+                    line[3] == ' ' && strncmp(line + 4, "MOV r6, ", 8) == 0)
+                    have_frame = 1;
+            }
+        }
+        if (!have_frame) return;
+    }
+
+    /* Pass 2: decide what can go.  R1 needs "r0 holds slot o"; R2 needs the
+     * store to be unobservable. */
+    {
+        static unsigned char valid[SR_MAX_SLOTS];
+        static int pending[SR_MAX_SLOTS];
+        for (i = 0; i < nslots; i++) { valid[i] = 0; pending[i] = -1; }
+        for (i = 0; i < nlines; i++) {
+            int lk = sr_lk[i];
+            int s = sr_lo[i];
+            if (lk == 3) {
+                for (k = 0; k < nslots; k++) { valid[k] = 0; pending[k] = -1; }
+            } else if (lk == 1) {
+                if (sr_slots[s].taint) { valid[s] = 0; continue; }
+                if (valid[s]) { sr_drop[i] = 1; continue; }
+                for (k = 0; k < nslots; k++) valid[k] = 0;
+                valid[s] = 1;
+                pending[s] = -1;                 /* the store is observable */
+            } else if (lk == 2) {
+                if (sr_slots[s].taint) {
+                    /* Never selected: the line is only labelled when the slot
+                     * was clean at the time it was scanned, and a later mention
+                     * in another shape taints it. */
+                    sr_drop[i] = 0;
+                    valid[s] = 0;
+                    continue;
+                }
+                if (sr_slots[s].reads == 0 && !sr_slots[s].indirect) {
+                    /* Nothing in the whole function loads this slot, and no
+                     * escaped frame address reaches it, so no store to it can
+                     * ever be observed. */
+                    sr_drop[i] = 1;
+                    valid[s] = 0;
+                    continue;
+                }
+                if (pending[s] >= 0) sr_drop[pending[s]] = 1;
+                pending[s] = i;
+                /* r0 now holds *this* slot's value and nothing else, so every
+                 * other slot loses its claim.  (Keeping them was the bug that
+                 * let "r0 already holds slot 0" survive a load of slot 96 in
+                 * between: the load is a legitimate access, not a mention in
+                 * an unmodelled shape, so nothing else cleared it.) */
+                for (k = 0; k < nslots; k++) valid[k] = 0;
+                valid[s] = 1;
+            } else if (lk == 4 || lk == 6) {
+                /* r0 lost the cached value (6) or the frame pointer itself was
+                 * just set up (4).  A pending store is still a store: keep it. */
+                for (k = 0; k < nslots; k++) valid[k] = 0;
+            }
+        }
+    }
+
+    /* Pass 3: rebuild. */
+    asmbuf_init(&out);
+    for (i = 0; i < nlines; i++) {
+        int len = sr_ll[i];
+        if (sr_drop[i]) continue;
+        for (k = 0; k < len; k++) asmbuf_putc(&out, b->buf[sr_ptr[i] + k]);
+        asmbuf_putc(&out, '\n');
+    }
+    asmbuf_reserve(b, from + out.len + 1);
+    if (from + out.len + 1 <= b->cap) {
+        for (i = 0; i < out.len; i++) b->buf[from + i] = out.buf[i];
+        b->buf[from + out.len] = 0;
+        b->len = from + out.len;
+    }
+}
+#endif /* ARKCC_FEATURE_OPT_SLOTREG */
 
 #if ARKCC_FEATURE_OPT_VSTACK
 /* ------------------- value stack -> register allocation -------------------
@@ -10202,6 +10581,13 @@ static char *codegen_arm(IrProgram *prog) {
         /* The text of this function is complete: it is the last slice of the
          * buffer, so the rewrite sees exactly this function and nothing else. */
         ark_regalloc_function(&buf, fstart, f, local_size);
+#endif
+#if ARKCC_FEATURE_OPT_SLOTREG
+        /* Redundant frame access removal: a load that r0 already satisfies, and
+         * a store the block overwrites before anything can read it.  Runs
+         * before cmat so the constant that fed a dropped store is then seen as
+         * a dead write by M3 and goes away in the same build. */
+        if (g_config.enable_opt_slotreg) ark_slotreg_function(&buf, fstart, f, local_size);
 #endif
 #if ARKCC_FEATURE_OPT_CMAT
         /* Constant materialisation cleanup, last of the text passes: it

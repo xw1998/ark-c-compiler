@@ -30,7 +30,7 @@ endif
         test-tailcall test-divconst test-xblock test-sizeweight \
         test-inline test-vstack test-addr test-strength test-cbz test-branch \
         test-imm test-peep test-cbranch test-copyprop test-live test-movimm test-pair \
-        test-prop test-deadpush test-cmat install \
+        test-prop test-deadpush test-cmat test-slotreg install \
         stm32 stm32-check
 
 all: $(ARKCC)
@@ -46,7 +46,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch test-imm test-peep test-cbranch test-copyprop test-cmat test-live test-movimm
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch test-imm test-peep test-cbranch test-copyprop test-cmat test-slotreg test-live test-movimm
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -310,6 +310,17 @@ test-deadpush: $(ARKCC)
 # cropped build (-DARKCC_FEATURE_OPT_CMAT=0) refuses the flag by name.
 test-cmat: $(ARKCC)
 	$(PYTHON) tests/run_cmat_tests.py ./$(ARKCC)
+
+# Gate for -fopt-slotreg: the pass only ever deletes lines, never inserts, so
+# the gate pins that every dropped line is a frame load/store of r0, that the
+# output is a subsequence of the input, that the image never grows, that rule
+# R1 (redundant reload) and R2 (dead or overwritten store) each fire, that an
+# address-escaping frame and a volatile frame stay byte-identical, that a call
+# boundary is never crossed, that all three arms agree on the answer in
+# unicorn, and that a cropped build (-DARKCC_FEATURE_OPT_SLOTREG=0) refuses the
+# flag by name.
+test-slotreg: $(ARKCC)
+	$(PYTHON) tests/run_slotreg_tests.py ./$(ARKCC)
 
 
 

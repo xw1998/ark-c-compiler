@@ -283,6 +283,19 @@
 /* ARKCC_FEATURE_OPT_COPYPROP: -fopt-copyprop, the IAR "ECT" family -- drop a
  * register copy whose destination is overwritten before any read, and forward
  * one that feeds a single three-operand ALU consumer. */
+/* ARKCC_FEATURE_OPT_SLOTREG: -fopt-slotreg, block-local redundant frame
+ * access removal (drop a "LDR r0, [r6,#o]" whose value r0 already holds, and a
+ * "STR r0, [r6,#o]" that a later write in the same basic block overwrites --
+ * or that nothing in the function ever reads).  See docs/SLOT_REGISTERS.md
+ * section 3.  Small tables (~30 KB BSS), kept off the STM32 profile for the
+ * same reason as the other text passes. */
+#ifndef ARKCC_FEATURE_OPT_SLOTREG
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_OPT_SLOTREG   0   /* 板上裁掉：只在宿主/交叉编译用 */
+# else
+#   define ARKCC_FEATURE_OPT_SLOTREG   1
+# endif
+#endif
 #ifndef ARKCC_FEATURE_OPT_COPYPROP
 # if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
 #   define ARKCC_FEATURE_OPT_COPYPROP   0

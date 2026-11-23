@@ -199,3 +199,66 @@ moves), and **S2a is deferred until after cmat**, with its stacked-measurement b
 
 The seven gates in section 4 and the four falsifiers in section 5 are **unchanged word for word**;
 only the precondition and the baseline moved. P15 now points at P16.
+
+## 9 Design revision and measurement (2026-11-23, after S2a was implemented)
+
+Per section 7 this section only **appends**; the seven gates in section 4 and the four falsifiers
+in section 5 are unchanged.
+
+### 9.1 What the measurements overturned: the shadow-register model of section 3
+
+Section 3 proposed `MOV rC, r0` in place of `LDR r0, [r6, #o]`. That substitution is **1-for-1**:
+`-fopt-regalloc-near` on the same corpus measures `LDR -73`, `STR -58`, `MOV +131` and
+**19,066 -> 19,066 instructions**, not one fewer. Implementing section 3 as written could only
+save memory latency, not size, which contradicts the goal set in section 1.
+
+**Revision**: S2a became **delete-only, never insert** -- no register substitution, no `r8`-`r11`,
+no frame-layout change; only two locally provable kinds of frame access are deleted from the
+emitted text:
+
+- **R1**: `LDR r0, [r6, #o]` where the block already knows `r0` holds that slot ⇒ delete;
+- **R2(a)**: `STR r0, [r6, #o]` where the slot has `reads == 0` in the whole function and its
+  **address has not escaped** ⇒ delete;
+- **R2(b)**: a later `STR r0` to the same slot in the same block with no read in between ⇒ delete
+  the earlier one.
+
+### 9.2 Revision to section 3.1: the address escape point
+
+Section 3.1 only required "every occurrence of the slot is `LDR r0`/`STR r0`". Measurement showed
+that is not enough: `ADD rX, r6, #o` **computes an address** (it does not access memory), and that
+address can flow into `memcpy`, after which any slot at or above it may be written indirectly --
+something the text layer cannot enumerate. So: as soon as such an address-computing line appears,
+every slot with `off >= that offset` is marked `indirect` (new slots inherit it), and an `indirect`
+slot may not be deleted by R2(a).
+
+The price of this revision is measured: without it, -340 instructions (-1.82%) and 5 `arm_exec`
+semantic failures; with it, -64 (-0.34%) and 0 failures.
+
+### 9.3 Where the seven gates of section 4 landed
+
+`tests/run_slotreg_tests.py` (`make test-slotreg`) covers section 4 items 1, 2, 3 and 6 directly
+(OFF IS OFF / off by default / only ever smaller / cropping). Item 4 (block consistency) became two
+stronger structural assertions -- "every deleted line is `LDR`/`STR r0, [r6, #n]`" and "the output is
+a subsequence of the input" -- because this implementation inserts no line at all, so both are
+stricter than the original gate. Item 5 is covered by seven fixtures × three arms agreeing in
+unicorn, and outside that by `tests/arm_exec/run_arm_exec.py --extra=-fopt-slotreg` running the full
+41-case execution suite. Item 7 (no drift in other backends) is covered by the x86_64 and riscv32
+parts of `make test`; the pass lives only in the ARM text layer.
+
+### 9.4 Measurement (baseline = twelve switches + `-fopt-cmat`, 18,729)
+
+| Build | Instructions | Change |
+| --- | ---: | ---: |
+| Baseline | 18,729 | — |
+| + `-fopt-slotreg` | **18,665** | **-64 (-0.34%)** |
+
+Mnemonic account: `LDR 2,443 -> 2,408` (-35), `STR 1,148 -> 1,119` (-29), everything else unchanged.
+Per TU: none of the 95 grew, 85 are byte-identical.
+
+### 9.5 Verdict: archived
+
+By the first falsifier in section 5 (a total drop below 0.5%), the measured -64 < 95, so **the line
+is archived**. The stacked measurement of section 6 is therefore not needed (its prefix is already
+"vstack on", and this pass is still +64 on top, just below the line). The full argument, the root
+causes of the three miscompiles and "why the code stays in the tree" are in
+`docs/SLOTREG.md` (Chinese) / `docs/SLOTREG.en.md` (English).
