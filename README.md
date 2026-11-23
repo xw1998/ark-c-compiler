@@ -567,6 +567,7 @@ ark c compiler/
 ├── docs/MOVIMM.md           常量材料化：0..255 / MOVW / 修改立即数 / MVN / 双字五档的选择与标志位口径、为什么 MOVW 不需要后面的 MOVT #0、无符号立即数解析、-O2 上 −451 条（51,416 → 50,965）与 −1,804 字节（116,380 → 114,576）的同源对拍、门禁（中文，UTF-8，另有 .en.md）
 ├── docs/BUILD.md            Windows / Linux / STM32H743 三平台构建与裁切阶梯：工具链矩阵、两种内存布局实测、`make stm32-check` 装得下的机器判定（中文，UTF-8，另有 .en.md）
 ├── docs/COMPARISON.md       与 armcc / armclang 的横向对比：语料与口径、9 行结果表与相对比值、十个优化开关、四条结构性差距与逐项实测、复现脚本、三种「不该读成」（中文，UTF-8，另有 .en.md）
+├── docs/SLOT_REGISTERS.md   槽级寄存器化（S2 预注册，未实现）：为什么文本层余量只剩 ≤0.7%、`-fopt-regalloc` 两档在 HAL 上是 1:1 变形的反证、块内影子槽缓存状态机（clean/dirty）、成本式 (F+W)−(R+S)、七条冻结门禁、四条否证条件、与 `-fopt-vstack` 抢同一批栈往返的叠加要求（中文，UTF-8，另有 .en.md）
 ├── docs/IPO_LTO.md         全程序编译（--ipo / -flto）与跨 TU 常量传播（--const-global）：为什么不是对象级 LTO、合并语义、拒绝的组合、裁剪与两条门禁（中文，UTF-8）
 ├── docs/OBJ_IR.md          对象里的 IR 载荷与链接期重编（--obj-ir / -link --lto）：载荷格式、合并的池 remap、逐字节等价、拒绝与诊断、裁剪与门禁（中文，UTF-8）
 ├── docs/PARTIAL_LINK.md    部分链接（-r）：机器码作准、符号/重定位 rebase、数据段不搬、三类拒绝、可替换性与幂等、裁剪与门禁（中文，UTF-8）

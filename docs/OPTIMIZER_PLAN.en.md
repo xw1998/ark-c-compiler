@@ -521,7 +521,8 @@ drops.
   so the room left at this layer was small to begin with.
 - **Staged plan (S2-S5, none started)**:
   - **S2 intra-function virtual-register colouring**: longest live range inside a
-    straight-line block only, no call sites, pool r2/r3/r4; the goal is to turn
+    straight-line block only, no call sites, pool r8-r11 (callee-saved, same reason as
+    `-fopt-regalloc`; the slice is defined in `docs/SLOT_REGISTERS.en.md`); the goal is to turn
     "load it back for every use" into "keep it in a register across the block".
   - **S3 call sites and blocks**: values live across `BL` go into callee-saved
     registers (cost: 4 bytes per function in the prologue) and only when a
@@ -637,13 +638,39 @@ drops.
   hal_rcc_ex -1, hal_flash -1`; no unit grows.
 - **Honest conclusion**: the 56 repeated loads and the 203 round trips are the real S2 prize; this pass
   removes exactly one shape (the read-back of a statement assignment) for 0.09%. Closing the roughly 3.4x
-  gap to armcc/gcc therefore requires P12's S2: intra-function virtual-register colouring (r2/r3/r4,
+  gap to armcc/gcc therefore requires P12's S2: intra-function virtual-register colouring (r8-r11,
   straight-line blocks only, nothing across a call), also off by default and trimmable.
 - **Next step (S2 pre-registration sketch)**: virtual registers cover only live ranges inside one
   straight-line block that never crosses a call or a label; they compete with `-fopt-vstack` for the same
   stack round trips, so if the combination turns negative only vstack stays on by default (rule S5);
   spilling is conservative (a range interrupted by a call is abandoned). The gates stay "byte-identical
   when off, image never larger when on, 95/95 differential parity".
+
+---
+
+### P15 Slot-level register promotion (S2 pre-registration, **not implemented**)
+
+- **Why a separate entry**: after P7 through P14 took the HAL corpus from 47,885 instructions down to
+  19,066, the remaining room can no longer be eaten by "one more text rule" -- see below.
+- **Measured room (on top of the twelve switches)**: frame traffic still accounts for **18.8%**
+  (`LDR` 2,443 + `STR` 1,148 out of 19,066); 56 repeated loads inside a straight-line block, 203
+  `STR -> LDR` round trips on the same slot, **0** dead frame reads. So shape-exact text rules are
+  capped at roughly **0.7%**, and "drop dead `LDR`" has exactly zero yield.
+- **The key counter-example**: the existing `-fopt-regalloc` family selects **not a single slot** on
+  the HAL in its default mode; `-fopt-regalloc-near` turns `LDR -73`, `STR -58` into `MOV +131` and
+  leaves the **total unchanged**. The remaining frame accesses are therefore not redundant accesses but
+  the product of a model in which every intermediate has to pass through r0.
+- **Next step (slice S2a)**: block-local slot caching -- a promoted slot moves between a `clean` and a
+  `dirty` state, writes back only when a block ends dirty, is costed as `(F + W) - (R + S)` and applied
+  only when that is negative; it uses r8-r11 (callee-saved, widening PUSH paid once per function),
+  reuses the taint proof and frame-shifting code of `ark_regalloc_function()`, never spills and never
+  crosses a block.
+- **Gates and falsification conditions are frozen**: seven gates (OFF IS OFF, off by default, never
+  grows, block consistency, unicorn parity, trimming via `C3900U`, no cross-backend drift) and four
+  falsifiers (total drop below 0.5%, any TU growing, needing a spill to pass, a negative stack on top
+  of `-fopt-vstack`). All of it lives in `docs/SLOT_REGISTERS.md` (Chinese) /
+  `docs/SLOT_REGISTERS.en.md` (English); after implementation only a "measurement" and a "verdict"
+  section may be appended.
 
 ---
 
