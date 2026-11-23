@@ -4353,6 +4353,105 @@ static int cm_dies_later(int j, int reg) {
     return 0;
 }
 
+/* ---- M8: function-level liveness ------------------------------------------
+ * M1..M7 all live inside one block, because a block has a single entry: a write
+ * that the same block overwrites can never be seen.  M8 has to know whether a
+ * register is live *anywhere else* in the function, so it builds the block graph
+ * from the unit table, computes live-in / live-out by fixed point, and then
+ * drops a `MOV rD, #imm` (or a copy `MOV rD, rS`) whose destination is dead.
+ * Both forms are flag-neutral -- this emitter prints MOVS whenever it means to
+ * set the flags -- so removing one changes neither a value nor a flag.
+ *
+ * Every unknown resolves to the *wider* set, in this direction and no other:
+ *   - a conditional branch and CBZ/CBNZ reach their target *and* fall through;
+ *     `B` reaches only its target (or the next block when the label is not in
+ *     this function, i.e. a tail call);
+ *   - a call reads r0-r3 and r12 (and r1 may carry a 64-bit return);
+ *   - a return site (`POP {..., pc}`, `BX lr`) reads r0 and r1;
+ *   - an instruction this pass does not model is taken to read every register
+ *     and write none, which keeps everything before it live.
+ * Missing an edge would be unsound; inventing one only costs an opportunity.
+ *
+ * An IT block is never touched: the instruction count is what the conditional
+ * contract promises.
+ */
+#define CM_MAX_BLOCKS 1024
+#define CM_ALL_REGS   0x1fffu
+
+static int      cm_bs[CM_MAX_BLOCKS], cm_be[CM_MAX_BLOCKS];
+static unsigned cm_buse[CM_MAX_BLOCKS], cm_bdef[CM_MAX_BLOCKS];
+static unsigned cm_blin[CM_MAX_BLOCKS], cm_blout[CM_MAX_BLOCKS];
+static short    cm_bsucc[CM_MAX_BLOCKS][2];
+static unsigned char cm_bns[CM_MAX_BLOCKS];
+static unsigned char cm_bskip[CM_MAX_BLOCKS];   /* unknown effect: reads all */
+static unsigned char cm_itcov[CM_MAX_UNITS];
+
+static int cm_is_label(const CmUnit *u) {
+    int l;
+    if (!u->bar) return 0;
+    if (u->mn[0] == 0) return 1;                 /* indented label: text in ops */
+    l = (int)strlen(u->mn);
+    return u->mn[l - 1] == ':';                  /* column-0 label: text in mn  */
+}
+
+/* The text of a label unit, wherever step 2 happened to park it. */
+static const char *cm_label_name(const CmUnit *u) {
+    return u->mn[0] ? u->mn : u->ops;
+}
+
+/* A load-multiple that may write pc: POP, LDM, LDMIA, LDMDB, LDMFD, ... */
+static int cm_is_pop(const char *mn) {
+    if (cm_streq(mn, "POP")) return 1;
+    return (mn[0] == 'l' || mn[0] == 'L') &&
+           (mn[1] == 'd' || mn[1] == 'D') &&
+           (mn[2] == 'm' || mn[2] == 'M');
+}
+
+/* A conditional branch: it reaches its label and falls through.  `BAL` is the
+ * unconditional `B` spelled with a condition code. */
+static int cm_cond_branch(const char *mn) {
+    static const char *const c[] = {
+        "BEQ", "BNE", "BCC", "BCS", "BHS", "BLO", "BMI", "BPL", "BVS", "BVC",
+        "BHI", "BLS", "BGE", "BLT", "BGT", "BLE", "CBZ", "CBNZ", 0
+    };
+    int i;
+    for (i = 0; c[i]; i++) if (cm_streq(mn, c[i])) return 1;
+    return 0;
+}
+
+/* Instructions that end a block but touch no general register: the IT prefix
+ * (its effect is on the *next* instruction's condition), the memory barriers,
+ * and the branches (a branch reads the flags, or nothing at all). */
+static int cm_no_reg_effect(const CmUnit *u) {
+    const char *m = u->mn;
+    if ((m[0] == 'I' || m[0] == 'i') && (m[1] == 'T' || m[1] == 't')) return 1;
+    if (cm_streq(m, "DMB") || cm_streq(m, "DSB") || cm_streq(m, "ISB")) return 1;
+    if (cm_streq(m, "B") || cm_streq(m, "BAL")) return 1;
+    return cm_cond_branch(m);
+}
+
+
+/* The block that starts with this label, or -1. */
+static int cm_label_block(int nb, const char *name) {
+    int b;
+    if (!name[0]) return -1;
+    for (b = 0; b < nb; b++)
+        if (cm_is_label(&cm_units[cm_bs[b]]) &&
+            cm_streq(cm_label_name(&cm_units[cm_bs[b]]), name)) return b;
+    return -1;
+}
+
+/* `rD, #imm` or `rD, rS`: the two forms M8 may delete. */
+static int cm_mov_const(const char *ops) {
+    const char *rest = 0;
+    int rd = -1, rs = -1;
+    long long v;
+    if (!cm_first_reg(ops, &rd, &rest)) return 0;
+    while (*rest == ' ') rest++;
+    if (*rest == '#') return cm_imm(rest, &v);
+    return cm_reg(rest, &rs);
+}
+
 /* The pass over one function's text. */
 static void ark_cmat_function(AsmBuffer *b, int from) {
     static char t[CM_OPS_LEN + CM_MN_LEN + 8];
@@ -4403,6 +4502,12 @@ static void ark_cmat_function(AsmBuffer *b, int from) {
              * they carry no register or flag side effect, so the state of the
              * block survives them (the copy passes above skip them too). */
             if (tl > 0 && t[tl - 1] == ':') {
+                /* Keep the label itself: M8 resolves a branch to the block
+                 * that starts here. */
+                int q;
+                for (q = 0; q + 1 < tl && q + 1 < (int)sizeof cu->ops; q++)
+                    cu->ops[q] = t[q];
+                cu->ops[q] = 0;
                 cu->bar = 1;
                 cm_owner[i] = (short)nu;
                 nu++;
@@ -4666,6 +4771,197 @@ static void ark_cmat_function(AsmBuffer *b, int from) {
                 changed++;
             }
             break;          /* the first live unit decides, either way */
+        }
+    }
+
+    /* 4c. M8: a constant or a copy whose destination is dead across the
+     *     whole function.  Both halves of the value model leave those behind:
+     *     an operand the consumer folded away, and a copy a later rule moved
+     *     into place.  Only the two flag-neutral forms are considered, and
+     *     never inside an IT block. */
+    {
+        int nb = 0, m8ok = 1, j2, pass;
+
+        for (j2 = 0; j2 < nu; j2++) cm_itcov[j2] = 0;
+        for (j2 = 0; j2 < CM_MAX_BLOCKS; j2++) {
+            cm_blin[j2] = 0; cm_blout[j2] = 0; cm_bns[j2] = 0; cm_bskip[j2] = 0;
+        }
+
+        /* The units an IT block covers: the count is part of the contract. */
+        for (j2 = 0; j2 < nu; j2++) {
+            CmUnit *u = &cm_units[j2];
+            if ((u->mn[0] == 'I' || u->mn[0] == 'i') &&
+                (u->mn[1] == 'T' || u->mn[1] == 't')) {
+                int cnt = (int)strlen(u->mn) - 1, c2 = 0, k2 = j2 + 1;
+                while (k2 < nu && c2 < cnt) {
+                    if (cm_units[k2].mn[0]) { cm_itcov[k2] = 1; c2++; }
+                    k2++;
+                }
+            }
+        }
+
+        /* Blocks: a label starts one, a boundary unit ends one. */
+        {
+            int s2 = 0;
+            for (j2 = 0; j2 < nu; j2++) {
+                CmUnit *u = &cm_units[j2];
+                if (cm_is_label(u)) {
+                    if (j2 > s2) {
+                        if (nb >= CM_MAX_BLOCKS) { m8ok = 0; break; }
+                        cm_bs[nb] = s2; cm_be[nb] = j2 - 1; nb++;
+                    }
+                    s2 = j2;
+                    continue;
+                }
+                if (cm_boundary(u->mn)) {
+                    if (nb >= CM_MAX_BLOCKS) { m8ok = 0; break; }
+                    cm_bs[nb] = s2; cm_be[nb] = j2; nb++;
+                    s2 = j2 + 1;
+                }
+            }
+            if (m8ok && s2 < nu) {
+                if (nb >= CM_MAX_BLOCKS) m8ok = 0;
+                else { cm_bs[nb] = s2; cm_be[nb] = nu - 1; nb++; }
+            }
+        }
+        if (nb == 0) m8ok = 0;
+
+        /* Successors. */
+        for (j2 = 0; j2 < nb && m8ok; j2++) {
+            CmUnit *u = &cm_units[cm_be[j2]];
+            int nx = (j2 + 1 < nb) ? j2 + 1 : -1;
+            int tg;
+            cm_bns[j2] = 0;
+            if (cm_is_label(u)) {
+                if (nx >= 0) cm_bsucc[j2][cm_bns[j2]++] = (short)nx;
+                continue;
+            }
+            tg = cm_label_block(nb, u->ops);
+            if (cm_streq(u->mn, "B") || cm_streq(u->mn, "BAL")) {
+                if (tg >= 0) cm_bsucc[j2][cm_bns[j2]++] = (short)tg;
+                else if (nx >= 0) cm_bsucc[j2][cm_bns[j2]++] = (short)nx;
+                continue;
+            }
+            if (cm_streq(u->mn, "BL") || cm_streq(u->mn, "BLX")) {
+                if (nx >= 0) cm_bsucc[j2][cm_bns[j2]++] = (short)nx;
+                continue;
+            }
+            if (cm_streq(u->mn, "BX")) {
+                const char *p = u->ops;
+                while (*p == ' ') p++;
+                if (!cm_streq(p, "lr")) {          /* computed: unknown target */
+                    cm_bskip[j2] = 1;
+                    if (nx >= 0) cm_bsucc[j2][cm_bns[j2]++] = (short)nx;
+                }
+                continue;                          /* `BX lr` returns         */
+            }
+            if (cm_cond_branch(u->mn)) {
+                if (tg >= 0) cm_bsucc[j2][cm_bns[j2]++] = (short)tg;
+                if (nx >= 0) cm_bsucc[j2][cm_bns[j2]++] = (short)nx;
+                continue;
+            }
+            if (cm_is_pop(u->mn)) {
+                if (!strstr(u->ops, "pc") && nx >= 0)
+                    cm_bsucc[j2][cm_bns[j2]++] = (short)nx;
+                continue;
+            }
+            if (nx >= 0) cm_bsucc[j2][cm_bns[j2]++] = (short)nx;
+        }
+
+        /* use / def per block.  Units an earlier rule already deleted are not
+         * in the output, so they neither define nor use anything. */
+        for (j2 = 0; j2 < nb && m8ok; j2++) {
+            unsigned uu = 0, dd = 0;
+            int k2;
+            for (k2 = cm_bs[j2]; k2 <= cm_be[j2]; k2++) {
+                CmUnit *v = &cm_units[k2];
+                if (cm_is_label(v)) continue;
+                if (v->dead) continue;
+                if (cm_streq(v->mn, "BL") || cm_streq(v->mn, "BLX")) {
+                    uu |= (0x100fu & ~dd);         /* r0-r3, r12 are arguments */
+                    dd |= 0x100fu;                 /* ... and are clobbered    */
+                    continue;
+                }
+                if (cm_is_pop(v->mn)) {
+                    unsigned m2 = 0;
+                    if (strstr(v->ops, "pc")) uu |= (3u & ~dd);  /* return value */
+                    else if (cm_list_mask(v->ops, &m2)) dd |= m2;
+                    else cm_bskip[j2] = 1;
+                    continue;
+                }
+                if (cm_streq(v->mn, "BX")) {
+                    const char *p = v->ops;
+                    while (*p == ' ') p++;
+                    if (cm_streq(p, "lr")) uu |= (3u & ~dd);
+                    else cm_bskip[j2] = 1;
+                    continue;
+                }
+                if (cm_no_reg_effect(v)) continue;
+                if (cm_modelled(v->mn)) {
+                    uu |= (cm_uses(v->mn, v->ops, v->dst) & ~dd);
+                    if (v->dst >= 0) dd |= 1u << v->dst;
+                    continue;
+                }
+                cm_bskip[j2] = 1;                  /* unknown: it may read anything */
+            }
+            if (cm_bskip[j2]) { uu = CM_ALL_REGS; dd = 0; }
+            cm_buse[j2] = uu;
+            cm_bdef[j2] = dd;
+        }
+
+        /* live-in / live-out by fixed point over the block graph. */
+        for (pass = 0; pass < nb + 2 && m8ok; pass++) {
+            int ch = 0;
+            for (j2 = nb - 1; j2 >= 0; j2--) {
+                unsigned lo = 0, li;
+                int t2;
+                for (t2 = 0; t2 < (int)cm_bns[j2]; t2++)
+                    lo |= cm_blin[cm_bsucc[j2][t2]];
+                li = cm_buse[j2] | (lo & ~cm_bdef[j2]);
+                if (lo != cm_blout[j2] || li != cm_blin[j2]) {
+                    cm_blout[j2] = lo;
+                    cm_blin[j2] = li;
+                    ch = 1;
+                }
+            }
+            if (!ch) break;
+        }
+
+        /* Walk each block backwards and drop the dead MOVs. */
+        for (j2 = 0; j2 < nb && m8ok; j2++) {
+            unsigned live = cm_blout[j2];
+            int k2;
+            for (k2 = cm_be[j2]; k2 >= cm_bs[j2]; k2--) {
+                CmUnit *v = &cm_units[k2];
+                if (cm_is_label(v)) continue;
+                if (v->dead) continue;
+                if (cm_streq(v->mn, "BL") || cm_streq(v->mn, "BLX")) {
+                    live |= 0x100fu;
+                    continue;
+                }
+                if (cm_is_pop(v->mn)) {
+                    unsigned m2 = 0;
+                    if (strstr(v->ops, "pc")) live |= 3u;
+                    else if (cm_list_mask(v->ops, &m2)) live &= ~m2;
+                    continue;
+                }
+                if (cm_streq(v->mn, "BX")) {
+                    const char *p = v->ops;
+                    while (*p == ' ') p++;
+                    if (cm_streq(p, "lr")) live |= 3u;
+                    continue;
+                }
+                if (cm_no_reg_effect(v)) continue;
+                if (!cm_modelled(v->mn)) { live = CM_ALL_REGS; continue; }
+                if (!cm_itcov[k2] && v->dst >= 0 && cm_streq(v->mn, "MOV") &&
+                    cm_mov_const(v->ops) && !((live >> v->dst) & 1)) {
+                    v->dead = 1;
+                    changed++;
+                    continue;          /* its sources are not read any more */
+                }
+                if (v->dst >= 0) live &= ~(1u << v->dst);
+                live |= cm_uses(v->mn, v->ops, v->dst);
+            }
         }
     }
 

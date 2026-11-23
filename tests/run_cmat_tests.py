@@ -39,6 +39,16 @@ those three shapes inside one straight-line block:
       or any other live line ends the search -- a branch could reach the
       `POP` with a different value stack.
 
+  M8  A `MOV rD, #imm` or a copy `MOV rD, rS` whose destination is dead
+      *anywhere else in the function*.  M1..M7 only see one block, so an
+      operand the consumer folded away and a copy a later rule moved into
+      place both survive as writes nobody reads.  M8 builds the block graph
+      out of the unit table, computes live-in / live-out by fixed point and
+      drops the write.  Both forms are flag-neutral, an IT-covered unit is
+      never touched (the instruction count is what the conditional contract
+      promises), and every unknown resolves to the *wider* live set: a missed
+      edge would be unsound, an invented one only costs an opportunity.
+
 Everything else is a boundary: arithmetic that may set flags, multiplies,
 `UDIV`, `BX`, barriers, conditional forms and any mnemonic the pass does not
 know are never crossed or rewritten.  A `MOVW`/`MOVT` pair is treated as one
@@ -74,6 +84,14 @@ Checks:
      multi-register `PUSH`/`POP` (a prologue or an epilogue) may change, so
      may no label, and the instruction count must drop without the text
      growing.
+
+ 11. M8 FIRES, ON A REAL DRIVER.  The HAL DMA driver leaves dead constant
+     materialisations behind that only the function-level liveness can see:
+     the `MOV rD, #imm` and `MOV rD, rS` counts both drop, the instruction
+     count drops, and no label, no `.size`, no `IT` line changes -- the last
+     one is the anti-over-deletion half, because an IT block's instruction
+     count is part of its contract, and it would break silently if M8 deleted
+     a unit inside one.
 
 Usage: run_cmat_tests.py [path-to-arkcc]
 Exit 0 = every check passed, 1 = a check failed, 2 = setup problem.
@@ -208,6 +226,9 @@ def count_sub(s, text):
 
 
 M7PUSH_RE = re.compile(r'^PUSH \{r(\d+)\}$')
+M8MOVI_RE = re.compile(r'^\s+MOV\s+r\d+,\s*#')
+M8MOVRR_RE = re.compile(r'^\s+MOV\s+r\d+,\s*r\d+\s*$')
+M8IT_RE = re.compile(r'^\s+IT')
 M7POP_RE = re.compile(r'^POP \{r(\d+)\}$')
 MULTI_RE = re.compile(r'^\s+PUSH \{r\d+,')
 
@@ -462,6 +483,58 @@ def main():
                       'M7: no function is lost',
                       '%d/%d' % (count_sub('.size ', texts['off']),
                                  count_sub('.size ', texts['on'])))
+
+        # --- 5d. M8: dead across the whole function -------------------------
+        # The shapes M1..M7 cannot see: a write in one block whose only use
+        # would have been in another, and it is not there.  Driven from the
+        # same real driver as M7, so the fixture is never hand-made; the `IT`
+        # count is the anti-over-deletion half, because deleting a unit inside
+        # a conditional block changes how many instructions the block covers.
+        if not os.path.exists(hal):
+            skip('M8: a function-level dead write is dropped',
+                 'benchmark corpus not installed')
+        else:
+            texts8, h8_err = {}, None
+            for tag, flags in (('off', hal_flags), ('on', hal_flags + [FLAG])):
+                out = os.path.join(work, 'hal8_' + tag + '.s')
+                rc, log = run([arkcc] + ASM_ARM + hal_args +
+                              [hal, '-o', out] + flags, work)
+                if rc != 0:
+                    h8_err = (log.strip().splitlines() or ['asm failed'])[:1]
+                    break
+                with open(out, encoding='utf-8', errors='replace') as fh:
+                    texts8[tag] = fh.read()
+            if h8_err:
+                check(False, 'M8: the HAL DMA driver builds', h8_err[0][:120])
+            else:
+                mi_off = count(M8MOVI_RE, texts8['off'])
+                mi_on = count(M8MOVI_RE, texts8['on'])
+                check(mi_off > mi_on,
+                      'M8: dead `MOV rD, #imm` materialisations are dropped',
+                      '%d -> %d' % (mi_off, mi_on))
+                mr_off = count(M8MOVRR_RE, texts8['off'])
+                mr_on = count(M8MOVRR_RE, texts8['on'])
+                check(mr_off > mr_on,
+                      'M8: dead `MOV rD, rS` copies are dropped',
+                      '%d -> %d' % (mr_off, mr_on))
+                check(insn_count(texts8['on']) < insn_count(texts8['off']),
+                      'M8: the instruction count drops',
+                      '%d -> %d' % (insn_count(texts8['off']),
+                                    insn_count(texts8['on'])))
+                it_off = count(M8IT_RE, texts8['off'])
+                it_on = count(M8IT_RE, texts8['on'])
+                check(it_off > 0 and it_off == it_on,
+                      'M8: no IT block is shortened',
+                      '%d -> %d IT block(s)' % (it_off, it_on))
+                check(label_count(texts8['on']) == label_count(texts8['off']),
+                      'M8: labels are untouched',
+                      '%d/%d label(s)' % (label_count(texts8['off']),
+                                          label_count(texts8['on'])))
+                check(count_sub('.size ', texts8['on']) ==
+                      count_sub('.size ', texts8['off']),
+                      'M8: no function is lost',
+                      '%d/%d' % (count_sub('.size ', texts8['off']),
+                                 count_sub('.size ', texts8['on'])))
 
         # --- 6. the answers stay the same -----------------------------------
         for name, _body, want, case_flags in CASES:

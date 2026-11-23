@@ -35,7 +35,7 @@ These shapes need no liveness analysis to be proved safe -- either the address
 and the result are identical, or the value is provably overwritten before any
 read inside the same block. That is the whole domain of this pass.
 
-## 2. The seven rules
+## 2. The eight rules
 
 ### 2.1 M1: a copy of a known constant becomes an immediate
 
@@ -156,6 +156,51 @@ them, because the writes in the middle stay live-looking:
 That is why M7's gain arrives in two steps: first the dead `MOV`s in the middle
 (-93), then the pairs themselves (-203).
 
+### 2.8 M8: a constant or a copy that is dead across the whole function
+
+> `MOV rD, #imm`, or a copy `MOV rD, rS`, where `rD` is **nowhere** read again
+> in this function: that write is dead.
+
+M1-M7 all stay inside one block, because a block has a single entry, so a write
+the same block overwrites can never be seen.  M8 is the first rule that has to
+ask whether a register is live *anywhere else*, so it cuts the unit table into
+blocks along the control flow, computes live-in / live-out by fixed point, and
+drops the `MOV` whose destination is not live.  Both forms are flag-neutral
+(this emitter prints `MOVS` whenever it means to set the flags), so removing one
+changes neither a value nor a flag.
+
+It picks up the tail the earlier rules leave behind: a constant whose consumer
+folded it away (once `CMP rX, #0` exists, the `MOV rX, #0` that produced it has
+no reader) and a copy a later rule moved into place.
+
+The graph is approximated **in the conservative direction only**:
+
+- a conditional branch and `CBZ`/`CBNZ` reach both their target and the next
+  block; `B`/`BAL` reach only their target (or the next block when the label is
+  not in this function, i.e. a tail call);
+- a call reads `r0`-`r3` and `r12`;
+- a return site (`POP {..., pc}`, `BX lr`) reads `r0` and `r1` (a 64-bit return
+  may carry its low half in `r1`);
+- an instruction this pass does not model is taken to read every register and
+  write none, which keeps everything before it live.
+
+Missing an edge would be unsound; inventing one only costs an opportunity, so
+every unknown resolves to the wider set.
+
+Two further safety points:
+
+- **never inside an IT block**.  How many instructions an `IT` covers is part of
+  its contract, and removing one silently changes the reach of the condition;
+- **a unit an earlier rule already deleted takes no part in the graph**.  It is
+  not in the output, so it neither reads nor writes anything.
+
+`MOVW`/`MOVT` is out of scope: it is not a flag-neutral single line, and the
+number of dead pairs in the corpus measures at exactly 0.
+
+The block boundaries are the ones from section 3: `PUSH` is on the whitelist and
+so is *not* a boundary (a whole "constant up to the stack, back again" stretch
+can live in one block); `POP`/`LDM`/`STM`/`IT` and every branch are.
+
 ## 3. Block boundaries and the read set
 
 A block ends (state is cleared) at:
@@ -246,15 +291,40 @@ constcache slotreg coalesce vreg`).  The corpus is assembled per TU with `-S`;
 instructions are counted line by line with `^\s+[A-Za-z][A-Za-z0-9.]*\s` (a
 `grep` misses a dozen directive-shaped lines per TU, so a script does the count).
 
-| build | instructions | vs baseline |
-| --- | ---: | ---: |
-| baseline (sixteen switches, `-fno-opt-cmat`) | 15,933 | -- |
-| + `-fopt-cmat`, M1/M2/M3 only | 15,613 | **-320** |
-| + `-fopt-cmat`, M1-M6 | 15,236 | -697 (-4.37%) |
-| + `-fopt-cmat`, all seven rules | **14,940** | **-993 (-6.23%)** |
+| build | instructions | code bytes | vs baseline |
+| --- | ---: | ---: | ---: |
+| baseline (sixteen switches, `-fno-opt-cmat`) | 15,933 | 40,188 | -- |
+| + `-fopt-cmat`, M1/M2/M3 only | 15,613 | -- | **-320** |
+| + `-fopt-cmat`, M1-M6 | 15,236 | -- | -697 (-4.37%) |
+| + `-fopt-cmat`, M1-M7 | 14,940 | 37,766 | -993 (-6.23%) |
+| + `-fopt-cmat`, all eight rules | **14,369** | **36,602** | **-1,564 (-9.81%)** |
 
-So M1/M2/M3 account for -320, **M4/M5/M6 for another -377** and **M7 (with the
-two criterion extensions) for another -296**.
+So M1/M2/M3 account for -320, **M4/M5/M6 for another -377**, **M7 (with the two
+criterion extensions) for another -296** and **M8 for another -571**.  The byte
+figures are measured, not derived: the code-section length in each `ARKOBJ2`
+header, summed over the corpus -- -2,422 for M1-M7 and -1,164 more for M8,
+3,586 in total.
+
+M8's -571 reconciles just as cleanly, and this time the account **fits on one
+line**:
+
+| item | M1-M7 | M1-M8 | delta |
+| --- | ---: | ---: | ---: |
+| `MOV rD, #imm` | 1,927 | 1,374 | **-553** |
+| `MOV rD, rS` | 1,156 | 1,138 | -18 |
+| the other `MOV` shapes (condition suffixes and so on) | 511 | 511 | 0 |
+| `MOV` total | 3,594 | 3,023 | **-571** |
+| every mnemonic | 14,940 | 14,369 | **-571** |
+
+Every other frequent mnemonic is bit-for-bit unchanged: `LDR` 1,600, `ADD`
+1,270, `MOVW` 937, `STR` 915, `PUSH` 895, `CMP` 845, `B` 817, `MOVT` 803,
+`POP` 566.
+
+The stronger evidence is a **file-by-file diff**: the 95 `.s` files of both
+trees (M1-M7 and M1-M8) run through `difflib` line by line give **571 lines
+removed, 0 lines added, 0 other changes**, and every removed line matches
+`MOV rD, #imm` or `MOV rD, rS`.  In other words, on real code this rule can only
+touch those two shapes -- not one byte else.
 
 M7's -296 reconciles line by line (the same two counters over three trees,
 subtracted mnemonic by mnemonic):
@@ -308,9 +378,11 @@ they net 0; M3 deletes 619 `MOV` lines plus 8 `MOVW`/`MOVT` lines, and M6d
 deletes 70 branch lines => -619 - 8 - 70 = **-697**, exactly the measured
 difference.
 
-At 4 bytes per Thumb-2 instruction the code is about **2,788 bytes** smaller
-with M1-M6 and about **3,972 bytes** smaller with all seven rules.
-(This is derived, not measured: the corpus is not linked into an image.)
+The byte figures in the table are the measured ones (`ARKOBJ2` code-section
+length, summed per TU): baseline 40,188 -> M1-M7 37,766 -> all eight rules
+36,602.  At the naive 4 bytes per Thumb-2 instruction the -697 lines of M1-M6
+would be 2,788 bytes; the measurement is smaller, because most of what goes is a
+2-byte 16-bit encoding.
 
 ## 7. Where it lives
 
@@ -336,7 +408,14 @@ right after `-fopt-regalloc` and before `ark_fix_far_offset()`:
 | `cm_dies_later` | "is this register written before anything reads it, from line j to the block end" -- M3's test (a `POP`/`LDM` counts as a write when its list names the register, and the scan keeps going when it does not) |
 | `cm_list_mask` | `{r4,r5,r6}` -> register mask; lists naming `lr`/`pc` or a write-back base are refused (returns 0) |
 | `cm_one_reg` | `{rN}` naming exactly one register in 0..12 |
-| `ark_cmat_function` | the pass: line table -> unit table (fusing MOVW/MOVT) -> walk M1/M2/M4/M5/M6 -> M3 -> M7 -> rebuild |
+| `cm_is_label` | is this unit a label (an indented label keeps its text in `ops`, a column-0 label is parsed into `mn` by `cm_split`; both must be recognised) |
+| `cm_label_name` | the label text, wherever it landed |
+| `cm_is_pop` | `POP` / `LDM*`: a load-multiple that may write `pc` |
+| `cm_cond_branch` | the eleven conditional branches plus `CBZ`/`CBNZ`: they reach the target *and* fall through |
+| `cm_no_reg_effect` | ends a block without touching a general register: `IT*`, `DMB`/`DSB`/`ISB`, every branch |
+| `cm_label_block` | label to block number (M8 resolves branch targets), -1 when absent |
+| `cm_mov_const` | `rD, #imm` or `rD, rS` -- the only two shapes M8 may delete |
+| `ark_cmat_function` | the pass: line table -> unit table (fusing MOVW/MOVT) -> walk M1/M2/M4/M5/M6 -> M3 -> M7 -> M8 (IT coverage / blocks / successors / use-def / fixed point / backwards delete) -> rebuild |
 
 `-fopt-cmat` is **off by default**. Under `ARKCC_PROFILE_STM32_MIN` the macro is
 0, so neither the code nor the static tables are in the image, and a cropped
@@ -345,7 +424,7 @@ about 300 KB of BSS and exist only in host builds.
 
 ## 8. Gate (`make test-cmat`)
 
-`tests/run_cmat_tests.py`, thirty-seven checks:
+`tests/run_cmat_tests.py`, forty-three checks:
 
 1. **OFF IS OFF**: the default build and `-fno-opt-cmat` are byte-identical;
 2. **M2 fires**: the `LSL #2]` shape goes to zero, `[rB, #off]` becomes more
@@ -375,10 +454,18 @@ about 300 KB of BSS and exist only in host builds.
     constant" and "a later instruction rewrites the index register" at the same
     time) but appears 52 times in that driver.  Assertions: the
     `PUSH {rX}` / dead writes / `POP {rX}` / indexed-load groups go **52 -> 0**,
-    the instruction count 2,351 -> 2,035, **multi-register `PUSH` (prologues)
+    the instruction count 2,351 -> 1,945 (that figure is the whole pass; M7's own
+    share is 2,351 -> 2,035, see item 11), **multi-register `PUSH` (prologues)
     15 -> 15**, **epilogue `POP {..., pc}` 32 -> 32**, labels 264/264 and
     functions 15/15 all unchanged, and 81 single-register `PUSH` lines still
     survive (proof it is not deleting `PUSH` wholesale).
+
+11. **M8 fires, on a real driver**: the same `stm32f4xx_hal_dma.c`.
+    Assertions: `MOV rD, #imm` 345 -> 250, `MOV rD, rS` 222 -> 114, the
+    instruction count 2,351 -> 1,945, **`IT` blocks 8 -> 8** (this is the
+    anti-over-deletion half: deleting a unit inside an `IT` silently changes how
+    far the condition reaches, and nothing in the text shows it), labels
+    264/264 and functions 15/15 unchanged.
 
 As a stronger layer, `tests/arm_exec/run_arm_exec.py --extra=-fopt-cmat` ran the
 whole execution suite (function pointers, 64-bit, soft-float, atomics, TLS,
