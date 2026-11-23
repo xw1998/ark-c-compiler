@@ -522,8 +522,8 @@ drops.
 - **Staged plan (S2-S5, none started)**:
   - **Status (2026-11-23)**: S2 landed as `-fopt-slotreg` and was **archived** under the <0.5%
     falsifier (P17); S3 is now pre-registered as **P18** (`docs/OPERAND_ALLOC.md`), whose slice
-    S3a has landed as `-fopt-constcache`; S4/S5 remain
-    registered only.
+    S3a has landed as `-fopt-constcache` and whose slice S3b has been **measured and closed** under
+    the same <0.5% falsifier (0.11%, section 9); S4/S5 remain registered only.
   - **S2 intra-function virtual-register colouring**: longest live range inside a
     straight-line block only, no call sites, pool r8-r11 (callee-saved, same reason as
     `-fopt-regalloc`; the slice is defined in `docs/SLOT_REGISTERS.en.md`); the goal is to turn
@@ -531,6 +531,8 @@ drops.
   - **S3 call sites and blocks**: values live across `BL` go into callee-saved
     registers (cost: 4 bytes per function in the prologue) and only when a
     "bytes of LDR saved > PUSH cost" balance says so.
+    **Status (2026-11-23)**: measured -- the genuine cross-call opportunity is 5 pairs / 0.11%, so
+    the slice is **closed** under the falsifier.
   - **S4 spills and high registers**: r8-r11 only under the same positive
     balance, with the same tiering threshold the near-slot regalloc uses.
   - **S5 merge with vstack**: pick one instead of stacking both (they fight over
@@ -786,9 +788,15 @@ drops.
   with `ra_` and offsets shifted once / `arm_exec` parity / cropping rejects with `C3900U`) and four
   falsifiers (< 0.5% archives the line, any TU growing, more than 4 registers needed, having to widen
   `PUSH` itself). All of it in `docs/OPERAND_ALLOC.md` / `.en.md`.
-- **S3b is registered only, not pre-registered**: live values across call sites in callee-saved
-  registers needs live intervals and a spill policy, and must be pre-registered separately after S3a
-  works and is measured.
+- **S3b: measured and closed (2026-11-23)**. Live values across call sites in callee-saved
+  registers were measured once, right after S3a landed (`docs/OPERAND_ALLOC.md` section 9): of 38
+  call sites that have live values in the 95 TUs, **0 still hold one in a pool register** -- the
+  "split because a pool register is live" route never fires; genuine cross-call single
+  `PUSH`...`POP` pairs are only **5 in 3 functions**, an upper bound of **20 B = 0.11%**, and after
+  paying the widened `PUSH` (12 B over those 3 functions) 8 B net remain. **Closed under the same
+  <0.5% falsifier: not pre-registered, not implemented.** Scope: this holds only for this corpus and
+  the current `-fopt-vstack` model, and does not mean value-stack round-trips are not worth
+  optimising.
 
 ---
 

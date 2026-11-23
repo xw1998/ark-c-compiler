@@ -185,6 +185,8 @@ stack (`[r5, ...]`, 1,414 accesses) or the frame (`[r6, #n]`, 1,879 accesses) th
 a `BL` should live in a callee-saved register. Its account is far harder (live intervals and a spill
 policy), so it **must be pre-registered separately, after S3a's gates and frame machinery work and
 after S3a's measured gain is known**. This document freezes no number for S3b.
+**Update 2026-11-23: the opportunity has been measured at 0.11%, so S3b is closed on the same
+<0.5% falsification line -- see section 9.**
 
 ## 8 Implementation and measurement (2026-11-23, S3a landed)
 
@@ -254,4 +256,68 @@ works). All seven criteria of section 5 land in `tests/run_operand_alloc_tests.p
 
 S3b is still not pre-registered: this slice solved "put a non-slot value into `r8`-`r11`" and
 "widen the saved block and shift offsets exactly once", but S3b also needs live intervals and a
-spill policy, so section 7 stands.
+spill policy, so section 7 stands. **The opportunity measurement followed immediately and closed it;
+see section 9.**
+
+## 9 S3b opportunity measurement and closure (2026-11-23)
+
+Section 7 asked for the S3b opportunity to be measured once S3a landed, before anything is
+pre-registered. Result: **not worth pre-registering; closed**.
+
+### 9.1 Convention
+
+- Corpus as in section 8.3 (95 TUs, twelve switches + `-fopt-cmat` + `-fopt-slotreg` + `-fopt-constcache`).
+- **Convention A (inside the compiler, authoritative)**: a temporary probe in `ark_vstack_function()`,
+  just before the `VS_F_CALL` branch (built by hand with `-DARKCC_S3B_STAT=1`; the source was reverted
+  afterwards), printing `depth / nmem / nreg` at every call site that has live values, where `nreg` is
+  how many of those live values are **still in a pool register**.
+- **Convention B (final text)**: on the 95 `.s` files, pair single-value `PUSH {rN}` / `POP {rN}` per
+  function in LIFO order and count only the pairs with a `BL`/`BLX` in between.
+
+### 9.2 Numbers
+
+| Convention | Result |
+| --- | --- |
+| A. call sites with live values | 38 (sum of depth 107, max 5; spread: `hal_rcc.c` 11, `ll_utils.c` 10, `hal_rcc_ex.c` 7, `hal_flash.c` 4, `hal_pwr_ex.c` 2, `hal_dma.c` 2, `hal_cortex.c` 1, `hal_flash_ex.c` 1) |
+| A. of those, with a live value still in a pool register (`nreg > 0`) | **0** (histogram `{0: 38}`) |
+| B. genuine cross-call single `PUSH`...`POP` pairs | **5 pairs in 3 functions** (`HAL_NVIC_GetPriority` 3, `FLASH_Program_DoubleWord` 1, `HAL_FLASHEx_OBGetConfig` 1) |
+| Upper bound on the gain | 5 x 4 B = **20 B = 0.11%** (base 18,506 instructions) |
+
+### 9.3 Two readings that must be stated
+
+1. **`nreg = 0` means S3b has no work to do today.** At `VS_F_CALL`, `ark_vstack_function()` flushes
+   and continues when every live value is already in memory (`vs_all_mem` true) and only falls back to
+   verbatim when one is not. All 38 call sites take the first route, so "split because a pool register
+   is live" never fires on this corpus. Implemented as "do not split at a call", S3b would produce
+   byte-identical output.
+2. **The depth of 107 is inflated by branch diamonds.** Hand-checking `HAL_RCC_OscConfig`: the probe
+   reports `depth=4` at every one of its call sites, yet no value survives those `BL`s in the emitted
+   text -- the "pinned in memory" entries come from diamonds (both arms `PUSH`, one `POP` after the
+   join) in the linear model, and they are memory values anyway: nothing is missing, nothing is extra.
+   The only genuine cross-call values are the 5 pairs of convention B.
+
+### 9.4 Why only 5 pairs
+
+The one stable shape in the HAL corpus is "the result or address of one call is needed only at the next
+call" (`HAL_NVIC_GetPriority`: push the address -> `BL __NVIC_GetPriority` -> pop three arguments ->
+`BL NVIC_DecodePriority`). Every other expression fits inside a single statement, and `-fopt-vstack`
+already turns the in-block stack round-trips into pool registers. In other words the 4 B S3b wants to
+save is the same 4 B vstack already saved, and only 5 of those are cross-call.
+
+### 9.5 Verdict: close
+
+Against the same falsification line as section 6 and `docs/SLOTREG.md` section 5 (**below 0.5% means
+close**), 0.11% is far short; against the cost/benefit rule P18 demands the account is negative too:
+moving those 5 values into `r8`-`r11` costs a widened `PUSH` of 4 B per function (12 B over 3
+functions), leaving 8 B net -- while introducing live intervals and a spill policy into the bargain.
+
+- **Not pre-registered, not implemented**; the matching item in `docs/OPTIMIZER_PLAN.md` now reads
+  "measured and closed".
+- **Scope is fixed**: the verdict holds only for "this corpus + the current `-fopt-vstack` model". It
+  shows that live values across calls are not the dominant cost of this corpus; it does **not** show
+  that value-stack round-trips are not worth optimising -- the vast majority of the 1,060 `PUSH` and
+  731 `POP` instructions are in-block round-trips and frame saves, which S3b never aimed at.
+- **Reopening conditions (registered, not started)**: a corpus where a value must survive a call inside
+  a hot loop; or, once P12's S4 (enable `r8`-`r11` only when the account is positive) exists, a global
+  colouring that promotes memory-resident live values into registers -- at which point S3b is a
+  sub-problem of it.
