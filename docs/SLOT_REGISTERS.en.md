@@ -179,3 +179,23 @@ file and into P15.
   is reverting code;
 - after implementation this file may only gain a "measurement" section and a "verdict" section; the
   gate text in sections 4 and 5 may not be edited.
+
+## 8 Measurement (2026-11-23, before S2a)
+
+Section 1 bounded the text-layer room on top of the twelve switches at **<=0.7%** (framed as frame
+traffic, 56 repeated loads inside a block, 203 `STR -> LDR` round trips on the same slot, 0 dead frame
+reads). Before building S2a the whole corpus was scanned for the shape distribution, and that estimate
+turns out to **cover only one family**:
+
+- repeated loads and same-slot round trips really are at the 0.7% level;
+- but "duplicated constant materialisation" -- the value stack copying a constant into a scratch
+  register and the consumer folding the index back into the addressing mode, plus the scratch
+  register being written twice in a row -- is **1.77% (337 instructions)** on top of the twelve
+  switches, an order of magnitude more than the pre-registered room.
+
+The order therefore changed: `-fopt-cmat` goes first (P16, landed: 19,066 -> 18,729, only `MOV`
+moves), and **S2a is deferred until after cmat**, with its stacked-measurement baseline now
+"twelve switches + `-fopt-cmat`".
+
+The seven gates in section 4 and the four falsifiers in section 5 are **unchanged word for word**;
+only the precondition and the baseline moved. P15 now points at P16.

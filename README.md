@@ -102,6 +102,7 @@
 | 值栈操作数配对 | 可选 | `-fopt-pair`（`ARKCC_FEATURE_OPT_PAIR`，宿主 1、板端 0，默认关）：IR 是栈机，两个相邻的值栈压入加上读它们的二元运算改成「左→r0、右→r1、直接算」，两对 `PUSH/POP` 与随之而来的寄存器搬运整块消失；只接栈槽（槽号 <8、非 volatile）、立即数、局部地址、非 va 的全局地址/标量（<8 字节，按宽度选 `LDR/LDRB/LDRH/LDRSB/LDRSH`）；64 位值、volatile、>8 字节对象一律不动。`-fopt-imm`（常量直接进立即数字段）与 `-fopt-cbranch`（比较直连分支）都比它便宜，pair 主动让位——这两条让位规则分别由一次翻车（+1,405 条 / +67 条）换来。95 TU HAL 语料 19,112 → 19,096 条（−16 / 0.08%），无单元变大。详见 `docs/OPTIMIZER_PLAN.md` 的 P12（S2–S5 为后续阶段） |
 | 局部槽常量传播与死存储删除 | 可选 | `-fopt-prop`（`ARKCC_FEATURE_OPT_PROP`，宿主 1、板端 0，默认关）：IR 层两半共用一张字节图——**前向**把「写入后没再改」的帧槽常量按宽度精确扩展后改写成 `PUSH_INT`，**后向**把「字节全不活跃、producer 可丢」的 store 连同它的 `PUSH` 一起删成 `NOP`。两条尺寸闸门都是翻车换来的：常量必须一条 ARM 指令装得下（否则 `LDR` 换成 `MOVW+MOVT`，首版 +16 条）；紧跟在覆盖同槽 `STORE` 之后的读不替换（值已在栈顶寄存器，`-fopt-imm` 已免费消化，改写成 `PUSH_INT` 反而 +6 条）。取帧地址只有 `IR_PUSH_ADDR` 一条指令，故函数里没有它时调用/指针写/memcpy 都碰不到本帧，活跃性可以放宽（−6 → −29）。十开关之上 19,112 → 19,083 条（−29 / 0.15%），`STR −15`、`MOV −14`，无单元变大；插桩显示前向传播在 HAL 上 `replaced=0`，收益全部来自死存储删除——文本层余量确实到顶，下一步只能去 IR 级寄存器分配。详见 `docs/OPTIMIZER_PLAN.md` 的 P13 |
 | 语句赋值的读回压栈 | 可选 | `-fopt-deadpush`（`ARKCC_FEATURE_OPT_DEADPUSH`，宿主 1、板端 0，默认关）：语句级本地赋值在 `STORE` 之后会紧跟一条读回压栈，而紧接着的丢弃 `POP` 让它白费——压栈（1 字，或 `long long` 的 2 字）后面紧跟相邻 n 个 `POP` 时整组改 `NOP`。volatile 读有观察语义、complex（四字）与宽度不符一律不动，不做任何活跃性分析。`-fopt-prop` 之上 19,083 → 19,066（−17 / 0.09%），`LDR −14`、`MOV −1`，无单元变大。详见 `docs/OPTIMIZER_PLAN.md` 的 P14 |
+| 常量二次材料化清理 | 可选 | `-fopt-cmat`（`ARKCC_FEATURE_OPT_CMAT`，宿主 1、板端 0，默认关）：值栈后端会把同一个常量材料化两次（先搬进暂存寄存器，再由消费者折回寻址方式），暂存寄存器也常连写两次。三条**纯文本**规则、都不需要活跃性分析：**M1** `MOV rD, rS` 且 `rS` 已知为 0..255 常量 ⇒ `MOV rD, #k`（本身不减条数，只为 M2/M3 创造条件）；**M2** `LDR/STR[B/H] rT, [rB, rI(, LSL #s)]` 且 `rI` 已知、`k<<s ≤ 4095`、`rI≠rB` ⇒ `[rB, #off]`（同地址同标志）；**M3** 标志中性写（`MOV` / 同寄存器 `MOVW`+`MOVT` 对 / 三操作数 `LSL LSR ASR ROR` / `MVN` / `UXT*` / `SXT*` / `CLZ` / `REV*`）被块内后写覆盖则删。块边界含标签、任何分支、`IT`、`POP/LDM/STM` 与**任何不在白名单的助记符**；`MOVW`+`MOVT` 必须整体处理。读集模型踩过两个致命坑（`MUL r0, r7` 隐式读目标、`STR` 第一操作数是源），门禁里各留了回归夹具。十二开关基线 19,066 → 18,729 条（−337 / −1.77%），只动 `MOV`（3,888 → 3,551）。详见 `docs/CMAT.md` |
 | 汇编器覆盖面 | 是 | LDR/STR 全地址模式（`[Rn]`/`[Rn,#imm]`/`[Rn,Rm]`/`[Rn,Rm,LSL #0..3]`/`[Rn,#imm]!`/`[Rn],#imm`、`[sp,#imm]`、`[pc,#imm]`）、`VLDM/VSTM/VPUSH/VPOP`、`LDMFD/STMFD/LDMEA/STMEA` 别名、`ADDW/SUBW`；体系结构不存在的形态（`LDMIB/LDMDA/STMIB/STMDA`、寄存器索引写回）明确报错 |
 | 预处理 | 是 | 对象/函数宏（`#/##`）、`#if/#elif/#else/#endif/#ifdef/#ifndef/#undef/#error/#warning/#pragma`、嵌套 `#include`（<=8 层）、`__VA_ARGS__`、`-I` 路径、三字符组替换 |
 | 注释 | 是 | `//` 和 `/* */` |
@@ -564,6 +565,7 @@ ark c compiler/
 ├── docs/CBRANCH.md          比较结果直连分支（-fopt-cbranch）：IR 相邻判据、条件码表、两条注入路径与立即数兜底、与 --reg-top / -fopt-cbz 的关系、不折的情形、13 项门禁与 HAL 全语料实测（中文，UTF-8，另有 .en.md）
 ├── docs/COPYPROP.md         寄存器拷贝清理（-fopt-copyprop）：照 IAR ECT 逆向下放的两条规则、为什么不需要活跃性、「第一个操作数也读」这条被 emulator 抓出的修正、与 peep 的分工、147+241 分解与旧 1,141 估算的错因、17 项门禁（中文，UTF-8，另有 .en.md）
 ├── docs/LIVE.md             活跃性驱动清理（-fopt-live）：控制流图 + in/out 不动点、L1-L4 四条规则、拒绝清单、三个被测试抓出的真缺陷（两操作数隐式读目标 / pp_trim 剥缩进 / 比对时机）与 ADC-SBC 三寄存器那条、与 copyprop 的分工、19,112 条实测、10 组门禁（中文，UTF-8，另有 .en.md）
+├── docs/CMAT.md             常量二次材料化清理（-fopt-cmat）：M1/M2/M3 三条规则与块边界、两个被 emulator 抓出的致命读集错误（`MUL` 隐式读目标 / `STR` 首操作数是源）、`MOVW`+`MOVT` 为什么必须整体处理、那条实测 0 命中被删掉的去重规则、19,066 → 18,729 的逐规则分解（M3 337 / M1 193 / M2 180）、17 项门禁（中文，UTF-8，另有 .en.md）
 ├── docs/MOVIMM.md           常量材料化：0..255 / MOVW / 修改立即数 / MVN / 双字五档的选择与标志位口径、为什么 MOVW 不需要后面的 MOVT #0、无符号立即数解析、-O2 上 −451 条（51,416 → 50,965）与 −1,804 字节（116,380 → 114,576）的同源对拍、门禁（中文，UTF-8，另有 .en.md）
 ├── docs/BUILD.md            Windows / Linux / STM32H743 三平台构建与裁切阶梯：工具链矩阵、两种内存布局实测、`make stm32-check` 装得下的机器判定（中文，UTF-8，另有 .en.md）
 ├── docs/COMPARISON.md       与 armcc / armclang 的横向对比：语料与口径、9 行结果表与相对比值、十个优化开关、四条结构性差距与逐项实测、复现脚本、三种「不该读成」（中文，UTF-8，另有 .en.md）
@@ -776,6 +778,10 @@ arkcc <file.c|file.s> [选项]
   -fopt-live         活跃性驱动清理：为每个函数建控制流图算寄存器活跃性，
                      删跨块的死拷贝、把拷贝推进到唯一的消费者、丢掉零索引、
                      把 MOVW/MOVT 常量直接落进目标；-fno-opt-live 关（默认关）
+  -fopt-cmat         常量二次材料化清理：把已知 0..255 常量的拷贝折成立即数、
+                     把已知索引折进寻址方式（k<<s <= 4095）、删掉被块内后写覆盖
+                     的标志中性写；MOVW/MOVT 对整体处理；
+                     -fno-opt-cmat 关（默认关）
   --ipo / -flto      全程序编译：一次吃多个 .c，在同一个 IR program 上做跨文件
                      优化（-O2 下跨文件内联），static 按单元改名、外部名按链接器
                      规则去重、无引用的 static 剪掉；必须给 -o，

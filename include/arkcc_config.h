@@ -266,6 +266,20 @@
 #   define ARKCC_FEATURE_OPT_DEADPUSH   1
 # endif
 #endif
+/* ARKCC_FEATURE_OPT_CMAT: -fopt-cmat, the constant-materialisation cleanup
+ * in src/backend/arm/backend_arm.c (M1 fold a copy of a known constant into an
+ * immediate, M2 fold a constant index into the addressing mode, M3 drop a
+ * flag-neutral write that is overwritten before a read in the same block).
+ * It needs ~4 K-entry tables (~300 KB of static space), so it is off the
+ * STM32 profile: a board build that ships the default configuration would
+ * never enter the pass anyway. */
+#ifndef ARKCC_FEATURE_OPT_CMAT
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_OPT_CMAT      0   /* 板上裁掉：只在宿主/交叉编译用（静态表约 300 KB BSS） */
+# else
+#   define ARKCC_FEATURE_OPT_CMAT      1
+# endif
+#endif
 /* ARKCC_FEATURE_OPT_COPYPROP: -fopt-copyprop, the IAR "ECT" family -- drop a
  * register copy whose destination is overwritten before any read, and forward
  * one that feeds a single three-operand ALU consumer. */

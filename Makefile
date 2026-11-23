@@ -30,7 +30,7 @@ endif
         test-tailcall test-divconst test-xblock test-sizeweight \
         test-inline test-vstack test-addr test-strength test-cbz test-branch \
         test-imm test-peep test-cbranch test-copyprop test-live test-movimm test-pair \
-        test-prop test-deadpush install \
+        test-prop test-deadpush test-cmat install \
         stm32 stm32-check
 
 all: $(ARKCC)
@@ -46,7 +46,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch test-imm test-peep test-cbranch test-copyprop test-live test-movimm
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch test-imm test-peep test-cbranch test-copyprop test-cmat test-live test-movimm
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -296,6 +296,20 @@ test-prop: $(ARKCC)
 # build (-DARKCC_FEATURE_OPT_DEADPUSH=0) refuses the flag by name.
 test-deadpush: $(ARKCC)
 	$(PYTHON) tests/run_deadpush_tests.py ./$(ARKCC)
+
+# Gate for -fopt-cmat: the backend materialises the same constant twice (a copy
+# of a known index into the scratch register, then the indexed load) and writes
+# the scratch register twice in a row.  The pass cleans that up with three
+# rules inside one straight-line block -- a copy of a known 0..255 constant
+# becomes an immediate (M1), a known index is folded into the addressing mode
+# when the byte offset fits in 0..4095 (M2), and a flag-neutral write that is
+# overwritten before any read is dead (M3).  The gate pins OFF IS OFF, each
+# rule firing, the instruction/image deltas, that a copy read by STR (a source
+# operand) and a MOVW/MOVT pair are left byte-identical, that every fixture
+# returns the Python answer in three arms, that labels survive, and that a
+# cropped build (-DARKCC_FEATURE_OPT_CMAT=0) refuses the flag by name.
+test-cmat: $(ARKCC)
+	$(PYTHON) tests/run_cmat_tests.py ./$(ARKCC)
 
 
 

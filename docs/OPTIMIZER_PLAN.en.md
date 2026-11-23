@@ -671,6 +671,46 @@ drops.
   of `-fopt-vstack`). All of it lives in `docs/SLOT_REGISTERS.md` (Chinese) /
   `docs/SLOT_REGISTERS.en.md` (English); after implementation only a "measurement" and a "verdict"
   section may be appended.
+- **Deferred (2026-11-23)**: measure before building paid off once more here -- see P16: the
+  "duplicated constant materialisation" family measures 1.77% on its own, an order of magnitude more
+  than the 0.7% text-layer room estimated on this page, so S2a is sequenced after P16.
+
+---
+
+### P16 Duplicated constant materialisation (`-fopt-cmat`, **landed in 0.9.1-wip**)
+
+- **Why it went first**: P15's pre-registration bounded the text-layer room at "<=0.7%" (framed as
+  frame traffic, repeated loads, same-slot round trips). That accounting missed a whole family: the
+  value-stack backend materialises **the same constant twice** (`MOV r7, #0` into the index register,
+  then `LDR r7, [r5, r1, LSL #2]` folding it back into the addressing mode) and also writes the scratch
+  register twice in a row. Measured on top of the twelve switches this family is **1.77%** -- an order
+  of magnitude more than the pre-registered estimate -- so it was taken first and S2a deferred.
+- **Three rules**: M1 a copy of a known 0..255 constant becomes an immediate; M2 a known index is folded
+  into the addressing mode (`k<<s <= 4095`, `rI != rB`); M3 a flag-neutral write overwritten later in the
+  block before any read is dropped. None of them needs liveness analysis.
+- **Two fatal miscompiles (fixed, and pinned by the gate)**: (1) a two-operand ALU instruction reads its
+  own destination (`MUL r0, r7`) -- the second version limits the source part to what follows the first
+  comma and recognises read-modify-write forms; (2) the first operand of `STR` is a source, and the first
+  version treated it as a destination and deleted the copy that had just loaded the value.
+- **`MOVW`+`MOVT` is handled as a unit**: dropping half of it leaves a different value, so the pair is
+  fused into one unit in the implementation.
+- **One rule that was removed**: the first draft also de-duplicated a same-value `MOVW`/`MOVT` pair. It
+  fires **zero** times on the corpus, so it was deleted and the rules renumbered -- which is itself a
+  finding.
+- **Trimming**: `ARKCC_FEATURE_OPT_CMAT` (`STM32_MIN` 0 / host 1), off by default; the ~300 KB BSS of
+  static tables exists only in host builds; a cropped build refuses `-fopt-cmat` with `C3900U`.
+- **Gates**: `tests/run_cmat_tests.py`, **17 checks**, `make test-cmat`: byte-identical when off, each of
+  M1/M2/M3 firing, `strfirst` (the copy is read only by `STR`) and `big` (a `MOVW`/`MOVT` pair)
+  **byte-identical**, three fixtures x three arms (off/on/alone) agreeing on unicorn, labels surviving,
+  the cropped build refusing. One layer further: `run_arm_exec.py --extra=-fopt-cmat` ran the whole
+  execution suite on a cmat-enabled build with **0 failures**.
+- **Measurement (twelve switches + `-fopt-cmat`)**: **19,066 -> 18,729 (-337, 1.77%)**; the histogram
+  moves only `MOV 3888 -> 3551` and no other mnemonic at all; the line diff splits into M3 337 / M1 193
+  rewrites / M2 180 rewrites (`LDR` 168 + `LDRB` 12), 710 lines deleted and 373 added.
+- **Conclusion**: the text layer did not run out of room -- the room was distributed differently from the
+  pre-registration's assumption (repeated loads and same-slot round trips really are 0.7%, but duplicated
+  constant materialisation is another 1.77%). Every new pass should therefore start by scanning the whole
+  corpus for the shape distribution instead of extrapolating P15's table.
 
 ---
 

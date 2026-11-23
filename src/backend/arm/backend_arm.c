@@ -2535,6 +2535,578 @@ static void ark_regalloc_function(AsmBuffer *b, int from, IrFunc *f, int local_e
     }
 }
 #endif /* ARKCC_FEATURE_OPT_REGALLOC */
+#if ARKCC_FEATURE_OPT_CMAT
+/* ------------------ constant materialisation cleanup (-fopt-cmat) --------
+ * The value model materialises every constant twice: once into a scratch
+ * register for the value stack, once into the register the consumer wants.
+ * On the HAL corpus (19,066 instructions after the twelve switches) that is
+ * 967 "MOV rN, #0", 943 adjacent MOV/MOV pairs and 981 MOVW/MOVT pairs, and
+ * the second half of many of those pairs is a copy of a value that was just
+ * built one line above.
+ *
+ * Three rules, all inside one straight-line block.  A block ends at a label,
+ * any branch (including CBZ/CBNZ and the conditional forms), IT, POP, LDM/STM
+ * or any mnemonic this pass does not model -- an unknown instruction may write
+ * a register or set flags, so the block state is dropped there too.  A block
+ * has one entry, so a value written inside it and overwritten before a read is
+ * dead on every path through it.
+ *
+ *   M1  `MOV rD, rS` where rS holds a constant known in this block becomes
+ *       `MOV rD, #k` (0 <= k <= 255, the form the emitter itself prints).  On
+ *       its own this saves nothing -- it is what lets M3 delete the
+ *       materialisation that rS came from.
+ *   M2  `LDR/STR[B/H] rT, [rB, rI(, LSL #s)]` where rI holds a constant k
+ *       known in this block becomes `[rB, #k<<s]` (0 <= k<<s <= 4095 and
+ *       rI != rB).  Same address, same flags, one operand fewer.
+ *   M3  A flag-neutral write (MOV / MOVW+MOVT pair / three-operand
+ *       LSL/LSR/ASR/ROR / MVN / UXT / SXT / CLZ / REV) whose destination is
+ *       written again later in the same block before any read of it is
+ *       dropped.  The requirement of a later write inside the block is what
+ *       makes liveness analysis unnecessary.  The MOVW+MOVT pair is kept as a
+ *       *single* unit on purpose: half of it alone leaves the register with a
+ *       different value, so neither half may ever be dropped by itself.
+ *
+ * A first draft also de-duplicated a MOVW/MOVT pair whose value the register
+ * already held.  Measured on the corpus it fires zero times (any read of the
+ * register in between clears the state, and without such a read the first
+ * pair was dead for a different reason), so the rule is gone rather than kept
+ * as never-exercised code.
+ *
+ * Refused on purpose: ADD/SUB/AND/ORR/EOR (they can set flags, and the corpus
+ * is full of `ADD rX, rB, #0` used as a copy), MUL (MULS sets N/Z), write-back
+ * and shifted register indexes other than a plain `LSL #s`, offsets beyond
+ * 4095, and every delete whose value could be live at the end of the block.
+ *
+ * Convention (same one the copy passes above already rely on): the text this
+ * emitter prints spells a flag-setting move MOVS, so a plain MOV/MOVW/MOVT/
+ * MVN/UXT/SXT/CLZ/REV or a three-operand shift leaves the flags alone.
+ */
+#define CM_MAX_LINES 4096
+#define CM_MAX_UNITS 2048
+#define CM_MN_LEN    16
+#define CM_OPS_LEN   96
+
+typedef struct {
+    int   line;      /* index into cm_ls[] of the first line of this unit */
+    int   nlines;    /* 1, or 2 for a fused MOVW/MOVT pair                */
+    char  mn[CM_MN_LEN];
+    char  ops[CM_OPS_LEN];
+    signed char   dst;     /* register written, -1 when it writes none    */
+    unsigned char neutral; /* deleting it cannot change a value or a flag */
+    unsigned char rewrite; /* ops[] differs from the text of the line     */
+    unsigned char dead;    /* every line of the unit is dropped           */
+    unsigned char bar;     /* barrier: clears the block state             */
+} CmUnit;
+
+static int   cm_linestart[CM_MAX_LINES];
+static int   cm_linelen[CM_MAX_LINES];
+static CmUnit cm_units[CM_MAX_UNITS];
+static short cm_owner[CM_MAX_LINES];
+
+/* Case-insensitive compare: the emitter prints a few mnemonics in lower case
+ * ("bx", "rev16", "rrx"), and every mnemonic test below has to see them. */
+static int cm_streq(const char *a, const char *b) {
+    for (;;) {
+        char x = *a++, y = *b++;
+        if (x >= 'a' && x <= 'z') x = (char)(x - 'a' + 'A');
+        if (y >= 'a' && y <= 'z') y = (char)(y - 'a' + 'A');
+        if (x != y) return 0;
+        if (!x) return 1;
+    }
+}
+
+/* Copy one line without leading blanks and without a trailing CR. */
+static int cm_trim(const char *ln, int len, char *dst, int cap) {
+    int i = 0, o = 0;
+    while (i < len && (ln[i] == ' ' || ln[i] == '\t')) i++;
+    while (i < len) {
+        char c = ln[i++];
+        if (c == '\r') continue;
+        if (o + 1 >= cap) return -1;
+        dst[o++] = c;
+    }
+    dst[o] = 0;
+    return o;
+}
+
+/* "rN" and nothing else (0..12: r13 sp / r14 lr / r15 pc are never slots). */
+static int cm_reg(const char *s, int *out) {
+    int n = 0;
+    if ((s[0] != 'r' && s[0] != 'R') || !s[1]) return 0;
+    s++;
+    if (*s < '0' || *s > '9') return 0;
+    while (*s >= '0' && *s <= '9') { n = n * 10 + (*s - '0'); s++; }
+    if (*s || n > 12) return 0;
+    *out = n;
+    return 1;
+}
+
+/* "#<decimal>" and nothing else. */
+static int cm_imm(const char *s, long long *out) {
+    long long v = 0;
+    if (s[0] != '#' || !s[1]) return 0;
+    s++;
+    if (*s < '0' || *s > '9') return 0;
+    while (*s >= '0' && *s <= '9') {
+        v = v * 10 + (*s - '0');
+        if (v > 0x7fffffffLL) return 0;
+        s++;
+    }
+    if (*s) return 0;
+    *out = v;
+    return 1;
+}
+
+/* Split "MN ops" into the two halves.  0 for a line with no mnemonic. */
+static int cm_split(const char *t, char *mn, int mn_sz, char *ops, int ops_sz) {
+    int i = 0, o = 0;
+    if (!t[0]) return 0;
+    if (t[0] == ';' || t[0] == '@' || t[0] == '.') return 0;
+    while (t[i] && t[i] != ' ' && t[i] != '\t') {
+        if (i + 1 >= mn_sz) return 0;
+        mn[i] = t[i];
+        i++;
+    }
+    mn[i] = 0;
+    while (t[i] == ' ' || t[i] == '\t') i++;
+    while (t[i]) {
+        if (o + 1 >= ops_sz) return 0;
+        ops[o++] = t[i++];
+    }
+    ops[o] = 0;
+    return 1;
+}
+
+/* "rA, rest" -> register A and the rest of the operand string. */
+static int cm_first_reg(const char *ops, int *r, const char **rest) {
+    char t[8];
+    int i = 0, o = 0;
+    while (ops[i] == ' ') i++;
+    while (ops[i] && ops[i] != ',' && o + 1 < (int)sizeof t) t[o++] = ops[i++];
+    t[o] = 0;
+    if (!cm_reg(t, r)) return 0;
+    while (ops[i] == ' ') i++;
+    if (ops[i] != ',') return 0;
+    i++;
+    while (ops[i] == ' ') i++;
+    *rest = ops + i;
+    return 1;
+}
+
+/* Mnemonics whose first operand is written. */
+static int cm_write_first(const char *mn) {
+    static const char *const w[] = {
+        "MOV", "MOVW", "MOVT", "MVN", "ADD", "SUB", "AND", "ORR", "EOR",
+        "MUL", "MLA", "RSB", "ADC", "SBC", "BIC", "LSL", "LSR", "ASR", "ROR",
+        "UXTB", "UXTH", "SXTB", "SXTH", "CLZ", "REV", "REV16", "REVSH",
+        "LDR", "LDRB", "LDRH", "LDRSB", "LDRSH", 0
+    };
+    int i;
+    for (i = 0; w[i]; i++) if (cm_streq(mn, w[i])) return 1;
+    return 0;
+}
+
+/* Every mnemonic this pass is willing to look at.  Anything else is a block
+ * barrier, because an unmodelled instruction may write a register or set the
+ * flags in a way the state below would not know about. */
+static int cm_modelled(const char *mn) {
+    static const char *const m[] = {
+        "MOV", "MOVW", "MOVT", "MVN", "ADD", "SUB", "AND", "ORR", "EOR",
+        "MUL", "MLA", "RSB", "ADC", "SBC", "BIC", "LSL", "LSR", "ASR", "ROR",
+        "UXTB", "UXTH", "SXTB", "SXTH", "CLZ", "REV", "REV16", "REVSH",
+        "LDR", "LDRB", "LDRH", "LDRSB", "LDRSH", "STR", "STRB", "STRH",
+        "CMP", "CMN", "TST", "PUSH", "NOP", "ADR", 0
+    };
+    int i;
+    for (i = 0; m[i]; i++) if (cm_streq(mn, m[i])) return 1;
+    return 0;
+}
+
+/* Mnemonics that cannot change the condition flags, so deleting one is never
+ * observable by a conditional branch.  LSL/LSR/ASR/ROR count only in their
+ * three-operand form; the two-operand Thumb form is the flag-setting one. */
+static int cm_neutral(const char *mn, const char *ops) {
+    static const char *const n[] = {
+        "MOV", "MOVW", "MOVT", "MVN", "UXTB", "UXTH", "SXTB", "SXTH",
+        "CLZ", "REV", "REV16", "REVSH", 0
+    };
+    int i, commas = 0;
+    for (i = 0; n[i]; i++) if (cm_streq(mn, n[i])) return 1;
+    if (cm_streq(mn, "LSL") || cm_streq(mn, "LSR") ||
+        cm_streq(mn, "ASR") || cm_streq(mn, "ROR")) {
+        for (i = 0; ops[i]; i++) if (ops[i] == ',') commas++;
+        return commas >= 2;
+    }
+    return 0;
+}
+
+/* Does this instruction end the straight-line block? */
+static int cm_boundary(const char *mn) {
+    char c = mn[0];
+    if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
+    if (c == 'B') {
+        /* Branches (B, B<cond>, BL, BLX, BX) end a block; BIC/BFI/BFC/BFX do
+         * not, and they are the only "B..." mnemonics this emitter prints. */
+        if (cm_streq(mn, "BIC") || cm_streq(mn, "BICS") ||
+            cm_streq(mn, "BFI") || cm_streq(mn, "BFC") ||
+            cm_streq(mn, "BFX")) return 0;
+        return 1;
+    }
+    if ((mn[0] == 'I' || mn[0] == 'i') && (mn[1] == 'T' || mn[1] == 't')) return 1;
+    if (cm_streq(mn, "POP") || cm_streq(mn, "LDM") || cm_streq(mn, "LDMIA") ||
+        cm_streq(mn, "LDMDB") || cm_streq(mn, "STM") || cm_streq(mn, "STMIA") ||
+        cm_streq(mn, "STMDB") || cm_streq(mn, "TBB") || cm_streq(mn, "TBH"))
+        return 1;
+    if (!cm_modelled(mn)) return 1;
+    return 0;
+}
+
+/* Every register named in the string. */
+static unsigned cm_scan_regs(const char *ops) {
+    unsigned m = 0;
+    int i;
+    for (i = 0; ops[i]; i++) {
+        int v = 0;
+        const char *p;
+        if (ops[i] != 'r' && ops[i] != 'R') continue;
+        if (i > 0 && ((ops[i - 1] >= 'a' && ops[i - 1] <= 'z') ||
+                      (ops[i - 1] >= 'A' && ops[i - 1] <= 'Z') ||
+                      (ops[i - 1] >= '0' && ops[i - 1] <= '9') ||
+                      ops[i - 1] == '_')) continue;
+        p = ops + i + 1;
+        if (*p < '0' || *p > '9') continue;
+        while (*p >= '0' && *p <= '9') { v = v * 10 + (*p - '0'); p++; }
+        if (*p && ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+                   (*p >= '0' && *p <= '9') || *p == '_')) continue;
+        if (v <= 12) m |= 1u << v;
+    }
+    return m;
+}
+
+/* Read-modify-write forms: with two operands the assembler makes Rd the first
+ * source as well (`MUL rD, rS` is Rd = Rd * Rs, `LSL rD, rS` is Rd = Rd << Rs,
+ * and `ADD rD, rS` is Rd = Rd + Rs), so deleting an earlier write to Rd would
+ * change what this instruction computes.  One comma is exactly the two-operand
+ * form; three-operand ALU instructions and `Rd, #imm` are not affected. */
+static int cm_is_rmw(const char *mn, int one_comma) {
+    static const char *const r[] = {
+        "ADD", "SUB", "ADC", "SBC", "AND", "ORR", "EOR", "BIC", "RSB",
+        "MUL", "MLA", "LSL", "LSR", "ASR", "ROR", 0
+    };
+    int i;
+    if (!one_comma) return 0;
+    for (i = 0; r[i]; i++) if (cm_streq(mn, r[i])) return 1;
+    return 0;
+}
+
+/* Registers the instruction reads.  The first operand is a pure output only
+ * for the "write_first" mnemonics; for STR/CMP/CMN/TST/PUSH every operand is
+ * a source, and the STR form is exactly why this distinction matters (`STR r0,
+ * [r6, #24]` reads r0 even though it sits where a destination usually is).  A
+ * superset of the true reads, which is the safe direction for every rule. */
+static unsigned cm_uses(const char *mn, const char *ops, int dst) {
+    unsigned m;
+    int i, comma = -1, commas = 0;
+    if (!cm_write_first(mn)) return cm_scan_regs(ops);
+    for (i = 0; ops[i]; i++)
+        if (ops[i] == ',') { commas++; if (comma < 0) comma = i; }
+    m = cm_scan_regs(comma >= 0 ? ops + comma + 1 : ops);
+    if (dst >= 0 && cm_is_rmw(mn, commas == 1)) m |= 1u << dst;
+    return m;
+}
+
+/* "rT, [rB, rI]" / "rT, [rB, rI, LSL #s]" -> the four fields.  Every other
+ * memory form (plain offset, write-back, post-index) is rejected. */
+static int cm_mem_idx(const char *mn, const char *ops, int *rt, int *rb,
+                      int *ri, int *sh) {
+    char t[16];
+    int i = 0, o = 0, a = -1, bb = -1, c = -1;
+    if (!(cm_streq(mn, "LDR") || cm_streq(mn, "STR") || cm_streq(mn, "LDRB") ||
+          cm_streq(mn, "STRB") || cm_streq(mn, "LDRH") || cm_streq(mn, "STRH")))
+        return 0;
+    while (ops[i] == ' ') i++;
+    while (ops[i] && ops[i] != ',') {
+        if (o + 1 >= (int)sizeof t) return 0;
+        t[o++] = ops[i++];
+    }
+    t[o] = 0;
+    if (!cm_reg(t, &a) || ops[i] != ',') return 0;
+    i++;
+    while (ops[i] == ' ') i++;
+    if (ops[i] != '[') return 0;
+    i++;
+    while (ops[i] == ' ') i++;
+    o = 0;
+    while (ops[i] && ops[i] != ',' && ops[i] != ']') {
+        if (o + 1 >= (int)sizeof t) return 0;
+        t[o++] = ops[i++];
+    }
+    t[o] = 0;
+    if (!cm_reg(t, &bb)) return 0;
+    while (ops[i] == ' ') i++;
+    if (ops[i] != ',') return 0;
+    i++;
+    while (ops[i] == ' ') i++;
+    o = 0;
+    while (ops[i] && ops[i] != ',' && ops[i] != ']') {
+        if (o + 1 >= (int)sizeof t) return 0;
+        t[o++] = ops[i++];
+    }
+    t[o] = 0;
+    if (!cm_reg(t, &c)) return 0;
+    while (ops[i] == ' ') i++;
+    *sh = 0;
+    if (ops[i] == ']') {
+        if (ops[i + 1]) return 0;
+        *rt = a; *rb = bb; *ri = c;
+        return 1;
+    }
+    if (ops[i] != ',') return 0;
+    i++;
+    while (ops[i] == ' ') i++;
+    if (!(ops[i] == 'L' && ops[i + 1] == 'S' && ops[i + 2] == 'L')) return 0;
+    i += 3;
+    while (ops[i] == ' ') i++;
+    if (ops[i] != '#') return 0;
+    i++;
+    if (ops[i] < '0' || ops[i] > '9') return 0;
+    {
+        int s = 0;
+        while (ops[i] >= '0' && ops[i] <= '9') { s = s * 10 + (ops[i] - '0'); i++; }
+        while (ops[i] == ' ') i++;
+        if (ops[i] != ']' || ops[i + 1] || s > 3) return 0;
+        *sh = s;
+    }
+    *rt = a; *rb = bb; *ri = c;
+    return 1;
+}
+
+/* The pass over one function's text. */
+static void ark_cmat_function(AsmBuffer *b, int from) {
+    static char t[CM_OPS_LEN + CM_MN_LEN + 8];
+    AsmBuffer out;            /* (only touched when something changed)    */
+    int n = 0, nu = 0, pos = from, len, i, j, changed = 0;
+    long long cval[13];
+    unsigned char cknown[13];
+
+    if (!g_config.enable_opt_cmat) return;
+
+    /* 1. line table */
+    while (pos < b->len) {
+        len = 0;
+        while (pos + len < b->len && b->buf[pos + len] != '\n') len++;
+        if (n >= CM_MAX_LINES) return;     /* function too large: leave alone */
+        cm_linestart[n] = pos;
+        cm_linelen[n] = len;
+        n++;
+        pos += len + 1;
+    }
+    if (n == 0) return;
+
+    /* 2. one unit per line; MOVW+MOVT of the same register fused into one,
+     *    because neither half is meaningful on its own. */
+    for (i = 0; i < n; i++) cm_owner[i] = -1;
+    for (i = 0; i < n; i++) {
+        CmUnit *cu;
+        char mn2[CM_MN_LEN], ops2[CM_OPS_LEN];
+        if (nu >= CM_MAX_UNITS) return;
+        cu = &cm_units[nu];
+        cu->line = i;
+        cu->nlines = 1;
+        cu->dst = -1;
+        cu->neutral = 0;
+        cu->rewrite = 0;
+        cu->dead = 0;
+        cu->bar = 0;
+        cu->mn[0] = 0;
+        cu->ops[0] = 0;
+        if (cm_trim(b->buf + cm_linestart[i], cm_linelen[i], t, sizeof t) < 0)
+            return;                        /* a long line: do not touch it */
+        if (!cm_split(t, cu->mn, sizeof cu->mn, cu->ops, sizeof cu->ops)) {
+            int tl = (int)strlen(t);
+            /* A label starts a new block.  Comments and directives do not:
+             * they carry no register or flag side effect, so the state of the
+             * block survives them (the copy passes above skip them too). */
+            if (tl > 0 && t[tl - 1] == ':') {
+                cu->bar = 1;
+                cm_owner[i] = (short)nu;
+                nu++;
+            }
+            continue;
+        }
+        if (cm_boundary(cu->mn)) {
+            cu->bar = 1;
+            cm_owner[i] = (short)nu;
+            nu++;
+            continue;
+        }
+        /* MOVW followed by MOVT of the same destination: fuse. */
+        if (cm_streq(cu->mn, "MOVW") && i + 1 < n) {
+            int rd = -1, rd2 = -1;
+            const char *rest = 0;
+            long long v;
+            if (cm_trim(b->buf + cm_linestart[i + 1], cm_linelen[i + 1],
+                        t, sizeof t) >= 0 &&
+                cm_split(t, mn2, sizeof mn2, ops2, sizeof ops2) &&
+                cm_streq(mn2, "MOVT") &&
+                cm_first_reg(cu->ops, &rd, &rest) && cm_imm(rest, &v) &&
+                cm_first_reg(ops2, &rd2, &rest) && cm_imm(rest, &v) &&
+                rd == rd2) {
+                cu->nlines = 2;
+                cu->dst = rd;
+                cu->neutral = 1;
+                cm_owner[i] = (short)nu;
+                cm_owner[i + 1] = (short)nu;
+                nu++;
+                i++;
+                continue;
+            }
+        }
+        if (cm_write_first(cu->mn)) {
+            const char *rest = 0;
+            int r = -1;
+            if (cm_first_reg(cu->ops, &r, &rest)) cu->dst = (signed char)r;
+        }
+        cu->neutral = (unsigned char)cm_neutral(cu->mn, cu->ops);
+        cm_owner[i] = (short)nu;
+        nu++;
+    }
+
+    /* 3. per-block walk: M1, M2, M3 rewrite, and the constant state is kept
+     *    only inside a block. */
+    for (i = 0; i < 13; i++) { cknown[i] = 0; cval[i] = 0; }
+    for (j = 0; j < nu; j++) {
+        CmUnit *cu = &cm_units[j];
+        unsigned rd;
+        int r;
+        if (cu->bar) {
+            for (r = 0; r < 13; r++) cknown[r] = 0;
+            continue;
+        }
+        rd = cm_uses(cu->mn, cu->ops, cu->dst);
+        if (cu->nlines == 2) {
+            /* MOVW+MOVT: the register now holds a value no small immediate can
+             * express, so any remembered constant for it is gone. */
+            if (cu->dst >= 0) cknown[cu->dst] = 0;
+            continue;
+        }
+        if (cm_streq(cu->mn, "MOV") && cu->dst >= 0) {
+            const char *rest = 0;
+            int rd2 = -1, rs = -1;
+            long long v;
+            if (cm_first_reg(cu->ops, &rd2, &rest)) {
+                if (cm_imm(rest, &v)) {
+                    cknown[cu->dst] = 1;
+                    cval[cu->dst] = v;
+                    continue;
+                }
+                if (cm_reg(rest, &rs)) {
+                    r = cu->dst;
+                    if (cknown[rs] && cval[rs] >= 0 && cval[rs] <= 255) {
+                        char nops[CM_OPS_LEN];
+                        int o;
+                        snprintf(nops, sizeof nops, "r%d, #%d", r, (int)cval[rs]);
+                        o = (int)strlen(nops);
+                        if (o < (int)sizeof cu->ops) {
+                            memcpy(cu->ops, nops, (size_t)o + 1);
+                            cu->rewrite = 1;
+                            changed++;
+                        }
+                    }
+                    if (cknown[rs]) { cknown[r] = 1; cval[r] = cval[rs]; }
+                    else cknown[r] = 0;
+                    continue;
+                }
+            }
+        } else {
+            int rt = -1, rb = -1, ri = -1, sh = 0;
+            if (cm_mem_idx(cu->mn, cu->ops, &rt, &rb, &ri, &sh)) {
+                if (ri != rb && cknown[ri]) {
+                    long long off = cval[ri] << sh;
+                    if (off >= 0 && off <= 4095) {
+                        char nops[CM_OPS_LEN];
+                        int o;
+                        snprintf(nops, sizeof nops, "r%d, [r%d, #%d]",
+                                 rt, rb, (int)off);
+                        o = (int)strlen(nops);
+                        if (o < (int)sizeof cu->ops) {
+                            memcpy(cu->ops, nops, (size_t)o + 1);
+                            cu->rewrite = 1;
+                            changed++;
+                        }
+                    }
+                }
+            }
+        }
+        /* whatever this unit touches is no longer known after it */
+        for (r = 0; r < 13; r++) {
+            if ((rd >> r) & 1) cknown[r] = 0;
+        }
+        if (cu->dst >= 0) cknown[cu->dst] = 0;
+    }
+
+    /* 4. M3: a flag-neutral write whose destination is written again later in
+     *    the same block before any read.  Ascending order is enough: dropping
+     *    a unit can never hide a later write from a unit still to come. */
+    for (j = 0; j < nu; j++) {
+        CmUnit *cu = &cm_units[j];
+        int d = cu->dst;
+        if (!cu->neutral || cu->dead || cu->bar || d < 0) continue;
+        for (i = j + 1; i < nu; i++) {
+            CmUnit *v = &cm_units[i];
+            if (v->bar) break;
+            if (v->dead) continue;
+            if ((cm_uses(v->mn, v->ops, v->dst) >> d) & 1) break;
+            if (v->dst == d) { cu->dead = 1; changed++; break; }
+        }
+    }
+
+    if (!changed) return;
+
+    /* 5. rebuild the function text */
+    asmbuf_init(&out);
+    for (i = 0; i < n; i++) {
+        int o = cm_owner[i];
+        int k;
+        if (o < 0) {                       /* line the pass did not model */
+            for (k = 0; k < cm_linelen[i]; k++)
+                asmbuf_putc(&out, b->buf[cm_linestart[i] + k]);
+            asmbuf_putc(&out, '\n');
+            continue;
+        }
+        if (cm_units[o].line != i) continue;          /* second half of pair */
+        if (cm_units[o].dead) continue;
+        if (cm_units[o].rewrite) {
+            asmbuf_puts(&out, "    ");
+            asmbuf_puts(&out, cm_units[o].mn);
+            if (cm_units[o].ops[0]) {
+                asmbuf_putc(&out, ' ');
+                asmbuf_puts(&out, cm_units[o].ops);
+            }
+            asmbuf_putc(&out, '\n');
+            continue;
+        }
+        for (k = 0; k < cm_linelen[i]; k++)
+            asmbuf_putc(&out, b->buf[cm_linestart[i] + k]);
+        asmbuf_putc(&out, '\n');
+        if (cm_units[o].nlines == 2) {     /* the MOVT half of the pair */
+            i++;
+            for (k = 0; k < cm_linelen[i]; k++)
+                asmbuf_putc(&out, b->buf[cm_linestart[i] + k]);
+            asmbuf_putc(&out, '\n');
+        }
+    }
+    /* Nothing changed?  Then leave the buffer exactly as it was. */
+    if (out.len == b->len - from &&
+        memcmp(out.buf, b->buf + from, (size_t)out.len) == 0) return;
+    asmbuf_reserve(b, from + out.len + 1);
+    if (from + out.len + 1 > b->cap) return;
+    for (i = 0; i < out.len; i++) b->buf[from + i] = out.buf[i];
+    b->buf[from + out.len] = 0;
+    b->len = from + out.len;
+}
+#endif /* ARKCC_FEATURE_OPT_CMAT */
+
 #if ARKCC_FEATURE_OPT_VSTACK
 /* ------------------- value stack -> register allocation -------------------
  * What this is: the IR is a stack machine, so the emitter spells every value
@@ -9630,6 +10202,13 @@ static char *codegen_arm(IrProgram *prog) {
         /* The text of this function is complete: it is the last slice of the
          * buffer, so the rewrite sees exactly this function and nothing else. */
         ark_regalloc_function(&buf, fstart, f, local_size);
+#endif
+#if ARKCC_FEATURE_OPT_CMAT
+        /* Constant materialisation cleanup, last of the text passes: it
+         * works on the final register names and the addresses regalloc
+         * left behind, and its folded offsets are always within 4095 so
+         * the far-offset fixer below has nothing to undo. */
+        if (g_config.enable_opt_cmat) ark_cmat_function(&buf, fstart);
 #endif
         /* Correctness, not an option: a frame slot beyond 4095 bytes cannot be
          * reached by "[r6, #off]" at all. */
