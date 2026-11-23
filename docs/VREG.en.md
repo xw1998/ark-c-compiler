@@ -1,4 +1,4 @@
-# S6 pre-registration: IR-level virtual register allocation (`-fopt-vreg`, not implemented)
+# S6: IR-level virtual register allocation (`-fopt-vreg`, implemented, off by default)
 
 English | [中文](VREG.md)
 
@@ -285,3 +285,91 @@ The first version ran vreg before regalloc: 95 TUs gave **18,151 → 18,310 (+15
 Repro: `int h2(int a,int b,int c,int d,int e,struct VgS *p){return e + p->a;}` returns `0x30B0xxxx` instead of 6 under `-fopt-vstack`; without the flag, or with only `-fopt-regalloc -fopt-constcache`, it is correct (five arguments are fine, six are not; six plain integers are unaffected -- one memory access is needed).
 
 The switch is off by default (0.9.1-wip), so `-O2` is unaffected. Fix: after widening, vstack calls the new `vs_shift_r6()`, which moves every `[r6, #n]` with `n >= frame` by **+8** -- the `PUSH` grew by one word *and* the frame by four, so the caller's arguments sit two words higher relative to `r6`. Shifting by four only lands on the newly saved word (measured: immediate `UC_ERR_READ_UNMAPPED`). After the fix `h2` returns 6 under `-fopt-vstack` and `vg3` (`p->a + p->d + a + b + c + d + e`) returns 56; `run_vstack_tests.py` and `run_vreg_tests.py` are green, and the 95-TU total is still 18,151 (immediates only, no instruction delta).
+
+## 12 Measured result (2026-11-23, S6b implemented: whole-block renaming)
+
+S6a only consumed the single load that fed the very next instruction. S6b widens the region to **the rest of the basic block**: once a promoted slot's load is dropped, every line in the same block that reads that load's destination reads the cache register instead, until one of these ends the region -- a branch/jump/label, `BL`/`BLX`, PUSH/POP or frame setup, another frame access, or a line that **writes** the destination without reading it (the low register no longer holds that value; a read-modify-write is renamed and kept, so the cache register carries the updated value down the same path). This section records measurement and implementation only; the frozen gates of §5 and the falsifiers of §6 are unchanged word for word.
+
+### 12.1 What changed relative to S6a (three things, and one departure from the §4 plan)
+
+One discrepancy first: §4 describes S6b as "cross-block: linear scan + interval merging". What actually landed first is **whole-block renaming** -- the region boundary is still a single path inside one block (any branch or label ends it), with no cross-block liveness and no interval merging. S6a's -2.29% was still far from F1 (archive if below 5%), and whole-block renaming eats most of the readers without needing a CFG at all, so it was made into its own slice and archived on its own; "cross-block linear scan + interval merging" moves to **S6b-2**, still under the same F1.
+
+
+1. **Region: one line -> the whole basic block.** Each of a slot's loads now consumes all its readers in the block, so the hit rate grows from "the next instruction" to "every reader in the block".
+2. **One line can carry several renames.** With a block-wide region a single line may read two promoted slots (`ADD r0, r3, r4`), so the rename is a **per-line map of up to 4 pairs** (`VG_MAX_MAP 4`) applied in sequence instead of a single `(from,to)` pair.
+3. **Frame alignment: add a register, not a word.** The frame was 8-aligned before the pass, so after adding `nregs` registers it is still aligned **iff `nregs` is even** (independent of the parity of `saved_words`). When odd, one more r8-r11 is taken from the pool -- any r8-r11 name in a `PUSH` costs 32 bits either way, so the spare register adds no instruction; if the pool has no spare, the function is left alone.
+
+### 12.2 Measured numbers (95 TUs, Cortex-M4, sixteen switches + `-fopt-coalesce`)
+
+| Configuration | Instructions | vs baseline |
+|---|---|---|
+| Baseline (no `-fopt-vreg`) | 18,151 | -- |
+| S6a (point elision) | 17,736 | -415 (-2.29%) |
+| **S6b (whole-block renaming)** | **17,350** | **-801 (-4.41%)** |
+
+S6b saves a further **386** instructions over S6a. 14 TUs change; the six largest: `stm32f4xx_hal_dma.c` 2,603->2,316 (-287), `stm32f4xx_hal_gpio.c` 883->756 (-127), `stm32f4xx_hal_rcc.c` 2,780->2,677 (-103), `stm32f4xx_hal_exti.c` 626->572 (-54), `stm32f4xx_hal_cortex.c` 790->743 (-47), `stm32f4xx_ll_utils.c` 819->773 (-46). The rest: `flash_ex` -38, `rcc_ex` -35, `dma_ex` -22, `flash` -22, `hal` -8, `pwr` -5. **No TU grows.**
+
+### 12.3 Gates (all green)
+
+| Gate | Result |
+|---|---|
+| `tests/run_vreg_tests.py` (with the new `deep` fixture, expects 116) | all checks passed |
+| `tests/run_vstack_tests.py` | all checks passed |
+| `tests/run_coalesce_tests.py` | all checks passed |
+| `tests/run_regalloc_tests.py --arkcc ./arkcc.exe` | all claims hold |
+| `tests/arm_exec/run_arm_exec.py --arkcc ./arkcc.exe` | 0 failure(s) |
+| same with `--extra=-fopt-vreg` | 0 failure(s) |
+| `tests/asm_cases/run_asm_cmp.py` (disassembly text against GNU as + objdump) | identical=12 differ=0; 24 `--asm-extra` mnemonics and 15 refusal reasons green |
+| OFF IS OFF (vreg off, sixteen switches, 95 TUs vs the pre-change baseline) | identical 95 / different 0 |
+
+This round also added a **third-party semantic cross-check** (the throwaway `hisem.py`): the same line is assembled by both `arm-none-eabi-as` (12.3.rel1, shipped with STM32CubeIDE) and `arkcc`, each executed in unicorn (`UC_MODE_THUMB|UC_MODE_MCLASS`, single step), and `r0-r14` plus NZCV are compared. 31 forms (CMP high/low/immediate, LSL/LSR/ASR three- and two-operand, MUL/MULS, NEG/RSB) give **bad=0**. The criterion is semantic equivalence, not identical bytes: one syntax may have several legal encodings (16-bit vs 32-bit), and it passes as long as every register and flag agrees.
+
+### 12.4 Four real defects (each only surfaced once slots reached `r8-r11`)
+
+None of these was a typo in new code. Each was an **assumption in existing code that happened to hold while only r0-r7 were in play**. `-fopt-vreg` was the first pass to put locals in r8-r11 and the first to feed a real two-operand shift into the assembler, and all four assumptions broke at once.
+
+**12.4.1 The built-in assembler silently truncated high registers (CMP / immediate CMP / NEG / MUL)**
+
+| Source | Encoding before the fix | Consequence |
+|---|---|---|
+| `CMP r9, r7` | `cmp r1, r15` | compares the wrong pair, condition codes all wrong |
+| `CMP r9, #4` | `cmp r1, #4` | T1 `CMP Rn,#imm8` carries only 3 bits of Rn and the code never looked at `rn` |
+| `NEG r9, r7` | `rsbs r1, r7, #0` | destination truncated to r1 |
+| `MUL r9, r8, r7` | hard error, stop | T2 already supports three distinct registers |
+
+The fix is not "reject it", but completing the 32-bit forms: `CMP` via `0xEBB0|Rn` + `0x0F00|Rm`; `CMP Rn,#imm` via `0xF1B0|i<<10|Rn` + `imm3<<12|0x0F00|imm8`; `NEG` (= `RSB Rd,Rm,#0`) via `0xF1C0|Rm` + `Rd<<8`; `MUL` via `0xFB00|Rn` + `0xF000|Rd<<8|Rm`. Just as important, **pass 1's byte-width decision had to be corrected in step** -- `MUL`'s pass 1 simply `(void)`-ed the third register `rn1`, so `MUL r1,r2,r3` was laid out at two bytes while pass 2 wrote four (or the reverse), and every label downstream drifted. **Both passes must derive their width from the same predicate.**
+
+One field was also settled after I got it wrong once: in T2 16-bit `CMP Rn,Rm` (`0100 0101 0 Rm Rn`), **Rm is the full four bits [6:3]**, **Rn is only three bits**, and bit 7 is always 0. gas encodes `CMP r1, r9` as `0x4549`. My first fix took bit 3 as an N bit of Rn, which was still wrong; gas / capstone / unicorn now agree.
+
+**12.4.2 Two-operand shift had its operand roles reversed (the worst defect this round)**
+
+Thumb's two-operand `LSL Rd, Rs` means **`Rd = Rd << Rs`** -- the value being shifted is **the destination itself** and the second operand is the shift amount. The old code assumed the shifted value was the second operand, so `LSL r0, r1` was encoded as `lsls r0, r0, r0`.
+
+How it surfaced: the `alone` arm of the `merge` / `selfsrc` fixtures in `run_coalesce_tests.py` (only `-fopt-coalesce`, so strength reduction has not folded `<<3` into an immediate) returned 2070 / 5 where 86 / 35 were expected. Tracing SRAM writes in unicorn located `cs_c = 0x800` (`8 << 8`, should be `8 << 3`).
+
+The fix separates the three operand shapes:
+
+```c
+if (rs >= 0)     { rn_src = rm; rs_amt = rs; }   /* three-operand Rd, Rn, Rs */
+else if (is_imm) { rn_src = rm; rs_amt = rd; }   /* immediate    Rd, Rn, #imm */
+else             { rn_src = rd; rs_amt = rm; }   /* two-operand  Rd, Rs -> Rd = Rd shift Rs */
+```
+
+What makes this defect dangerous is that **it had always been there**: as long as no real two-operand shift reached the assembler it never fired. `-fopt-strength` folds `x << 3` into an immediate, which covered it exactly; only the fixture arm that deliberately keeps it uncovered pulled it out.
+
+**12.4.3 `vg_reads_reg` could not tell "write-only" from "read-modify-write"**
+
+With a block-wide region, boundaries depend on whether a line reads or writes the destination. The first version treated **the first operand as a write target unconditionally**: `ADD r0, r1` is the two-operand form (`r0 = r0 + r1`) and **reads** r0, but the first version called it write-only, so the region ended early and that line was not renamed -- it kept reading the stale value in the low register. The opposite error is just as bad: renaming a write-only line lets the cache register and the low register diverge.
+
+The final rule: **every operand after the first counts as a read**; the first operand also counts as a read under a **two-operand data-processing form** (`ADD/SUB/AND/ORR/EOR/ADC/SBC/RSB/RSC/MUL/MLA/BIC/ORN/LSL/LSR/ASR/ROR/RRX/MVN/NEG`) and counts as write-only otherwise (`LDR`/`MOV`/`MOVW`/`MOVT`/`LDRB`...). Erring towards "reads" is the safe direction: a needless rename just copies the same value into the cache register, while a missed read is a wrong answer.
+
+**12.4.4 In-place renaming overwrote text still being read**
+
+`r8` is one character longer than `r3`. The first version replaced `r3` with `r8` in place in one buffer, and the second rename then read from text that had already been lengthened/rewritten -- overflow or shifted characters. The fix is **double-buffered ping-pong**: `line -> rl -> rl2 -> ...`, read one buffer while writing the other, and leave `res` pointing at the last one written.
+
+### 12.5 Measurement discipline (unchanged)
+
+- S6a and S6b numbers are re-measured on the **final binary**, never carried over from intermediate readings.
+- Every gate builds its command line through the `build()` helper in `tests/`, never by hand, so fixtures and gates cannot drift apart.
+- `-fopt-vreg` is still **off by default**; an `ARKCC_FEATURE_VREG=0` build rejects the flag by name (C3900U), and without the flag the sixteen-switch output is byte-identical (95/95 identical).
+- This section only appends measurement and implementation. The seven frozen gates of §5 and the F1-F4 falsifiers of §6 are **unchanged word for word**. S6c (across `BL` + spill, with a cost/benefit criterion) is still not started.

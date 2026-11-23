@@ -223,7 +223,7 @@ REFUSE_CASES = [
     ("ldrd r0, r1, [r2, r3]", "not exist for this instruction"),
     ("vldr s0, [r1, r2]",   "not exist for this instruction"),
     ("ldr r0, [r1, #4096]", "0..4095"),
-    ("mov r0, #0x12345",    "0..65535"),
+    ("mov r0, #0x12345",    "MOV immediate is out of range"),
     ("add r0, r1, #5000",   "0..4095"),
     ("sub sp, sp, #5000",   "0..4095"),
     ("addw r0, r1, #5000",  "0..4095"),

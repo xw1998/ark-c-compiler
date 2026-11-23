@@ -3101,8 +3101,14 @@ static unsigned char  vg_dr[VG_MAX_LINES];   /* destination/source register of a
 static int            vg_ptr[VG_MAX_LINES];
 static int            vg_cons[VG_MAX_LINES]; /* consumer line of an elidable LDR, else -1 */
 static unsigned char  vg_act[VG_MAX_LINES];  /* 0 copy, 1 drop, 2 MOV rD<-rC, 3 MOV rC<-rS, 4 rename */
-static signed char    vg_ren[VG_MAX_LINES];  /* register for act 2/3/4           */
+static signed char    vg_ren[VG_MAX_LINES];  /* register for act 2/3             */
 static unsigned char  vg_rf[VG_MAX_LINES];   /* register to rename in act 4      */
+/* S6b: one line can carry several renames (two loads live across it), so the
+ * rename is kept as a small per-line map instead of a single pair. */
+#define VG_MAX_MAP 4
+static signed char    vg_mf[VG_MAX_LINES][VG_MAX_MAP];
+static signed char    vg_mt[VG_MAX_LINES][VG_MAX_MAP];
+static unsigned char  vg_mn[VG_MAX_LINES];
 static int            vg_esc_lo;             /* lowest escaped frame offset      */
 
 static int vg_isalpha(char c) {
@@ -3257,6 +3263,53 @@ static int vg_mentions_reg(const char *ln, int reg) {
             return 1;
         p += n;
     }
+    return 0;
+}
+
+/* Does the instruction actually *read* reg?  vg_mentions_reg cannot tell a
+ * destination from a source ("LDR r0, [r5]" writes r0 and reads only r5), and
+ * the difference matters here: a write-only line ends a rename region while a
+ * read-modify-write has to be renamed and kept.  Operands after the first are
+ * always read; a two-operand data-processing form also reads its destination
+ * (Thumb "ADD r0, r1" is "r0 = r0 + r1").  Erring towards "reads" is the safe
+ * direction: the line is then renamed, so the cache register takes the same
+ * value the low register would have. */
+static int vg_reads_reg(const char *ln, int reg) {
+    char mn[8];
+    const char *s = ln, *p;
+    int depth = 0, nops = 1, i;
+    static const char *const twoop[] = {
+        "ADD", "SUB", "AND", "ORR", "EOR", "ADC", "SBC", "RSB", "RSC",
+        "MUL", "MLA", "BIC", "ORN", "LSL", "LSR", "ASR", "ROR", "RRX",
+        "MVN", "NEG", 0
+    };
+    if (!vg_mnem(ln, mn)) return 0;
+    while (*s == ' ' || *s == '\t') s++;
+    while (vg_isalpha(*s)) s++;
+    while (*s == ' ' || *s == '\t') s++;
+    if (!*s) return 0;
+    for (p = s; *p; p++) {
+        if (*p == '[' || *p == '{') depth++;
+        else if (*p == ']' || *p == '}') depth--;
+        else if (*p == ',' && depth == 0) nops++;
+    }
+    depth = 0;
+    for (p = s; *p; p++) {
+        if (*p == '[' || *p == '{') depth++;
+        else if (*p == ']' || *p == '}') depth--;
+        else if (*p == ',' && depth == 0) break;
+    }
+    if (*p) {
+        char tail[512];
+        int k = 0;
+        p++;
+        while (*p && k < (int)sizeof(tail) - 1) tail[k++] = *p++;
+        tail[k] = 0;
+        if (vg_mentions_reg(tail, reg)) return 1;
+    }
+    if (nops == 2)
+        for (i = 0; twoop[i]; i++)
+            if (strcmp(mn, twoop[i]) == 0) return 1;
     return 0;
 }
 
@@ -3432,6 +3485,7 @@ static void ark_vreg_function(AsmBuffer *b, int from, IrFunc *f, int local_eff) 
         vg_act[nlines] = 0;
         vg_ren[nlines] = -1;
         vg_rf[nlines] = 0;
+        vg_mn[nlines] = 0;
         nlines++;
         pos += len + 1;
     }
@@ -3533,35 +3587,60 @@ static void ark_vreg_function(AsmBuffer *b, int from, IrFunc *f, int local_eff) 
         if (!(used_mask & (1u << (k - 8)))) free_regs[nfree++] = k;
     if (nfree == 0) return;
 
-    /* Pass 2: which loads can be elided (their consumer renamed).  The
-     * consumer is the next *instruction*; the register it must read is the one
-     * the load wrote, and it must not write it back. */
+    /* Pass 2: which loads can be elided.  S6b widens the region from "the very
+     * next instruction" to the rest of the basic block: the load is dropped and
+     * every line inside the region that reads the load's destination reads the
+     * cache register instead.  This is safe because the region has a single
+     * path (the scan stops at any barrier, so a rename never crosses a branch,
+     * a call or a prologue/epilogue) and the cache register already holds the
+     * slot's value everywhere (every store became "MOV rC, rS").
+     *
+     * The scan also stops at any other frame access and at the first line that
+     * *overwrites* the destination without reading it -- after that the low
+     * register carries a different value.  A read-modify-write of the
+     * destination is renamed and kept: the cache register then carries the
+     * updated value down the same path. */
     for (i = 0; i < nlines; i++) {
-        int j, s, dr;
+        int j, s, dr, end;
         vg_cons[i] = -1;
         if (vg_lk[i] != 1) continue;
         s = vg_lo[i];
         if (s < 0 || vg_slots[s].taint) continue;
         dr = vg_dr[i];
-        if (dr < 0) continue;
-        j = i + 1;
-        while (j < nlines && vg_lk[j] == 0 && !vg_is_ins_at(b, j)) j++;
-        if (j >= nlines) continue;
-        if (vg_lk[j] != 0) continue;            /* next is a frame access or barrier */
-        if (!vg_is_ins_at(b, j)) continue;
-        {
+        if (dr < 0 || vg_it[i]) continue;
+        end = -1;
+        for (j = i + 1; j < nlines; j++) {
             int len = vg_ll[j];
             char cl[256];
-            if (len >= (int)sizeof(cl) - 1) continue;
+            if (vg_lk[j] == 3 || vg_lk[j] == 4) break;   /* barrier / prologue */
+            if (vg_lk[j] == 2) {
+                /* A store whose source is this register has to be renamed as
+                 * well, or it would write the pre-load value back.  A store of
+                 * any other value does not touch this register at all. */
+                if (vg_dr[j] != dr) continue;
+                end = j + 1;
+                continue;
+            }
+            if (vg_lk[j] == 1) {
+                /* Another slot's load only ends the region when it overwrites
+                 * this very register; otherwise it touches a different one. */
+                if (vg_dr[j] == dr) { end = j; break; }
+                continue;
+            }
+            if (!vg_is_ins_at(b, j)) continue;  /* blank or comment */
+            if (len >= (int)sizeof(cl) - 1) { end = -1; break; }
             for (k = 0; k < len; k++) cl[k] = b->buf[vg_ptr[j] + k];
             cl[len] = 0;
-            if (vg_it[j]) continue;
-            if (vg_writes_reg(cl, dr)) continue;
-            if (!vg_mentions_reg(cl, dr)) continue;
-            if (vg_hi_mask(cl)) continue;       /* a high register is already named */
-            vg_cons[i] = j;
-            vg_slots[s].elid++;
+            if (vg_writes_reg(cl, dr)) {
+                if (!vg_reads_reg(cl, dr)) { end = j; break; }
+                if (vg_mentions_reg(cl, dr)) end = j + 1;
+                continue;                       /* read-modify-write: keep it */
+            }
+            if (vg_mentions_reg(cl, dr)) end = j + 1;
         }
+        if (end < 0) continue;                  /* nothing to rename */
+        vg_cons[i] = end;
+        vg_slots[s].elid++;
     }
 
     /* Pass 3: pick slots.  Rank by elided loads, take what the pool holds. */
@@ -3579,14 +3658,17 @@ static void ark_vreg_function(AsmBuffer *b, int from, IrFunc *f, int local_eff) 
         made[nregs++] = free_regs[k];
     }
     if (nregs == 0) return;
-    if ((saved_words + nregs) & 1) {             /* keep the saved block 8-aligned */
+    if (nregs & 1) {
+        /* The frame was 8-aligned before this pass, so an odd number of added
+         * words would leave sp at 4 mod 8.  One spare high register costs
+         * nothing (a PUSH naming any of r8-r11 is 32-bit either way). */
         int j;
         for (j = 0; j < nfree; j++) {
             int used = 0, q;
             for (q = 0; q < nregs; q++) if (made[q] == free_regs[j]) used = 1;
             if (!used) { made[nregs++] = free_regs[j]; break; }
         }
-        if ((saved_words + nregs) & 1) return;   /* no spare left: leave the function */
+        if (nregs & 1) return;                   /* no spare left: leave the function */
     }
 
     /* Assign actions. */
@@ -3598,12 +3680,28 @@ static void ark_vreg_function(AsmBuffer *b, int from, IrFunc *f, int local_eff) 
         r = vg_slots[s].reg;
         if (!r) continue;
         if (vg_lk[i] == 1) {
-            if (vg_cons[i] >= 0) {
-                vg_act[i] = 1;                    /* drop the load ... */
-                vg_act[vg_cons[i]] = 4;           /* ... and rename its consumer */
-                vg_ren[vg_cons[i]] = (signed char)r;
-                vg_rf[vg_cons[i]] = vg_dr[i];
+            int ok = (vg_cons[i] > i + 0) ? 1 : 0, dr = vg_dr[i];
+            if (ok) {
+                int j;
+                for (j = i + 1; j < vg_cons[i]; j++) {
+                    int len = vg_ll[j];
+                    char cl[256];
+                    if (!vg_is_ins_at(b, j)) continue;
+                    if (len >= (int)sizeof(cl) - 1) { ok = 0; break; }
+                    for (k = 0; k < len; k++) cl[k] = b->buf[vg_ptr[j] + k];
+                    cl[len] = 0;
+                    if (!vg_mentions_reg(cl, dr)) continue;
+                    if (vg_mn[j] >= VG_MAX_MAP) { ok = 0; break; }
+                    vg_mf[j][vg_mn[j]] = (signed char)dr;
+                    vg_mt[j][vg_mn[j]] = (signed char)r;
+                    vg_mn[j]++;
+                }
+            }
+            if (ok) {
+                vg_act[i] = 1;                    /* drop the load; the region reads rC */
             } else {
+                /* Any rename already recorded stays: it names the same slot's
+                 * cache register, so it is just as correct as the MOV. */
                 vg_act[i] = 2;                    /* MOV rD, rC: same count */
                 vg_ren[i] = (signed char)r;
             }
@@ -3629,17 +3727,52 @@ static void ark_vreg_function(AsmBuffer *b, int from, IrFunc *f, int local_eff) 
             continue;
         }
         if (vg_act[i] == 3) {
-            asmbuf_puts(&out, "    MOV r");
-            asmbuf_int(&out, vg_ren[i]);
-            asmbuf_puts(&out, ", r");
-            asmbuf_int(&out, vg_dr[i]);
+            /* "MOV rC, rS".  If the source register was itself renamed (this
+             * store sits inside another slot's region) the copy reads that
+             * slot's cache register; and when the two names coincide the copy
+             * is a no-op, which is one instruction saved. */
+            char mv[128], rl[512], rl2[512];
+            const char *res = mv;
+            int m, p2 = 0, selfmove = 0;
+            mv[p2++] = 'M'; mv[p2++] = 'O'; mv[p2++] = 'V'; mv[p2++] = ' ';
+            mv[p2++] = 'r';
+            if (vg_ren[i] >= 10) {
+                mv[p2++] = (char)('0' + vg_ren[i] / 10);
+                mv[p2++] = (char)('0' + vg_ren[i] % 10);
+            } else mv[p2++] = (char)('0' + vg_ren[i]);
+            mv[p2++] = ','; mv[p2++] = ' '; mv[p2++] = 'r';
+            if (vg_dr[i] >= 10) {
+                mv[p2++] = (char)('0' + vg_dr[i] / 10);
+                mv[p2++] = (char)('0' + vg_dr[i] % 10);
+            } else mv[p2++] = (char)('0' + vg_dr[i]);
+            mv[p2] = 0;
+            for (m = 0; m < vg_mn[i]; m++) {
+                const char *in = (m == 0) ? mv : res;
+                char *dst = (m & 1) ? rl2 : rl;
+                if (vg_mf[i][m] == (signed char)vg_dr[i] &&
+                    vg_mt[i][m] == (signed char)vg_ren[i]) selfmove = 1;
+                if (!vg_rename_reg(in, vg_mf[i][m], vg_mt[i][m], dst)) return;
+                res = dst;
+            }
+            if (selfmove) continue;              /* MOV rC, rC */
+            asmbuf_puts(&out, "    ");
+            asmbuf_puts(&out, res);
             asmbuf_putc(&out, '\n');
             continue;
         }
-        if (vg_act[i] == 4) {
-            char rl[512];
-            if (!vg_rename_reg(line, vg_rf[i], vg_ren[i], rl)) return;   /* would be a bug */
-            asmbuf_puts(&out, rl);
+        if (vg_mn[i]) {                        /* S6b: renamed reads of a cache reg */
+            /* Ping-pong buffers: "r8" is one character longer than "r3", so a
+             * rename cannot write over the text it is still reading. */
+            char rl[512], rl2[512];
+            const char *res = line;
+            int m;
+            for (m = 0; m < vg_mn[i]; m++) {
+                const char *in = (m == 0) ? line : res;
+                char *dst = (m & 1) ? rl2 : rl;
+                if (!vg_rename_reg(in, vg_mf[i][m], vg_mt[i][m], dst)) return;
+                res = dst;
+            }
+            asmbuf_puts(&out, res);
             asmbuf_putc(&out, '\n');
             continue;
         }
@@ -13857,6 +13990,49 @@ static void pass1_a(ArmAsm *a) {
                         else         pc += 2;
                     }
                 }
+            } else if (strieq_a(first, "MUL") || strieq_a(first, "LSL") ||
+                       strieq_a(first, "LSR") || strieq_a(first, "ASR")) {
+                /* The 16-bit forms of MUL and of the shifts name r0-r7 only.
+                 * A high register forces the 32-bit encoding, so pass 1 has to
+                 * look at the registers instead of assuming two bytes -- the
+                 * same rule pass 2 applies.  (It used to assume two bytes and
+                 * pass 2 masked with 7, so "LSL r9, r9, #2" assembled as
+                 * "LSLS r1, r1, #2": a silent wrong answer produced by this
+                 * compiler's own -fopt-vreg renaming.) */
+                int wide1;
+                if (strieq_a(first, "MUL")) {
+                    int rd1 = parse_reg_a(&p), rn1, rm1, second1;
+                    eat_comma_a(&p); second1 = parse_reg_a(&p);
+                    skip_space_a(&p);
+                    if (*p == ',') { rn1 = second1; eat_comma_a(&p); rm1 = parse_reg_a(&p); }
+                    else           { rn1 = rd1;     rm1 = second1; }
+                    /* 16-bit MULS requires Rd == Rn and r0-r7; everything
+                     * else (including three distinct registers) is the 32-bit
+                     * T2 form.  This used to ignore rn1, so "MUL r1, r2, r3"
+                     * was laid out at two bytes while pass 2 wrote four. */
+                    wide1 = !(rd1 >= 0 && rd1 <= 7 && rn1 == rd1 &&
+                              rm1 >= 0 && rm1 <= 7);
+                } else {
+                    int rd1 = parse_reg_a(&p), rm1, rs1 = -1;
+                    eat_comma_a(&p); rm1 = parse_reg_a(&p);
+                    skip_space_a(&p);
+                    if (*p == ',') {
+                        p++; skip_space_a(&p);
+                        if (*p == '#') (void)parse_imm_a(&p);
+                        else           rs1 = parse_reg_a(&p);
+                    }
+                    wide1 = !(rd1 >= 0 && rd1 <= 7 && rm1 >= 0 && rm1 <= 7 &&
+                              (rs1 < 0 || rs1 <= 7));
+                }
+                pc += wide1 ? 4 : 2;
+            } else if (strieq_a(first, "NEG") || strieq_a(first, "RSB")) {
+                /* NEG Rd, Rm is RSB Rd, Rm, #0; the 16-bit form names r0-r7
+                 * only, so a high register takes the 32-bit RSB. */
+                int rd1 = parse_reg_a(&p), rm1;
+                eat_comma_a(&p); rm1 = parse_reg_a(&p);
+                skip_space_a(&p);
+                if (*p == ',') { p++; skip_space_a(&p); if (*p == '#') (void)parse_imm_a(&p); pc += 4; }
+                else pc += (rd1 >= 0 && rd1 <= 7 && rm1 >= 0 && rm1 <= 7) ? 2 : 4;
             } else if (strieq_a(first, "LSLS") || strieq_a(first, "LSRS") ||
                        strieq_a(first, "ASRS")) {
                 /* --asm-extra: 16-bit immediate / 16-bit two-operand register form,
@@ -13875,18 +14051,23 @@ static void pass1_a(ArmAsm *a) {
                 }
                 pc += third_is_reg ? 4 : 2;
             } else if (strieq_a(first, "CMP")) {
-                /* CMP Rn, #imm: T1 (2B) for imm 0-255, T2 (4B) for larger. */
+                /* CMP Rn, #imm: T1 (2B) for imm 0-255, T2 (4B) for larger.
+                 * CMP Rn, Rm: T2 (2B) names r0-r15 in Rn but only r0-r7 in
+                 * Rm, so a high Rm takes the 32-bit form.  Assuming two bytes
+                 * for every register form used to truncate r8-r11 to their low
+                 * three bits (measured: "CMP r9, r7" became "CMP r1, r7").
+                 * ONLY Rn is three bits wide in both 16-bit forms; the N bit
+                 * of "01000101 N Rm Rn" carries bit 3 of Rm. */
                 int rn = parse_reg_a(&p);
-                (void)rn;
                 skip_space_a(&p);
                 if (*p == ',') { p++; skip_space_a(&p); }
                 if (*p == '#') {
                     int imm = parse_imm_a(&p);
-                    if (imm >= 0 && imm <= 255) pc += 2;
+                    if (rn >= 0 && rn <= 7 && imm >= 0 && imm <= 255) pc += 2;
                     else pc += 4;
                 } else {
                     (void)parse_reg_a(&p);
-                    pc += 2;
+                    pc += (rn >= 0 && rn <= 7) ? 2 : 4;
                 }
             } else if (strieq_a(first, "MOVEQ") || strieq_a(first, "MOVNE") ||
                        strieq_a(first, "MOVLT") || strieq_a(first, "MOVGT") ||
@@ -15022,9 +15203,10 @@ static void pass2_a(ArmAsm *a) {
         else if (strieq_a(first, "MUL")) {
             /* MULS T1 (16-bit): MULS <Rdn>, <Rn>, <Rdm> with Rd == Rn.
              * The two-operand form MULS Rd, Rm is the same encoding (Rn = Rd).
-             * Three distinct registers need the 32-bit MUL T2 form, which this
-             * encoder does not emit: reject it loudly instead of silently
-             * dropping the third operand (MOD codegen emits "MUL r2, r2, r1"). */
+             * Anything else -- a high register, or three distinct registers --
+             * takes the 32-bit MUL T2 form, which names r0-r15 in all three
+             * slots.  The third operand used to be dropped on the floor for
+             * "MUL r2, r2, r1"; it is now encoded for real. */
             int rd = parse_reg_a(&p); int rn, rm, second;
             eat_comma_a(&p); second = parse_reg_a(&p);
             skip_space_a(&p);
@@ -15035,17 +15217,19 @@ static void pass2_a(ArmAsm *a) {
                 rn = rd;                      /* two-operand: Rd = Rd * Rm */
                 rm = second;
             }
-            if (rd != rn) {
-                {
-                    char b1[12], b2[12];
-                    diag_tool(DIAG_SEV_ERROR, "arkcc",
-                              "MUL with three distinct registers (Rd=r%s, Rn=r%s) "
-                              "needs the 32-bit form, not supported",
-                              diag_num(b1, rd), diag_num(b2, rn), 0,0,0,0);
-                }
-                a->hard_errors++;
+            if (rd == rn && rd >= 0 && rd <= 7 && rm >= 0 && rm <= 7) {
+                out16(a, 0x4340 | ((rm & 7) << 3) | (rd & 7));
+            } else {
+                /* MUL T2 (32-bit) names r0-r15: 0xFB00|Rn ; 0xF000|Rd<<8|Rm.
+                 * pass 1 already widened the instruction when a high register
+                 * was named, so emitting two bytes here would desynchronise
+                 * every later label -- and masking with 7 would silently
+                 * multiply the wrong register (-fopt-vreg produces
+                 * "MUL r9, r9, r7"). */
+                out16(a, 0xFB00u | (unsigned)(rn & 0xF));
+                out16(a, 0xF000u | (unsigned)((rd & 0xF) << 8) |
+                         (unsigned)(rm & 0xF));
             }
-            out16(a, 0x4340 | ((rm & 7) << 3) | (rd & 7));
         }
         else if (strieq_a(first, "ADC") || strieq_a(first, "SBC")) {
             /* Carry-propagating add/subtract.  16-bit Thumb only has the
@@ -15129,64 +15313,70 @@ static void pass2_a(ArmAsm *a) {
                  strieq_a(first, "MVN")) {
             (void)logic_dp_a(a, first, &p, 1);
         }
-        else if (strieq_a(first, "LSL")) {
+        else if (strieq_a(first, "LSL") || strieq_a(first, "LSR") ||
+                 strieq_a(first, "ASR")) {
+            /* Three shapes, and every one of them has a 16-bit form that names
+             * r0-r7 only and a 32-bit form that names r0-r15.  Masking with 7
+             * used to turn "LSL r9, r9, #2" into "LSLS r1, r1, #2" -- a silent
+             * wrong answer, and one this compiler produced itself once
+             * -fopt-vreg started renaming frame slots into r8-r11.
+             *   16-bit immediate : imm5<<6 | Rm<<3 | Rd        (type in 0x1800)
+             *   32-bit immediate : EA4F ; imm3 Rd imm2 type Rm
+             *   16-bit register  : 0x4080 | Rs<<3 | Rs          (type in 0x0040)
+             *   32-bit register  : FA0x(0/20/40) Rn ; F000 Rd Rs
+             */
+            int is_lsr = strieq_a(first, "LSR");
+            int is_asr = strieq_a(first, "ASR");
+            int sh16 = is_lsr ? 0x0800 : (is_asr ? 0x1000 : 0x0000);
+            int rg16 = is_lsr ? 0x40C0 : (is_asr ? 0x4100 : 0x4080);
+            unsigned type2 = is_lsr ? 1u : (is_asr ? 2u : 0u);
             int rd = parse_reg_a(&p); int rm;
             eat_comma_a(&p); rm = parse_reg_a(&p);
             skip_space_a(&p);
-            if (*p == ',') {
-                /* LSL rd, rm, #imm5 (T1 immediate shift) */
-                p++; skip_space_a(&p);
-                if (*p == '#') {
-                    int imm = parse_imm_a(&p) & 0x1F;
-                    out16(a, (unsigned)(imm << 6) | ((rm & 7) << 3) | (rd & 7));
-                } else {
-                    int rm2 = parse_reg_a(&p);
-                    out16(a, 0x4080 | ((rm2 & 7) << 3) | (rd & 7));
+            {
+                int is_imm = 0, imm = 0, rs = -1, rn_src, rs_amt;
+                if (*p == ',') {
+                    p++; skip_space_a(&p);
+                    if (*p == '#') { imm = parse_imm_a(&p); is_imm = 1; }
+                    else           rs = parse_reg_a(&p);
                 }
-            } else {
-                /* LSL rd, rm (T1 register shift) */
-                out16(a, 0x4080 | ((rm & 7) << 3) | (rd & 7));
-            }
-        }
-        else if (strieq_a(first, "LSR")) {
-            int rd = parse_reg_a(&p); int rm;
-            eat_comma_a(&p); rm = parse_reg_a(&p);
-            skip_space_a(&p);
-            if (*p == ',') {
-                /* LSR rd, rm, #imm5 (T1 immediate shift; imm5=0 means 32) */
-                p++; skip_space_a(&p);
-                if (*p == '#') {
-                    int imm = parse_imm_a(&p);
-                    int imm5 = (imm >= 32) ? 0 : (imm & 0x1F);
-                    out16(a, 0x0800 | (unsigned)(imm5 << 6) | ((rm & 7) << 3) | (rd & 7));
+                /* Operand roles, which are easy to get backwards:
+                 *   Rd, Rn, Rs   -> result Rd, value Rn, amount Rs
+                 *   Rd, Rn, #imm -> result Rd, value Rn
+                 *   Rd, Rs       -> result Rd, value Rd (the destination is
+                 *                   the shifted value), amount Rs
+                 * The two-operand form used to set rn_src=Rs and rs_amt=Rd,
+                 * which assembled the backend's own "LSL r0, r1" as
+                 * "LSLS r0, r0, r0" -- it shifted a value by its own low
+                 * byte (measured: 8 << 8 = 0x800 where 8 << 3 was meant). */
+                if (rs >= 0)     { rn_src = rm; rs_amt = rs; }
+                else if (is_imm) { rn_src = rm; rs_amt = rd; }
+                else             { rn_src = rd; rs_amt = rm; }
+                if (rd >= 0 && rd <= 7 && rm >= 0 && rm <= 7 && rs_amt >= 0 && rs_amt <= 7) {
+                    if (is_imm) {
+                        int imm5;
+                        if (is_lsr || is_asr) imm5 = (imm >= 32) ? 0 : (imm & 0x1F);
+                        else                  imm5 = imm & 0x1F;
+                        out16(a, (unsigned)sh16 | (unsigned)(imm5 << 6) |
+                                 ((rm & 7) << 3) | (rd & 7));
+                    } else {
+                        out16(a, (unsigned)rg16 | ((rs_amt & 7) << 3) | (rd & 7));
+                    }
+                } else if (is_imm) {
+                    int imm5 = (is_lsr || is_asr)
+                                   ? ((imm >= 32) ? 0 : (imm & 0x1F))
+                                   : (imm & 0x1F);
+                    out16(a, 0xEA4Fu);
+                    out16(a, (unsigned)(((imm5 >> 2) & 7) << 12) |
+                             (unsigned)((rd & 0xF) << 8) |
+                             (unsigned)((imm5 & 3) << 6) |
+                             (type2 << 4) | (unsigned)(rn_src & 0xF));
                 } else {
-                    int rm2 = parse_reg_a(&p);
-                    out16(a, 0x40C0 | ((rm2 & 7) << 3) | (rd & 7));
+                    /* LSL.W / LSR.W / ASR.W Rd, Rn, Rs */
+                    out16(a, 0xFA00u | (type2 << 5) | (unsigned)(rn_src & 0xF));
+                    out16(a, 0xF000u | (unsigned)((rd & 0xF) << 8) |
+                             (unsigned)(rs_amt & 0xF));
                 }
-            } else {
-                /* LSR rd, rm (T1 register shift) */
-                out16(a, 0x40C0 | ((rm & 7) << 3) | (rd & 7));
-            }
-        }
-        else if (strieq_a(first, "ASR")) {
-            /* ASR T1: ASRS Rd, Rm, #imm5 (immediate) or ASRS Rd, Rs (register) */
-            int rd = parse_reg_a(&p); int rm;
-            eat_comma_a(&p); rm = parse_reg_a(&p);
-            skip_space_a(&p);
-            if (*p == ',') {
-                /* ASR rd, rm, #imm5 (T1 immediate shift; imm5=0 means 32) */
-                p++; skip_space_a(&p);
-                if (*p == '#') {
-                    int imm = parse_imm_a(&p);
-                    int imm5 = (imm >= 32) ? 0 : (imm & 0x1F);
-                    out16(a, 0x1000 | (unsigned)(imm5 << 6) | ((rm & 7) << 3) | (rd & 7));
-                } else {
-                    int rm2 = parse_reg_a(&p);
-                    out16(a, 0x4100 | ((rm2 & 7) << 3) | (rd & 7));
-                }
-            } else {
-                /* ASR rd, rm (T1 register shift) */
-                out16(a, 0x4100 | ((rm & 7) << 3) | (rd & 7));
             }
         }
         else if (strieq_a(first, "MRS") || strieq_a(first, "MSR")) {
@@ -15339,6 +15529,16 @@ static void pass2_a(ArmAsm *a) {
                 diag_tool(DIAG_SEV_ERROR, "arkcc",
                           "MULS with three distinct registers needs the 32-bit form, "
                           "which this assembler does not emit", 0,0,0,0,0,0);
+                a->hard_errors++;
+            }
+            if (!(rd >= 0 && rd <= 7 && rm >= 0 && rm <= 7)) {
+                /* MULS is --asm-extra only and pass 1 lays it out at two
+                 * bytes; masking a high register with 7 would multiply the
+                 * wrong register, so refuse instead ("MUL" spells the same
+                 * instruction and does have the 32-bit form). */
+                diag_tool(DIAG_SEV_ERROR, "arkcc",
+                          "MULS needs r0-r7 operands; use MUL for high registers",
+                          0,0,0,0,0,0);
                 a->hard_errors++;
             }
             out16(a, 0x4340u | ((rm & 7) << 3) | (rd & 7));
@@ -15655,19 +15855,55 @@ static void pass2_a(ArmAsm *a) {
         }
 #endif
         else if (strieq_a(first, "NEG") || strieq_a(first, "RSB")) {
+            /* NEG Rd, Rm == RSB Rd, Rm, #0.  The 16-bit form RSBS names
+             * r0-r7 only; a high register takes the 32-bit RSB (immediate)
+             * T2 encoding 0xF1C0|Rn ; Rd<<8 (imm8 = 0).  pass 1 already
+             * widened on the same rule -- masking with 7 used to turn
+             * "NEG r9, r7" into "RSBS r1, r7, #0" (-fopt-vreg emits that
+             * shape once it promotes a slot into r8-r11). */
             int rd = parse_reg_a(&p); int rm;
+            int neg_imm = -1, has_third = 0, third_is_imm = 0;
             eat_comma_a(&p); rm = parse_reg_a(&p);
-            out16(a, 0x4240 | ((rm & 7) << 3) | (rd & 7));
             skip_space_a(&p);
-            if (*p == ',') { p++; skip_space_a(&p); if (*p == '#') parse_imm_a(&p); }
+            if (*p == ',') {
+                p++; skip_space_a(&p);
+                has_third = 1;
+                if (*p == '#') { third_is_imm = 1; neg_imm = parse_imm_a(&p); }
+                else           { (void)parse_reg_a(&p); }
+            }
+            if (!has_third && rd >= 0 && rd <= 7 && rm >= 0 && rm <= 7) {
+                out16(a, 0x4240 | ((rm & 7) << 3) | (rd & 7));
+            } else if (has_third && third_is_imm && neg_imm == 0) {
+                out16(a, 0xF1C0u | (unsigned)(rm & 0xF));
+                out16(a, (unsigned)((rd & 0xF) << 8));
+            } else if (!has_third) {
+                /* NEG Rd, Rm with a high register: RSB.W Rd, Rm, #0 */
+                out16(a, 0xF1C0u | (unsigned)(rm & 0xF));
+                out16(a, (unsigned)((rd & 0xF) << 8));
+            } else {
+                /* RSB Rd, Rm, #imm with imm != 0 needs ThumbExpandImm, which
+                 * this assembler does not implement; a register third operand
+                 * has no 32-bit "RSB register" form on ARMv7-M either.
+                 * Refuse loudly, but still emit four bytes so that every
+                 * later label keeps the address pass 1 assigned. */
+                diag_tool(DIAG_SEV_ERROR, "arkcc",
+                          "RSB with an immediate other than #0 or a register "
+                          "third operand is not supported", 0,0,0,0,0,0);
+                a->hard_errors++;
+                out16(a, 0xBF00);
+                out16(a, 0xBF00);
+            }
         }
         else if (strieq_a(first, "CMP")) {
             int rn = parse_reg_a(&p);
             eat_comma_a(&p);
             if (*p == '#') {
                 int imm = parse_imm_a(&p);
-                if (imm >= 0 && imm <= 255) {
-                    /* T1 16-bit: CMP Rn, #imm8 */
+                if (rn >= 0 && rn <= 7 && imm >= 0 && imm <= 255) {
+                    /* T1 16-bit: CMP Rn, #imm8.  Rn is only three bits wide
+                     * here, so masking with 7 used to turn "CMP r9, #4"
+                     * into "CMP r1, #4" -- a silent wrong answer that
+                     * -fopt-vreg provokes the moment a slot lives in r8-r11. */
                     out16(a, 0x2800 | ((rn & 7) << 8) | (imm & 0xFF));
                 } else {
                     /* T2 32-bit: CMP.W Rn, #imm12 (ThumbExpandImm).
@@ -15693,7 +15929,35 @@ static void pass2_a(ArmAsm *a) {
                 }
             } else {
                 int rm = parse_reg_a(&p);
-                out16(a, 0x4280 | ((rm & 7) << 3) | (rn & 7));
+                if (rn >= 0 && rn <= 7 && rm >= 0 && rm <= 7) {
+                    out16(a, 0x4280 | ((rm & 7) << 3) | (rn & 7));
+                } else if (rn >= 0 && rn <= 7 && rm >= 0 && rm <= 14) {
+                    /* T2 16-bit "01000101 0 Rm Rn": Rm is the full four-bit
+                     * field at bits 6:3, Rn only three bits at 2:0, and bit 7
+                     * (N) stays 0 for CMP -- gas assembles "CMP r1, r9" as
+                     * 0x4549.  Two earlier spellings of this branch were
+                     * wrong: masking Rm with 7 truncated r8-r14, and putting
+                     * Rm's bit 3 into bit 7 made the decoder read the operands
+                     * swapped ("CMP r9, r7" as cmp r1, r15), which is what
+                     * broke the -fopt-coalesce merge fixture. */
+                    out16(a, 0x4500 | ((unsigned)(rm & 0xF) << 3) |
+                             (unsigned)(rn & 7));
+                } else if (rn >= 0 && rn <= 14 && rm >= 0 && rm <= 14) {
+                    /* 32-bit CMP.W Rn, Rm.  Both registers are full width,
+                     * but PC is not an operand of CMP. */
+                    out16(a, 0xEBB0u | (unsigned)(rn & 0xF));
+                    out16(a, 0x0F00u | (unsigned)(rm & 0xF));
+                } else {
+                    /* r15 is not a legal CMP operand in either width.  Keep
+                     * the byte count pass 1 assigned (two bytes when Rn is
+                     * low) so no label downstream moves. */
+                    diag_tool(DIAG_SEV_ERROR, "arkcc",
+                              "CMP does not take PC as an operand",
+                              0,0,0,0,0,0);
+                    a->hard_errors++;
+                    if (rn >= 0 && rn <= 7) { out16(a, 0xBF00); }
+                    else { out16(a, 0xBF00); out16(a, 0xBF00); }
+                }
             }
         }
         else if (is_ldr_str_a(first)) {

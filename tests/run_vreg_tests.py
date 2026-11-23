@@ -182,6 +182,29 @@ int main(void)
 }
 """
 
+# S6b: the region is the rest of the *block*, not just the next instruction.
+# A value loaded early must stay valid across straight-line work (the multiply
+# and the add) and feed an instruction several lines later; the same block also
+# promotes a second slot, so one line can read two cache registers at once.
+DEEP = HEAD + """\
+int vg_deep(struct VgS *p, int n)
+{
+    int s, t;
+    s = p->a;
+    n = n * 3;
+    n = n + 1;
+    t = p->h;
+    s = s + n;
+    t = t + s;
+    return t + p->b;
+}
+int main(void)
+{
+    struct VgS v = {1, 2, 3, 40, 5, 6, 7, 100};
+    return vg_deep(&v, 4);
+}
+"""
+
 # Two-word locals must stay correct on both halves.
 WIDE = """\
 int vg_pad;
@@ -204,6 +227,7 @@ CASES = [
     ('volatile', VOLATILE, 3),
     ('call', CALL, 189),      # 1 + 2*40 + 100 + 2*4
     ('wide', WIDE, 29),       # 11 + 7 + 11
+    ('deep', DEEP, 116),      # n=4*3+1=13, s=1+13=14, t=100+14=114, +2
 ]
 
 check = V.check
@@ -281,7 +305,7 @@ def local_words(text):
 
 # Which function each fixture is expected to promote.
 FN = {'chain': 'vg_chain', 'loop': 'vg_loop', 'many': 'vg_many',
-      'call': 'vg_cl'}
+      'call': 'vg_cl', 'deep': 'vg_deep'}
 
 
 def main():
@@ -369,7 +393,7 @@ def main():
                       '%s: no offset is left inside the widened save' % name)
 
         # --- 2. it pays -----------------------------------------------------
-        for name in ('chain', 'loop', 'many', 'call'):
+        for name in ('chain', 'loop', 'many', 'call', 'deep'):
             if name not in arms:
                 continue
             t_off, _b, t_on, _b2 = arms[name]
