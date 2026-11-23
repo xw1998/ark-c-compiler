@@ -233,6 +233,17 @@
 #   define ARKCC_FEATURE_OPT_CBRANCH    1
 # endif
 #endif
+/* ARKCC_FEATURE_OPT_PAIR: -fopt-pair, consuming two adjacent one-word
+ * value-stack pushes together with the binary op that reads them, so
+ * the operands go straight into r0/r1 instead of through the stack.
+ * Same trimming rule as the other emitter-side passes. */
+#ifndef ARKCC_FEATURE_OPT_PAIR
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_OPT_PAIR       0   /* 板上裁掉：只在宿主/交叉编译用 */
+# else
+#   define ARKCC_FEATURE_OPT_PAIR       1
+# endif
+#endif
 /* ARKCC_FEATURE_OPT_COPYPROP: -fopt-copyprop, the IAR "ECT" family -- drop a
  * register copy whose destination is overwritten before any read, and forward
  * one that feeds a single three-operand ALU consumer. */

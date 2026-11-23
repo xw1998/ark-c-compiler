@@ -50,7 +50,7 @@ aliasing is uncertain" plus ARM-specific instruction rewrites.**
 
 ---
 
-## 2 The line: ten items, ordered by value per unit of work
+## 2 The line: twelve items, ordered by value per unit of work
 
 ### P1 Block-tail merging (block-level cross-jump) -- **landed in 0.9.1**
 
@@ -461,6 +461,80 @@ drops.
   1,294 -> 1,276 B; STM32F4 HAL, 96 units, code sections 116,480 -> **113,058 B
   (-3,422 B / -2.94%)**, 96/96 shrink with nothing growing (the symbol table is unchanged,
   so every saved byte is code). Details in `docs/BRANCH_SHRINK.en.md`.
+
+### P12 Pairing value-stack operands (`-fopt-pair`, **landed in 0.9.1-wip, slice S1**)
+
+- **Why start here**: the IR is a stack machine, so `a & b` reaches the backend as
+  `PUSH/PUSH/POP/POP/AND` -- four of the five instructions only move operands.
+  The ten-switch baseline over 95 HAL translation units is **19,112 instructions /
+  45,760 bytes**, with the histogram `MOV 3903 / LDR 2457 / ADD 1460 / STR 1163 /
+  MOVW 1115 / PUSH 1060 / CMP 1035 / MOVT 981`: `MOV` plus `LDR` is 33% of the
+  total and almost all of it is stack traffic and the temporaries it drags in.
+  The text layer is measured out on the same corpus (`ADD rD,rS,#0` 463,
+  `MOV#imm+LSL` 326, only 3 pairable `PUSH/POP` => at most ~1.7%), so the next
+  step has to be where operands land at the IR level.
+- **One rule**: `IR_PUSH A; IR_PUSH B; IR_BINARY op` becomes `A->r0; B->r1; op`
+  with no stack traffic. The net stack effect is +1 (the result is still pushed
+  for its consumer), so this is word-for-word equivalent to the old two-push,
+  two-pop sequence.
+- **What may be an operand** (`pair_operand_ok`): a stack slot (`aux` slot < 8,
+  not `IR_AUX_VOLATILE`), an immediate, `IR_PUSH_ADDR`, a global address, or a
+  global scalar that is not a va pointer and is smaller than 8 bytes (loaded with
+  `LDR/LDRB/LDRH/LDRSB/LDRSH` by width). **Refused**: volatile, 64-bit values,
+  va pointer symbols, objects over 8 bytes, and any shape not on that list -- a
+  stack round trip is better than a wrong answer.
+- **Two stand-down rules, both paid for in measurements**:
+  1. **Stand down for `-fopt-imm`**: when the second operand is an encodable
+     constant, `ADD r0, r0, #4` is always one instruction cheaper than
+     `MOV r1, #4` plus `ADD r0, r1`. Without this rule the first version went
+     19,112 -> **20,517 (+1,405)** on the corpus, with `hal_dma.c` alone at +404.
+  2. **Stand down for `-fopt-cbranch`**: a comparison consumed by the next `if`
+     is two instructions cheaper as `CMP + Bcc` than materialise-and-test again,
+     and `-fopt-cbranch` lives inside `case IR_BINARY`, so a pair that bypasses
+     that case silently disables it. With the rule 19,179 -> **19,096**, and
+     every translation unit is flat or better.
+  Both stand-down tests **reuse the existing helper**
+  (`emit_binary_imm(b, op, v, left=0, emit=0)`) instead of introducing a second
+  set of thresholds that could drift.
+- **Trimming**: `ARKCC_FEATURE_OPT_PAIR` (`STM32_MIN` 0 / host 1), off by
+  default and present only in host and cross builds. A cropped build refuses
+  `-fopt-pair` by name (`C3900U`) and still compiles without the flag.
+- **Gate**: `tests/run_pair_tests.py`, **20 checks**, `make test-pair`:
+  OFF IS OFF byte-for-byte (`-O2` == `-O2 -fno-opt-pair`), the default build
+  still shows 8 stack operations, the pass removes exactly 4 of them so
+  `AND r0, r1` reads both registers directly, instruction and image sizes only
+  shrink, the label set is untouched, `a+4` is byte-identical with and without
+  `-fopt-imm`, `if (a<b)` is byte-identical under `-fopt-cbranch` **while
+  without that flag the pair pass does take the comparison** (a differential
+  control so "never looks at comparisons" cannot pass), a 64-bit and and a
+  volatile read are byte-identical, all five fixtures return the same value in
+  both arms under unicorn, and a cropped build refuses the flag.
+- **Measured** (95-TU HAL corpus, `-fopt-pair` on top of the ten switches):
+  **19,112 -> 19,096 (-16 instructions, 0.08%)**, `fails 0`, `MOV 3903 -> 3888`;
+  per file `hal_gpio.c -5, hal_cortex.c -3, hal_rcc.c -3, hal_dma.c -2,
+  ll_utils.c -2, system_stm32f4xx.c -1`, the other 89 units flat, **none larger**.
+- **Why keep a 0.08% step**: it exercises the whole plumbing-and-gate template --
+  where a new pass sits, how it stands down, OFF IS OFF, a two-way differential
+  control, refusal in a cropped build, and equal values in the emulator -- that
+  S2-S5 will reuse unchanged. `-fopt-vstack` already turns a single `PUSH {r0}`
+  into a shadow register (`a+b` is only three instructions in the baseline),
+  so the room left at this layer was small to begin with.
+- **Staged plan (S2-S5, none started)**:
+  - **S2 intra-function virtual-register colouring**: longest live range inside a
+    straight-line block only, no call sites, pool r2/r3/r4; the goal is to turn
+    "load it back for every use" into "keep it in a register across the block".
+  - **S3 call sites and blocks**: values live across `BL` go into callee-saved
+    registers (cost: 4 bytes per function in the prologue) and only when a
+    "bytes of LDR saved > PUSH cost" balance says so.
+  - **S4 spills and high registers**: r8-r11 only under the same positive
+    balance, with the same tiering threshold the near-slot regalloc uses.
+  - **S5 merge with vstack**: pick one instead of stacking both (they fight over
+    the same round trips); the corpus decides which one stays on by default.
+- **Risks recorded**: overlapping responsibility with `-fopt-vstack` (S5 has to
+  be a subtraction); rising register pressure spills long live ranges; debug
+  readability (variable locations must survive under `-g`); board size (whether
+  S2 and above is worth keeping under `STM32_MIN` is a question only the
+  `make stm32-check` size gate can answer).
 
 ---
 

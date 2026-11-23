@@ -99,6 +99,7 @@
 | 比较结果直连分支 | 可选 | `-fopt-cbranch`（`ARKCC_FEATURE_OPT_CBRANCH`，宿主 1、板端 0，默认关）：IR 发射期，`IR_BINARY(比较)` 的下一条正好是 `IR_JZ` / `IR_JNZ` 时，直接发 `CMP` + `B<cond>`，不再把比较物化成 0/1 再 `CMP r0, #0` 复测一遍。有符号 / 无符号两套条件码（`BLT/BGE` 对 `BLO/BHS`），`<=`/`>=` 的取反用 `BGT`/`BLT` 而不是 `>`/`>=`；立即数路径附 `MOV r1,#k` + `CMP r0,r1` 兜底；与 `--reg-top` 互斥，与 `-fopt-cbz` 叠加（`CMP r0,#0`+`BNE` 再折成 `CBNZ`）；比较结果有第二个消费者（`int x = (a<b); if (x)`）时不折。在 `-fopt-imm -fopt-peep` 之上 25,033 → 22,438 条（−2,595 / −10.37%）、61,628 → 53,404 字节（−8,224 / −13.34%）。详见 `docs/CBRANCH.md` |
 | 寄存器拷贝清理 | 可选 | `-fopt-copyprop`（`ARKCC_FEATURE_OPT_COPYPROP`，宿主 1、板端 0，默认关）：照 IAR `ECT CopyPropagation candidate` / `DefIntoMove` / `Dead MOV` 逆向下放的两条**纯文本**规则，都不需要活跃性分析。A 死拷贝：`MOV rD, rS` 或 `MOV rD, #imm` 在同一个**直线块内**、任何读取之前被完全覆写 ⇒ 删除（`MOV` 不写标志，值与标志都不变）；直线块在标签、任何分支、`PUSH/POP/LDM/STM`、`IT` 系列、`CPS/BKPT`、函数尾结束。B 拷贝推进：`MOV rD, rS` 紧跟 `OP rD, rD, X` ⇒ `OP rD, rS, X`（`rD≠rS`、`X≠rD`，`OP` 限三操作数 ALU，**排除 `CMP/CMN/TST`**）。读判定必须是「第一个操作数也读，除非它是纯写目标」，否则会连 `MOV` + `STR`/`CMP` 一起删（emulator 抓出 9 个错答案）。八开关基线 22,438 → 21,915 条（−523 / −2.33%）、53,404 → 52,358 字节（−1,046 / −1.96%）；省的全是 `MOV`，其余助记符一条不动。详见 `docs/COPYPROP.md` |
 | 活跃性驱动清理 | 可选 | `-fopt-live`（`ARKCC_FEATURE_OPT_LIVE`，宿主 1、板端 0，默认关，静态表约 1.5 MB 故板端裁掉）：第一个**跨基本块**的 pass —— 为每个函数建控制流图、把寄存器活跃性（`out = ∪succ.in`、`in = use ∪ (out−def)`）迭代到不动点，然后四条规则：**L1** `MOV rD, rS|#imm` 且 `rD` 之后不活跃 ⇒ 删除（能删掉绕过标签/分支的暂存）；**L2** `MOV rD, rS` 之后窗口内（`LV_WINDOW`=4）唯一读 `rD` 且不写它、之后 `rD` 不活跃的指令 ⇒ 消费者改读 `rS`、删拷贝（不要求三操作数 ALU，也不要求紧邻，`LDR rD,[rD,...]`/`CMP`/`STR` 都能接；窗口里写 `rD`/`rS` 或跨块就放弃）；**L3** `MOV rT, #0` 紧跟只把 `rT` 当地址索引的指令 ⇒ 丢掉索引 `[rB, rT, LSL #n]` → `[rB]`；**L4** `MOVW/MOVT rD` + `MOV rX, rD` ⇒ 常量直接落进 `rX`（IAR `DefIntoMove`）；`MOVW`/`MVN` + `MOV` 的单条材料化同样折（`MOV rD,#imm` 不折：16 位 `MOVS` 换 `MOVW` 会变宽且丢标志位）。拒绝清单：`BL/BLX` 读 `r0-r3`、无后继块返回 `r0-r3`、`CBZ/CBNZ` 第一个操作数是读、`IT` 块内一律不改、`r6`/`sp`/`lr`/`pc` 永不作目标、两操作数 ALU 的第一个操作数**也是读**（否则 `MOV r0,r5` + `LSL r0,r7` 会把活值删掉 —— emulator 抓出 376 条错删）、`ADC/SBC/RSC` 的消费者不折（16 位编码要求 `Rd == Rn`，折出三寄存器形式汇编器不发射）。九开关基线 21,915 → **19,112 条（−2,803 / −12.79%）**、52,358 → **45,760 字节（−12.60%）**；基线里 `MOVW/MOVT/MOV` 三连 681 处与 `MOVW`/`MVN` + `MOV` 二连 21 处全部命中（剩 2 处与 1 处是 `rD` 之后仍活跃）。详见 `docs/LIVE.md` |
+| 值栈操作数配对 | 可选 | `-fopt-pair`（`ARKCC_FEATURE_OPT_PAIR`，宿主 1、板端 0，默认关）：IR 是栈机，两个相邻的值栈压入加上读它们的二元运算改成「左→r0、右→r1、直接算」，两对 `PUSH/POP` 与随之而来的寄存器搬运整块消失；只接栈槽（槽号 <8、非 volatile）、立即数、局部地址、非 va 的全局地址/标量（<8 字节，按宽度选 `LDR/LDRB/LDRH/LDRSB/LDRSH`）；64 位值、volatile、>8 字节对象一律不动。`-fopt-imm`（常量直接进立即数字段）与 `-fopt-cbranch`（比较直连分支）都比它便宜，pair 主动让位——这两条让位规则分别由一次翻车（+1,405 条 / +67 条）换来。95 TU HAL 语料 19,112 → 19,096 条（−16 / 0.08%），无单元变大。详见 `docs/OPTIMIZER_PLAN.md` 的 P12（S2–S5 为后续阶段） |
 | 汇编器覆盖面 | 是 | LDR/STR 全地址模式（`[Rn]`/`[Rn,#imm]`/`[Rn,Rm]`/`[Rn,Rm,LSL #0..3]`/`[Rn,#imm]!`/`[Rn],#imm`、`[sp,#imm]`、`[pc,#imm]`）、`VLDM/VSTM/VPUSH/VPOP`、`LDMFD/STMFD/LDMEA/STMEA` 别名、`ADDW/SUBW`；体系结构不存在的形态（`LDMIB/LDMDA/STMIB/STMDA`、寄存器索引写回）明确报错 |
 | 预处理 | 是 | 对象/函数宏（`#/##`）、`#if/#elif/#else/#endif/#ifdef/#ifndef/#undef/#error/#warning/#pragma`、嵌套 `#include`（<=8 层）、`__VA_ARGS__`、`-I` 路径、三字符组替换 |
 | 注释 | 是 | `//` 和 `/* */` |
@@ -755,6 +756,10 @@ arkcc <file.c|file.s> [选项]
   -fopt-cbranch      比较结果直连分支：比较的下一条正好是条件跳转时直接
                      CMP + B<cond>，不再物化成 0/1 再复测；值另有消费者时不折；
                      -fno-opt-cbranch 关（默认关）
+  -fopt-pair         值栈操作数配对：两个相邻压栈 + 读它们的二元运算并成
+                     左→r0、右→r1 直接算，两对 PUSH/POP 连同寄存器搬运消失；
+                     常量与比较分支分别让给 -fopt-imm / -fopt-cbranch；
+                     64 位、volatile、>8 字节对象不动；-fno-opt-pair 关（默认关）
   -fopt-copyprop     寄存器拷贝清理：删掉被完全覆写却没被读的 MOV，把
                      MOV rD,rS 推进到紧邻的 OP rD,rD,X 里；跨标签/分支/PUSH
                      不判；-fno-opt-copyprop 关（默认关）

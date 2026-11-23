@@ -69,6 +69,7 @@ void config_init(void) {
     g_config.enable_opt_imm       = 0;
     g_config.enable_opt_peep      = 0;
     g_config.enable_opt_cbranch   = 0;
+    g_config.enable_opt_pair      = 0;
     g_config.enable_opt_copyprop  = 0;
     g_config.enable_opt_live      = 0;
     g_config.enable_opt_inline    = ARKCC_FEATURE_OPT_INLINE;
@@ -479,6 +480,8 @@ void config_apply_args(int argc, char **argv) {
                 g_config.enable_opt_peep                = enable;
             else if (ark_streq(name, "opt-cbranch") || ark_streq(name, "cbranch"))
                 g_config.enable_opt_cbranch             = enable;
+            else if (ark_streq(name, "opt-pair") || ark_streq(name, "pair"))
+                g_config.enable_opt_pair                = enable;
             else if (ark_streq(name, "opt-copyprop") || ark_streq(name, "copyprop"))
                 g_config.enable_opt_copyprop            = enable;
             else if (ark_streq(name, "opt-live") || ark_streq(name, "live"))
@@ -512,10 +515,10 @@ void config_print(void) {
             g_config.enable_opt_strength);
     ark_log("  opt_cbz=%d opt_branch=%d\n",
             g_config.enable_opt_cbz, g_config.enable_opt_branch);
-    ark_log("  opt_imm=%d opt_peep=%d opt_cbranch=%d opt_copyprop=%d opt_live=%d\n",
+    ark_log("  opt_imm=%d opt_peep=%d opt_cbranch=%d opt_copyprop=%d opt_live=%d opt_pair=%d\n",
             g_config.enable_opt_imm, g_config.enable_opt_peep,
             g_config.enable_opt_cbranch, g_config.enable_opt_copyprop,
-            g_config.enable_opt_live);
+            g_config.enable_opt_live, g_config.enable_opt_pair);
     ark_log("  dce_cfg=%d reloc_data=%d reg_top=%d rt_lazy=%d asm_extra=%d\n",
             g_config.enable_dce_cfg, g_config.enable_reloc_data,
             g_config.enable_reg_top, g_config.enable_rt_lazy,

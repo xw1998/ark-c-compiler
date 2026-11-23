@@ -6269,6 +6269,155 @@ static void arm_put_escaped_str(AsmBuffer *b, const char *s) {
     }
 }
 
+#if ARKCC_FEATURE_OPT_PAIR
+/* --- -fopt-pair: consume two one-word pushes and their binary op together ---
+ *
+ * The IR is a stack machine, so `a + b` arrives as PUSH a / PUSH b / BINARY and
+ * the generic path emits, for every operand, a load followed by a PUSH, then two
+ * POPs, the op and a final PUSH:
+ *
+ *     <a>            -> r0 ; PUSH {r0}
+ *     <b>            -> r0 ; PUSH {r0}
+ *     POP {r1} ; POP {r0} ; OP r0, r0, r1 ; PUSH {r0}
+ *
+ * Nothing between the two pushes reads the value stack, so the operands can go
+ * straight into the two registers emit_binary() already expects -- left in r0,
+ * right in r1 -- and the four stack words disappear:
+ *
+ *     <a> -> r0 ; <b> -> r1 ; OP r0, r0, r1 ; PUSH {r0}
+ *
+ * The recorded stack effect is identical (+1 word), so every later consumer and
+ * every text pass downstream (vstack included) sees the same contract.
+ *
+ * Refused shapes take the generic path unchanged: anything that pushes more
+ * than one word (64-bit, struct, _Complex), a volatile read (its DMB pair must
+ * stay where the generic path puts it), a va_ptr global (its address comes from
+ * a helper that hard-codes r0), or an operator emit_binary() does not know.
+ */
+
+/* The operators emit_binary() implements, so a pair is only formed when the
+ * consumer is one of them.  The 0x100 "unsigned" bit is not part of the op. */
+static int pair_op_ok(int op) {
+    switch (op & ~0x100) {
+    case (int)TOK_PLUS:  case (int)TOK_MINUS: case (int)TOK_MUL:
+    case (int)TOK_DIV:   case (int)TOK_MOD:
+    case (int)TOK_BAND:  case (int)TOK_BOR:   case (int)TOK_BXOR:
+    case (int)TOK_SHL:   case (int)TOK_SHR:
+    case (int)TOK_EQ:    case (int)TOK_NE:
+    case (int)TOK_LT:    case (int)TOK_GT:
+    case (int)TOK_LE:    case (int)TOK_GE:
+        return 1;
+    }
+    return 0;
+}
+
+/* 1 when I is a one-word push that can be materialised in an arbitrary
+ * register without writing any register but that one. */
+static int pair_operand_ok(IrInst *I) {
+    if (!I) return 0;
+    switch (I->op) {
+    case IR_PUSH_INT:
+        return 1;
+    case IR_PUSH_VAR:
+        if ((I->aux & 0xFF) >= 8) return 0;       /* two words */
+        if (I->aux & IR_AUX_VOLATILE) return 0;   /* needs its DMB pair */
+        return 1;
+    case IR_PUSH_ADDR:
+        return 1;
+    case IR_PUSH_GLOBAL_ADDR:
+        return 1;
+    case IR_PUSH_GLOBAL:
+        if (is_va_ptr_sym(I->name)) return 0;     /* helper hard-codes r0 */
+        return gvar_find_size(I->name) < 8;       /* 8+ bytes is two words */
+    default:
+        return 0;
+    }
+}
+
+/* Materialise an accepted push into `rd`. */
+static void pair_operand_emit(AsmBuffer *b, IrInst *I, int rd) {
+    switch (I->op) {
+    case IR_PUSH_INT:
+        emit_mov_imm(b, rd, I->val);
+        return;
+    case IR_PUSH_VAR: {
+        int width = I->aux & 0xFF;
+        int is_unsigned = (I->aux & 0x100) != 0;
+        asmbuf_puts(b, "    ");
+        if (width == 1)      asmbuf_puts(b, is_unsigned ? "LDRB r" : "LDRSB r");
+        else if (width == 2) asmbuf_puts(b, is_unsigned ? "LDRH r" : "LDRSH r");
+        else                 asmbuf_puts(b, "LDR r");
+        asmbuf_int(b, rd);
+        asmbuf_puts(b, ", [r6, #");
+        asmbuf_int(b, I->val);
+        asmbuf_puts(b, "]\n");
+        return;
+    }
+    case IR_PUSH_ADDR:
+        asmbuf_puts(b, "    ADD r");
+        asmbuf_int(b, rd);
+        asmbuf_puts(b, ", r6, #");
+        asmbuf_int(b, I->val);
+        asmbuf_putc(b, '\n');
+        return;
+    case IR_PUSH_GLOBAL_ADDR:
+        emit_gvar_addr32(b, rd, I->name);
+        return;
+    case IR_PUSH_GLOBAL:
+        emit_gvar_addr32(b, rd, I->name);
+        asmbuf_puts(b, "    LDR r");
+        asmbuf_int(b, rd);
+        asmbuf_puts(b, ", [r");
+        asmbuf_int(b, rd);
+        asmbuf_puts(b, "]\n");
+        return;
+    }
+}
+
+/* 1 when the *second* operand is a constant that -fopt-imm folds into the
+ * instruction's immediate field on its own turn (it sees it as "PUSH k
+ * right before the op").  Taking the pair then would put the constant in
+ * a register and lose that fold -- measured on `a + 4`, where the pair
+ * cost one extra MOV r1, #4 per site -- so the pair stands down. */
+/* 1 when the consumer is a comparison.  -fopt-cbranch turns
+ * "build 0/1, then test it" into a single CMP + branch, which is
+ * the better shape whenever it applies, so the pair stands down
+ * there (see pair_cbranch_preempted). */
+static int pair_is_cmp(int op) {
+    switch (op & ~0x100) {
+    case (int)TOK_EQ: case (int)TOK_NE:
+    case (int)TOK_LT: case (int)TOK_GT:
+    case (int)TOK_LE: case (int)TOK_GE:
+        return 1;
+    }
+    return 0;
+}
+
+/* 1 when -fopt-cbranch will consume this comparison directly.  The
+ * branch rule lives in the IR_BINARY case, which the pair path
+ * never reaches, so taking the pair here would forfeit it
+ * (measured on HAL_GPIO_Init: four extra instructions per
+ * comparison that fed an if). */
+static int pair_cbranch_preempted(int op, IrInst *next) {
+    if (!next) return 0;
+    if (!g_config.enable_opt_cbranch) return 0;
+    if (!pair_is_cmp(op)) return 0;
+    return next->op == IR_JZ || next->op == IR_JNZ;
+}
+
+#if ARKCC_FEATURE_OPT_IMM
+static int pair_imm_preempted(IrInst *I, int op) {
+    if (!I || I->op != IR_PUSH_INT) return 0;
+    return emit_binary_imm(0, op, (int)I->val, 0, 0);
+}
+#else
+static int pair_imm_preempted(IrInst *I, int op) {
+    (void)I; (void)op;
+    return 0;
+}
+#endif
+#endif
+
 static char *codegen_arm(IrProgram *prog) {
     AsmBuffer buf;
     int fi;
@@ -6919,6 +7068,31 @@ static char *codegen_arm(IrProgram *prog) {
                     imm_op = f->code[i + 2].aux;
                     continue;
                 }
+            }
+#endif
+#if ARKCC_FEATURE_OPT_PAIR
+            /* -fopt-pair: two adjacent one-word pushes and the binary op that
+             * consumes them go out as one sequence with the operands in
+             * r0/r1.  Decided before anything is emitted, so a refusal leaves
+             * the generic path exactly as it was.  Not combined with --reg-top
+             * or -fopt-imm: both already model a value that has not reached
+             * the machine stack yet. */
+            if (g_config.enable_opt_pair && !ark_top_enabled() && !imm_live &&
+                i + 2 < f->code_count &&
+                f->code[i + 2].op == IR_BINARY &&
+                pair_op_ok(f->code[i + 2].aux) &&
+                pair_operand_ok(&f->code[i]) &&
+                pair_operand_ok(&f->code[i + 1]) &&
+                !pair_imm_preempted(&f->code[i + 1], f->code[i + 2].aux) &&
+                !pair_cbranch_preempted(
+                    f->code[i + 2].aux,
+                    (i + 3 < f->code_count) ? &f->code[i + 3] : 0)) {
+                pair_operand_emit(&buf, &f->code[i], 0);
+                pair_operand_emit(&buf, &f->code[i + 1], 1);
+                emit_binary(&buf, f->code[i + 2].aux);
+                emit_push_r0(&buf);
+                i += 2;
+                continue;
             }
 #endif
             if (ark_top_enabled() && ark_top_try(&buf, I, &rtop, &rtop_ret))

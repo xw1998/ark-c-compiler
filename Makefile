@@ -29,7 +29,7 @@ endif
         test-objir test-partiallink test-deadinline test-softfloat test-tailmerge \
         test-tailcall test-divconst test-xblock test-sizeweight \
         test-inline test-vstack test-addr test-strength test-cbz test-branch \
-        test-imm test-peep test-cbranch test-copyprop test-live test-movimm install \
+        test-imm test-peep test-cbranch test-copyprop test-live test-movimm test-pair install \
         stm32 stm32-check
 
 all: $(ARKCC)
@@ -261,6 +261,18 @@ test-live: $(ARKCC)
 
 test-movimm: $(ARKCC)
 	$(PYTHON) tests/run_movimm_tests.py ./$(ARKCC)
+
+# Gate for -fopt-pair: two adjacent value-stack pushes and the operator that
+# reads them are emitted as two loads straight into r0/r1 instead of a
+# PUSH/PUSH/POP/POP round trip.  The gate checks OFF IS OFF, that exactly the
+# two staging pairs disappear from a bitwise and, that a folded immediate
+# (-fopt-imm) and a comparison feeding a branch (-fopt-cbranch) are left
+# byte-identical because those passes are cheaper, that a 64-bit and and a
+# volatile read are refused, that the emulator returns the Python answer in
+# both arms, and that a cropped build (-DARKCC_FEATURE_OPT_PAIR=0) refuses
+# the flag by name (C3900U).
+test-pair: $(ARKCC)
+	$(PYTHON) tests/run_pair_tests.py ./$(ARKCC)
 
 
 
