@@ -520,6 +520,9 @@ drops.
   into a shadow register (`a+b` is only three instructions in the baseline),
   so the room left at this layer was small to begin with.
 - **Staged plan (S2-S5, none started)**:
+  - **Status (2026-11-23)**: S2 landed as `-fopt-slotreg` and was **archived** under the <0.5%
+    falsifier (P17); S3 is now pre-registered as **P18** (`docs/OPERAND_ALLOC.md`); S4/S5 remain
+    registered only.
   - **S2 intra-function virtual-register colouring**: longest live range inside a
     straight-line block only, no call sites, pool r8-r11 (callee-saved, same reason as
     `-fopt-regalloc`; the slice is defined in `docs/SLOT_REGISTERS.en.md`); the goal is to turn
@@ -741,6 +744,41 @@ drops.
   deleted** -- the headroom is not in the text layer. The remaining 3,500-odd frame accesses each do
   something useful; making them disappear needs computation directly in registers (P12's S3 operand
   allocation), which is a new model, not more rules.
+
+---
+
+### P18 Operand allocation (S3 pre-registration, **not implemented**)
+
+- **Why the model has to change**: after P16 (cmat, -1.77%) and P17 (slotreg, -0.34%) the text layer
+  is measured out -- slotreg without its safety gate could delete -1.82%, but every one of those
+  deletions rested on indirect accesses the text layer cannot see, and that measured as 5
+  execution-level failures. Of the remaining 18,665 instructions, **17.6% read or write the
+  function's own memory** (`[r6]` 1,879 + `[r5]` 1,414), 11.2% materialise 32-bit constants
+  (`MOVW`+`MOVT` 2,096), 7.0% are pure register copies (`MOV rD,rS` 1,305) and 9.6% push or pop the
+  value stack (1,791). These are not redundant accesses; they are what a model in which every
+  intermediate must cross memory produces.
+- **Slice S3a: a function-level 32-bit constant cache.** When a 32-bit constant is materialised
+  `c >= 5` times in a function, materialise it once into a callee-saved register (`r8`-`r11`) and turn
+  the rest into `MOV rD, rC`; net gain `c - 4`. Measured (conservative convention, key includes the
+  destination register): **657 of 1,115 `MOVW` (59%) repeat inside the same function**, an optimistic
+  upper bound of **399 (-2.1%)**, or **193 (-1.0%)** with at most 4 cache registers.
+- **Its real value is the foundation**: S3a has to solve "put something that is not a frame slot into
+  `r8`-`r11`", "widen `PUSH`/`POP` and shift every offset" and "keep 8-byte alignment" -- exactly the
+  hard parts of S3b (live values across calls).
+- **The known conflict (found by reading `ark_regalloc_function()`)**: `ra_` and S3a want the same
+  registers, the same frame block and the same offset shift. The fixed resolution is "the PUSH
+  widening and offset shift may have exactly one owner": S3a does not widen itself, it takes the
+  remaining registers from `ra_`'s `made[]`/`extra`, and `ra_`'s widening also saves them. If
+  implementation cannot do that, the slice **degrades to not done** -- two passes shifting offsets
+  independently is a miscompile hotspot and not worth 1-2%.
+- **Gates frozen**: seven gates (OFF IS OFF / only ever smaller with any growth red / the reuse
+  really happens and the replacement is `MOV rD,rC` / still hits across a `BL` / no register clash
+  with `ra_` and offsets shifted once / `arm_exec` parity / cropping rejects with `C3900U`) and four
+  falsifiers (< 0.5% archives the line, any TU growing, more than 4 registers needed, having to widen
+  `PUSH` itself). All of it in `docs/OPERAND_ALLOC.md` / `.en.md`.
+- **S3b is registered only, not pre-registered**: live values across call sites in callee-saved
+  registers needs live intervals and a spill policy, and must be pre-registered separately after S3a
+  works and is measured.
 
 ---
 
