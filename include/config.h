@@ -28,6 +28,7 @@ typedef struct {
     int enable_opt_peep;            /* -fopt-peep: 消除经栈的寄存器拷贝与回读 */
     int enable_opt_cbranch;         /* -fopt-cbranch: 比较结果直接喂给条件跳转 */
     int enable_opt_pair;            /* -fopt-pair: 两个紧推 push 与二元运算合并，不走值栈 */
+    int enable_opt_prop;            /* -fopt-prop: 局部槽常量传播，把载回读成立即数 */
     int enable_opt_copyprop;        /* -fopt-copyprop: 删死拷贝、把拷贝推进到消费者 */
     int enable_opt_live;            /* -fopt-live: 用 CFG+活跃性删只活跃性看得见的拷贝 */
     int enable_opt_inline;   /* --autoinline / -O2 */

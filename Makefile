@@ -29,7 +29,8 @@ endif
         test-objir test-partiallink test-deadinline test-softfloat test-tailmerge \
         test-tailcall test-divconst test-xblock test-sizeweight \
         test-inline test-vstack test-addr test-strength test-cbz test-branch \
-        test-imm test-peep test-cbranch test-copyprop test-live test-movimm test-pair install \
+        test-imm test-peep test-cbranch test-copyprop test-live test-movimm test-pair \
+        test-prop install \
         stm32 stm32-check
 
 all: $(ARKCC)
@@ -273,6 +274,18 @@ test-movimm: $(ARKCC)
 # the flag by name (C3900U).
 test-pair: $(ARKCC)
 	$(PYTHON) tests/run_pair_tests.py ./$(ARKCC)
+
+# Gate for local-slot constant propagation with paired dead-store removal
+# (-fopt-prop): that the default build is byte-identical and keeps writing an
+# overwritten temp, that the dead store goes while a live one stays, that a
+# join point and a taken address end the analysis while a call alone does not,
+# that volatile stores are left alone, that `x = 7; y = 1; return x + y;`
+# folds with the loads gone, that every fixture returns the Python answer in
+# both arms, and that a cropped build (-DARKCC_FEATURE_OPT_PROP=0) refuses the
+# flag by name (C3900U).
+test-prop: $(ARKCC)
+	$(PYTHON) tests/run_prop_tests.py ./$(ARKCC)
+
 
 
 

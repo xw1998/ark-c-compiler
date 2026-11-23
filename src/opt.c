@@ -200,6 +200,380 @@ void opt_strength_func(IrFunc *f) {
 #endif
 }
 
+/* --- Local-slot constant propagation (-fopt-prop) ------------------------
+ * Why this exists: the value-stack passes (vstack / imm / cbranch / pair) all
+ * work on what the emitter produced, so none of them can answer the question
+ * "this slot was just given 5, so reading it back gives 5".  Everything irgen
+ * spills to a frame slot stays a real LDR unless an IR-level pass remembers
+ * what went in.  In the HAL corpus that is 1,974 local loads (10.3% of all
+ * instructions) and the characteristic loop-invariant shape
+ *
+ *     MOV r7, #0            (i = 0)
+ *     ...
+ *     MOV r1, r7            (PUSH i)
+ *     LSL r1, r1, #2        (PUSH_INT 4; MUL)
+ *     LDR r0, [r5, r1]      (LOAD_IDX)
+ *
+ * where the shl/mul chain only exists because `i` was not known to be 0.
+ *
+ * The analysis is a byte map, not a slot list, and that is the whole point:
+ *
+ *   valid[off] == 1  <=>  bytes[off] is the constant byte the last store on
+ *                         that exact byte wrote, and nothing has overwritten
+ *                         it since.
+ *
+ * A load of w bytes at off is replaced only when every one of those w bytes is
+ * valid; the value is then reconstructed from those bytes and extended exactly
+ * the way LDRB / LDRSB / LDRH / LDRSH / LDR would extend it.  So the
+ * replacement is the *memory content*, not a guess about it, and overlapping
+ * and differently-sized stores (a union, a char written over an int) stay
+ * correct without any extra rule.
+ *
+ * The pass has two halves, and they are coupled on purpose:
+ *
+ *   1. forward: remember what each store wrote, rewrite a local load whose
+ *      bytes are all known into PUSH_INT.  On its own this pass *grew* the HAL
+ *      corpus (a frame load is one LDR; a constant that needs MOVW+MOVT is two
+ *      instructions), so the replacement is gated on prop_imm_one_instr().
+ *   2. backward: every store whose bytes are never read again is dead, and it
+ *      is deleted together with the one-instruction producer right in front of
+ *      it.  `uint32_t tmpreg = 0;` that is overwritten before any read is the
+ *      canonical case and it is very common in vendor HAL code, so this half is
+ *      what pays for the loads the forward half could not prove.
+ *
+ * What invalidates the forward half:
+ *   - any label or jump (JMP / JZ / JNZ / JMP_NAMED / CMP_JMP_EQ): a merge
+ *     point or a back edge, so nothing recorded before it may cross;
+ *   - any write through something we cannot name (STORE_IDX, STORE_GLOBAL,
+ *     STORE_FLD, MEMCPY, CALL, SVC, SMC): the address may be a local's;
+ *   - ALLOCA and ASM anywhere in the function: frame layout / memory traffic
+ *     that this pass cannot reason about, so the whole function is skipped;
+ *   - a volatile store or load: never folded, never recorded;
+ *   - 8-byte and wider stores and loads: two machine words, and for a double
+ *     the IR says nothing about the object's type, so leave them alone.
+ *
+ * The value of the store is only known when it is the immediately preceding
+ * instruction (IR_PUSH_INT); any other producer clears the pending value, so a
+ * store of a computed value simply invalidates its bytes.  PUSH_VAR that is
+ * itself replaced also counts as a known constant, which lets `a = b;` forward
+ * a constant one hop further.
+ *
+ * What makes the backward half conservative: a jump/label, a pointer read
+ * (LOAD_IDX / LOAD_FLD), taking a frame address (PUSH_ADDR), and every call or
+ * opaque memory operation mark the *whole* frame live, because each of those is
+ * a point at which a value could leave the analysis' sight.  Only a store whose
+ * own bytes are still dead after that is removed -- and only when its producer
+ * is a one-word push that is not volatile.
+ *
+ * After the forward half the IR has new PUSH_INT / BINARY adjacencies, so
+ * folding runs once more -- but only when folding is actually enabled for this
+ * compilation, otherwise -fno-opt-constfold would silently keep folding here.
+ */
+/* Does this constant cost one instruction on the ARM emitter?  The emitter's
+ * emit_mov_imm reaches for MOV / MOVW / a rotated MOV / MVN, and only falls
+ * back to MOVW+MOVT for a value that none of those can spell.  A frame load is
+ * one LDR, so a replacement is a size win or a size draw exactly when the
+ * constant is one instruction; a MOVW+MOVT replacement would be one
+ * instruction *longer* than the load it replaces (measured: the first cut of
+ * this pass grew the HAL corpus by 16 instructions, all of them this case).
+ * The classification below mirrors that emitter; the gate test asserts the
+ * corpus does not grow, so a drift between the two shows up as a failure
+ * rather than as a silent size regression. */
+static int prop_imm_one_instr(long long v) {
+    unsigned u = (unsigned)v;
+    int r;
+    if (v >= 0 && v <= 0xFFFF) return 1;          /* MOV / MOVW */
+    for (r = 0; r < 32; r += 2) {                 /* 8-bit value, rotated */
+        unsigned x = (r == 0) ? u : ((u << r) | (u >> (32 - r)));
+        if ((x & ~0xFFu) == 0) return 1;
+    }
+    for (r = 0; r < 32; r += 2) {                 /* MVN of such a value */
+        unsigned n = ~u;
+        unsigned x = (r == 0) ? n : ((n << r) | (n >> (32 - r)));
+        if ((x & ~0xFFu) == 0) return 1;
+    }
+    return 0;
+}
+
+static void prop_clear(unsigned char *valid, int n) {
+    int k;
+    for (k = 0; k < n; k++) valid[k] = 0;
+}
+
+static void prop_mark_all(unsigned char *valid, int n) {
+    int k;
+    for (k = 0; k < n; k++) valid[k] = 1;
+}
+
+/* Mark [off, off+w) live.  A range that leaves the frame means the pass has
+ * lost track of an address, so the whole frame becomes live. */
+static void prop_mark_range(unsigned char *valid, int n, long long off, int w) {
+    int k;
+    if (off < 0 || off + w > n) { prop_mark_all(valid, n); return; }
+    for (k = 0; k < w; k++) valid[(int)off + k] = 1;
+}
+
+/* Is P a one-word push that can be deleted together with a dead store that
+ * consumes it?  Returns 1 only for producers with no side effect at all. */
+static int prop_push_droppable(const IrInst *P, int sw) {
+    if (sw != 1 && sw != 2 && sw != 4) return 0;   /* store must pop one word */
+    if (P->op == IR_PUSH_INT || P->op == IR_PUSH_ADDR) return 1;
+    if (P->op != IR_PUSH_VAR) return 0;
+    if (P->aux & (IR_AUX_VOLATILE | IR_AUX_SLOT64 | IR_AUX_COMPLEX)) return 0;
+    {
+        int w = P->aux & 0xFF;
+        if (w == 0) w = 4;
+        if (w != 1 && w != 2 && w != 4) return 0;
+    }
+    return 1;
+}
+
+/* Forward half: rewrite known local loads into IR_PUSH_INT.  Returns the number
+ * of rewritten instructions. */
+static int prop_forward(IrFunc *f, unsigned char *valid, unsigned char *bytes, int n) {
+    int i, replaced = 0;
+    int pending_const = 0;
+    long long pending_val = 0;
+
+    prop_clear(valid, n);
+    for (i = 0; i < f->code_count; i++) {
+        IrInst *I = &f->code[i];
+        int was_const = pending_const;
+        long long cval = pending_val;
+        pending_const = 0;
+        switch (I->op) {
+        case IR_PUSH_INT:
+            pending_const = 1;
+            pending_val = I->val;
+            break;
+        case IR_PUSH_VAR: {
+            int w = I->aux & 0xFF;
+            int is_uns = (I->aux & 0x100) != 0;
+            long long v = 0;
+            int k, ok = 1;
+            if (I->aux & (IR_AUX_VOLATILE | IR_AUX_SLOT64)) break;
+            if (I->aux & IR_AUX_COMPLEX) break;
+            if (w == 0) w = 4;
+            if (w != 1 && w != 2 && w != 4) break;
+            if (I->val < 0 || I->val + w > n) break;
+            for (k = 0; k < w; k++)
+                if (!valid[(int)I->val + k]) { ok = 0; break; }
+            if (!ok) break;
+            for (k = w - 1; k >= 0; k--)
+                v = (v << 8) | (long long)bytes[(int)I->val + k];
+            if (w == 1) {
+                if (!is_uns && (v & 0x80)) v |= ~(long long)0xFF;
+            } else if (w == 2) {
+                if (!is_uns && (v & 0x8000)) v |= ~(long long)0xFFFF;
+            } else if (!is_uns && (v & 0x80000000LL)) {
+                v |= ~(long long)0xFFFFFFFFLL;
+            }
+            if (!prop_imm_one_instr(v)) break;   /* would cost two instructions */
+            /* Skip the shape the emitter already wins for free: a load that
+             * directly follows a store covering its bytes.  The store's value
+             * is still the top-of-stack register, so -fopt-imm already drops
+             * this load; spelling it as PUSH_INT would emit a fresh MOV(W)
+             * there and turn a free load into a real instruction (measured:
+             * exactly the four HAL files that grew in the first cut). */
+            if (i > 0 && f->code[i - 1].op == IR_STORE) {
+                IrInst *Q = &f->code[i - 1];
+                int qw = Q->aux & 0xFF;
+                long long qo = Q->val;
+                if (qw == 0) qw = 4;
+                if (!(Q->aux & IR_AUX_VOLATILE) && qo <= I->val &&
+                    I->val + w <= qo + qw) {
+                    break;
+                }
+            }
+            I->op = IR_PUSH_INT;
+            I->val = v;
+            I->aux = 0;
+            I->name = 0;
+            replaced++;
+            pending_const = 1;
+            pending_val = v;
+            break;
+        }
+        case IR_STORE: {
+            int sw = I->aux & 0xFF;
+            int off = (int)I->val;
+            int k;
+            if (sw == 0) sw = 4;
+            if (sw != 1 && sw != 2 && sw != 4) {
+                /* 8 / 16 bytes: two or four words popped.  Clear every frame
+                 * byte it can reach; off is the object's base. */
+                int end = off + sw;
+                if (off < 0 || off >= n) { prop_clear(valid, n); break; }
+                if (end > n) end = n;
+                for (k = off; k < end; k++) valid[k] = 0;
+                break;
+            }
+            if (off < 0 || off + sw > n) {
+                if (off >= 0 && off < n)
+                    for (k = off; k < n; k++) valid[k] = 0;
+                break;
+            }
+            if ((I->aux & IR_AUX_VOLATILE) || !was_const) {
+                for (k = 0; k < sw; k++) valid[off + k] = 0;
+                break;
+            }
+            for (k = 0; k < sw; k++) {
+                valid[off + k] = 1;
+                bytes[off + k] =
+                    (unsigned char)(((unsigned long long)cval >> (8 * k)) & 0xFF);
+            }
+            break;
+        }
+        /* Writes through an address this pass cannot name, and every point at
+         * which control flow may merge or loop back. */
+        case IR_STORE_IDX:
+        case IR_STORE_GLOBAL:
+        case IR_STORE_FLD:
+        case IR_MEMCPY:
+        case IR_CALL:
+        case IR_SVC:
+        case IR_SMC:
+        case IR_ASM:
+        case IR_ALLOCA:
+        case IR_LABEL:
+        case IR_LABEL_NAMED:
+        case IR_JMP:
+        case IR_JMP_NAMED:
+        case IR_JZ:
+        case IR_JNZ:
+        case IR_CMP_JMP_EQ:
+        case IR_FUNC_BEGIN:
+            prop_clear(valid, n);
+            break;
+        default:
+            break;
+        }
+    }
+    return replaced;
+}
+
+/* Backward half: delete stores whose bytes are never read again, together with
+ * the one-instruction producer in front of them.  Returns the number of removed
+ * pairs (each pair turns two instructions into IR_NOP). */
+static int prop_dead_stores(IrFunc *f, unsigned char *alive, int n, int escaped) {
+    int i, removed = 0;
+    prop_mark_all(alive, n);
+    for (i = f->code_count - 1; i >= 0; i--) {
+        IrInst *I = &f->code[i];
+        switch (I->op) {
+        case IR_LABEL:
+        case IR_LABEL_NAMED:
+        case IR_JMP:
+        case IR_JMP_NAMED:
+        case IR_JZ:
+        case IR_JNZ:
+        case IR_CMP_JMP_EQ:
+        case IR_ASM:
+        case IR_ALLOCA:
+        case IR_FUNC_BEGIN:
+        case IR_PUSH_ADDR:          /* the frame address escapes */
+            prop_mark_all(alive, n);
+            break;
+        /* Memory traffic and calls can only reach this frame when somebody
+         * took its address, and in this IR the only way to take one is
+         * IR_PUSH_ADDR.  With no PUSH_ADDR anywhere in the function, a callee
+         * cannot name a byte of our frame, a pointer parameter cannot point
+         * into it, and a memcpy has no argument that could alias it -- so the
+         * frame survives all of them untouched. */
+        case IR_LOAD_IDX:
+        case IR_LOAD_FLD:
+        case IR_CALL:
+        case IR_SVC:
+        case IR_SMC:
+        case IR_MEMCPY:
+        case IR_STORE_IDX:
+        case IR_STORE_GLOBAL:
+        case IR_STORE_FLD:
+            if (escaped) prop_mark_all(alive, n);
+            break;
+        case IR_PUSH_VAR: {
+            int w = I->aux & 0xFF;
+            if (w == 0) w = 4;
+            if ((I->aux & (IR_AUX_VOLATILE | IR_AUX_SLOT64 | IR_AUX_COMPLEX)) ||
+                (w != 1 && w != 2 && w != 4))
+                prop_mark_all(alive, n);
+            else
+                prop_mark_range(alive, n, I->val, w);
+            break;
+        }
+        case IR_STORE: {
+            int sw = I->aux & 0xFF;
+            long long off = I->val;
+            int k, dead;
+            IrInst *P;
+            if (sw == 0) sw = 4;
+            if (sw != 1 && sw != 2 && sw != 4) {   /* two / four words */
+                prop_mark_all(alive, n);
+                break;
+            }
+            if (I->aux & IR_AUX_VOLATILE) {        /* observable, never removed */
+                prop_mark_range(alive, n, off, sw);
+                break;
+            }
+            if (off < 0 || off + sw > n) {
+                prop_mark_all(alive, n);
+                break;
+            }
+            dead = 1;
+            for (k = 0; k < sw; k++)
+                if (alive[(int)off + k]) { dead = 0; break; }
+            P = (i > 0) ? &f->code[i - 1] : (IrInst *)0;
+            if (dead && P && prop_push_droppable(P, sw)) {
+                P->op = IR_NOP;
+                I->op = IR_NOP;
+                removed++;
+                continue;
+            }
+            for (k = 0; k < sw; k++) alive[(int)off + k] = 0;
+            break;
+        }
+        default:
+            break;
+        }
+    }
+    return removed;
+}
+
+void opt_prop_func(IrFunc *f) {
+#if ARKCC_FEATURE_OPT_PROP
+    int n, i, replaced, removed, escaped;
+    unsigned char *valid;
+    unsigned char *bytes;
+    unsigned char *alive;
+
+    if (f->code_count <= 0) return;
+    n = f->local_size;
+    if (n <= 0) return;
+    escaped = 0;
+    for (i = 0; i < f->code_count; i++) {
+        IrOp op = f->code[i].op;
+        if (op == IR_ASM || op == IR_ALLOCA) return;
+        if (op == IR_PUSH_ADDR) escaped = 1;
+    }
+    valid = (unsigned char *)mem_pool_alloc(n);
+    bytes = (unsigned char *)mem_pool_alloc(n);
+    alive = (unsigned char *)mem_pool_alloc(n);
+    if (!valid || !bytes || !alive) return;
+
+    replaced = prop_forward(f, valid, bytes, n);
+    removed = prop_dead_stores(f, alive, n, escaped);
+    if (removed) compact_func(f);
+
+    mem_pool_free(alive, n);
+    mem_pool_free(bytes, n);
+    mem_pool_free(valid, n);
+
+    if (replaced && g_config.enable_opt_constfold) opt_constfold_func(f);
+#else
+    (void)f;
+#endif
+}
+
 void opt_dce_func(IrFunc *f) {
     int i;
     int unreachable = 0;

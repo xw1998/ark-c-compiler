@@ -536,6 +536,67 @@ drops.
   S2 and above is worth keeping under `STM32_MIN` is a question only the
   `make stm32-check` size gate can answer).
 
+### P13 Local-slot constant propagation + dead-store elimination (`-fopt-prop`, **landed in 0.9.1-wip**)
+
+- **Diagnosis**: across the 95-TU HAL corpus there are **1,974 local loads (10.3%)** and
+  1,163 `STR`s against frame slots, and `MOV+LDR` (build a temp address/value, then read it
+  back) accounts for 33% of them. Most of those loads read a slot that was written once and
+  never changed afterwards -- declaration initialisation is the typical case.
+- **Two halves, one byte map**: `valid[off]` marks "this byte's constant value is known",
+  `bytes[off]` holds the value.
+  - **Forward propagation**: one straight-line sweep. `IR_PUSH_INT/IR_PUSH_ADDR` and a
+    non-volatile `IR_PUSH_VAR` of known width mark their bytes valid; a `PUSH_VAR` whose
+    bytes are all known is sign/zero-extended exactly per `LDRB/LDRSB/LDRH/LDRSH/LDR` and
+    rewritten to `IR_PUSH_INT`; a store marks its bytes; a label, branch, call, `ASM`,
+    `ALLOCA` or a frame-address escape clears the map (no guessing across joins).
+  - **Backward dead-store elimination**: byte-level liveness swept backwards. A store whose
+    bytes are all dead, and whose producer is droppable (`PUSH_INT/PUSH_ADDR`, width 1/2/4,
+    non-volatile `PUSH_VAR`), is turned into `IR_NOP` together with that producer; the
+    `IR_NOP`s are then compacted away.
+- **Two size gates, each paid for by a measured regression**:
+  1. `prop_imm_one_instr()` only replaces constants that fit one ARM instruction. Without it,
+     a frame `LDR` (1 instruction) became `MOVW+MOVT` (2), and the corpus grew from 19,112 to
+     **19,128 (+16)**.
+  2. **Redundant-load skip**: a `PUSH_VAR` that immediately follows an `IR_STORE` covering
+     all of its bytes is not replaced. The value is still in the top-of-stack register, so
+     `-fopt-imm` already folds that load into zero instructions; rewriting it to `PUSH_INT`
+     at IR level adds a `MOVW`. Without this rule the corpus was 19,118 (+6), with
+     `hal_dma/hal_flash/hal_flash_ex/gpio` all larger.
+- **One relaxation, argued not assumed**: backward liveness marks everything live at
+  `CALL/LOAD_IDX/STORE_IDX/MEMCPY/STORE_GLOBAL/...` only when the function contains an
+  `IR_PUSH_ADDR` (its frame address escaped). In this IR `IR_PUSH_ADDR` is the only way to
+  obtain a frame address (all 24 emission sites in `irgen.c`: aggregate init, bitfields,
+  taking an address, passing by address), so without it no callee, pointer write or memcpy
+  can name a byte of the frame. Before this relaxation the pass saved 6 instructions; with
+  it, **29**.
+- **Trimming**: `ARKCC_FEATURE_OPT_PROP` (`STM32_MIN` 0 / host 1), off by default, enabled on
+  top of `-O2`. A trimmed build refuses `-fopt-prop` with `C3900U` and still compiles without
+  the flag. The `ir.prop` stage row trims to all zeros (`built_in=0`, null function pointer),
+  `ARK_PROFILE_LITE`, minimum level 1.
+- **Gates**: `tests/run_prop_tests.py`, **36 checks**, `make test-prop`. Highlights: OFF IS
+  OFF byte-identical; a declaration-initialised dead store goes 3->2 with the image not
+  growing; both arms of an `if/else` merge and a `volatile` store stay byte-identical; a slot
+  read through a callee (true escape) and a still-read slot keep their store count; a slot
+  that is never address-taken can be dropped even when the function is called; a
+  pure-constant read goes 2->0 and the function shrinks; seven fixtures return the same value
+  on unicorn with the pass off and on; the trimmed build refuses the flag. Every gate passes
+  `-fno-opt-inline`: inlining is a size-driven decision, so deleting one instruction can push
+  a small `static` over the threshold, and then the gate would be measuring the inliner.
+- **Measured (ten switches plus `-fopt-prop`)**: **19,112 -> 19,083 (-29 instructions, 0.15%)**,
+  `fails 0`; `MOV 3903 -> 3889`, `STR 1163 -> 1148` (exactly 15 `PUSH;STORE` pairs removed),
+  every other mnemonic unchanged; per file `hal_flash_ex.c -12, main.c -4, hal_pwr_ex.c -4,
+  ll_utils.c -4, gpio.c -2, hal_cortex.c -2, hal_flash.c -1`, the rest unchanged, **nothing
+  larger**.
+- **Honest conclusion (important)**: instrumented counters show `replaced=0` and
+  `removed_pairs=15` on this corpus -- **forward propagation earns nothing on the HAL**,
+  because `-fopt-imm` already tracks register-resident values at the text level, and almost
+  every IR-visible "read of a known constant" is a form it already folds for free (that is
+  where the redundant-load skip came from). All the value comes from backward DSE, and dead
+  stores are simply rare in the HAL (declaration init followed by immediate overwrite). This
+  says the **text-level budget is genuinely exhausted**: 0.15% is close to the measurable
+  limit here, and the next step has to be IR-level register allocation (P12's S2 onwards),
+  not more local rules.
+
 ---
 
 ---

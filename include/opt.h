@@ -79,4 +79,12 @@ int  opt_const_global(IrProgram *prog);
  * shift/add chain that would replace it. */
 void opt_strength_func(IrFunc *f);
 
+/* Local-slot constant propagation (-fopt-prop): replaces a load of a local
+ * slot with the immediate the last store wrote there, when no control-flow
+ * merge, no write through an unnamed address and no volatile access stands
+ * between the two.  The record is per byte, so overlapping stores of
+ * different widths stay exact, and the replaced load is exactly what the
+ * LDRB/LDRSB/LDRH/LDRSH/LDR would have returned.  See src/opt.c. */
+void opt_prop_func(IrFunc *f);
+
 #endif /* ARK_OPT_H */

@@ -244,6 +244,17 @@
 #   define ARKCC_FEATURE_OPT_PAIR       1
 # endif
 #endif
+/* ARKCC_FEATURE_OPT_PROP: -fopt-prop, IR-level local-slot constant
+ * propagation (src/opt.c).  It needs a byte map the size of the frame, which
+ * is trivially cheap on the host and pointless on a board build that ships the
+ * default configuration (in which the pass is off). */
+#ifndef ARKCC_FEATURE_OPT_PROP
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_OPT_PROP      0   /* 板上裁掉：只在宿主/交叉编译用 */
+# else
+#   define ARKCC_FEATURE_OPT_PROP      1
+# endif
+#endif
 /* ARKCC_FEATURE_OPT_COPYPROP: -fopt-copyprop, the IAR "ECT" family -- drop a
  * register copy whose destination is overwritten before any read, and forward
  * one that feeds a single three-operand ALU consumer. */

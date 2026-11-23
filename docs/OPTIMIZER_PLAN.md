@@ -404,6 +404,50 @@
   溢出变多；调试可读性下降（需要 `-g` 下保留变量位置信息）；板端体积
   （`STM32_MIN` 下 S2 以上是否值得开，必须由 `make stm32-check` 的体积闸门回答）。
 
+### P13 局部槽常量传播 + 死存储删除（`-fopt-prop`，**已落地 0.9.1-wip**）
+
+- **诊断**：95 TU HAL 语料里 `LDR`/`STR` 对帧内槽的访问共 **1,974 条 local load（10.3%）**
+  与 1,163 条 `STR`，其中 `MOV+LDR`（先造地址/临时值再读回）占 33%。
+  这些读里大部分是在读「刚写进去、后续再也没变过」的槽——声明初始化尤其典型。
+- **两半，共用一张 byte map**：`valid[off]` 记「该字节的常量值已知」、`bytes[off]` 记值。
+  - **前向传播**：直线扫描，`IR_PUSH_INT/IR_PUSH_ADDR` 与宽度已知的非 volatile
+    `IR_PUSH_VAR` 把字节标已知；`IR_PUSH_VAR` 全字节已知时按 `LDRB/LDRSB/LDRH/LDRSH/LDR`
+    的语义精确符号/零扩展后改写成 `IR_PUSH_INT`；`IR_STORE` 写入即标记；标签、跳转、
+    调用、`ASM`、`ALLOCA`、取帧地址等会失效的点把 map 清空（不跨 join 点猜）。
+  - **后向死存储删除**：字节级活跃性向后扫，`IR_STORE` 的字节全不活跃、且它的 producer
+    可丢（`IR_PUSH_INT/IR_PUSH_ADDR`、宽度 1/2/4、非 volatile 的 `PUSH_VAR`）时，两条一起
+    改 `IR_NOP`，最后 `compact_func` 重排。
+- **两条尺寸闸门（都是实测翻车换来的）**：
+  1. `prop_imm_one_instr()`：只替换「一条 ARM 指令装得下的常量」。首版没有它，帧内 `LDR`
+     （1 条）被换成 `MOVW+MOVT`（2 条），语料反而 19,112 → **19,128（+16）**。
+  2. **冗余跳过规则**：`PUSH_VAR` 紧跟在**覆盖它全部字节**的同槽 `IR_STORE` 之后时不替换。
+     因为此时值还在栈顶寄存器里，`-fopt-imm` 已经把这条 load 就地消化成 0 条；IR 层再把它
+     改写成 `PUSH_INT` 反而多出一条 `MOVW`。缺这条时 19,118（+6），`hal_dma/hal_flash/
+     hal_flash_ex/gpio` 四个文件变大。
+- **一处保守性放宽（有论证）**：后向活跃性里 `CALL/LOAD_IDX/STORE_IDX/MEMCPY/STORE_GLOBAL/...`
+  只在函数**存在 `IR_PUSH_ADDR`**（本帧地址曾外流）时才 mark_all。本 IR 里取帧地址只有
+  `IR_PUSH_ADDR` 一条指令（`irgen.c` 的全部 24 个发射点：聚合初始化、位域、取地址、按地址传参），
+  所以没有它就没有任何 callee / 指针写 / memcpy 能命名本帧字节。缺这条时只 −6，补上后 **−29**。
+- **裁切**：`ARKCC_FEATURE_OPT_PROP`（`STM32_MIN` 0 / 宿主 1），默认关；`-O2` 之上再开。
+  裁剪构建以 `C3900U` 拒绝 `-fopt-prop`，不带旗标仍可编译。阶段表行 `ir.prop` 的裁剪形态
+  为全 0（`built_in=0` + 函数指针 0），`ARK_PROFILE_LITE`、最低优化级 1。
+- **判据**：`tests/run_prop_tests.py`，**36 项**，`make test-prop`。要点：OFF IS OFF 逐字节；
+  声明初始化的死存储 3→2 且镜像不增；`if/else` 两支合并与 `volatile` 逐字节不变；
+  经 callee 读出过的槽（真阳性逃逸）与仍被读的槽（`live`）store 数不变；无取址但被调用的
+  槽仍可删；纯常量读 2→0 且函数变短；七个夹具 off/on 两臂在 unicorn 上同值；裁剪构建拒绝。
+  门禁一律带 `-fno-opt-inline`：内联是尺寸驱动的决策，删掉一条指令可能把小 static 推过阈值，
+  那样测到的是内联器而不是本 pass。
+- **实测（十开关之上加 `-fopt-prop`）**：**19,112 → 19,083（−29 条 / 0.15%）**，`fails 0`；
+  直方图 `MOV 3903 → 3889`、`STR 1163 → 1148`（正好 15 对 `PUSH;STORE` 被删），其余助记符不动；
+  逐文件 `hal_flash_ex.c −12、main.c −4、hal_pwr_ex.c −4、ll_utils.c −4、gpio.c −2、
+  hal_cortex.c −2、hal_flash.c −1`，其余持平，**无一个变大**。
+- **诚实结论（重要）**：插桩统计这台语料上 `replaced=0`、`removed_pairs=15`
+  —— **前向传播在 HAL 上收益为零**，因为 `-fopt-imm` 已经在文本层跟踪寄存器里的值，
+  IR 层能看见的「已知常量读」几乎全是它已经免费消化的形态（见冗余跳过规则的由来）；
+  全部价值来自后向死存储删除，而 HAL 里死存储本来就少（声明初始化 + 立即覆盖）。
+  这说明**文本层的余量确实到顶了**：这条线 0.15% 已接近可测极限，下一步必须在 IR 级
+  寄存器分配（P12 的 S2 起）上做，而不是继续加本地规则。
+
 ---
 
 ---

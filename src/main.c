@@ -568,6 +568,14 @@ int main(int argc, char **argv) {
             return 1;
         }
 #endif
+#if !ARKCC_FEATURE_OPT_PROP
+        else if (strcmp(a, "-fopt-prop") == 0) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: -fopt-prop is not compiled into "
+                    "this build (rebuild with -DARKCC_FEATURE_OPT_PROP=1)\n");
+            return 1;
+        }
+#endif
         else if (a[0] == '-' && a[1] == 'f') {
             /* -fxxx / -fno-xxx: already handled by config_apply_args, silently accepted here */
         }

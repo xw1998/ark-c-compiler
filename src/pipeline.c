@@ -126,6 +126,7 @@ static int ir_wanted_unroll(void)     { return g_config.enable_unroll; }
 static int ir_wanted_tailmerge(void)  { return g_config.enable_tailmerge; }
 static int ir_wanted_xblock(void)     { return g_config.enable_xblock; }
 static int ir_wanted_strength(void)   { return g_config.enable_opt_strength; }
+static int ir_wanted_prop(void)       { return g_config.enable_opt_prop; }
 #if ARKCC_FEATURE_CONST_GLOBAL
 static int ir_wanted_const_global(void) { return g_config.enable_const_global; }
 /* opt_const_global reports how many loads it replaced; the table wants a void
@@ -164,6 +165,16 @@ static const IrStage g_ir_stages[] = {
       ir_wanted_constfold, PIPE_NAME("off (-fno-opt-constfold)"), 0, 0, opt_constfold_func, 0 },
     { PIPE_NAME("ir.dce"),       ARK_PROFILE_LITE, 1, GATE_FLAG_AND_LEVEL, ARKCC_FEATURE_OPT_DCE,
       ir_wanted_dce,       PIPE_NAME("off (-fno-opt-dce)"),       0, 0, opt_dce_func,       0 },
+    /* 局部槽常量传播紧跟折叠：折叠先把 `x = 1 + 2` 这种存储值变成一个常数，
+     * 传播再把它沿用到后面的读者；反过来，传播造出的新 PUSH_INT + BINARY 相邻
+     * 关系由它自己在结尾补跑一次折叠（只在折叠真的开着时）。放在 dce 之前，
+     * 让被它变成 NOP 的指令顺手被清掉。 */
+#if ARKCC_FEATURE_OPT_PROP
+    { PIPE_NAME("ir.prop"),      ARK_PROFILE_LITE, 1, GATE_FLAG_AND_LEVEL, 1,
+      ir_wanted_prop,      PIPE_NAME("off (-fopt-prop)"),         0, 0, opt_prop_func,      0 },
+#else
+    { PIPE_NAME("ir.prop"),      ARK_PROFILE_LITE, 1, GATE_FLAG_AND_LEVEL, 0, 0, 0, 0, 0, 0, 0 },
+#endif
 #if ARKCC_FEATURE_OPT_DCE_CFG
     { PIPE_NAME("ir.dce-cfg"),   ARK_PROFILE_FULL, 1, GATE_FLAG_AND_LEVEL, 1,
       ir_wanted_dce_cfg,   PIPE_NAME("off (--dce-cfg)"),          0, 0, opt_dce_cfg_func,   0 },
