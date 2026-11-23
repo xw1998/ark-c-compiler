@@ -18,6 +18,20 @@ those three shapes inside one straight-line block:
       `LSL/LSR/ASR/ROR`, `MVN`, `UXT*`, `SXT*`, `CLZ`, `REV*`) that is
       overwritten later in the same block before anything reads it is dead.
 
+  M4  `LSL/LSR/ASR rD, rS, #n` where rS holds a known constant becomes
+      `MOV rD, #k` with the folded value (only when 0 <= k <= 255).  The
+      three-operand shift is flag-neutral, so the value and the flags are
+      both unchanged, and the result is now a constant the rules above can
+      use.
+
+  M5  The same fold through `UXTB/UXTH/SXTB/SXTH`.
+
+  M6  `CMP rX, #k` with rX known, followed immediately by a conditional
+      branch: the branch is decided here.  If it is always taken the branch
+      becomes `B`; if it is never taken the branch line is dropped.  The
+      `CMP` itself is kept, so no flag any later instruction could read
+      changes at all.
+
 Everything else is a boundary: arithmetic that may set flags, multiplies,
 `UDIV`, `BX`, barriers, conditional forms and any mnemonic the pass does not
 know are never crossed or rewritten.  A `MOVW`/`MOVT` pair is treated as one
@@ -41,6 +55,11 @@ Checks:
   7. LABELS SURVIVE.  The pass rewrites lines, never labels.
   8. CROPPED OUT, REFUSED.  A build with -DARKCC_FEATURE_OPT_CMAT=0 refuses
      `-fopt-cmat` by name (C3900U) and still compiles without the flag.
+  9. M4/M5/M6 FIRE.  A constant through a shift and through an extend is
+     folded, a never-taken branch disappears, the instruction count drops
+     and the answer does not change.  A shift whose result does not fit the
+     8-bit immediate (`300 << 5`) and a shift that would need a negative
+     immediate (`-8 >> 1`) are left alone.
 
 Usage: run_cmat_tests.py [path-to-arkcc]
 Exit 0 = every check passed, 1 = a check failed, 2 = setup problem.
@@ -101,10 +120,55 @@ int cm_bigf(void) { return cm_bv == 0x12345678u; }
 int main(void) { return cm_bigf(); }
 """
 
+# The nine other passes above BASE are what keep a local constant in a
+# register instead of spilling it; without them the shift folds below never
+# see a known value, and the fixture would test nothing.
+FULL = BASE + ['-fopt-prop', '-fopt-copyprop', '-fopt-live', '-fopt-constcache',
+               '-fopt-slotreg', '-fopt-coalesce', '-fopt-deadpush']
+
+# M4/M5/M6: a constant through a shift, the same through an extend, and a
+# `do {} while (0)` whose compare is a known 0 (the shape the HAL's
+# `__HAL_RCC_..._CLK_ENABLE()` macros produce).
+CONST = """\
+volatile int cm_sink;
+int cm_shl(void) { int i = 2; return i << 3; }
+int cm_shr(void) { unsigned i = 5; return (int)(i >> 1); }
+int cm_sar(void) { int i = 200; return i >> 2; }
+int cm_uxtb(void) { unsigned char c = 128; return c; }
+int cm_uxtb2(void) { unsigned char c = 300; return c; }
+int cm_sxth(void) { short s = -2; return s; }
+#define CM_CLK() do { cm_sink = 1; } while (0U)
+void cm_clk(void) { CM_CLK(); }
+int main(void)
+{
+    cm_clk();
+    return (cm_shl() + cm_shr() + cm_sar() + cm_uxtb()
+            + cm_uxtb2() + cm_sxth() + 2) & 255;
+}
+"""
+
+# Anti-over-fire: both shifts have a known source and a result that does not
+# fit the 8-bit immediate (200 << 5 = 6400, 200 << 1 = 400), so both must
+# survive the pass untouched -- while the 7 through `UXTB` in the same file
+# still folds, which shows the file really is being processed.
+NOFIT = """\
+volatile int cm_gate_v;
+int cm_big1(void) { int i = 200; return i << 5; }
+int cm_big2(void) { int i = 200; return i << 1; }
+int cm_big3(void) { unsigned char c = 7; return c; }
+int main(void)
+{
+    cm_gate_v = 1;
+    return (cm_big1() + cm_big2() + cm_big3()) & 255;
+}
+"""
+
 CASES = [
-    ('idx', IDX, 4),
-    ('strfirst', STRFIRST, 5),
-    ('big', BIG, 1),
+    ('idx', IDX, 4, BASE),
+    ('strfirst', STRFIRST, 5, BASE),
+    ('big', BIG, 1, BASE),
+    ('cmat_const', CONST, 240, FULL),
+    ('cmat_nofit', NOFIT, 151, FULL),
 ]
 
 check = V.check
@@ -144,7 +208,7 @@ def main():
 
     work = tempfile.mkdtemp(prefix='arkcc_cmat_')
     try:
-        for name, body, _ in CASES:
+        for name, body, _want, _flags in CASES:
             write(os.path.join(work, name + '.c'), body)
 
         # --- 1. off is off --------------------------------------------------
@@ -229,11 +293,68 @@ def main():
                   '%d/%d line(s)' % (len(tb_off.splitlines()),
                                      len(tb_on.splitlines())))
 
+        # --- 5b. M4 / M5 / M6, and the no-over-fold half --------------------
+        tc_off, _, e9 = build(arkcc, work, 'cmat_const', FULL, 'coff')
+        tc_on, _, e10 = build(arkcc, work, 'cmat_const', FULL + [FLAG], 'con')
+        if e9 or e10:
+            check(False, 'cmat_const: both arms build', (e9 or e10)[0][:120])
+        else:
+            for pat, rule in (('LSL r0, r0, #3', 'M4'),
+                              ('LSR r0, r0, #1', 'M4'),
+                              ('ASR r0, r0, #2', 'M4')):
+                a = count_sub(pat, tc_off)
+                b = count_sub(pat, tc_on)
+                check(a > 0 and b == 0,
+                      '%s: `%s` is folded into an immediate' % (rule, pat),
+                      '%d -> %d' % (a, b))
+            check(count_sub('MOV r0, #16', tc_on) > 0 and
+                  count_sub('MOV r0, #50', tc_on) > 0,
+                  'M4: the folded values are the right ones (16, 50)',
+                  '%d / %d' % (count_sub('MOV r0, #16', tc_on),
+                               count_sub('MOV r0, #50', tc_on)))
+            u_off = count_sub('UXTB r0, r0', tc_off)
+            u_on = count_sub('UXTB r0, r0', tc_on)
+            check(u_off > u_on and count_sub('MOV r0, #128', tc_on) > 0,
+                  'M5: a known 128 through UXTB becomes the constant itself',
+                  'UXTB %d -> %d, MOV r0, #128 %d'
+                  % (u_off, u_on, count_sub('MOV r0, #128', tc_on)))
+            b_off = count_sub('BNE .L_cm_clk_0', tc_off)
+            b_on = count_sub('BNE .L_cm_clk_0', tc_on)
+            check(b_off > 0 and b_on == 0,
+                  'M6: a branch after a known-false CMP is dropped',
+                  'BNE %d -> %d' % (b_off, b_on))
+            check(count_sub('CMP r0, #0', tc_on) ==
+                  count_sub('CMP r0, #0', tc_off),
+                  'M6: the CMP itself is kept, so no flag can change',
+                  'CMP %d -> %d' % (count_sub('CMP r0, #0', tc_off),
+                                   count_sub('CMP r0, #0', tc_on)))
+            drop = insn_count(tc_off) - insn_count(tc_on)
+            check(drop >= 6, 'the instruction count drops by one per fold',
+                  '%d -> %d' % (insn_count(tc_off), insn_count(tc_on)))
+
+        tn_off, _, e11 = build(arkcc, work, 'cmat_nofit', FULL, 'noff')
+        tn_on, _, e12 = build(arkcc, work, 'cmat_nofit', FULL + [FLAG], 'non')
+        if e11 or e12:
+            check(False, 'cmat_nofit: both arms build', (e11 or e12)[0][:120])
+        else:
+            for pat in ('LSL r0, r0, #5', 'LSL r0, r0, #1'):
+                a = count_sub(pat, tn_off)
+                b = count_sub(pat, tn_on)
+                check(a > 0 and a == b,
+                      'no over-fold: `%s` (result > 255) is left alone' % pat,
+                      '%d -> %d' % (a, b))
+            check(count_sub('UXTB r0, r0', tn_off) >
+                  count_sub('UXTB r0, r0', tn_on),
+                  'no over-fold: the file is still being processed',
+                  'UXTB %d -> %d' % (count_sub('UXTB r0, r0', tn_off),
+                                     count_sub('UXTB r0, r0', tn_on)))
+
         # --- 6. the answers stay the same -----------------------------------
-        for name, _body, want in CASES:
+        for name, _body, want, case_flags in CASES:
             arms = {}
             ok = True
-            for tag, flags in (('off', BASE), ('on', BASE + [FLAG]),
+            for tag, flags in (('off', case_flags),
+                               ('on', case_flags + [FLAG]),
                                ('alone', [FLAG])):
                 t, blob, err = build(arkcc, work, name, flags, 'v' + tag)
                 if err:

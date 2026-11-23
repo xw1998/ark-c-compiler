@@ -3920,6 +3920,8 @@ static int   cm_linestart[CM_MAX_LINES];
 static int   cm_linelen[CM_MAX_LINES];
 static CmUnit cm_units[CM_MAX_UNITS];
 static short cm_owner[CM_MAX_LINES];
+/* The unit count while the "dead write" test runs (cm_dies_later). */
+static int   cm_nu;
 
 /* Case-insensitive compare: the emitter prints a few mnemonics in lower case
  * ("bx", "rev16", "rrx"), and every mnemonic test below has to see them. */
@@ -4199,6 +4201,89 @@ static int cm_mem_idx(const char *mn, const char *ops, int *rt, int *rb,
     return 1;
 }
 
+/* "rD, rS, #n" -- the three-operand shift the emitter prints when it scales
+ * an index ("LSL r1, r7, #2").  The two-operand Thumb form is the flag-setting
+ * one and is refused here: nothing in these rules may change the flags. */
+static int cm_shift3(const char *mn, const char *ops, int *rd, int *rs, int *sh) {
+    const char *rest = 0;
+    char t[8];
+    int i = 0, o = 0, n = 0;
+    if (!(cm_streq(mn, "LSL") || cm_streq(mn, "LSR") || cm_streq(mn, "ASR")))
+        return 0;
+    if (!cm_first_reg(ops, rd, &rest)) return 0;
+    while (rest[i] && rest[i] != ',' && o + 1 < (int)sizeof t) t[o++] = rest[i++];
+    t[o] = 0;
+    if (!cm_reg(t, rs)) return 0;
+    while (rest[i] == ' ') i++;
+    if (rest[i] != ',') return 0;
+    i++;
+    while (rest[i] == ' ') i++;
+    if (rest[i] != '#') return 0;
+    i++;
+    if (rest[i] < '0' || rest[i] > '9') return 0;
+    while (rest[i] >= '0' && rest[i] <= '9') { n = n * 10 + (rest[i] - '0'); i++; }
+    if (rest[i]) return 0;
+    *sh = n;
+    return 1;
+}
+
+/* "UXTB rD, rS" (and the three other extends): two operands, no flags. */
+static int cm_extend2(const char *mn, const char *ops, int *rd, int *rs) {
+    const char *rest = 0;
+    if (!(cm_streq(mn, "UXTB") || cm_streq(mn, "UXTH") ||
+          cm_streq(mn, "SXTB") || cm_streq(mn, "SXTH")))
+        return 0;
+    if (!cm_first_reg(ops, rd, &rest)) return 0;
+    while (*rest == ' ') rest++;
+    if (!cm_reg(rest, rs)) return 0;
+    return 1;
+}
+
+/* Is the branch `mn` taken when the compare just executed was "rA - rB"?
+ * Textbook condition evaluation; the 32-bit difference is computed exactly
+ * (unsigned wrap for C/Z and a 64-bit subtraction for the signed overflow
+ * bit), so nothing here depends on how the target computes flags.
+ * -1 means "not a condition this rule understands". */
+static int cm_cond_true(const char *mn, long long a, long long b) {
+    unsigned ua = (unsigned)a, ub = (unsigned)b;
+    unsigned ur = ua - ub;
+    int n = ((int)ur < 0);
+    int z = (ur == 0);
+    int c = (ua >= ub);
+    long long d = (long long)(int)ua - (long long)(int)ub;
+    int v = (d > 2147483647LL || d < -2147483648LL);
+    if (cm_streq(mn, "BEQ")) return z;
+    if (cm_streq(mn, "BNE")) return !z;
+    if (cm_streq(mn, "BCS") || cm_streq(mn, "BHS")) return c;
+    if (cm_streq(mn, "BCC") || cm_streq(mn, "BLO")) return !c;
+    if (cm_streq(mn, "BMI")) return n;
+    if (cm_streq(mn, "BPL")) return !n;
+    if (cm_streq(mn, "BVS")) return v;
+    if (cm_streq(mn, "BVC")) return !v;
+    if (cm_streq(mn, "BHI")) return c && !z;
+    if (cm_streq(mn, "BLS")) return !c || z;
+    if (cm_streq(mn, "BGE")) return n == v;
+    if (cm_streq(mn, "BLT")) return n != v;
+    if (cm_streq(mn, "BGT")) return !z && n == v;
+    if (cm_streq(mn, "BLE")) return z || n != v;
+    return -1;
+}
+
+/* M3's criterion, factored out so the folded-constant rules can reuse it: is
+ * `reg` written again later in this block before anything reads it?  Then
+ * every earlier write to it is dead. */
+static int cm_dies_later(int j, int reg) {
+    int i;
+    for (i = j + 1; i < cm_nu; i++) {
+        CmUnit *v = &cm_units[i];
+        if (v->bar) break;
+        if (v->dead) continue;
+        if ((cm_uses(v->mn, v->ops, v->dst) >> reg) & 1) break;
+        if (v->dst == reg) return 1;
+    }
+    return 0;
+}
+
 /* The pass over one function's text. */
 static void ark_cmat_function(AsmBuffer *b, int from) {
     static char t[CM_OPS_LEN + CM_MN_LEN + 8];
@@ -4206,6 +4291,9 @@ static void ark_cmat_function(AsmBuffer *b, int from) {
     int n = 0, nu = 0, pos = from, len, i, j, changed = 0;
     long long cval[13];
     unsigned char cknown[13];
+    int pcmp = -1;                 /* register a pending CMP compares (M6) */
+    long long pcmpval = 0;         /* ... its known value                     */
+    long long pcmpimm = 0;         /* ... and the immediate it compares with  */
 
     if (!g_config.enable_opt_cmat) return;
 
@@ -4293,13 +4381,50 @@ static void ark_cmat_function(AsmBuffer *b, int from) {
     /* 3. per-block walk: M1, M2, M3 rewrite, and the constant state is kept
      *    only inside a block. */
     for (i = 0; i < 13; i++) { cknown[i] = 0; cval[i] = 0; }
+    cm_nu = nu;
+    pcmp = -1;
     for (j = 0; j < nu; j++) {
         CmUnit *cu = &cm_units[j];
         unsigned rd;
         int r;
         if (cu->bar) {
+            /* M6: a conditional branch whose compare had both operands known
+             * is decided here -- it either always branches or never does.
+             * The CMP itself is kept, so every flag the rest of the block
+             * could still read is exactly what it was; only the branch line
+             * changes (and it is the only consumer of those flags). */
+            if (pcmp >= 0) {
+                int taken = cm_cond_true(cu->mn, pcmpval, pcmpimm);
+                if (taken == 1) {
+                    if (!cm_streq(cu->mn, "B")) {
+                        cu->mn[0] = 'B';
+                        cu->mn[1] = 0;
+                        cu->rewrite = 1;
+                        changed++;
+                    }
+                } else if (taken == 0) {
+                    cu->dead = 1;
+                    changed++;
+                }
+            }
+            pcmp = -1;
             for (r = 0; r < 13; r++) cknown[r] = 0;
             continue;
+        }
+        /* CMP rX, #k with rX holding a known constant: remember it for the
+         * branch on the next line (M6).  Any other unit clears it. */
+        {
+            const char *crest = 0;
+            long long cimm = 0;
+            int cr = -1;
+            pcmp = -1;
+            if (cm_streq(cu->mn, "CMP") && cu->dst < 0 &&
+                cm_first_reg(cu->ops, &cr, &crest) && cm_imm(crest, &cimm) &&
+                cr >= 0 && cknown[cr]) {
+                pcmp = cr;
+                pcmpval = cval[cr];
+                pcmpimm = cimm;
+            }
         }
         rd = cm_uses(cu->mn, cu->ops, cu->dst);
         if (cu->nlines == 2) {
@@ -4338,6 +4463,70 @@ static void ark_cmat_function(AsmBuffer *b, int from) {
             }
         } else {
             int rt = -1, rb = -1, ri = -1, sh = 0;
+            int srd = -1, srs = -1, shn = 0;
+            int erd = -1, ers = -1;
+            if (cm_shift3(cu->mn, cu->ops, &srd, &srs, &shn) && cknown[srs]) {
+                /* M4: a constant through a three-operand shift.  The shift is
+                 * flag-neutral (the flag-setting form is the two-operand one),
+                 * so replacing it with a MOV of the folded value changes no
+                 * value and no flag -- and it lets M2 fold the index of the
+                 * access that consumes the result one line later. */
+                long long v = cval[srs];
+                int ok = 1;
+                if (cm_streq(cu->mn, "LSL")) {
+                    if (shn >= 32 || v > (0x7fffffffLL >> shn)) ok = 0;
+                    else v = v << shn;
+                } else if (cm_streq(cu->mn, "LSR")) {
+                    if (shn >= 32) ok = 0;
+                    else v = (long long)((unsigned)v >> shn);
+                } else {
+                    v = (long long)((int)v >> shn);
+                    if (v < 0) ok = 0;      /* no negative immediate to print */
+                }
+                if (ok) {
+                    if (v >= 0 && v <= 255) {
+                        char nops[CM_OPS_LEN];
+                        snprintf(nops, sizeof nops, "r%d, #%d", srd, (int)v);
+                        if ((int)strlen(nops) < (int)sizeof cu->ops) {
+                            memcpy(cu->ops, nops, strlen(nops) + 1);
+                            cu->mn[0] = 'M'; cu->mn[1] = 'O'; cu->mn[2] = 'V';
+                            cu->mn[3] = 0;
+                            cu->rewrite = 1;
+                            changed++;
+                        }
+                    }
+                    cknown[srd] = 1;
+                    cval[srd] = v;
+                    continue;
+                }
+            }
+            if (cm_extend2(cu->mn, cu->ops, &erd, &ers) && cknown[ers]) {
+                /* M5: the same fold through a zero/sign extend.  It is what
+                 * turns "MOV r0, #1 / UXTB r0, r0" into one instruction. */
+                long long v = cval[ers], w = v;
+                if (cm_streq(cu->mn, "UXTB")) w = v & 0xff;
+                else if (cm_streq(cu->mn, "UXTH")) w = v & 0xffff;
+                else if (cm_streq(cu->mn, "SXTB")) w = (int)(signed char)(v & 0xff);
+                else w = (int)(short)(v & 0xffff);
+                if (w >= 0 && w <= 255) {
+                    char nops[CM_OPS_LEN];
+                    snprintf(nops, sizeof nops, "r%d, #%d", erd, (int)w);
+                    if ((int)strlen(nops) < (int)sizeof cu->ops) {
+                        memcpy(cu->ops, nops, strlen(nops) + 1);
+                        cu->mn[0] = 'M'; cu->mn[1] = 'O'; cu->mn[2] = 'V';
+                        cu->mn[3] = 0;
+                        cu->rewrite = 1;
+                        changed++;
+                    }
+                }
+                if (w >= 0) {
+                    cknown[erd] = 1;
+                    cval[erd] = w;
+                } else {
+                    cknown[erd] = 0;
+                }
+                continue;
+            }
             if (cm_mem_idx(cu->mn, cu->ops, &rt, &rb, &ri, &sh)) {
                 if (ri != rb && cknown[ri]) {
                     long long off = cval[ri] << sh;
@@ -4370,13 +4559,7 @@ static void ark_cmat_function(AsmBuffer *b, int from) {
         CmUnit *cu = &cm_units[j];
         int d = cu->dst;
         if (!cu->neutral || cu->dead || cu->bar || d < 0) continue;
-        for (i = j + 1; i < nu; i++) {
-            CmUnit *v = &cm_units[i];
-            if (v->bar) break;
-            if (v->dead) continue;
-            if ((cm_uses(v->mn, v->ops, v->dst) >> d) & 1) break;
-            if (v->dst == d) { cu->dead = 1; changed++; break; }
-        }
+        if (cm_dies_later(j, d)) { cu->dead = 1; changed++; }
     }
 
     if (!changed) return;

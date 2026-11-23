@@ -245,10 +245,19 @@ def main():
                   '%d/%d bytes' % (len(b_a), len(b_b)))
 
         # --- 2..4. the two rules, and only them -----------------------------
+        # `-fopt-cmat` runs *after* this pass, so it is off in both arms here:
+        # once slotreg removes a spill/reload pair, a constant that used to be
+        # destroyed by the reload survives into cmat's M4, which then folds a
+        # shift into `MOV rD, #k`.  That is correct (the value is the same) but
+        # it is cmat's effect, not this pass's, and it would break "the output
+        # is the input with lines removed" -- the invariant this section is
+        # about.
+        NC = ['-fno-opt-cmat']
         arms = {}
         for name, _body, _want in CASES:
-            t_off, b_off, e3 = build(arkcc, work, name, BASE, name + '_off')
-            t_on, b_on, e4 = build(arkcc, work, name, BASE + [FLAG],
+            t_off, b_off, e3 = build(arkcc, work, name, BASE + NC,
+                                     name + '_off')
+            t_on, b_on, e4 = build(arkcc, work, name, BASE + NC + [FLAG],
                                    name + '_on')
             if e3 or e4:
                 check(False, '%s: both arms build' % name,

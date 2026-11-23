@@ -4,10 +4,12 @@ English | [中文](CMAT.md)
 
 > In one line: the value-stack backend materialises the same constant twice -- it
 > copies it into a scratch register, and the consumer folds it back into the
-> addressing mode -- and it also writes the scratch register twice in a row.
-> `-fopt-cmat` removes those three shapes from a function's emitted text:
-> **337 instructions fewer (-1.77%)** on the whole HAL corpus, `MOV` goes from
-> 3,888 to 3,551, and no other mnemonic moves by one.
+> addressing mode -- it also writes the scratch register twice in a row, lets a
+> constant walk through a shift or an extend, and still emits `CMP` + branch for
+> a `do {} while (0U)` whose condition is known. `-fopt-cmat` removes those six
+> shapes from a function's emitted text: **697 instructions fewer (-4.37%)** on
+> the whole HAL corpus, `LSL` 509 -> 186, `UXTB` 218 -> 61, and 116 conditional
+> branches gone.
 
 ---
 
@@ -32,7 +34,7 @@ These shapes need no liveness analysis to be proved safe -- either the address
 and the result are identical, or the value is provably overwritten before any
 read inside the same block. That is the whole domain of this pass.
 
-## 2. The three rules
+## 2. The six rules
 
 ### 2.1 M1: a copy of a known constant becomes an immediate
 
@@ -71,6 +73,49 @@ can observe the old value.
 **A `MOVW`+`MOVT` pair is one unit.** Dropping half of it leaves a different
 value in the register, so the implementation fuses the pair into a single unit
 (`nlines == 2`) and the rebuild copies or drops it whole.
+
+### 2.4 M4: a constant through a three-operand shift
+
+> `LSL/LSR/ASR rD, rS, #n` where `rS` is known inside the block: the result is
+> computed and, if it lands in 0..255, the line becomes `MOV rD, #k`.  Otherwise
+> the constant state is still recorded and the line is left alone.
+
+The safety comes from the encoding: **the three-operand shift does not set the
+flags** (the old two-operand `LSL rD, rS` form does), so rewriting it as
+`MOV rD, #k` changes neither the value nor the flags.
+
+Only 0..255 is rewritten because that is the shape the emitter uses for small
+constants; above that a `MOVW` would be needed and the line would get longer.
+The state is recorded either way, so M2/M3/M6 can still use the value.
+`rS == rD` (`LSL r0, r0, #3`) is accepted too: read, then compute.
+
+### 2.5 M5: a constant through an extend
+
+> `UXTB/UXTH/SXTB/SXTH rD, rS` where `rS` is known: same treatment.
+
+`UXTB` truncation and `SXTB` sign extension are pure arithmetic on a constant
+and touch no flag.  A result in 0..255 is rewritten; a negative result keeps the
+line and drops the constant state, because M2/M6 only accept small non-negative
+constants.
+
+### 2.6 M6: a conditional branch after a known `CMP` is decided here
+
+> `CMP rX, #k` followed immediately by a conditional branch (nothing that writes
+> the flags in between) where `rX` is known inside the block: the direction is
+> computed.  Always taken turns the branch line into `B <target>`; never taken
+> drops the line.  **The `CMP` itself is kept.**
+
+Keeping the `CMP` is what makes this safe: every later instruction sees exactly
+the N/Z/C/V it would have seen without the pass, so M6 needs no liveness argument
+and cannot change any later condition-code evaluation.  The condition is
+evaluated the textbook way (a 64-bit subtraction for V, the 32-bit unsigned
+difference for N/Z/C) and covers
+`BEQ/BNE/BCS/BCC/BMI/BPL/BVS/BVC/BHI/BLS/BGE/BLT/BGT/BLE`.
+
+Rewriting to `B` saves no instruction by itself; it wins because `B` encodes
+shorter than a conditional branch in Thumb-2.  Dropping a never-taken branch is
+a pure win, and the corpus has far more of those (70 vs 46): the
+`do { ... } while (0U)` HAL macros expand to `MOV r0, #0 / CMP r0, #0 / BNE`.
 
 ## 3. Block boundaries and the read set
 
@@ -122,49 +167,85 @@ treats `STR` as a write deletes the copy and stores something other than 5.
 - write-back / post-indexed addressing;
 - register indexes other than a plain `LSL #s` (`LSR`/`ASR`/`ROR` index, `RRX`);
 - offsets beyond 4095;
+- **two-operand** shifts and extends (`LSL rD, rS` sets N/Z/C, so rewriting it
+  would change the flags);
+- in M6, anything but an immediately following branch (`pcmp` is cleared by any
+  non-`CMP` unit);
 - any deletion that would need liveness analysis to prove (end of block, across blocks).
 
 ## 5. One rule that did not survive
 
-The first draft also had a fourth rule: drop a whole `MOVW`+`MOVT` pair when the
+One more mechanism was tried and deleted besides the pair rule below: handing
+"constant producers" to M3 (`cm_cdef`/`cm_canddef`).  Its post-check only looked
+for liveness from the fold point, and when a fold does not actually happen
+(value > 255 or negative) the fold point itself still reads the source register
+and lies outside the scan -- so it would **delete a producer that is still
+read**, the one kind of silent wrong answer this pass must never produce.
+Removing it costs no benefit: every producer that can set the constant state is
+a flag-neutral write, which M3 already covers.
+
+The first draft also had a rule: drop a whole `MOVW`+`MOVT` pair when the
 register already held that constant.
 
 Measured on the corpus it fires **zero** times: between two pairs with the same
 value there is always a read of the register (which clears the state), and when
 there is no such read the first pair was dead for a different reason anyway.
 Following "do not keep code that never fires", the rule and its state
-(`pknown`/`pval`) were removed and the rules renumbered to M1/M2/M3. It is
+(`pknown`/`pval`) were removed and the rules renumbered to M1/M2/M3, with
+M4/M5/M6 appended after them rather than reshuffled. It is
 recorded here because it is itself a conclusion: **this shape does not occur in
 the corpus.**
 
 ## 6. Measurements (whole HAL corpus, 95 TUs, Cortex-M4, `-O2 --reloc-data`)
 
-Baseline = the twelve 0.9.1 switches
-(`vstack addr strength cbz branch imm peep cbranch copyprop live prop deadpush`):
+Baseline = the current sixteen 0.9.1 switches
+(`vstack addr strength cbz branch imm peep cbranch copyprop live prop deadpush
+constcache slotreg coalesce vreg`).  The corpus is assembled per TU with `-S`;
+instructions are counted line by line with `^\s+[A-Za-z][A-Za-z0-9.]*\s` (a
+`grep` misses a dozen directive-shaped lines per TU, so a script does the count).
 
-| build | instructions | change |
+| build | instructions | vs baseline |
 | --- | ---: | ---: |
-| baseline (twelve switches) | 19,066 | -- |
-| + `-fopt-cmat` | **18,729** | **-337 (-1.77%)** |
+| baseline (sixteen switches, `-fno-opt-cmat`) | 15,933 | -- |
+| + `-fopt-cmat`, M1/M2/M3 only | 15,613 | **-320** |
+| + `-fopt-cmat`, all six rules | **15,236** | **-697 (-4.37%)** |
 
-Mnemonic account (counted line by line over the same `.s` files):
+So M1/M2/M3 account for -320 and **M4/M5/M6 for another -377**.
+
+Mnemonic account (same `.s` files, baseline vs all six rules):
 
 | mnemonic | baseline | + cmat | delta |
 | --- | ---: | ---: | ---: |
-| `MOV` | 3,888 | 3,551 | **-337** |
-| everything else | 15,178 | 15,178 | 0 |
+| `LSL` | 509 | 186 | **-323** |
+| `UXTB` | 218 | 61 | **-157** |
+| `BNE` | 516 | 402 | **-114** |
+| `MOV` | 3,803 | 3,733 | -70 |
+| `LSR` | 125 | 56 | -69 |
+| `B` | 771 | 817 | **+46** |
+| `MOVW` | 941 | 937 | -4 |
+| `MOVT` | 807 | 803 | -4 |
+| `BEQ` | 182 | 180 | -2 |
+| total | 15,933 | 15,236 | **-697** |
 
-A full line-by-line diff splits the 337 into three sources:
+This account reconciles with the rules without a remainder (the table below is
+**derived from the mnemonic account above**, not from a second set of counters;
+two independent paths give the same numbers):
 
-| rule | hits | shape |
+| rule | hits | reconciliation |
 | --- | ---: | --- |
-| M3 (drop neutral write) | **337** | 530 `MOV` lines deleted, 193 of them re-added by M1 |
-| M1 (copy to immediate) | 193 | all `MOV rD, rS` -> `MOV rD, #k`, no count change |
-| M2 (fold index) | 180 | `LDR` 168 + `LDRB` 12, same address, one operand fewer |
+| M4 | **392** | `LSL` -323 plus `LSR` -69, each replaced by one `MOV` |
+| M5 | **157** | `UXTB` -157, same (`UXTH`/`SXTB`/`SXTH`: 0 this round) |
+| M6t (to `B`) | **46** | `B` +46, no instruction-count change |
+| M6d (drop branch) | **70** | conditional branches drop by 116 = 46 (M6t) + 70 (M6d), of which `BNE` -114 and `BEQ` -2 |
+| M3 (drop neutral write) | **623** | `MOV` net -70 = +549 (new `MOV`s from M4/M5) - 619 (deleted by M3); plus 4 `MOVW`+`MOVT` pairs (8 lines) => 619 + 4 units = **623** |
 
-At 4 bytes per Thumb-2 instruction the code is about **1,348 bytes** smaller.
-(This number is derived, not measured: the corpus is assembled per TU with `-S`,
-so no linked image exists to measure.)
+Closure check: the 392 + 157 shifts and extends become just as many `MOV`s, so
+they net 0; M3 deletes 619 `MOV` lines plus 8 `MOVW`/`MOVT` lines, and M6d
+deletes 70 branch lines => -619 - 8 - 70 = **-697**, exactly the measured
+difference.
+
+At 4 bytes per Thumb-2 instruction the code is about **2,788 bytes** smaller.
+(This is derived, not measured: the corpus is not linked into an image.)
 
 ## 7. Where it lives
 
@@ -184,7 +265,11 @@ right after `-fopt-regalloc` and before `ark_fix_far_offset()`:
 | `cm_is_rmw` | two-operand read-modify-write (`MUL rD, rS`, `LSL rD, rS`, ...) |
 | `cm_uses` | the read set (section 3.1) |
 | `cm_mem_idx` | recognise `[rB, rI(, LSL #s)]` |
-| `ark_cmat_function` | the pass: line table -> unit table (fusing MOVW/MOVT) -> walk the three rules -> rebuild |
+| `cm_shift3` | recognise a strictly three-operand `LSL/LSR/ASR rD, rS, #n` (the two-operand form sets flags, so it is refused) |
+| `cm_extend2` | recognise `UXTB/UXTH/SXTB/SXTH rD, rS` |
+| `cm_cond_true` | condition evaluation on frozen operands (1 taken / 0 not / -1 unknown) |
+| `cm_dies_later` | "is this register written before anything reads it, from line j to the block end" -- M3's test |
+| `ark_cmat_function` | the pass: line table -> unit table (fusing MOVW/MOVT) -> walk the six rules -> rebuild |
 
 `-fopt-cmat` is **off by default**. Under `ARKCC_PROFILE_STM32_MIN` the macro is
 0, so neither the code nor the static tables are in the image, and a cropped
@@ -193,7 +278,7 @@ about 300 KB of BSS and exist only in host builds.
 
 ## 8. Gate (`make test-cmat`)
 
-`tests/run_cmat_tests.py`, seventeen checks:
+`tests/run_cmat_tests.py`, thirty checks:
 
 1. **OFF IS OFF**: the default build and `-fno-opt-cmat` are byte-identical;
 2. **M2 fires**: the `LSL #2]` shape goes to zero, `[rB, #off]` becomes more
@@ -207,7 +292,16 @@ about 300 KB of BSS and exist only in host builds.
    return the Python answer on the emulator;
 7. **labels survive**;
 8. **a cropped build** refuses the flag by name (`C3900U` + macro) and still
-   compiles without it.
+   compiles without it;
+9. **M4/M5/M6 fire**: `LSL r0, r0, #3`, `LSR r0, r0, #1` and `ASR r0, r0, #2`
+   disappear with the flag on and the folded `MOV r0, #16` / `MOV r0, #50`
+   carry the right values; `UXTB r0, r0` drops by one and leaves
+   `MOV r0, #128`; the `do {} while (0U)` `BNE .L_cm_clk_0` line disappears
+   while every `CMP r0, #0` stays (proof the flags did not move); the
+   instruction count goes 149 -> 139.  The anti-over-fold half: `200 << 5`
+   (6400) and `200 << 1` (400) both overflow the 8-bit immediate and keep the
+   same line count in both arms, while the `UXTB` in the same file still folds
+   (proof the file really is processed).
 
 As a stronger layer, `tests/arm_exec/run_arm_exec.py --extra=-fopt-cmat` ran the
 whole execution suite (function pointers, 64-bit, soft-float, atomics, TLS,
