@@ -184,9 +184,9 @@ The window length and the table bounds are compile-time constants:
 the **whole function**, which is then emitted unchanged -- a half-rewritten
 function can never reach the output.
 
-## 4. Three real defects the tests found
+## 4. Real defects the tests found
 
-None of these is a design problem; each is a "can this ship" problem. They are
+None of these (4.1-4.3, with 4.4 and 4.5 added later) is a design problem; each is a "can this ship" problem. They are
 recorded in order because every one of them produces either a compiling program
 with a different answer or a pass that silently never fires.
 
@@ -252,6 +252,41 @@ not rewritten.
 Both had to be fixed together: fixing one still fails on the same source file
 through the other pass.
 
+### 4.5 Later: a directive inside a block range reads the previous function's parse
+
+`lv_pass` parses only **real instructions** (the static `iv[i]` is written only when
+`kd[i] == 1`), but a block's line range `first..last` spans every line between its first
+and last instruction, including directives such as `.loc` and `.arkdatasym`. Two
+backwards scans (the block's use/def scan, and the live-after scan that feeds L1) did
+not skip them and handed a directive line to `lv_rw(&iv[j], ...)` -- which read the
+parse the **previous function left at the same line index**.
+
+Measured on the HAL corpus (`stm32f4xx_ll_utils.c`): `LL_mDelay` leaves a
+`MOVT r5, #57344` parse at index 9; the next function, `LL_SetSystemCoreClock`, has a
+`.loc` there, so the scan concluded r5 was written at that point (`wr = 0x20`), r5
+stopped being live, and L1 deleted its `MOV r5, r0`, leaving:
+
+```asm
+    STR r5, [r1]        ; r5 is never written in this function
+```
+
+Fix: add `if (kd[j] != 1) continue;` to both scans. The three sibling call sites
+(L2's window scan, `cp_pass`, `peep`) were audited and already had the guard.
+
+Scope (nine-switch set, 95 TUs): 19,100 before the fix, **19,105 after**; 9 TUs change
+and 86 are byte-identical. Besides that `STR r5`, `stm32f4xx_hal.c` (two `STR r5`) and
+`stm32f4xx_hal_cortex.c` (`STR r7, [r0]` reading an undefined register) share the root
+cause, while `stm32f4xx_hal_flash.c` goes the other way -- the bug kept a batch of dead
+`MOV r7, #0` alive through the phantom write. A read-before-write scan over the 95
+post-fix `.s` files reports nothing except the `__arkcc_memcpy` loop entry (r4 is set by
+the caller, not a miscompile).
+
+Gate: case 7b in `tests/run_live_tests.py` uses that real file as its fixture -- the
+off arm must show the `MOV r5, r0 / STR r5, [r1]` staging, the on arm must keep the
+store on `r0` and must not contain `STR r5`. It is the only shape that reproduces: with
+`LL_SetSystemCoreClock` alone the argument lands directly in `r0`, and only a preceding
+`LL_mDelay` in the same TU stages it through `r5`.
+
 ## 5. Division of labour with `-fopt-copyprop`
 
 | Aspect | `-fopt-copyprop` | `-fopt-live` |
@@ -304,6 +339,19 @@ The same function before and after (`D:/tmp/cbrLV/all_000.s` vs `lv_000.s`):
 Six lines become three, with exactly the same meaning: `r5` is the address and
 `r0` receives the loaded value.
 
+### 6.1 Re-measurement after the 4.5 fix (same nine-switch set)
+
+| Build | Instructions | Change |
+| --- | ---: | ---: |
+| Before the fix (directive read a stale parse) | 19,100 | -- |
+| After the fix | **19,105** | **+5** |
+
+The fix restores instructions that were wrongly deleted, so the count moving up is the
+correct direction; the 19,112 quoted above is a reading taken while the defect was still
+present and is not the same build, so do not subtract. Within this measurement 86 TUs are
+byte-identical, and with `-fopt-live` off all 95 are byte-identical to the pre-fix build
+(OFF IS OFF).
+
 ## 7. Where the code lives
 
 `src/backend/arm/backend_arm.c`, its own `#if ARKCC_FEATURE_OPT_LIVE` section
@@ -339,6 +387,7 @@ common guard).
 | 6 | **anti-over-deletion**: `shift` (`MOV r0, r5` + `LSL r0, r7`) 71 → 69 removes only two pieces of *non-return* compare staging; `MOV rX, rY` 7 → 5 and `LSL rX, rY` 2/2 unchanged -- the permanent control for §4.1 |
 | 6b | **the return mask follows the return type**: `vstage` compares two arguments in a `void` and in an `int` function; the `void` side must lose its compare staging 3 → 0 (`MOV rX, rY` 14 → 4, 121 → 110 instructions) while the value the `int` function really returns survives |
 | 7 | six fixtures × three arms (off / on / on-alone with no other pass) return the Python answer on the emulator (0 / 7 / 12 / 0 / 35 / 1) |
+| 7b | **a directive does not leak a stale parse** (4.5): on the real `stm32f4xx_ll_utils.c` the off arm must show `MOV r5, r0` + `STR r5, [r1]` (the staging really exists) and the on arm must be `STR r0, [r1]` with no `STR r5` |
 | 8 | label counts unchanged on every fixture |
 | 9 | a cropped build (`-DARKCC_FEATURE_OPT_LIVE=0`) refuses `-fopt-live` by name (`C3900U`, rc=1) |
 | 10 | the same cropped build still compiles without the flag (rc=0) |

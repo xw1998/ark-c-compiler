@@ -1808,6 +1808,16 @@ static int lv_pass(AsmBuffer *b, int from, unsigned retmask) {
         unsigned u = 0, d = 0;
         for (j = blk[i].last; j >= blk[i].first; j--) {
             unsigned rd, wr;
+            /* Only real instructions have a parse.  A block's line range
+             * spans the directives between its first and last instruction
+             * (".loc", ".arkdatasym", ...), and `iv[]` is written only when
+             * kd == 1 -- so an unguarded read of iv[j] here picks up the
+             * *previous function's* parse of the same line index.  Measured:
+             * LL_mDelay left "MOVT r5, #57344" at index 9; the next function
+             * had a directive at index 9, its liveness believed r5 was
+             * clobbered there, and the live pass deleted "MOV r5, r0" --
+             * leaving "STR r5, [r1]" reading a register nothing wrote. */
+            if (kd[j] != 1) continue;
             lv_rw(&iv[j], &rd, &wr);
             u |= rd & ~d;
             d |= wr;
@@ -1849,6 +1859,7 @@ static int lv_pass(AsmBuffer *b, int from, unsigned retmask) {
         if (blk[i].succ[0] < 0) live |= (bsx[i] == 2) ? 0xFu : retmask;
         for (j = blk[i].last; j >= blk[i].first; j--) {
             unsigned rd, wr;
+            if (kd[j] != 1) continue;   /* directive: no parse, no effect */
             lv_rw(&iv[j], &rd, &wr);
             la[j] = live;
             live = (live & ~wr) | rd;

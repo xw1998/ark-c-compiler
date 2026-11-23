@@ -50,6 +50,17 @@ implementation:
      in place.
   7. THE ANSWER IS THE SAME.  Five fixtures, three arms (off / on / on alone,
      no other pass), values checked on the emulator against Python.
+  7b. NO LEAK THROUGH A DIRECTIVE.  A block's line range spans the directives
+     (".loc", ".arkdatasym") between its first and last instruction, and the
+     per-line parse `iv[]` is written only for real instructions.  Scanning a
+     directive must therefore not pick up the *previous* function's parse of
+     the same line index.  Measured on the real ST LL driver: `LL_mDelay` left
+     a `MOVT r5` parse at index 9, the next function (`LL_SetSystemCoreClock`)
+     had a directive at index 9, and the scan believed r5 was clobbered there
+     -- so L1 deleted its `MOV r5, r0` and the store read a register nothing
+     had written.  The fixture is the real file because the argument only
+     stages through r5 in that corpus; the off arm must show the staging, the
+     on arm must keep the store on r0.
   8. LABELS SURVIVE.  The pass rewrites lines, never labels.
   9. CROPPED OUT, REFUSED.  A build with -DARKCC_FEATURE_OPT_LIVE=0 refuses
      `-fopt-live` by name (C3900U) and still compiles without the flag.
@@ -57,6 +68,7 @@ implementation:
 Usage: run_live_tests.py [path-to-arkcc]
 Exit 0 = every check passed, 1 = a check failed, 2 = setup problem.
 """
+import io
 import os
 import re
 import shutil
@@ -287,6 +299,68 @@ def main():
             check(cmp_stage_count(t_on) == 0,
                   'vstage: the compare staging in a void function is dead',
                   '%d -> %d' % (cmp_stage_count(t_off), cmp_stage_count(t_on)))
+
+        # --- 7b. no leak through a directive -------------------------------
+        # `iv[]` is written only for real instructions (kd == 1), but a block's
+        # line range spans the directives between its first and last
+        # instruction.  Scanning a directive used to read the *previous*
+        # function's parse of the same index and hallucinate a write, which
+        # killed a live argument.  The real ST LL driver is the smallest input
+        # that reproduces it: without the pass `LL_SetSystemCoreClock` stages
+        # its argument in r5 (`MOV r5, r0`), with the pass the store must stay
+        # on r0 and r5 must not appear before it is written.
+        leak_src = os.path.join(ROOT, 'examples', 'ark_test', 'Drivers',
+                                'STM32F4xx_HAL_Driver', 'Src',
+                                'stm32f4xx_ll_utils.c')
+        if not os.path.exists(leak_src):
+            skip('no leak through a directive',
+                 'examples/ark_test corpus is not present')
+        else:
+            ll_flags = ['-D', 'STM32F401xE', '-D', 'USE_HAL_DRIVER',
+                        '--reloc-data']
+            for rel in ('examples/ark_test',
+                        'examples/ark_test/Drivers/STM32F4xx_HAL_Driver/Inc',
+                        'examples/ark_test/Core/Inc',
+                        'examples/ark_test/Drivers/CMSIS/Device/ST/'
+                        'STM32F4xx/Include',
+                        'examples/ark_test/Drivers/CMSIS/Core/Include',
+                        'include', 'src', 'stdlib/include'):
+                ll_flags += ['-I', os.path.join(ROOT, rel)]
+
+            def leak_body(flags, tag):
+                out = os.path.join(work, 'leak_' + tag + '.s')
+                rc, log = run([arkcc] + ASM_ARM + ['-O2'] + ll_flags
+                              + flags + [leak_src, '-o', out], work)
+                if rc != 0:
+                    return None, log[-200:]
+                txt = io.open(out, encoding='utf-8', errors='replace').read()
+                m = re.search(r'^LL_SetSystemCoreClock:\n(.*?)\.size\s+'
+                              r'LL_SetSystemCoreClock', txt, re.S | re.M)
+                return (m.group(1) if m else ''), ''
+
+            off_b, e_off = leak_body(BASE, 'off')
+            on_b, e_on = leak_body(BASE + [FLAG], 'on')
+            if off_b is None or on_b is None:
+                check(False, 'the directive-leak fixture builds',
+                      (e_off or e_on)[:120])
+            else:
+                check('MOV r5, r0' in off_b and 'STR r5, [r1]' in off_b,
+                      'the leak fixture really stages the argument in r5 '
+                      'without the pass',
+                      'off arm: %s' % ' '.join(
+                          l.strip() for l in off_b.splitlines()
+                          if 'r5' in l))
+                check('STR r5, [r1]' not in on_b,
+                      'a directive does not leak the previous parse into '
+                      'liveness',
+                      'on arm still stores r5: %s' % ' '.join(
+                          l.strip() for l in on_b.splitlines()
+                          if 'STR r5' in l))
+                check('STR r0, [r1]' in on_b,
+                      'the pass leaves the argument store intact',
+                      'on arm: %s' % ' '.join(
+                          l.strip() for l in on_b.splitlines()
+                          if 'STR' in l))
 
         # --- 7. the answers stay the same -----------------------------------
         for name, _body, want in CASES:
