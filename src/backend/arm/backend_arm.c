@@ -1876,7 +1876,7 @@ static int lv_pass(AsmBuffer *b, int from, unsigned retmask) {
             continue;
         }
         /* L1: the copy is dead. */
-        if (!strcmp(iv[i].mn, "MOV") && iv[i].nops == 2 &&
+        if (g_config.enable_opt_live && !strcmp(iv[i].mn, "MOV") && iv[i].nops == 2 &&
             cp_reg(iv[i].op[0], &d) && d >= 0 && d <= 12 && d != 6 &&
             (cp_reg(iv[i].op[1], &s) || iv[i].op[1][0] == '#') &&
             !(la[i] & lv_bit(d))) {
@@ -1892,7 +1892,8 @@ static int lv_pass(AsmBuffer *b, int from, unsigned retmask) {
          *   MVN  rD,#imm / MOV rX,rD               -> one MVN into rX
          * Retargeting a MOVW or an MVN keeps the width (4 bytes) and writes no
          * flags, so the single-instruction shapes are a pure win. */
-        if ((!strcmp(iv[i].mn, "MOVW") || !strcmp(iv[i].mn, "MVN")) &&
+        if (g_config.enable_opt_live &&
+            (!strcmp(iv[i].mn, "MOVW") || !strcmp(iv[i].mn, "MVN")) &&
             iv[i].nops == 2 && iv[i].op[1][0] == '#' &&
             cp_reg(iv[i].op[0], &d) && d >= 0 && d <= 12 && d != 6) {
             int j1 = -1, j2 = -1, dd, xx, ss;
@@ -1965,7 +1966,7 @@ static int lv_pass(AsmBuffer *b, int from, unsigned retmask) {
             if (done) continue;
         }
         /* L2 / L3: the very next instruction consumes the copy. */
-        if (!strcmp(iv[i].mn, "MOV") && iv[i].nops == 2 &&
+        if (g_config.enable_opt_live && !strcmp(iv[i].mn, "MOV") && iv[i].nops == 2 &&
             cp_reg(iv[i].op[0], &d) && d >= 0 && d <= 12 && d != 6) {
             int j = -1, v, hasbrace = 0, gap_ok = 1, src2 = -1;
             unsigned src_bit = 0;
@@ -2057,6 +2058,147 @@ static int lv_pass(AsmBuffer *b, int from, unsigned retmask) {
                 }
             }
         }
+        /* L5 (-fopt-coalesce): local copy coalescing -- rename the uses of
+         * the copy target and drop the copy instead of staging a value through
+         * a scratch register.
+         *
+         * The shape this exists for is what the value-stack pass leaves behind
+         * a two-operand ALU instruction, whose Thumb-1 encoding needs Rd == Rn:
+         *
+         *     LDR  r5, [r6, #0]      ; a
+         *     LDR  r7, [r6, #8]      ; b
+         *     MOV  r0, r5            ; stage the left operand into r0
+         *     AND  r0, r7            ; r0 = a & b   (Rd == Rn, so not "AND r5, r7")
+         *     LSL  r0, r0, #16       ; the consumer
+         *     STR  r0, [r6, #32]
+         *
+         * Renaming every occurrence of r0 in the run to r5 and deleting the
+         * copy gives "AND r5, r7" / "LSL r5, r5, #16" / "STR r5, ...": same
+         * values, same flags, one instruction fewer, and every instruction
+         * stays 16-bit because only r0-r7 take part.
+         *
+         * The run is the straight-line stretch that follows the copy.  It
+         * stops at a label, at a block boundary, at an IT instruction, at any
+         * write-back or register-list form (shapes the operand list does not
+         * fully describe) and at the first write of the copy source.
+         *
+         * Why the rename is sound:
+         *   - before the target is redefined rD and rS hold the same value, so
+         *     a line that reads either is unaffected by the rename;
+         *   - a line that reads rD is the interesting case: after the rename it
+         *     reads rS, which still holds that value;
+         *   - a line that writes rD carries the staged value forward into rS,
+         *     and from then on rD no longer gets a value at all, so any later
+         *     read of rS that is not a read of rD would see a different value
+         *     and is refused;
+         *   - at the end of the run nothing may still want the copy: rD may not
+         *     be live after the last rewritten line, and if the target was
+         *     redefined inside the run then rS may not be live there either
+         *     (its old value is gone);
+         *   - only r0-r7 take part, so no rewritten instruction changes its
+         *     register class and none of them grows a 32-bit encoding;
+         *   - every rewritten line is checked against the original text before
+         *     anything is mutated (`lv_same`), so a parse that truncated an
+         *     operand can never reach the output. */
+        if (g_config.enable_opt_coalesce && !strcmp(iv[i].mn, "MOV") &&
+            iv[i].nops == 2 && !it[i] && !lv_has_writeback(&iv[i]) &&
+            cp_reg(iv[i].op[0], &d) && cp_reg(iv[i].op[1], &s) &&
+            d >= 0 && d <= 7 && s >= 0 && s <= 7 && d != s && d != 6 && s != 6) {
+            int last = -1, ok5 = 1, wrote_d = 0, k;
+            for (j = i + 1; j < n; j++) {
+                unsigned rd, wr;
+                int v, brace = 0;
+                if (kd[j] == 2) break;              /* label: block boundary */
+                if (kd[j] != 1) continue;           /* directive / blank line */
+                if (bof[j] != bof[i] || it[j] || lv_has_writeback(&iv[j])) break;
+                for (v = 0; v < iv[j].nops; v++)
+                    if (strchr(iv[j].op[v], '{')) brace = 1;
+                if (brace) break;                   /* register list: unparsed */
+                if (iv[j].mn[0] == 'B' && iv[j].mn[1] == 'L') break;
+                lv_rw(&iv[j], &rd, &wr);
+                /* A register that is read or written without being named in
+                 * the operand list (`BL` reads its arguments out of r0-r3)
+                 * cannot be renamed by rewriting text: the copy would be
+                 * deleted while the implicit reader still expects it there.
+                 * Measured: `MOV r0, r5` staged a call argument, the callee
+                 * then ran on whatever r0 happened to hold. */
+                {
+                    int ment = 0;
+                    for (v = 0; v < iv[j].nops; v++)
+                        if (cp_mentions(iv[j].op[v], d)) ment = 1;
+                    if (!ment && ((rd | wr) & lv_bit(d))) { ok5 = 0; break; }
+                }
+                if (wr & lv_bit(s)) {
+                    /* The copy source is overwritten: nothing after this point
+                     * may be renamed, and a line that also reads rD would need
+                     * the copy to survive, so this run cannot be done. */
+                    if (rd & lv_bit(d)) ok5 = 0;
+                    break;
+                }
+                if (wr & lv_bit(d)) {
+                    if (rd & lv_bit(d)) {
+                        wrote_d = 1;                /* value carried into rS */
+                        last = j;
+                        continue;
+                    }
+                    break;                          /* copy target overwritten */
+                }
+                if (rd & lv_bit(d)) {
+                    last = j;
+                    continue;
+                }
+                if (wrote_d && (rd & lv_bit(s))) {  /* stale read of rS */
+                    ok5 = 0;
+                    break;
+                }
+            }
+            if (ok5 && last >= 0 &&
+                !(la[last] & lv_bit(d)) &&
+                (!wrote_d || !(la[last] & lv_bit(s)))) {
+                /* Phase 1: nothing is mutated until every line that will be
+                 * renamed is known to round-trip through the parser. */
+                int bad = 0;
+                for (k = i + 1; k <= last && !bad; k++) {
+                    unsigned gr, gw;
+                    if (kd[k] != 1) continue;
+                    lv_rw(&iv[k], &gr, &gw);
+                    if (!(gr & lv_bit(d)) && !(gw & lv_bit(d))) continue;
+                    if (!lv_same(b, ls, ll, &iv[k], k)) bad = 1;
+                }
+                if (!bad) {
+                    /* Phase 2: rename, rebuild, emit. */
+                    AsmBuffer blk5;
+                    asmbuf_init(&blk5);
+                    for (k = i + 1; k <= last; k++) {
+                        unsigned gr, gw;
+                        int v;
+                        char nw5[256];
+                        if (kd[k] != 1) { pp_copy_line(&blk5, b->buf + ls[k], ll[k]); continue; }
+                        lv_rw(&iv[k], &gr, &gw);
+                        if (!(gr & lv_bit(d)) && !(gw & lv_bit(d))) {
+                            pp_copy_line(&blk5, b->buf + ls[k], ll[k]); continue;
+                        }
+                        for (v = 0; v < iv[k].nops; v++) {
+                            if (!cp_mentions(iv[k].op[v], d)) continue;
+                            if (!lv_repl_reg(nw5, sizeof nw5, iv[k].op[v], d, s)) { bad = 1; break; }
+                            memcpy(iv[k].op[v], nw5, sizeof iv[k].op[v]);
+                        }
+                        if (bad) break;
+                        if (!lv_rebuild(nw5, sizeof nw5, &iv[k])) { bad = 1; break; }
+                        asmbuf_puts(&blk5, "    ");
+                        asmbuf_puts(&blk5, nw5);
+                        asmbuf_putc(&blk5, '\n');
+                    }
+                    if (!bad) {
+                        if (blk5.len > 0) asmbuf_puts(&out, blk5.buf);
+                        changed++;
+                        i = last + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+
         pp_copy_line(&out, b->buf + ls[i], ll[i]);
         i++;
     }
@@ -2084,7 +2226,7 @@ static unsigned ark_ret_mask(Type *rt) {
 
 static void ark_live_function(AsmBuffer *b, int from, unsigned retmask) {
     int round;
-    if (!g_config.enable_opt_live) return;
+    if (!g_config.enable_opt_live && !g_config.enable_opt_coalesce) return;
     for (round = 0; round < 4; round++) {
         if (lv_pass(b, from, retmask) == 0) break;
     }
@@ -10945,7 +11087,8 @@ static char *codegen_arm(IrProgram *prog) {
         /* With the control-flow graph and liveness in hand the copies that
          * only liveness can see -- a value staged around a branch, an address
          * copied out of a scratch register -- are finally removable. */
-        if (g_config.enable_opt_live) ark_live_function(&buf, fstart, ark_ret_mask(f->ret_type));
+        if (g_config.enable_opt_live || g_config.enable_opt_coalesce)
+            ark_live_function(&buf, fstart, ark_ret_mask(f->ret_type));
 #endif
 #if ARKCC_FEATURE_OPT_REGALLOC
         /* The text of this function is complete: it is the last slice of the

@@ -328,6 +328,18 @@
 #   define ARKCC_FEATURE_OPT_LIVE      1
 # endif
 #endif
+/* ARKCC_FEATURE_OPT_COALESCE: -fopt-coalesce, local copy coalescing.  A
+ * straight-line `MOV rD, rS` whose uses can all read rS instead is deleted and
+ * the uses are renamed; the proof is the liveness the -fopt-live pass already
+ * computes (rD must not be live past the last renamed use, rS must not be
+ * written inside the run).  No extra tables: it rides on lv_pass(). */
+#ifndef ARKCC_FEATURE_OPT_COALESCE
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN || !ARKCC_FEATURE_OPT_LIVE
+#   define ARKCC_FEATURE_OPT_COALESCE   0   /* 板上裁掉；且必须与 live 同时在场（骑在 lv_pass 上） */
+# else
+#   define ARKCC_FEATURE_OPT_COALESCE   1
+# endif
+#endif
 #ifndef ARKCC_FEATURE_OPT_INLINE
 # if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
 #   define ARKCC_FEATURE_OPT_INLINE    0   /* Trim auto-inline on STM32 (costs Flash) */

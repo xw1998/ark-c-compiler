@@ -600,6 +600,14 @@ int main(int argc, char **argv) {
             return 1;
         }
 #endif
+#if !ARKCC_FEATURE_OPT_COALESCE
+        else if (strcmp(a, "-fopt-coalesce") == 0) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: -fopt-coalesce is not compiled into "
+                    "this build (rebuild with -DARKCC_FEATURE_OPT_COALESCE=1)\n");
+            return 1;
+        }
+#endif
 #if !ARKCC_FEATURE_OPT_CONSTCACHE
         else if (strcmp(a, "-fopt-constcache") == 0) {
             fprintf(stderr,
