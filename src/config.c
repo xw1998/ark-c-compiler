@@ -74,6 +74,7 @@ void config_init(void) {
     g_config.enable_opt_deadpush  = 0;
     g_config.enable_opt_cmat      = 0;
     g_config.enable_opt_slotreg   = 0;
+    g_config.enable_opt_vreg      = 0;
     g_config.enable_opt_constcache = 0;
     g_config.enable_opt_coalesce = 0;
     g_config.enable_opt_copyprop  = 0;
@@ -144,6 +145,7 @@ static void apply_kv(const char *section, const char *key, const char *val) {
         else if (ark_streq(key, "opt_constfold")) g_config.enable_opt_constfold = parse_bool(val);
         else if (ark_streq(key, "opt_dce"))   g_config.enable_opt_dce       = parse_bool(val);
         else if (ark_streq(key, "opt_regalloc")) g_config.enable_opt_regalloc = parse_bool(val);
+        else if (ark_streq(key, "opt_vreg"))      g_config.enable_opt_vreg      = parse_bool(val);
         else if (ark_streq(key, "opt_inline"))    g_config.enable_opt_inline    = parse_bool(val);
         else if (ark_streq(key, "opt_vectorize")) g_config.enable_opt_vectorize = parse_bool(val);
         else if (ark_streq(key, "dce_cfg"))       g_config.enable_dce_cfg = parse_bool(val);
@@ -496,6 +498,8 @@ void config_apply_args(int argc, char **argv) {
                 g_config.enable_opt_cmat                = enable;
             else if (ark_streq(name, "opt-slotreg") || ark_streq(name, "slotreg"))
                 g_config.enable_opt_slotreg             = enable;
+            else if (ark_streq(name, "opt-vreg") || ark_streq(name, "vreg"))
+                g_config.enable_opt_vreg                = enable;
             else if (ark_streq(name, "opt-constcache") || ark_streq(name, "constcache"))
                 g_config.enable_opt_constcache          = enable;
             else if (ark_streq(name, "opt-copyprop") || ark_streq(name, "copyprop"))
@@ -540,6 +544,7 @@ void config_print(void) {
     ark_log("  opt_prop=%d opt_deadpush=%d opt_cmat=%d opt_slotreg=%d\n",
             g_config.enable_opt_prop, g_config.enable_opt_deadpush,
             g_config.enable_opt_cmat, g_config.enable_opt_slotreg);
+    ark_log("  opt_vreg=%d\n", g_config.enable_opt_vreg);
     ark_log("  opt_constcache=%d\n", g_config.enable_opt_constcache);
     ark_log("  opt_coalesce=%d\n", g_config.enable_opt_coalesce);
     ark_log("  dce_cfg=%d reloc_data=%d reg_top=%d rt_lazy=%d asm_extra=%d\n",

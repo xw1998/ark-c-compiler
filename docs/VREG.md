@@ -220,3 +220,48 @@ MOV r0, r8            ; 取下时改成寄存器 MOV
 > **槽缓存 + 改名消除（rename elision）**：命中的 `LDR rX,[slot]` 不是换成 `MOV rX, rCache`，而是**把消耗这个值的直线段内的目的寄存器改名为 `rCache` 并删掉该 `LDR`**；对应的 `STR rCache,[slot]` 一侧则由「把生产者的目的寄存器直接改成 `rCache`、删掉 `STR`」完成。段边界复用 `-fopt-coalesce` 的 `lv_same` 回放校验；但因 `rCache` 是 callee-saved，`BL` **不再是屏障**（这正是它比 coalesce 能多做的原因）。
 
 这与 §3 的「vreg + 线性扫描」是同一目标（值住在哪个寄存器由模型决定，而不是由文本模式猜），**§5 的 7 条冻结门禁与 §6 的 F1-F4 一字不改**；只把「怎么写」从替换改成消除，把预期收益锚定到 10.4 的 9.4% 上界内（S6a 的 −8% ≥1,450 条仍成立，且留出 264 条余量给实现损耗）。
+
+## 11 落地实测（2026-11-23，S6a 实现完成）
+
+实现形式按 §10.5 落地：旗标 `-fopt-vreg`，**默认关**；裁剪构建（`-DARKCC_FEATURE_OPT_VREG=0`）按名拒绝（C3900U）而不是接受后什么都不做。
+
+### 11.1 与既有 pass 的协作方式（为什么必须后跑）
+
+`-fopt-constcache` 长在 `ark_regalloc_function()` 内部，和 vreg 抢同一个 `r8-r11` 池与同一对 `PUSH/POP`。因此 vreg **不是** override regalloc，而是排在它后面：
+
+1. `regalloc`（含 constcache）先把槽缓存到 `r8-r11`、加宽帧；
+2. `vreg` 再从**文本**里读出 `PUSH` 列表、已占用寄存器位图与 `base = local_eff + 4 * saved_words`，只在剩下的寄存器里工作，加宽时把 `>= base` 的偏移整体平移。
+
+首版让 vreg 排在 regalloc 之前，95 个 TU 合计 **18,151 → 18,310（+159）**：`MOV r5, r8` 与 `MOVW+MOVT` 的收益全被吃掉。改成协作后是 **−415**。
+
+### 11.2 三条实现口径
+
+- **装载目的寄存器是 r0–r7，不是固定 r0**：`-fopt-vstack` 把槽流量搬到 `r5/r7`（`LDR r5,[r6,#n]`），只认 `LDR r0` 会让整条路线在 vstack 下失效（实测只拿到 −270）；改名/删除都按「装载实际写的那个寄存器」参数化。
+- **每槽要求 `elid >= 2`**：只按指令数记账（`PUSH/POP` 加宽不增指令但每寄存器多 4 B 栈流量），省 1 条不值得多压一个字。
+- **`saved_words = PUSH 列表寄存器数 + 1`**（`lr` 占一字），`base = local_eff + 4 * saved_words`；加宽后若 `(saved_words + nregs)` 为奇数，从空闲池补一个寄存器把帧拉回 8 字节对齐。
+
+### 11.3 实测数字（95 个 TU，Cortex-M4，十六开关 + `-fopt-coalesce`）
+
+| 口径 | 指令数 | 相对基线 |
+|---|---|---|
+| 基线（无 `-fopt-vreg`） | 18,151 | — |
+| `-fopt-vreg` | **17,736** | **−415（−2.29%）** |
+
+13 个 TU 变化，最大：`stm32f4xx_hal_dma.c` 2,603→2,422（−181）、`stm32f4xx_hal_rcc.c` 2,780→2,718、`stm32f4xx_hal_exti.c` 626→590。
+
+### 11.4 门禁（`tests/run_vreg_tests.py`，全绿）
+
+1. **OFF IS OFF**：默认 `-O2` 与 `-O2 -fno-opt-vreg` 逐字节相同（1,218/1,218 字节，含镜像）。
+2. **IT PAYS**：四个重载夹具（`chain/loop/many/call`，都是「结构体指针 + 远偏移」形态，产生 `LDR rX,[r6,#n]` 紧跟消费指令）指令数严格下降；**任何夹具都不增**——这条 pass 没有「加一条指令」的形态。
+3. **帧是同一个帧**：被提升函数的 `PUSH/POP` 加同一批寄存器（记为 `added`），`>= base` 的调用方/va 区偏移按 `4 × len(added)` 平移，加宽区内不留偏移。
+4. **不碰无法证明的东西**：地址逃逸的局部量与 `volatile` 局部量逐行不变。
+5. **答案一致**：七个夹具在 unicorn 上跑 off / on / alone 三臂（`alone` 只有 `-fopt-vreg`，帧加宽路径唯一被单独走到的臂），返回 Python 答案。
+6. **裁掉就按名拒绝**：`-DARKCC_FEATURE_OPT_VREG=0` 的构建报 C3900U，且不带旗标时照常编译。
+
+### 11.5 附带发现（登记，未在本轮修）
+
+`-fopt-vstack` 在**调用实参多于 4 个**且函数体用到第 5/6 个实参时错编译：vstack 为第三槽征用 `r4` 使帧加宽 4 字节，但前端的「实参拷贝」`LDR r0,[r6,#n]` 偏移仍按 4 个保存字计算，读到低 4/8 字节的另一个位置。
+
+复现：`int h2(int a,int b,int c,int d,int e,struct VgS *p){return e + p->a;}`，`-fopt-vstack` 下返回值是 `0x30B0xxxx` 而非 6；不带该旗标与只开 `-fopt-regalloc -fopt-constcache` 都正确（5 个实参正确、6 个才错，纯整数 6 实参不受影响，需要一次访存）。
+
+该开关默认关（0.9.1-wip），因此不影响 `-O2` 现状；已登记为待修缺陷，修法是让 vstack 在加宽帧后按 regalloc 的方式平移 `>= base` 的偏移（`ra_shift_line`），本轮不在 vreg 线内解决。

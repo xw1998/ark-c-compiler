@@ -3046,6 +3046,679 @@ static void ark_regalloc_function(AsmBuffer *b, int from, IrFunc *f, int local_e
         b->len = from + out.len;
     }
 }
+#if ARKCC_FEATURE_OPT_VREG
+/* ------------------ slot promotion to callee-saved registers (-fopt-vreg) --
+ * docs/VREG.md section 10.5 pre-registers this as S6a's text-layer landing
+ * form.  A slot is not "accessed through a register" (which would be a MOV, no
+ * shorter than the LDR it replaces) but *promoted* -- its loads and stores
+ * disappear from memory.  A store becomes "MOV rC, rS" (the same one
+ * instruction the STR was); the load that feeds the very next instruction is
+ * deleted outright and that instruction reads rC instead (rename elision),
+ * which is the only form that removes an instruction.  A load whose consumer
+ * cannot be renamed falls back to "MOV rD, rC" (same count).  So the pass never
+ * adds an instruction: the whole win is the number of elided loads.
+ *
+ * The slot traffic is not always through r0: -fopt-vstack rewrites the value
+ * stack into r5/r7, so a local is loaded into whichever scratch register the
+ * previous pass chose ("LDR r5, [r6, #16]" feeding "MOV r0, r5").  The pass
+ * therefore works on the register the load actually names and renames *that*
+ * one in its consumer, for any of r0..r7.  r8-r11 are never destinations here,
+ * so the cache register can never collide with a rewritten line.
+ *
+ * Safety is the same taint proof -fopt-regalloc and -fopt-slotreg rely on: a
+ * slot is touched only when every mention of it in the whole function is
+ * exactly "LDR rD, [r6,#o]" or "STR rS, [r6,#o]" below the local frame, it is
+ * not volatile, no frame address at or below it escapes, and no mention sits
+ * under an IT (a conditional access cannot become an unconditional copy).  One
+ * mention in any other shape leaves the slot in memory.
+ *
+ * r8-r11 are the registers: the backend never names them and AAPCS makes them
+ * callee-saved, so they survive calls.  -fopt-regalloc (and the constant cache
+ * inside it) runs first and draws from the same four, so this pass reads the
+ * register list, the frame base and the leftover registers off the text it is
+ * given instead of assuming a four-word save: the prologue is widened, the
+ * epilogue widened to match, and every offset at or above the new base is
+ * shifted, exactly as -fopt-regalloc does. */
+#define VG_MAX_SLOTS 128
+#define VG_MAX_LINES 3000
+#define VG_MAX_REGS  4
+
+typedef struct {
+    int off;
+    int reads;
+    int stores;
+    int elid;      /* loads whose consumer can be renamed away          */
+    int taint;
+    int reg;       /* 8..11 when promoted, 0 otherwise                  */
+} VgSlot;
+
+static VgSlot         vg_slots[VG_MAX_SLOTS];
+static unsigned short vg_ll[VG_MAX_LINES];
+static short          vg_lo[VG_MAX_LINES];
+static unsigned char  vg_lk[VG_MAX_LINES];   /* 0 other, 1 LDR, 2 STR, 3 barrier, 4 frame setup */
+static unsigned char  vg_it[VG_MAX_LINES];
+static unsigned char  vg_dr[VG_MAX_LINES];   /* destination/source register of an LDR/STR */
+static int            vg_ptr[VG_MAX_LINES];
+static int            vg_cons[VG_MAX_LINES]; /* consumer line of an elidable LDR, else -1 */
+static unsigned char  vg_act[VG_MAX_LINES];  /* 0 copy, 1 drop, 2 MOV rD<-rC, 3 MOV rC<-rS, 4 rename */
+static signed char    vg_ren[VG_MAX_LINES];  /* register for act 2/3/4           */
+static unsigned char  vg_rf[VG_MAX_LINES];   /* register to rename in act 4      */
+static int            vg_esc_lo;             /* lowest escaped frame offset      */
+
+static int vg_isalpha(char c) {
+    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+}
+static char vg_upper(char c) { return (c >= 'a' && c <= 'z') ? (char)(c - 32) : c; }
+
+/* "r0".."r11" into tok (>=5 bytes). */
+static void vg_tok(int reg, char *tok) {
+    tok[0] = 'r';
+    if (reg >= 10) { tok[1] = (char)('0' + reg / 10); tok[2] = (char)('0' + reg % 10); tok[3] = 0; }
+    else { tok[1] = (char)('0' + reg); tok[2] = 0; }
+}
+
+/* Uppercased mnemonic of an instruction line into mn (>=8 bytes); 0 when the
+ * line is blank, a comment, a directive or a label. */
+static int vg_mnem(const char *ln, char *mn) {
+    const char *s = ln;
+    int n = 0;
+    while (*s == ' ' || *s == '\t') s++;
+    if (!*s || *s == '.' || *s == '$' || *s == '@' || *s == ';') return 0;
+    while (vg_isalpha(*s)) { if (n < 7) mn[n++] = vg_upper(*s); s++; }
+    mn[n] = 0;
+    if (n == 0) return 0;
+    /* A label looks like "name:" with no space before the colon. */
+    { const char *t = s; while (*t == ' ' || *t == '\t') t++; if (t == s && *t == ':') return 0; }
+    return n;
+}
+
+/* A label, or any instruction with more than one exit: after it a cached
+ * register's value is only known on this path, so it ends the rewrite region. */
+static int vg_barrier(const char *ln) {
+    char mn[8];
+    static const char *const br_mn[] = {
+        "B", "BEQ", "BNE", "BCC", "BCS", "BHS", "BLO", "BMI", "BPL", "BVS",
+        "BVC", "BHI", "BLS", "BGE", "BLT", "BGT", "BLE", "BAL", "BX", "BL",
+        "BLX", "CBZ", "CBNZ", "IT", "ITT", "ITE", "ITTT", "ITTE", "ITET",
+        "ITEE", "ITTTT", "POP", "PUSH", "LDM", "LDMIA", "LDMFD", "STM",
+        "STMIA", "STMDB", "STMFD", 0
+    };
+    const char *s = ln;
+    int i, sp = 0;
+    while (*s == ' ' || *s == '\t') s++;
+    if (!*s) return 0;
+    if (*s == '.' || *s == '$') {
+        const char *t = s;
+        while (*t) { if (*t == ' ' || *t == '\t') sp = 1; t++; }
+        if (!sp && t > s && t[-1] == ':') return 1;   /* .Lxx: or $d: */
+        if (*s == '$') return 1;
+        return 0;
+    }
+    if (!vg_mnem(ln, mn)) {
+        const char *t = s;
+        while (*t) { if (*t == ' ' || *t == '\t') sp = 1; t++; }
+        if (!sp && t > s && t[-1] == ':') return 1;   /* bare label */
+        return 0;
+    }
+    for (i = 0; br_mn[i]; i++)
+        if (strcmp(mn, br_mn[i]) == 0) return 1;
+    return 0;
+}
+
+/* Classify one line against the frame pointer.
+ *   0  exactly "LDR rD, [r6,#n]"      (*off, *dreg = D)
+ *   1  exactly "STR rS, [r6,#n]"      (*off, *dreg = S)
+ *   2  "r6, #n" in another shape      (*off when it parses, else -1)
+ *   3  no "r6, " mention at all
+ *   4  "MOV r6, sp" -- the frame pointer being set up
+ * Only single-digit destinations are modelled: the emitter's frame traffic
+ * uses r0/r5/r7 and the cache registers are r8-r11, so anything else is a
+ * shape this pass does not own. */
+static int vg_scan(const char *ln, int *off, int *dreg) {
+    const char *s = ln;
+    const char *p, *q;
+    int n = 0, kind;
+    *off = -1;
+    *dreg = -1;
+    while (*s == ' ' || *s == '\t') s++;
+    if (s[0]=='M'&&s[1]=='O'&&s[2]=='V'&&s[3]==' '&&s[4]=='r'&&s[5]=='6'&&s[6]==','&&s[7]==' ')
+        return 4;
+    for (kind = 0; kind < 2; kind++) {
+        if (strncmp(s, kind == 0 ? "LDR r" : "STR r", 5) != 0) continue;
+        q = s + 4;
+        if (q[1] < '0' || q[1] > '7') continue;
+        if (q[2] != ',' || q[3] != ' ' || q[4] != '[') continue;
+        if (!(q[5] == 'r' && q[6] == '6' && q[7] == ',' && q[8] == ' ' && q[9] == '#'))
+            continue;
+        p = q + 10;
+        if (*p < '0' || *p > '9') continue;
+        n = 0;
+        while (*p >= '0' && *p <= '9') { n = n * 10 + (*p - '0'); p++; }
+        if (*p != ']') continue;
+        p++;
+        while (*p == ' ' || *p == '\t' || *p == '\r') p++;
+        if (*p) continue;
+        *off = n;
+        *dreg = (kind == 0) ? (q[1] - '0') : (q[1] - '0');
+        return kind;
+    }
+    p = ln;
+    while (p[0] && !(p[0]=='r'&&p[1]=='6'&&p[2]==','&&p[3]==' ')) p++;
+    if (!p[0]) return 3;
+    q = p + 4;
+    if (*q == '#') {
+        q++;
+        if (*q >= '0' && *q <= '9') {
+            while (*q >= '0' && *q <= '9') { n = n * 10 + (*q - '0'); q++; }
+            *off = n;
+        }
+    }
+    return 2;
+}
+
+/* Does this instruction write reg as its destination? */
+static int vg_writes_reg(const char *ln, int reg) {
+    const char *s = ln;
+    char mn[8], tok[5];
+    int i, n;
+    static const char *const nodst[] = {
+        "STR", "STRB", "STRH", "CMP", "CMN", "TST", "TEQ", "PUSH", "POP",
+        "NOP", "DMB", "DSB", "ISB", "IT", "BX", "BL", "BLX", "CBZ", "CBNZ",
+        "LDM", "LDMIA", "LDMFD", "STM", "STMIA", "STMDB", "STMFD", "B",
+        "BEQ", "BNE", "BCC", "BCS", "BHS", "BLO", "BMI", "BPL", "BVS",
+        "BVC", "BHI", "BLS", "BGE", "BLT", "BGT", "BLE", "BAL", 0
+    };
+    if (!vg_mnem(ln, mn)) return 0;
+    for (i = 0; nodst[i]; i++)
+        if (strcmp(mn, nodst[i]) == 0) return 0;
+    while (*s == ' ' || *s == '\t') s++;
+    while (vg_isalpha(*s)) s++;
+    while (*s == ' ' || *s == '\t') s++;
+    vg_tok(reg, tok);
+    n = (int)strlen(tok);
+    if (strncmp(s, tok, n) == 0 &&
+        (s[n] == ',' || s[n] == ' ' || s[n] == '\0' || s[n] == '\r'))
+        return 1;
+    return 0;
+}
+
+/* Does reg appear as a whole token? */
+static int vg_mentions_reg(const char *ln, int reg) {
+    char tok[5];
+    const char *p = ln;
+    int n;
+    vg_tok(reg, tok);
+    n = (int)strlen(tok);
+    while ((p = strstr(p, tok)) != 0) {
+        char a = (p == ln) ? ' ' : p[-1];
+        char b = p[n];
+        if (!vg_isalpha(a) && !(a >= '0' && a <= '9') &&
+            !vg_isalpha(b) && !(b >= '0' && b <= '9'))
+            return 1;
+        p += n;
+    }
+    return 0;
+}
+
+/* Bit 0..3 set for r8..r11 named anywhere in the line.  A register named in
+ * the text may already be live (regalloc's slots and constant cache do not
+ * always keep theirs in the list), so it is not available. */
+static int vg_hi_mask(const char *line) {
+    const char *p = line;
+    unsigned m = 0;
+    while ((p = strchr(p, 'r')) != 0) {
+        char a = (p == line) ? ' ' : p[-1];
+        char b = p[1];
+        if (!vg_isalpha(a) && !(a >= '0' && a <= '9') &&
+            !vg_isalpha(b) && !(b >= '0' && b <= '9')) {
+            if (b == '8' || b == '9') m |= 1u << (b - '8');
+            else if (b == '1' && (p[2] == '0' || p[2] == '1'))
+                m |= 1u << (10 + (p[2] - '0') - 8);
+        }
+        p++;
+    }
+    return (int)m;
+}
+
+/* Replace every whole token "from" with "to".  Returns 1 if the line changed. */
+static int vg_rename_reg(const char *in, int from, int to, char *dst) {
+    char ftok[5], ttok[5];
+    const char *p = in;
+    int o = 0, changed = 0, n;
+    vg_tok(from, ftok);
+    vg_tok(to, ttok);
+    n = (int)strlen(ftok);
+    while (*p) {
+        if (strncmp(p, ftok, n) == 0) {
+            char a = (p == in) ? ' ' : p[-1];
+            char b = p[n];
+            if (!vg_isalpha(a) && !(a >= '0' && a <= '9') &&
+                !vg_isalpha(b) && !(b >= '0' && b <= '9')) {
+                int k;
+                for (k = 0; ttok[k]; k++) dst[o++] = ttok[k];
+                p += n;
+                changed = 1;
+                continue;
+            }
+        }
+        dst[o++] = *p++;
+    }
+    dst[o] = 0;
+    return changed;
+}
+
+static int vg_slot(int *n, int off) {
+    int i;
+    for (i = 0; i < *n; i++)
+        if (vg_slots[i].off == off) return i;
+    if (*n >= VG_MAX_SLOTS) return -1;
+    vg_slots[*n].off = off;
+    vg_slots[*n].reads = 0;
+    vg_slots[*n].stores = 0;
+    vg_slots[*n].elid = 0;
+    vg_slots[*n].taint = (off >= vg_esc_lo);   /* an escaped address can reach it */
+    vg_slots[*n].reg = 0;
+    return (*n)++;
+}
+
+static int vg_is_ins_at(AsmBuffer *b, int idx) {
+    char t[256], mn[8];
+    int len = vg_ll[idx], k;
+    if (len >= (int)sizeof(t) - 1) return 0;
+    for (k = 0; k < len; k++) t[k] = b->buf[vg_ptr[idx] + k];
+    t[len] = 0;
+    return vg_mnem(t, mn) != 0;
+}
+
+/* Count the registers of a flattened PUSH/POP list. */
+static int vg_list_regs(const char *line) {
+    const char *p = strchr(line, '{');
+    int n = 0;
+    if (!p) return 0;
+    p++;
+    while (*p && *p != '}') {
+        if (p[0] == 'r' && p[1] >= '0' && p[1] <= '9') {
+            n++;
+            p += 2;
+            while (*p >= '0' && *p <= '9') p++;
+        } else p++;
+    }
+    return n;
+}
+
+static int vg_list_has(const char *line, int reg) {
+    const char *p = strchr(line, '{');
+    if (!p) return 0;
+    p++;
+    while (*p && *p != '}') {
+        if (p[0] == 'r' && p[1] >= '0' && p[1] <= '9') {
+            int v = p[1] - '0';
+            const char *q = p + 2;
+            if (*q >= '0' && *q <= '9') { v = v * 10 + (*q - '0'); q++; }
+            if (v == reg) return 1;
+            p = q;
+        } else p++;
+    }
+    return 0;
+}
+
+/* Flatten a register-list line (no spaces, no CR) into flat; 0 if too long. */
+static int vg_flatten(const char *line, char *flat, int cap) {
+    int i = 0, j = 0;
+    while (line[i] && j < cap - 1) {
+        if (line[i] != ' ' && line[i] != '\t' && line[i] != '\r') flat[j++] = line[i];
+        i++;
+    }
+    flat[j] = 0;
+    return i < cap;
+}
+
+/* The frame save of a function this pass may widen.  -fopt-regalloc runs
+ * first and may already have added its own cache registers, so the shape is
+ * "PUSH {r5, r6, r7[, rX...], lr}" rather than regalloc's original four-word
+ * list.  The epilogue restores the same list and ends in pc (normal) or lr
+ * (variadic). */
+static int vg_is_frame_push(const char *line) {
+    char flat[160];
+    if (!vg_flatten(line, flat, (int)sizeof(flat))) return 0;
+    if (strncmp(flat, "PUSH{", 5) != 0) return 0;
+    if (!vg_list_has(flat, 5) || !vg_list_has(flat, 6) || !vg_list_has(flat, 7)) return 0;
+    {
+        int j = (int)strlen(flat);
+        return j >= 3 && flat[j - 1] == '}' && flat[j - 2] == 'r' && flat[j - 3] == 'l';
+    }
+}
+
+static int vg_is_frame_pop(const char *line) {
+    char flat[160];
+    if (!vg_flatten(line, flat, (int)sizeof(flat))) return 0;
+    if (strncmp(flat, "POP{", 4) != 0) return 0;
+    if (!vg_list_has(flat, 5) || !vg_list_has(flat, 6) || !vg_list_has(flat, 7)) return 0;
+    {
+        int j = (int)strlen(flat);
+        if (j < 4 || flat[j - 1] != '}') return 0;
+        return (flat[j - 2] == 'c' && flat[j - 3] == 'p') ||
+               (flat[j - 2] == 'r' && flat[j - 3] == 'l');
+    }
+}
+
+static void ark_vreg_function(AsmBuffer *b, int from, IrFunc *f, int local_eff) {
+    int nslots = 0, nlines = 0, pos, i, k;
+    int base;
+    int nregs = 0, made[VG_MAX_REGS];
+    int free_regs[VG_MAX_REGS], nfree = 0;
+    int saved_words = 4;
+    unsigned used_mask = 0;
+    int have_prologue = 0, have_frame = 0, done_push = 0;
+    AsmBuffer out;
+    char line[256];
+    char mn[8];
+
+    if (!g_config.enable_opt_vreg) return;
+    vg_esc_lo = 0x7fffffff;
+
+    /* Pass 1: split into lines. */
+    for (pos = from; pos < b->len; ) {
+        int len = 0;
+        while (pos + len < b->len && b->buf[pos + len] != '\n') len++;
+        if (nlines >= VG_MAX_LINES) return;
+        vg_ptr[nlines] = pos;
+        vg_ll[nlines] = (unsigned short)(len < 65535 ? len : 65535);
+        vg_lo[nlines] = -1;
+        vg_lk[nlines] = 0;
+        vg_it[nlines] = 0;
+        vg_dr[nlines] = 0;
+        vg_cons[nlines] = -1;
+        vg_act[nlines] = 0;
+        vg_ren[nlines] = -1;
+        vg_rf[nlines] = 0;
+        nlines++;
+        pos += len + 1;
+    }
+    /* Pre-scan: the frame save's word count and every high register the text
+     * already names.  -fopt-regalloc (and the constant cache inside it) runs
+     * before this pass and takes its registers from the same four, so the pool
+     * here is what it left over, and the base offset is where its widening put
+     * it. */
+    for (i = 0; i < nlines; i++) {
+        int len = vg_ll[i];
+        if (len >= (int)sizeof(line) - 1) return;
+        for (k = 0; k < len; k++) line[k] = b->buf[vg_ptr[i] + k];
+        line[len] = 0;
+        if (!have_prologue && vg_is_frame_push(line)) {
+            have_prologue = 1;
+            /* The list always ends in lr (the epilogue in pc/lr), so the word
+             * count is its registers plus that one. */
+            saved_words = vg_list_regs(line) + 1;
+        }
+        used_mask |= (unsigned)vg_hi_mask(line);
+    }
+    base = local_eff + 4 * saved_words;
+
+    for (i = 0; i < nlines; i++) {
+        int len = vg_ll[i];
+        if (len < (int)sizeof(line) - 1) {
+            for (k = 0; k < len; k++) line[k] = b->buf[vg_ptr[i] + k];
+            line[len] = 0;
+        } else {
+            return;                      /* absurdly long line: leave the function */
+        }
+        if (vg_barrier(line)) { vg_lk[i] = 3; continue; }
+        {
+            int off = -1, dr = -1, t = vg_scan(line, &off, &dr);
+            if (t == 4) { vg_lk[i] = 4; have_frame = 1; }
+            else if (t == 3) { vg_lk[i] = 0; }
+            else if (t == 0 || t == 1) {
+                if (off >= 0 && off < base) {
+                    int s = vg_slot(&nslots, off);
+                    if (s < 0) return;
+                    vg_lo[i] = (short)s;
+                    vg_dr[i] = (unsigned char)dr;
+                    vg_lk[i] = (unsigned char)(t == 0 ? 1 : 2);
+                    if (t == 0) vg_slots[s].reads++;
+                    else vg_slots[s].stores++;
+                }
+            } else {                     /* t == 2: another shape naming a slot */
+                if (off >= 0 && off < base) {
+                    int s = vg_slot(&nslots, off);
+                    int s3;
+                    if (s < 0) return;
+                    /* An address at or below this offset can reach it: a callee
+                     * may write through it, so promotion is not sound. */
+                    if (off < vg_esc_lo) vg_esc_lo = off;
+                    for (s3 = 0; s3 < nslots; s3++)
+                        if (vg_slots[s3].off >= off) vg_slots[s3].taint = 1;
+                }
+            }
+        }
+    }
+    /* IT coverage: an IT block makes the next n instructions conditional. */
+    for (i = 0; i < nlines; i++) {
+        int len = vg_ll[i], cnt, c;
+        if (len >= (int)sizeof(line) - 1) continue;
+        for (k = 0; k < len; k++) line[k] = b->buf[vg_ptr[i] + k];
+        line[len] = 0;
+        if (!vg_mnem(line, mn)) continue;
+        if (mn[0] != 'I' || mn[1] != 'T') continue;
+        cnt = (int)strlen(mn) - 1;
+        c = 0;
+        for (k = i + 1; k < nlines && c < cnt; k++) {
+            if (vg_lk[k] == 3 || vg_lk[k] == 4) break;
+            if (vg_lk[k] == 1 || vg_lk[k] == 2) { vg_it[k] = 1; c++; }
+            else if (vg_is_ins_at(b, k)) { vg_it[k] = 1; c++; }
+        }
+    }
+    /* Volatile locals and in-IT mentions: keep in memory. */
+    if (f) {
+        int k2;
+        for (k2 = 0; k2 < f->code_count; k2++) {
+            IrInst *I2 = &f->code[k2];
+            int s2;
+            if (!(I2->aux & IR_AUX_VOLATILE)) continue;
+            if (I2->op != IR_PUSH_VAR && I2->op != IR_STORE && I2->op != IR_PUSH_ADDR)
+                continue;
+            s2 = vg_slot(&nslots, (int)I2->val);
+            if (s2 >= 0) vg_slots[s2].taint = 1;
+        }
+    }
+    for (i = 0; i < nlines; i++) {
+        if ((vg_lk[i] == 1 || vg_lk[i] == 2) && vg_it[i]) {
+            int s = vg_lo[i];
+            if (s >= 0) vg_slots[s].taint = 1;
+        }
+    }
+    if (!have_prologue || !have_frame) return;
+    if (nslots == 0) return;
+    for (k = 8; k <= 11; k++)
+        if (!(used_mask & (1u << (k - 8)))) free_regs[nfree++] = k;
+    if (nfree == 0) return;
+
+    /* Pass 2: which loads can be elided (their consumer renamed).  The
+     * consumer is the next *instruction*; the register it must read is the one
+     * the load wrote, and it must not write it back. */
+    for (i = 0; i < nlines; i++) {
+        int j, s, dr;
+        vg_cons[i] = -1;
+        if (vg_lk[i] != 1) continue;
+        s = vg_lo[i];
+        if (s < 0 || vg_slots[s].taint) continue;
+        dr = vg_dr[i];
+        if (dr < 0) continue;
+        j = i + 1;
+        while (j < nlines && vg_lk[j] == 0 && !vg_is_ins_at(b, j)) j++;
+        if (j >= nlines) continue;
+        if (vg_lk[j] != 0) continue;            /* next is a frame access or barrier */
+        if (!vg_is_ins_at(b, j)) continue;
+        {
+            int len = vg_ll[j];
+            char cl[256];
+            if (len >= (int)sizeof(cl) - 1) continue;
+            for (k = 0; k < len; k++) cl[k] = b->buf[vg_ptr[j] + k];
+            cl[len] = 0;
+            if (vg_it[j]) continue;
+            if (vg_writes_reg(cl, dr)) continue;
+            if (!vg_mentions_reg(cl, dr)) continue;
+            if (vg_hi_mask(cl)) continue;       /* a high register is already named */
+            vg_cons[i] = j;
+            vg_slots[s].elid++;
+        }
+    }
+
+    /* Pass 3: pick slots.  Rank by elided loads, take what the pool holds. */
+    for (k = 0; k < nfree; k++) {
+        int best = -1;
+        for (i = 0; i < nslots; i++) {
+            if (vg_slots[i].reg || vg_slots[i].taint) continue;
+            if (vg_slots[i].elid < 2) continue;   /* must pay for itself in count */
+            if (best < 0 || vg_slots[i].elid > vg_slots[best].elid ||
+                (vg_slots[i].elid == vg_slots[best].elid && vg_slots[i].off < vg_slots[best].off))
+                best = i;
+        }
+        if (best < 0) break;
+        vg_slots[best].reg = free_regs[k];
+        made[nregs++] = free_regs[k];
+    }
+    if (nregs == 0) return;
+    if ((saved_words + nregs) & 1) {             /* keep the saved block 8-aligned */
+        int j;
+        for (j = 0; j < nfree; j++) {
+            int used = 0, q;
+            for (q = 0; q < nregs; q++) if (made[q] == free_regs[j]) used = 1;
+            if (!used) { made[nregs++] = free_regs[j]; break; }
+        }
+        if ((saved_words + nregs) & 1) return;   /* no spare left: leave the function */
+    }
+
+    /* Assign actions. */
+    for (i = 0; i < nlines; i++) {
+        int s, r;
+        if (vg_lk[i] != 1 && vg_lk[i] != 2) continue;
+        s = vg_lo[i];
+        if (s < 0) continue;
+        r = vg_slots[s].reg;
+        if (!r) continue;
+        if (vg_lk[i] == 1) {
+            if (vg_cons[i] >= 0) {
+                vg_act[i] = 1;                    /* drop the load ... */
+                vg_act[vg_cons[i]] = 4;           /* ... and rename its consumer */
+                vg_ren[vg_cons[i]] = (signed char)r;
+                vg_rf[vg_cons[i]] = vg_dr[i];
+            } else {
+                vg_act[i] = 2;                    /* MOV rD, rC: same count */
+                vg_ren[i] = (signed char)r;
+            }
+        } else {
+            vg_act[i] = 3;                        /* MOV rC, rS: same count as STR */
+            vg_ren[i] = (signed char)r;
+        }
+    }
+
+    /* Pass 4: rebuild. */
+    asmbuf_init(&out);
+    for (i = 0; i < nlines; i++) {
+        int len = vg_ll[i];
+        if (vg_act[i] == 1) continue;
+        for (k = 0; k < len; k++) line[k] = b->buf[vg_ptr[i] + k];
+        line[len] = 0;
+        if (vg_act[i] == 2) {
+            asmbuf_puts(&out, "    MOV r");
+            asmbuf_int(&out, vg_dr[i]);
+            asmbuf_puts(&out, ", r");
+            asmbuf_int(&out, vg_ren[i]);
+            asmbuf_putc(&out, '\n');
+            continue;
+        }
+        if (vg_act[i] == 3) {
+            asmbuf_puts(&out, "    MOV r");
+            asmbuf_int(&out, vg_ren[i]);
+            asmbuf_puts(&out, ", r");
+            asmbuf_int(&out, vg_dr[i]);
+            asmbuf_putc(&out, '\n');
+            continue;
+        }
+        if (vg_act[i] == 4) {
+            char rl[512];
+            if (!vg_rename_reg(line, vg_rf[i], vg_ren[i], rl)) return;   /* would be a bug */
+            asmbuf_puts(&out, rl);
+            asmbuf_putc(&out, '\n');
+            continue;
+        }
+        if (!done_push && vg_is_frame_push(line)) {
+            int cut = ra_last_elem_at(line);
+            done_push = 1;
+            if (cut < 0) cut = (int)strlen(line);
+            for (k = 0; k < cut; k++) asmbuf_putc(&out, line[k]);
+            for (k = 0; k < nregs; k++) {
+                asmbuf_puts(&out, ", r");
+                asmbuf_int(&out, made[k]);
+            }
+            for (k = cut; k < (int)strlen(line); k++) asmbuf_putc(&out, line[k]);
+            asmbuf_putc(&out, '\n');
+            continue;
+        }
+        if (vg_is_frame_pop(line)) {
+            int cut = ra_last_elem_at(line);
+            if (cut < 0) cut = (int)strlen(line);
+            for (k = 0; k < cut; k++) asmbuf_putc(&out, line[k]);
+            for (k = 0; k < nregs; k++) {
+                asmbuf_puts(&out, ", r");
+                asmbuf_int(&out, made[k]);
+            }
+            for (k = cut; k < (int)strlen(line); k++) asmbuf_putc(&out, line[k]);
+            asmbuf_putc(&out, '\n');
+            continue;
+        }
+        for (k = 0; k < len; k++) asmbuf_putc(&out, line[k]);
+        asmbuf_putc(&out, '\n');
+    }
+
+    /* The saved block grew by 4*nregs bytes: shift every offset at or above
+     * base (caller args and the va region).  Locals are all below base. */
+    if (4 * nregs > 0) {
+        AsmBuffer shf;
+        int opos;
+        char nline[256];
+        asmbuf_init(&shf);
+        for (opos = 0; opos < out.len; ) {
+            int len = 0, olen, nlen = 0;
+            char shl[1024];
+            const char *np;
+            while (opos + len < out.len && out.buf[opos + len] != '\n') len++;
+            if (len >= (int)sizeof(line)) {
+                for (i = 0; i < len; i++) asmbuf_putc(&shf, out.buf[opos + i]);
+                asmbuf_putc(&shf, '\n');
+                opos += len + 1;
+                continue;
+            }
+            for (i = 0; i < len; i++) line[i] = out.buf[opos + i];
+            line[len] = 0;
+            np = out.buf + opos + len;
+            if (*np == '\n') np++;
+            while (np[nlen] && np[nlen] != '\n' && nlen < (int)sizeof(nline) - 1) {
+                nline[nlen] = np[nlen];
+                nlen++;
+            }
+            nline[nlen] = 0;
+            olen = ra_shift_line(line, len, nline, base, 4 * nregs, shl);
+            for (i = 0; i < olen; i++) asmbuf_putc(&shf, shl[i]);
+            asmbuf_putc(&shf, '\n');
+            opos += len + 1;
+        }
+        asmbuf_reserve(&out, shf.len + 1);
+        for (i = 0; i < shf.len; i++) out.buf[i] = shf.buf[i];
+        out.buf[shf.len] = 0;
+        out.len = shf.len;
+    }
+
+    asmbuf_reserve(b, from + out.len + 1);
+    if (from + out.len + 1 <= b->cap) {
+        for (i = 0; i < out.len; i++) b->buf[from + i] = out.buf[i];
+        b->buf[from + out.len] = 0;
+        b->len = from + out.len;
+    }
+}
+#endif /* ARKCC_FEATURE_OPT_VREG */
+
 #endif /* ARKCC_FEATURE_OPT_REGALLOC */
 #if ARKCC_FEATURE_OPT_CMAT
 /* ------------------ constant materialisation cleanup (-fopt-cmat) --------
@@ -11094,6 +11767,15 @@ static char *codegen_arm(IrProgram *prog) {
         /* The text of this function is complete: it is the last slice of the
          * buffer, so the rewrite sees exactly this function and nothing else. */
         ark_regalloc_function(&buf, fstart, f, local_size);
+#if ARKCC_FEATURE_OPT_VREG
+        /* Slot promotion names the same r8-r11 pool, but it runs *after*
+         * regalloc on purpose: the constant cache lives inside regalloc and
+         * the frame save is already widened by the time this pass sees it, so
+         * the two share one owner of PUSH/POP and one base offset instead of
+         * replacing each other.  Neither pass is a barrier for the other. */
+        if (g_config.enable_opt_vreg)
+            ark_vreg_function(&buf, fstart, f, local_size);
+#endif
 #endif
 #if ARKCC_FEATURE_OPT_SLOTREG
         /* Redundant frame access removal: a load that r0 already satisfies, and

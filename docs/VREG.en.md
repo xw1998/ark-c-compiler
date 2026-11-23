@@ -240,3 +240,48 @@ Even taking all 1,714 we only reach 16,437 (still 2.9x armcc). ⇒ **the text-la
 > **Slot cache + rename elision**: a hit `LDR rX,[slot]` is *not* replaced by `MOV rX, rCache`; instead **the destination register is renamed to `rCache` across the straight-line region that consumes the value, and the `LDR` is deleted**; the matching `STR rCache,[slot]` side is done by "retarget the producer's destination register to `rCache` and delete the `STR`". Region boundaries reuse `-fopt-coalesce`'s `lv_same` replay check; but because `rCache` is callee-saved, `BL` **is no longer a barrier** (this is exactly what lets it do more than coalesce).
 
 This targets the same thing as §3's "vreg + linear scan" (which register a value lives in is decided by the model, not guessed from a text pattern); **the 7 frozen gates in §5 and F1-F4 in §6 are unchanged, character for character** — only "how to write it" moves from replacement to elision, anchoring the expected gain inside 10.4's 9.4% bound (S6a's -8% >= 1,450 still holds, with 264 lines of margin for implementation loss).
+
+## 11 Measured result (2026-11-23, S6a implemented)
+
+The form is the one §10.5 fixed: flag `-fopt-vreg`, **off by default**; a cropped build (`-DARKCC_FEATURE_OPT_VREG=0`) refuses it by name (C3900U) instead of accepting it and doing nothing.
+
+### 11.1 How it cooperates with the existing passes (why it must run last)
+
+`-fopt-constcache` lives *inside* `ark_regalloc_function()` and competes for the same `r8-r11` pool and the same `PUSH/POP` pair. So vreg does **not** override regalloc; it runs after it:
+
+1. `regalloc` (including the constant cache) caches values in `r8-r11` first and widens the frame;
+2. `vreg` then reads the `PUSH` list, the used-register mask and `base = local_eff + 4 * saved_words` **off the text**, works only in what is left, and shifts every offset at or above `base` when it widens.
+
+The first version ran vreg before regalloc: 95 TUs gave **18,151 → 18,310 (+159)**, the `MOV r5, r8` and `MOVW+MOVT` gains gone. Cooperating gives **-415**.
+
+### 11.2 Three implementation rules
+
+- **The load destination is r0-r7, not always r0**: `-fopt-vstack` moves slot traffic to `r5/r7` (`LDR r5,[r6,#n]`); accepting only `LDR r0` made the whole route dead on top of vstack (-270 only). Renaming and deletion are parameterised by the register the load actually writes.
+- **A slot must have `elid >= 2`**: the accounting is in instructions (`PUSH/POP` widening adds no instruction but 4 B of stack traffic per register), so saving one line is not worth a stack word.
+- **`saved_words = number of listed registers + 1`** (lr is one word), `base = local_eff + 4 * saved_words`; if `saved_words + nregs` is odd after widening, one more register is taken from the free pool to keep 16 + 8k alignment.
+
+### 11.3 Measured numbers (95 TUs, Cortex-M4, sixteen switches + `-fopt-coalesce`)
+
+| Arm | Instructions | vs baseline |
+|---|---|---|
+| baseline (no `-fopt-vreg`) | 18,151 | — |
+| `-fopt-vreg` | **17,736** | **-415 (-2.29%)** |
+
+13 TUs change; largest `stm32f4xx_hal_dma.c` 2,603 -> 2,422 (-181), `stm32f4xx_hal_rcc.c` 2,780 -> 2,718, `stm32f4xx_hal_exti.c` 626 -> 590.
+
+### 11.4 Gate (`tests/run_vreg_tests.py`, all green)
+
+1. **OFF IS OFF**: default `-O2` and `-O2 -fno-opt-vreg` are byte-identical (1,218/1,218 bytes, image included).
+2. **IT PAYS**: four reload fixtures (`chain/loop/many/call`, all "struct pointer + distant member" shapes that produce `LDR rX,[r6,#n]` immediately followed by its consumer) strictly shrink, and **no fixture grows** -- the pass has no form that adds an instruction.
+3. **THE FRAME IS ONE FRAME**: the promoted function's `PUSH/POP` gain the same registers (`added`), every offset at or above `base` (caller args and the va region) shifts by `4 x len(added)`, and no offset is left inside the widened save.
+4. **IT DOES NOT TOUCH WHAT IT CANNOT PROVE**: an address-escaping local and a `volatile` local come out line-for-line identical.
+5. **THE ANSWER IS THE SAME**: seven fixtures run on the emulator in three arms (off / on / alone -- `alone` is the only arm that exercises frame widening on its own) and return the Python answer.
+6. **CROPPED OUT, REFUSED**: a `-DARKCC_FEATURE_OPT_VREG=0` build reports C3900U and still compiles without the flag.
+
+### 11.5 Side finding (registered, not fixed in this round)
+
+`-fopt-vstack` miscompiles a call with **more than four arguments** when the body uses argument 5 or 6: vstack claims `r4` for the third value-stack slot, widening the frame by four bytes, but the front end's argument-copy loads `LDR r0,[r6,#n]` still assume four saved words and read four/eight bytes too low.
+
+Repro: `int h2(int a,int b,int c,int d,int e,struct VgS *p){return e + p->a;}` returns `0x30B0xxxx` instead of 6 under `-fopt-vstack`; without the flag, or with only `-fopt-regalloc -fopt-constcache`, it is correct (five arguments are fine, six are not; six plain integers are unaffected -- one memory access is needed).
+
+The switch is off by default (0.9.1-wip), so `-O2` is unaffected. Registered as a defect to fix by shifting every offset at or above `base` after vstack widens, the way regalloc does (`ra_shift_line`); out of scope for the vreg line.

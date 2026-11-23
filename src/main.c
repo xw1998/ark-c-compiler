@@ -600,6 +600,14 @@ int main(int argc, char **argv) {
             return 1;
         }
 #endif
+#if !ARKCC_FEATURE_OPT_VREG
+        else if (strcmp(a, "-fopt-vreg") == 0) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: -fopt-vreg is not compiled into "
+                    "this build (rebuild with -DARKCC_FEATURE_OPT_VREG=1)\n");
+            return 1;
+        }
+#endif
 #if !ARKCC_FEATURE_OPT_COALESCE
         else if (strcmp(a, "-fopt-coalesce") == 0) {
             fprintf(stderr,

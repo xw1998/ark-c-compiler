@@ -296,6 +296,18 @@
 #   define ARKCC_FEATURE_OPT_SLOTREG   1
 # endif
 #endif
+/* ARKCC_FEATURE_OPT_VREG: -fopt-vreg (S6a), slot promotion to a callee-saved
+ * register.  Loads whose consumer can be renamed are deleted, stores become
+ * "MOV rC, r0"; the pass reuses the -fopt-regalloc frame machinery (PUSH/POP
+ * widening and the single offset shift), so it is only compiled when that
+ * feature is present too.  See docs/VREG.md section 10.5. */
+#ifndef ARKCC_FEATURE_OPT_VREG
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN || !ARKCC_FEATURE_OPT_REGALLOC
+#   define ARKCC_FEATURE_OPT_VREG      0   /* 板上裁掉；且必须与 regalloc 同时在场 */
+# else
+#   define ARKCC_FEATURE_OPT_VREG      1
+# endif
+#endif
 /* ARKCC_FEATURE_OPT_CONSTCACHE: -fopt-constcache (S3a), a function-level cache
  * for 32-bit constants.  A constant materialised c times costs 2c instructions;
  * materialising it once at function entry into a callee-saved register and
