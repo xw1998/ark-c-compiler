@@ -327,22 +327,87 @@ static int ir_name_is(const char *a, const char *b) {
 }
 
 /* Would this function be dropped if nothing referenced it? */
-static int ir_is_droppable_inline(const IrFunc *f) {
+static int ir_is_droppable_static(const IrFunc *f) {
     if (!f) return 0;
     if (!f->is_static) return 0;
-    if (!(f->is_inline || f->forceinline)) return 0;
     /* Every attribute below is the author telling the toolchain that the
      * symbol itself matters: keep it, whatever the call graph says. */
     if (f->is_used || f->is_unused) return 0;
     if (f->is_weak) return 0;
     if (f->is_constructor || f->is_destructor) return 0;
     if (f->is_irq || f->is_naked) return 0;
-    if (f->is_asm_func || f->alias_target) return 0;
+    if (f->alias_target) return 0;
     if (ir_name_is(f->name, "main")) return 0;
     return 1;
 }
 
-int ir_drop_unused_inline(IrProgram *prog) {
+/* Names that a linker script, the vector table or the startup code may refer to
+ * by hand.  A `static` definition of one of them is unusual but legal, and
+ * dropping it would turn a working interrupt handler into a link error (or, in
+ * a raw image, into a vector that jumps at whatever follows).  Keeping them is
+ * the conservative side of an optimisation that exists only to save bytes. */
+static int ir_name_is_entry_point(const char *name) {
+    static const char *const keep[] = {
+        "main", "_start", "Reset_Handler", "NMI_Handler", "HardFault_Handler",
+        "MemManage_Handler", "BusFault_Handler", "UsageFault_Handler",
+        "SVC_Handler", "DebugMon_Handler", "PendSV_Handler", "SysTick_Handler",
+        "Default_Handler", "__arkcc_init_globals", 0
+    };
+    int i;
+    if (!name) return 0;
+    for (i = 0; keep[i]; i++)
+        if (name[i] == keep[i][0] && ir_name_is(name, keep[i])) return 1;
+    return 0;
+}
+
+/* Does `text` name `name`?  Plain substring search, written out because this
+ * file is freestanding: a raw asm body is the only place a symbol can be
+ * mentioned without an IR operand, and a false positive here costs one kept
+ * function body while a false negative would cost a link error. */
+static int ir_text_names(const char *text, const char *name) {
+    int i, j;
+    if (!text || !name || !name[0]) return 0;
+    for (i = 0; text[i]; i++) {
+        for (j = 0; name[j] && text[i + j] == name[j]; j++) { }
+        if (!name[j]) return 1;
+    }
+    return 0;
+}
+
+/* Drop every static function this unit cannot reach.
+ *
+ * Two shapes arrive here for the same reason:
+ *   * `static inline` / `__STATIC_INLINE` header helpers (CMSIS), and
+ *   * plain `static` functions in a translation unit that never calls them
+ *     (`__ASM uint32_t __REV16(uint32_t)` in cmsis_armcc.h is the shape that
+ *     made this visible: 1,780 instructions of helper bodies in a 95-file
+ *     corpus that no code ever branched to).
+ * Both have internal linkage, so nothing outside this unit can name them; if
+ * this unit never mentions one, it cannot run, and C99 6.7.4p6 makes its
+ * existence an internal matter.  gcc removes both from -O1 up, and the ARM and
+ * IAR compilers do the same, so keeping the bodies only ever cost size.
+ *
+ * The removal is deliberately timid (every shape has a check in
+ * tests/run_deadinline_tests.py):
+ *   * `used`, `unused`, `weak`, `constructor`, `destructor`, `interrupt`,
+ *     `naked`, `alias`, an entry-point name and `main` are never dropped;
+ *   * a raw asm body is text this pass cannot parse but can read: any
+ *     candidate whose name occurs in an inline-asm statement or in an `__asm`
+ *     function body is kept.  That covers "BL helper", "ldr r0, =helper" and
+ *     ".word helper", and it errs on the side of keeping when the text merely
+ *     mentions a longer name.  A reference the text does not spell out (an
+ *     assembler macro that concatenates the name) would be caught by the
+ *     linker as an undefined symbol -- a failed build, never a wrong image;
+ *   * reachability is a fixed point over calls, address-takes (IR_PUSH_FUNC),
+ *     alias targets and global initialisers, so a dead cycle of helpers
+ *     disappears together while anything a kept function uses survives;
+ *   * `--warn-unused-static` runs earlier in the pipeline, so the author still
+ *     hears about a static function nothing uses even though its body is gone;
+ *     `__attribute__((used))` is the way to keep one anyway.
+ *
+ * Returns the number of functions removed (0 when nothing changed, including
+ * every refusal above). */
+int ir_drop_unused_static(IrProgram *prog) {
     int n, i, k, c, n_cand = 0, dropped = 0, changed;
     int *cand;
     unsigned char *keep;
@@ -355,7 +420,8 @@ int ir_drop_unused_inline(IrProgram *prog) {
 
     for (i = 0; i < n; i++) {
         keep[i] = 1;
-        if (ir_is_droppable_inline(prog->funcs[i])) {
+        if (ir_is_droppable_static(prog->funcs[i]) &&
+            !ir_name_is_entry_point(prog->funcs[i]->name)) {
             keep[i] = 0;               /* needs one live reference to survive */
             cand[n_cand++] = i;
         }
@@ -395,12 +461,32 @@ int ir_drop_unused_inline(IrProgram *prog) {
             }
             for (k = 0; k < F->code_count; k++) {
                 const IrInst *I = &F->code[k];
-                if (I->op == IR_ASM) return 0;   /* unreadable string: keep all */
+                if (I->op == IR_ASM) {
+                    if (!I->name) continue;
+                    for (c = 0; c < n_cand; c++) {
+                        if (keep[cand[c]]) continue;
+                        if (ir_text_names(I->name, prog->funcs[cand[c]]->name)) {
+                            keep[cand[c]] = 1;
+                            changed = 1;
+                        }
+                    }
+                    continue;
+                }
                 if (I->op != IR_CALL && I->op != IR_PUSH_FUNC) continue;
                 if (!I->name) continue;
                 for (c = 0; c < n_cand; c++) {
                     if (keep[cand[c]]) continue;
                     if (ir_name_is(prog->funcs[cand[c]]->name, I->name)) {
+                        keep[cand[c]] = 1;
+                        changed = 1;
+                    }
+                }
+            }
+            /* An `__asm` whole-function body is raw text, not IR instructions. */
+            if (F->is_asm_func && F->asm_body) {
+                for (c = 0; c < n_cand; c++) {
+                    if (keep[cand[c]]) continue;
+                    if (ir_text_names(F->asm_body, prog->funcs[cand[c]]->name)) {
                         keep[cand[c]] = 1;
                         changed = 1;
                     }

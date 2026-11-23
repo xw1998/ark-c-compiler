@@ -333,8 +333,10 @@ def main():
         rc, log = run(arkcc, ARM + ['-O1', 'prune_lib.c', '-S',
                                     '-o', 'prune_alone.s'], work)
         text = asm_text(os.path.join(work, 'prune_alone.s')) if rc == 0 else ''
-        check(rc == 0 and 'dead' in text,
-              'the same static is kept by a plain single-file compile',
+        # The removal is a single IR pass, not an --ipo trick: a plain
+        # single-file compile takes the same path and also drops it.
+        check(rc == 0 and 'dead' not in text,
+              'a plain single-file compile drops it too (one IR pass)',
               'rc=%d' % rc)
 
         # ------------------------------------------------- 5. inline across TU

@@ -42,6 +42,18 @@ library -- on the arkc side that item is **920 instructions / 4.8%**
 instructions**. The table does not deduct it, because that is Flash really
 occupied.
 
+> **Note (2026-11)**: the "each translation unit carries its own run-time
+> helpers" paragraph above describes the snapshot this document was taken from.
+> Two always-on, switchless changes have landed since: (1) unreferenced
+> `static` functions are no longer emitted ([DEADSTATIC.en.md](DEADSTATIC.en.md)),
+> so helpers such as `__REV16` / `__REVSH` / `__RRX` only stay in the image when
+> they are really called; (2) `__aeabi_memcpy` is emitted on demand, only when a
+> `BL __aeabi_memcpy` actually occurs in the unit. The "920 instructions / 4.8%"
+> deduction therefore shrinks considerably, while the table in SS2 is still the
+> snapshot reading and has **not been re-measured**. On the 95-TU HAL corpus the
+> two changes together save 1,737 instructions (-9.57%), and 2,538 (-13.98%)
+> with `-fopt-vreg` stacked on top.
+
 ## 2. Results
 
 Totals over the 96 effective translation units:

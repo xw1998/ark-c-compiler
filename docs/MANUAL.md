@@ -1451,34 +1451,40 @@ arkcc -link ab.o --vector-table -o app.bin
 详见 [PARTIAL_LINK.md](PARTIAL_LINK.md)，门禁 `tests/run_partiallink_tests.py`
 （`make test-partiallink`，27 项检查）。
 
-### 5.20 未被引用的 `static inline` 不再发射
+### 5.20 未被引用的 `static` 函数不再发射
 
-`static inline` 只有在被用到时才需要存在（C11 6.7.4p7：静态 inline 定义不产生外部可见定义）。
-ARK 过去对**每个**函数体都发射代码，于是「包含了头文件但没调用」这种最常见的形态会带出
-死代码；一旦这段死代码引用了「只声明未定义」的外部对象（典型例子：CMSIS 的
-`ITM_SendChar()` 引用调试器提供 RAM 的 `ITM_RxBuffer`），对象写出阶段就会拒绝：
+`static` 函数只有本翻译单元能叫到（C11 6.2.2p3）。本单元从未提到它，它就不可能运行，
+函数体只是躺在对象文件里的字节。ARK 过去对**每个**函数体都发射代码，于是「包含了头文件
+但没调用」这种最常见的形态会带出死代码；一旦这段死代码引用了「只声明未定义」的外部对象
+（典型例子：CMSIS 的 `ITM_SendChar()` 引用调试器提供 RAM 的 `ITM_RxBuffer`），对象写出
+阶段就会拒绝：
 
 ```
 Error: reference to the global 'ITM_RxBuffer', which this translation unit only declares; ...
 ```
 
-现在 `ir_drop_unused_inline()` 在 IR 层删掉不可达的 `static inline` / `static __forceinline`。
-它挂在 `ark_emit_program()` 这个唯一收口处，所以单文件、`--ipo`、`-link --lto`、`-S`
-走的是同一条路径。
+现在 `ir_drop_unused_static()` 在 IR 层删掉不可达的 `static` 函数（`static inline`、
+`__STATIC_INLINE` 与普通 `static` 一视同仁）。它挂在 `ark_emit_program()` 这个唯一收口处，
+所以单文件、`--ipo`、`-link --lto`、`-S` 走的是同一条路径，`-O0` 同样生效。
 
 - **存活判据**：从被保留的函数出发（`IR_CALL` 与 `IR_PUSH_FUNC` 的函数地址被取用都算一条边），
-  再加上全局初始器里出现的符号（`init_sym` / `init_refs`），以及 `alias` 目标；
+  再加上全局初始器里出现的符号（`init_sym` / `init_refs`）、`alias` 目标，以及**原始汇编
+  文本里点到名**的候选（`IR_ASM` 语句与 `__asm` 整函数体都做子串搜索；读不出来时由链接期
+  报 undefined，是响亮失败而不是错镜像）；
 - **不删**：`__attribute__((used))`、`unused`、`weak`、`constructor`、`destructor`、
-  `interrupt`、`naked`、`alias` 目标、`main`；
-- **不删普通 `static`（非 inline）**：那是作者写下的符号，要听 `--warn-unused-static`；
-  所以「死的 `static` 引用外部对象」仍会报上面那条错；
-- 整份 TU 出现 inline asm 时**整体放弃**（asm 文本里的符号对控制流图不可见）；
-- 默认生效、无开关，`-O0` 同样生效（这是正确性修复，不是优化）；`--verbose` 时打印
-  删掉了几个函数。
+  `interrupt`、`naked`、`alias` 目标、`main`，以及入口点名（`Reset_Handler`、
+  `HardFault_Handler`、`SysTick_Handler` 等，链接脚本与向量表可能按名字引用）；
+- 默认生效、无开关（这是正确性修复，不是优化）；`-v` 时打印删掉了几个函数；
+- 作者的两条逃生门：`__attribute__((used))` 保住一个没有 C 引用的 `static`；
+  `--warn-unused-static` 在 pipeline 更早处运行，所以函数体不进镜像了仍然会告知。
 
-门禁 `tests/run_deadinline_tests.py`（`make test-deadinline`，19 项检查）：删掉的形态、
-每一种"必须保留"的形态、"同一个 helper 去掉 inline 仍然报错"（证明是这一步修好的）、
-`-S` 与 `-c` 行为一致，以及含 inline asm 时整体放弃。
+95 个 TU 的 HAL 语料（`-O2`，Cortex-M4）：18,151 → **16,414 条（−1,737 / −9.57%）**，
+95 个 TU 全部变小、无一变大；叠 `-fopt-vreg` 时 18,151 → **15,613 条（−2,538 / −13.98%）**。
+「包含一堆头文件、函数体一个都不用」的 TU 直接归零。细节见 [DEADSTATIC.md](DEADSTATIC.md)。
+
+门禁 `tests/run_deadinline_tests.py`（`make test-deadinline`，24 项检查）：删掉的两种形态、
+每一种"必须保留"的形态（含入口点名与 `used` 的反假通过）、`-S` 与 `-c` 行为一致、
+asm 点名则保留 / 未点名则照删。
 
 ## 6 在 Windows 上测试
 

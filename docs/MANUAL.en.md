@@ -1706,39 +1706,49 @@ Refused: `-r` without `-link` / with `--lto` / with `-c`, `-S`, `-E`, `-MMD` / w
 See [PARTIAL_LINK.en.md](PARTIAL_LINK.en.md); the gate is
 `tests/run_partiallink_tests.py` (`make test-partiallink`, 27 checks).
 
-### 5.20 An unreferenced `static inline` is no longer emitted
+### 5.20 An unreferenced `static` function is no longer emitted
 
-A `static inline` function only has to exist when it is used (C11 6.7.4p7: a static inline
-definition does not produce an externally visible definition). ARK used to emit code for
-**every** function body, so the most common shape -- "the header is included but the helper is
-never called" -- dragged dead code along; and once that dead code referenced an external object
-it only declares (the classic case: CMSIS's `ITM_SendChar()` reading the debugger-provided
-`ITM_RxBuffer`), the object writer refused:
+A `static` function can only be called from its own translation unit (C11 6.2.2p3). If this unit
+never mentions it, it cannot run -- its body is just bytes sitting in the object file. ARK used
+to emit code for **every** function body, so the most common shape, "the header is included but
+the helper is never called", dragged dead code along; and once that dead code referenced an
+external object it only declares (the classic case: CMSIS's `ITM_SendChar()` reading the
+debugger-provided `ITM_RxBuffer`), the object writer refused:
 
 ```
 Error: reference to the global 'ITM_RxBuffer', which this translation unit only declares; ...
 ```
 
-`ir_drop_unused_inline()` now removes unreachable `static inline` / `static __forceinline`
-functions at the IR level. It hangs off `ark_emit_program()`, the single choke point, so the
-single-file path, `--ipo`, `-link --lto` and `-S` all take the same route.
+`ir_drop_unused_static()` now removes unreachable `static` functions at the IR level
+(`static inline`, `__STATIC_INLINE` and plain `static` alike). It hangs off
+`ark_emit_program()`, the single choke point, so the single-file path, `--ipo`,
+`-link --lto` and `-S` all take the same route, and `-O0` is covered too.
 
 - **Liveness**: reachability from every kept function (`IR_CALL` and an `IR_PUSH_FUNC` that
   takes a function's address are both edges), plus any symbol named by a global initializer
-  (`init_sym` / `init_refs`) and any `alias` target;
+  (`init_sym` / `init_refs`), any `alias` target, and any candidate **named in raw assembly
+  text** (`IR_ASM` statements and whole-function `__asm` bodies are substring-searched; when
+  the text cannot be read the link reports an undefined symbol -- a loud failure, never a
+  wrong image);
 - **Never dropped**: `__attribute__((used))`, `unused`, `weak`, `constructor`, `destructor`,
-  `interrupt`, `naked`, `alias` targets, and `main`;
-- **Plain `static` (no `inline`) is never dropped**: it is a symbol the author wrote, and
-  `--warn-unused-static` is how you hear about it -- so a dead non-inline `static` that
-  references an external object still produces the error above;
-- a translation unit containing inline asm makes the pass **back off entirely** (symbols named
-  by asm text are invisible to the control-flow graph);
-- on by default, no switch, effective at `-O0` too (this is a correctness fix, not an
-  optimisation); `--verbose` prints how many functions were dropped.
+  `interrupt`, `naked`, `alias` targets, `main`, and the entry-point names
+  (`Reset_Handler`, `HardFault_Handler`, `SysTick_Handler`, ... which a linker script or the
+  vector table may reference by name);
+- on by default, no switch (this is a correctness fix, not an optimisation); `-v` prints
+  how many functions were dropped;
+- two escape hatches: `__attribute__((used))` keeps a `static` with no C reference, and
+  `--warn-unused-static` runs earlier in the pipeline, so the author still hears about an
+  unused static function even though its body no longer reaches the image.
 
-The gate is `tests/run_deadinline_tests.py` (`make test-deadinline`, 19 checks): the shape that
-is dropped, every shape that must be kept, "the same helper without `inline` still fails" (which
-proves this step is what fixes the build), `-S` agreeing with `-c`, and the inline-asm back-off.
+95-TU HAL corpus (`-O2`, Cortex-M4): 18,151 -> **16,414 instructions (-1,737 / -9.57%)**, all
+95 TUs smaller, none bigger; with `-fopt-vreg`: 18,151 -> **15,613 (-2,538 / -13.98%)**. A TU
+that includes a pile of headers and uses none of the helpers drops to zero. Details in
+[DEADSTATIC.en.md](DEADSTATIC.en.md).
+
+The gate is `tests/run_deadinline_tests.py` (`make test-deadinline`, 24 checks): both dropped
+shapes, every shape that must be kept (including the anti-false-green cases for an entry-point
+name and for `used`), `-S` agreeing with `-c`, and "named by asm is kept / not named is still
+dropped".
 
 ## 6 Testing on Windows
 

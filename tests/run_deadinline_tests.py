@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Unreferenced `static inline` functions are not emitted.
+"""Unreachable `static` functions are not emitted.
 
 Why this gate exists: a header such as CMSIS's `core_cm4.h` defines helpers
 like `ITM_SendChar()` as `static inline` and references an external object
@@ -8,27 +8,38 @@ the header but never calls the helper still used to get code for it, and that
 code carries a relocation against a symbol the unit only declares -- which the
 object writer refuses ("reference to the global 'X', which this translation
 unit only declares"). The C language does not require such a function to exist
-at all when it is never used, so the IR pass `ir_drop_unused_inline()` removes
+at all when it is never used, so the IR pass `ir_drop_unused_static()` removes
 it before code generation.
 
+The same pass removes plain `static` functions (no `inline`) that nothing in
+the unit mentions.  The shape that showed this is `cmsis_armcc.h`'s
+`__ASM uint32_t __REV16(uint32_t)`: 1,780 instructions of helper bodies across
+the 95-file HAL corpus that no code ever branched to.  gcc removes them from
+-O1 up; `--warn-unused-static` still reports them (it runs earlier in the
+pipeline) and `__attribute__((used))` keeps one in the object.
+
 What the pass deliberately does NOT do (each shape has a check below):
-  * plain `static` (no `inline`) is left alone: it is a symbol the author
-    wrote, and `--warn-unused-static` is the documented way to hear about it;
   * `__attribute__((used))` / `unused` / `weak` / `constructor` / `destructor`
     / `interrupt` / `naked` / `alias` targets / `main` are never dropped;
-  * a translation unit that contains file-scope `asm` is left completely
-    untouched (the pass cannot see what the assembler refers to);
+  * an entry-point name (`_start`, `Reset_Handler`, `*_Handler`,
+    `Default_Handler`, `__arkcc_init_globals`) is never dropped even when it
+    is static -- a linker script or the vector table may name it by hand;
+  * a raw asm body keeps every helper whose name it spells out (`__asm("bl
+    keep_by_asm")`), because the asm is text this pass can read but not parse;
   * anything reachable from a kept function, from a global initializer, or
     from a function pointer push is kept.
 
 Anti-false-green checks:
-  * the same source without the inline on the helper still fails ("only
-    declares") -> the pass, not something else, is what makes the build work;
+  * the same plain-static source with `__attribute__((used))` still fails
+    ("only declares") -> the pass, not something else, is what makes the
+    plain-static build work;
   * a kept inline of the same shape stays in the symbol table -> the check is
     not simply "the name is absent";
   * `-S` output agrees with `-c` (no label for the dropped function);
-  * a translation unit with `asm` keeps the function (the conservative path
-    is really taken, not silently skipped).
+  * an `asm` body that names a helper keeps it, while an `asm` body that does
+    not name it still lets the unreachable helper go (the text scan is really
+    consulted, in both directions);
+  * a static `SysTick_Handler` is kept (the entry-point list is really used).
 
 Usage: run_deadinline_tests.py [path-to-arkcc]
 Exit 0 = every check behaved.
@@ -69,6 +80,38 @@ static int ITM_SendChar(int ch)
 {
     (void)ITM_RxBuffer;
     return ch;
+}
+
+int main(void)
+{
+    return 0;
+}
+'''
+
+# The same plain static with `used`: the author asked for the symbol, so the
+# body stays and the "only declares" refusal comes back.  This is what proves
+# the plain-static removal above is the pass and not something else.
+SRC_PLAIN_USED = r'''extern volatile int ITM_RxBuffer;
+
+static __attribute__((used)) int ITM_SendChar(int ch)
+{
+    (void)ITM_RxBuffer;
+    return ch;
+}
+
+int main(void)
+{
+    return 0;
+}
+'''
+
+# A static interrupt handler is unreachable by any call this pass can see, but
+# the vector table names it.  It must survive.
+SRC_HANDLER = r'''extern volatile int ITM_RxBuffer;
+
+static void SysTick_Handler(void)
+{
+    (void)ITM_RxBuffer;
 }
 
 int main(void)
@@ -120,6 +163,28 @@ static inline int maybe_asm_calls_me(int ch)
 int poke(void)
 {
     __asm("nop");
+    return 0;
+}
+
+int main(void)
+{
+    return poke();
+}
+'''
+
+# An asm body that names a helper is a live reference the IR operands do not
+# show.  The name is in the string, so the pass must keep the helper.
+SRC_ASM_REF = r'''extern volatile int ITM_RxBuffer;
+
+static int keep_by_asm(int ch)
+{
+    (void)ITM_RxBuffer;
+    return ch;
+}
+
+int poke(void)
+{
+    __asm("bl keep_by_asm");
     return 0;
 }
 
@@ -241,6 +306,8 @@ def main():
         ('dead.c', SRC_DEAD), ('plain_static.c', SRC_PLAIN_STATIC),
         ('called.c', SRC_CALLED), ('used.c', SRC_USED), ('asm.c', SRC_ASM),
         ('mixed.c', SRC_MIXED), ('initref.c', SRC_INITREF),
+        ('plain_used.c', SRC_PLAIN_USED), ('handler.c', SRC_HANDLER),
+        ('asm_ref.c', SRC_ASM_REF),
     )
     for name, text in sources:
         with open(os.path.join(work, name), 'w', newline='') as f:
@@ -259,14 +326,24 @@ def main():
               'a second dead inline is not in the symbol table either',
               str(names))
         check('main' in names, 'main is still there', str(names))
-        # Same source without the inline: the object writer's complaint is
-        # what the pass is here to prevent, so the gate can actually fail.
+        # The same source without the inline: a plain static helper that
+        # nothing calls is dead code too, so it goes away and the object builds.
         rc2, log2 = run(arkcc, ARM + ['-c', 'plain_static.c',
                                       '-o', 'plain_static.o'], work)
-        check(rc2 != 0 and 'only declares' in log2,
-              'the same helper without inline still hits "only declares" '
-              '(the pass is what fixes it, not something else)',
-              'rc=%d' % rc2)
+        check(rc2 == 0, 'a plain static helper nothing calls compiles',
+              'rc=%d %s' % (rc2, (log2.strip().splitlines() or [''])[0][:80]))
+        if rc2 == 0:
+            pnames = sym_names(parse_obj(os.path.join(work, 'plain_static.o')))
+            check('ITM_SendChar' not in pnames,
+                  'and it is not in the symbol table either', str(pnames))
+        # Anti-false-green: the same plain static with `used` must keep the
+        # body, so the refusal the build above escaped comes back.
+        rc3, log3 = run(arkcc, ARM + ['-c', 'plain_used.c',
+                                      '-o', 'plain_used.o'], work)
+        check(rc3 != 0 and 'only declares' in log3,
+              'the same plain static with __attribute__((used)) still hits '
+              '"only declares" (removal is the pass, not something else)',
+              'rc=%d' % rc3)
     else:
         skip('symbol table checks', 'no object was produced')
 
@@ -302,11 +379,25 @@ def main():
         check('init_helper' in names,
               'and it is still in the symbol table', str(names))
 
-    # --- 4. file-scope asm turns the pass off -----------------------------
-    rc, log = run(arkcc, ARM + ['-c', 'asm.c', '-o', 'asm.o'], work)
+    # --- 3b. an entry-point name is kept even when it is static -----------
+    rc, log = run(arkcc, ARM + ['-c', 'handler.c', '-o', 'handler.o'], work)
     check(rc != 0 and 'only declares' in log,
-          'a unit with file-scope asm keeps every inline (conservative path)',
+          'a static SysTick_Handler is kept (the vector table names it)',
           'rc=%d' % rc)
+
+    # --- 4. raw asm is read as text ---------------------------------------
+    # An asm statement naming the helper keeps it (and the unit still fails on
+    # the external object it only declares, so "kept" is observable).
+    rc, log = run(arkcc, ARM + ['-c', 'asm_ref.c', '-o', 'asm_ref.o'], work)
+    check(rc != 0 and 'only declares' in log,
+          'an asm body that names a helper keeps it', 'rc=%d' % rc)
+    rc, log = run(arkcc, ARM + ['-S', 'asm_ref.c', '-o', 'asm_ref.s'], work)
+    check(rc != 0 and 'only declares' in log,
+          '-S agrees: the asm-named helper is still there', 'rc=%d' % rc)
+    # ... and an asm body that does not name it is not an excuse to keep it.
+    rc, log = run(arkcc, ARM + ['-c', 'asm.c', '-o', 'asm.o'], work)
+    check(rc == 0, 'an asm body that names nothing drops the dead inline',
+          'rc=%d %s' % (rc, (log.strip().splitlines() or [''])[0][:80]))
 
     # --- 5. only the unreachable half of a pair goes away -----------------
     rc, log = run(arkcc, ARM + ['-c', 'mixed.c', '-o', 'mixed.o'], work)

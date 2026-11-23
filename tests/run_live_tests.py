@@ -175,8 +175,30 @@ LSLRR_RE = re.compile(r'^\s+LSL\s+r\d+,\s*r\d+\s*$')
 CMPSTAGE_RE = re.compile(r'^\s+MOV\s+r[0-3],\s*r\d+\s*$')
 
 
+# The ARM backend emits __aeabi_memcpy only when a `BL __aeabi_memcpy` really
+# occurs, so a compiler-runtime helper may or may not be sitting at the end of
+# the file.  It is not fixtured code, and counting it would make these tallies
+# depend on whether some unrelated part of the unit needed memcpy, so it is cut
+# out before anything is counted.
+RUNTIME_NAMES = ('__aeabi_memcpy',)
+
+def drop_runtime(text):
+    out, skipping = [], False
+    for ln in text.splitlines():
+        s = ln.strip()
+        if s.startswith('.global ') and s[8:].strip() in RUNTIME_NAMES:
+            skipping = True
+            continue
+        if skipping:
+            if not s:
+                skipping = False
+            continue
+        out.append(ln)
+    return '\n'.join(out)
+
+
 def count(re_, text):
-    return sum(1 for ln in text.splitlines() if re_.match(ln))
+    return sum(1 for ln in drop_runtime(text).splitlines() if re_.match(ln))
 
 
 def cmp_stage_count(text):
@@ -257,13 +279,16 @@ def main():
                   '%d/%d bytes' % (len(b_a), len(b_b)))
 
         # --- 2..5. one rule each -------------------------------------------
-        rule_check(arkcc, work, 'dead', 'd', 5, 3, 0, 3,
+        # The `want` numbers are MOV rX, rY tallies of the fixture's own code
+        # only (drop_runtime cuts the on-demand __aeabi_memcpy out).  They were
+        # one higher while the runtime helper was emitted unconditionally.
+        rule_check(arkcc, work, 'dead', 'd', 5, 2, 0, 3,
                    'the dead copies are gone')
-        rule_check(arkcc, work, 'fwd', 'f', 2, 3, 0, 1,
+        rule_check(arkcc, work, 'fwd', 'f', 2, 2, 0, 1,
                    'the copies fold into their consumer')
-        rule_check(arkcc, work, 'zero', 'z', 5, 2, 0, 2,
+        rule_check(arkcc, work, 'zero', 'z', 5, 1, 0, 2,
                    'the staged zero indices fold away')
-        rule_check(arkcc, work, 'addr', 'a', 3, 1, 0, 0,
+        rule_check(arkcc, work, 'addr', 'a', 3, 0, 0, 0,
                    'the address copies are gone')
 
         # --- 6. nothing else is touched ------------------------------------
@@ -282,7 +307,7 @@ def main():
                   'shift: only the dead non-return staging copies are removed',
                   ('removed: %s' % '; '.join(l.strip() for l in gone))
                   if gone else 'nothing removed')
-            check(count(MOVRR_RE, t_on) == 5 and count(LSLRR_RE, t_on)
+            check(count(MOVRR_RE, t_on) == 4 and count(LSLRR_RE, t_on)
                   == count(LSLRR_RE, t_off),
                   'shift: a two-operand ALU destination is not a dead copy',
                   'MOV rX, rY %d -> %d, LSL %d -> %d'

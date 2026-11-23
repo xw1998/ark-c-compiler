@@ -307,6 +307,12 @@ One discrepancy first: §4 describes S6b as "cross-block: linear scan + interval
 | S6a (point elision) | 17,736 | -415 (-2.29%) |
 | **S6b (whole-block renaming)** | **17,350** | **-801 (-4.41%)** |
 
+> The later "unreferenced `static` functions are no longer emitted" pass is an
+> always-on IR-level pass (see [DEADSTATIC.en.md](DEADSTATIC.en.md)) that saves a
+> further 1,737 instructions on the same corpus; counting it, the current total with
+> `-fopt-vreg` is **15,613 (-13.98%)**. The 17,350 above is the reading taken when
+> S6b landed and is left unchanged.
+
 S6b saves a further **386** instructions over S6a. 14 TUs change; the six largest: `stm32f4xx_hal_dma.c` 2,603->2,316 (-287), `stm32f4xx_hal_gpio.c` 883->756 (-127), `stm32f4xx_hal_rcc.c` 2,780->2,677 (-103), `stm32f4xx_hal_exti.c` 626->572 (-54), `stm32f4xx_hal_cortex.c` 790->743 (-47), `stm32f4xx_ll_utils.c` 819->773 (-46). The rest: `flash_ex` -38, `rcc_ex` -35, `dma_ex` -22, `flash` -22, `hal` -8, `pwr` -5. **No TU grows.**
 
 ### 12.3 Gates (all green)

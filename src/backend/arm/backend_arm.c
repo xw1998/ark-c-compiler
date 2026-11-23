@@ -9284,14 +9284,16 @@ static char *codegen_arm(IrProgram *prog) {
         int divconst_skip = 0;
         DivConst divconst_st;
 #endif
-#if ARKCC_FEATURE_OPT_IMM
         /* -fopt-imm: 1 while a constant push has been swallowed and the binary
          * op that consumes it (immediately next, or next after one more push
          * when the constant is the left operand) has not been emitted yet.
-         * imm_left marks the left-operand shape so only commutative ops fold.
-         * Always 0 in a build without ARKCC_FEATURE_OPT_IMM, and never set when
-         * the switch is off, so the image is unchanged. */
+         * Always 0 in a build without ARKCC_FEATURE_OPT_IMM (it is declared
+         * outside the gate for that reason: -fopt-pair consults it even when
+         * the fold is cropped out), and never set when the switch is off, so
+         * the image is unchanged. */
         int imm_live = 0;
+#if ARKCC_FEATURE_OPT_IMM
+        /* imm_left marks the left-operand shape so only commutative ops fold. */
         int imm_left = 0;
         int imm_val = 0;
         int imm_op = 0;
@@ -12332,46 +12334,60 @@ static char *codegen_arm(IrProgram *prog) {
      *
      * __aeabi_memcpy stays: no run-time library provides it for a
      * freestanding target, the byte loop below cannot be wrong, and struct
-     * assignment / struct-by-value arguments would otherwise need libc. */
+     * assignment / struct-by-value arguments would otherwise need libc.
+     *
+     * Emitted only when this unit actually calls it: every TU that includes
+     * <string.h>-using code used to carry the routine whether or not it
+     * branched to it (1,235 of the 1,780 dead helper instructions in the
+     * 95-TU corpus).  The scan is over the text already emitted, which is
+     * exactly the set of call sites that survive optimisation. */
     {
-        /* __aeabi_memcpy: struct assignment, struct-by-value arguments and
-         * array initialisation are all lowered to a `BL memcpy`.  That made
-         * every one of them a link-time dependency on the C library, which a
-         * freestanding target does not have -- the MiniApp SDK on the board
-         * defines no memcpy, so `s = va_arg(ap, struct S)` (and any plain
-         * `a = b` for structs) failed to link with "undefined reference to
-         * memcpy".  Emitting the routine under the AEABI name it belongs to
-         * (r0=dst, r1=src, r2=n, same convention as the real one) removes the
-         * dependency and still satisfies a translation unit that only ever
-         * sees `BL __aeabi_memcpy`.
-         *
-         * Byte-at-a-time on purpose: no alignment requirement, no tail, and
-         * the assembler only has to encode 16-bit forms.  Structs in this
-         * language are small; a word loop would be faster but would need the
-         * unaligned-tail path proven first. */
-        asmbuf_puts(&buf, ".global __aeabi_memcpy\n.thumb_func\n__aeabi_memcpy:\n");
-        asmbuf_puts(&buf, "    PUSH {r4}\n");
-        asmbuf_puts(&buf, "    MOV r4, r0\n");
-        asmbuf_puts(&buf, "    CMP r2, #0\n");
-        asmbuf_puts(&buf, "    BEQ .L_arkcc_mcpy_done\n");
-        asmbuf_puts(&buf, ".L_arkcc_mcpy_loop:\n");
-        asmbuf_puts(&buf, "    LDRB r3, [r1]\n");
-        asmbuf_puts(&buf, "    STRB r3, [r4]\n");
-        asmbuf_puts(&buf, "    ADD r4, r4, #1\n");
-        asmbuf_puts(&buf, "    ADD r1, r1, #1\n");
-        /* SUB + CMP, not `SUBS`: the internal assembler takes SUBS only with
-         * --asm-extra, and this routine is emitted for every target build.
-         * Measured on the board: `cc --pack` refused the whole unit with
-         * "unknown mnemonic \"SUBS\"" -- the host gate assembles with GNU as,
-         * which takes it, so this only showed up on the target. */
-        asmbuf_puts(&buf, "    SUB r2, r2, #1\n");
-        asmbuf_puts(&buf, "    CMP r2, #0\n");
-        asmbuf_puts(&buf, "    BNE .L_arkcc_mcpy_loop\n");
-        asmbuf_puts(&buf, ".L_arkcc_mcpy_done:\n");
-        asmbuf_puts(&buf, "    POP {r4}\n");
-        asmbuf_puts(&buf, "    BX lr\n\n");
-
-
+        int need_memcpy = 0, ms;
+        static const char mcpy_needle[] = "BL __aeabi_memcpy";
+        for (ms = 0; ms + (int)sizeof(mcpy_needle) - 1 <= buf.len; ms++) {
+            if (memcmp(buf.buf + ms, mcpy_needle, sizeof(mcpy_needle) - 1) == 0) {
+                need_memcpy = 1;
+                break;
+            }
+        }
+        if (need_memcpy) {
+            /* __aeabi_memcpy: struct assignment, struct-by-value arguments and
+             * array initialisation are all lowered to a `BL memcpy`.  That made
+             * every one of them a link-time dependency on the C library, which a
+             * freestanding target does not have -- the MiniApp SDK on the board
+             * defines no memcpy, so `s = va_arg(ap, struct S)` (and any plain
+             * `a = b` for structs) failed to link with "undefined reference to
+             * memcpy".  Emitting the routine under the AEABI name it belongs to
+             * (r0=dst, r1=src, r2=n, same convention as the real one) removes the
+             * dependency and still satisfies a translation unit that only ever
+             * sees `BL __aeabi_memcpy`.
+             *
+             * Byte-at-a-time on purpose: no alignment requirement, no tail, and
+             * the assembler only has to encode 16-bit forms.  Structs in this
+             * language are small; a word loop would be faster but would need the
+             * unaligned-tail path proven first. */
+            asmbuf_puts(&buf, ".global __aeabi_memcpy\n.thumb_func\n__aeabi_memcpy:\n");
+            asmbuf_puts(&buf, "    PUSH {r4}\n");
+            asmbuf_puts(&buf, "    MOV r4, r0\n");
+            asmbuf_puts(&buf, "    CMP r2, #0\n");
+            asmbuf_puts(&buf, "    BEQ .L_arkcc_mcpy_done\n");
+            asmbuf_puts(&buf, ".L_arkcc_mcpy_loop:\n");
+            asmbuf_puts(&buf, "    LDRB r3, [r1]\n");
+            asmbuf_puts(&buf, "    STRB r3, [r4]\n");
+            asmbuf_puts(&buf, "    ADD r4, r4, #1\n");
+            asmbuf_puts(&buf, "    ADD r1, r1, #1\n");
+            /* SUB + CMP, not `SUBS`: the internal assembler takes SUBS only with
+             * --asm-extra, and this routine is emitted for every target build.
+             * Measured on the board: `cc --pack` refused the whole unit with
+             * "unknown mnemonic \"SUBS\"" -- the host gate assembles with GNU as,
+             * which takes it, so this only showed up on the target. */
+            asmbuf_puts(&buf, "    SUB r2, r2, #1\n");
+            asmbuf_puts(&buf, "    CMP r2, #0\n");
+            asmbuf_puts(&buf, "    BNE .L_arkcc_mcpy_loop\n");
+            asmbuf_puts(&buf, ".L_arkcc_mcpy_done:\n");
+            asmbuf_puts(&buf, "    POP {r4}\n");
+            asmbuf_puts(&buf, "    BX lr\n\n");
+        }                                       /* need_memcpy */
     }
 
     /* Globals: SRAM addresses are assigned by gvar_assign() above and loaded

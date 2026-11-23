@@ -63,18 +63,21 @@ IMG_ARM = ['-target', 'arm', '--vector-table']
 # --- fixtures ---------------------------------------------------------------
 # One function per foldable form so each instruction can be checked in the
 # body it was emitted into.  The bodies are deliberately tiny: a big one would
-# let a wrong pass hide behind an average.
+# let a wrong pass hide behind an average.  They are `used` on purpose: at -O2
+# every call is inlined, and an inlined `static` with no remaining reference is
+# no longer emitted at all (the IR-level dead-static pass), which would leave
+# the body this gate wants to read empty.
 FOLD = """\
 int imm_pad_f;
-static int f_add(int a) { return a + 16; }
-static int f_sub(int a) { return a - 7; }
-static int f_and(int a) { return a & 0x0F; }
-static int f_or(int a)  { return a | 0x30; }
-static int f_xor(int a) { return a ^ 3; }
-static int f_shl(int a) { return a << 4; }
-static int f_shr(unsigned a) { return a >> 3; }
-static int f_lt(int a)  { return a < 5; }
-static int f_eq(int a)  { return a == 9; }
+static __attribute__((used)) int f_add(int a) { return a + 16; }
+static __attribute__((used)) int f_sub(int a) { return a - 7; }
+static __attribute__((used)) int f_and(int a) { return a & 0x0F; }
+static __attribute__((used)) int f_or(int a)  { return a | 0x30; }
+static __attribute__((used)) int f_xor(int a) { return a ^ 3; }
+static __attribute__((used)) int f_shl(int a) { return a << 4; }
+static __attribute__((used)) int f_shr(unsigned a) { return a >> 3; }
+static __attribute__((used)) int f_lt(int a)  { return a < 5; }
+static __attribute__((used)) int f_eq(int a)  { return a == 9; }
 int main(void)
 {
     return (f_add(1) + f_sub(20) + f_and(0x1ff) + f_or(0) + f_xor(5) +
@@ -82,13 +85,14 @@ int main(void)
 }
 """
 
-# Every body here must come out of the pass byte for byte unchanged.
+# Every body here must come out of the pass byte for byte unchanged.  Same
+# `used` reason as above: these bodies exist to be compared.
 REJECT = """\
 int imm_pad_r;
-static int r_and(int a) { return a & 0x12345678; }
-static int r_add(int a) { return a + 70000; }
-static int r_mul(int a) { return a * 5; }
-static int r_div(int a) { return a / 3; }
+static __attribute__((used)) int r_and(int a) { return a & 0x12345678; }
+static __attribute__((used)) int r_add(int a) { return a + 70000; }
+static __attribute__((used)) int r_mul(int a) { return a * 5; }
+static __attribute__((used)) int r_div(int a) { return a / 3; }
 int main(void)
 {
     return (r_and(0xffffffff) + r_add(0) + r_mul(2) + r_div(9)) & 0xFF;

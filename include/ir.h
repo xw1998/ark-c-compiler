@@ -277,27 +277,42 @@ int ir_program_add_argbytes(IrProgram *prog, const int *vals, int n);
  * code that would read the wrong words. */
 extern int g_ir_vararg_words;
 
-/* Remove the static inline functions this unit cannot reach, in place.
+/* Remove the static functions this unit cannot reach, in place.
  *
- * A `static inline` definition (CMSIS' __STATIC_INLINE is `static __inline`)
- * is the normal shape of a helper a translation unit may or may not exercise.
- * C99 6.7.4p6 makes such a definition an internal matter of the unit: it is
- * part of the program only when something uses it.  Emitting an unreachable
- * one was harmless until its body named an object this unit only declares --
- * the single-object backends then refuse the reference ("a single-object image
- * carries no channel for another unit's data address"), so merely including
- * core_cm4.h failed a build that never called ITM_ReceiveChar().
+ * Two shapes are removed for the same reason: a `static inline` definition
+ * (CMSIS' __STATIC_INLINE is `static __inline`) and a plain `static` function
+ * nothing in the unit calls.  Both have internal linkage, so no other
+ * translation unit can name them either; C99 6.7.4p6 makes such a definition
+ * an internal matter of the unit, and gcc (-O1 up), armcc and the IAR compiler
+ * all leave the body out.
  *
- * What is removed: a function that is `static` and (inline / __forceinline),
- * that carries none of used / unused / weak / constructor / destructor / alias /
- * __irq, that is not `main`, and that no surviving code calls or takes the
- * address of.  A plain `static` function is kept (it is a symbol the author
- * wrote, and --warn-unused-static reports it).  A unit containing inline asm is
- * left untouched: the asm body is a string this pass cannot read.
+ * Emitting an unreachable body was harmless until it named an object this unit
+ * only declares -- the single-object backends then refuse the reference ("a
+ * single-object image carries no channel for another unit's data address"), so
+ * merely including core_cm4.h failed a build that never called
+ * ITM_ReceiveChar().  In the 95-file HAL corpus the same rule now also removes
+ * 1,780 instructions of `__ASM` helper bodies that nothing branches to.
+ *
+ * What is removed: a `static` function that carries none of used / unused /
+ * weak / constructor / destructor / alias / __irq / naked, that is not an
+ * entry-point name (`main`, `_start`, Reset_Handler, *Handler, Default_Handler,
+ * __arkcc_init_globals), and that no surviving code calls, takes the address
+ * of, aliases, names in a global initialiser, or mentions in a raw asm body.
+ *
+ * An inline-asm statement or an `__asm` function body cannot be parsed, but it
+ * can be read: a candidate whose name occurs in that text is kept, which
+ * covers `BL helper`, `ldr r0, =helper` and `.word helper`.  A reference the
+ * text does not spell out (an assembler macro that concatenates the name) is
+ * reported by the linker as an undefined symbol -- a failed build, never a
+ * wrong image.
+ *
+ * `--warn-unused-static` runs earlier in the pipeline and still reports the
+ * plain `static` functions this pass removes; `__attribute__((used))` is the
+ * documented way to keep one in the object.
  *
  * Returns the number of functions removed (0 when nothing changed, including
  * every refusal above). */
-int ir_drop_unused_inline(IrProgram *prog);
+int ir_drop_unused_static(IrProgram *prog);
 
 IrProgram *ir_program_new(void);
 void       ir_program_add(IrProgram *prog, IrFunc *func);
