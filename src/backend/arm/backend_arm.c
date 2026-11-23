@@ -2151,6 +2151,51 @@ static int ra_pre8(const char *s, const char *pat) {
     return 1;
 }
 
+/* The prologue and the value-stack spills share a prefix: a spill that keeps
+ * one value looks like `PUSH {r5}` while the frame save is `PUSH {r5, r6, r7,
+ * lr}`.  Comparing a prefix therefore mistook a mid-function spill for the
+ * frame save and widened it, wiping out the frame that was already there.  The
+ * register list is compared with spaces removed and *in full*, so only the one
+ * shape the epilogue can restore is accepted; the `r4` variant of the prologue
+ * (a vstack-only shape) is deliberately not ours: it carries an extra pad word
+ * whose alignment the widening would break.
+ *
+ *   prologue:  PUSH {r5, r6, r7, lr}
+ *   epilogue:  POP  {r5, r6, r7, pc}   (normal)
+ *              POP  {r5, r6, r7, lr}   (variadic, followed by ADD sp / BX lr) */
+static int ra_list_is(const char *line, const char *want) {
+    char flat[128];
+    int i = 0, j = 0;
+    while (line[i] && j < (int)sizeof(flat) - 1) {
+        if (line[i] != ' ' && line[i] != '\t') flat[j++] = line[i];
+        i++;
+    }
+    flat[j] = 0;
+    return strcmp(flat, want) == 0;
+}
+
+static int ra_is_prologue_push(const char *line) {
+    return ra_list_is(line, "PUSH{r5,r6,r7,lr}");
+}
+
+static int ra_is_epilogue_pop(const char *line) {
+    return ra_list_is(line, "POP{r5,r6,r7,pc}") ||
+           ra_list_is(line, "POP{r5,r6,r7,lr}");
+}
+
+/* Offset of the comma that starts the last element of a register list, so a
+ * rewrite can keep the head (and any extra register the emitter put there) and
+ * the tail (`pc}` vs `lr}`) exactly as they were.  -1 if there is no list. */
+static int ra_last_elem_at(const char *line) {
+    int n = (int)strlen(line), i;
+    for (i = n - 1; i >= 0; i--)
+        if (line[i] == '}') break;
+    if (i <= 0) return -1;
+    for (; i >= 0; i--)
+        if (line[i] == ',') return i;
+    return -1;
+}
+
 /* Classify one assembly line.
  *   -1  no "[r6, #<n>]" at all
  *    0  exactly "LDR r0, [r6, #n]"   (*off, *is_ldr = 1)
@@ -2287,6 +2332,172 @@ static int ra_shift_line(const char *ln, int len, const char *next,
 /* Rewrite b->buf[from..b->len) in place.  Called once per emitted function, at
  * the moment its text is complete, so "the last slice of the buffer" really is
  * that function and nothing else. */
+
+#if ARKCC_FEATURE_OPT_CONSTCACHE
+/* ------------------ function-level 32-bit constant cache (S3a) -----------
+ * A 32-bit constant is materialised as "MOVW rD, #lo" + "MOVT rD, #hi": two
+ * instructions every time it is needed.  When one function needs the same pair
+ * c times it is cheaper to build it once into a callee-saved register and copy
+ * it per use: 2 + c instructions instead of 2c.
+ *
+ * Building it at function *entry* rather than at the first textual occurrence
+ * is what makes the rewrite dominance-safe.  A textual first occurrence can sit
+ * inside a branch that the second occurrence never takes; the cache register
+ * would then hold whatever the entry left in it.  From the entry there is no
+ * such path: every use is dominated by the materialisation.
+ *
+ * The account is gain = c - 2 and cost = one wider PUSH + one wider POP (two
+ * instructions), paid only by a function that had no saved register yet -- once
+ * -fopt-regalloc or this cache has widened the list, adding another register is
+ * free because a PUSH naming any high register is 32-bit whatever its length.
+ * The selection below therefore requires the total gain to cover that two.
+ *
+ * Registers come from r8-r11 *after* -fopt-regalloc has picked its slots, so the
+ * two never share one, and only regalloc widens PUSH/POP and shifts the frame
+ * offsets: exactly one owner of that code, which is the condition written down
+ * in docs/OPERAND_ALLOC.md section 4. */
+#define CC_MAX_CONSTS 24
+#define CC_MIN_COUNT  5     /* c occurrences must cover the pair and the PUSH/POP */
+
+typedef struct {
+    unsigned lo;
+    unsigned hi;
+    int count;
+    int reg;      /* 0 = not cached, else the callee-saved register holding it */
+    int poison;   /* value is relocatable or unparsable: never cache it */
+} CcConst;
+
+static CcConst cc_tab[CC_MAX_CONSTS];
+static int cc_n;
+static int cc_hregs;   /* bit 0..3 = r8..r11 appear in this function's own text */
+
+static int cc_on(void) {
+    return g_config.enable_opt_constcache ? 1 : 0;
+}
+
+/* "    MOVW rN, #<decimal>" / "    MOVT rN, #<decimal>": the emitter prints
+ * decimals only, and anything else (a symbol, a hex form, a comment) makes the
+ * line not match, which is the conservative answer.  The destination may be
+ * any register: use sites write r0-r7 (the value stack's scratch registers),
+ * while only the materialisation this pass inserts at the entry writes a
+ * callee-saved register -- so the *filler* is what moves the value into rN,
+ * not this matcher. */
+static int cc_pair_half(const char *line, const char *mn, int *rd, unsigned *val) {
+    const char *p;
+    int d = 0, nd = 0;
+    unsigned v = 0;
+    if (!(line[0] == ' ' && line[1] == ' ' && line[2] == ' ' && line[3] == ' '))
+        return 0;
+    p = line + 4;
+    if (strncmp(p, mn, 4) != 0) return 0;
+    p += 4;
+    if (*p != ' ' || p[1] != 'r') return 0;
+    p += 2;
+    while (*p >= '0' && *p <= '9' && nd < 2) {
+        d = d * 10 + (*p - '0');
+        p++;
+        nd++;
+    }
+    if (!nd) return 0;
+    if (*p != ',' || p[1] != ' ' || p[2] != '#') return 0;
+    p += 3;
+    if (*p < '0' || *p > '9') return 0;
+    while (*p >= '0' && *p <= '9') {
+        v = v * 10u + (unsigned)(*p - '0');
+        p++;
+    }
+    while (*p == ' ' || *p == '\r') p++;
+    if (*p) return 0;
+    *rd = d;
+    *val = v;
+    return 1;
+}
+
+static int cc_find(unsigned lo, unsigned hi) {
+    int i;
+    for (i = 0; i < cc_n; i++)
+        if (cc_tab[i].lo == lo && cc_tab[i].hi == hi) return i;
+    return -1;
+}
+
+static void cc_note(unsigned lo, unsigned hi) {
+    int i = cc_find(lo, hi);
+    if (i < 0) {
+        if (cc_n >= CC_MAX_CONSTS) return;
+        i = cc_n++;
+        cc_tab[i].lo = lo;
+        cc_tab[i].hi = hi;
+        cc_tab[i].count = 0;
+        cc_tab[i].reg = 0;
+        cc_tab[i].poison = 0;
+    }
+    if (!cc_tab[i].poison) cc_tab[i].count++;
+}
+
+/* A value the linker rewrites must never be copied: the two halves are patched
+ * at link time, so "the number in the text" is not the number the instruction
+ * will carry.  The whole (lo,hi) key is refused, because a literal constant
+ * with the same halves elsewhere in the function is indistinguishable from it. */
+static void cc_poison(unsigned lo, unsigned hi) {
+    int i = cc_find(lo, hi);
+    if (i < 0) {
+        if (cc_n >= CC_MAX_CONSTS) return;
+        i = cc_n++;
+        cc_tab[i].lo = lo;
+        cc_tab[i].hi = hi;
+        cc_tab[i].count = 0;
+        cc_tab[i].reg = 0;
+    }
+    cc_tab[i].poison = 1;
+    cc_tab[i].reg = 0;
+}
+
+static void cc_begin(void) {
+    cc_n = 0;
+    cc_hregs = 0;
+}
+
+/* "... .arkdata" / "... .arkdatasym foo": the directive that marks the
+ * MOVW/MOVT pair right after it as a relocatable address. */
+static int cc_is_reloc_dir(const char *line) {
+    while (*line == ' ' || *line == '\t') line++;
+    if (line[0] != '.') return 0;
+    if (strncmp(line, ".arkdata", 8) == 0) return 1;
+    if (strncmp(line, ".arkdatasym", 11) == 0) return 1;
+    return 0;
+}
+
+/* Which of r8-r11 the function's own text mentions.  A register that already
+ * appears anywhere -- -fopt-regalloc's slots, an inline asm block, anything --
+ * is not a safe home for a value that must survive to every use site, so it is
+ * excluded from the candidate set rather than analysed.  Conservative by
+ * construction: a false hit only costs one register. */
+static int cc_line_hregs(const char *line) {
+    const char *p = line;
+    int mask = 0;
+    while (*p) {
+        if (p[0] == 'r' && p[1] >= '0' && p[1] <= '9' &&
+            !(p > line && p[-1] >= 'a' && p[-1] <= 'z')) {
+            const char *q = p + 1;
+            int n = 0;
+            while (*q >= '0' && *q <= '9') { n = n * 10 + (*q - '0'); q++; }
+            if (n >= 8 && n <= 11) mask |= 1 << (n - 8);
+            p = q;
+            continue;
+        }
+        p++;
+    }
+    return mask;
+}
+#define cc_any() (cc_on() && cc_n > 0)
+#endif /* ARKCC_FEATURE_OPT_CONSTCACHE */
+#if !ARKCC_FEATURE_OPT_CONSTCACHE
+/* Built out (the STM32_MIN profile, or a build without -fopt-regalloc): the
+ * pass is a no-op and every call site below still compiles. */
+#define cc_on() 0
+#define cc_any() 0
+#endif
+
 static void ark_regalloc_function(AsmBuffer *b, int from, IrFunc *f, int local_eff) {
     static RaSlot slots[RA_MAX_SLOTS];
     int nslots = 0;
@@ -2299,11 +2510,61 @@ static void ark_regalloc_function(AsmBuffer *b, int from, IrFunc *f, int local_e
     int made[RA_MAX_REGS];
     int nregs = 0;
     int have_prologue = 0;
+    int done_push = 0;
     AsmBuffer out;
     char line[256];
     char nline[256];
 
-    if (!ra_enabled()) return;
+    if (!ra_enabled() && !cc_on()) return;
+
+#if ARKCC_FEATURE_OPT_CONSTCACHE
+    /* Constant-cache survey.  Runs before the slot walk and never consumes a
+     * line from it (a MOVW/MOVT pair spans two lines but neither is a frame
+     * access).  Both halves of the account live here: how often each 32-bit
+     * constant is rebuilt, and which high registers the text already uses. */
+    if (cc_on()) {
+        int cpos;
+        int prev_dir = 0;
+        char pline[256];
+        cc_begin();
+        for (cpos = from; cpos < b->len; ) {
+            int clen = 0, k2;
+            while (cpos + clen < b->len && b->buf[cpos + clen] != '\n') clen++;
+            if (clen >= (int)sizeof(line)) {
+                cc_hregs |= 0x0F;   /* text we cannot parse: assume it uses them */
+                prev_dir = 0;
+                cpos += clen + 1;
+                continue;
+            }
+            for (k2 = 0; k2 < clen; k2++) line[k2] = b->buf[cpos + k2];
+            line[clen] = 0;
+            cc_hregs |= cc_line_hregs(line);
+            {
+                int d1 = -1, d2 = -1;
+                unsigned v1 = 0, v2 = 0;
+                if (cc_pair_half(line, "MOVW", &d1, &v1)) {
+                    int l2 = 0, p2 = cpos + clen + 1;
+                    while (p2 + l2 < b->len && b->buf[p2 + l2] != '\n') l2++;
+                    if (l2 > 0 && l2 < (int)sizeof(pline)) {
+                        for (k2 = 0; k2 < l2; k2++) pline[k2] = b->buf[p2 + k2];
+                        pline[l2] = 0;
+                        if (cc_pair_half(pline, "MOVT", &d2, &v2) && d2 == d1) {
+                            /* After .arkdata/.arkdatasym the pair is an address
+                             * the linker patches, not a number. */
+                            if (prev_dir) cc_poison(v1, v2);
+                            else cc_note(v1, v2);
+                            prev_dir = 0;
+                            cpos = p2 + l2 + 1;
+                            continue;
+                        }
+                    }
+                }
+            }
+            prev_dir = cc_is_reloc_dir(line);
+            cpos += clen + 1;
+        }
+    }
+#endif
 
     /* Pass 1: every mention of every frame slot. */
     for (pos = from; pos < b->len; ) {
@@ -2312,9 +2573,7 @@ static void ark_regalloc_function(AsmBuffer *b, int from, IrFunc *f, int local_e
         if (len >= (int)sizeof(line)) { pos += len + 1; continue; }
         for (i = 0; i < len; i++) line[i] = b->buf[pos + i];
         line[len] = 0;
-        if (line[0] == ' ' && line[1] == ' ' && line[2] == ' ' && line[3] == ' ' &&
-            ra_pre8(line + 4, "PUSH {r5"))
-            have_prologue = 1;
+        if (ra_is_prologue_push(line)) have_prologue = 1;
         kind = ra_classify(line, &off, &is_ldr, &wide);
         if (kind >= 0) {
             int s = ra_slot(slots, &nslots, off);
@@ -2349,7 +2608,8 @@ static void ark_regalloc_function(AsmBuffer *b, int from, IrFunc *f, int local_e
         }
     }
 
-    if (!have_prologue || nslots == 0) return;   /* __naked or nothing to do */
+    if (!have_prologue) return;   /* __naked, or a prologue shape we do not own */
+    if (nslots == 0 && !cc_any()) return;
 
     /* Pick the clean slots that pay for themselves.  Default: rank by bytes
      * saved and stop once the 4-byte PUSH/POP widening is covered, so a
@@ -2397,6 +2657,49 @@ static void ark_regalloc_function(AsmBuffer *b, int from, IrFunc *f, int local_e
             nregs = 0;
         }
     }
+#if ARKCC_FEATURE_OPT_CONSTCACHE
+    /* Second consumer of the same saved-register block.  A constant built c
+     * times costs 2c instructions; built once at the entry and copied per use
+     * it costs 2 + c, so the account is (c - 1) per constant.  Binding the
+     * block at all costs one wider PUSH and one wider POP -- two instructions
+     * -- and only a function that had no saved register yet pays them, because
+     * a PUSH naming any high register is 32-bit whatever the length of its
+     * list.  Registers are taken after -fopt-regalloc has picked its slots,
+     * and only from what the function's own text does not mention, so the two
+     * never share one and this pass never has to widen or shift anything. */
+    if (cc_on() && cc_n > 0) {
+        int total = 0, selsum = 0, guard, j;
+        int pushpop = (nregs == 0) ? 2 : 0;
+        for (guard = 0; guard < CC_MAX_CONSTS && nregs < RA_MAX_REGS; guard++) {
+            int best = -1, r;
+            for (i = 0; i < cc_n; i++) {
+                if (cc_tab[i].reg || cc_tab[i].poison) continue;
+                if (cc_tab[i].count < CC_MIN_COUNT) continue;
+                if (best < 0 || cc_tab[i].count > cc_tab[best].count ||
+                    (cc_tab[i].count == cc_tab[best].count &&
+                     cc_tab[i].lo < cc_tab[best].lo))
+                    best = i;
+            }
+            if (best < 0) break;
+            for (r = 8; r <= 11; r++) {
+                int used = 0;
+                for (j = 0; j < nregs; j++)
+                    if (made[j] == r) used = 1;
+                if (!used && !(cc_hregs & (1 << (r - 8)))) break;
+            }
+            if (r > 11) break;
+            cc_tab[best].reg = r;
+            made[nregs++] = r;
+            total += cc_tab[best].count - 1;
+            selsum++;
+        }
+        if (selsum == 0 || total - pushpop <= 0) {
+            /* The selection did not pay for itself: hand the registers back. */
+            for (i = 0; i < cc_n; i++) cc_tab[i].reg = 0;
+            nregs -= selsum;
+        }
+    }
+#endif
     if (nregs == 0) return;
 
     /* An odd number of saved words would leave sp at 4 mod 8 once the prologue
@@ -2432,6 +2735,37 @@ static void ark_regalloc_function(AsmBuffer *b, int from, IrFunc *f, int local_e
         for (i = 0; i < len; i++) line[i] = b->buf[pos + i];
         line[len] = 0;
 
+#if ARKCC_FEATURE_OPT_CONSTCACHE
+        /* A pair whose value sits in a cache register becomes a copy; when the
+         * pair already wrote that very register both lines simply go away. */
+        if (cc_on()) {
+            int d1 = -1, d2 = -1;
+            unsigned v1 = 0, v2 = 0;
+            if (cc_pair_half(line, "MOVW", &d1, &v1)) {
+                int l2 = 0, p2 = pos + len + 1;
+                char pline[256];
+                while (p2 + l2 < b->len && b->buf[p2 + l2] != '\n') l2++;
+                if (l2 > 0 && l2 < (int)sizeof(pline)) {
+                    for (i = 0; i < l2; i++) pline[i] = b->buf[p2 + i];
+                    pline[l2] = 0;
+                    if (cc_pair_half(pline, "MOVT", &d2, &v2) && d2 == d1) {
+                        int ci = cc_find(v1, v2);
+                        if (ci >= 0 && cc_tab[ci].reg) {
+                            if (d1 != cc_tab[ci].reg) {
+                                asmbuf_puts(&out, "    MOV r");
+                                asmbuf_int(&out, d1);
+                                asmbuf_puts(&out, ", r");
+                                asmbuf_int(&out, cc_tab[ci].reg);
+                                asmbuf_putc(&out, '\n');
+                            }
+                            pos = p2 + l2 + 1;
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+#endif
         kind = -1;
         if (line[0] == ' ' && line[1] == ' ' && line[2] == ' ' && line[3] == ' ')
             kind = ra_classify(line, &off, &is_ldr, &wide);
@@ -2446,32 +2780,57 @@ static void ark_regalloc_function(AsmBuffer *b, int from, IrFunc *f, int local_e
                 continue;
             }
         }
-        if (line[0] == ' ' && line[1] == ' ' && line[2] == ' ' && line[3] == ' ' &&
-            ra_pre8(line + 4, "PUSH {r5")) {
-            /* Same list, plus the registers this function really holds. */
-            asmbuf_puts(&out, "    PUSH {r5, r6, r7");
+        if (!done_push && ra_is_prologue_push(line)) {
+            /* Same list, plus the registers this function really holds.  Only
+             * the first such line is the frame save; a spill later in the body
+             * is a different list and is left alone. */
+            int cut = ra_last_elem_at(line);
+            if (cut < 0) cut = (int)strlen(line);
+            done_push = 1;
+            for (i = 0; i < cut; i++) asmbuf_putc(&out, line[i]);
             for (k = 0; k < nregs; k++) {
                 asmbuf_puts(&out, ", r");
                 asmbuf_int(&out, made[k]);
             }
-            asmbuf_puts(&out, ", lr}\n");
+            for (i = cut; i < (int)strlen(line); i++) asmbuf_putc(&out, line[i]);
+            asmbuf_putc(&out, '\n');
+#if ARKCC_FEATURE_OPT_CONSTCACHE
+            /* Every cached constant is built once here, above every use site.
+             * Building it at the first textual occurrence instead would not be
+             * dominance-safe: that occurrence can sit inside a branch. */
+            for (k = 0; k < cc_n; k++) {
+                if (!cc_tab[k].reg) continue;
+                asmbuf_puts(&out, "    MOVW r");
+                asmbuf_int(&out, cc_tab[k].reg);
+                asmbuf_puts(&out, ", #");
+                asmbuf_int(&out, (int)cc_tab[k].lo);
+                asmbuf_putc(&out, '\n');
+                asmbuf_puts(&out, "    MOVT r");
+                asmbuf_int(&out, cc_tab[k].reg);
+                asmbuf_puts(&out, ", #");
+                asmbuf_int(&out, (int)cc_tab[k].hi);
+                asmbuf_putc(&out, '\n');
+            }
+#endif
             pos += len + 1;
             continue;
         }
-        if (line[0] == ' ' && line[1] == ' ' && line[2] == ' ' && line[3] == ' ' &&
-            ra_pre8(line + 4, "POP {r5,")) {
-            /* A variadic function returns through POP {r5,r6,r7,lr} and then
-             * ADD sp,#16 / BX lr (it has to drop the r0-r3 mirror first), so
-             * rewriting that line to POP {..,pc} would jump out 16 bytes early
-             * with the pad still on the stack.  Keep lr; the rest of the list
-             * is widened exactly like the non-variadic case. */
-            int keeps_lr = (strstr(line, ", lr}") != 0);
-            asmbuf_puts(&out, "    POP {r5, r6, r7");
+        if (ra_is_epilogue_pop(line)) {
+            /* Every return path restores the same block, so all of them are
+             * widened.  A variadic function returns through POP {r5,r6,r7,lr}
+             * and then ADD sp,#16 / BX lr (it has to drop the r0-r3 mirror
+             * first), so rewriting that line to POP {..,pc} would jump out 16
+             * bytes early with the pad still on the stack: the tail element is
+             * kept verbatim rather than chosen here. */
+            int cut = ra_last_elem_at(line);
+            if (cut < 0) cut = (int)strlen(line);
+            for (i = 0; i < cut; i++) asmbuf_putc(&out, line[i]);
             for (k = 0; k < nregs; k++) {
                 asmbuf_puts(&out, ", r");
                 asmbuf_int(&out, made[k]);
             }
-            asmbuf_puts(&out, keeps_lr ? ", lr}\n" : ", pc}\n");
+            for (i = cut; i < (int)strlen(line); i++) asmbuf_putc(&out, line[i]);
+            asmbuf_putc(&out, '\n');
             pos += len + 1;
             continue;
         }

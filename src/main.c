@@ -600,6 +600,16 @@ int main(int argc, char **argv) {
             return 1;
         }
 #endif
+#if !ARKCC_FEATURE_OPT_CONSTCACHE
+        else if (strcmp(a, "-fopt-constcache") == 0) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: -fopt-constcache is not compiled into "
+                    "this build (rebuild with -DARKCC_FEATURE_OPT_CONSTCACHE=1; "
+                    "it also needs -DARKCC_FEATURE_OPT_REGALLOC=1, which owns "
+                    "the PUSH/POP widening and the frame offset shift)\n");
+            return 1;
+        }
+#endif
         else if (a[0] == '-' && a[1] == 'f') {
             /* -fxxx / -fno-xxx: already handled by config_apply_args, silently accepted here */
         }

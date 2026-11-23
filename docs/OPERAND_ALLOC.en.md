@@ -185,3 +185,73 @@ stack (`[r5, ...]`, 1,414 accesses) or the frame (`[r6, #n]`, 1,879 accesses) th
 a `BL` should live in a callee-saved register. Its account is far harder (live intervals and a spill
 policy), so it **must be pre-registered separately, after S3a's gates and frame machinery work and
 after S3a's measured gain is known**. This document freezes no number for S3b.
+
+## 8 Implementation and measurement (2026-11-23, S3a landed)
+
+### 8.1 Where it lives
+
+`-fopt-constcache` is not a pass of its own: it is the **second client** inside
+`ark_regalloc_function()`, which is how the rule written into section 4 holds -- "the `PUSH`
+widening and the offset shift may have exactly one owner". `extra` is computed once, offsets are
+shifted once, `PUSH`/`POP` are rewritten once.
+
+- **The constant survey** walks the same text before slot selection. A `MOVW` immediately followed
+  by a matching `MOVT` on the same destination is one pair; the key is `(lo, hi)`. A pair that
+  follows `.arkdata` / `.arkdatasym` is a link-time relocated address and **not a number**, so the
+  whole key is poisoned (never cached) while the other keys in the same function still qualify.
+- **Selection order**: `ra_` picks its slots first (`made[0..nregs)`); constants only take what is
+  left of `r8`-`r11`, and only a register that does **not appear anywhere in the function's original
+  text** (conservative -- a misjudgement only costs one register). The total still obeys
+  `RA_MAX_REGS` (4).
+- **The account** is `Sigma(count-1)`: materialising a constant `c` times costs `2c` instructions,
+  building it once at the entry plus one copy per use costs `2+c`. Turning the saved block from
+  "no saved register" into "some" costs one wider `PUSH` and `POP` (2 instructions), charged only
+  when `nregs == 0` started out true; when the constants do not cover it the whole group is
+  handed back, so a function never grows because of this pass.
+- **The materialisation sits at the entry** (after `PUSH`, before `SUB sp`), not at the first
+  textual use -- that use can sit inside a branch, which is not dominance-safe.
+- An odd register count takes one spare register, so the saved block stays a multiple of 8 bytes
+  (AAPCS wants that at every `BL`).
+
+### 8.2 An existing defect the work exposed (fixed)
+
+`ra_` recognised the prologue with a **prefix** match on `"PUSH {r5"`. A value-stack spill of one
+value is written `PUSH {r5}` and matched too, so a **mid-function** spill was widened as if it were
+the frame save and the entry materialisation was inserted in the middle of the body; meanwhile the
+vstack r4 shape `PUSH {r4, r5, r6, r7, lr}` did not match at all (which is why `ra_` had never
+broken those functions).
+
+The fix compares the **whole list**: with spaces removed it must be exactly `PUSH{r5,r6,r7,lr}`.
+The epilogue is the same (`POP{r5,r6,r7,pc}` or `POP{r5,r6,r7,lr}`). `PUSH` is rewritten only at its
+first occurrence (the real frame save) while every return path's `POP` is rewritten (they all have to
+restore the same widened block), and the tail element (`pc}` or `lr}`) is carried over verbatim
+instead of being chosen here.
+
+**The cost and the boundary**: this pass deliberately does **not** take over vstack's r4 prologue
+shape -- it carries an extra pad word and widening it would break 8-byte alignment. So a function
+whose frame was rewritten into that shape by `-fopt-vstack` abstains as a whole: a little less gain,
+but it can never be wrong. That is an accepted conservatism, not an oversight.
+
+### 8.3 Measurement (baseline = twelve switches + `-fopt-cmat` + `-fopt-slotreg`)
+
+| Item | Value |
+| --- | --- |
+| Corpus | 95 TUs under `examples/ark_test` |
+| Off | 18,665 instructions |
+| On | **18,506 (-159, -0.85%)** |
+| Changed | 3 TUs: `stm32f4xx_hal_dma_ex.c` 3,412->3,340, `stm32f4xx_hal_rcc.c` 2,887->2,813, `stm32f4xx_hal_rcc_ex.c` 1,150->1,137 |
+| Unchanged | 92 TUs byte-identical; **no TU grew** |
+| OFF IS OFF | A cropped build (`-DARKCC_FEATURE_OPT_CONSTCACHE=0`) on the same corpus is byte-identical to the default build on 95/95 |
+| Execution level | `tests/arm_exec --extra=-fopt-constcache` -- **0 failure** |
+
+### 8.4 Verdict: land (no falsifier triggered)
+
+None of the four falsifiers in section 6 holds: -0.85% is above the 0.5% line, no TU grew, at most
+4 registers are used, and S3a **did not have to widen `PUSH` itself** (the shared scheme of section 4
+works). All seven criteria of section 5 land in `tests/run_operand_alloc_tests.py`
+(`make test-opalloc`) and every check passes; three of them ("across a call", "no register clash",
+"offsets shifted exactly once") assert on the real emitted text rather than arguing from the IR.
+
+S3b is still not pre-registered: this slice solved "put a non-slot value into `r8`-`r11`" and
+"widen the saved block and shift offsets exactly once", but S3b also needs live intervals and a
+spill policy, so section 7 stands.

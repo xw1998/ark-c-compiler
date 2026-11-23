@@ -30,7 +30,7 @@ endif
         test-tailcall test-divconst test-xblock test-sizeweight \
         test-inline test-vstack test-addr test-strength test-cbz test-branch \
         test-imm test-peep test-cbranch test-copyprop test-live test-movimm test-pair \
-        test-prop test-deadpush test-cmat test-slotreg install \
+        test-prop test-deadpush test-cmat test-slotreg test-opalloc install \
         stm32 stm32-check
 
 all: $(ARKCC)
@@ -46,7 +46,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch test-imm test-peep test-cbranch test-copyprop test-cmat test-slotreg test-live test-movimm
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch test-imm test-peep test-cbranch test-copyprop test-cmat test-slotreg test-opalloc test-live test-movimm
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -321,6 +321,19 @@ test-cmat: $(ARKCC)
 # flag by name.
 test-slotreg: $(ARKCC)
 	$(PYTHON) tests/run_slotreg_tests.py ./$(ARKCC)
+
+# Gate for the operand-allocation family (slice S3a, -fopt-constcache): a
+# 32-bit constant rebuilt at every use is built once at the entry into a
+# callee-saved register and copied per use.  The gate pins that it is off
+# without the flag, that no fixture gains an instruction or a byte, that the
+# reuse really happens (fewer pairs, `MOV rD, rC`, one entry materialisation in
+# r8-r11), that a use after an un-inlinable call still reads the register, that
+# -fopt-regalloc's slots and this pass's registers never overlap, that the
+# caller-argument offsets move by exactly one saved block, that all three arms
+# return the Python answer on the emulator, and that a cropped build
+# (-DARKCC_FEATURE_OPT_CONSTCACHE=0) refuses the flag by name.
+test-opalloc: $(ARKCC)
+	$(PYTHON) tests/run_operand_alloc_tests.py ./$(ARKCC)
 
 
 

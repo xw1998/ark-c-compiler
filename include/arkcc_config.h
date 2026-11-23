@@ -296,6 +296,21 @@
 #   define ARKCC_FEATURE_OPT_SLOTREG   1
 # endif
 #endif
+/* ARKCC_FEATURE_OPT_CONSTCACHE: -fopt-constcache (S3a), a function-level cache
+ * for 32-bit constants.  A constant materialised c times costs 2c instructions;
+ * materialising it once at function entry into a callee-saved register and
+ * copying it per use costs 2 + c plus one wider PUSH/POP, so the net gain is
+ * c - 4 and the threshold is c >= 5.  It rides on the -fopt-regalloc frame
+ * machinery (that pass owns the PUSH/POP widening and the one-and-only offset
+ * shift), so it is only compiled when the regalloc feature is present too.
+ * See docs/OPERAND_ALLOC.md section 3. */
+#ifndef ARKCC_FEATURE_OPT_CONSTCACHE
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN || !ARKCC_FEATURE_OPT_REGALLOC
+#   define ARKCC_FEATURE_OPT_CONSTCACHE 0   /* 板上裁掉；且必须与 regalloc 同时在场 */
+# else
+#   define ARKCC_FEATURE_OPT_CONSTCACHE 1
+# endif
+#endif
 #ifndef ARKCC_FEATURE_OPT_COPYPROP
 # if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
 #   define ARKCC_FEATURE_OPT_COPYPROP   0

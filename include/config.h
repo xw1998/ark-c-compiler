@@ -32,6 +32,7 @@ typedef struct {
     int enable_opt_deadpush;        /* -fopt-deadpush: 删掉紧跟 IR_POP 的单字压栈（赋值读回） */
     int enable_opt_cmat;            /* -fopt-cmat: 常量二次材料化清理（立即数与索引折叠、死中性写） */
     int enable_opt_slotreg;         /* -fopt-slotreg: 块内冗余帧读与死帧写的删除 */
+    int enable_opt_constcache;      /* -fopt-constcache: 函数级 32 位常量缓存（callee-saved） */
     int enable_opt_copyprop;        /* -fopt-copyprop: 删死拷贝、把拷贝推进到消费者 */
     int enable_opt_live;            /* -fopt-live: 用 CFG+活跃性删只活跃性看得见的拷贝 */
     int enable_opt_inline;   /* --autoinline / -O2 */

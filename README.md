@@ -104,6 +104,7 @@
 | 语句赋值的读回压栈 | 可选 | `-fopt-deadpush`（`ARKCC_FEATURE_OPT_DEADPUSH`，宿主 1、板端 0，默认关）：语句级本地赋值在 `STORE` 之后会紧跟一条读回压栈，而紧接着的丢弃 `POP` 让它白费——压栈（1 字，或 `long long` 的 2 字）后面紧跟相邻 n 个 `POP` 时整组改 `NOP`。volatile 读有观察语义、complex（四字）与宽度不符一律不动，不做任何活跃性分析。`-fopt-prop` 之上 19,083 → 19,066（−17 / 0.09%），`LDR −14`、`MOV −1`，无单元变大。详见 `docs/OPTIMIZER_PLAN.md` 的 P14 |
 | 常量二次材料化清理 | 可选 | `-fopt-cmat`（`ARKCC_FEATURE_OPT_CMAT`，宿主 1、板端 0，默认关）：值栈后端会把同一个常量材料化两次（先搬进暂存寄存器，再由消费者折回寻址方式），暂存寄存器也常连写两次。三条**纯文本**规则、都不需要活跃性分析：**M1** `MOV rD, rS` 且 `rS` 已知为 0..255 常量 ⇒ `MOV rD, #k`（本身不减条数，只为 M2/M3 创造条件）；**M2** `LDR/STR[B/H] rT, [rB, rI(, LSL #s)]` 且 `rI` 已知、`k<<s ≤ 4095`、`rI≠rB` ⇒ `[rB, #off]`（同地址同标志）；**M3** 标志中性写（`MOV` / 同寄存器 `MOVW`+`MOVT` 对 / 三操作数 `LSL LSR ASR ROR` / `MVN` / `UXT*` / `SXT*` / `CLZ` / `REV*`）被块内后写覆盖则删。块边界含标签、任何分支、`IT`、`POP/LDM/STM` 与**任何不在白名单的助记符**；`MOVW`+`MOVT` 必须整体处理。读集模型踩过两个致命坑（`MUL r0, r7` 隐式读目标、`STR` 第一操作数是源），门禁里各留了回归夹具。十二开关基线 19,066 → 18,729 条（−337 / −1.77%），只动 `MOV`（3,888 → 3,551）。详见 `docs/CMAT.md` |
 | 槽级寄存器化 | 可选 | `-fopt-slotreg`（`ARKCC_FEATURE_OPT_SLOTREG`，宿主 1、板端 0，默认关）：在函数的已发射文本上**只删行、绝不插入**——删掉「`r0` 已持有该槽」的重复重载（**R1**）、删掉永远不会被观察的死写（**R2(a)** 全函数 0 读且地址未外流；**R2(b)** 块内被后写覆盖）。不引入任何寄存器、不动帧布局，所以「只减不增」是结构保证；地址外流点（`ADD rX, r6, #off`）之上的槽一律禁止死写删除，`volatile`、`[r6,rX]` 索引、写回、非十进制偏移、无帧函数整函数弃权。基线（十二开关 + `-fopt-cmat`）18,729 → **18,665 条（−64 / −0.34%）**，`LDR −35`、`STR −29`，95 个 TU 无一变大、85 个逐字节相同。按预注册否证线（<0.5% 即收档）**本条线收档**，代码留在默认关闭的旗标后。详见 `docs/SLOTREG.md` |
+| 函数级常量缓存 | 可选 | `-fopt-constcache`（`ARKCC_FEATURE_OPT_CONSTCACHE`，宿主 1、板端 0，默认关）：同一个 32 位常量在一次函数里被材料化 **≥5 次**时，在入口用 `MOVW`+`MOVT` 建一次进 callee-saved（`r8`–`r11`），其余使用点改 `MOV rD, rC`。它是 `-fopt-regalloc` 的**第二个客户**，共用同一段保存寄存器块：`extra` 一次算完、偏移只平移一次、`PUSH`/`POP` 只加宽一次；寄存器从 `ra_` 未占用且函数原文本未出现的高寄存器里取，`.arkdata` 之后的链接期重定位对子不缓存，`vstack` 的 r4 形态 prologue 整函数弃权（多带一个填充字，加宽会破坏 8 字节对齐）。基线（十二开关 + `-fopt-cmat` + `-fopt-slotreg`）18,665 → **18,506 条（−159 / −0.85%）**，95 个 TU 无一变大、92 个逐字节相同，`arm_exec` 0 failure。详见 `docs/OPERAND_ALLOC.md` §8 |
 | 汇编器覆盖面 | 是 | LDR/STR 全地址模式（`[Rn]`/`[Rn,#imm]`/`[Rn,Rm]`/`[Rn,Rm,LSL #0..3]`/`[Rn,#imm]!`/`[Rn],#imm`、`[sp,#imm]`、`[pc,#imm]`）、`VLDM/VSTM/VPUSH/VPOP`、`LDMFD/STMFD/LDMEA/STMEA` 别名、`ADDW/SUBW`；体系结构不存在的形态（`LDMIB/LDMDA/STMIB/STMDA`、寄存器索引写回）明确报错 |
 | 预处理 | 是 | 对象/函数宏（`#/##`）、`#if/#elif/#else/#endif/#ifdef/#ifndef/#undef/#error/#warning/#pragma`、嵌套 `#include`（<=8 层）、`__VA_ARGS__`、`-I` 路径、三字符组替换 |
 | 注释 | 是 | `//` 和 `/* */` |
@@ -567,7 +568,7 @@ ark c compiler/
 ├── docs/COPYPROP.md         寄存器拷贝清理（-fopt-copyprop）：照 IAR ECT 逆向下放的两条规则、为什么不需要活跃性、「第一个操作数也读」这条被 emulator 抓出的修正、与 peep 的分工、147+241 分解与旧 1,141 估算的错因、17 项门禁（中文，UTF-8，另有 .en.md）
 ├── docs/LIVE.md             活跃性驱动清理（-fopt-live）：控制流图 + in/out 不动点、L1-L4 四条规则、拒绝清单、三个被测试抓出的真缺陷（两操作数隐式读目标 / pp_trim 剥缩进 / 比对时机）与 ADC-SBC 三寄存器那条、与 copyprop 的分工、19,112 条实测、10 组门禁（中文，UTF-8，另有 .en.md）
 ├── docs/CMAT.md             常量二次材料化清理（-fopt-cmat）：M1/M2/M3 三条规则与块边界、两个被 emulator 抓出的致命读集错误（`MUL` 隐式读目标 / `STR` 首操作数是源）、`MOVW`+`MOVT` 为什么必须整体处理、那条实测 0 命中被删掉的去重规则、19,066 → 18,729 的逐规则分解（M3 337 / M1 193 / M2 180）、17 项门禁（中文，UTF-8，另有 .en.md）
-├── docs/OPERAND_ALLOC.md    操作数分配（S3 预注册，未实现）：18,665 条指令的家族拆解（`[r6]` 1,879 / `[r5]` 1,414 / `MOVW`+`MOVT` 2,096 / `MOV rD,rS` 1,305 / `PUSH`+`POP` 1,791）、为什么文本层已量到底、切片 S3a（函数级 32 位常量缓存，实测重复 657 条、乐观上界 399 条）、与 `-fopt-regalloc` 抢寄存器与帧的真冲突及「PUSH 加宽只允许有一个所有者」的解法、七条门禁与四条否证（中文，UTF-8，另有 .en.md）
+├── docs/OPERAND_ALLOC.md    操作数分配（S3 预注册 + S3a 落地）：18,665 条指令的家族拆解（`[r6]` 1,879 / `[r5]` 1,414 / `MOVW`+`MOVT` 2,096 / `MOV rD,rS` 1,305 / `PUSH`+`POP` 1,791）、为什么文本层已量到底、切片 S3a（函数级 32 位常量缓存，实测重复 657 条、乐观上界 399 条）、与 `-fopt-regalloc` 抢寄存器与帧的真冲突及「PUSH 加宽只允许有一个所有者」的解法、七条门禁与四条否证、实现（第二个客户 / 入口材料化 / 重定位对子 poison）与被点亮的既有 PUSH 前缀匹配缺陷及修法、18,665 → 18,506 的实测与落地判决（中文，UTF-8，另有 .en.md）
 ├── docs/SLOTREG.md          槽级寄存器化（-fopt-slotreg）：预注册的影子寄存器模型为何被实测推翻、改成「只删不增」的 R1/R2 两条规则与安全论证（地址外流点、volatile、函数级弃权）、三个误编译的根因（memcpy 间接写 / t==3 写 r0 / STR 不清 valid）、18,729 → 18,665 的实测与按 <0.5% 收档的判决、7 组门禁（中文，UTF-8，另有 .en.md）
 ├── docs/MOVIMM.md           常量材料化：0..255 / MOVW / 修改立即数 / MVN / 双字五档的选择与标志位口径、为什么 MOVW 不需要后面的 MOVT #0、无符号立即数解析、-O2 上 −451 条（51,416 → 50,965）与 −1,804 字节（116,380 → 114,576）的同源对拍、门禁（中文，UTF-8，另有 .en.md）
 ├── docs/BUILD.md            Windows / Linux / STM32H743 三平台构建与裁切阶梯：工具链矩阵、两种内存布局实测、`make stm32-check` 装得下的机器判定（中文，UTF-8，另有 .en.md）
@@ -789,6 +790,10 @@ arkcc <file.c|file.s> [选项]
                      被观察的死写（全函数 0 读且地址未外流、或块内被后写覆盖）；
                      只删行不插入，帧布局与寄存器分配完全不变；
                      -fno-opt-slotreg 关（默认关）
+  -fopt-constcache   函数级常量缓存：同一函数里被材料化 >=5 次的 32 位常量在入口
+                     一次建进 callee-saved（r8-r11），其余使用点改 MOV rD, rC；
+                     与 -fopt-regalloc 共用同一段保存寄存器（只加宽一次、偏移只
+                     平移一次）；-fno-opt-constcache 关（默认关）
   --ipo / -flto      全程序编译：一次吃多个 .c，在同一个 IR program 上做跨文件
                      优化（-O2 下跨文件内联），static 按单元改名、外部名按链接器
                      规则去重、无引用的 static 剪掉；必须给 -o，

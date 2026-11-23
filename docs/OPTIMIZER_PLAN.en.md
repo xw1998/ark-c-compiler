@@ -521,7 +521,8 @@ drops.
   so the room left at this layer was small to begin with.
 - **Staged plan (S2-S5, none started)**:
   - **Status (2026-11-23)**: S2 landed as `-fopt-slotreg` and was **archived** under the <0.5%
-    falsifier (P17); S3 is now pre-registered as **P18** (`docs/OPERAND_ALLOC.md`); S4/S5 remain
+    falsifier (P17); S3 is now pre-registered as **P18** (`docs/OPERAND_ALLOC.md`), whose slice
+    S3a has landed as `-fopt-constcache`; S4/S5 remain
     registered only.
   - **S2 intra-function virtual-register colouring**: longest live range inside a
     straight-line block only, no call sites, pool r8-r11 (callee-saved, same reason as
@@ -747,7 +748,7 @@ drops.
 
 ---
 
-### P18 Operand allocation (S3 pre-registration, **not implemented**)
+### P18 Operand allocation (S3 pre-registration; slice S3a landed as `-fopt-constcache`)
 
 - **Why the model has to change**: after P16 (cmat, -1.77%) and P17 (slotreg, -0.34%) the text layer
   is measured out -- slotreg without its safety gate could delete -1.82%, but every one of those
@@ -771,6 +772,15 @@ drops.
   remaining registers from `ra_`'s `made[]`/`extra`, and `ra_`'s widening also saves them. If
   implementation cannot do that, the slice **degrades to not done** -- two passes shifting offsets
   independently is a miscompile hotspot and not worth 1-2%.
+- **Measured (2026-11-23, S3a landed)**: `-fopt-constcache` is implemented as the second client
+  inside `ark_regalloc_function()` (`extra` computed once, offsets shifted once, `PUSH`/`POP`
+  rewritten once). Baseline 18,665 -> **18,506 (-159, -0.85%)**, only 3 TUs changed, 92
+  byte-identical and **none grew**; `arm_exec --extra=-fopt-constcache` reports **0 failure** and a
+  cropped build on the same corpus is byte-identical on 95/95. The work also exposed an existing
+  defect: `ra_` recognised the prologue by **prefix** (`"PUSH {r5"`), so a value-stack spill of one
+  value was widened as the frame save while vstack's r4 shape did not match at all. It now compares
+  the whole list, and deliberately declines the r4 shape (it carries a pad word that widening would
+  misalign), so those functions abstain as a whole.
 - **Gates frozen**: seven gates (OFF IS OFF / only ever smaller with any growth red / the reuse
   really happens and the replacement is `MOV rD,rC` / still hits across a `BL` / no register clash
   with `ra_` and offsets shifted once / `arm_exec` parity / cropping rejects with `C3900U`) and four
