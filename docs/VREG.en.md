@@ -278,10 +278,10 @@ The first version ran vreg before regalloc: 95 TUs gave **18,151 → 18,310 (+15
 5. **THE ANSWER IS THE SAME**: seven fixtures run on the emulator in three arms (off / on / alone -- `alone` is the only arm that exercises frame widening on its own) and return the Python answer.
 6. **CROPPED OUT, REFUSED**: a `-DARKCC_FEATURE_OPT_VREG=0` build reports C3900U and still compiles without the flag.
 
-### 11.5 Side finding (registered, not fixed in this round)
+### 11.5 Side finding (found and fixed in this round)
 
 `-fopt-vstack` miscompiles a call with **more than four arguments** when the body uses argument 5 or 6: vstack claims `r4` for the third value-stack slot, widening the frame by four bytes, but the front end's argument-copy loads `LDR r0,[r6,#n]` still assume four saved words and read four/eight bytes too low.
 
 Repro: `int h2(int a,int b,int c,int d,int e,struct VgS *p){return e + p->a;}` returns `0x30B0xxxx` instead of 6 under `-fopt-vstack`; without the flag, or with only `-fopt-regalloc -fopt-constcache`, it is correct (five arguments are fine, six are not; six plain integers are unaffected -- one memory access is needed).
 
-The switch is off by default (0.9.1-wip), so `-O2` is unaffected. Registered as a defect to fix by shifting every offset at or above `base` after vstack widens, the way regalloc does (`ra_shift_line`); out of scope for the vreg line.
+The switch is off by default (0.9.1-wip), so `-O2` is unaffected. Fix: after widening, vstack calls the new `vs_shift_r6()`, which moves every `[r6, #n]` with `n >= frame` by **+8** -- the `PUSH` grew by one word *and* the frame by four, so the caller's arguments sit two words higher relative to `r6`. Shifting by four only lands on the newly saved word (measured: immediate `UC_ERR_READ_UNMAPPED`). After the fix `h2` returns 6 under `-fopt-vstack` and `vg3` (`p->a + p->d + a + b + c + d + e`) returns 56; `run_vstack_tests.py` and `run_vreg_tests.py` are green, and the 95-TU total is still 18,151 (immediates only, no instruction delta).

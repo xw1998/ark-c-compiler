@@ -258,10 +258,10 @@ MOV r0, r8            ; 取下时改成寄存器 MOV
 5. **答案一致**：七个夹具在 unicorn 上跑 off / on / alone 三臂（`alone` 只有 `-fopt-vreg`，帧加宽路径唯一被单独走到的臂），返回 Python 答案。
 6. **裁掉就按名拒绝**：`-DARKCC_FEATURE_OPT_VREG=0` 的构建报 C3900U，且不带旗标时照常编译。
 
-### 11.5 附带发现（登记，未在本轮修）
+### 11.5 附带发现（本轮已修）
 
 `-fopt-vstack` 在**调用实参多于 4 个**且函数体用到第 5/6 个实参时错编译：vstack 为第三槽征用 `r4` 使帧加宽 4 字节，但前端的「实参拷贝」`LDR r0,[r6,#n]` 偏移仍按 4 个保存字计算，读到低 4/8 字节的另一个位置。
 
 复现：`int h2(int a,int b,int c,int d,int e,struct VgS *p){return e + p->a;}`，`-fopt-vstack` 下返回值是 `0x30B0xxxx` 而非 6；不带该旗标与只开 `-fopt-regalloc -fopt-constcache` 都正确（5 个实参正确、6 个才错，纯整数 6 实参不受影响，需要一次访存）。
 
-该开关默认关（0.9.1-wip），因此不影响 `-O2` 现状；已登记为待修缺陷，修法是让 vstack 在加宽帧后按 regalloc 的方式平移 `>= base` 的偏移（`ra_shift_line`），本轮不在 vreg 线内解决。
+该开关默认关（0.9.1-wip），因此不影响 `-O2` 现状。修法：vstack 加宽帧后调用新增的 `vs_shift_r6()`，把 `>= frame` 的 `[r6, #n]` 全部平移 **+8**（`PUSH` 多压一个字 **加上** 帧多 4 字节，调用方实参相对 `r6` 一共上移两个字；只移 +4 会读到中间那块保存区，实测立即 `UC_ERR_READ_UNMAPPED`）。修后 `h2` 在 `-fopt-vstack` 下返回 6，`vg3`（`p->a + p->d + a + b + c + d + e`）返回 56；`run_vstack_tests.py` 与 `run_vreg_tests.py` 均全绿，95 TU 合计仍为 18,151（只改立即数，不改指令数）。

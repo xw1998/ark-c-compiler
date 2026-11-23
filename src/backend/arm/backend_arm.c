@@ -5329,6 +5329,45 @@ static int vs_settext(VsLine *ln, const char *text)
     return 1;
 }
 
+/* Widen the frame and keep every r6-relative offset honest.
+ *
+ * r6 points at the low address of the local area, so the caller's stack
+ * arguments (5th, 6th, ... and the va region) sit at r6 + frame + 4 * saved
+ * words.  Growing the saved block by one word therefore moves every slot at
+ * or above `frame` up by four bytes: the argument-copy loads the front end
+ * emitted (`LDR r0, [r6, #n]`, n = frame + 16) included.  A local lives below
+ * `frame`, so it is never touched. */
+static void vs_shift_r6(VsLine *L, int nlines, int frame, int delta) {
+    int i;
+    for (i = 0; i < nlines; i++) {
+        const char *p, *q;
+        char buf[256];
+        int o = 0;
+        if (L[i].del || !L[i].t) continue;
+        p = L[i].t;
+        for (;;) {
+            const char *hit = strstr(p, "[r6, #");
+            int n = 0;
+            if (!hit) break;
+            hit += 6;
+            if (!vs_isdigit(*hit)) { p = hit; continue; }
+            q = hit;
+            while (vs_isdigit(*q)) { n = n * 10 + (*q - '0'); q++; }
+            if (n < frame || *q != ']') { p = q; continue; }
+            /* copy up to the digits, then the shifted number, then the rest */
+            if (hit - L[i].t + 12 >= (int)sizeof buf) return;   /* too long */
+            while (p < hit && o < (int)sizeof buf - 16) buf[o++] = *p++;
+            o += snprintf(buf + o, sizeof buf - o, "%d", n + delta);
+            p = q;
+        }
+        if (p != L[i].t && o > 0) {
+            while (*p && o < (int)sizeof buf - 1) buf[o++] = *p++;
+            buf[o] = 0;
+            if (!vs_settext(&L[i], buf)) return;
+        }
+    }
+}
+
 static void ark_vstack_function(AsmBuffer *b, int from)
 {
     VsLine *L = 0;
@@ -5500,8 +5539,14 @@ static void ark_vstack_function(AsmBuffer *b, int from)
                     if (vs_settext(&L[r4_pro], ptxt) &&
                         vs_settext(&L[r4_sub], stxt) &&
                         vs_settext(&L[r4_add], atxt) &&
-                        vs_settext(&L[r4_pop], qtxt))
-                        { pool[npool] = 4; npool++; }
+                        vs_settext(&L[r4_pop], qtxt)) {
+                        /* +8, not +4: the PUSH grew by one word *and* the
+                         * frame grew by four, so the caller's arguments move
+                         * up by two words in total. */
+                        vs_shift_r6(L, nlines, frame, 8);
+                        pool[npool] = 4;
+                        npool++;
+                    }
                 }
             }
         }
