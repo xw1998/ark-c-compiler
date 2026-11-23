@@ -800,6 +800,53 @@ drops.
 
 ---
 
+### P19 IR-level virtual register allocation (S6 pre-registration; not implemented)
+
+- **Why the model has to change**: after `-fopt-coalesce` (L5) the baseline is **18,151
+  instructions over 548 functions** (95 TUs, Cortex-M4, `-O2`, fifteen switches + coalesce),
+  against armcc `-O2` 5,629 and armclang `-O2` 5,068 -- still **about 3.2-3.4x**. All three text-level
+  routes have now been measured out and archived: slotreg without its gate deletes -1.82% but
+  produces 5 `arm_exec` failures (archived); constcache takes 159 instructions and S3b had only
+  5 pairs / 0.11% left (archived); coalesce leaves 81 of 95 TUs byte-identical at -1.93% and every
+  remaining copy is blocked by "a `BL` inside the segment". What is left is **3,213 frame accesses
+  (17.7%) + 1,120 scratch copies (6.2%) + 741 `PUSH {r0}` (4.1%) = 5,074 instructions (28%)**, and
+  all of it is the direct cost of one assumption: every intermediate must cross memory or r0. The
+  text layer cannot see which register a value is in right now, so every rule must first treat the
+  invisible accesses as a hazard -- and by the time it is safe the gain is gone.
+- **Target model**: `irgen -> IR -> new IR-to-text emitter (S6) -> assembly`. The stack-machine
+  semantics of the IR become **virtual registers + linear scan + spill** inside S6: `IR_PUSH` no
+  longer implies r0 and live ranges are expressed by vreg identity. The pool is caller-saved
+  `r0`-`r3` (values that do not cross a `BL`) plus callee-saved `r8`-`r11` (values that do, sharing
+  the same save block as `ark_regalloc_function()` -- **exactly one owner**). `r6` stays the frame
+  base (dropping the frame pointer measured at 0.2%). Live ranges come from the CFG that
+  `src/mir.c` already builds, with `RETURN` / `BL` / indirect calls as split points; spill enters
+  only at S6c. **Mutually exclusive with `-fopt-vstack`** (the original P12 S5 ruling); which one
+  survives by default is decided by measuring the corpus.
+- **Slices**: **S6a** stays inside one block and never crosses a `BL` (ALU reads both operands
+  straight from pool registers and leaves the result there), target **-8% (>= 1,450)** -- the first
+  slice that can be judged; **S6b** goes across blocks with linear scan and range merging (including
+  diamonds, where ranges must intersect to count as live), another -8%; **S6c** crosses `BL` and
+  spills, **enabled only when the balance is positive** (saved access bytes > widened `PUSH` bytes,
+  and the balance must be printed); **S6d** merges or de-duplicates against `-fopt-vstack`.
+- **Gates frozen (seven)**: OFF IS OFF byte-identical on 95/95 / any TU growing is red with no
+  "better on average" reading / default off with INI and CLI both able to flip it / `arm_exec
+  --extra=-fopt-vreg` with 0 failures and assertions still computed outside the program / a cropped
+  build refusing with `C3900U` while an unflagged build still compiles / `stm32_build_check.py
+  --layout both` still all PASS / `make test` EXIT=0 including `make test-vreg`.
+- **Falsifiers (frozen; triggering one archives the line)**: F1 S6a lands under 5% total (stricter
+  than 0.5% because changing the model carries its own risk); F2 any TU grows; F3 one `arm_exec`
+  failure that cannot be attributed to "a shape not implemented yet" (**rather an error than a wrong
+  answer**); F4 S6a needs more than `r0`-`r3` or needs spill to clear 5% (that means the block never
+  had those registers to give, so go back to the text layer).
+- **Cropping**: `ARKCC_FEATURE_VREG`, 0 under `ARKCC_PROFILE_STM32_MIN`, 1 elsewhere, **off by
+  default**; when off it does not run and changes no existing output byte. The body is a new
+  emitter rather than a new table, so cropping it only saves code size.
+- **What this does not promise**: this pre-registration **does not get to 5,629**. The intermediate
+  target for S6a + S6b is **12,700 instructions (-30%)**; changing the model is a project-level
+  decision and needs one explicit go-ahead. All measurements live in `docs/VREG.md` / `.en.md`.
+
+---
+
 ## 3 How this relates to the stage table (two layers of trimming)
 
 | Layer | Mechanism | Guarantee when off |
