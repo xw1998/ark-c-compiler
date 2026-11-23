@@ -172,3 +172,71 @@ deleted.
    `-fopt-coalesce`;
 4. "changing the model" is a project-level decision: this pre-registration needs one explicit
    go-ahead before implementation, matching the S4/S5 entries in `docs/OPTIMIZER_PLAN.md` P12.
+## 10 Negative measurements before implementation (2026-11-23, measure first, then write code)
+
+This section holds the four measurements taken *before* writing any S6 code, asking whether the text layer still has money left in it. All four are negative or negligible, and the fourth bounds the *form* of any gain — which directly fixes the **implementation form** of S6a (see §10.5). All numbers are on the 95-TU corpus under `-O2` with the sixteen switches; `base` must self-check to **18,151** within a single run.
+
+### 10.1 The shipping default of `-fopt-regalloc` is a no-op
+
+| Arm | Total instructions | vs base |
+| --- | --- | --- |
+| base (sixteen switches) | 18,151 | — |
+| `+ -fopt-regalloc` | 18,151 | **0, 95/95 byte-identical** |
+| `+ -fopt-regalloc-near` | 18,174 | +23 (+0.13%, 3 TUs smaller, 2 larger) |
+
+The zero effect of the default arm **is not a bug**; two design boundaries fire at once:
+
+1. The default arm only takes "wide" slots (offset >124 or not 4-byte aligned, where widening `PUSH` pays off); HAL locals almost all sit in `0..124` and are 4-byte aligned ⇒ `saves = 0`, no slot is selected;
+2. `ra_classify()` only recognises `LDR r0,[r6,#n]` / `STR r0,[r6,#n]`, but `-fopt-vstack` has already rewritten most accesses into the `r5`/`r7` shadow-stack shape ⇒ those lines are treated as taint and dropped.
+
+Conclusion: the shipping text-level slot caching gains nothing even when switched on; `-near`'s +23 is noise.
+
+### 10.2 Slot caching only turns an access into a MOV, and instruction count goes up
+
+One `HAL_GPIO_ReadPin` instance (under `-fopt-regalloc-near`):
+
+```asm
+STR r0, [r6, #16]     ; was: store the return value into the slot
+...
+LDR r0, [r6, #16]     ; was: read it back
+```
+
+becomes
+
+```asm
+MOV r8, #1            ; the constant held in the slot is MOV'd into the cache register
+MOV r0, #1            ; plus a redundant immediate load
+...
+MOV r0, r8            ; the read-back becomes a register MOV
+```
+
+Two things happen at once: the **count does not drop** (`STR`→`MOV`, `LDR`→`MOV` one for one), and `MOV r5, r8` (between high registers) is a **32-bit encoding**, *wider* than the original `LDR r5, [r6, #16]` (16-bit). So "cache + MOV replacement" is byte-negative by construction and cannot be the landing form of S6a.
+
+### 10.3 `-fopt-pair` and `--reg-top` are both dominated by existing switches
+
+| Arm | Total instructions | vs base |
+| --- | --- | --- |
+| `+ -fopt-pair` | 18,145 | **−6 (−0.03%), 5 TUs smaller, 0 larger** |
+| `--reg-top` (fairer arm with imm / cbranch removed) | 24,812 | **+6,661 (+36.7%)** |
+| `--reg-top + -fopt-pair` | 24,800 | same order; pair saves only 12 |
+
+Under the full sixteen switches `-fopt-pair` is worth only 6 lines, i.e. adjacent-`MOV` merging has already been eaten by `-fopt-imm` / `-fopt-cbranch`; and removing those two does not let pair recover (still 24,8xx). ⇒ pair is archived, not an input to S6.
+
+### 10.4 Upper bound of text-layer gain (decisive)
+
+Of the 18,151 lines, the simplest frame accesses `LDR/STR rN,[r6,#n]` total **1,845** (LDR 1,306 / STR 539):
+
+- **99.8% (1,842)** land on slots that are **never address-taken** (no `ADD/SUB rX, r6, #n` points at them);
+- If each function keeps its four most-accessed slots in `r8-r11`, the **absolute upper bound** of removable lines is **1,714 = 9.4%**;
+- "store then same-register reload" (`LDR rX,[slot]` immediately followed by a same-slot same-register `STR`) is only **80 lines (0.44%)**;
+- foldable "STR→LDR across statements" forwarding pairs are only **52 pairs → 104 lines (0.6%)**.
+
+Even taking all 1,714 we only reach 16,437 (still 2.9x armcc). ⇒ **the text-layer route ends here**, consistent with §2.
+
+### 10.5 Implementation-form revision implied by 10.2 and 10.4 (gates unchanged)
+
+§4 originally wrote S6a as "cache into `r8-r11` + replace accesses with MOV". 10.2 proves "replace with MOV" is byte-negative, and 10.4 proves the only worthwhile gain is "make the access disappear entirely". Therefore **S6a's implementation form is revised to**:
+
+> **Slot cache + rename elision**: a hit `LDR rX,[slot]` is *not* replaced by `MOV rX, rCache`; instead **the destination register is renamed to `rCache` across the straight-line region that consumes the value, and the `LDR` is deleted**; the matching `STR rCache,[slot]` side is done by "retarget the producer's destination register to `rCache` and delete the `STR`". Region boundaries reuse `-fopt-coalesce`'s `lv_same` replay check; but because `rCache` is callee-saved, `BL` **is no longer a barrier** (this is exactly what lets it do more than coalesce).
+
+This targets the same thing as §3's "vreg + linear scan" (which register a value lives in is decided by the model, not guessed from a text pattern); **the 7 frozen gates in §5 and F1-F4 in §6 are unchanged, character for character** — only "how to write it" moves from replacement to elision, anchoring the expected gain inside 10.4's 9.4% bound (S6a's -8% >= 1,450 still holds, with 264 lines of margin for implementation loss).
