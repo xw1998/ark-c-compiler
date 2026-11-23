@@ -599,6 +599,52 @@ drops.
 
 ---
 
+### P14 Throwing away the read-back of a statement assignment (`-fopt-deadpush`, **landed in 0.9.1-wip**)
+
+- **Measure first**: on the 19,083 lines produced by the ten switches plus `-fopt-prop`, we asked what S2
+  (register allocation) could actually buy:
+  - straight-line blocks that load the same frame slot twice with no store or clobber in between:
+    **56 instructions (0.3%)**;
+  - a `STR` followed later in the same block by a read of the same slot (`STR -> LDR` round trip):
+    **203 places**, distances 1:51, 2:25, 3:44, 4:14, 5:6;
+  - **dead frame reads (the destination is never read afterwards): 0**.
+
+  So the remaining room needs real register allocation; a single local rule is capped below 1%, and the
+  "drop dead `LDR`" direction has exactly zero yield on this corpus, so it was ruled out first.
+- **The rule**: for a statement-level assignment to a local, `irgen.c` emits `IR_STORE` and then an
+  `IR_PUSH_VAR` (the source comment says "Re-load the stored value"); for an expression statement the very
+  next instruction is the `IR_POP` that discards it. The predicate is therefore narrow: `IR_PUSH_INT` /
+  `IR_PUSH_ADDR` (always one word) or an `IR_PUSH_VAR` of width 0/1/2/4 (one word) / width 8 (two words)
+  **followed immediately by n `IR_POP`s** becomes `IR_NOP`, with a final `compact_func`.
+- **Conservative edges (keep a redundant stack round trip rather than a wrong answer)**: volatile reads
+  have observation semantics and are excluded; `IR_AUX_COMPLEX` (16, four words) is not "one value" and is
+  excluded; width 8 with a mismatched number of pops is not recognised; only *adjacent* pops count and no
+  liveness analysis is performed -- falsifiable, explainable, no CFG needed.
+- **Trimming**: `ARKCC_FEATURE_OPT_DEADPUSH` (STM32_MIN 0 / host 1), off by default; the stage row
+  `ir.deadpush` runs under `ARK_PROFILE_LITE` at minimum optimisation level 1; a trimmed build refuses
+  `-fopt-deadpush` with `C3900U`.
+- **Gates**: `tests/run_deadpush_tests.py`, **25 checks**, `make test-deadpush`. Highlights: OFF IS OFF is
+  byte-identical; a statement assignment goes from 3 to 2 `LDR`s and the image does not grow; a **used**
+  assignment (`z = (y = a + 1) + 2`) loses only the outer one while the inner read-back stays; the
+  `volatile` function text is byte-identical and its `LDR` count unchanged; a `long long` assignment goes
+  from 5 to 3 `LDR`s with the same return value; all four fixtures agree off vs on under unicorn; the
+  trimmed build refuses the switch yet compiles without it. Every gate passes `-fno-opt-inline`, for the
+  same reason as in P13.
+- **Measurement (ten switches + `-fopt-prop` + `-fopt-deadpush`)**: **19,083 -> 19,066 (-17, 0.09%)**,
+  `fails 0`; against the ten-switch baseline of 19,112 this is **-46**. Histogram: `LDR 2457 -> 2443`,
+  `MOV 3889 -> 3888`, nothing else moves. Per file (against 19,112): `hal_flash_ex -12, hal_cortex -10,
+  ll_utils -6, main.c -4, hal_pwr_ex -4, gpio -2, hal_exti -2, hal_gpio -2, hal_pwr -1, hal_rcc -1,
+  hal_rcc_ex -1, hal_flash -1`; no unit grows.
+- **Honest conclusion**: the 56 repeated loads and the 203 round trips are the real S2 prize; this pass
+  removes exactly one shape (the read-back of a statement assignment) for 0.09%. Closing the roughly 3.4x
+  gap to armcc/gcc therefore requires P12's S2: intra-function virtual-register colouring (r2/r3/r4,
+  straight-line blocks only, nothing across a call), also off by default and trimmable.
+- **Next step (S2 pre-registration sketch)**: virtual registers cover only live ranges inside one
+  straight-line block that never crosses a call or a label; they compete with `-fopt-vstack` for the same
+  stack round trips, so if the combination turns negative only vstack stays on by default (rule S5);
+  spilling is conservative (a range interrupted by a call is abandoned). The gates stay "byte-identical
+  when off, image never larger when on, 95/95 differential parity".
+
 ---
 
 ## 3 How this relates to the stage table (two layers of trimming)

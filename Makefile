@@ -30,7 +30,7 @@ endif
         test-tailcall test-divconst test-xblock test-sizeweight \
         test-inline test-vstack test-addr test-strength test-cbz test-branch \
         test-imm test-peep test-cbranch test-copyprop test-live test-movimm test-pair \
-        test-prop install \
+        test-prop test-deadpush install \
         stm32 stm32-check
 
 all: $(ARKCC)
@@ -285,6 +285,17 @@ test-pair: $(ARKCC)
 # flag by name (C3900U).
 test-prop: $(ARKCC)
 	$(PYTHON) tests/run_prop_tests.py ./$(ARKCC)
+
+# Gate for -fopt-deadpush: a statement assignment stores its value and then
+# reloads it for the enclosing expression, which the statement immediately
+# pops.  This pass deletes that throw-away push (and the POP after it, or the
+# POP chain of a two-word value).  The gate pins OFF IS OFF, that exactly one
+# reload goes, that the reload a nested assignment really uses stays, that a
+# volatile read stays, that a `long long` statement loses both reloads, that
+# every fixture returns the Python answer in both arms, and that a cropped
+# build (-DARKCC_FEATURE_OPT_DEADPUSH=0) refuses the flag by name.
+test-deadpush: $(ARKCC)
+	$(PYTHON) tests/run_deadpush_tests.py ./$(ARKCC)
 
 
 

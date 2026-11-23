@@ -576,6 +576,14 @@ int main(int argc, char **argv) {
             return 1;
         }
 #endif
+#if !ARKCC_FEATURE_OPT_DEADPUSH
+        else if (strcmp(a, "-fopt-deadpush") == 0) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: -fopt-deadpush is not compiled into "
+                    "this build (rebuild with -DARKCC_FEATURE_OPT_DEADPUSH=1)\n");
+            return 1;
+        }
+#endif
         else if (a[0] == '-' && a[1] == 'f') {
             /* -fxxx / -fno-xxx: already handled by config_apply_args, silently accepted here */
         }

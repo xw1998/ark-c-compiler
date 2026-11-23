@@ -127,6 +127,7 @@ static int ir_wanted_tailmerge(void)  { return g_config.enable_tailmerge; }
 static int ir_wanted_xblock(void)     { return g_config.enable_xblock; }
 static int ir_wanted_strength(void)   { return g_config.enable_opt_strength; }
 static int ir_wanted_prop(void)       { return g_config.enable_opt_prop; }
+static int ir_wanted_deadpush(void)   { return g_config.enable_opt_deadpush; }
 #if ARKCC_FEATURE_CONST_GLOBAL
 static int ir_wanted_const_global(void) { return g_config.enable_const_global; }
 /* opt_const_global reports how many loads it replaced; the table wants a void
@@ -174,6 +175,15 @@ static const IrStage g_ir_stages[] = {
       ir_wanted_prop,      PIPE_NAME("off (-fopt-prop)"),         0, 0, opt_prop_func,      0 },
 #else
     { PIPE_NAME("ir.prop"),      ARK_PROFILE_LITE, 1, GATE_FLAG_AND_LEVEL, 0, 0, 0, 0, 0, 0, 0 },
+#endif
+    /* 赋值语句会为外层表达式把写入的值读回一次；语句级赋值随后就把它弹掉。
+     * 这个 pass 只删「单字压栈紧跟 IR_POP」这一种形态，语义精确、不需要任何
+     * 分析，放在 prop 之后让 prop 造出的死读回也能被吃掉。 */
+#if ARKCC_FEATURE_OPT_DEADPUSH
+    { PIPE_NAME("ir.deadpush"),  ARK_PROFILE_LITE, 1, GATE_FLAG_AND_LEVEL, 1,
+      ir_wanted_deadpush,  PIPE_NAME("off (-fopt-deadpush)"),     0, 0, opt_deadpush_func, 0 },
+#else
+    { PIPE_NAME("ir.deadpush"),  ARK_PROFILE_LITE, 1, GATE_FLAG_AND_LEVEL, 0, 0, 0, 0, 0, 0, 0 },
 #endif
 #if ARKCC_FEATURE_OPT_DCE_CFG
     { PIPE_NAME("ir.dce-cfg"),   ARK_PROFILE_FULL, 1, GATE_FLAG_AND_LEVEL, 1,

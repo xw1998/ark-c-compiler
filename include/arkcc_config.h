@@ -255,6 +255,17 @@
 #   define ARKCC_FEATURE_OPT_PROP      1
 # endif
 #endif
+/* ARKCC_FEATURE_OPT_DEADPUSH: -fopt-deadpush, IR-level removal of a one-word
+ * push that the next IR_POP discards (src/opt.c).  No extra memory at all --
+ * a single pass over the instruction list -- but it is still a host-only
+ * switch so the board build stays bit-for-bit what it was. */
+#ifndef ARKCC_FEATURE_OPT_DEADPUSH
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_OPT_DEADPUSH   0   /* 板上裁掉：只在宿主/交叉编译用 */
+# else
+#   define ARKCC_FEATURE_OPT_DEADPUSH   1
+# endif
+#endif
 /* ARKCC_FEATURE_OPT_COPYPROP: -fopt-copyprop, the IAR "ECT" family -- drop a
  * register copy whose destination is overwritten before any read, and forward
  * one that feeds a single three-operand ALU consumer. */

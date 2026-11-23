@@ -86,5 +86,8 @@ void opt_strength_func(IrFunc *f);
  * different widths stay exact, and the replaced load is exactly what the
  * LDRB/LDRSB/LDRH/LDRSH/LDR would have returned.  See src/opt.c. */
 void opt_prop_func(IrFunc *f);
+/* -fopt-deadpush: drop a one-word push that the very next IR_POP throws away
+ * (the read-back an assignment statement never uses). */
+void opt_deadpush_func(IrFunc *f);
 
 #endif /* ARK_OPT_H */

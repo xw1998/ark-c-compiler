@@ -574,6 +574,66 @@ void opt_prop_func(IrFunc *f) {
 #endif
 }
 
+/* --- Dead push elimination (-fopt-deadpush) ------------------------------
+ * Why this exists: an assignment keeps a value on the IR stack for the
+ * enclosing expression (`irgen.c`, AST_ASSIGN: "Re-load the stored value").
+ * When the assignment is a statement of its own, that value is popped again
+ * one instruction later, so the sequence
+ *
+ *     PUSH_VAR a          (the right-hand side, or PUSH_INT/PUSH_ADDR)
+ *     STORE    x          (consumes it)
+ *     PUSH_VAR x          (re-materialise the value for the expression)
+ *     POP                 (the statement throws it away)
+ *
+ * emits a real LDR for a value that is immediately discarded -- 574 frame
+ * stores in the HAL corpus, of which 203 are read back inside the same
+ * straight-line block.
+ *
+ * The rule is deliberately the narrowest one that is exactly right: a
+ * one-word push directly followed by IR_POP, with nothing in between, is
+ * dead.  A push has no side effect at all except a volatile read, so the
+ * volatile flag removes it from the set; an 8- or 16-wide push is two or
+ * four words and a single POP does not balance it, so those are left alone
+ * too (the shapes irgen emits there are a POP chain, not a single POP).
+ *
+ * Removing PUSH/POP pairs keeps the IR stack balanced, so everything after
+ * the pair is untouched, and the frame slot is still written: only the
+ * throw-away read disappears.
+ */
+static int dp_push_words(const IrInst *P) {
+    unsigned w;
+    if (P->op == IR_PUSH_INT || P->op == IR_PUSH_ADDR) return 1;
+    if (P->op != IR_PUSH_VAR) return 0;
+    if (P->aux & IR_AUX_VOLATILE) return 0;     /* the read itself is required */
+    if (P->aux & IR_AUX_COMPLEX) return 0;      /* four words: not modelled here */
+    w = (unsigned)P->aux & 0xFFu;
+    /* 0 means "plain word"; 1/2/4 are the byte/half/word loads.  An 8-wide
+     * slot (long long, double) pushes two words. */
+    if (w == 0 || w == 1 || w == 2 || w == 4) return 1;
+    if (w == 8) return 2;
+    return 0;
+}
+
+void opt_deadpush_func(IrFunc *f) {
+#if ARKCC_FEATURE_OPT_DEADPUSH
+    int i, k, words, removed = 0;
+    if (f->code_count < 2) return;
+    for (i = 0; i + 1 < f->code_count; i++) {
+        words = dp_push_words(&f->code[i]);
+        if (words <= 0 || i + words >= f->code_count) continue;
+        for (k = 1; k <= words; k++)
+            if (f->code[i + k].op != IR_POP) break;
+        if (k <= words) continue;
+        for (k = 0; k <= words; k++) f->code[i + k].op = IR_NOP;
+        removed += words + 1;
+        i += words;
+    }
+    if (removed) compact_func(f);
+#else
+    (void)f;
+#endif
+}
+
 void opt_dce_func(IrFunc *f) {
     int i;
     int unreachable = 0;

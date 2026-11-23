@@ -101,6 +101,7 @@
 | 活跃性驱动清理 | 可选 | `-fopt-live`（`ARKCC_FEATURE_OPT_LIVE`，宿主 1、板端 0，默认关，静态表约 1.5 MB 故板端裁掉）：第一个**跨基本块**的 pass —— 为每个函数建控制流图、把寄存器活跃性（`out = ∪succ.in`、`in = use ∪ (out−def)`）迭代到不动点，然后四条规则：**L1** `MOV rD, rS|#imm` 且 `rD` 之后不活跃 ⇒ 删除（能删掉绕过标签/分支的暂存）；**L2** `MOV rD, rS` 之后窗口内（`LV_WINDOW`=4）唯一读 `rD` 且不写它、之后 `rD` 不活跃的指令 ⇒ 消费者改读 `rS`、删拷贝（不要求三操作数 ALU，也不要求紧邻，`LDR rD,[rD,...]`/`CMP`/`STR` 都能接；窗口里写 `rD`/`rS` 或跨块就放弃）；**L3** `MOV rT, #0` 紧跟只把 `rT` 当地址索引的指令 ⇒ 丢掉索引 `[rB, rT, LSL #n]` → `[rB]`；**L4** `MOVW/MOVT rD` + `MOV rX, rD` ⇒ 常量直接落进 `rX`（IAR `DefIntoMove`）；`MOVW`/`MVN` + `MOV` 的单条材料化同样折（`MOV rD,#imm` 不折：16 位 `MOVS` 换 `MOVW` 会变宽且丢标志位）。拒绝清单：`BL/BLX` 读 `r0-r3`、无后继块返回 `r0-r3`、`CBZ/CBNZ` 第一个操作数是读、`IT` 块内一律不改、`r6`/`sp`/`lr`/`pc` 永不作目标、两操作数 ALU 的第一个操作数**也是读**（否则 `MOV r0,r5` + `LSL r0,r7` 会把活值删掉 —— emulator 抓出 376 条错删）、`ADC/SBC/RSC` 的消费者不折（16 位编码要求 `Rd == Rn`，折出三寄存器形式汇编器不发射）。九开关基线 21,915 → **19,112 条（−2,803 / −12.79%）**、52,358 → **45,760 字节（−12.60%）**；基线里 `MOVW/MOVT/MOV` 三连 681 处与 `MOVW`/`MVN` + `MOV` 二连 21 处全部命中（剩 2 处与 1 处是 `rD` 之后仍活跃）。详见 `docs/LIVE.md` |
 | 值栈操作数配对 | 可选 | `-fopt-pair`（`ARKCC_FEATURE_OPT_PAIR`，宿主 1、板端 0，默认关）：IR 是栈机，两个相邻的值栈压入加上读它们的二元运算改成「左→r0、右→r1、直接算」，两对 `PUSH/POP` 与随之而来的寄存器搬运整块消失；只接栈槽（槽号 <8、非 volatile）、立即数、局部地址、非 va 的全局地址/标量（<8 字节，按宽度选 `LDR/LDRB/LDRH/LDRSB/LDRSH`）；64 位值、volatile、>8 字节对象一律不动。`-fopt-imm`（常量直接进立即数字段）与 `-fopt-cbranch`（比较直连分支）都比它便宜，pair 主动让位——这两条让位规则分别由一次翻车（+1,405 条 / +67 条）换来。95 TU HAL 语料 19,112 → 19,096 条（−16 / 0.08%），无单元变大。详见 `docs/OPTIMIZER_PLAN.md` 的 P12（S2–S5 为后续阶段） |
 | 局部槽常量传播与死存储删除 | 可选 | `-fopt-prop`（`ARKCC_FEATURE_OPT_PROP`，宿主 1、板端 0，默认关）：IR 层两半共用一张字节图——**前向**把「写入后没再改」的帧槽常量按宽度精确扩展后改写成 `PUSH_INT`，**后向**把「字节全不活跃、producer 可丢」的 store 连同它的 `PUSH` 一起删成 `NOP`。两条尺寸闸门都是翻车换来的：常量必须一条 ARM 指令装得下（否则 `LDR` 换成 `MOVW+MOVT`，首版 +16 条）；紧跟在覆盖同槽 `STORE` 之后的读不替换（值已在栈顶寄存器，`-fopt-imm` 已免费消化，改写成 `PUSH_INT` 反而 +6 条）。取帧地址只有 `IR_PUSH_ADDR` 一条指令，故函数里没有它时调用/指针写/memcpy 都碰不到本帧，活跃性可以放宽（−6 → −29）。十开关之上 19,112 → 19,083 条（−29 / 0.15%），`STR −15`、`MOV −14`，无单元变大；插桩显示前向传播在 HAL 上 `replaced=0`，收益全部来自死存储删除——文本层余量确实到顶，下一步只能去 IR 级寄存器分配。详见 `docs/OPTIMIZER_PLAN.md` 的 P13 |
+| 语句赋值的读回压栈 | 可选 | `-fopt-deadpush`（`ARKCC_FEATURE_OPT_DEADPUSH`，宿主 1、板端 0，默认关）：语句级本地赋值在 `STORE` 之后会紧跟一条读回压栈，而紧接着的丢弃 `POP` 让它白费——压栈（1 字，或 `long long` 的 2 字）后面紧跟相邻 n 个 `POP` 时整组改 `NOP`。volatile 读有观察语义、complex（四字）与宽度不符一律不动，不做任何活跃性分析。`-fopt-prop` 之上 19,083 → 19,066（−17 / 0.09%），`LDR −14`、`MOV −1`，无单元变大。详见 `docs/OPTIMIZER_PLAN.md` 的 P14 |
 | 汇编器覆盖面 | 是 | LDR/STR 全地址模式（`[Rn]`/`[Rn,#imm]`/`[Rn,Rm]`/`[Rn,Rm,LSL #0..3]`/`[Rn,#imm]!`/`[Rn],#imm`、`[sp,#imm]`、`[pc,#imm]`）、`VLDM/VSTM/VPUSH/VPOP`、`LDMFD/STMFD/LDMEA/STMEA` 别名、`ADDW/SUBW`；体系结构不存在的形态（`LDMIB/LDMDA/STMIB/STMDA`、寄存器索引写回）明确报错 |
 | 预处理 | 是 | 对象/函数宏（`#/##`）、`#if/#elif/#else/#endif/#ifdef/#ifndef/#undef/#error/#warning/#pragma`、嵌套 `#include`（<=8 层）、`__VA_ARGS__`、`-I` 路径、三字符组替换 |
 | 注释 | 是 | `//` 和 `/* */` |
@@ -765,6 +766,9 @@ arkcc <file.c|file.s> [选项]
                      前向传播、把没人读的 store 连同压栈一起删掉；常量必须
                      一条指令装得下、紧跟同槽 STORE 的读不动；
                      -fno-opt-prop 关（默认关）
+  -fopt-deadpush    丢掉语句赋值的读回压栈：赋值后紧跟的读回与随后的丢弃
+                     一起删掉；volatile、四字复杂对象、宽度不符不动；
+                     -fno-opt-deadpush 关（默认关）
   -fopt-copyprop     寄存器拷贝清理：删掉被完全覆写却没被读的 MOV，把
                      MOV rD,rS 推进到紧邻的 OP rD,rD,X 里；跨标签/分支/PUSH
                      不判；-fno-opt-copyprop 关（默认关）
