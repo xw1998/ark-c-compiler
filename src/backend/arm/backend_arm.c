@@ -3862,11 +3862,14 @@ static void ark_vreg_function(AsmBuffer *b, int from, IrFunc *f, int local_eff) 
  * the second half of many of those pairs is a copy of a value that was just
  * built one line above.
  *
- * Three rules, all inside one straight-line block.  A block ends at a label,
- * any branch (including CBZ/CBNZ and the conditional forms), IT, POP, LDM/STM
- * or any mnemonic this pass does not model -- an unknown instruction may write
- * a register or set flags, so the block state is dropped there too.  A block
- * has one entry, so a value written inside it and overwritten before a read is
+ * Seven rules, all inside one straight-line block.  A block ends at a label,
+ * any branch (including CBZ/CBNZ and the conditional forms), IT, stack
+ * traffic (PUSH / POP / LDM / STM) or any mnemonic this pass does not model --
+ * an unknown instruction may write a register or set flags, so the block
+ * state is dropped there too.  One refinement: a POP / LDM writes exactly the
+ * registers its list names, so the state of every *other* register survives
+ * it, which is what lets M2 fold an index that a POP walked over.  A block has
+ * one entry, so a value written inside it and overwritten before a read is
  * dead on every path through it.
  *
  *   M1  `MOV rD, rS` where rS holds a constant known in this block becomes
@@ -3883,6 +3886,21 @@ static void ark_vreg_function(AsmBuffer *b, int from, IrFunc *f, int local_eff) 
  *       makes liveness analysis unnecessary.  The MOVW+MOVT pair is kept as a
  *       *single* unit on purpose: half of it alone leaves the register with a
  *       different value, so neither half may ever be dropped by itself.
+ *   M4  `LSL/LSR/ASR rD, rS, #n` where rS holds a constant known in this block
+ *       becomes `MOV rD, #k` with the folded value (0 <= k <= 255).  The
+ *       three-operand shift is flag-neutral, so value and flags are unchanged
+ *       and the result is a constant M1/M2/M3 can use.
+ *   M5  The same fold through UXT / SXT.
+ *   M6  `CMP rX, #k` with rX known, immediately followed by a conditional
+ *       branch: the branch is decided here.  Always taken becomes `B`, never
+ *       taken is dropped; the CMP itself stays, so no flag any later
+ *       instruction could read changes.
+ *   M7  `PUSH {rX}` and, with nothing but dead units in between, `POP {rX}`:
+ *       the value stack stores a value and loads it straight back.  Once the
+ *       dead writes are gone nothing runs in between, sp ends where it
+ *       started, and both lines go.  A label, a call or any other live unit
+ *       ends the search -- a branch could reach the POP with a different
+ *       value stack.
  *
  * A first draft also de-duplicated a MOVW/MOVT pair whose value the register
  * already held.  Measured on the corpus it fires zero times (any read of the
@@ -4269,6 +4287,46 @@ static int cm_cond_true(const char *mn, long long a, long long b) {
     return -1;
 }
 
+/* "{r4,r5,r6}" -> a mask of the registers inside the braces; the return value
+ * is the register count, or 0 when the operand is anything else (`PUSH
+ * {r5,r6,r7,lr}` names lr, which this mask has no bit for, so it is refused
+ * and the caller stays conservative). */
+static int cm_list_mask(const char *ops, unsigned *mask) {
+    unsigned m = 0;
+    int i = 0, n = 0;
+    while (ops[i] == ' ') i++;
+    if (ops[i] != '{') return 0;
+    i++;
+    for (;;) {
+        int v = 0;
+        while (ops[i] == ' ') i++;
+        if (ops[i] != 'r' && ops[i] != 'R') return 0;
+        i++;
+        if (ops[i] < '0' || ops[i] > '9') return 0;
+        while (ops[i] >= '0' && ops[i] <= '9') { v = v * 10 + (ops[i] - '0'); i++; }
+        if (v > 12) return 0;
+        m |= 1u << v;
+        n++;
+        while (ops[i] == ' ') i++;
+        if (ops[i] == '}') { i++; break; }
+        if (ops[i] != ',') return 0;
+        i++;
+    }
+    while (ops[i] == ' ') i++;
+    if (ops[i]) return 0;
+    *mask = m;
+    return n;
+}
+
+/* "{rN}" naming exactly one low register. */
+static int cm_one_reg(const char *ops, int *reg) {
+    unsigned m = 0;
+    int r;
+    if (cm_list_mask(ops, &m) != 1) return 0;
+    for (r = 0; r < 13; r++) if (m == (1u << r)) { *reg = r; return 1; }
+    return 0;
+}
+
 /* M3's criterion, factored out so the folded-constant rules can reuse it: is
  * `reg` written again later in this block before anything reads it?  Then
  * every earlier write to it is dead. */
@@ -4276,8 +4334,19 @@ static int cm_dies_later(int j, int reg) {
     int i;
     for (i = j + 1; i < cm_nu; i++) {
         CmUnit *v = &cm_units[i];
+        /* POP / LDM write exactly the registers in their list: a write to
+         * `reg` here is the overwrite the caller is looking for, and a list
+         * that does not name `reg` still ends the block (stack traffic is
+         * outside what this pass models). */
+        if (cm_streq(v->mn, "POP") || cm_streq(v->mn, "LDM") ||
+            cm_streq(v->mn, "LDMIA")) {
+            unsigned m = 0;
+            if (v->dead) continue;
+            if (!cm_list_mask(v->ops, &m)) break;   /* `LDM rB!, {...}` etc. */
+            if ((m >> reg) & 1) return 1;           /* it overwrites reg   */
+            continue;      /* it leaves reg alone, and so do its neighbours */
+        }
         if (v->bar) break;
-        if (v->dead) continue;
         if ((cm_uses(v->mn, v->ops, v->dst) >> reg) & 1) break;
         if (v->dst == reg) return 1;
     }
@@ -4378,14 +4447,15 @@ static void ark_cmat_function(AsmBuffer *b, int from) {
         nu++;
     }
 
-    /* 3. per-block walk: M1, M2, M3 rewrite, and the constant state is kept
-     *    only inside a block. */
+    /* 3. per-block walk: M1, M2, M4, M5 and M6 rewrite, and the constant state
+     *    is kept only inside a block (a POP / LDM clears just the registers
+     *    its list names). */
     for (i = 0; i < 13; i++) { cknown[i] = 0; cval[i] = 0; }
     cm_nu = nu;
     pcmp = -1;
     for (j = 0; j < nu; j++) {
         CmUnit *cu = &cm_units[j];
-        unsigned rd;
+        unsigned rd, bmask;
         int r;
         if (cu->bar) {
             /* M6: a conditional branch whose compare had both operands known
@@ -4408,7 +4478,20 @@ static void ark_cmat_function(AsmBuffer *b, int from) {
                 }
             }
             pcmp = -1;
-            for (r = 0; r < 13; r++) cknown[r] = 0;
+            /* A braced register-list barrier writes exactly the registers it
+             * names, so the rest keep their known values: that is what lets
+             * the index of `[rB, rI, LSL #s]` be folded across the PUSH/POP
+             * dance the value stack leaves behind.  Any other barrier (a
+             * branch, a call, an unmodelled instruction) may touch anything
+             * and still clears the lot. */
+            if ((cm_streq(cu->mn, "POP") || cm_streq(cu->mn, "LDM") ||
+                 cm_streq(cu->mn, "LDMIA")) &&
+                cm_list_mask(cu->ops, &bmask)) {
+                for (r = 0; r < 13; r++)
+                    if ((bmask >> r) & 1) cknown[r] = 0;
+            } else {
+                for (r = 0; r < 13; r++) cknown[r] = 0;
+            }
             continue;
         }
         /* CMP rX, #k with rX holding a known constant: remember it for the
@@ -4560,6 +4643,30 @@ static void ark_cmat_function(AsmBuffer *b, int from) {
         int d = cu->dst;
         if (!cu->neutral || cu->dead || cu->bar || d < 0) continue;
         if (cm_dies_later(j, d)) { cu->dead = 1; changed++; }
+    }
+
+    /* 4b. M7: `PUSH {rX}` and, with nothing but dead units in between,
+     *     `POP {rX}`.  The pair stores a value on the stack and loads it
+     *     straight back into the same register, so both lines go: sp is
+     *     unchanged and nothing runs in between once the dead units are
+     *     dropped.  A label or any other live unit ends the search -- a
+     *     branch could reach the POP with a different value stack, and a
+     *     call must keep the stack it can see. */
+    for (j = 0; j < nu; j++) {
+        CmUnit *cu = &cm_units[j];
+        int rp = -1, rq = -1, k;
+        if (cu->dead || cu->bar) continue;
+        if (!cm_streq(cu->mn, "PUSH") || !cm_one_reg(cu->ops, &rp)) continue;
+        for (k = j + 1; k < nu; k++) {
+            CmUnit *v = &cm_units[k];
+            if (v->dead) continue;
+            if (cm_streq(v->mn, "POP") && cm_one_reg(v->ops, &rq) && rq == rp) {
+                cu->dead = 1;
+                v->dead = 1;
+                changed++;
+            }
+            break;          /* the first live unit decides, either way */
+        }
     }
 
     if (!changed) return;

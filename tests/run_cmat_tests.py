@@ -32,6 +32,13 @@ those three shapes inside one straight-line block:
       `CMP` itself is kept, so no flag any later instruction could read
       changes at all.
 
+  M7  `PUSH {rX}` and, with nothing but dead lines in between, `POP {rX}`.
+      The value stack stores a value and loads it straight back into the same
+      register: once the dead writes between them are gone there is no code
+      at all, sp ends where it started, and both lines go.  A label, a call
+      or any other live line ends the search -- a branch could reach the
+      `POP` with a different value stack.
+
 Everything else is a boundary: arithmetic that may set flags, multiplies,
 `UDIV`, `BX`, barriers, conditional forms and any mnemonic the pass does not
 know are never crossed or rewritten.  A `MOVW`/`MOVT` pair is treated as one
@@ -60,6 +67,13 @@ Checks:
      and the answer does not change.  A shift whose result does not fit the
      8-bit immediate (`300 << 5`) and a shift that would need a negative
      immediate (`-8 >> 1`) are left alone.
+
+ 10. M7 FIRES, ON A REAL DRIVER.  The HAL DMA driver in the benchmark corpus
+     leaves 50-odd `PUSH {rX}` / dead writes / `POP {rX}` / indexed-load
+     groups behind; every one of them must be gone with the flag on, no
+     multi-register `PUSH`/`POP` (a prologue or an epilogue) may change, so
+     may no label, and the instruction count must drop without the text
+     growing.
 
 Usage: run_cmat_tests.py [path-to-arkcc]
 Exit 0 = every check passed, 1 = a check failed, 2 = setup problem.
@@ -191,6 +205,33 @@ def count(re_, text):
 
 def count_sub(s, text):
     return sum(1 for ln in text.splitlines() if s in ln)
+
+
+M7PUSH_RE = re.compile(r'^PUSH \{r(\d+)\}$')
+M7POP_RE = re.compile(r'^POP \{r(\d+)\}$')
+MULTI_RE = re.compile(r'^\s+PUSH \{r\d+,')
+
+
+def m7_shapes(text):
+    """`PUSH {rX}`, dead-looking writes, `POP {rX}`, then the index load."""
+    lines = [ln.strip() for ln in text.splitlines()]
+    n = 0
+    for i, ln in enumerate(lines[:-2]):
+        m = M7PUSH_RE.match(ln)
+        if not m:
+            continue
+        for j in range(i + 1, min(i + 4, len(lines))):
+            p = M7POP_RE.match(lines[j])
+            if p:
+                if (p.group(1) == m.group(1) and j + 1 < len(lines)
+                        and lines[j + 1].startswith('LDR')
+                        and 'LSL' in lines[j + 1]):
+                    n += 1
+                break
+            if not (lines[j].startswith('MOV ') or lines[j].startswith('.loc')
+                    or lines[j] == ''):
+                break
+    return n
 
 
 def label_count(text):
@@ -348,6 +389,79 @@ def main():
                   'no over-fold: the file is still being processed',
                   'UXTB %d -> %d' % (count_sub('UXTB r0, r0', tn_off),
                                      count_sub('UXTB r0, r0', tn_on)))
+
+        # --- 5c. M7: the value-stack PUSH/POP dance -------------------------
+        # The shape the value stack leaves behind on a real driver: the base
+        # goes down on the stack, the index is materialised into a register,
+        # the base comes back, and the load folds the index away.  Every write
+        # in the middle is dead, so the pair buys nothing.  Driven from the
+        # HAL DMA driver in the benchmark corpus, so the fixture is a real
+        # one; the multi-register PUSH/POP of every prologue and epilogue is
+        # the anti-over-fire half.
+        hal = os.path.join(ROOT, 'examples', 'ark_test', 'Drivers',
+                           'STM32F4xx_HAL_Driver', 'Src',
+                           'stm32f4xx_hal_dma.c')
+        if not os.path.exists(hal):
+            skip('M7: a live PUSH/POP pair is dropped',
+                 'benchmark corpus not installed')
+        else:
+            hal_args = ['-O2', '-DSTM32F401xE', '-DUSE_HAL_DRIVER',
+                        '--reloc-data']
+            for d in ('', 'Core/Inc', 'Core/Src',
+                      'Drivers/STM32F4xx_HAL_Driver/Inc',
+                      'Drivers/CMSIS/Device/ST/STM32F4xx/Include',
+                      'Drivers/CMSIS/Core/Include'):
+                hal_args += ['-I', os.path.join(ROOT, 'examples', 'ark_test',
+                                                d)]
+            hal_args += ['-I', INC]
+            hal_flags = FULL + ['-fopt-vreg']
+            texts, h_err = {}, None
+            for tag, flags in (('off', hal_flags),
+                               ('on', hal_flags + [FLAG])):
+                out = os.path.join(work, 'hal_' + tag + '.s')
+                rc, log = run([arkcc] + ASM_ARM + hal_args +
+                              [hal, '-o', out] + flags, work)
+                if rc != 0:
+                    h_err = (log.strip().splitlines() or ['asm failed'])[:1]
+                    break
+                with open(out, encoding='utf-8', errors='replace') as fh:
+                    texts[tag] = fh.read()
+            if h_err:
+                check(False, 'M7: the HAL DMA driver builds', h_err[0][:120])
+            else:
+                s_off = m7_shapes(texts['off'])
+                s_on = m7_shapes(texts['on'])
+                check(s_off > 0 and s_on == 0,
+                      'M7: `PUSH {rX}` / dead writes / `POP {rX}` pairs are '
+                      'dropped',
+                      '%d -> %d pair(s)' % (s_off, s_on))
+                check(insn_count(texts['on']) < insn_count(texts['off']),
+                      'M7: the instruction count drops',
+                      '%d -> %d' % (insn_count(texts['off']),
+                                    insn_count(texts['on'])))
+                m_off = count(MULTI_RE, texts['off'])
+                m_on = count(MULTI_RE, texts['on'])
+                check(m_off > 0 and m_off == m_on,
+                      'M7: a multi-register PUSH (a prologue) is never cut',
+                      '%d -> %d' % (m_off, m_on))
+                e_off = count_sub(', pc}', texts['off'])
+                e_on = count_sub(', pc}', texts['on'])
+                check(e_off > 0 and e_off == e_on,
+                      'M7: an epilogue POP is never cut',
+                      '%d -> %d' % (e_off, e_on))
+                check(count_sub('PUSH {r0}', texts['on']) > 0,
+                      'M7: single-register PUSH lines that still matter '
+                      'survive',
+                      '%d left' % count_sub('PUSH {r0}', texts['on']))
+                check(label_count(texts['on']) == label_count(texts['off']),
+                      'M7: labels are untouched',
+                      '%d/%d label(s)' % (label_count(texts['off']),
+                                          label_count(texts['on'])))
+                check(count_sub('.size ', texts['on']) ==
+                      count_sub('.size ', texts['off']),
+                      'M7: no function is lost',
+                      '%d/%d' % (count_sub('.size ', texts['off']),
+                                 count_sub('.size ', texts['on'])))
 
         # --- 6. the answers stay the same -----------------------------------
         for name, _body, want, case_flags in CASES:

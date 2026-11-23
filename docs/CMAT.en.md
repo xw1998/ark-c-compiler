@@ -6,10 +6,11 @@ English | [中文](CMAT.md)
 > copies it into a scratch register, and the consumer folds it back into the
 > addressing mode -- it also writes the scratch register twice in a row, lets a
 > constant walk through a shift or an extend, and still emits `CMP` + branch for
-> a `do {} while (0U)` whose condition is known. `-fopt-cmat` removes those six
-> shapes from a function's emitted text: **697 instructions fewer (-4.37%)** on
-> the whole HAL corpus, `LSL` 509 -> 186, `UXTB` 218 -> 61, and 116 conditional
-> branches gone.
+> a `do {} while (0U)` whose condition is known; and the value stack still
+> pushes a base, leaves only dead writes in between, and pops it straight back.
+> `-fopt-cmat` removes those seven shapes from a function's emitted text: **993
+> instructions fewer (-6.23%)** on the whole HAL corpus, `LSL` 509 -> 163,
+> `UXTB` 218 -> 61, 116 conditional branches gone, and 67 push/pop pairs gone.
 
 ---
 
@@ -34,7 +35,7 @@ These shapes need no liveness analysis to be proved safe -- either the address
 and the result are identical, or the value is provably overwritten before any
 read inside the same block. That is the whole domain of this pass.
 
-## 2. The six rules
+## 2. The seven rules
 
 ### 2.1 M1: a copy of a known constant becomes an immediate
 
@@ -117,6 +118,44 @@ shorter than a conditional branch in Thumb-2.  Dropping a never-taken branch is
 a pure win, and the corpus has far more of those (70 vs 46): the
 `do { ... } while (0U)` HAL macros expand to `MOV r0, #0 / CMP r0, #0 / BNE`.
 
+### 2.7 M7: the value stack's `PUSH {rX}` / `POP {rX}` pair goes
+
+> A `PUSH {rX}` followed by a `POP {rX}` with **nothing but already-dead units
+> in between** loses both lines.
+
+When the value stack stores a value and immediately loads it straight back into
+the same register, with no live code left in between, the round trip buys
+nothing: `sp` goes down and comes back, net zero, and no observer ever sees the
+intermediate stack write.
+
+Three safety points:
+
+- **no live code in between**.  Every unit between the two must already have
+  been judged dead by M3, and M3's criterion is "written again later in this
+  block with no read in between", so deleting them changes no value;
+- **no labels, no calls**.  A label, `BL`/`BLX` and every branch end the search:
+  a branch may reach that `POP` with a different value stack, and a call must
+  see the stack frame it expects;
+- **no register lists**.  Only exactly `PUSH {rN}` / `POP {rN}` with one
+  `r0`-`r12` is recognised; `PUSH {r5,r6,r7,lr}` (prologue) and
+  `POP {..., pc}` (epilogue) are never touched.
+
+Two supporting extensions to the existing criteria -- M7 is useless without
+them, because the writes in the middle stay live-looking:
+
+- **a `POP`/`LDM` is a write**.  `cm_dies_later` used to treat `POP` as the end
+  of the block, so "overwritten by `POP {rX}`" was invisible.  Now a `POP`/`LDM`
+  that names the register in its list counts as the overwrite, and one that does
+  not name it **keeps scanning** (write-back forms such as `LDM rB!, {...}` and
+  lists this pass cannot parse are still block ends);
+- **a `POP`/`LDM` clears only its own registers**.  Any `POP` used to wipe all
+  thirteen known-constant slots, so after `POP {r0}` even `r1`'s value was gone
+  and `LDR r0, [r0, r1, LSL #2]` could not fold to `[r0, #0]`.  Now only the
+  listed bits are cleared.
+
+That is why M7's gain arrives in two steps: first the dead `MOV`s in the middle
+(-93), then the pairs themselves (-203).
+
 ## 3. Block boundaries and the read set
 
 A block ends (state is cleared) at:
@@ -124,7 +163,10 @@ A block ends (state is cleared) at:
 - a label (`.L...:` / a function name);
 - any branch: the `B` family, `BL`, `BX`, `BLX`, `CBZ`/`CBNZ`, the ten conditional forms;
 - `IT` -- the instructions under it are conditional;
-- `POP` / `LDM*` / `STM*`;
+- `POP` / `LDM*` / `STM*` -- **with one exception**: a `POP`/`LDM` writes only
+  the registers its list names, so it clears only those constant slots and every
+  other register stays known (section 2.7).  A write-back `LDM rB!, {...}` and a
+  list containing `sp`/`lr`/`pc` are still treated as a full block end;
 - **any mnemonic that is not on the whitelist** (an unknown instruction may write a
   register or set flags, so it is a boundary by default).
 
@@ -208,11 +250,33 @@ instructions are counted line by line with `^\s+[A-Za-z][A-Za-z0-9.]*\s` (a
 | --- | ---: | ---: |
 | baseline (sixteen switches, `-fno-opt-cmat`) | 15,933 | -- |
 | + `-fopt-cmat`, M1/M2/M3 only | 15,613 | **-320** |
-| + `-fopt-cmat`, all six rules | **15,236** | **-697 (-4.37%)** |
+| + `-fopt-cmat`, M1-M6 | 15,236 | -697 (-4.37%) |
+| + `-fopt-cmat`, all seven rules | **14,940** | **-993 (-6.23%)** |
 
-So M1/M2/M3 account for -320 and **M4/M5/M6 for another -377**.
+So M1/M2/M3 account for -320, **M4/M5/M6 for another -377** and **M7 (with the
+two criterion extensions) for another -296**.
 
-Mnemonic account (same `.s` files, baseline vs all six rules):
+M7's -296 reconciles line by line (the same two counters over three trees,
+subtracted mnemonic by mnemonic):
+
+| item | M1-M6 | seven rules | delta | belongs to |
+| --- | ---: | ---: | ---: | --- |
+| `PUSH` | 962 | 895 | **-67** | the push/pop pairs M7 drops |
+| `POP` | 633 | 566 | **-67** | same |
+| `MOV` | 3,733 | 3,594 | -139 | dead writes the new criteria expose |
+| `LSL` | 186 | 163 | -23 | same |
+| total | 15,236 | 14,940 | **-296** | |
+
+That is **67 pairs (134 lines) plus 162 dead lines in between = 296**, exactly
+the measured difference.  The M1-M6 tree still holds 74 sites of the shape
+`PUSH {r0}` / `MOV r0, #0` / `MOV r1, #0` / `POP {r0}` /
+`LDR r0, [r0, r1, LSL #2]`; 67 of them go.  The remaining seven look the same
+but their middle write is still read by a later instruction, so not a single
+line of them moves -- that is the price of doing no global liveness analysis,
+and the reason the rule is safe.
+
+Mnemonic account (M1-M6, same `.s` files, baseline vs all six rules; the M7
+part is the table above):
 
 | mnemonic | baseline | + cmat | delta |
 | --- | ---: | ---: | ---: |
@@ -244,7 +308,8 @@ they net 0; M3 deletes 619 `MOV` lines plus 8 `MOVW`/`MOVT` lines, and M6d
 deletes 70 branch lines => -619 - 8 - 70 = **-697**, exactly the measured
 difference.
 
-At 4 bytes per Thumb-2 instruction the code is about **2,788 bytes** smaller.
+At 4 bytes per Thumb-2 instruction the code is about **2,788 bytes** smaller
+with M1-M6 and about **3,972 bytes** smaller with all seven rules.
 (This is derived, not measured: the corpus is not linked into an image.)
 
 ## 7. Where it lives
@@ -268,8 +333,10 @@ right after `-fopt-regalloc` and before `ark_fix_far_offset()`:
 | `cm_shift3` | recognise a strictly three-operand `LSL/LSR/ASR rD, rS, #n` (the two-operand form sets flags, so it is refused) |
 | `cm_extend2` | recognise `UXTB/UXTH/SXTB/SXTH rD, rS` |
 | `cm_cond_true` | condition evaluation on frozen operands (1 taken / 0 not / -1 unknown) |
-| `cm_dies_later` | "is this register written before anything reads it, from line j to the block end" -- M3's test |
-| `ark_cmat_function` | the pass: line table -> unit table (fusing MOVW/MOVT) -> walk the six rules -> rebuild |
+| `cm_dies_later` | "is this register written before anything reads it, from line j to the block end" -- M3's test (a `POP`/`LDM` counts as a write when its list names the register, and the scan keeps going when it does not) |
+| `cm_list_mask` | `{r4,r5,r6}` -> register mask; lists naming `lr`/`pc` or a write-back base are refused (returns 0) |
+| `cm_one_reg` | `{rN}` naming exactly one register in 0..12 |
+| `ark_cmat_function` | the pass: line table -> unit table (fusing MOVW/MOVT) -> walk M1/M2/M4/M5/M6 -> M3 -> M7 -> rebuild |
 
 `-fopt-cmat` is **off by default**. Under `ARKCC_PROFILE_STM32_MIN` the macro is
 0, so neither the code nor the static tables are in the image, and a cropped
@@ -278,7 +345,7 @@ about 300 KB of BSS and exist only in host builds.
 
 ## 8. Gate (`make test-cmat`)
 
-`tests/run_cmat_tests.py`, thirty checks:
+`tests/run_cmat_tests.py`, thirty-seven checks:
 
 1. **OFF IS OFF**: the default build and `-fno-opt-cmat` are byte-identical;
 2. **M2 fires**: the `LSL #2]` shape goes to zero, `[rB, #off]` becomes more
@@ -302,6 +369,16 @@ about 300 KB of BSS and exist only in host builds.
    (6400) and `200 << 1` (400) both overflow the 8-bit immediate and keep the
    same line count in both arms, while the `UXTB` in the same file still folds
    (proof the file really is processed).
+10. **M7 fires, on a real driver**: the fixture is `stm32f4xx_hal_dma.c` from
+    the benchmark corpus.  The shape is hard to build in a small synthetic
+    fixture (it needs "base already on the value stack", "the index folds to a
+    constant" and "a later instruction rewrites the index register" at the same
+    time) but appears 52 times in that driver.  Assertions: the
+    `PUSH {rX}` / dead writes / `POP {rX}` / indexed-load groups go **52 -> 0**,
+    the instruction count 2,351 -> 2,035, **multi-register `PUSH` (prologues)
+    15 -> 15**, **epilogue `POP {..., pc}` 32 -> 32**, labels 264/264 and
+    functions 15/15 all unchanged, and 81 single-register `PUSH` lines still
+    survive (proof it is not deleting `PUSH` wholesale).
 
 As a stronger layer, `tests/arm_exec/run_arm_exec.py --extra=-fopt-cmat` ran the
 whole execution suite (function pointers, 64-bit, soft-float, atomics, TLS,
