@@ -51,7 +51,7 @@ Totals over the 95 effective units:
 | compiler | options | instructions | code bytes |
 | --- | --- | ---: | ---: |
 | **arkc** | `-O2` (no `-fopt-*`) | 49,186 | 110,468 |
-| **arkc** | `-O2` + all nineteen `-fopt-*` (see section 3) | **13,517** | **34,932** |
+| **arkc** | `-O2` + all nineteen `-fopt-*` (see section 3) | **13,566** | **34,980** |
 | armcc | `-O1` | 6,051 | 14,888 |
 | armcc | `-O2` | 5,619 | 13,920 |
 | armcc | `-O3 -Otime` | 5,740 | 15,300 |
@@ -64,10 +64,10 @@ Against armcc `-O2` (5,619 instructions / 13,920 B):
 | comparison | instructions | code bytes |
 | --- | ---: | ---: |
 | arkc `-O2` (no `-fopt-*`) | 8.8× | 7.9× |
-| arkc `-O2` + every `-fopt-*` | **2.40×** | **2.51×** |
+| arkc `-O2` + every `-fopt-*` | **2.41×** | **2.51×** |
 
-**The switches take the gap from 8.8× down to 2.4×** (instructions -72.5%, code
-bytes -68.4%).
+**The switches take the gap from 8.8× down to 2.4×** (instructions -72.4%, code
+bytes -68.3%).
 
 **IAR did not take part**: IAR EWARM 9.70 is installed on this machine
 (`D:\tools\IAR_EWARM_9.70\arm\bin\iccarm.exe`, V9.70.1.475/W64) but **has no
@@ -99,7 +99,7 @@ Four of them are new relative to the previous version of this table: `-fopt-cmat
 [OPERAND_ALLOC.en.md](OPERAND_ALLOC.en.md) section 8) and `-fopt-pair`
 (-10 instructions). `-fopt-vreg` / `-fopt-coalesce` / `-fopt-prop` /
 `-fopt-deadpush` are described in [VREG.en.md](VREG.en.md) and their own documents.
-The fifth one added after that set is `-fopt-litpool` (-701 instructions / -1,140 B,
+The fifth one added after that set is `-fopt-litpool` (-705 instructions / -1,134 B,
 turning `MOVW`+`MOVT` into literal-pool `LDR`, see [LITPOOL.en.md](LITPOOL.en.md)).
 
 ## 4. Where the gap comes from: four structural reasons
@@ -157,8 +157,8 @@ Two further ceilings that were **quantified and judged not worth doing**:
 
 > **This section is the historical ladder**: it is the reading taken when the ten
 > switches landed, accumulated one at a time, and it exists to explain what each
-> rule is worth. **The current total is section 2** (13,517 instructions /
-> 34,932 B); the ladder no longer adds up to it, because dead-static suppression
+> rule is worth. **The current total is section 2** (13,566 instructions /
+> 34,980 B); the ladder no longer adds up to it, because dead-static suppression
 > and the on-demand run-time helper landed in between and four more tables were
 > added.
 
@@ -230,7 +230,7 @@ corpus.
   (intermediate results spilling to the frame), which does need liveness and is
   real engineering work.
 - **Not "only a few passes are missing"**: categorising the current binary by
-  mnemonic, 4,875 of the 7,898 instruction gap (62%) fall in one group of "value
+  mnemonic, 4,918 of the 7,947 instruction gap (62%) fall in one group of "value
   transport" categories (`MOV` immediate / `MOVW`+`MOVT` / `MOV` register /
   `PUSH`+`POP` / frame access). That is a model-level price, not a missing pass;
   what is left to win and what each item costs is written down item by item in

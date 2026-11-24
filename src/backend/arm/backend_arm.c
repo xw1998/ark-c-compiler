@@ -2349,6 +2349,30 @@ static int ra_last_elem_at(const char *line) {
     return -1;
 }
 
+/* Is register `r` named as a whole token on this line?  A widened PUSH/POP
+ * that names a register twice is silently deduplicated by the assembler, so
+ * the word count -- and every offset derived from it -- would be wrong. */
+static int ra_names_reg(const char *line, int r) {
+    const char *p = line;
+    while (*p) {
+        if (p[0] == 'r' && p[1] >= '0' && p[1] <= '9' &&
+            !(p > line && (((p[-1] >= 'a' && p[-1] <= 'z') ||
+                            (p[-1] >= 'A' && p[-1] <= 'Z')) ||
+                           (p[-1] >= '0' && p[-1] <= '9')))) {
+            const char *q = p + 1;
+            int n = 0;
+            while (*q >= '0' && *q <= '9') { n = n * 10 + (*q - '0'); q++; }
+            if (!(((q[0] >= 'a' && q[0] <= 'z') || (q[0] >= 'A' && q[0] <= 'Z')) ||
+                  (q[0] >= '0' && q[0] <= '9')))
+                if (n == r) return 1;
+            p = q;
+            continue;
+        }
+        p++;
+    }
+    return 0;
+}
+
 /* Classify one assembly line.
  *   -1  no "[r6, #<n>]" at all
  *    0  exactly "LDR r0, [r6, #n]"   (*off, *is_ldr = 1)
@@ -2667,7 +2691,9 @@ static void ark_regalloc_function(AsmBuffer *b, int from, IrFunc *f, int local_e
     AsmBuffer out;
     char line[256];
     char nline[256];
+    char pushline[64];               /* the frame save this pass will widen */
 
+    pushline[0] = 0;
     if (!ra_enabled() && !cc_on()) return;
 
 #if ARKCC_FEATURE_OPT_CONSTCACHE
@@ -2726,7 +2752,13 @@ static void ark_regalloc_function(AsmBuffer *b, int from, IrFunc *f, int local_e
         if (len >= (int)sizeof(line)) { pos += len + 1; continue; }
         for (i = 0; i < len; i++) line[i] = b->buf[pos + i];
         line[len] = 0;
-        if (ra_is_prologue_push(line)) have_prologue = 1;
+        if (ra_is_prologue_push(line)) {
+            int q;
+            have_prologue = 1;
+            for (q = 0; q < len && q < (int)sizeof(pushline) - 1; q++)
+                pushline[q] = line[q];
+            pushline[q] = 0;
+        }
         kind = ra_classify(line, &off, &is_ldr, &wide);
         if (kind >= 0) {
             int s = ra_slot(slots, &nslots, off);
@@ -2853,6 +2885,18 @@ static void ark_regalloc_function(AsmBuffer *b, int from, IrFunc *f, int local_e
         }
     }
 #endif
+    /* The save list this pass widens is the one in the text; a candidate it
+     * already names would make the assembler deduplicate the list silently,
+     * leaving the real block shorter than `extra` below claims and every
+     * offset shifted too far.  With the fixed prologue shape accepted above
+     * this cannot fire today -- it is cheap insurance for the day the shape
+     * grows. */
+    if (have_prologue) {
+        int j, n2 = 0;
+        for (j = 0; j < nregs; j++)
+            if (!ra_names_reg(pushline, made[j])) made[n2++] = made[j];
+        nregs = n2;
+    }
     if (nregs == 0) return;
 
     /* An odd number of saved words would leave sp at 4 mod 8 once the prologue
@@ -3316,18 +3360,35 @@ static int vg_reads_reg(const char *ln, int reg) {
 
 /* Bit 0..3 set for r8..r11 named anywhere in the line.  A register named in
  * the text may already be live (regalloc's slots and constant cache do not
- * always keep theirs in the list), so it is not available. */
+ * always keep theirs in the list), so it is not available.
+ *
+ * The token boundary is part of the test: `Lr8_keep` or `r10_table` is a
+ * symbol, not a register, so the 'r' must not follow an identifier character
+ * and the last digit must not be followed by one.  -fopt-constcache asks the
+ * same question in cc_line_hregs and scans exactly this way.
+ *
+ * 0.9.1-wip fix: the first version compared the character *after* the 'r'
+ * against "not a digit", which is false for every register there is, so the
+ * mask was always empty.  -fopt-vreg then believed r8..r11 were free and
+ * appended registers the widened PUSH already named -- `PUSH {r5, r6, r7, r8,
+ * r9, r8, r9, lr}` -- which the assembler silently deduplicates and which
+ * therefore also threw off this pass's own word count. */
 static int vg_hi_mask(const char *line) {
     const char *p = line;
     unsigned m = 0;
-    while ((p = strchr(p, 'r')) != 0) {
-        char a = (p == line) ? ' ' : p[-1];
-        char b = p[1];
-        if (!vg_isalpha(a) && !(a >= '0' && a <= '9') &&
-            !vg_isalpha(b) && !(b >= '0' && b <= '9')) {
-            if (b == '8' || b == '9') m |= 1u << (b - '8');
-            else if (b == '1' && (p[2] == '0' || p[2] == '1'))
-                m |= 1u << (10 + (p[2] - '0') - 8);
+    while (*p) {
+        if (p[0] == 'r' && p[1] >= '0' && p[1] <= '9' &&
+            !(p > line && (((p[-1] >= 'a' && p[-1] <= 'z') ||
+                            (p[-1] >= 'A' && p[-1] <= 'Z')) ||
+                           (p[-1] >= '0' && p[-1] <= '9')))) {
+            const char *q = p + 1;
+            int n = 0;
+            while (*q >= '0' && *q <= '9') { n = n * 10 + (*q - '0'); q++; }
+            if (!(((q[0] >= 'a' && q[0] <= 'z') || (q[0] >= 'A' && q[0] <= 'Z')) ||
+                  (q[0] >= '0' && q[0] <= '9')))
+                if (n >= 8 && n <= 11) m |= 1u << (n - 8);
+            p = q;
+            continue;
         }
         p++;
     }
@@ -3548,6 +3609,12 @@ static void ark_vreg_function(AsmBuffer *b, int from, IrFunc *f, int local_eff) 
         }
         used_mask |= (unsigned)vg_hi_mask(line);
     }
+    /* The registers the prologue already saves are in use by definition, and
+     * widening the list to name one twice would make the assembler deduplicate
+     * it behind this pass's back: the real PUSH would then be shorter than
+     * saved_words says, so both the frame base and the parity of the block
+     * would be wrong.  Belt and braces next to the line scan above. */
+    used_mask |= saved_mask;
     base = local_eff + 4 * saved_words;
 
     for (i = 0; i < nlines; i++) {

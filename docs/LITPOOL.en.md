@@ -35,7 +35,7 @@ Two consequences, spelled out so the numbers cannot be misread:
 - **`c = 0` cannot happen** (an unused constant has no `MOVW`/`MOVT`), so there is no
   negative case.
 
-On real code, "the same 32-bit constant materialised several times" is common: the 803
+On real code, "the same 32-bit constant materialised several times" is common: the 807
 `MOVW`/`MOVT` pairs in the 95-TU corpus cover only on the order of 125 distinct
 constants (the older estimate was 6.42 uses per constant). That is exactly what a pool
 eats.
@@ -86,7 +86,7 @@ added:
 
 `LDR [pc, #imm]` reaches only 4,095 bytes — roughly 1,000 instructions. **A large function
 cannot host a single pool** (two of them exist in the 95-TU corpus, and together they hold
-225 of the 707 convertible pairs). So the text is cut into **regions**, one pool per group
+225 of the 711 convertible pairs). So the text is cut into **regions**, one pool per group
 of regions:
 
 1. **A region ends at an instruction that ends the control flow**: `POP {..., pc}`,
@@ -124,19 +124,19 @@ allocation.
 
 | Reading | 18 switches | 19 switches (+`-fopt-litpool`) | Delta |
 | --- | ---: | ---: | ---: |
-| Instructions | 14,218 | **13,517** | **-701** |
-| Code bytes | 36,072 | **34,932** | **-1,140** |
+| Instructions | 14,271 | **13,566** | **-705** |
+| Code bytes | 36,114 | **34,980** | **-1,134** |
 
-- **Instructions** -701 (-4.93%), **bytes** -1,140 B (-3.16%).
+- **Instructions** -705 (-4.94%), **bytes** -1,134 B (-3.14%).
 
 The byte bill reconciles line by line (counted with `grep -c` on the `.s` files the
-19-switch build produces): **701 sites** (`LDR rD, .Llit_*`) and **355 pools**
-(`.Llit_*:` definitions). Each site goes 8 → 4 bytes, i.e. -4, total **-2,804**; each pool
-costs 4 bytes, total **+1,420**; the `.align 4` in front of each pool pads **244** bytes on
-average. So
+19-switch build produces): **705 sites** (`LDR rD, .Llit_*`) and **359 pools**
+(`.Llit_*:` definitions). Each site goes 8 → 4 bytes, i.e. -4, total **-2,820**; each pool
+costs 4 bytes, total **+1,436**; the `.align 4` in front of the pools pads **250** bytes in
+total. So
 
 ```
--2,804  +  1,420  +  244  =  -1,140  B   (matches the measured difference exactly)
+-2,820  +  1,436  +  250  =  -1,134  B   (matches the measured difference exactly)
 ```
 
 Fewer pools means more saving — which is why regions are merged greedily (one pool per
@@ -146,24 +146,26 @@ Pair audit (same corpus, `MOVW rX` immediately followed by `MOVT rX`):
 
 | Item | Count |
 | --- | ---: |
-| Adjacent same-register `MOVW`/`MOVT` pairs with 18 switches | **803** |
+| Adjacent same-register `MOVW`/`MOVT` pairs with 18 switches | **807** |
 | Of those marked by `.arkdata` (the linker patches them) | 96 |
-| Of those with different registers or not adjacent (not a real pair) | 6 |
-| **Converted** | **701** |
+| Of those with different registers or not adjacent (not a real pair) | 0 |
+| Poolable (`807 - 96`) | 711 |
+| **Converted** | **705** (the other 6 sit in long regions / large functions the pass refuses) |
 | Remaining `MOVW` / `MOVT` with 19 switches | 236 / 102 (338 = 1,740 - 1,402) |
 
-`803 - 96 - 6 = 701` matches the measured instruction difference exactly. The old
-`docs/BOUNDARY.en.md` section 5.1 estimated -803 instructions / -2,712 B by assuming every
-pair converts and each constant gets one pool. The measurement is smaller, for three
-reasons: 96 pairs are linker patches (untouchable), 6 are not real pairs, and **every
-region group builds its own pool** (the same constant can occupy one word per group).
+`807 - 96 = 711` poolable, 705 actually converted, matching the measured instruction
+difference exactly. The old `docs/BOUNDARY.en.md` section 5.1 estimated -803 instructions /
+-2,712 B by assuming every pair converts and each constant gets one pool. The measurement
+is smaller, for three reasons: 96 pairs are linker patches (untouchable), 6 are refused by
+the region/function limits, and **every region group builds its own pool** (the same
+constant can occupy one word per group).
 
 One function, `HAL_RCC_OscConfig()` (`stm32f4xx_hal_rcc.c`):
 
 | Setting | Instructions in that function | TU total |
 | --- | ---: | ---: |
-| 18 switches | 1,212 | 2,123 |
-| 19 switches | **1,186** | **2,040** |
+| 18 switches | 1,256 | 2,171 |
+| 19 switches | **1,229** | **2,085** |
 
 That function is large enough to need four groups — the region mechanism showing up on real
 code.

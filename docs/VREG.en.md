@@ -435,11 +435,11 @@ The fix is a marker `vg_rf[i]` (an array that was free in this pass): after Pass
 | Corpus (95 TUs, Cortex-M4, `-O2`) | instructions | bytes |
 |---|---|---|
 | seventeen switches (eighteen minus `-fopt-vreg`) | 14,954 | 36,204 |
-| eighteen switches (with the fixed `-fopt-vreg`) | **14,218** | **36,072** |
+| eighteen switches (with the fixed `-fopt-vreg`) | **14,271** | **36,114** |
 
-So `-fopt-vreg` now really contributes **-736 instructions (-4.9%) / -132 B**.
+So `-fopt-vreg` now really contributes **-683 instructions (-4.6%) / -90 B** (the `vg_hi_mask` fix of section 14 lifts eighteen switches from 14,218 to 14,271; seventeen switches are unaffected because they do not contain vreg).
 
-**One honest note that has to be written down**: before the fix the same measurement read 14,103 instructions / 36,072 B. The 115 extra instructions are exactly what those two defects used to "save" -- loads that were wrongly deleted come back as `MOV` (bytes unchanged: `-fopt-cmat` then removes the equivalent `MOV`). In other words, the -415 / -801 published in §11/§12 include instructions bought with **wrong answers**; the real contribution is smaller than those numbers. From this section on, the `-fopt-vreg` account is 14,954 -> 14,218.
+**One honest note that has to be written down**: before the fix the same measurement read 14,103 instructions / 36,072 B. The 115 extra instructions are exactly what those two defects used to "save" -- loads that were wrongly deleted come back as `MOV` (bytes unchanged: `-fopt-cmat` then removes the equivalent `MOV`). In other words, the -415 / -801 published in §11/§12 include instructions bought with **wrong answers**; the real contribution is smaller than those numbers. From this section on, the `-fopt-vreg` account is 14,954 -> 14,271.
 
 S6c itself (the part that crosses a `BL`) is worth little: the hit condition demands `dr >= 4` and that register in the prologue save list, while the frame-flow destinations are mostly `r0` (caller-saved, cannot cross a `BL`) and `r5`/`r7`, so sites that can hit are rare to begin with.
 
@@ -447,9 +447,50 @@ S6c itself (the part that crosses a `BL`) is worth little: the hit condition dem
 
 | Gate | Result |
 |---|---|
-| `tests/run_vreg_tests.py` (9 fixtures incl. the new `crossbl`, 137 assertions expected) | all checks passed |
+| `tests/run_vreg_tests.py` (10 fixtures incl. the new `crossbl` and `mixed`, 75 assertions) | all checks passed |
 | `tests/arm_exec/run_arm_exec.py --arkcc ./arkcc.exe --extra=-fopt-vreg` | 0 failure(s) |
 | `make test` | green |
 | OFF IS OFF (no flag, eighteen switches, 95 TUs against the baseline) | identical 95 / different 0 |
 
 The closing sentence of §12.5 ("S6c ... is still not started") is superseded by this section. The seven frozen gates of §5 and the F1-F4 falsifiers of §6 remain **unchanged word for word**.
+
+### 14 `vg_hi_mask` always empty: vreg and the constant cache fight over `r8-r11` (0.9.1-wip fix)
+
+Section 13 fixed "the region's edge loses the value". This section fixes a quieter defect:
+**two consumers each believing they own the same register**.
+
+**Symptom**: with nineteen switches the 95-TU corpus contains four duplicated register lists --
+`PUSH {r5, r6, r7, r8, r9, r8, r9, lr}` and the matching `POP` (in `HAL_RCC_OscConfig` and the
+function after it in `stm32f4xx_hal_rcc.c`, plus two in `stm32f4xx_hal_rcc_ex.c`). The built-in
+assembler **silently de-duplicates** a repeated register, so fewer words are actually pushed
+than `saved_words` says, and both the frame offsets and the 8-byte alignment are computed wrong.
+
+**Root cause**: `vg_hi_mask()` decided token boundaries with "is the character after `r` not a
+digit" -- but that character is always a digit (`8` in `r8`), so the condition was always false
+and the mask was always 0. `-fopt-vreg` therefore believed `r8-r11` were all free, while
+`-fopt-regalloc` (with its constant cache, `CC_MIN_COUNT = 5`) runs **before** it and had
+already claimed some of them for profitable slots. Each pass kept its own books.
+
+**The fix (three places, the last two are insurance)**:
+
+1. Rewrite `vg_hi_mask()` as a token scan: a `rN` mention needs a non-alphanumeric before it and
+   a non-alphanumeric after it, the same rule as `cc_line_hregs()` (setting bits for `r8`-`r11`).
+2. After the pre-scan, add `used_mask |= saved_mask`: **a register the prologue already saves is
+   busy by definition**, independent of whether the scan above is complete.
+3. Keep the prologue's `PUSH` line in `pushline`, add `ra_names_reg()`, and drop any register
+   already named there from the candidates. Today's prologue shape (`PUSH {r5,r6,r7,lr}`) never
+   triggers it; it is insurance for a wider prologue.
+
+**Price and readings**: handing the stolen registers back is not free -- eighteen switches
+14,218 -> **14,271** (+53 instructions / +42 B), nineteen switches 13,517 -> **13,566**
+(+49 / +48 B). The extra instructions are frame accesses that used to be "saved" wrongly, not
+new overhead.
+
+**Gates**: a new `mixed` fixture -- the only shape where both wins hold at once (one constant
+added five times in a function that also reads slots repeatedly) -- plus a general assertion on
+both arms of every fixture: **no `PUSH`/`POP` list may name a register twice**. `mixed` carries
+eight dedicated assertions, one of which
+(`the constant cache keeps its register and this pass takes a different one`) watches the exact
+failure shape: the two passes must end up with different registers. All 10 fixtures pass,
+75 assertions in total.
+

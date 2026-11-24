@@ -253,6 +253,36 @@ int main(void)
 }
 """
 
+# -fopt-regalloc's constant cache and this pass share one saved-register
+# block: the cache takes a high register first, and this pass takes what is
+# left.  The two used to collide, because the mask of registers the text
+# already names compared the character *after* the 'r' against "not a digit" --
+# false for every register there is -- so the mask was always empty and this
+# pass appended r8/r9 a second time.  The assembler deduplicates such a list
+# without a word of warning, which also made the word count below wrong.  The
+# fixture binds a constant to a high register (five uses of one 32-bit value)
+# *and* reloads a promoted slot, so both consumers show up in one PUSH.
+MIXED = HEAD + """\
+int vgm(struct VgS *p, int n)
+{
+    unsigned s;
+    s = (unsigned)p->a;
+    s = s + 0x00012345u;
+    s = s + (unsigned)p->d;
+    s = s + 0x00012345u;
+    s = s + (unsigned)p->h;
+    s = s + 0x00012345u;
+    s = s + 0x00012345u;
+    s = s + 0x00012345u;
+    return (int)((s >> 16) + (unsigned)n);
+}
+int main(void)
+{
+    struct VgS v = {1, 2, 3, 40, 5, 6, 7, 100};
+    return vgm(&v, 9);
+}
+"""
+
 CASES = [
     ('chain', CHAIN, 150),    # 1 + 40 + 100 + 9
     ('loop', LOOP, 420),      # (40 + 100) * 3
@@ -263,7 +293,14 @@ CASES = [
     ('wide', WIDE, 29),       # 11 + 7 + 11
     ('deep', DEEP, 116),      # n=4*3+1=13, s=1+13=14, t=100+14=114, +2
     ('crossbl', CROSSBL, 219),  # s=1+40=41 (+100), vg_work(4,5)=78, 41+100+78
+    ('mixed', MIXED, 14),     # (1 + 5*0x12345 + 40 + 100) >> 16 == 5, + 9
 ]
+
+# Which flag set each fixture is built with.  The mixed case leaves out
+# -fopt-vstack on purpose: that pass turns the prologue into `PUSH {r4, r5, r6,
+# r7, lr}`, a shape neither -fopt-regalloc nor this pass accepts, so both
+# consumers would silently back out and the fixture would prove nothing.
+CASE_BASE = {'mixed': [f for f in BASE if f != '-fopt-vstack']}
 
 check = V.check
 skip = V.skip
@@ -325,6 +362,20 @@ def frame_lists_named(text, fn):
             break
     return push, pop
 
+def dup_frame_regs(text):
+    """Register lists that name the same register twice.
+
+    A widened PUSH naming a register the list already has is silently
+    deduplicated by the assembler, so the emitted block is shorter than the
+    pass believes and every offset derived from its size is wrong.  No arm may
+    ever produce one."""
+    bad = []
+    for ln in text.splitlines():
+        kind, regs = regs_of(ln)
+        if regs and len(regs) != len(set(regs)):
+            bad.append(ln.strip())
+    return bad
+
 def offsets(text):
     return [int(m) for m in OFF_RE.findall(text)]
 
@@ -340,7 +391,8 @@ def local_words(text):
 
 # Which function each fixture is expected to promote.
 FN = {'chain': 'vg_chain', 'loop': 'vg_loop', 'many': 'vg_many',
-      'call': 'vg_cl', 'deep': 'vg_deep', 'crossbl': 'vg_cb'}
+      'call': 'vg_cl', 'deep': 'vg_deep', 'crossbl': 'vg_cb',
+      'mixed': 'vgm'}
 
 
 def main():
@@ -372,14 +424,20 @@ def main():
         # --- 2..4. the rule, the count, the frame ---------------------------
         arms = {}
         for name, _body, _want in CASES:
-            t_off, b_off, e3 = build(arkcc, work, name, BASE, name + '_off')
-            t_on, b_on, e4 = build(arkcc, work, name, BASE + [FLAG],
+            cbase = CASE_BASE.get(name, BASE)
+            t_off, b_off, e3 = build(arkcc, work, name, cbase, name + '_off')
+            t_on, b_on, e4 = build(arkcc, work, name, cbase + [FLAG],
                                    name + '_on')
             if e3 or e4:
                 check(False, '%s: both arms build' % name,
                       (e3 or e4)[0][:120])
                 continue
             arms[name] = (t_off, b_off, t_on, b_on)
+            d_off = dup_frame_regs(t_off)
+            d_on = dup_frame_regs(t_on)
+            check(not d_off and not d_on,
+                  '%s: no PUSH/POP list names a register twice' % name,
+                  'off %s on %s' % (d_off[:1], d_on[:1]))
             n_off = insn_count(t_off)
             n_on = insn_count(t_on)
             check(n_on <= n_off,
@@ -408,6 +466,13 @@ def main():
                 check(bool(added),
                       '%s: the promoted function asks the frame for a register'
                       % name, 'push %s' % (p_on,))
+            if name == 'mixed':
+                hi = ('r8', 'r9', 'r10', 'r11')
+                off_hi = [r for r in p_off if r in hi]
+                check(len(off_hi) >= 1 and all(r in p_on for r in off_hi),
+                      'mixed: the constant cache keeps its register and this '
+                      'pass takes a different one',
+                      'off %s on %s' % (p_off, p_on))
             if added:
                 # base = local words + 4 saved words (lr included); every
                 # offset at or above it belongs to the caller/va region and
@@ -458,7 +523,8 @@ def main():
                 continue
             got = {}
             ok = True
-            for tag, flags in (('off', BASE), ('on', BASE + [FLAG]),
+            cbase = CASE_BASE.get(name, BASE)
+            for tag, flags in (('off', cbase), ('on', cbase + [FLAG]),
                                ('alone', [FLAG])):
                 t, blob, err = build(arkcc, work, name, flags, 'v' + tag)
                 if err:
