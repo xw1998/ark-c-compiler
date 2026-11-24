@@ -86,3 +86,40 @@ pass 放在 `ark_fix_far_offset()` 之前、`-fopt-addr` 第二轮之后，直�
 - 未做「跨 `BL` 的槽复用」（需要活跃性 + 调用点分析，收益同样只落在栈上）；
 - Linux 宿主未实跑（本机无交叉工具链），只做了 MinGW 宿主 + `--layout both` 构建级检查；
 - STM32H743 仅 `--layout both` 构建通过，未上板。
+
+## 6 修订（2026-11-24）：多 return 收尾与 base 偏移补偿
+
+23 开关口径下 `-fopt-frame` 自己造了两类误编译，都是「删了 PUSH 槽但只在一条
+返回路径上补齐」的变体。
+
+### 6.1 多 return：只收窄第一个 epilogue
+
+旧实现只找**第一个** `POP {..}` 做收窄，函数里其它返回路径仍是原来的宽 `POP`。
+于是同一个函数里 `PUSH {r4-r7, lr}` 被改成 `PUSH {r7, lr}`，而另一条 epilogue 还
+`POP {r4-r7, pc}`——退出时多弹 4 个字，SP 被拉偏，模拟器报 `UC_ERR_EXCEPTION`。
+
+修法：步 2 收集**全部** `POP {..}`，步 3b 按每个 `return` 路径标记 sp 恢复行
+（`MOV sp, r6` / `ADD sp, #N`），步 4 扫全函数，步 7 逐条 rebuild；
+`FR_MAX_EPI = 64` 条上限，超出整函数弃权。收窄名单取所有 epilogue 的**子集**
+（只在每条返回路径都不用的槽才删）。
+
+### 6.2 base_used：删掉的字必须补成 padding
+
+帧基址模式下序言是 `PUSH {..}` + `SUB sp, sp, #N` + `MOV r6, sp`，入栈实参在
+`[r6, #(4*np + oldN) + k]`。删掉 `d` 个 PUSH 槽后 `SUB` 的立即数也减 `4d`，
+**基址整体下移 `4d`**，而入栈实参的地址是调用者按 ABI 摆好的、不会跟着动 ⇒
+每个栈参数读偏 `4d` 字节。实测 `five(1,2,3,4,9)` 读成 `11`（第 5 个参数是栈参数）。
+
+修法：`base_used` 时保持总帧长不变 —— `newN = oldN + 4 * dropped`（删掉的槽位改成
+padding，`SUB` 仍是原来的立即数）。若原帧长本来就不是 8 的倍数（无法在保持对齐的
+前提下补偿），整函数弃权。
+
+**为什么不直接 bail**：bail 会失去所有「带局部变量或栈参数」函数的帧优化，
+而那正是收益集中的地方。补偿后总帧长不变、对齐自动成立，`PUSH`/`POP` 缩短编码的
+收益仍然保留（16-bit Thumb 下 `PUSH {r4-r7,lr}` 与 `PUSH {r7,lr}` 同长，真正的
+收益是栈 —— 见 §3）。
+
+### 6.3 门禁
+
+`abi_stack_args` 单开关 `-fopt-frame` = 50（修前 1）；`shift64` 五开关 = 50；
+23 开关 `tests/arm_exec` 40/40；`make test-frame` 全过；95 TU 编译 0 err。

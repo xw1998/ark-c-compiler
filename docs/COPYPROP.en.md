@@ -289,3 +289,20 @@ are already dead.
   functions (`EbkInterproceduralCrossJumpHelper` / `EbkCrossCallHandler`, see
   `c_compiler/iar/docs/07-crossjump-and-tbaa.md`), not a copy problem, and is a
   separate project (see `docs/OPTIMIZER_PLAN.md`).
+
+## 12 Revision (2026-11-24): `cp_parse` must track `{}` depth as well
+
+`cp_parse` splits a line into "mnemonic + up to four top-level comma-separated operands";
+the top-level test originally tracked only `[` / `]` depth. Lines that contain braces with
+commas inside — a struct returned by value, a big aggregate initialiser, or
+`PUSH {r4-r7, lr}` — did not raise the depth, so `PUSH {r4-r7, lr}` was split into three
+operands and the register list was read wrongly. The "the first operand is also read unless
+it is a pure write target" test then ran on the wrong operand and `-fopt-copyprop` deleted a
+`MOV` it had to keep.
+
+Fix: the depth counter also tracks `{}` (`{` increments, `}` decrements; `[` / `]` behave
+as before). Unbalanced brackets make `cp_parse` fail, and the caller treats the line as
+"not understood" instead of guessing.
+
+**Gates.** `make test-copyprop` 17 checks green; `tests/arm_exec` under 23 switches 40/40;
+95 TUs compile without error.

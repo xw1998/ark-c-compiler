@@ -218,3 +218,26 @@ M3 吃掉，两个 pass 在同一个构建里叠加而不是互相干扰：
 现在比较臂关掉 `-fopt-live`（`NC = ['-fno-opt-cmat', '-fno-opt-live']`），断言「每一行被删的都是
 `LDR/STR r0, [r6, #n]`」才真正只在检验本 pass。**修断言不是放宽**：动手前先确认删行来源，
 否则会把「别的 pass 合法优化」误记成「本 pass 越界」。
+
+## 11 修订（2026-11-24）：越界加载必须清槽缓存
+
+23 开关口径下 `abi_stack_args` 回 1（应为 50），最小集
+`-fopt-pair -fopt-slotreg -fopt-vstack`。
+
+**根因**：Pass 1 把 `LDR r0, [r6, #56]` 正确识别为「帧加载」（`off = 56 ≥ base`，
+这是**入栈的实参**，不归本函数帧管），但调用方只处理 `off < base` 分支，于是
+`sr_lk[行]` 留在 0（= 未分类），`valid[槽号]` 的缓存状态没有被清掉。下一条
+`LDR r0, [r6, #0]` 因此被当作「槽 0 已经在这个寄存器里」直接删掉，
+`a` 被不相干的值顶替。
+
+修法：`off >= base` 的加载也置 `sr_lk[nlines] = 6`（= 「本 pass 不认识，别信缓存」），
+只对 `t == 1`（真加载）做，`t == 2`（store）本来就不需要。
+
+**为什么不是整函数 bail**：越界加载是任何带栈参数函数的必备形态，bail 会让 slotreg
+在所有 `f(a,b,c,d,e)` 这类函数上完全失效。
+
+**代价**：只多一次「清缓存」，被删掉的加载本来就应当保留，无体积回归。
+
+**门禁**：`abi_stack_args` 三开关 50；23 开关下 `struct_narrow_copy` 84 /
+`struct_narrow_call_assign` 61 / `sret_live_results` 50；`tests/arm_exec` 40/40；
+`make test-slotreg` 全过。

@@ -254,3 +254,17 @@ vstack → addr → cbz → peep → copyprop → regalloc → fix_far_offset
   （`EbkInterproceduralCrossJumpHelper` / `EbkCrossCallHandler`，
   见 `c_compiler/iar/docs/07-crossjump-and-tbaa.md`），与拷贝不是一回事，
   单独立项（见 `docs/OPTIMIZER_PLAN.md`）。
+
+## 12 修订（2026-11-24）：`cp_parse` 的括号深度要同时认 `{}`
+
+`cp_parse` 把一行拆成「助记符 + 最多 4 个顶层逗号分隔的操作数」，原来的顶层判定只
+跟踪 `[` / `]` 深度。结构体按值返回、大结构体初始化和 `PUSH {r4-r7, lr}` 这类行里
+出现 `{}` 且内含逗号时，深度不涨，`PUSH {r4-r7, lr}` 被切成三个操作数、寄存器表被
+读错——「第一个操作数也读，除非它是纯写目标」这条判定因此作用在错误的操作数上，
+`-fopt-copyprop` 删掉了不该删的 `MOV`。
+
+修法：深度计数器同时认 `{}`（`{` 加、`}` 减，`[` / `]` 行为不变）。括号不配平时
+`cp_parse` 返回失败，调用方按「不认识此行」处理，不猜。
+
+**门禁**：`make test-copyprop` 17 项全过；23 开关 `tests/arm_exec` 40/40；
+95 TU 编译 0 err。

@@ -463,3 +463,35 @@ The lesson matches `docs/SLOTREG.md` §10: **establish which pass produced the
 difference and what shape it is before touching an assertion**; changing "better
 than expected" into `<=` just because it looks favourable removes the gate's
 ability to catch regressions.
+
+## 13. Revision (2026-11-24): the `use` set is now computed by a forward scan
+
+`blk[i].use` must be the *upward-exposed* read set of the block — registers read before
+anything in the block writes them. The old code scanned the same expression
+`u |= rd & ~d` **backwards**, which computes the mirror image ("reads after which nothing
+below writes") and loses exactly one shape: a register **read at the top of a loop body and
+written at the bottom**.
+
+```
+MOV r0, r8     ; read at the top
+...
+MOV r8, r0     ; written at the bottom
+```
+
+Scanning backwards, the bottom line first records `r8` in `d` and the top line's `r8` is
+masked away by `~d`, so `r8` is neither in `use` nor in the live-out set; the bottom write
+is declared dead, `-fopt-live` deletes it, and the loop keeps reading a stale register.
+Measured: `strinit_nul` returned `0` instead of `311436` under
+`-fopt-vstack -fopt-vreg -fopt-live`.
+
+Fix: scan **forward**. `u |= rd & ~d` now means what it says (`d` is what has been written
+*so far*, so `rd & ~d` keeps exactly the reads that precede any write), and
+`blk[i].use` is no longer intersected with the block's whole `d`.
+
+The second point matters just as much: masking `use` with the block's full `d` erases the
+very shape this analysis exists for, because a register read at the top and written at the
+bottom **is** live-in. (The mask was originally added to stop `r0`-`r3` being live-in to
+almost every block; the forward scan removes that leak at its source.)
+
+**Gates.** `one.py strinit_nul` (19 switches) 311436; whole `tests/arm_exec` corpus 0
+failures; `make test-live` fully green.

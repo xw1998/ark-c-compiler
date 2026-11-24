@@ -236,8 +236,11 @@ still checked byte for byte by `tests/asm_cases/05_pcrel.s`.
 ```
 ark_vstack_function()      # shorten the function first: drop PUSH/POP
 ark_addr_function()        # then fold ADD/MOV into addressing modes
-ark_cbz_function()         # finally look for CMP #0 + branch in the final shape
+ark_cbz_function()         # look for CMP #0 + branch in the final shape (first sweep)
 ark_regalloc_function()    # then allocate registers on the shorter stream
+...                        # peep / copyprop / live / vreg / slotreg / cmat / litpool
+ark_cbz_function()         # sweep once more after every rename (second sweep, §12)
+ark_frame_function()       # frame trimming, last
 ```
 
 Two practical reasons for running last:
@@ -250,6 +253,10 @@ Two practical reasons for running last:
 
 **No four-way order comparison was run**, so no "how much does the order cost"
 number is reported.
+
+Only the first half of this diagram is about ordering. The second sweep is not an
+ordering question at all: it targets sites the first sweep cannot see. Reasons and
+numbers are in §12.
 
 ## 10. Three things deliberately not done
 
@@ -264,4 +271,87 @@ number is reported.
 The region upper bound counts 4 bytes per instruction, so a site whose whole
 body is 16-bit instructions is over-estimated by 2× and a fusable site is
 refused. That is the other side of "miss rather than err", the same character
-as the 64-instruction forward scan limit in `-fopt-addr`.
+as the 64-instruction forward scan limit in `-fopt-addr`.## 12. The second sweep: run it again on the final text
+
+### 12.1 Why one sweep is not enough
+
+The first `ark_cbz_function()` runs after `vstack` / `addr` but *before* `peep` /
+`copyprop` / `live` / `regalloc` / `vreg` / `slotreg` / `cmat` / `litpool`. That is
+the position §9 argues for (work on the shortest text), and the price is that it
+cannot see the `CMP rX, #0` + `BEQ/BNE` pairs those passes **create**:
+
+- `cmat` drops the constant materialisation that fed the compare, so the `CMP`
+  operand becomes a bare register;
+- `slotreg` deletes a load that `rX` already satisfied, which makes the `CMP` and
+  the branch adjacent;
+- `litpool` turns a `MOVW`/`MOVT` pair into one `LDR`, shortening the byte distance
+  from branch to label, so a site that was over the 64-byte bound falls back into
+  range;
+- the renames in `regalloc` / `vreg` move the compared register into `r0`--`r7`, and
+  the T1 form of `CBZ` only takes low registers. This is the most direct of the four.
+
+These are not guesses: in the corpus census, **180** adjacent `CMP rX, #0` + conditional
+branch pairs were still present after the first sweep had fused everything it could
+prove.
+
+### 12.2 How
+
+Call `ark_cbz_function()` a second time, after the second `live`, the second `peep`
+and the second `addr`, and before `frame` trimming:
+
+```c
+/* Second CBZ sweep, for the same reason as the second liveness, peep
+ * and addressing sweeps: ... */
+if (g_config.enable_opt_cbz) ark_cbz_function(&buf, fstart);
+```
+
+Same flag (`-fopt-cbz`), same rule set: **no new option**, so the cropping table, the
+`--asm-extra` list and the switch inventory in `docs/BUILD.md` are untouched (still
+23). With the flag off the block does not run at all, so the byte-identical
+`OFF IS OFF` assertion is unaffected.
+
+Safety comes from the rule itself: when the region bound cannot be proven or the
+flags are read inside the body (§4, §5), this sweep declines the site exactly like
+the first one. A second run can therefore only fuse what *became* provable since —
+the same argument as for the second liveness, peep and addressing sweeps.
+
+### 12.3 Measurements
+
+95 translation units (STM32F4 HAL + application), `-O2 -mcpu Cortex-M4`, switches =
+the 19-switch set + `frame` / `voldmb` / `constcond` (22 `-fopt-` switches).
+`-fopt-volbar` is deliberately outside this accounting: it is a semantics switch that
+really emits the barriers the front end marks (2,848 `DMB SY` on this corpus), not a
+size optimisation.
+
+| | before second sweep | after second sweep | change |
+| --- | --- | --- | --- |
+| instructions | 12,266 | **12,215** | **−51 (−0.42%)** |
+| object bytes | 405,514 B | **404,970 B** | **−544 B (−0.13%)** |
+| compile errors | 0 | 0 | — |
+| `DMB SY` | 1 | 1 | — |
+
+Both readings come from the same binary: the second-sweep call was commented out,
+the compiler was rebuilt, and the corpus re-measured, so −51 is a same-build delta and
+not a cross-build comparison. No single translation unit grew.
+
+Census re-check on the same build: adjacent `CMP #0` + conditional branch pairs fall
+from **146** to **95**, which is exactly the 51 the second sweep fused. The remaining
+95 are still blocked by the 64-byte bound of §4, by flags being read inside the body
+(§5), and by bodies whose target label sits at the end of the function — they are
+refused, not missed.
+
+> **Why the older numbers are not directly comparable.** This section used to record
+> 12,034 → 11,966 (−68). Those were measured on a build *before* the miscompiles in the
+> second `-fopt-addr` sweep (dropped immediate offset), `-fopt-frame` (frame-base
+> offset), `-fopt-slotreg` (out-of-frame load) and `-fopt-vreg` (read-modify-write
+> rename) were fixed — see `docs/ADDR_FOLD.en.md` §12, `docs/FRAME_TRIM.en.md` §6,
+> `docs/SLOTREG.en.md` §11, `docs/VREG.md` §18.6. Fixing them stops a number of sites
+> from being folded incorrectly, so the instruction count rises to 12,266. The two
+> numbers are not the same code and must not be subtracted to claim a win.
+
+### 12.4 Gates
+
+All 14 checks of `make test-cbz` pass (same assertions: `base=0 / on=6`,
+`va 216 → all 210`, the `long` arm fuses nothing, the cropped build answers
+`C3900U`); `tests/arm_exec` reports 0 failures over the whole corpus; the cropping
+self-check still reports 23/23 `C3900U`.

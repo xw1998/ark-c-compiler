@@ -302,3 +302,50 @@ the first fold was missing -- and the miss was not a rule shortage, it was **the
 rules running too early**. Any future text pass that recognises an adjacent
 pattern should ask the same question: does the pass that builds this pattern run
 after me?
+
+## 12. Revision (2026-11-24): the register-form fold must require a zero immediate offset
+
+Under the 19/22-switch combinations the second `-fopt-addr` sweep miscompiled three
+`tests/arm_exec` cases (`struct_narrow_copy` 122 vs 84, `struct_narrow_call_assign`
+65 vs 61, `sret_live_results` 3 vs 50). Greedy minimisation left exactly four flags,
+`-fopt-addr -fopt-cmat -fopt-imm -fopt-peep`, and the self-contained fixture `p8.c`
+reduces it further:
+
+```c
+struct S3 { char a, b, c; } v[3]; struct S3 t;
+v[1] = t;                                  /* a=1 b=2 c=3 */
+for (i = 0; i < 5; i++) w[1].c[i] = i + 1; /* only to keep w alive */
+return v[1].a * 1 + v[1].b * 2 + v[1].c * 4;
+```
+
+The baseline and every 1-3 flag subset answer 17; **all four flags answer 7** — `.b`
+and `.c` are both read at offset 0.
+
+**Root cause.** R1's form 2 (an access right after `ADD rD, rB, rI`) folds with
+`ad_mem_line(nmn, mdst, ab1, aidx, ash, 0)`, i.e. **the offset is hard-wired to 0**.
+In isolation the rule is fine: it requires the folded access to be the immediate form
+(`midx < 0`), where `moff` is normally 0. With four flags a new adjacency appears:
+
+```
+ADD r0, r0, r1        ; base + index
+ADD r0, r0, #1        ; field offset
+LDRB r0, [r0, #0]
+```
+
+R1 first folds form 1 and moves `#1` into the access (`LDRB r0, [r0, #1]`); on the next
+round the `ADD r0, r0, r1` still sees an immediate-form access, now with `moff = 1`,
+and form 2 accepts it and emits `LDRB r0, [r0, r1]` — **the field offset disappears**.
+Three passes together build this adjacency (two `addr` runs plus `peep` rewriting
+`PUSH/MOV/POP` into `ADD`), which is why only the four-flag combination reproduces it.
+
+**Fix.** Form 2 and R4 (merging `LSL rS, rI, #n` into `[rB, rS, LSL #n]`) both require
+`moff == 0`; otherwise the fold is declined (the `ADD` stays and the access keeps its
+offset). One fewer fold costs one `ADD` — the first time this pass chooses "fold less
+rather than fold wrong".
+
+**Cost.** Zero hits on the HAL corpus (this "index then field offset" adjacency does not
+occur there), so the §11 numbers are unaffected; the three `arm_exec` cases go from
+wrong answers back to correct ones.
+
+**Gates.** `p8.c` with the four flags = 17; the three cases under 23 switches read
+84 / 61 / 50; the whole `tests/arm_exec` corpus under 23 switches is **40/40**.

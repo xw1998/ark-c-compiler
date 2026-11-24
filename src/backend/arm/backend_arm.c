@@ -1414,8 +1414,15 @@ static int cp_parse(const char *t, cp_ins *o) {
     while (t[i] && o->nops < 4) {
         k = 0; depth = 0;
         while (t[i] && !(depth == 0 && t[i] == ',')) {
-            if (t[i] == '[') depth++;
-            else if (t[i] == ']') depth--;
+            /* '[..]' and '{..}' are both single operands.  Counting only
+             * brackets used to split a register list at its commas, and
+             * the four-operand cap then truncated anything longer than
+             * {rA, rB, rC}: "POP {r5, r6, r7, r8, r9, pc}" came back as
+             * op[3] = "r8, r9, pc}", so "pc" was never seen, the block was
+             * not read as returning, and -fopt-live deleted the live copy
+             * of the return value in front of the epilogue. */
+            if (t[i] == '[' || t[i] == '{') depth++;
+            else if (t[i] == ']' || t[i] == '}') depth--;
             if (k < 39) o->op[o->nops][k++] = t[i];
             i++;
         }
@@ -2004,7 +2011,7 @@ static int lv_pass(AsmBuffer *b, int from, unsigned retmask) {
     /* use / def */
     for (i = 0; i < nb; i++) {
         unsigned u = 0, d = 0;
-        for (j = blk[i].last; j >= blk[i].first; j--) {
+        for (j = blk[i].first; j <= blk[i].last; j++) {
             unsigned rd, wr;
             /* Only real instructions have a parse.  A block's line range
              * spans the directives between its first and last instruction
@@ -2020,17 +2027,25 @@ static int lv_pass(AsmBuffer *b, int from, unsigned retmask) {
             u |= rd & ~d;
             d |= wr;
         }
-        /* `u` is accumulated with `u |= rd & ~d` where `d` is what is written
-         * *below* the current point, so a register that the block both reads
-         * and writes earlier in the block stays in `u`.  Standard live-in is
-         * `use | (out & ~def)`, and a register the block defines before every
-         * read is not live-in however it got into `u`: mask it off.  Without
-         * this mask the liveness of everything a block defines leaked out of
-         * it, and `in` claimed r0..r3 were live-in to almost every block --
-         * measured on HAL_Delay, a dead "MOV r0, r5" staged for a comparison
-         * stayed because the exit block's own "MOV r0, #..." was counted as a
-         * read of r0. */
-        blk[i].use = u & ~d;
+        /* `u` must be the *upward-exposed* read set: a register the block reads
+         * before anything in the block writes it.  The scan above therefore runs
+         * forward, so `d` is what has been written *above* the current point and
+         * `rd & ~d` counts only reads no earlier write shadows.  It used to run
+         * backward with the same expression, which computes the mirror image
+         * ("reads after which nothing below writes") and loses exactly one shape:
+         * a value read at the top of a loop body and written at the bottom
+         * (`MOV r0, r8` ... `MOV r8, r0`).  Liveness then called the bottom write
+         * dead, -fopt-live deleted it, and the loop kept reading the stale
+         * register.  Measured on the strinit_nul case with
+         * `-fopt-vstack -fopt-vreg -fopt-live`: returned 0 instead of 311436.
+         *
+         * The result is not masked with `~d` either.  With the forward scan a read
+         * that an earlier write shadows is already absent from `u`, so masking by
+         * the whole def set only removes the case this analysis is for: a block
+         * that reads a register *before* defining it is live-in on that register.
+         * (The mask was added to stop `in` claiming r0..r3 live-in to almost every
+         * block; the forward scan removes that leak at its source.) */
+        blk[i].use = u;
         blk[i].def = d;
     }
     /* Liveness to a fixed point. */
@@ -3925,7 +3940,7 @@ static void ark_vreg_function(AsmBuffer *b, int from, IrFunc *f, int local_eff) 
      * destination is renamed and kept: the cache register then carries the
      * updated value down the same path. */
     for (i = 0; i < nlines; i++) {
-        int j, s, dr, end;
+        int j, s, dr, end, rmw = -1;
         vg_cons[i] = -1;
         if (vg_lk[i] != 1) continue;
         s = vg_lo[i];
@@ -3968,11 +3983,37 @@ static void ark_vreg_function(AsmBuffer *b, int from, IrFunc *f, int local_eff) 
             if (vg_writes_reg(cl, dr)) {
                 if (!vg_reads_reg(cl, dr)) { end = j; break; }
                 if (vg_mentions_reg(cl, dr)) end = j + 1;
+                rmw = j;
                 continue;                       /* read-modify-write: keep it */
             }
             if (vg_mentions_reg(cl, dr)) end = j + 1;
         }
         if (end < 0) continue;                  /* nothing to rename */
+        if (rmw >= 0) {
+            /* Renaming a read-modify-write makes the cache register carry the
+             * result of that operation.  That is only sound when the result
+             * really becomes the slot's new value -- i.e. when it is written
+             * straight back to the slot (the counter idiom, whose store the
+             * rewrite below turns into a self-move).  If the result goes
+             * anywhere else the cache register is left holding a temporary
+             * while the slot still holds its old value, and the *next* load
+             * of that slot would be elided and read the temporary:
+             * The stdlib's mul32x32() is exactly this shape -- `a0*b0` and `a0*b1` share
+             * a0, each result goes to its own slot, so -fopt-pair
+             * -fopt-vreg -fopt-vstack came back with `MUL r10, r1` twice and
+             * the second one multiplied p00 by b1.  Fall back to
+             * `MOV rd, rC`, which costs exactly what the load cost, and stop
+             * the region in front of the read-modify-write so nothing inside
+             * it is renamed either. */
+            int q = rmw + 1;
+            while (q < nlines && !vg_is_ins_at(b, q)) q++;
+            if (!(q < nlines && vg_lk[q] == 2 && vg_lo[q] == s &&
+                  vg_dr[q] == dr)) {
+                vg_cons[i] = rmw;
+                vg_rf[i] = 1;      /* keep the copy: act 2, not act 1 */
+                continue;          /* not elided, so elid stays 0 */
+            }
+        }
         vg_cons[i] = end;
         vg_slots[s].elid++;
         /* The rename is only sound when nothing reads `dr` implicitly at the
@@ -5485,9 +5526,45 @@ static void ark_cmat_function(AsmBuffer *b, int from) {
  * both left untouched: the pass only deletes what it can prove unused.
  */
 #define FR_MAX_LINES 8192
+#define FR_MAX_EPI   64
 
 static int fr_ls[FR_MAX_LINES];
 static int fr_ll[FR_MAX_LINES];
+static int fr_epi[FR_MAX_EPI];             /* line of each return path's POP */
+static unsigned char fr_fl[FR_MAX_LINES];  /* line restores sp for a return */
+
+static int fr_ident(int c);
+
+/* `MOV sp, <base>` -- the line that puts the caller's stack back before the
+ * epilogue pops.  Every return path has its own copy. */
+static int fr_is_mov_sp_base(const char *s, const char *base) {
+    const char *d, *c;
+    if (strncmp(s, "MOV", 3) != 0) return 0;
+    d = s + 3;
+    while (*d == ' ' || *d == '\t') d++;
+    if (!(strncmp(d, "sp", 2) == 0 && !fr_ident((unsigned char)d[2]))) return 0;
+    c = strchr(s, ',');
+    if (!c) return 0;
+    c++;
+    while (*c == ' ' || *c == '\t') c++;
+    if (!base[0] || strncmp(c, base, strlen(base)) != 0) return 0;
+    return !fr_ident((unsigned char)c[strlen(base)]);
+}
+
+/* `ADD sp, sp, #<n>` -- the line that drops the frame's padding. */
+static int fr_is_add_sp(const char *s) {
+    const char *d, *c;
+    if (strncmp(s, "ADD", 3) != 0) return 0;
+    d = s + 3;
+    while (*d == ' ' || *d == '\t') d++;
+    if (!(strncmp(d, "sp", 2) == 0 && !fr_ident((unsigned char)d[2]))) return 0;
+    c = strchr(d, ',');
+    if (!c) return 0;
+    c++;
+    while (*c == ' ' || *c == '\t') c++;
+    if (!(strncmp(c, "sp", 2) == 0 && !fr_ident((unsigned char)c[2]))) return 0;
+    return strchr(c, '#') != NULL;
+}
 
 /* One line, minus the CRLF tail.  Returns -1 for an over-long line, and the
  * pass then refuses to touch the function. */
@@ -5575,10 +5652,10 @@ static void ark_frame_function(AsmBuffer *b, int from) {
     int pos = from, n = 0, i, k;
     char t[512];
     char pn[16][8], qn[16][8];
-    int np = 0, nq = 0, popen = 0, pclose = 0, qopen = 0, qclose = 0;
+    int np = 0, nq = 0, nepi = 0, popen = 0, pclose = 0, qopen = 0, qclose = 0;
     int used[16], base_used = 0;
     char base[8];
-    int pi = -1, qi = -1, sub_i = -1, add_i = -1, mov1_i = -1, mov2_i = -1;
+    int pi = -1, qi = -1, sub_i = -1, mov1_i = -1;
     int oldN = 0, nkeep = 0, newN = 0, dropped = 0;
     int keep[16];
     AsmBuffer body, out;
@@ -5595,8 +5672,18 @@ static void ark_frame_function(AsmBuffer *b, int from) {
     }
     if (n < 4) return;
 
-    /* 2. the frame save: first PUSH naming lr, then the first POP naming pc.
-     *    A second PUSH naming lr in between means this is not one function. */
+    /* 2. the frame save: one PUSH naming lr, and every return path's POP
+     *    naming pc.  A function with several returns has one POP per path,
+     *    and each of them restores the same registers -- so narrowing the
+     *    PUSH without narrowing all of them leaves every later return popping
+     *    a list the prologue never pushed.  That is how `__aeabi_lcmp` came
+     *    back with a 6-word PUSH and 8-word POPs and took the emulator down
+     *    with UC_ERR_EXCEPTION.  A second PUSH naming lr anywhere means this
+     *    is not one function and the pass refuses.
+     *
+     *    A return path is also the only place a POP may name registers the
+     *    prologue did not save; a POP naming pc that does is a tail call or
+     *    something this pass does not model, and it refuses. */
     for (i = 0; i < n; i++) {
         const char *s;
         if (fr_trim(b->buf + fr_ls[i], fr_ll[i], t, sizeof t) < 0) return;
@@ -5621,15 +5708,20 @@ static void ark_frame_function(AsmBuffer *b, int from) {
             continue;
         }
         if (strncmp(s, "POP", 3) == 0 && fr_braces(s, &qopen, &qclose)) {
-            int m = fr_names(s, qopen, qclose, qn, 16);
+            int m = fr_names(s, qopen, qclose, qn, 16), j2;
             if (m <= 0) return;
-            if (!fr_has(qn, m, "pc")) return;
-            nq = m;
-            qi = i;
-            break;
+            if (!fr_has(qn, m, "pc")) continue;
+            for (j2 = 0; j2 < m; j2++) {
+                if (strcmp(qn[j2], "pc") == 0 || strcmp(qn[j2], "lr") == 0)
+                    continue;
+                if (!fr_has(pn, np, qn[j2])) return;     /* not this frame */
+            }
+            if (nepi >= FR_MAX_EPI) return;
+            fr_epi[nepi++] = i;
         }
     }
-    if (qi < 0) return;
+    if (nepi == 0) return;
+    qi = fr_epi[0];
 
     /* 3. the frame base, the padding and the two movs that build it */
     base[0] = 0;
@@ -5641,8 +5733,6 @@ static void ark_frame_function(AsmBuffer *b, int from) {
             const char *h = strrchr(s, '#');
             if (h) { oldN = fr_num(h + 1); sub_i = i; }
         }
-        if (add_i < 0 && strncmp(s, "ADD", 3) == 0 && strstr(s, "sp"))
-            add_i = i;
         if (!base[0] && strncmp(s, "MOV", 3) == 0) {
             const char *c = strchr(s, ',');
             if (c) {
@@ -5662,30 +5752,44 @@ static void ark_frame_function(AsmBuffer *b, int from) {
         }
     }
     if (!base[0] || sub_i < 0 || mov1_i < 0) return;
-    for (i = qi - 1; i > pi; i--) {
-        const char *s;
-        const char *c, *q;
-        if (fr_trim(b->buf + fr_ls[i], fr_ll[i], t, sizeof t) < 0) return;
-        s = fr_skip_ws(t);
-        if (strncmp(s, "MOV", 3) != 0) continue;
-        c = strchr(s, ',');
-        if (!c) continue;
-        q = c + 1;
-        while (*q == ' ' || *q == '\t') q++;
-        if ((int)strlen(q) == (int)strlen(base) &&
-            strncmp(q, base, strlen(base)) == 0) { mov2_i = i; break; }
+
+    /* 3b. the lines each return path uses to undo the frame: `MOV sp, base`
+     *     and `ADD sp, sp, #n`, directly in front of its POP.  Marking them is
+     *     what lets the whole function be scanned in step 4 without mistaking
+     *     them for body code that names sp. */
+    memset(fr_fl, 0, (size_t)n);
+    for (i = 0; i < nepi; i++) {
+        int q = fr_epi[i] - 1, seen = 0;
+        while (q > pi && seen < 3) {
+            const char *s;
+            if (fr_trim(b->buf + fr_ls[q], fr_ll[q], t, sizeof t) < 0) goto bail;
+            s = fr_skip_ws(t);
+            if (*s == 0 || *s == '.') { q--; continue; }
+            if (fr_is_mov_sp_base(s, base) || fr_is_add_sp(s)) {
+                fr_fl[q] = 1;
+                seen++;
+                q--;
+                continue;
+            }
+            break;
+        }
     }
-    if (mov2_i < 0) return;
 
     /* 4. body text, minus directives, the frame instructions and any other
-     *    mention of sp (which would make the padding load-bearing). */
+     *    mention of sp (which would make the padding load-bearing).  The whole
+     *    function is scanned, not just the text in front of the first return:
+     *    a register used only on a later path is still used. */
     asmbuf_init(&body);
-    for (i = pi + 1; i < qi; i++) {
+    for (i = pi + 1; i < n; i++) {
         const char *s;
-        if (i == mov1_i || i == mov2_i || i == sub_i || i == add_i) continue;
+        if (i == mov1_i || i == sub_i || fr_fl[i]) continue;
         if (fr_trim(b->buf + fr_ls[i], fr_ll[i], t, sizeof t) < 0) goto bail;
         s = fr_skip_ws(t);
         if (*s == '.') continue;
+        if (strncmp(s, "POP", 3) == 0 && fr_braces(s, &qopen, &qclose)) {
+            int m = fr_names(s, qopen, qclose, qn, 16);
+            if (m > 0 && fr_has(qn, m, "pc")) continue;     /* a return path */
+        }
         if (strstr(s, "sp")) goto bail;
         asmbuf_puts(&body, s);
         asmbuf_putc(&body, '\n');
@@ -5708,20 +5812,36 @@ static void ark_frame_function(AsmBuffer *b, int from) {
     /* 6. new padding: sp must stay 8-byte aligned (nkeep counts lr, which is
      *    4 bytes like every other slot). */
     if (base_used) {
-        if ((4 * nkeep + oldN) % 8 != 0) goto bail;
-        newN = oldN;
+        /* The frame base is sp after the padding, so the incoming stack
+         * arguments sit at [base, #(4*np + oldN) + k] -- the distance is the
+         * PUSH list plus the padding.  Dropping slots therefore has to be
+         * paid back into the padding, otherwise every stack argument of a
+         * frame-using function moves up 4 bytes per dropped register:
+         * `five(1, 2, 3, 4, 9)` came back as 11 that way.  The total frame
+         * size is unchanged, so the previous alignment carries over. */
+        if ((4 * np + oldN) % 8 != 0) goto bail;
+        newN = oldN + 4 * dropped;
     } else {
         newN = (nkeep % 2 == 0) ? 0 : 4;
     }
     if (dropped <= 0 && newN == oldN) goto bail;
 
-    /* 7. rebuild */
+    /* 7. rebuild: the prologue, every return path, and the padding in front of
+     *    each of them. */
     asmbuf_init(&out);
     for (i = 0; i < n; i++) {
+        const char *s;
+        int e, is_epi = 0;
+        char en[16][8];
+        int en_n = 0, j;
+        if (fr_trim(b->buf + fr_ls[i], fr_ll[i], t, sizeof t) < 0) goto bail;
+        s = fr_skip_ws(t);
+        for (e = 0; e < nepi; e++) if (fr_epi[e] == i) is_epi = 1;
+
         if (i == pi) {
             asmbuf_puts(&out, "    PUSH {");
             k = 0;
-            for (int j = 0; j < np; j++) {
+            for (j = 0; j < np; j++) {
                 if (!keep[j]) continue;
                 if (k++) asmbuf_puts(&out, ", ");
                 asmbuf_puts(&out, pn[j]);
@@ -5729,29 +5849,48 @@ static void ark_frame_function(AsmBuffer *b, int from) {
             asmbuf_puts(&out, "}\n");
             continue;
         }
-        if (i == qi) {
+        if (is_epi) {
+            if (strncmp(s, "POP", 3) != 0 || !fr_braces(s, &qopen, &qclose))
+                goto bail;
+            en_n = fr_names(s, qopen, qclose, en, 16);
+            if (en_n <= 0) goto bail;
             asmbuf_puts(&out, "    POP {");
             k = 0;
-            for (int j = 0; j < nq; j++) {
+            for (j = 0; j < en_n; j++) {
                 int want = 1;
-                if (strcmp(qn[j], "pc") != 0 && strcmp(qn[j], "lr") != 0) {
+                if (strcmp(en[j], "pc") != 0 && strcmp(en[j], "lr") != 0) {
                     int m;
                     want = 0;
                     for (m = 0; m < np; m++)
-                        if (keep[m] && strcmp(pn[m], qn[j]) == 0) { want = 1; break; }
+                        if (keep[m] && strcmp(pn[m], en[j]) == 0) { want = 1; break; }
                 }
                 if (!want) continue;
                 if (k++) asmbuf_puts(&out, ", ");
-                asmbuf_puts(&out, qn[j]);
+                asmbuf_puts(&out, en[j]);
             }
             asmbuf_puts(&out, "}\n");
             continue;
         }
-        if ((i == sub_i || i == add_i) && newN == 0) continue;
-        if ((i == sub_i || i == add_i) && newN != oldN) {
-            asmbuf_puts(&out, (i == sub_i) ? "    SUB sp, sp, #" : "    ADD sp, sp, #");
-            asmbuf_int(&out, newN);
-            asmbuf_putc(&out, '\n');
+        if (i == sub_i || fr_is_add_sp(s)) {
+            if (newN == 0) continue;
+            if (newN != oldN) {
+                asmbuf_puts(&out, (i == sub_i) ? "    SUB sp, sp, #" : "    ADD sp, sp, #");
+                asmbuf_int(&out, newN);
+                asmbuf_putc(&out, '\n');
+                continue;
+            }
+        } else if (!base_used && (i == mov1_i || fr_is_mov_sp_base(s, base))) {
+            /* The frame base is only ever built by `MOV base, sp` and torn down
+             * by `MOV sp, base`, and both are excluded from `body` above -- so
+             * `base_used == 0` means the body never names the base, i.e. the
+             * frame itself became dead and every slot can go.  Dropping the
+             * slots but keeping these movs is what broke
+             * `-fopt-vstack -fopt-vreg -fopt-peep -fopt-frame` on the strinit_nul
+             * case: the base was no longer saved, the `MOV base, sp` still ran,
+             * and the caller's frame pointer came back clobbered -- the
+             * emulator died with UC_ERR_EXCEPTION instead of returning
+             * 75065859.  With the frame gone its movs go with it, on every
+             * return path. */
             continue;
         }
         for (k = 0; k < fr_ll[i]; k++)
@@ -6381,6 +6520,17 @@ static void ark_slotreg_function(AsmBuffer *b, int from, IrFunc *f, int local_si
                         sr_lo[nlines] = (short)s;
                         sr_lk[nlines] = (unsigned char)(t == 1 ? 1 : 2);
                         if (t == 1) sr_slots[s].reads++;
+                    } else if (t == 1) {
+                        /* A load of an incoming stack argument -- `LDR r0,
+                         * [r6, #local_size+16]` in a function that spills its
+                         * fifth word argument.  The slot is not ours, so there
+                         * is nothing to remember about it, but the load still
+                         * overwrites r0: leaving the line unclassified kept
+                         * "r0 already holds slot 0" alive across it, and the
+                         * next `LDR r0, [r6, #0]` was then deleted and the
+                         * value of `e` reused as `a` (five(1,2,3,4,9) read
+                         * back 11). */
+                        sr_lk[nlines] = 6;
                     }
                 } else if (t == 3 || t == 4) {
                     if (t == 3 && off < 0) return;  /* offset not parseable */
@@ -7846,6 +7996,7 @@ static void ark_vstack_function(AsmBuffer *b, int from)
 }
 #endif /* ARKCC_FEATURE_OPT_VSTACK */
 
+
 #if ARKCC_FEATURE_OPT_ADDR
 /* ------------------- addressing-mode folding (-fopt-addr) ----------------
  * The IR is a stack machine, so one C array/pointer access is emitted as a
@@ -8497,8 +8648,9 @@ static void ark_addr_function(AsmBuffer *b, int from)
                             L[nex].t = ad_mem_line(nmn, mdst, ab1, -1, 0, s);
                             L[i].del = 1; changed = 1; continue;
                         }
-                    } else if ((mdst == ab0 && ad_is_load(nmn)) ||
-                               ad_dead_after(L, nlines, nex + 1, ab0)) {
+                    } else if (moff == 0 &&
+                               ((mdst == ab0 && ad_is_load(nmn)) ||
+                                ad_dead_after(L, nlines, nex + 1, ab0))) {
                         L[nex].t = ad_mem_line(nmn, mdst, ab1, aidx, ash, 0);
                         L[i].del = 1; changed = 1; continue;
                     }
@@ -8563,7 +8715,8 @@ static void ark_addr_function(AsmBuffer *b, int from)
                         int sc = 0;
                         ad_split_base(nmn, abase, &sc);
                         (void)sc;
-                        if (midx == s_dst && msh == 0 && mbase != s_src &&
+                        if (midx == s_dst && msh == 0 && moff == 0 &&
+                            mbase != s_src &&
                             (ad_streq(abase, "LDR") || ad_streq(abase, "STR")) &&
                             ((mdst == s_dst && ad_is_load(nmn)) ||
                              ad_dead_after(L, nlines, nex + 1, s_dst))) {
@@ -13818,6 +13971,20 @@ static char *codegen_arm(IrProgram *prog) {
          * which run after the first fold.  Same rule set, same gate. */
         if (g_config.enable_opt_addr)
             ark_addr_function(&buf, fstart);
+#endif
+#if ARKCC_FEATURE_OPT_CBZ
+        /* Second CBZ sweep, for the same reason as the second liveness, peep
+         * and addressing sweeps: the `CMP rX, #0` + `BEQ/BNE` pair this pass
+         * fuses is *created* by the passes above it -- cmat drops the constant
+         * that fed the compare, slotreg deletes a load so the compare's operand
+         * becomes a bare register, litpool turns a MOVW/MOVT pair into a LDR
+         * that shortens the region between branch and label, and the renames
+         * in regalloc/vreg move the compared register into r0-r7.  The first
+         * sweep runs before all of them, so it never sees those pairs.  Same
+         * rule set, same gate, and the pass declines whenever the region or
+         * the flags cannot be proven, so a second run can only fuse more of
+         * what became provable. */
+        if (g_config.enable_opt_cbz) ark_cbz_function(&buf, fstart);
 #endif
 #if ARKCC_FEATURE_OPT_FRAME
         /* Frame trimming is last: every pass above has already renamed

@@ -281,3 +281,30 @@ assertion mixed deletions from two passes. The comparison arms now disable
 is `LDR/STR r0, [r6, #n]`" really tests only this pass. **Fixing an assertion is
 not loosening it**: establish who deleted the lines before touching the text, or
 another pass's legitimate optimisation gets recorded as this pass's overreach.
+
+## 11 Revision (2026-11-24): an out-of-frame load must invalidate the slot cache
+
+Under 23 switches `abi_stack_args` returned 1 instead of 50; the minimal set was
+`-fopt-pair -fopt-slotreg -fopt-vstack`.
+
+**Root cause.** Pass 1 correctly classifies `LDR r0, [r6, #56]` as a frame load
+(`off = 56 >= base`: this is an *incoming stack argument*, not part of this function's
+frame), but the caller only handles the `off < base` branch, so `sr_lk[line]` stays 0
+("unclassified") and `valid[slot]` is never invalidated. The next `LDR r0, [r6, #0]` is
+then deleted as "slot 0 is already in this register", and `a` is replaced by an unrelated
+value.
+
+**Fix.** A load with `off >= base` also sets `sr_lk[nlines] = 6` ("this pass does not
+understand this line; do not trust the cache"), for `t == 1` (a real load) only — `t == 2`
+(stores) need no cache invalidation.
+
+**Why not bail the whole function.** An out-of-frame load exists in every function with
+stack arguments; bailing would disable slotreg entirely on any `f(a,b,c,d,e)`-shaped
+function.
+
+**Cost.** One extra invalidation; the load it saves from deletion had to stay anyway, so
+no size regression.
+
+**Gates.** `abi_stack_args` with three flags = 50; under 23 switches
+`struct_narrow_copy` 84 / `struct_narrow_call_assign` 61 / `sret_live_results` 50;
+`tests/arm_exec` 40/40; `make test-slotreg` fully green.

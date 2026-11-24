@@ -195,8 +195,11 @@ tests/arm_exec/run_arm_exec.py --arkcc ./arkcc.exe "--extra=-fopt-cbz"
 ```
 ark_vstack_function()      # 先缩短函数，删掉 PUSH/POP
 ark_addr_function()        # 再看剩下的 ADD/MOV 能不能折进寻址
-ark_cbz_function()         # 最后在最终形状上找 CMP #0 + 跳转
+ark_cbz_function()         # 在最终形状上找 CMP #0 + 跳转（第一遍）
 ark_regalloc_function()    # 然后在更短的指令流上做寄存器分配
+...                        # peep / copyprop / live / vreg / slotreg / cmat / litpool
+ark_cbz_function()         # 所有改名结束后再扫一遍（第二遍，见 §12）
+ark_frame_function()       # 帧裁剪，最后
 ```
 
 放在最后有两条实际理由：
@@ -207,6 +210,9 @@ ark_regalloc_function()    # 然后在更短的指令流上做寄存器分配
   发射器当时的编号。
 
 **没有做「四个顺序各跑一遍」的对照**，所以这里不报顺序差多少条。
+
+这张图只有前半段是「顺序选择」；后半段那次第二遍扫描不是顺序问题，而是
+「第一遍根本看不见的站点」——理由与读数见 §12。
 
 ## 10. 明确不做的三件事
 
@@ -221,3 +227,73 @@ ark_regalloc_function()    # 然后在更短的指令流上做寄存器分配
 区间上界按每条 4 字节估，对「一整个短 `if` 体都是 16 位指令」的站点会高估一倍，
 于是本来能放下的折不掉。这是「宁可漏、不可错」的另一面，与 `-fopt-addr` 的
 64 条前向扫描上限同性质。
+
+## 12. 第二遍扫描：在最终文本上再跑一次
+
+### 12.1 为什么第一遍不够
+
+第一遍 `ark_cbz_function()` 排在 `vstack` / `addr` 之后、但在 `peep` / `copyprop` /
+`live` / `regalloc` / `vreg` / `slotreg` / `cmat` / `litpool` **之前**。这正是 §9 想要
+的位置（在尽量短的文本上动手），代价是它看不见后面那些 pass **新造出来**的
+`CMP rX, #0` + `BEQ/BNE` 对：
+
+- `cmat` 删掉喂给比较的常量物化，一条 `MOV rX, #k` 消失，`CMP` 的操作数变成裸寄存器；
+- `slotreg` 删掉一次已满足的 load，`CMP` 的两侧因此变成相邻；
+- `litpool` 把 `MOVW/MOVT` 对换成一条 `LDR`，分支到标签之间的字节数变短，本来超
+  64 字节上界的站点落回可折范围；
+- `regalloc` / `vreg` 的重命名把被比较的寄存器搬进 `r0`–`r7`——`CBZ` 的 T1 形只吃
+  低寄存器，这是最直接的一条。
+
+这四条不是猜测：语料普查里 `CMP rX, #0` + 条件跳的相邻对在第一遍之后仍有
+**146 处**，而第一遍当时已经折掉了它能证的全部站点。
+
+### 12.2 怎么做
+
+在第二遍 `live`、第二遍 `peep`、第二遍 `addr` 之后、`frame` 帧裁剪之前，再调一次
+`ark_cbz_function()`：
+
+```c
+/* Second CBZ sweep, for the same reason as the second liveness, peep
+ * and addressing sweeps: ... */
+if (g_config.enable_opt_cbz) ark_cbz_function(&buf, fstart);
+```
+
+同一个旗标（`-fopt-cbz`）、同一份规则集：**没有新增开关**，所以裁切表、`--asm-extra`
+名单、`docs/BUILD.md` 的开关清单都不用动（仍是 23 个）。开关关掉时这段代码整块不跑，
+`OFF IS OFF` 的逐字节断言不受影响。
+
+安全性靠规则本身：区间上界算不出、或标志位在体内被读（§4、§5），这一遍与第一遍
+一样放弃该站点。所以「多跑一遍」只可能多折**后来变得可证**的站点，不可能折错——这
+与第二遍 liveness / peep / addr 是同一个论据。
+
+### 12.3 读数
+
+95 个 TU（STM32F4 HAL + 应用）、`-O2 -mcpu Cortex-M4`，口径 = 十九开关 +
+`frame` / `voldmb` / `constcond`（22 个 `-fopt-` 开关）。`-fopt-volbar` 不在这个口径里：
+它是语义开关，会按前端标记真补发屏障（本语料 2,848 条 `DMB SY`），不是体积优化。
+
+| | 第二遍之前 | 第二遍之后 | 变化 |
+| --- | --- | --- | --- |
+| 指令条数 | 12,266 | **12,215** | **−51（−0.42%）** |
+| 对象字节 | 405,514 B | **404,970 B** | **−544 B（−0.13%）** |
+| 编译错误 | 0 | 0 | — |
+| `DMB SY` | 1 | 1 | — |
+
+两个读数取自同一份二进制：把第二遍那一行临时注释掉重编一次再量，所以 −51 是同构建
+差分而不是跨构建比较。没有任何一个 TU 变大。
+
+普查复核（同一构建）：`CMP #0` + 条件跳的相邻对由 **146 处**降到 **95 处**，正好是
+第二遍吃掉的 51 处。剩下 95 处仍被 §4 的 64 字节上界、§5 的标志位仍被读、以及
+「目标标签在函数末尾、区间上百字节」三条挡着，不是可见而没折。
+
+> **历史读数为什么不直接比**：本节早先记的是 12,034 → 11,966（−68）。那是在修掉
+> `-fopt-addr` 第二遍丢立即数偏移、`-fopt-frame` base 偏移、`-fopt-slotreg` 越界加载、
+> `-fopt-vreg` 读-改-写重命名这批误编译**之前**的构建上量的（见 `docs/ADDR_FOLD.md` §12、
+> `docs/FRAME_TRIM.md` §6、`docs/SLOTREG.md` §11、`docs/VREG.md` §18.6）。修复让若干站点
+> 不再被错误折叠，指令数因此上浮到 12,266；两个数不是同一份代码，不能相减当收益。
+
+### 12.4 门禁
+
+`make test-cbz` 的 14 项全过（同一批断言，`base=0 / on=6`、`va 216 → all 210`、
+`long` 臂一处不折、裁切构建 `C3900U`）；`tests/arm_exec` 全语料执行等价 0 failure；
+裁切自检 23/23 仍全部 `C3900U`。
