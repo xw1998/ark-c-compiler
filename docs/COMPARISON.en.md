@@ -51,7 +51,7 @@ Totals over the 95 effective units:
 | compiler | options | instructions | code bytes |
 | --- | --- | ---: | ---: |
 | **arkc** | `-O2` (no `-fopt-*`) | 49,186 | 110,468 |
-| **arkc** | `-O2` + all eighteen `-fopt-*` (see section 3) | **14,121** | **36,106** |
+| **arkc** | `-O2` + all eighteen `-fopt-*` (see section 3) | **14,218** | **36,072** |
 | armcc | `-O1` | 6,051 | 14,888 |
 | armcc | `-O2` | 5,619 | 13,920 |
 | armcc | `-O3 -Otime` | 5,740 | 15,300 |
@@ -64,7 +64,7 @@ Against armcc `-O2` (5,619 instructions / 13,920 B):
 | comparison | instructions | code bytes |
 | --- | ---: | ---: |
 | arkc `-O2` (no `-fopt-*`) | 8.8× | 7.9× |
-| arkc `-O2` + every `-fopt-*` | **2.51×** | **2.59×** |
+| arkc `-O2` + every `-fopt-*` | **2.53×** | **2.59×** |
 
 **The switches take the gap from 8.8× down to 2.5×** (instructions -71.3%, code
 bytes -67.3%).
@@ -152,8 +152,8 @@ Two further ceilings that were **quantified and judged not worth doing**:
 
 > **This section is the historical ladder**: it is the reading taken when the ten
 > switches landed, accumulated one at a time, and it exists to explain what each
-> rule is worth. **The current total is section 2** (14,121 instructions /
-> 36,106 B); the ladder no longer adds up to it, because dead-static suppression
+> rule is worth. **The current total is section 2** (14,218 instructions /
+> 36,072 B); the ladder no longer adds up to it, because dead-static suppression
 > and the on-demand run-time helper landed in between and four more tables were
 > added.
 
@@ -221,6 +221,12 @@ corpus.
   it was pure code generation with no liveness involved. What is left is reason 1
   (intermediate results spilling to the frame), which does need liveness and is
   real engineering work.
+- **Not "only a few passes are missing"**: categorising the current binary by
+  mnemonic, 6,277 of the 8,599 instruction gap (73%) fall in one group of "value
+  transport" categories (`MOV` immediate / `MOVW`+`MOVT` / `MOV` register /
+  `PUSH`+`POP` / frame access). That is a model-level price, not a missing pass;
+  what is left to win and what each item costs is written down item by item in
+  **[BOUNDARY.en.md](BOUNDARY.en.md)** (Chinese [BOUNDARY.md](BOUNDARY.md)).
 - **Not "IAR is worse or better"**: it is installed but unlicensed, so it cannot
   be measured; there are no numbers, so there is nothing to say here. Its
   reverse-engineered mechanisms are what the newer passes follow.
