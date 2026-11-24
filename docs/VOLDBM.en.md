@@ -106,13 +106,26 @@ coincide here.
 Also: 95 TUs with 0 err; `tests/arm_exec` 0 failure in both arms; **OFF IS
 OFF** (the default build is byte-identical to the pre-change binary on `.s`/`.o`).
 
-## 7 Known gap (pre-existing, not introduced here)
+## 7 Known gap (closed by `-fopt-volbar`, see `docs/VOLMEM.md`)
 
-`volatile` **struct member** accesses (`s.v`) emit no `DMB` at all (measured 0
-barriers in the probe fixture). So "volatile member access lacks a barrier" is an
-earlier conservatism gap in `arkcc`, and it errs on the **fewer-barriers** side --
-in tension with the "rather an error than a wrong answer" discipline. Logged, not
-addressed this round.
+What was logged here: `volatile` **struct member** accesses (`s.v`), `volatile` globals and
+dereferenced pointers (`*p`) emit no `DMB` at all (0 barriers in the probe fixtures).
+
+That has to be read in two layers, otherwise "not fixed" and "must not be emitted" get
+confused:
+
+- **The mark was the real gap, and it is fixed.** The lvalue paths in `src/irgen.c` tested
+  `L->type->is_volatile` only, dropping the "base object is a volatile aggregate" layer of
+  C11 6.5.2.3p3, so those accesses carried no `IR_AUX_VOLATILE` and an IR-only pass was
+  entitled to fold or hoist them -- that is what returns a wrong answer. Every site is
+  marked now, at zero cost (95 TUs byte-identical).
+- **The barrier is still not emitted by default, deliberately.** A single ARMv7-M core does
+  not reorder Device/Strongly-ordered accesses (ARM ARM B2.3.7), and armcc, armclang, IAR
+  and GCC (Cortex-M) emit no barrier for volatile; forcing the pair costs **+41.0%**
+  instructions (12,113 -> 17,081) and 1 -> 2,848 `DMB`. Use `-fopt-volbar` when a second bus
+  master relies on the compiler for ordering.
+
+Details, measurement tables and the 24-check gate are in `docs/VOLMEM.md`.
 
 ## 8 Not done / known limits
 

@@ -97,6 +97,13 @@ register**, so this is the conservative convention):
 > If a 32-bit constant `K` is materialised `c` times in a function (`c >= 3`), materialise it once
 > into a **callee-saved** register `rC` (one of `r8`-`r11`) and turn the other `c - 1` occurrences into
 > `MOV rD, rC`.
+>
+> The implementation is one notch stronger: wherever `rC` can serve as the second source operand of a
+> two-operand ALU instruction, it is used directly (`EOR r0, r8`, `ADD r0, r0, r8`); only the shapes
+> that need source and destination apart (both `MUL` operands, `s + K` when `rC` is already taken) fall
+> back to `MOV rD, rC`. The account is therefore never worse than `c - 4`, and the gate counts
+> **use sites that read the cache register** -- a direct source operand or a `MOV` copy alike -- instead
+> of only the `MOV` form.
 
 The account: `2c` instructions become `2 + (c - 1)`, a gain of `c - 2`; but `rC` is callee-saved and
 must be saved, which costs one `PUSH` and one `POP` (2 instructions). So **net = (c - 2) - 2 = c - 4**

@@ -10503,6 +10503,31 @@ static int vdm_elide(const char *nm) {
 #define vdm_elide(nm) 0
 #endif
 
+#if ARKCC_FEATURE_OPT_VOLBAR
+/* Volatile accesses that do not go through a frame slot: a global, or any
+ * load/store through a computed address (struct member, array element, *p,
+ * bit-field).  These get the same DMB SY pair the IR_PUSH_VAR / IR_STORE
+ * cases emit.  The object lives outside the frame, so the compiler cannot
+ * prove that no other master (DMA, a second core, a peripheral) sees it, and
+ * the barrier's whole job is that ordering -- unlike a frame slot, whose
+ * escape analysis -fopt-voldmb performs.
+ *
+ * Both barriers are needed: one before the access to keep the preceding
+ * writes in front of it, one after so the access itself is not reordered
+ * into the following code.  The IDX/FLD cases below have several exits, so
+ * the trailing barrier is emitted once, after the switch.
+ *
+ * Not emitted by the riscv32 backend (it would need FENCE, which that
+ * backend does not model) and unnecessary on x86/x86-64, whose memory
+ * ordering is strong; both still honour the IR_AUX_VOLATILE marker so no
+ * pass treats the access as dead or foldable. */
+static int arm_vol_needs_barrier(int op) {
+    return op == IR_LOAD_IDX  || op == IR_STORE_IDX ||
+           op == IR_LOAD_FLD  || op == IR_STORE_FLD ||
+           op == IR_PUSH_GLOBAL || op == IR_STORE_GLOBAL;
+}
+#endif
+
 static char *codegen_arm(IrProgram *prog) {
     AsmBuffer buf;
     int fi;
@@ -11082,6 +11107,11 @@ static char *codegen_arm(IrProgram *prog) {
             }
 #endif
             rtop_ret = 0;
+#if ARKCC_FEATURE_OPT_VOLBAR
+            if ((I->aux & IR_AUX_VOLATILE) && g_config.enable_opt_volbar &&
+                arm_vol_needs_barrier(I->op))
+                emit_line(&buf, "DMB SY");  /* volatile: order prior memory ops */
+#endif
             /* P2: the instructions verified to follow a tail call (the dummy
              * PUSH_INT 0 and the IR_RETURN) emit nothing -- the branch is the
              * return. */
@@ -13456,7 +13486,10 @@ static char *codegen_arm(IrProgram *prog) {
                  * val=bit offset, aux=bit width. mask = (1<<bw)-1. */
                 case IR_STORE_FLD: {
                     int bit_off = I->val;
-                    int bw = I->aux;
+                    /* aux bit 0x10000 (IR_AUX_VOLATILE) marks the access, not
+                     * the width, so it has to be masked out before bw is used
+                     * as a shift count. */
+                    int bw = I->aux & ~IR_AUX_VOLATILE;
                     unsigned mask = (bw >= 32) ? 0xFFFFFFFFu : ((1u << bw) - 1u);
                     emit_pop_r0(&buf);                 /* value */
                     emit_pop_r1(&buf);                 /* addr */
@@ -13666,6 +13699,11 @@ static char *codegen_arm(IrProgram *prog) {
                     asmbuf_putc(&buf, '\n');
                     break;
             }
+#if ARKCC_FEATURE_OPT_VOLBAR
+            if ((I->aux & IR_AUX_VOLATILE) && g_config.enable_opt_volbar &&
+                arm_vol_needs_barrier(I->op))
+                emit_line(&buf, "DMB SY");  /* volatile: order subsequent memory ops */
+#endif
         }
 #if ARKCC_FEATURE_DWARF
         if (dbg) {

@@ -3446,6 +3446,44 @@ static int irgen_idx_aux(Type *t, int aux) {
     return aux;
 }
 
+/* 1 when an access through lvalue `l` has to be treated as a volatile access.
+ *
+ * C11 6.5.2.3p3: a member of a volatile-qualified aggregate is itself
+ * volatile-qualified, so `s.v` and `p->v` are volatile accesses even though
+ * the member's own declared type is unqualified.  `*p` and `arr[i]` need no
+ * help here: irgen gives those nodes the qualified pointee/element type, so
+ * the first test already covers them.
+ *
+ * Every load/store path used to test `l->type->is_volatile` directly, which
+ * silently dropped the qualifier that comes from the aggregate object.  The
+ * accesses were still emitted in order, one per source access (no pass folds
+ * or hoists them today), but the backend saw a plain access: no DMB SY pair,
+ * and nothing told the optimizer the access was observable. */
+static int irgen_lvalue_volatile(AstNode *l) {
+    AstNode *obj;
+    Type *st;
+    if (!l) return 0;
+    if (l->type && l->type->is_volatile) return 1;
+    if (l->kind != AST_MEMBER) return 0;
+    obj = l->u.member.obj;
+    if (!obj) return 0;
+    if (l->u.member.is_arrow) {
+        st = (obj->type && obj->type->kind == TYPE_PTR) ? obj->type->base : 0;
+    } else {
+        st = obj->type;
+    }
+    return (st && st->is_volatile) ? 1 : 0;
+}
+
+/* aux shared by every global access: _Complex widening plus the volatile
+ * marker.  A volatile global may change between two accesses (C11 6.7.3p6),
+ * so the backend has to order the accesses and no pass may fold them. */
+static int irgen_global_aux(Type *t) {
+    int aux = irgen_is_cplx_float(t) ? IR_AUX_COMPLEX : 0;
+    if (t && t->is_volatile) aux |= IR_AUX_VOLATILE;
+    return aux;
+}
+
 /* C99 6.3.1.3: convert the top-of-stack integer to dst_t's representation,
  * i.e. keep the low `bits` bits and re-extend them (sign for signed types,
  * zero for unsigned types). Without this a cast like (char)300 leaves 300 on
@@ -3949,7 +3987,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                     ir_emit(g->fn, IR_PUSH_GLOBAL_ADDR, 0, gname, 0);
                 } else {
                     ir_emit(g->fn, IR_PUSH_GLOBAL, 0, gname,
-                            irgen_is_cplx_float(s->type) ? IR_AUX_COMPLEX : 0);
+                            irgen_global_aux(s->type));
                 }
             } else if (s->kind == SYM_ENUM_CONST) {
                 ir_emit(g->fn, IR_PUSH_INT, s->enum_value, 0, 0);
@@ -4339,6 +4377,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                     node->u.unary.operand->type->is_packed) {
                     packed_aux = 0x400;
                 }
+                if (irgen_lvalue_volatile(node)) packed_aux |= IR_AUX_VOLATILE;
                 irgen_load_idx(g, node->type, type_size(node->type ? node->type : type_int()), packed_aux);
             } else if (op == (int)TOK_INC || op == (int)TOK_DEC) {
                 int delta = (op == (int)TOK_INC) ? 1 : -1;
@@ -4362,36 +4401,37 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                          * PUSH_GLOBAL/STORE_GLOBAL; static locals use the mangled name. */
                         const char *gname = operand->u.name;
                         if (s->is_static) gname = static_local_name(g->fn->name, operand->u.name);
+                        int gaux = irgen_global_aux(s->type);
                         if (s->type && s->type->kind == TYPE_LLONG) {
                             /* 64-bit global ++/--: same fix as the local case
                              * below -- one 32-bit add would wrap the low half
                              * and leave the high half untouched. */
                             if (node->u.unary.is_postfix) {
-                                ir_emit(g->fn, IR_PUSH_GLOBAL, 0, gname, 0);
-                                ir_emit(g->fn, IR_PUSH_GLOBAL, 0, gname, 0);
+                                ir_emit(g->fn, IR_PUSH_GLOBAL, 0, gname, gaux);
+                                ir_emit(g->fn, IR_PUSH_GLOBAL, 0, gname, gaux);
                             } else {
-                                ir_emit(g->fn, IR_PUSH_GLOBAL, 0, gname, 0);
+                                ir_emit(g->fn, IR_PUSH_GLOBAL, 0, gname, gaux);
                             }
                             ir_emit(g->fn, IR_PUSH_INT, delta, 0, 0);
                             ir_emit(g->fn, IR_PUSH_INT, delta < 0 ? -1 : 0, 0, 0);
                             ir_emit(g->fn, IR_64BINARY, 0, 0, (int)TOK_PLUS);
-                            ir_emit(g->fn, IR_STORE_GLOBAL, 0, gname, 0);
+                            ir_emit(g->fn, IR_STORE_GLOBAL, 0, gname, gaux);
                             if (!node->u.unary.is_postfix)
-                                ir_emit(g->fn, IR_PUSH_GLOBAL, 0, gname, 0);
+                                ir_emit(g->fn, IR_PUSH_GLOBAL, 0, gname, gaux);
                         } else if (node->u.unary.is_postfix) {
-                            ir_emit(g->fn, IR_PUSH_GLOBAL, 0, gname, 0);
-                            ir_emit(g->fn, IR_PUSH_GLOBAL, 0, gname, 0);
+                            ir_emit(g->fn, IR_PUSH_GLOBAL, 0, gname, gaux);
+                            ir_emit(g->fn, IR_PUSH_GLOBAL, 0, gname, gaux);
                             ir_emit(g->fn, IR_PUSH_INT, delta, 0, 0);
                             ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_PLUS);
                             irgen_bool_norm_top(g, s->type);
-                            ir_emit(g->fn, IR_STORE_GLOBAL, 0, gname, 0);
+                            ir_emit(g->fn, IR_STORE_GLOBAL, 0, gname, gaux);
                         } else {
-                            ir_emit(g->fn, IR_PUSH_GLOBAL, 0, gname, 0);
+                            ir_emit(g->fn, IR_PUSH_GLOBAL, 0, gname, gaux);
                             ir_emit(g->fn, IR_PUSH_INT, delta, 0, 0);
                             ir_emit(g->fn, IR_BINARY, 0, 0, (int)TOK_PLUS);
                             irgen_bool_norm_top(g, s->type);
-                            ir_emit(g->fn, IR_STORE_GLOBAL, 0, gname, 0);
-                            ir_emit(g->fn, IR_PUSH_GLOBAL, 0, gname, 0);
+                            ir_emit(g->fn, IR_STORE_GLOBAL, 0, gname, gaux);
+                            ir_emit(g->fn, IR_PUSH_GLOBAL, 0, gname, gaux);
                         }
                     } else if (s->type && s->type->kind == TYPE_LLONG) {
                         /* 64-bit ++/--: the generic path below pushes one word
@@ -4465,10 +4505,15 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                      * storage unit at one bit offset, store once, and evaluate
                      * the lvalue address exactly once. */
                     int fld_aux = bf_bw;
+                    int bf_st_aux = bf_bw;
                     int bstep = (op == (int)TOK_INC) ? 1 : -1;
                     Type *vt = operand->type ? operand->type : type_int();
                     if (operand->type && !operand->type->is_unsigned)
                         fld_aux |= 0x100;
+                    if (irgen_lvalue_volatile(operand)) {
+                        fld_aux |= IR_AUX_VOLATILE;
+                        bf_st_aux |= IR_AUX_VOLATILE;
+                    }
                     irgen_lvalue_addr(g, operand);                  /* [addr] */
                     ir_emit(g->fn, IR_DUP, 0, 0, 0);                /* [addr,addr] */
                     ir_emit(g->fn, IR_LOAD_FLD, bf_bo, 0, fld_aux);  /* [addr,old] */
@@ -4486,7 +4531,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         ir_emit(g->fn, IR_LOAD_FLD, bf_bo, 0, fld_aux); /* [old,addr,old] */
                         irgen_push_step(g, vt, bstep);               /* [old,addr,old,step] */
                         irgen_emit_binary_op(g, (int)TOK_PLUS, vt, type_int());
-                        ir_emit(g->fn, IR_STORE_FLD, bf_bo, 0, bf_bw); /* [old] */
+                        ir_emit(g->fn, IR_STORE_FLD, bf_bo, 0, bf_st_aux); /* [old] */
                     } else {
                         irgen_push_step(g, vt, bstep);               /* [addr,old,step] */
                         irgen_emit_binary_op(g, (int)TOK_PLUS, vt, type_int());
@@ -4495,7 +4540,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         ir_emit(g->fn, IR_LOAD_FLD, bf_bo, 0, fld_aux); /* [new,addr,old] */
                         irgen_push_step(g, vt, bstep);               /* [new,addr,old,step] */
                         irgen_emit_binary_op(g, (int)TOK_PLUS, vt, type_int());
-                        ir_emit(g->fn, IR_STORE_FLD, bf_bo, 0, bf_bw); /* [new] */
+                        ir_emit(g->fn, IR_STORE_FLD, bf_bo, 0, bf_st_aux); /* [new] */
                     }
                 } else {
                     /* General lvalue: *ptr, arr[i], s.f, p->f, etc.
@@ -4528,6 +4573,8 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                      * the 64-bit op and float takes a floating add instead of
                      * "add one to the bit pattern". */
                     {
+                        if (irgen_lvalue_volatile(operand))
+                            packed_aux |= IR_AUX_VOLATILE;
                         int idx_aux = irgen_idx_aux(operand->type, packed_aux);
                         Type *vt = operand->type ? operand->type : type_int();
                         Type *rt = (vt->kind == TYPE_FLOAT || vt->kind == TYPE_DOUBLE)
@@ -4739,7 +4786,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                          * duplicated copy must cover every stack word. */
                         irgen_dup_words(g, irgen_store_dup_words(s->type));
                         ir_emit(g->fn, IR_STORE_GLOBAL, 0, gname,
-                                irgen_is_cplx_float(s->type) ? IR_AUX_COMPLEX : 0);
+                                irgen_global_aux(s->type));
                     } else if (s) {
                         int store_aux = 0;
                         if (s && s->type) {
@@ -4859,7 +4906,9 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         }
 
                     }
-                    ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, irgen_idx_aux(L->type, packed_aux));
+                    ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0,
+                            irgen_idx_aux(L->type, packed_aux |
+                                          (irgen_lvalue_volatile(L) ? IR_AUX_VOLATILE : 0)));
                 } else if (L->kind == AST_UNARY && L->u.unary.op == (int)TOK_MUL) {
                     int elem_sz = type_size(L->type ? L->type : type_int());
                     int packed_aux = 0;
@@ -4923,7 +4972,9 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         }
 
                     }
-                    ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, irgen_idx_aux(L->type, packed_aux));
+                    ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0,
+                            irgen_idx_aux(L->type, packed_aux |
+                                          (irgen_lvalue_volatile(L) ? IR_AUX_VOLATILE : 0)));
                 } else if (L->kind == AST_MEMBER) {
                     int bo, bw;
                     if (member_bitfield_info(L, &bo, &bw)) {
@@ -4932,9 +4983,12 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         int fld_aux = bw;
                         if (L->type && !L->type->is_unsigned)
                             fld_aux |= 0x100;
+                        if (irgen_lvalue_volatile(L))
+                            fld_aux |= IR_AUX_VOLATILE;
                         irgen_lvalue_addr(g, L);                      /* [addr] */
                         irgen_expr(g, node->u.binary.right);          /* [addr, value] */
-                        ir_emit(g->fn, IR_STORE_FLD, bo, 0, bw);      /* [] */
+                        ir_emit(g->fn, IR_STORE_FLD, bo, 0,
+                                bw | (fld_aux & IR_AUX_VOLATILE));    /* [] */
                         irgen_lvalue_addr(g, L);                      /* [addr] */
                         ir_emit(g->fn, IR_LOAD_FLD, bo, 0, fld_aux);   /* [masked_value] */
                     } else {
@@ -4999,7 +5053,9 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                             }
 
                         }
-                        ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0, irgen_idx_aux(L->type, 0));
+                        ir_emit(g->fn, IR_STORE_IDX, elem_sz, 0,
+                                irgen_idx_aux(L->type,
+                                              irgen_lvalue_volatile(L) ? IR_AUX_VOLATILE : 0));
                     }
                 } else {
                     {
@@ -5034,14 +5090,14 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         const char *gname = L->u.name;
                         if (s->is_static) gname = static_local_name(g->fn->name, L->u.name);
                         ir_emit(g->fn, IR_PUSH_GLOBAL, 0, gname,
-                                irgen_is_cplx_float(s->type) ? IR_AUX_COMPLEX : 0);
+                                irgen_global_aux(s->type));
                         irgen_expr(g, node->u.binary.right);
                         irgen_maybe_widen_for_binary(g, s->type, node->u.binary.right ? node->u.binary.right->type : 0);
                         irgen_emit_binary_op(g, bop, s->type, node->u.binary.right ? node->u.binary.right->type : 0);
                         irgen_bool_norm_top(g, s->type);
                         irgen_dup_words(g, irgen_store_dup_words(s->type));
                         ir_emit(g->fn, IR_STORE_GLOBAL, 0, gname,
-                                irgen_is_cplx_float(s->type) ? IR_AUX_COMPLEX : 0);
+                                irgen_global_aux(s->type));
                     } else if (s) {
                         int store_aux = 0;
                         int push_aux = 0;
@@ -5103,7 +5159,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                         L->u.unary.operand->type->is_packed) {
                         packed_aux = 0x400;
                     }
-                    if (L->type && L->type->is_volatile) {
+                    if (irgen_lvalue_volatile(L)) {
                         packed_aux |= IR_AUX_VOLATILE;
                     }
                     irgen_lvalue_addr(g, L);                       /* [addr] */
@@ -5130,7 +5186,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                     if (arr->type && arr->type->kind == TYPE_PTR && arr->type->is_packed) {
                         packed_aux = 0x400;
                     }
-                    if (L->type && L->type->is_volatile) {
+                    if (irgen_lvalue_volatile(L)) {
                         packed_aux |= IR_AUX_VOLATILE;
                     }
                     irgen_lvalue_addr(g, L);                       /* [addr] */
@@ -5155,13 +5211,15 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                          * result on the stack. */
                         int fld_aux = bw;
                         if (L->type && !L->type->is_unsigned) fld_aux |= 0x100;
+                        if (irgen_lvalue_volatile(L)) fld_aux |= IR_AUX_VOLATILE;
                         irgen_lvalue_addr(g, L);                       /* [addr] */
                         ir_emit(g->fn, IR_DUP, 0, 0, 0);               /* [addr, addr] */
                         ir_emit(g->fn, IR_LOAD_FLD, bo, 0, fld_aux);   /* [addr, old] */
                         irgen_expr(g, node->u.binary.right);           /* [addr, old, rhs] */
                         irgen_maybe_widen_for_binary(g, L->type, node->u.binary.right ? node->u.binary.right->type : 0);
                         irgen_emit_binary_op(g, bop, L->type, node->u.binary.right ? node->u.binary.right->type : 0);
-                        ir_emit(g->fn, IR_STORE_FLD, bo, 0, bw);       /* [] */
+                        ir_emit(g->fn, IR_STORE_FLD, bo, 0,
+                                bw | (fld_aux & IR_AUX_VOLATILE));        /* [] */
                         irgen_lvalue_addr(g, L);                       /* [addr] */
                         ir_emit(g->fn, IR_LOAD_FLD, bo, 0, fld_aux);   /* [new] */
                     } else {
@@ -5172,7 +5230,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                          * duplicate it with IR_DUP so that side effects in the
                          * member's base object are not doubled.
                          * Bug-I5 FIX: Preserve volatile semantics on s.f OP= val. */
-                        if (L->type && L->type->is_volatile) {
+                        if (irgen_lvalue_volatile(L)) {
                             vol_aux = IR_AUX_VOLATILE;
                         }
                         irgen_lvalue_addr(g, L);                       /* [addr] */
@@ -5869,6 +5927,7 @@ static void irgen_expr(IrGen *g, AstNode *node) {
             if (arr->type && arr->type->kind == TYPE_PTR && arr->type->is_packed) {
                 packed_aux = 0x400;
             }
+            if (irgen_lvalue_volatile(node)) packed_aux |= IR_AUX_VOLATILE;
             irgen_lvalue_addr(g, node);
             ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
             irgen_load_idx(g, node->type, elem_sz, packed_aux);
@@ -5883,6 +5942,8 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                 int fld_aux = bw;
                 if (node->type && !node->type->is_unsigned)
                     fld_aux |= 0x100;
+                if (irgen_lvalue_volatile(node))
+                    fld_aux |= IR_AUX_VOLATILE;
                 irgen_lvalue_addr(g, node);
                 ir_emit(g->fn, IR_LOAD_FLD, bo, 0, fld_aux);
             } else if (node->type && node->type->kind == TYPE_ARRAY) {
@@ -5895,7 +5956,8 @@ static void irgen_expr(IrGen *g, AstNode *node) {
                 if (elem_sz <= 0) elem_sz = 4;
                 irgen_lvalue_addr(g, node);
                 ir_emit(g->fn, IR_PUSH_INT, 0, 0, 0);
-                irgen_load_idx(g, node->type, elem_sz, 0);
+                irgen_load_idx(g, node->type, elem_sz,
+                               irgen_lvalue_volatile(node) ? IR_AUX_VOLATILE : 0);
             }
             break;
         }

@@ -76,6 +76,7 @@ void config_init(void) {
     g_config.enable_opt_slotreg   = 0;
     g_config.enable_opt_frame     = 0;
     g_config.enable_opt_voldmb    = 0;
+    g_config.enable_opt_volbar    = 0;
     g_config.enable_opt_vreg      = 0;
     g_config.enable_opt_constcache = 0;
     g_config.enable_opt_litpool   = 0;
@@ -505,6 +506,8 @@ void config_apply_args(int argc, char **argv) {
                 g_config.enable_opt_frame               = enable;
             else if (ark_streq(name, "opt-voldmb") || ark_streq(name, "voldmb"))
                 g_config.enable_opt_voldmb              = enable;
+            else if (ark_streq(name, "opt-volbar") || ark_streq(name, "volbar"))
+                g_config.enable_opt_volbar              = enable;
             else if (ark_streq(name, "opt-vreg") || ark_streq(name, "vreg"))
                 g_config.enable_opt_vreg                = enable;
             else if (ark_streq(name, "opt-litpool") || ark_streq(name, "litpool"))
@@ -554,7 +557,8 @@ void config_print(void) {
             g_config.enable_opt_prop, g_config.enable_opt_deadpush,
             g_config.enable_opt_cmat, g_config.enable_opt_slotreg);
     ark_log("  opt_vreg=%d\n", g_config.enable_opt_vreg);
-    ark_log("  opt_frame=%d opt_voldmb=%d\n", g_config.enable_opt_frame, g_config.enable_opt_voldmb);
+    ark_log("  opt_frame=%d opt_voldmb=%d opt_volbar=%d\n", g_config.enable_opt_frame,
+            g_config.enable_opt_voldmb, g_config.enable_opt_volbar);
     ark_log("  opt_constcache=%d opt_litpool=%d\n", g_config.enable_opt_constcache,
             g_config.enable_opt_litpool);
     ark_log("  opt_coalesce=%d\n", g_config.enable_opt_coalesce);

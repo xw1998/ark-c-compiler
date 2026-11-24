@@ -31,6 +31,7 @@ endif
         test-inline test-vstack test-addr test-strength test-cbz test-branch \
         test-imm test-peep test-cbranch test-copyprop test-live test-movimm test-pair \
         test-prop test-deadpush test-cmat test-slotreg test-opalloc \
+        test-voldmb test-volmem \
         test-litpool test-coalesce install \
         stm32 stm32-check
 
@@ -47,7 +48,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch test-imm test-peep test-cbranch test-copyprop test-cmat test-slotreg test-opalloc test-live test-movimm test-litpool test-coalesce
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch test-imm test-peep test-cbranch test-copyprop test-cmat test-slotreg test-opalloc test-live test-movimm test-litpool test-coalesce test-voldmb test-volmem
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -333,6 +334,28 @@ test-cmat: $(ARKCC)
 # flag by name.
 test-slotreg: $(ARKCC)
 	$(PYTHON) tests/run_slotreg_tests.py ./$(ARKCC)
+
+# Gate for -fopt-voldmb: a volatile access to a frame slot whose address this
+# function never takes has no other observer, so the DMB SY pair is pure
+# overhead.  The gate pins OFF IS OFF, that the pair goes (and the function is
+# exactly one instruction shorter per deleted barrier), that a leaked `&v` puts
+# it back byte for byte, that an unrelated address-of does not blind the pass,
+# that a function with no volatile access is untouched, that every arm returns
+# the Python answer under unicorn, and that a cropped build
+# (-DARKCC_FEATURE_OPT_VOLDBM=0) refuses the flag by name.  See docs/VOLDBM.md.
+test-voldmb: $(ARKCC)
+	$(PYTHON) tests/run_voldmb_tests.py ./$(ARKCC)
+
+# Gate for volmem: the volatile qualifier has to reach every access (global,
+# volatile aggregate member, dereferenced pointer), and the DMB SY pair around
+# such an access is a separate, off-by-default decision (-fopt-volbar).  The
+# gate pins OFF IS OFF, zero barriers by default, that every load and store
+# survives (the IR mark), that the flag adds balanced pairs without moving an
+# access, that a plain function is byte-identical either way, that all arms
+# agree under unicorn, and that a cropped build
+# (-DARKCC_FEATURE_OPT_VOLBAR=0) refuses the flag by name.  See docs/VOLMEM.md.
+test-volmem: $(ARKCC)
+	$(PYTHON) tests/run_volmem_tests.py ./$(ARKCC)
 
 # Gate for the operand-allocation family (slice S3a, -fopt-constcache): a
 # 32-bit constant rebuilt at every use is built once at the entry into a

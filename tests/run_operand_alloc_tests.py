@@ -195,6 +195,38 @@ PAIR_RE = re.compile(r'^\s+MOV([WT]) r(\d+), #(\d+)\s*$')
 COPY_RE = re.compile(r'^\s+MOV r(\d+), r(\d+)\s*$')
 PUSH_RE = re.compile(r'^\s+PUSH \{([^}]*)\}\s*$')
 FRAME_RE = re.compile(r'\[r6, #(\d+)\]')
+SRC2_RE = re.compile(r'^\s+[A-Z]+(?:\.[WN])?\s+r\d+, r\d+, r(\d+)\s*$')
+SRC1_RE = re.compile(r'^\s+(?!MOV|MVN|PUSH|POP|LDR|STR|BL|B|CMP|TST)[A-Z]+(?:\.[WN])?\s+r\d+, r(\d+)\s*$')
+
+
+def cache_uses(lines, regs):
+    """Sites that read the cached constant.
+
+    The pass is stronger than "every remaining occurrence is a `MOV rD, rC`":
+    where the constant can be the second source operand of a two-operand ALU
+    instruction the cache register is used directly (`EOR r0, r8`), and only the
+    shapes that need source and destination apart fall back to a copy.  Both
+    count as a use; what must not happen is the constant being rebuilt.
+    """
+    n = 0
+    for ln in lines:
+        m = COPY_RE.match(ln)
+        if m:
+            if int(m.group(2)) in regs:
+                n += 1
+            continue
+        m = SRC2_RE.match(ln) or SRC1_RE.match(ln)
+        if m and int(m.group(1)) in regs:
+            n += 1
+    return n
+
+def rebuilt_pairs(lines, regs, skip_entry=True):
+    """MOVW/MOVT pairs written into a cache register, ignoring the one the pass
+    inserts at the entry."""
+    found = pairs(lines)
+    if skip_entry:
+        found = found[1:]
+    return [p for p in found if p[1] in regs]
 
 
 def ilen(lines):
@@ -347,12 +379,14 @@ def main():
             check(len(regs) >= 1 and all(8 <= r <= 11 for r in regs),
                   'it is built once at the entry, into a callee-saved register',
                   'r%s' % ','.join(str(r) for r in regs))
-            copies = [int(m.group(1)) for ln in f_on
-                      if (m := COPY_RE.match(ln)) and int(m.group(2)) in regs]
-            check(len(copies) >= 5,
-                  'the use sites became `MOV rD, rC`',
-                  '%d copy(ies) from r%s' % (len(copies),
-                                             ','.join(str(r) for r in regs)))
+            uses = cache_uses(f_on, regs)
+            check(uses >= 5,
+                  'every use site reads the cache register '
+                  '(a copy or a two-operand source)',
+                  '%d use(s) of r%s' % (uses, ','.join(str(r) for r in regs)))
+            check(not rebuilt_pairs(f_on, regs),
+                  'the constant is never rebuilt after the entry '
+                  'materialisation', '%d pair(s)' % len(rebuilt_pairs(f_on, regs)))
             check(ilen(f_on) < ilen(f_off),
                   'the function got shorter',
                   '%d -> %d' % (ilen(f_off), ilen(f_on)))
@@ -367,12 +401,14 @@ def main():
             bl = next((i for i, ln in enumerate(f_on)
                        if re.match(r'^\s+(BL|BLX)\b', ln)), None)
             after = [ln for ln in f_on[bl + 1:]] if bl is not None else []
-            check(bl is not None and regs and
-                  any((m := COPY_RE.match(ln)) and int(m.group(2)) in regs
-                      for ln in after),
+            check(bl is not None and regs and cache_uses(after, regs) > 0,
                   'a use after the call still reads the cache register',
-                  'BL at line %s, cache r%s'
-                  % (bl, ','.join(str(r) for r in regs)))
+                  'BL at line %s, %d use(s) of r%s'
+                  % (bl, cache_uses(after, regs),
+                     ','.join(str(r) for r in regs)))
+            check(not rebuilt_pairs(after, regs, skip_entry=False),
+                  'the constant is not rebuilt after the call either',
+                  '%d pair(s)' % len(rebuilt_pairs(after, regs)))
 
         # --- 5. not stepping on -fopt-regalloc ------------------------------
         if 'mix' in arms:

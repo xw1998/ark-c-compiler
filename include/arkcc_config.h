@@ -327,6 +327,26 @@
 #   define ARKCC_FEATURE_OPT_VOLDBM  1
 # endif
 #endif
+/* ARKCC_FEATURE_OPT_VOLBAR: -fopt-volbar, also emit the DMB SY pair around a
+ * volatile access to an object that is *not* a frame slot -- a global, a
+ * volatile struct member reached through a pointer, or a dereferenced
+ * pointer.  Those objects may be named by another observer (DMA engine, a
+ * second core, an ISR), so the compiler cannot prove the barrier is
+ * redundant.  Default off, because on ARMv7-M a single core never reorders
+ * Device/Strongly-ordered accesses (ARM ARM B2.3.7), so armcc, armclang, IAR
+ * and GCC(Cortex-M) all emit no barrier at all; forcing the pair costs about
+ * +40% instructions on the HAL corpus (12304 -> 17264, 139 -> 2986 DMB).
+ * Turn it on only when a second bus master relies on the compiler for
+ * ordering.  The volatile qualifier itself is always honoured by the
+ * optimizer (IR_AUX_VOLATILE), so this flag is about barriers only.
+ * See docs/VOLMEM.md. */
+#ifndef ARKCC_FEATURE_OPT_VOLBAR
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_OPT_VOLBAR  0
+# else
+#   define ARKCC_FEATURE_OPT_VOLBAR  1
+# endif
+#endif
 /* ARKCC_FEATURE_OPT_VREG: -fopt-vreg (S6a), slot promotion to a callee-saved
  * register.  Loads whose consumer can be renamed are deleted, stores become
  * "MOV rC, r0"; the pass reuses the -fopt-regalloc frame machinery (PUSH/POP

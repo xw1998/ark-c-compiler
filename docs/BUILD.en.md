@@ -214,7 +214,8 @@ Method: build a real binary from the same sources with the **host gcc** plus
 | --- | --- |
 | full host build, default profile (`make`) | 0 error |
 | STM32_MIN profile host build | 0 error, runnable binary |
-| the 21 `-fopt-*` (addr/branch/cbranch/cbz/cmat/coalesce/constcache/copyprop/deadpush/frame/imm/litpool/live/pair/peep/prop/slotreg/strength/voldmb/vreg/vstack) | **21/21 refused with `C3900U` and the flag named** |
+| the 22 `-fopt-*` (addr/branch/cbranch/cbz/cmat/coalesce/constcache/copyprop/deadpush/frame/imm/litpool/live/pair/peep/prop/slotreg/strength/volbar/voldmb/vreg/vstack) | **22/22 refused with `C3900U` and the flag named** |
+| conversely: `constfold` / `dce` / `inline` / `regalloc` / `vectorize` are **kept** in the profile (not in the crop table) | `rc=0` with the flag |
 | the same source with no `-fopt-*` at all | exit 0, valid Thumb-2 assembly |
 | `make stm32-check` (armclang + real scatter, both layouts) | see section 4, all PASS |
 

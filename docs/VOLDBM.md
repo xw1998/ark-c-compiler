@@ -90,11 +90,23 @@ RCC->CR = tmpreg;              /* 写回 */
 另有：95 TU 0 err；`tests/arm_exec` 两臂 0 failure；**OFF IS OFF**（默认构建与改前二进制
 `.s`/`.o` 逐字节相同）。
 
-## 7 已知缺口（现存，不是本 pass 引入）
+## 7 已知缺口（已由 `-fopt-volbar` 收口，见 `docs/VOLMEM.md`）
 
-`volatile` **结构体成员**访问（`s.v`）本来就不发 `DMB`（探测夹具实测 0 个屏障）。也就是说
-「volatile 成员访问缺少屏障」是 `arkcc` 更早的一个保守性缺口，方向是**少发**而不是多发——
-与「宁可报错不给错答案」的纪律存在张力，已登记，未在本轮处理。
+本轮登记的事实是：`volatile` **结构体成员**访问（`s.v`）、全局 `volatile` 与解引用指针
+（`*p`）本来就不发 `DMB`（探测夹具实测 0 个屏障）。
+
+读法要做两层区分，否则会把「没修」和「不该修」混在一起：
+
+- **标记层是真缺口，已修**。`src/irgen.c` 的 lvalue 路径只判 `L->type->is_volatile`，
+  按 C11 6.5.2.3p3 丢了「基对象是 volatile 聚合」这一层，于是 IR 里这几类访问没有
+  `IR_AUX_VOLATILE`，优化器有权折叠/提升——那才会给出错答案。现在全部打上标记，代价为 0
+  （95 TU 逐字节不变）。
+- **屏障层默认仍不发，这是刻意的**。ARMv7-M 单核不重排 Device/Strongly-ordered 访问
+  （ARM ARM B2.3.7），armcc/armclang/IAR/GCC(Cortex-M) 对 volatile 一个屏障都不发；
+  无条件补发的实测代价是 **+41.0% 指令**（12,113 → 17,081）、`DMB` 1 → 2,848。
+  需要严格序（多总线主控）时用 `-fopt-volbar` 显式打开。
+
+细节、实测表与 24 条门禁见 `docs/VOLMEM.md`。
 
 ## 8 未做 / 已知限制
 
