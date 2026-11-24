@@ -561,6 +561,7 @@ ark c compiler/
 ├── docs/DIVCONST.md        除常数变乘魔数+移位（--divconst）：幅值法为何正确、三种无符号形状与 L==32 特例、五条拒绝、三层裁剪、45 项门禁与如实字节账（中文，UTF-8）
 ├── docs/XBLOCK.md          整块重复块消除（--xblock）：为什么条件分支收尾必须拒绝、跳转目标按块而非 label id 比较、只有标签的块如何归一化、改写形态、三层裁剪、26 项门禁与字节账（中文，UTF-8）
 ├── docs/RA_VSTACK.md       值栈 → 寄存器分配（-fopt-vstack）：为什么做在发射后的文本层、影子值栈与 r5/r7 双槽池、引用计数与三种必须物化的形状、七条安全护栏、四项改写规则与一项 peephole、有条件的第三槽 r4、23 项门禁与 ARM 全语料执行对账（中文，UTF-8，另有 .en.md）
+├── docs/VSTACK_CFG.md      基于控制流的值栈（S7 预注册）：线性扫描 + 边界清空在 19 开关口径上量出 589 处 pin / 471 处 pool-full、便宜版 0 处与完整版上界 1,178 条 = 9.6%（故不能按 F1 收档）、目标模型（函数 CFG + 基本块 + join 状态：同一值须所有前驱同寄存器同槽位才可跨边界保留）、三个切片（S7a 只读影子求解报 `retainable`/`must_spill`/`poolfull_after`/`net`、S7b 新开关 `-fopt-vstack-cfg` 默认关且 OFF IS OFF、S7c 跨调用保留上界 10 条只登记）、冻结判据（S7a 净 ≥ 300 条 = 2.4% 才开工，S7b ≥ 3% 落地 / 1–3% 只登记 / < 1% 撤回）与反假绿强制块尾 flush 对照、四条不许的写法、预算法与排期（中文，UTF-8，另有 .en.md）
 ├── docs/SIZEWEIGHT.md     空间/速度连续权重（--size-weight 0..9）：四张门槛表、5 = 0.9.0 常量、为什么不给 -Oz/-Os/-Ot、派生宏与裁剪、31 项门禁、80 文件逐字节对账、以及「带参函数永不内联」这条已知欠账（中文，UTF-8）
 ├── docs/ADDR_FOLD.md        寻址折叠（-fopt-addr）：三条规则与安全性、为什么不实现两种写回形、第二遍运行（regalloc / vreg / slotreg / cmat 之后 12,795 → 12,346）、四臂门禁与 HAL 全语料实测（中文，UTF-8，另有 .en.md）
 ├── docs/STRENGTH.md        强度削减（-fopt-strength）：为什么一个开关两个落点、AC5 的对照证据、阶段位置踩坑（放在 dce 之后会因改变内联决策而变大）、索引缩放折进寻址方式、18 项门禁与 HAL 全语料实测（中文，UTF-8，另有 .en.md）
