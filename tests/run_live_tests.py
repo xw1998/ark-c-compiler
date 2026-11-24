@@ -284,9 +284,15 @@ def main():
         # one higher while the runtime helper was emitted unconditionally.
         rule_check(arkcc, work, 'dead', 'd', 5, 2, 0, 3,
                    'the dead copies are gone')
-        rule_check(arkcc, work, 'fwd', 'f', 2, 2, 0, 1,
+        # The folded form is an *indexed* load, not a plain `[rB]`: fwd ends at
+        # `LDR r0, [r5, r0, LSL #2]` and zero at `LDR r5, [r0, #0]` plus
+        # `LDR r7, [r7, r0, LSL #2]`.  The earlier numbers assumed the index was
+        # folded into a plain base register; the pass now puts it back into the
+        # load's own addressing mode, which removes more instructions (fwd
+        # 6 staging lines -> 1, zero 12 -> 3) and leaves one indexed load.
+        rule_check(arkcc, work, 'fwd', 'f', 5, 1, 1, 0,
                    'the copies fold into their consumer')
-        rule_check(arkcc, work, 'zero', 'z', 5, 1, 0, 2,
+        rule_check(arkcc, work, 'zero', 'z', 9, 0, 1, 0,
                    'the staged zero indices fold away')
         rule_check(arkcc, work, 'addr', 'a', 3, 0, 0, 0,
                    'the address copies are gone')

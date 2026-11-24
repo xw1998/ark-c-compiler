@@ -436,3 +436,30 @@ semantics), but running copyprop first lets live converge faster.
   access: no byte saving under the 16-bit encodings, not worth a project.
 - **Alias analysis / TBAA.** This backend has no loop vectorisation, so the
   payoff does not justify the complexity.
+
+## 12. Revision (2026-11-24): the `fwd` / `zero` shape assertions follow the implementation
+
+Re-running the gate at close-out turned four counting assertions red in each of
+`fwd` and `zero`, while **every semantic assertion (the off/on/alone arms against
+the Python answer) stayed green**. A line-by-line diff confirmed stale
+assertions, not a regression:
+
+| fixture | old assertion | measured | actual shape |
+|---|---|---|---|
+| `fwd` | drop 2, keep 2 `MOV rX,rY`, keep 1 plain load | drop **5**, keep 1 `MOV rX,rY` | off's 6 staging lines fold into `LDR r0, [r5, r0, LSL #2]` |
+| `zero` | drop 5, keep 1 `MOV rX,rY`, keep 2 plain loads | drop **9**, keep 0 `MOV rX,rY` | off's 12 lines fold into `LDR r5, [r0, #0]` + `LDR r7, [r7, r0, LSL #2]` |
+
+The difference is **the shape of the folded product**: the old assertion assumed
+the index was folded into a plain base register (`LDR rX, [rB]`), while the
+implementation puts it back into the load's own addressing mode
+(`[rB, rI, LSL #2]`) or an immediate offset (`[rB, #0]`). So the indexed-load
+count does not fall to zero and the plain-load count does not rise. **The result
+is better than the old assertion assumed** (`fwd` 6 -> 1 lines, `zero` 12 -> 3),
+which is why the numbers were updated rather than the criteria loosened: the
+delta and all three counts are still judged by **exact equality**, so any future
+shape drift turns red again.
+
+The lesson matches `docs/SLOTREG.md` §10: **establish which pass produced the
+difference and what shape it is before touching an assertion**; changing "better
+than expected" into `<=` just because it looks favourable removes the gate's
+ability to catch regressions.

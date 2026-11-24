@@ -374,3 +374,22 @@ vstack → addr → strength → cbz → peep → copyprop → live → regalloc
   （`c_compiler/iar/docs/07-crossjump-and-tbaa.md`），是「更小」的最大一块，需 IPO 级分析。
 - **`LDRD` / `STRD` 合并**：两条相邻 32 位访问合成 64 位访问，16 位编码下无字节收益，不立项。
 - **别名分析 / TBAA**：本后端没有循环向量化，收益不足以付复杂度。
+
+## 12. 修订（2026-11-24）：`fwd` / `zero` 的形态断言随实现更新
+
+收尾复跑门禁时 `fwd` 与 `zero` 各有 4 条计数断言红，**语义断言（`off/on/alone` 三臂与
+Python 答案一致）全绿**。逐行 diff 后确认是断言过时，不是回归：
+
+| 夹具 | 旧断言 | 实测 | 实际形态 |
+|---|---|---|---|
+| `fwd` | 降 2 条、`MOV rX,rY` 留 2、plain load 留 1 | 降 **5** 条、`MOV rX,rY` 留 1 | off 的 6 条暂存行折成 `LDR r0, [r5, r0, LSL #2]` |
+| `zero` | 降 5 条、`MOV rX,rY` 留 1、plain load 留 2 | 降 **9** 条、`MOV rX,rY` 留 0 | off 的 12 条折成 `LDR r5, [r0, #0]` + `LDR r7, [r7, r0, LSL #2]` |
+
+关键差别在**折叠产物的形态**：旧断言假定索引被折进一个纯基址寄存器（`LDR rX, [rB]`），
+实际实现是把索引放回 load 自己的寻址模式（`[rB, rI, LSL #2]`）或立即数偏移（`[rB, #0]`），
+因此 indexed load 计数不降为 0、plain load 计数也不增加。**结果比旧断言设想的更优**
+（`fwd` 6→1 条、`zero` 12→3 条），所以是更新数值而不是放宽判据：delta 与三个计数
+仍按**精确相等**判定，未来任何形态漂移都会再红。
+
+教训与 `docs/SLOTREG.md` §10 同型：**先确认差异来自哪个 pass、属于哪种形态，
+再动断言**；只看到「实际比期望好」就改成 `<=`，会让门禁失去发现回归的能力。
