@@ -209,6 +209,13 @@ under F1 (< 5% means close it) **S6b-2 is closed and not implemented**. The othe
 copies have a consumer inside their own block; removing those needs a change to the value
 stack / allocation model and is not part of the register-copy item.
 
+**A weaker avenue was measured too**: folding "`MOV rD, rS` immediately followed by one
+instruction that only reads `rD`, with `rD` dead for the rest of the block" (feeding the
+source register straight into the next instruction, `CMP r0, #0` -> `CMP r5, #0`) yields
+**73 instructions = 0.54%**, also closed under F1. Together still under 5%, so there is
+nothing else to do in the register-copy column short of the value-stack model -- rule B of
+`-fopt-copyprop` (an `OP rD, rD, X` right after) already took the well-formed part.
+
 ### 5.5 Registered but not done
 
 - **`DMB SY` 139** (armcc 12): every `volatile` write is followed by a barrier, while

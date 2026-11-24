@@ -515,7 +515,9 @@ writes nothing), so the number is a ceiling.
 `docs/BOUNDARY.md` section 2 and the register-copy count in section 5.4.
 
 **Result**: **266** candidates -- **1.96%** of all instructions, 15.4% of the copies
-themselves.
+themselves. A weaker fold (`MOV rD,rS` immediately followed by one instruction that only
+reads `rD`, with `rD` dead for the rest of the block) adds **73 = 0.54%** and is closed
+together with it.
 
 **Verdict**: under F1 (a win below 5% means close it) the range is **closed and S6b-2 is not
 implemented**. The remaining 1,465 copies have a consumer inside their own block; removing
