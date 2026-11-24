@@ -379,3 +379,77 @@ The final rule: **every operand after the first counts as a read**; the first op
 - Every gate builds its command line through the `build()` helper in `tests/`, never by hand, so fixtures and gates cannot drift apart.
 - `-fopt-vreg` is still **off by default**; an `ARKCC_FEATURE_VREG=0` build rejects the flag by name (C3900U), and without the flag the sixteen-switch output is byte-identical (95/95 identical).
 - This section only appends measurement and implementation. The seven frozen gates of §5 and the F1-F4 falsifiers of §6 are **unchanged word for word**. S6c (across `BL` + spill, with a cost/benefit criterion) is still not started.
+
+## 13 Measured result (2026-11-24, S6c: the region crosses a call, plus two real defects the new fixture flushed out)
+
+### 13.1 The change: a call is no longer a wall
+
+S6b widened the region from "the very next instruction" to "the rest of the basic block", but `BL`/`BLX` was still a hard barrier. S6c lets exactly one shape through: **the destination register `dr` of the load being renamed satisfies `dr >= 4` and appears in this function's own prologue save list** (`saved_mask`, collected register by register from `PUSH {...}` in the pre-scan). The argument is checkable line by line:
+
+- the cache register (`r8-r11`) is callee-saved, and this function's prologue really saves it (otherwise the pass would not have taken it as a cache register);
+- an untainted slot's address never escaped anywhere, so the callee cannot reach it at all -- the slot has no addressable location;
+- therefore, after the call, the cache register still holds what `dr` held before the rename.
+
+The implementation adds a new barrier class `vg_lk = 5`: the IT coverage scan and every other consumer still treat 3 and 5 alike as walls (`>= 3`), and only the Pass 2 region scan tells them apart:
+
+```
+if (vg_lk[j] == 4) break;                   /* frame setup: still a wall */
+if (vg_lk[j] == 5) {
+    if (dr >= 4 && ((saved_mask >> dr) & 1u)) continue;   /* S6c: walk through */
+    end = j; break;                          /* otherwise the region ends here */
+}
+if (vg_lk[j] == 3) break;                    /* any other barrier */
+```
+
+Walking through `POP {dr}` is deliberately **not** allowed: a `POP` landing on `dr` silently invalidates the premise "`dr` still holds that slot's value".
+
+### 13.2 The new `crossbl` fixture
+
+`tests/run_vreg_tests.py` grows a ninth fixture: `s` is written **before** a call and read **after** it, and the callee is deliberately far too large to inline. The assertions come in two layers:
+
+- the generic seven: no instruction added, `PUSH`/`POP` gain the same registers, the promoted function really asks the frame for a register, every offset above the frame base moves with it, instructions really disappear, the three arms (off / on / alone) return the same value on the emulator (219), and the `alone` arm is right too;
+- the S6c-specific one: within three instructions after the `BL`, the plain arm **must** still show a `LDR rN, [r6, #off]` (proving the reload sits on the far side of the call) and the promoted arm **must** show none (proving the value stayed in the cache register instead of coming back from the frame).
+
+### 13.3 Two real defects (present since S6b; there was simply no fixture)
+
+`crossbl` produced a **wrong answer on its first run** (the `on` arm returned 889, and 141 after the first fix). Both have the same root: **the rename moves the value into the cache register and `dr` no longer holds it** -- so any "reader that does not name the register" at the region's edge loses the value.
+
+**13.3.1 `hits == 0`: nothing inside the region reads `dr`**
+
+In `n = vg_work(n, 5)` the load of the argument `n` is followed directly by `BL`. Before S6c a `BL` was a wall, so the region `[i+1, end)` contained no line mentioning `r0` (`BL` only reads `r0-r3` *implicitly*) -- yet `vg_cons[i] = end` still held, so `vg_act[i] = 1` deleted the load with no line rewritten to read the cache register: `r0` still held the previous statement's value (`s` = 41 went in as the argument). The fix is a `hits` counter: **the load may be deleted only if the region really recorded at least one rename**; otherwise fall back to `MOV rD, rC` (the same one instruction, so no loss, but correct).
+
+**13.3.2 Three implicit readers**
+
+`hits` only catches the "not one line renamed" case. The real condition is "nothing at the region's edge reads `dr` **implicitly**", and there are exactly three such readers, none of which the S6b rewrite can cover:
+
+| shape | who reads implicitly | example |
+|---|---|---|
+| a call | `r0-r3` of a `BL` | `n = work(n, 5)`: the argument *is* that load's value |
+| a push | `dr` inside a `PUSH {...}` / `STM...` list | a list sits in braces; the rename logic never looks there |
+| the return | `r0` in the epilogue | `return t & 0xff` renamed to `AND r9, r9, #255`, and the function returned the stale `r0` |
+
+The fix is a marker `vg_rf[i]` (an array that was free in this pass): after Pass 2 knows `end`, if `end` is a `BL` and `dr <= 3`, or `end` is a `PUSH`/`STM` whose list names `dr`, or `dr == 0` and the path from `end` to the frame epilogue is nothing but teardown (`MOV sp, r6` / `ADD sp` / `SUB sp`, possibly across a shared return label), the load is marked "must stay in `dr`" and **no rename is done for that region at all** -- it becomes `MOV rD, rC` outright. Why the renames have to go too: the `MOV` lands at the load's position, so if a consumer inside the region were still rewritten to write the cache register, `dr` would receive the pre-rename value -- a quieter, worse bug.
+
+### 13.4 Measurement and the account
+
+| Corpus (95 TUs, Cortex-M4, `-O2`) | instructions | bytes |
+|---|---|---|
+| seventeen switches (eighteen minus `-fopt-vreg`) | 14,954 | 36,204 |
+| eighteen switches (with the fixed `-fopt-vreg`) | **14,218** | **36,072** |
+
+So `-fopt-vreg` now really contributes **-736 instructions (-4.9%) / -132 B**.
+
+**One honest note that has to be written down**: before the fix the same measurement read 14,103 instructions / 36,072 B. The 115 extra instructions are exactly what those two defects used to "save" -- loads that were wrongly deleted come back as `MOV` (bytes unchanged: `-fopt-cmat` then removes the equivalent `MOV`). In other words, the -415 / -801 published in §11/§12 include instructions bought with **wrong answers**; the real contribution is smaller than those numbers. From this section on, the `-fopt-vreg` account is 14,954 -> 14,218.
+
+S6c itself (the part that crosses a `BL`) is worth little: the hit condition demands `dr >= 4` and that register in the prologue save list, while the frame-flow destinations are mostly `r0` (caller-saved, cannot cross a `BL`) and `r5`/`r7`, so sites that can hit are rare to begin with.
+
+### 13.5 Gates
+
+| Gate | Result |
+|---|---|
+| `tests/run_vreg_tests.py` (9 fixtures incl. the new `crossbl`, 137 assertions expected) | all checks passed |
+| `tests/arm_exec/run_arm_exec.py --arkcc ./arkcc.exe --extra=-fopt-vreg` | 0 failure(s) |
+| `make test` | green |
+| OFF IS OFF (no flag, eighteen switches, 95 TUs against the baseline) | identical 95 / different 0 |
+
+The closing sentence of §12.5 ("S6c ... is still not started") is superseded by this section. The seven frozen gates of §5 and the F1-F4 falsifiers of §6 remain **unchanged word for word**.

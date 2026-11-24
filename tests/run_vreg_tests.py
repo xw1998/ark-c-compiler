@@ -219,6 +219,40 @@ long long vg_w(long long a, int n)
 int main(void) { return (int)vg_w(11, 7); }
 """
 
+# S6c: the region may walk through a call.  `s` is stored before the call and
+# read after it; the callee is deliberately too big to inline, so the reload in
+# the plain arm really sits on the far side of a `BL`.  This is the only shape
+# where a rename is kept across a call, and it is sound only because the cache
+# register is callee-saved and this function's own prologue saves it -- a wrong
+# widening of that rule returns a clobbered value, which the emulator arm below
+# catches.
+CROSSBL = HEAD + """\
+int vg_work(int x, int y)
+{
+    int i, t;
+    t = 0;
+    for (i = 0; i < y; i++) {
+        t = t + x * 3 + i;
+        if (t & 1) t = t + x;
+    }
+    return t & 0xff;
+}
+int vg_cb(struct VgS *p, int n)
+{
+    int s;
+    s = p->a;
+    s = s + p->d;
+    n = vg_work(n, 5);
+    s = s + p->h;
+    return s + n;
+}
+int main(void)
+{
+    struct VgS v = {1, 2, 3, 40, 5, 6, 7, 100};
+    return vg_cb(&v, 4);
+}
+"""
+
 CASES = [
     ('chain', CHAIN, 150),    # 1 + 40 + 100 + 9
     ('loop', LOOP, 420),      # (40 + 100) * 3
@@ -228,6 +262,7 @@ CASES = [
     ('call', CALL, 189),      # 1 + 2*40 + 100 + 2*4
     ('wide', WIDE, 29),       # 11 + 7 + 11
     ('deep', DEEP, 116),      # n=4*3+1=13, s=1+13=14, t=100+14=114, +2
+    ('crossbl', CROSSBL, 219),  # s=1+40=41 (+100), vg_work(4,5)=78, 41+100+78
 ]
 
 check = V.check
@@ -305,7 +340,7 @@ def local_words(text):
 
 # Which function each fixture is expected to promote.
 FN = {'chain': 'vg_chain', 'loop': 'vg_loop', 'many': 'vg_many',
-      'call': 'vg_cl', 'deep': 'vg_deep'}
+      'call': 'vg_cl', 'deep': 'vg_deep', 'crossbl': 'vg_cb'}
 
 
 def main():
@@ -393,7 +428,7 @@ def main():
                       '%s: no offset is left inside the widened save' % name)
 
         # --- 2. it pays -----------------------------------------------------
-        for name in ('chain', 'loop', 'many', 'call', 'deep'):
+        for name in ('chain', 'loop', 'many', 'call', 'deep', 'crossbl'):
             if name not in arms:
                 continue
             t_off, _b, t_on, _b2 = arms[name]
@@ -439,6 +474,35 @@ def main():
                       ' '.join('%s=%s' % (t, got[t])
                                for t in ('off', 'on', 'alone'))
                       + ' want=%s' % want)
+
+        # --- 5. S6c: the region really crosses the call ----------------------
+        # Counting frame loads in the three lines after each BL is the
+        # difference between "the reload is now on the other side of a call"
+        # and "the reload simply moved".  The plain arm must show one, the
+        # promoted arm must show none.
+        if 'crossbl' in arms:
+            t_off, _b, t_on, _b2 = arms['crossbl']
+            f_off = V.split_functions(t_off).get('vg_cb', '')
+            f_on = V.split_functions(t_on).get('vg_cb', '')
+
+            def loads_after_call(body, window):
+                lines = [l for l in body.splitlines() if l.strip()]
+                for q, l in enumerate(lines):
+                    if re.match(r'^\s+BL(X)?\s', l):
+                        return sum(
+                            1 for l2 in lines[q + 1:q + 1 + window]
+                            if re.match(r'^\s+LDR\s+r\d+,\s*\[r6,\s*#\d+\]',
+                                        l2))
+                return -1
+
+            n_off = loads_after_call(f_off, 3)
+            n_on = loads_after_call(f_on, 3)
+            check(n_off >= 1,
+                  'crossbl: the plain arm reloads the slot after the call',
+                  '%d frame load(s) in the next 3 lines' % n_off)
+            check(n_on == 0,
+                  'crossbl: the promoted arm keeps the value across the call',
+                  '%d frame load(s) in the next 3 lines' % n_on)
 
         # --- 6. cropped out, refused ----------------------------------------
         trimmed, why = build_arkcc(work, ['-DARKCC_FEATURE_OPT_VREG=0'],

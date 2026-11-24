@@ -3095,7 +3095,8 @@ typedef struct {
 static VgSlot         vg_slots[VG_MAX_SLOTS];
 static unsigned short vg_ll[VG_MAX_LINES];
 static short          vg_lo[VG_MAX_LINES];
-static unsigned char  vg_lk[VG_MAX_LINES];   /* 0 other, 1 LDR, 2 STR, 3 barrier, 4 frame setup */
+static unsigned char  vg_lk[VG_MAX_LINES];   /* 0 other, 1 LDR, 2 STR, 3 barrier, 4 frame setup,
+                                              * 5 call (a barrier the region scan may cross) */
 static unsigned char  vg_it[VG_MAX_LINES];
 static unsigned char  vg_dr[VG_MAX_LINES];   /* destination/source register of an LDR/STR */
 static int            vg_ptr[VG_MAX_LINES];
@@ -3455,12 +3456,49 @@ static int vg_is_frame_pop(const char *line) {
     }
 }
 
+/* Does the path from line `j` on run into the frame epilogue?  Only a shared
+ * return label and the frame teardown (`MOV sp, r6`, `ADD/SUB sp, sp, #n`) may
+ * stand between the region and the POP; anything else means this is not the
+ * exit tail. */
+static int vg_ret_tail(AsmBuffer *b, int j, int nlines) {
+    char line[256], flat[160];
+    while (j < nlines) {
+        int k2, len = vg_ll[j];
+        if (len >= (int)sizeof(line) - 1) return 0;
+        for (k2 = 0; k2 < len; k2++) line[k2] = b->buf[vg_ptr[j] + k2];
+        line[len] = 0;
+        if (vg_is_frame_pop(line)) return 1;
+        if (!vg_is_ins_at(b, j)) { j++; continue; }    /* comment, .loc, label */
+        if (!vg_flatten(line, flat, (int)sizeof(flat))) return 0;
+        if (strncmp(flat, "MOVsp,r6", 8) == 0) { j++; continue; }
+        if (strncmp(flat, "ADDsp,sp,#", 10) == 0) { j++; continue; }
+        if (strncmp(flat, "SUBsp,sp,#", 10) == 0) { j++; continue; }
+        return 0;
+    }
+    return 0;
+}
+
+/* Does this barrier line read `reg` without naming it in an operand list?  A
+ * PUSH/STM list is the one barrier that reads the registers it names, and a
+ * list names them in a place the S6b rename cannot rewrite. */
+static int vg_barrier_reads(AsmBuffer *b, int j, int reg) {
+    char line[256], flat[160];
+    int k2, len = vg_ll[j];
+    if (len >= (int)sizeof(line) - 1) return 0;
+    for (k2 = 0; k2 < len; k2++) line[k2] = b->buf[vg_ptr[j] + k2];
+    line[len] = 0;
+    if (!vg_flatten(line, flat, (int)sizeof(flat))) return 0;
+    if (strncmp(flat, "PUSH{", 5) != 0 && strncmp(flat, "STM", 3) != 0) return 0;
+    return vg_list_has(flat, reg);
+}
+
 static void ark_vreg_function(AsmBuffer *b, int from, IrFunc *f, int local_eff) {
     int nslots = 0, nlines = 0, pos, i, k;
     int base;
     int nregs = 0, made[VG_MAX_REGS];
     int free_regs[VG_MAX_REGS], nfree = 0;
     int saved_words = 4;
+    unsigned saved_mask = 0;                 /* registers the prologue preserves */
     unsigned used_mask = 0;
     int have_prologue = 0, have_frame = 0, done_push = 0;
     AsmBuffer out;
@@ -3500,10 +3538,13 @@ static void ark_vreg_function(AsmBuffer *b, int from, IrFunc *f, int local_eff) 
         for (k = 0; k < len; k++) line[k] = b->buf[vg_ptr[i] + k];
         line[len] = 0;
         if (!have_prologue && vg_is_frame_push(line)) {
+            int k4;
             have_prologue = 1;
             /* The list always ends in lr (the epilogue in pc/lr), so the word
              * count is its registers plus that one. */
             saved_words = vg_list_regs(line) + 1;
+            for (k4 = 4; k4 <= 11; k4++)
+                if (vg_list_has(line, k4)) saved_mask |= 1u << k4;
         }
         used_mask |= (unsigned)vg_hi_mask(line);
     }
@@ -3517,7 +3558,23 @@ static void ark_vreg_function(AsmBuffer *b, int from, IrFunc *f, int local_eff) 
         } else {
             return;                      /* absurdly long line: leave the function */
         }
-        if (vg_barrier(line)) { vg_lk[i] = 3; continue; }
+        if (vg_barrier(line)) {
+            /* S6c: a call is not a wall for a promoted slot.  The cache
+             * register is callee-saved (it is in the prologue's save list, or
+             * this pass would not have taken it), and an untainted slot cannot
+             * be reached by the callee at all -- no address of it ever escaped
+             * into memory.  So the region scan below is allowed to walk through
+             * a call when the value it renames sits in a callee-saved register
+             * too.  Every other consumer of vg_lk still treats 5 as a barrier. */
+            char m2[8];
+            if (vg_mnem(line, m2) &&
+                ((m2[0] == 'B' && m2[1] == 'L' && m2[2] == 0) ||
+                 (m2[0] == 'B' && m2[1] == 'L' && m2[2] == 'X' && m2[3] == 0)))
+                vg_lk[i] = 5;
+            else
+                vg_lk[i] = 3;
+            continue;
+        }
         {
             int off = -1, dr = -1, t = vg_scan(line, &off, &dr);
             if (t == 4) { vg_lk[i] = 4; have_frame = 1; }
@@ -3557,7 +3614,7 @@ static void ark_vreg_function(AsmBuffer *b, int from, IrFunc *f, int local_eff) 
         cnt = (int)strlen(mn) - 1;
         c = 0;
         for (k = i + 1; k < nlines && c < cnt; k++) {
-            if (vg_lk[k] == 3 || vg_lk[k] == 4) break;
+            if (vg_lk[k] >= 3) break;
             if (vg_lk[k] == 1 || vg_lk[k] == 2) { vg_it[k] = 1; c++; }
             else if (vg_is_ins_at(b, k)) { vg_it[k] = 1; c++; }
         }
@@ -3591,8 +3648,10 @@ static void ark_vreg_function(AsmBuffer *b, int from, IrFunc *f, int local_eff) 
      * next instruction" to the rest of the basic block: the load is dropped and
      * every line inside the region that reads the load's destination reads the
      * cache register instead.  This is safe because the region has a single
-     * path (the scan stops at any barrier, so a rename never crosses a branch,
-     * a call or a prologue/epilogue) and the cache register already holds the
+     * path (the scan stops at any barrier, so a rename never crosses a branch
+     * or a prologue/epilogue; S6c lets it cross a call, but only when the
+     * destination is a callee-saved register this prologue really saves, so
+     * the value survives the call) and the cache register already holds the
      * slot's value everywhere (every store became "MOV rC, rS").
      *
      * The scan also stops at any other frame access and at the first line that
@@ -3612,7 +3671,17 @@ static void ark_vreg_function(AsmBuffer *b, int from, IrFunc *f, int local_eff) 
         for (j = i + 1; j < nlines; j++) {
             int len = vg_ll[j];
             char cl[256];
-            if (vg_lk[j] == 3 || vg_lk[j] == 4) break;   /* barrier / prologue */
+            if (vg_lk[j] == 4) break;                   /* prologue / frame setup */
+            if (vg_lk[j] == 5) {
+                /* A call clobbers r0-r3 and preserves r4-r11, so the region can
+                 * only continue when the value it renames lives in a register
+                 * the callee is obliged to keep -- and that this function's own
+                 * prologue really saves. */
+                if (dr >= 4 && ((saved_mask >> dr) & 1u)) continue;
+                end = j;
+                break;
+            }
+            if (vg_lk[j] == 3) break;                   /* any other barrier */
             if (vg_lk[j] == 2) {
                 /* A store whose source is this register has to be renamed as
                  * well, or it would write the pre-load value back.  A store of
@@ -3641,6 +3710,25 @@ static void ark_vreg_function(AsmBuffer *b, int from, IrFunc *f, int local_eff) 
         if (end < 0) continue;                  /* nothing to rename */
         vg_cons[i] = end;
         vg_slots[s].elid++;
+        /* The rename is only sound when nothing reads `dr` implicitly at the
+         * region's edge, because a rename moves the value into the cache
+         * register and leaves `dr` holding whatever it held before the load.
+         * Three edges have such a reader, none of which the S6b rewrite can
+         * touch:
+         *   - a call reads r0-r3 without naming them, so an argument value
+         *     stays live in `dr` (`n = work(n, 5)` passed the previous
+         *     expression's value as the argument);
+         *   - a PUSH/STM list names `dr` inside braces;
+         *   - the epilogue returns in r0, so a region that runs into the exit
+         *     tail leaves the return value in `dr` (`return t & 0xff`
+         *     computed into the cache register and returned a stale r0).
+         * Such a load is kept as "MOV rD, rC" with no rename at all -- the
+         * same instruction count the load had, so nothing grows. */
+        if (end < nlines) {
+            if (vg_lk[end] == 5 && dr <= 3) vg_rf[i] = 1;
+            else if (vg_lk[end] == 3 && vg_barrier_reads(b, end, dr)) vg_rf[i] = 1;
+        }
+        if (dr == 0 && !vg_rf[i] && vg_ret_tail(b, end, nlines)) vg_rf[i] = 1;
     }
 
     /* Pass 3: pick slots.  Rank by elided loads, take what the pool holds. */
@@ -3681,6 +3769,8 @@ static void ark_vreg_function(AsmBuffer *b, int from, IrFunc *f, int local_eff) 
         if (!r) continue;
         if (vg_lk[i] == 1) {
             int ok = (vg_cons[i] > i + 0) ? 1 : 0, dr = vg_dr[i];
+            int hits = 0;
+            if (vg_rf[i]) ok = 0;                 /* implicit reader: keep the copy */
             if (ok) {
                 int j;
                 for (j = i + 1; j < vg_cons[i]; j++) {
@@ -3695,13 +3785,24 @@ static void ark_vreg_function(AsmBuffer *b, int from, IrFunc *f, int local_eff) 
                     vg_mf[j][vg_mn[j]] = (signed char)dr;
                     vg_mt[j][vg_mn[j]] = (signed char)r;
                     vg_mn[j]++;
+                    hits++;
                 }
             }
-            if (ok) {
+            if (ok && hits) {
                 vg_act[i] = 1;                    /* drop the load; the region reads rC */
             } else {
                 /* Any rename already recorded stays: it names the same slot's
-                 * cache register, so it is just as correct as the MOV. */
+                 * cache register, so it is just as correct as the MOV.
+                 *
+                 * `hits == 0` is the S6c-found case: the load's value is used
+                 * only *implicitly* -- a call reads r0-r3 without naming them,
+                 * and a branch carries the register to another block.  Nothing
+                 * inside the region can be rewritten to read the cache
+                 * register, so dropping the load would leave the low register
+                 * holding whatever it held before the load, and the value would
+                 * simply be gone (`n = work(n, 5)` passed `s` instead of `n`).
+                 * The copy costs exactly what the load cost, so keeping it
+                 * never grows the function. */
                 vg_act[i] = 2;                    /* MOV rD, rC: same count */
                 vg_ren[i] = (signed char)r;
             }
