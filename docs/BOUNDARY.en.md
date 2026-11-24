@@ -175,13 +175,39 @@ bounded by the F1 falsifier (close the slice if under 5%).
 `MOV r0, #imm` 1,000 + `MOV rX, #imm` 354. This **must not be double counted** with 5.1:
 after pooling most of these sites still need one `LDR`; what can still go is only "the
 same constant materialised several times in one basic block" (`-fopt-constcache` already
-took 159, the rest is unmeasured).
+took 159).
+
+**Measured upper bound (2026-11-24, measure first, then close)**: counting "the same
+immediate materialised a second time or later inside the same basic block" over the
+nineteen-switch corpus gives **1,830** `MOV rX, #imm` (including `#0`, epilogue return
+codes and so on -- a wider rule than the 1,354 classifier reading above, so the bound can
+only come out too high), of which **320** are same-block repeats; the pooled form
+`LDR rX, .Llit_*` appears 705 times with **87** same-block repeats of the same pool label.
+Together that is **407 instructions = 3.00%**, and it is a **ceiling** -- actually
+deleting one also requires the destination register to still hold the value on that line
+(liveness), so the real number is smaller. Under F1 (a win below 5% means close it) the
+item is **closed**; no same-block constant reuse will be implemented.
+
+> Note for whoever comes next: the `-fopt-constcache` threshold is "appears five or more
+> times in a function", which already covers the shape worth spending a callee-saved
+> register on. What is left is one or two repeats inside a block; deleting one `MOV` would
+> cost a liveness analysis for a ceiling of 3%.
 
 ### 5.4 Register copies 1,731 (12.8%)
 
 `-fopt-copyprop` / `-fopt-coalesce` / `-fopt-live` already removed the redundant copies
 that do not cross a block boundary; what remains needs **inter-block** liveness (the S6b-2
-range), and the win is under 5%.
+range).
+
+**Measured upper bound (2026-11-24, measure first, then close)**: each `MOV rD,rS` was
+counted under the rule "its destination is not read again in the rest of its block but is
+in the block's `live_out` set" (the counter self-checks: across the 95-TU corpus it counts
+13,566 instructions and 1,731 `MOV rD,rS`, exactly the classifier readings in section 2 and
+this section). Only **266** of them qualify -- **1.96% of all instructions, 15.4% of the
+copies themselves**. That is an **upper bound** (anything uncertain counts as live), so
+under F1 (< 5% means close it) **S6b-2 is closed and not implemented**. The other 1,465
+copies have a consumer inside their own block; removing those needs a change to the value
+stack / allocation model and is not part of the register-copy item.
 
 ### 5.5 Registered but not done
 

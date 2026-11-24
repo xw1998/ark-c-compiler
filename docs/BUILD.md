@@ -83,8 +83,8 @@ make stm32-check
 # --- layout: sram ---
 # PASS  every STM32 profile source compiles  [34 file(s), 0 failed]
 # PASS  .ark_buf fits its sram region  [475192 / 520192 bytes (91%)]
-# PASS  code + rodata fits the 2 MB flash  [375916 / 2097152 bytes (17.9%)]
-# PASS  ordinary .data/.bss fits SRAM1-3 (288 KB)  [30908 / 294912 bytes (10%)]
+# PASS  code + rodata fits the 2 MB flash  [378100 / 2097152 bytes (18.0%)]
+# PASS  ordinary .data/.bss fits SRAM1-3 (288 KB)  [30944 / 294912 bytes (10%)]
 # --- layout: sdram ---
 # PASS  .ark_buf fits its sdram region  [29434192 / 33554432 bytes (88%)]
 # ...
@@ -96,7 +96,7 @@ make stm32-check
 | `sdram`（部署档） | `0xC0000000` UNINIT 32 MB | 29,434,192 B（88%） | 15 项实测覆盖（§5.1），profile 默认尺寸远不够；SDRAM 由 `SystemInit()` 起 |
 | `sram`（无 SDRAM 回退档） | `0x24000000` 起 508 KB | 475,192 B（91%） | 必须裁，见 §5 |
 
-代码 + 只读数据 **375,888–375,916 B / 17.9%**，两种布局几乎一样——因为裁的是**零初始化的
+代码 + 只读数据 **378,072–378,100 B / 18.0%**，两种布局几乎一样——因为裁的是**零初始化的
 工作区**，不是代码。`.ark_buf` 在 SDRAM 布局里是 `UNINIT`，所以 29.4 MB 的工作区
 **不进 flash 镜像**；这一条也在门禁里（`the arena is not loaded as initialised data`）。
 
@@ -165,8 +165,8 @@ SDRAM 档不是"默认尺寸就够"，而是**必须显式给齐**：STM32 默�
 | `ARM_MAX_SYMBOLS` / `_RELOCS` / `_GVARS` | 4096 / 4096 / 2048 | ARM 后端符号表 |
 | `ARKCC_FEATURE_OPT_INLINE` | 1 | **保留内联**：裁掉它后 95 个 TU 里有 8 个与宿主 `-O2` 不同 |
 
-`.ark_buf` 合计 **29,434,192 / 33,554,432 B（88%）**，代码 + 只读 375,888 B（17.9%），
-普通 RW/ZI 86,208 B（29%，在另一块 288 KB SRAM1-3 上）。
+`.ark_buf` 合计 **29,434,192 / 33,554,432 B（88%）**，代码 + 只读 378,072 B（18.0%），
+普通 RW/ZI 86,244 B（29%，在另一块 288 KB SRAM1-3 上）。
 
 arena 取 8 MB 而不是 4.5 MB：peak 4.29 MB 之外还要给 `--ipo` 这类"一次装多个 TU"的
 用法留头；SDRAM 有 32 MB，把 arena 压到 4.5 MB 只能让 `.ark_buf` 从 88% 降到 76%，这点收益抵不上一次重量的风险。
@@ -175,6 +175,39 @@ arena 取 8 MB 而不是 4.5 MB：peak 4.29 MB 之外还要给 `--ipo` 这类"�
 对 **95 个 HAL/Core TU** 做 `-O2` 对拍，去掉 `.file/.loc/.type/.size/.cfi_*` 行后
 **95/95 完全相同**，最大 arena peak 4,292,040 B。板上编出来的汇编与工作站一致，
 板端 bug 能在工作站复现。
+
+### 5.2 裁掉的东西必须**拒绝**，不能静默降级（19/19 实测）
+
+裁切的风险不是"编不过"——是"编得过但行为变了"。所以剖面裁掉的每一个优化都必须
+**按名字拒绝**（诊断码 `C3900U`），而不是收下旗标然后悄悄什么都不做。
+
+做法：拿同一份源码用**宿主 gcc** 加 `-DARKCC_PROFILE=ARKCC_PROFILE_STM32_MIN`
+（外加 `-DARKCC_BACKEND_X86_64=0 -DARKCC_BACKEND_RISCV32=0 -DARKCC_BACKEND_C=0`）
+编出一个真二进制，然后逐个旗标试：
+
+| 检查 | 结果 |
+| --- | --- |
+| `make` 全量宿主构建（默认档） | 0 error |
+| STM32_MIN 剖面宿主构建 | 0 error，二进制可执行 |
+| 19 个 `-fopt-*`（addr/branch/cbranch/cbz/cmat/coalesce/constcache/copyprop/deadpush/imm/litpool/live/pair/peep/prop/slotreg/strength/vreg/vstack） | **19/19 全部 `C3900U` 且报出旗标名** |
+| 同一个源文件，不带任何 `-fopt-*` | 退出码 0，正常产出 Thumb-2 汇编 |
+| `make stm32-check`（armclang + 真实 scatter，两种布局） | 见 §4，全 PASS |
+
+最后两行合起来才有意义：**旗标被拒 ≠ 编译器坏了**，不带旗标它照样把 `stm32f4xx` 那样的
+代码编成正确的汇编。`tests/run_vreg_tests.py` 的第 6 项把其中 `-fopt-vreg` 这一条
+固化成常规门禁（`-DARKCC_FEATURE_OPT_VREG=0` 构建必须拒绝该旗标、无旗标仍可编）。
+
+### 5.3 三个平台的验证状态（如实）
+
+| 平台 | 怎么验的 | 状态 |
+| --- | --- | --- |
+| Windows 宿主（MinGW gcc） | `make` + 四十余组门禁 + 95 TU 对拍 | **已验** |
+| STM32H743（armclang + armlink + 真实 scatter） | `make stm32-check`，sram / sdram 两种布局 | **已验**（§4） |
+| Linux 宿主 | 本机没有可用的 Linux 环境（WSL 无发行版、无 clang/docker/`arm-none-eabi-gcc`） | **未验**，只做了 §3 的三条静态核对 |
+
+Linux 那一格不写成"应该能跑"：`port/host/*.c` 共 154 行、只 `#include <stdio.h>` 系的
+头，`Makefile` 非 Windows 分支只换产物名/RM/空设备，所以**预期**与 Windows 相同；
+但"预期"不是"跑过"，拿到 Linux 机器时请 `make && make test` 复核。
 
 ---
 
@@ -192,7 +225,7 @@ arena 取 8 MB 而不是 4.5 MB：peak 4.29 MB 之外还要给 `--ipo` 这类"�
 
 - `the arena is not loaded as initialised data`：`.ark_buf` 的零字节不许进 flash 镜像
   （在 SDRAM 布局里靠 `UNINIT`）。
-- `ordinary .data/.bss fits SRAM1-3`：真正的 RW/ZI 只有 30,908 B，但它在
+- `ordinary .data/.bss fits SRAM1-3`：真正的 RW/ZI 在无 SDRAM 回退档只有 30,944 B（SDRAM 档 86,244 B），但它在
   **另一块** 288 KB 的 SRAM1-3 上，不能拿 AXI 的余量去抵。
 
 `tests/run_buffer_tests.py` 现在也盯 `PP_BUF_SIZE`（4 KB 档必须**拒绝**而不是截断），

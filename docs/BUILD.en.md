@@ -93,8 +93,8 @@ make stm32-check
 # --- layout: sram ---
 # PASS  every STM32 profile source compiles  [34 file(s), 0 failed]
 # PASS  .ark_buf fits its sram region  [475192 / 520192 bytes (91%)]
-# PASS  code + rodata fits the 2 MB flash  [375916 / 2097152 bytes (17.9%)]
-# PASS  ordinary .data/.bss fits SRAM1-3 (288 KB)  [30908 / 294912 bytes (10%)]
+# PASS  code + rodata fits the 2 MB flash  [378100 / 2097152 bytes (18.0%)]
+# PASS  ordinary .data/.bss fits SRAM1-3 (288 KB)  [30944 / 294912 bytes (10%)]
 # --- layout: sdram ---
 # PASS  .ark_buf fits its sdram region  [29434192 / 33554432 bytes (88%)]
 # ...
@@ -106,7 +106,7 @@ make stm32-check
 | `sdram` (deployed) | `0xC0000000` UNINIT, 32 MB | 29,434,192 B (88%) | 15 measured overrides (sec. 5.1); the profile defaults are far too small; SDRAM is brought up by `SystemInit()` |
 | `sram` (no-SDRAM fallback) | from `0x24000000`, 508 KB | 475,192 B (91%) | has to be trimmed, see §5 |
 
-Code plus read-only data is **375,888--375,916 B / 17.9%** and barely differs between the
+Code plus read-only data is **378,072--378,100 B / 18.0%** and barely differs between the
 two layouts, because what gets trimmed is the **zero-initialised working set**,
 not code. In the SDRAM layout `.ark_buf` is `UNINIT`, so 29.4 MB of working set
 **never enters the flash image**; that is asserted by the gate too
@@ -185,7 +185,7 @@ compile a single HAL unit. The 15 values in `LAYOUTS["sdram"]` of
 | `ARKCC_FEATURE_OPT_INLINE` | 1 | **keep the inliner**: with it compiled out, 8 of the 95 TUs differ from the host `-O2` build |
 
 `.ark_buf` totals **29,434,192 / 33,554,432 B (88%)**, code + read-only is
-375,888 B (17.9%), and ordinary RW/ZI is 86,208 B (29%, on the separate 288 KB
+378,072 B (18.0%), and ordinary RW/ZI is 86,244 B (29%, on the separate 288 KB
 SRAM1-3 block).
 
 The arena is 8 MB rather than 4.5 MB because the 4.29 MB peak still has to leave
@@ -199,6 +199,42 @@ host `-O2` build over **95 HAL/Core TUs**; after dropping the
 `.file/.loc/.type/.size/.cfi_*` lines, **95/95 are identical**, with a maximum
 arena peak of 4,292,040 B. The board therefore emits the same assembly as the
 workstation, which is what makes a board bug reproducible locally.
+
+### 5.2 What was cropped must be **refused**, not silently degraded (19/19 measured)
+
+The danger of trimming is not "it will not build" -- it is "it builds but behaves
+differently". So every optimisation the profile crops has to be **refused by name**
+(diagnostic `C3900U`), not accepted and quietly ignored.
+
+Method: build a real binary from the same sources with the **host gcc** plus
+`-DARKCC_PROFILE=ARKCC_PROFILE_STM32_MIN` (and `-DARKCC_BACKEND_X86_64=0`
+`-DARKCC_BACKEND_RISCV32=0` `-DARKCC_BACKEND_C=0`), then try each flag:
+
+| Check | Result |
+| --- | --- |
+| full host build, default profile (`make`) | 0 error |
+| STM32_MIN profile host build | 0 error, runnable binary |
+| the 19 `-fopt-*` (addr/branch/cbranch/cbz/cmat/coalesce/constcache/copyprop/deadpush/imm/litpool/live/pair/peep/prop/slotreg/strength/vreg/vstack) | **19/19 refused with `C3900U` and the flag named** |
+| the same source with no `-fopt-*` at all | exit 0, valid Thumb-2 assembly |
+| `make stm32-check` (armclang + real scatter, both layouts) | see section 4, all PASS |
+
+The last two rows only mean something together: **a refused flag is not a broken
+compiler** -- without the flags it still compiles `stm32f4xx`-shaped code into correct
+assembly. Check 6 of `tests/run_vreg_tests.py` freezes the `-fopt-vreg` case as a regular
+gate (a `-DARKCC_FEATURE_OPT_VREG=0` build must refuse the flag and still compile without it).
+
+### 5.3 Verification status of the three platforms (honest)
+
+| Platform | How it was checked | Status |
+| --- | --- | --- |
+| Windows host (MinGW gcc) | `make` + the forty-odd gate groups + the 95-TU diff | **verified** |
+| STM32H743 (armclang + armlink + real scatter) | `make stm32-check`, sram and sdram layouts | **verified** (section 4) |
+| Linux host | no usable Linux environment on this machine (WSL has no distro, no clang/docker/`arm-none-eabi-gcc`) | **not verified**; only the three static checks in section 3 |
+
+The Linux cell is not written as "it should run": `port/host/*.c` is 154 lines and includes
+only `stdio`-family headers, and the non-Windows branch of the `Makefile` only swaps the
+artifact name / `RM` / the null device, so it is **expected** to match Windows -- but
+"expected" is not "ran". On a Linux box, run `make && make test`.
 
 ---
 
@@ -220,7 +256,7 @@ Two more assertions that are easy to miss:
 
 - `the arena is not loaded as initialised data`: the zero bytes of `.ark_buf`
   must not enter the flash image (the SDRAM layout does this with `UNINIT`).
-- `ordinary .data/.bss fits SRAM1-3`: real RW/ZI is only 30,908 B, but it lives
+- `ordinary .data/.bss fits SRAM1-3`: real RW/ZI is only 30,944 B without SDRAM (86,244 B with it), but it lives
   in the **other** 288 KB SRAM1-3 block, so AXI headroom cannot pay for it.
 
 `tests/run_buffer_tests.py` now also watches `PP_BUF_SIZE` (a 4 KB setting must

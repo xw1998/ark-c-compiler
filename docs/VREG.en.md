@@ -494,3 +494,30 @@ eight dedicated assertions, one of which
 failure shape: the two passes must end up with different registers. All 10 fixtures pass,
 75 assertions in total.
 
+
+
+## 15 Measured upper bound for S6b-2 (inter-block liveness), and its closure
+
+S6b did **intra-block** whole-block renaming; extending renaming across block edges is the
+S6b-2 range, and it only has work to do when a `MOV rD,rS` destination is no longer read in
+the rest of its own block yet still appears in that block's `live_out`. That population is
+the **upper bound** on the item's win.
+
+**Counting rule (`D:/tmp/fr/s6b2_bound.py`, not checked in)**: split functions on `.type`,
+split basic blocks on labels and branches, compute per-block def/use, run a CFG liveness
+fixed point (at most 50 rounds), then scan each block backwards counting
+"`MOV rD,rS` with `rD != rS`, `rD` not in any later use of the block, `rD` in `live_out`".
+Anything uncertain counts as live (an unknown mnemonic reads every operand it names and
+writes nothing), so the number is a ceiling.
+
+**Self-check (the counter must agree with the classifier)**: the 95-TU corpus yields
+**13,566** instructions and **1,731** `MOV rD,rS` -- exactly the totals in
+`docs/BOUNDARY.md` section 2 and the register-copy count in section 5.4.
+
+**Result**: **266** candidates -- **1.96%** of all instructions, 15.4% of the copies
+themselves.
+
+**Verdict**: under F1 (a win below 5% means close it) the range is **closed and S6b-2 is not
+implemented**. The remaining 1,465 copies have a consumer inside their own block; removing
+them requires touching the value stack / allocation model (the same class as the
+`PUSH {... r0 ...}` item registered after S6c) and is not part of this budget. Registered.
