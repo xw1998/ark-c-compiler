@@ -833,12 +833,98 @@ order**.
 
 ### 18.2 Still registered and not done
 
-- **Join-aware pool-register retention across labels/branches** (569 pins concentrate
-  here): a real model change that needs a new pre-registered criterion, and the seven
-  frozen gates of section 5 plus the F1-F4 falsifiers of section 6 must not move a
-  character. Do a read-only feasibility measurement first.
-- **Widening the pool to r8-r11**: competes with `-fopt-vreg` for `cc_hregs`; it needs a
-  measured independent vreg gain before it can even be judged.
+- **Join-aware pool-register retention across labels/branches**: a real model change that
+  needs a new pre-registered criterion, and the seven frozen gates of section 5 plus the
+  F1-F4 falsifiers of section 6 must not move a character. **The read-only feasibility
+  measurement has been done -- see section 18.3**: the cheap version (single-predecessor
+  labels) measures 0 pins and is closed at 0 instructions; the full version has an upper
+  bound of 1,178 instructions (9.6%), above the F1 threshold and therefore not closable, but
+  it needs a CFG and join-level state and is the value-stack rework itself.
+- **Widening the pool to r8-r11**: competes with `-fopt-vreg` for `cc_hregs`. **Measured
+  (section 18.4)**: vreg is worth 882 instructions and r8-r11 carry 11.6% of the final text,
+  while widening the pool can buy at most 942 -- so the net is negative and the item is
+  closed.
 - **Widening the pool to r12**: conflicts with `ark_fix_far_offset()` (a `[r12, #n]`
   access costs 4 B).
 - **Keeping pool values across calls**: only 2 call-only pins exist; already refuted.
+
+### 18.3 Read-only feasibility measurement of join-aware retention (2026-11-24)
+
+The previous revision registered this as "do a read-only feasibility measurement first";
+this section is that measurement. **Not one line of emission code changed**: the probe sits
+in the pinned-PUSH branch of `ark_vstack_function()`, is switched on by the environment
+variable `ARKCC_VSTACK_STATS`, and was removed afterwards (never committed, no new flag, the
+crop table untouched).
+
+**Setting**. Nineteen switches, 95 TUs -- the same corpus as section 18. The probe reports
+three fields:
+
+| Field | Meaning |
+| --- | --- |
+| `mask` | bit OR of the first boundary that pinned the value: 1 = label, 2 = branch, 4 = call |
+| `kind` | whether the value already sits in a pool register (read from `pend[]`, **not** from `skind[depth]`, which is not written yet at that line -- that is where the garbage `kind` values of the first attempt came from) |
+| `edges` | if the boundary is a label, how many ways into it exist (branch targets plus fallthrough); -1 when the boundary is not a label |
+
+Self-check: the same build compiles 95 TUs with 0 errors and the classifier still totals
+12,304 instructions / 32,690 B, byte for byte the committed reading, so the probe did not
+change the emitted text.
+
+**Readings** (589 pins, plus 471 real `PUSH`es that are the pool running out):
+
+| Boundary mask | Pins |
+| --- | ---: |
+| label only (1) | 115 |
+| label + branch (3) | 366 |
+| call only (4) | 5 |
+| all three (7) | 103 |
+
+No mask of 2 on its own: a branch boundary is always followed by a label, so a value pinned
+by a branch carries the label bit too. By `edges`: **474** pins are first pinned at a branch
+or call (not a label), **115** at a label, and all 115 of those labels have `edges = 2`.
+
+**Criterion (frozen before looking) and verdict**:
+
+- **Cheap version = single-predecessor labels only** (no CFG needed, just "reached by
+  fallthrough and nothing else"). Measured: **0 pins** -- so the cheap version is worth 0
+  instructions and is **closed**. That is not an upper bound, it is the exact value: no value
+  in the corpus is pinned at a label with a single way in.
+- **Full version = CFG plus join-level state**. Upper bound 2 instructions per pin x 589 =
+  **1,178 (9.6% of the current instruction count)**, above F1's 5% threshold, so it may
+  **not** be closed under F1; but neither is it cheap work: it turns the value stack from
+  "linear scan plus flush at boundaries" into "solve block by block", and it has to prove the
+  join state agrees on every path into the label (otherwise the value is not in that pool
+  register on the other paths at all). The harder cost: pinning a value in a pool register
+  eats the block's available pool slots directly, and the 471 pool-full pushes say the pool is
+  already tight -- so the net win is necessarily below 1,178 and its sign depends on each
+  function's pool pressure. **Neither number is measured** (only an implementation can
+  measure them); registered as is.
+- How to read it: this is not part of what the register-copy / peephole / text-level work can
+  reach; it *is* the structural cause named "the value stack machine" in
+  `docs/BOUNDARY.md` section 5.6. Keep it as the first item of the value-stack rework.
+
+### 18.4 The decision on widening the pool to r8-r11: vreg is worth 882, and r8-r11 carry 11.6% of the final text
+
+This item was registered as "competes with `-fopt-vreg` for `cc_hregs`; the independent vreg
+gain has to be measured before it can be judged". Here are all three numbers at once
+(nineteen switches, 95 TUs, 0 errors):
+
+| Setting | Instructions | Bytes | Versus the nineteen |
+| --- | ---: | ---: | --- |
+| nineteen switches | 12,304 | 32,690 | -- |
+| without `-fopt-vreg` | 13,186 | 32,958 | **vreg is worth 882 instructions (7.2%) / 268 B** |
+| without `-fopt-vstack` | 15,668 | 39,372 | **vstack is worth 3,364 instructions (21.5%) / 6,682 B** |
+
+One more count over the final text: of the 12,304 instructions, **1,424 (11.6%)** mention
+`r8`-`r11` -- that is exactly `-fopt-vreg`'s candidate pool (`-fopt-regalloc` is not among
+the nineteen switches, so every one of those references comes from vreg).
+
+**Verdict**: widening the pool can buy at most the 471 pool-full pushes of section 18.3 x 2
+instructions = **942**, and the price is taking away from vreg exactly the registers that
+11.6% of its instructions work through -- while vreg itself is worth 882. The two are the
+same order of magnitude and the net is necessarily negative (less bought than sold). **Closed
+under the criterion**: `-fopt-vstack` keeps its three pool registers r5/r7/r4 and r8-r11 are
+off the table.
+
+Two readings worth keeping for scheduling: vstack is the largest single switch of the
+nineteen (3,364 = 21.5%) and vreg the second (882 = 7.2%) -- which is also why "the value
+stack rework" is the only structural lever left.

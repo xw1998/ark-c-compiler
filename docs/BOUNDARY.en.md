@@ -236,6 +236,26 @@ nothing else to do in the register-copy column short of the value-stack model --
   form; going to T1 needs layout iteration (+/-256 bytes). Same conclusion as
   `docs/COMPARISON.en.md` section 4: the risk is out of proportion to the win.
 
+### 5.6 Value-stack pins (589) and join-aware retention
+
+There is one more block of `PUSH`/`POP` that is not register copies: when a value is still
+live at a label / branch / call boundary, `-fopt-vstack` has to put it in memory for real (a
+"pin"). A read-only probe (removed after measuring, never committed) counts **589 pins** at
+the nineteen-switch setting, plus 471 real `PUSH`es that are the pool running out. The split:
+115 pinned only by a label, 366 with a branch in the mask, 5 pinned only by a call, 103 with
+all three.
+
+- **The cheap version (single-predecessor labels only)**: measured at **0 pins** -- every
+  label that pins values has more than one way in, so the cheap version is worth 0
+  instructions and is closed under the pre-registered rule.
+- **The full version (CFG + join-level state)**: the upper bound is 2 instructions per pin x
+  589 = **1,178 = 9.6%**, above F1's 5% threshold, so it may **not** be closed by F1; but what
+  it needs is a real control-flow graph and join-state modelling, i.e. turning the value stack
+  from "linear scan plus flush at boundaries" into "solve block by block". And pinning values
+  in a pool register eats the block's available pool slots directly (the 471 pool-full pushes
+  say the pool is already tight), so the net win is necessarily below 1,178. See
+  `docs/VREG.md` section 18.3.
+
 ## 6 What is already done (do not re-invest)
 
 | Stage | Content | Reading |
