@@ -252,7 +252,12 @@ def main():
         # it is cmat's effect, not this pass's, and it would break "the output
         # is the input with lines removed" -- the invariant this section is
         # about.
-        NC = ['-fno-opt-cmat']
+        # The second `-fopt-live` sweep runs *after* this pass and removes
+        # loads into registers other than r0 that this pass's deletions made
+        # redundant (the wide fixture's `LDR r1, [r6, #20]`).  That is live's
+        # effect, not this pass's, and it would break "every removed line is a
+        # frame access through r0" -- the invariant this section is about.
+        NC = ['-fno-opt-cmat', '-fno-opt-live']
         arms = {}
         for name, _body, _want in CASES:
             t_off, b_off, e3 = build(arkcc, work, name, BASE + NC,

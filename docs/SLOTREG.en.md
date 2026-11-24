@@ -244,3 +244,40 @@ Builds that need the smallest image can turn it on; everyone else pays nothing.
 writing code (P16's lesson), and "headroom" must be estimated as "how much can
 be safely deleted" rather than "how large it looks": frame accesses are 18.8%,
 but only 0.34% can be deleted safely.
+
+## 10 Revision (2026-11-24): the `escape` / `wide` miscompile and two blind spots
+
+Re-running the gate on the nineteen-switch set exposed a **wrong answer** in the
+`escape` fixture (`off=16 on=8 alone=16`). Two blind spots were found and fixed,
+both the same root: **the pass only knows frame accesses based on `r6`, but the
+frame base can be copied into another register.**
+
+1. **Frame-base alias (a real miscompile).** Inside `sr_sum(struct srP p)` the
+   emitter produces `MOV r5, r6` followed by `LDR r5, [r5, r7, LSL #2]`: a
+   by-value struct parameter is **indexed from a copied base**. The pass searches
+   for `"r6, "`, which `MOV r5, r6` does not contain => the line looks
+   frame-free => slot #0 is judged "never loaded in this function" =>
+   `STR r0, [r6, #0]` is deleted as a dead store => the answer goes from 16 to 8.
+2. **Frame address taken into a register (a blind spot).** In `main`, `MOV r0, r6`
+   hands the address of `a` to `sr_esc`; again no `"r6, "`, so neither `taint`
+   nor `sr_esc_lo` is raised, and both stores to `a`'s slots are deleted.
+
+**Fix** (`sr_count_r6` plus two special cases): count how many `r6` **tokens** a
+line has. Zero => not a frame line; two or more => abandon (`ADD r6, r6, #4`);
+exactly one but not in the `[r6, #n]` shape (`MOV r5, r6`, `MOV r0, r6`) =>
+**abandon the whole function**. `MOV r6, sp` and the epilogue `MOV sp, r6` are
+explicitly classified as frame setup/teardown, not aliases.
+
+**Cost**: under the twelve-switch set, 14,646 -> **14,583 (-63 instructions)**
+against the old -64 => the wider abstention costs **one instruction**;
+`smaller TU 10 / identical 85` unchanged. Under nineteen switches, 12,345 ->
+12,312 (-33). 95 TUs 0 err; `tests/arm_exec` 0 failure.
+
+**One over-strict assertion fixed at the same time**: the `wide` fixture's
+`LDR r1, [r6, #20]` is not deleted by this pass but by the **second `-fopt-live`
+sweep** that runs after it and sees r1 already holds the value. The old
+assertion mixed deletions from two passes. The comparison arms now disable
+`-fopt-live` (`NC = ['-fno-opt-cmat', '-fno-opt-live']`), so "every removed line
+is `LDR/STR r0, [r6, #n]`" really tests only this pass. **Fixing an assertion is
+not loosening it**: establish who deleted the lines before touching the text, or
+another pass's legitimate optimisation gets recorded as this pass's overreach.

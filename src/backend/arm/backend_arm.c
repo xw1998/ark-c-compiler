@@ -6186,6 +6186,30 @@ static int sr_pre8(const char *s, const char *pat) {
  * something that is not the cached slot value, and forgetting that is exactly
  * how "r0 already holds slot 0" stops being true.
  */
+/* Count the "r6" tokens in a line.  The pass only models accesses whose
+ * base is r6 itself; `MOV r5, r6` followed by `LDR r5, [r5, r7, LSL #2]`
+ * (a by-value struct parameter indexed from a copied base) is a frame
+ * access this pass cannot see, and missing it is how a live store gets
+ * deleted -- see the escape fixture in tests/run_slotreg_tests.py. */
+static int sr_count_r6(const char *ln) {
+    const char *p = ln;
+    int c = 0;
+    while (*p) {
+        if (p[0] == 'r' && p[1] == '6' &&
+            !(p[2] >= '0' && p[2] <= '9') &&
+            !((p[2] >= 'a' && p[2] <= 'z') || (p[2] >= 'A' && p[2] <= 'Z')) &&
+            (p == ln || !((p[-1] >= 'a' && p[-1] <= 'z') ||
+                          (p[-1] >= 'A' && p[-1] <= 'Z') ||
+                          (p[-1] >= '0' && p[-1] <= '9')))) {
+            c++;
+            p += 2;
+            continue;
+        }
+        p++;
+    }
+    return c;
+}
+
 static int sr_scan_line(const char *ln, int *off) {
     const char *p = ln, *br;
     int n = 0;
@@ -6196,10 +6220,25 @@ static int sr_scan_line(const char *ln, int *off) {
         if (s[0] == 'M' && s[1] == 'O' && s[2] == 'V' && s[3] == ' ' &&
             s[4] == 'r' && s[5] == '6' && s[6] == ',' && s[7] == ' ')
             return 4;
+        /* "MOV sp, r6" tears the frame down: the frame pointer is being
+         * copied back to sp, not aliased into a general register. */
+        if (s[0] == 'M' && s[1] == 'O' && s[2] == 'V' && s[3] == ' ' &&
+            s[4] == 's' && s[5] == 'p' && s[6] == ',' && s[7] == ' ' &&
+            s[8] == 'r' && s[9] == '6')
+            return 4;
+    }
+    {
+        int nr = sr_count_r6(ln);
+        if (nr == 0) return 0;               /* no frame mention       */
+        if (nr > 1) return 5;                /* two frame mentions     */
     }
     while (p[0] && !(p[0] == 'r' && p[1] == '6' && p[2] == ',' && p[3] == ' '))
         p++;
-    if (!p[0]) return 0;
+    if (!p[0]) return 5;   /* r6 in a shape this pass does not model
+                            * (`MOV r5, r6`, `MOV r0, r6`, ...): the base
+                            * can be aliased and a later [rX, rY, LSL #2]
+                            * reaches the frame invisibly.  Abandon the
+                            * function rather than guess. */
     if (p == ln || p[-1] != '[') {
         const char *q = p + 4;
         if (*q == '#') {
