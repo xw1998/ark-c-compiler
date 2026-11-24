@@ -800,7 +800,14 @@ drops.
 
 ---
 
-### P19 IR-level virtual register allocation (S6 pre-registration; not implemented)
+### P19 IR-level virtual register allocation (S6 pre-registration; **S6a/S6b/S6c landed and archived**)
+
+> **Status correction (2026-11-24)**: this heading said "not implemented", which is stale
+> documentation. `-fopt-vreg` is inside the nineteen-switch set and worth **882 instructions
+> (7.2%)**; all three slices S6a/S6b/S6c landed and were archived, with every gate and reading in
+> `docs/VREG.md` §11-§14 / §18. **It did not reach this section's -8% (>= 1,450) target**, and the
+> reading beyond F1 is archived in §18; the `--reg-top` base re-measured on 2026-11-24 is not
+> reusable (+54.4%, see `docs/VREG.md` §10.3).
 
 - **Why the model has to change**: after `-fopt-coalesce` (L5) the baseline is **18,151
   instructions over 548 functions** (95 TUs, Cortex-M4, `-O2`, fifteen switches + coalesce),

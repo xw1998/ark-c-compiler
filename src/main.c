@@ -600,6 +600,22 @@ int main(int argc, char **argv) {
             return 1;
         }
 #endif
+#if !ARKCC_FEATURE_OPT_FRAME
+        else if (strcmp(a, "-fopt-frame") == 0) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: -fopt-frame is not compiled into "
+                    "this build (rebuild with -DARKCC_FEATURE_OPT_FRAME=1)\n");
+            return 1;
+        }
+#endif
+#if !ARKCC_FEATURE_OPT_VOLDBM
+        else if (strcmp(a, "-fopt-voldmb") == 0) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: -fopt-voldmb is not compiled into "
+                    "this build (rebuild with -DARKCC_FEATURE_OPT_VOLDBM=1)\n");
+            return 1;
+        }
+#endif
 #if !ARKCC_FEATURE_OPT_VREG
         else if (strcmp(a, "-fopt-vreg") == 0) {
             fprintf(stderr,

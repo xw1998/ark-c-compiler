@@ -33,6 +33,8 @@ typedef struct {
     int enable_opt_cmat;            /* -fopt-cmat: 常量二次材料化清理（立即数与索引折叠、死中性写） */
     int enable_opt_slotreg;         /* -fopt-slotreg: 块内冗余帧读与死帧写的删除 */
     int enable_opt_vreg;            /* -fopt-vreg: 槽提升到 r8-r11（改名消除，S6a） */
+    int enable_opt_frame;           /* -fopt-frame: 帧保存表裁剪（删未用 callee-saved 槽与空帧） */
+    int enable_opt_voldmb;          /* -fopt-voldmb: 非取址 volatile 局部量的 DMB SY 对省略 */
     int enable_opt_constcache;      /* -fopt-constcache: 函数级 32 位常量缓存（callee-saved） */
     int enable_opt_litpool;         /* -fopt-litpool: 32 位常量放进函数尾的字面量池 */
     int enable_opt_copyprop;        /* -fopt-copyprop: 删死拷贝、把拷贝推进到消费者 */

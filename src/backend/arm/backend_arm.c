@@ -5468,6 +5468,311 @@ static void ark_cmat_function(AsmBuffer *b, int from) {
     b->len = from + out.len;
 }
 #endif /* ARKCC_FEATURE_OPT_CMAT */
+#if ARKCC_FEATURE_OPT_FRAME
+/* ------------------ callee-saved list trimming (-fopt-frame) ---------------
+ *
+ * The frame save is emitted before the body exists, so it is the union of
+ * every register the allocators might touch.  By the time the text is final a
+ * register that never appears between the PUSH and its POP is being saved and
+ * restored for nothing.  This pass deletes exactly those slots -- and, when
+ * that empties the frame, the four instructions that build it
+ * (SUB sp / MOV base,sp / MOV sp,base / ADD sp) as well.
+ *
+ * Deleting a slot moves sp, so the alignment padding (AAPCS: sp is 8-byte
+ * aligned at every call) is recomputed from the new register count.  A
+ * function that names sp anywhere else -- a variadic argument block, an
+ * sp-relative address -- and one whose padding would not come out even are
+ * both left untouched: the pass only deletes what it can prove unused.
+ */
+#define FR_MAX_LINES 8192
+
+static int fr_ls[FR_MAX_LINES];
+static int fr_ll[FR_MAX_LINES];
+
+/* One line, minus the CRLF tail.  Returns -1 for an over-long line, and the
+ * pass then refuses to touch the function. */
+static int fr_trim(const char *p, int len, char *out, int cap) {
+    int i = 0;
+    while (i < len && p[i] != '\r' && p[i] != '\n') i++;
+    if (i >= cap) return -1;
+    memcpy(out, p, (size_t)i);
+    out[i] = 0;
+    return i;
+}
+
+static const char *fr_skip_ws(const char *s) {
+    while (*s == ' ' || *s == '\t') s++;
+    return s;
+}
+
+static int fr_ident(int c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+           (c >= '0' && c <= '9') || c == '_';
+}
+
+/* "PUSH {r4, r5, lr}" -> span of the brace list. */
+static int fr_braces(const char *s, int *open, int *close) {
+    const char *a = strchr(s, '{');
+    const char *b = strchr(s, '}');
+    if (!a || !b || b < a) return 0;
+    *open = (int)(a - s) + 1;
+    *close = (int)(b - s);
+    return 1;
+}
+
+static int fr_names(const char *s, int open, int close, char names[][8], int max) {
+    int n = 0, i = open;
+    while (i < close) {
+        int st, ln;
+        while (i < close && (s[i] == ' ' || s[i] == '\t' || s[i] == ',')) i++;
+        if (i >= close) break;
+        st = i;
+        while (i < close && s[i] != ',' && s[i] != ' ' && s[i] != '\t') i++;
+        ln = i - st;
+        if (ln <= 0 || ln >= 8 || n >= max) return -1;
+        memcpy(names[n], s + st, (size_t)ln);
+        names[n][ln] = 0;
+        n++;
+    }
+    return n;
+}
+
+static int fr_has(char names[][8], int n, const char *want) {
+    int i;
+    for (i = 0; i < n; i++)
+        if (strcmp(names[i], want) == 0) return 1;
+    return 0;
+}
+
+static int fr_num(const char *s) {
+    int v = 0;
+    while (*s >= '0' && *s <= '9') { v = v * 10 + (*s - '0'); s++; }
+    return v;
+}
+
+/* Mark the members of `names` that occur as standalone tokens in [p, p+len),
+ * plus whether `base` does. */
+static void fr_mark_used(const char *p, int len, char names[][8], int n,
+                         int *used, const char *base, int *base_used) {
+    int i;
+    for (i = 0; i < n; i++) used[i] = 0;
+    *base_used = 0;
+    while (len > 0) {
+        int j = 0;
+        if (!fr_ident((unsigned char)p[0])) { p++; len--; continue; }
+        while (j < len && fr_ident((unsigned char)p[j])) j++;
+        for (i = 0; i < n; i++)
+            if ((int)strlen(names[i]) == j && memcmp(p, names[i], (size_t)j) == 0)
+                used[i] = 1;
+        if (base && base[0] && (int)strlen(base) == j &&
+            memcmp(p, base, (size_t)j) == 0)
+            *base_used = 1;
+        p += j; len -= j;
+    }
+}
+
+static void ark_frame_function(AsmBuffer *b, int from) {
+    int pos = from, n = 0, i, k;
+    char t[512];
+    char pn[16][8], qn[16][8];
+    int np = 0, nq = 0, popen = 0, pclose = 0, qopen = 0, qclose = 0;
+    int used[16], base_used = 0;
+    char base[8];
+    int pi = -1, qi = -1, sub_i = -1, add_i = -1, mov1_i = -1, mov2_i = -1;
+    int oldN = 0, nkeep = 0, newN = 0, dropped = 0;
+    int keep[16];
+    AsmBuffer body, out;
+
+    /* 1. line table */
+    while (pos < b->len) {
+        int len = 0;
+        while (pos + len < b->len && b->buf[pos + len] != '\n') len++;
+        if (n >= FR_MAX_LINES) return;
+        fr_ls[n] = pos;
+        fr_ll[n] = len;
+        n++;
+        pos += len + 1;
+    }
+    if (n < 4) return;
+
+    /* 2. the frame save: first PUSH naming lr, then the first POP naming pc.
+     *    A second PUSH naming lr in between means this is not one function. */
+    for (i = 0; i < n; i++) {
+        const char *s;
+        if (fr_trim(b->buf + fr_ls[i], fr_ll[i], t, sizeof t) < 0) return;
+        s = fr_skip_ws(t);
+        if (strncmp(s, "PUSH", 4) == 0 && fr_braces(s, &popen, &pclose)) {
+            int m = fr_names(s, popen, pclose, pn, 16);
+            if (m <= 0) return;
+            if (!fr_has(pn, m, "lr")) continue;
+            np = m;
+            pi = i;
+            break;
+        }
+    }
+    if (pi < 0) return;
+    for (i = pi + 1; i < n; i++) {
+        const char *s;
+        if (fr_trim(b->buf + fr_ls[i], fr_ll[i], t, sizeof t) < 0) return;
+        s = fr_skip_ws(t);
+        if (strncmp(s, "PUSH", 4) == 0 && fr_braces(s, &qopen, &qclose)) {
+            int m = fr_names(s, qopen, qclose, qn, 16);
+            if (m > 0 && fr_has(qn, m, "lr")) return;   /* a second frame save */
+            continue;
+        }
+        if (strncmp(s, "POP", 3) == 0 && fr_braces(s, &qopen, &qclose)) {
+            int m = fr_names(s, qopen, qclose, qn, 16);
+            if (m <= 0) return;
+            if (!fr_has(qn, m, "pc")) return;
+            nq = m;
+            qi = i;
+            break;
+        }
+    }
+    if (qi < 0) return;
+
+    /* 3. the frame base, the padding and the two movs that build it */
+    base[0] = 0;
+    for (i = pi + 1; i < qi; i++) {
+        const char *s;
+        if (fr_trim(b->buf + fr_ls[i], fr_ll[i], t, sizeof t) < 0) return;
+        s = fr_skip_ws(t);
+        if (sub_i < 0 && strncmp(s, "SUB", 3) == 0 && strstr(s, "sp")) {
+            const char *h = strrchr(s, '#');
+            if (h) { oldN = fr_num(h + 1); sub_i = i; }
+        }
+        if (add_i < 0 && strncmp(s, "ADD", 3) == 0 && strstr(s, "sp"))
+            add_i = i;
+        if (!base[0] && strncmp(s, "MOV", 3) == 0) {
+            const char *c = strchr(s, ',');
+            if (c) {
+                const char *q = c + 1;
+                const char *d = s + 3;
+                int ln = 0;
+                while (*q == ' ' || *q == '\t') q++;
+                while (*d == ' ' || *d == '\t') d++;
+                while (fr_ident((unsigned char)d[ln])) ln++;
+                if (strncmp(q, "sp", 2) == 0 && !fr_ident((unsigned char)q[2]) &&
+                    ln > 0 && ln < 8) {
+                    memcpy(base, d, (size_t)ln);
+                    base[ln] = 0;
+                    mov1_i = i;
+                }
+            }
+        }
+    }
+    if (!base[0] || sub_i < 0 || mov1_i < 0) return;
+    for (i = qi - 1; i > pi; i--) {
+        const char *s;
+        const char *c, *q;
+        if (fr_trim(b->buf + fr_ls[i], fr_ll[i], t, sizeof t) < 0) return;
+        s = fr_skip_ws(t);
+        if (strncmp(s, "MOV", 3) != 0) continue;
+        c = strchr(s, ',');
+        if (!c) continue;
+        q = c + 1;
+        while (*q == ' ' || *q == '\t') q++;
+        if ((int)strlen(q) == (int)strlen(base) &&
+            strncmp(q, base, strlen(base)) == 0) { mov2_i = i; break; }
+    }
+    if (mov2_i < 0) return;
+
+    /* 4. body text, minus directives, the frame instructions and any other
+     *    mention of sp (which would make the padding load-bearing). */
+    asmbuf_init(&body);
+    for (i = pi + 1; i < qi; i++) {
+        const char *s;
+        if (i == mov1_i || i == mov2_i || i == sub_i || i == add_i) continue;
+        if (fr_trim(b->buf + fr_ls[i], fr_ll[i], t, sizeof t) < 0) goto bail;
+        s = fr_skip_ws(t);
+        if (*s == '.') continue;
+        if (strstr(s, "sp")) goto bail;
+        asmbuf_puts(&body, s);
+        asmbuf_putc(&body, '\n');
+    }
+
+    fr_mark_used(body.buf, body.len, pn, np, used, base, &base_used);
+
+    /* 5. keep[]: the PUSH slots that are still needed */
+    for (i = 0; i < np; i++) {
+        keep[i] = 0;
+        if (strcmp(pn[i], "lr") == 0) keep[i] = 1;
+        else if (used[i]) keep[i] = 1;
+        else if (base_used && strcmp(pn[i], base) == 0) keep[i] = 1;
+    }
+    nkeep = 0;
+    for (i = 0; i < np; i++) if (keep[i]) nkeep++;
+    dropped = np - nkeep;
+    if (dropped <= 0 && base_used) goto bail;
+
+    /* 6. new padding: sp must stay 8-byte aligned (nkeep counts lr, which is
+     *    4 bytes like every other slot). */
+    if (base_used) {
+        if ((4 * nkeep + oldN) % 8 != 0) goto bail;
+        newN = oldN;
+    } else {
+        newN = (nkeep % 2 == 0) ? 0 : 4;
+    }
+    if (dropped <= 0 && newN == oldN) goto bail;
+
+    /* 7. rebuild */
+    asmbuf_init(&out);
+    for (i = 0; i < n; i++) {
+        if (i == pi) {
+            asmbuf_puts(&out, "    PUSH {");
+            k = 0;
+            for (int j = 0; j < np; j++) {
+                if (!keep[j]) continue;
+                if (k++) asmbuf_puts(&out, ", ");
+                asmbuf_puts(&out, pn[j]);
+            }
+            asmbuf_puts(&out, "}\n");
+            continue;
+        }
+        if (i == qi) {
+            asmbuf_puts(&out, "    POP {");
+            k = 0;
+            for (int j = 0; j < nq; j++) {
+                int want = 1;
+                if (strcmp(qn[j], "pc") != 0 && strcmp(qn[j], "lr") != 0) {
+                    int m;
+                    want = 0;
+                    for (m = 0; m < np; m++)
+                        if (keep[m] && strcmp(pn[m], qn[j]) == 0) { want = 1; break; }
+                }
+                if (!want) continue;
+                if (k++) asmbuf_puts(&out, ", ");
+                asmbuf_puts(&out, qn[j]);
+            }
+            asmbuf_puts(&out, "}\n");
+            continue;
+        }
+        if ((i == sub_i || i == add_i) && newN == 0) continue;
+        if ((i == sub_i || i == add_i) && newN != oldN) {
+            asmbuf_puts(&out, (i == sub_i) ? "    SUB sp, sp, #" : "    ADD sp, sp, #");
+            asmbuf_int(&out, newN);
+            asmbuf_putc(&out, '\n');
+            continue;
+        }
+        for (k = 0; k < fr_ll[i]; k++)
+            asmbuf_putc(&out, b->buf[fr_ls[i] + k]);
+        asmbuf_putc(&out, '\n');
+    }
+    /* Nothing changed?  Leave the buffer exactly as it was. */
+    if (out.len == b->len - from &&
+        memcmp(out.buf, b->buf + from, (size_t)out.len) == 0) goto bail;
+
+    asmbuf_reserve(b, from + out.len + 1);
+    if (from + out.len + 1 > b->cap) goto bail;
+    for (i = 0; i < out.len; i++) b->buf[from + i] = out.buf[i];
+    b->buf[from + out.len] = 0;
+    b->len = from + out.len;
+    return;
+
+bail:
+    return;
+}
+#endif /* ARKCC_FEATURE_OPT_FRAME */
 #if ARKCC_FEATURE_OPT_LITPOOL
 /* ------------------ 32-bit constants in a literal pool (-fopt-litpool) ------
  *
@@ -10111,6 +10416,54 @@ static int pair_imm_preempted(IrInst *I, int op) {
 #endif
 #endif
 
+#if ARKCC_FEATURE_OPT_VOLDBM
+/* ------------- volatile frame barriers (-fopt-voldmb) ---------------------
+ *
+ * A volatile access to a *frame slot* is emitted with a DMB SY pair.  That
+ * barrier's only observable effect is the order in which the memory system
+ * makes the access visible to another observer -- another master, a DMA
+ * engine, a second core.  If this function never takes the object's address
+ * nothing outside the frame can name it, so there is no other observer and
+ * the pair is pure overhead: eleven of the fifteen HAL clock-enable blocks
+ * spend two DMB SY (eight bytes) each on their `__IO uint32_t tmpreg`.
+ * armcc, armclang and IAR emit no barrier at all here.
+ *
+ * The proof is per *object name*: IR_PUSH_ADDR already carries the name of
+ * the object whose address is being taken (irgen.c), so a volatile access to
+ * `x` keeps its barriers exactly when some `&x` exists in the same function.
+ * An address-of whose name is empty cannot be attributed, and then the whole
+ * function keeps every barrier -- the pass only deletes what it can prove.
+ */
+#define VDM_MAX 128
+static const char *vdm_esc[VDM_MAX];
+static int vdm_esc_n;
+static int vdm_blind;
+
+static void vdm_scan(IrFunc *f) {
+    int i;
+    vdm_esc_n = 0;
+    vdm_blind = 0;
+    if (!g_config.enable_opt_voldmb) return;
+    for (i = 0; i < f->code_count; i++) {
+        if (f->code[i].op != IR_PUSH_ADDR) continue;
+        if (!f->code[i].name) { vdm_blind = 1; continue; }
+        if (vdm_esc_n < VDM_MAX) vdm_esc[vdm_esc_n++] = f->code[i].name;
+    }
+}
+
+/* 1 = this volatile frame access may drop its DMB SY pair. */
+static int vdm_elide(const char *nm) {
+    int i;
+    if (!g_config.enable_opt_voldmb || vdm_blind || !nm) return 0;
+    for (i = 0; i < vdm_esc_n; i++)
+        if (ark_streq(vdm_esc[i], nm)) return 0;
+    return 1;
+}
+#else
+#define vdm_scan(f) ((void)0)
+#define vdm_elide(nm) 0
+#endif
+
 static char *codegen_arm(IrProgram *prog) {
     AsmBuffer buf;
     int fi;
@@ -10318,6 +10671,7 @@ static char *codegen_arm(IrProgram *prog) {
          * that are raised deep inside the instruction switch (a reference to
          * _ark_va_ptr outside a variadic function, for instance). */
         g_cur_fn_name = f->name;
+        vdm_scan(f);
 
         /* Variadic functions: the va region is spilled below, once per
          * function, right after the prologue (see "va region" further down).
@@ -10958,7 +11312,7 @@ static char *codegen_arm(IrProgram *prog) {
                     int width = I->aux & 0xFF;
                     int is_unsigned = (I->aux & 0x100) != 0;
                     int is_volatile = (I->aux & IR_AUX_VOLATILE) != 0;
-                    if (is_volatile)
+                    if (is_volatile && !vdm_elide(I->name))
                         emit_line(&buf, "DMB SY");  /* volatile: order prior memory ops */
                     if (width == 8 && (I->aux & IR_AUX_COMPLEX)) {
                         /* _Complex float: widen each float half into a double
@@ -11020,7 +11374,7 @@ static char *codegen_arm(IrProgram *prog) {
                         asmbuf_puts(&buf, "]\n");
                         emit_push_r0(&buf);
                     }
-                    if (is_volatile)
+                    if (is_volatile && !vdm_elide(I->name))
                         emit_line(&buf, "DMB SY");  /* volatile: order subsequent memory ops */
                     break;
                 }
@@ -11236,7 +11590,7 @@ static char *codegen_arm(IrProgram *prog) {
                     int cplx8 = (I->aux & IR_AUX_COMPLEX) && sw == 8;
                     int is_volatile = (I->aux & IR_AUX_VOLATILE) != 0;
                     if (sw == 0) sw = 4;
-                    if (is_volatile)
+                    if (is_volatile && !vdm_elide(I->name))
                         emit_line(&buf, "DMB SY");  /* volatile: release barrier */
                         if (cplx8) {
                             asmbuf_puts(&buf, "    POP {r1}\n");
@@ -11287,7 +11641,7 @@ static char *codegen_arm(IrProgram *prog) {
                         asmbuf_int(&buf, I->val);
                         asmbuf_puts(&buf, "]\n");
                     }
-                    if (is_volatile)
+                    if (is_volatile && !vdm_elide(I->name))
                         emit_line(&buf, "DMB SY");  /* volatile: full barrier */
                     break;
                 }
@@ -13387,6 +13741,12 @@ static char *codegen_arm(IrProgram *prog) {
          * which run after the first fold.  Same rule set, same gate. */
         if (g_config.enable_opt_addr)
             ark_addr_function(&buf, fstart);
+#endif
+#if ARKCC_FEATURE_OPT_FRAME
+        /* Frame trimming is last: every pass above has already renamed
+         * registers, and the far-offset fixer below must see the final
+         * frame size. */
+        if (g_config.enable_opt_frame) ark_frame_function(&buf, fstart);
 #endif
         /* Correctness, not an option: a frame slot beyond 4095 bytes cannot be
          * reached by "[r6, #off]" at all. */

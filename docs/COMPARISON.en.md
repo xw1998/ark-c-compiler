@@ -79,7 +79,7 @@ mechanisms reverse-engineered into `D:/工作/git_project/c_compiler/iar/docs/`
 (`-fopt-cbranch`, `-fopt-copyprop` and M6/M7 of `-fopt-cmat` came from there), not
 to invent a number.
 
-## 3. Which nineteen switches "all `-fopt-*`" means
+## 3. Which twenty-one switches "all `-fopt-*`" means
 
 ```
 -fopt-vstack  -fopt-addr     -fopt-strength -fopt-cbz      -fopt-branch

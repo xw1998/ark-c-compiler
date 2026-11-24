@@ -222,6 +222,11 @@ Two things happen at once: the **count does not drop** (`STR`→`MOV`, `LDR`→`
 
 Under the full sixteen switches `-fopt-pair` is worth only 6 lines, i.e. adjacent-`MOV` merging has already been eaten by `-fopt-imm` / `-fopt-cbranch`; and removing those two does not let pair recover (still 24,8xx). ⇒ pair is archived, not an input to S6.
 
+**Re-measured 2026-11-24 (nineteen-switch baseline, base 12,304)**: on that baseline `--reg-top`
+gives **18,997 = +6,693 (+54.4%)**, **worse** than the +36.7% under sixteen switches. The more
+existing switches are on, the more of `--reg-top`'s gain is eaten, while its own `MOV`/widening
+cost stays ⇒ **this base is not reusable**, and no "build S6 on top of `--reg-top`" plan holds.
+
 ### 10.4 Upper bound of text-layer gain (decisive)
 
 Of the 18,151 lines, the simplest frame accesses `LDR/STR rN,[r6,#n]` total **1,845** (LDR 1,306 / STR 539):

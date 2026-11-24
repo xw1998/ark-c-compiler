@@ -296,6 +296,37 @@
 #   define ARKCC_FEATURE_OPT_SLOTREG   1
 # endif
 #endif
+
+/* ARKCC_FEATURE_OPT_FRAME: -fopt-frame, callee-saved list trimming.
+ * A slot the body never mentions is deleted from PUSH/POP; when that
+ * empties the frame the four instructions that build it go too, and the
+ * alignment padding is recomputed from the new register count.  Pure
+ * deletion -- it never invents an instruction.  Small tables (~64 KB BSS),
+ * kept off the STM32 profile for the same reason as the other text
+ * passes.  See docs/FRAME_TRIM.md. */
+#ifndef ARKCC_FEATURE_OPT_FRAME
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_OPT_FRAME   0   /* 板上裁掉：只在宿主/交叉编译用 */
+# else
+#   define ARKCC_FEATURE_OPT_FRAME   1
+# endif
+#endif
+/* ARKCC_FEATURE_OPT_VOLDBM: -fopt-voldmb, elide the DMB SY pair around a
+ * volatile access to a frame slot whose address this function never takes.
+ * A barrier orders memory transactions as seen by *another* observer; with
+ * no address taken no other observer can name the object, so the pair is
+ * pure overhead (2 instructions / 8 bytes per volatile local access; the
+ * HAL's `__IO uint32_t tmpreg` idiom is the whole population).  armcc,
+ * armclang and IAR emit nothing here.  Pure deletion, ~2 KB of BSS for the
+ * escaped-name table, so it stays off the STM32 profile like the other text
+ * passes.  See docs/VOLDBM.md. */
+#ifndef ARKCC_FEATURE_OPT_VOLDBM
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_OPT_VOLDBM  0
+# else
+#   define ARKCC_FEATURE_OPT_VOLDBM  1
+# endif
+#endif
 /* ARKCC_FEATURE_OPT_VREG: -fopt-vreg (S6a), slot promotion to a callee-saved
  * register.  Loads whose consumer can be renamed are deleted, stores become
  * "MOV rC, r0"; the pass reuses the -fopt-regalloc frame machinery (PUSH/POP
