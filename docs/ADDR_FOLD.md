@@ -179,8 +179,13 @@ tests/arm_exec/run_arm_exec.py --arkcc ./arkcc.exe "--extra=-fopt-vstack -fopt-a
 ark_vstack_function()      # 先缩短函数，删掉 PUSH/POP
 ark_addr_function()        # 再看剩下的 ADD/MOV 能不能折进寻址
 ark_regalloc_function()    # 然后在更短的指令流上做寄存器分配
+   ...                     # slotreg / cmat / litpool / live(2) / peep(2)
+ark_addr_function()        # 第二遍：见 §11，折 regalloc 一族造出来的拷贝
 ark_fix_far_offset()       # 最后处理远偏移
 ```
+
+（上面第二处 `ark_addr_function()` 是 0.9.1-wip 追加的**第二遍**运行，由同一个
+`-fopt-addr` 开关控制；它不是新 pass，规则集与第一遍完全相同，理由见 §11。）
 
 顺序有两条理由：
 
@@ -215,3 +220,37 @@ LDR  r0, [r4, r1]    ; R2 已把 ADD 并掉，于是移位与访问相邻
 
 `ad_dead_after` 的 64 条前向扫描上限意味着：一个大表达式里如果中间隔了超过 64 条指令
 才用到中间寄存器，就放弃折叠。这是"宁可漏、不可错"的另一面。
+
+## 11. 第二遍运行（0.9.1-wip，2026-11-24）
+
+`ark_addr_function()` 在后端里跑两次：第一次仍在 `vstack` 之后、`regalloc` 之前（§9），
+第二次在**全部**会产生寄存器拷贝的 pass 之后——`regalloc`（含 `-fopt-vreg`）、
+`-fopt-slotreg`、`-fopt-cmat`、`-fopt-litpool`、第二遍 `-fopt-live` 与第二遍
+`-fopt-peep` 之后，`ark_fix_far_offset()` 之前。理由与「第二遍活跃性」完全同构：
+
+- R2/R3 折的是「`ADD rD, …` / `MOV rD, rX` 之后紧跟一次经 `rD` 的访问」。第一次跑的时候，
+  这类 `MOV rX, r0` 里有一大批**还没被造出来**：槽提升（vreg）正是把 `LDR [r6, #n]` 换成
+  「先 `MOV rX, r0`、再经 `rX` 访问」的地方，slotreg 会再改名，cmat 会把成对访问合成
+  一条，第二遍 live 又会删掉一批使相邻关系改变的行。第一次折叠根本看不到它们。
+- 第二次用的规则集、`ad_dead_after()` 的 64 条上限、「最坏情况只漏不错」的性质
+  **全部不变**——只是换了一个更靠后的位置。
+
+读数（95 TU、十九开关全开）：
+
+| 阶段 | 指令 | 字节 |
+| --- | ---: | ---: |
+| 第一遍 addr + 第二遍 live + 第二遍 peep（上一版，提交 `b2e915c`） | 12,795 | 33,464 |
+| **+ 第二遍 addr** | **12,346** | **32,744** |
+
+−449 条（−3.51%）/ −720 字节（−2.15%），95/95 TU 无一变大。同一轮的 R6（见
+[PEEPHOLE.md](PEEPHOLE.md) §2）再把它推到 12,304 / 32,690。
+
+开关与裁切没变：第二遍挂在同一个 `g_config.enable_opt_addr` 与 `ARKCC_FEATURE_OPT_ADDR`
+上——**它不是新旗标**，因此 `include/arkcc_config.h` 的裁切表与 `src/main.c` 的
+`C3900U` 按名拒绝表一字未改。OFF IS OFF 也照旧：`-fno-opt-addr`（或
+`ARKCC_PROFILE_STM32_MIN`）下第二遍根本不进代码，`tests/run_addr_tests.py` 的四臂
+（`base` / `off` / `on` / `both`）全部照过，`tests/arm_exec` 全语料 0 失败。
+
+顺带记一条：这一遍是**第一次**让我们能量出「第一次折叠漏了多少」——漏掉的部分不是
+规则不够，而是**规则跑得太早**。以后再加任何「识别相邻模式」的文本 pass，都该问一遍
+「制造这个模式的 pass 是不是排在它后面」。

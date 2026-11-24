@@ -209,8 +209,14 @@ build without the flag is byte-identical to 0.9.0.
 ark_vstack_function()      # shorten the function first, drop PUSH/POP
 ark_addr_function()        # then see which ADD/MOV can fold into an operand
 ark_regalloc_function()    # allocate registers on the shorter stream
+   ...                     # slotreg / cmat / litpool / live(2) / peep(2)
+ark_addr_function()        # second run: see section 11, folds the copies regalloc made
 ark_fix_far_offset()       # finally handle far offsets
 ```
+
+(the second `ark_addr_function()` is the **second run** added in 0.9.1-wip, driven
+by the same `-fopt-addr` switch; it is not a new pass, its rule set is identical
+to the first run's, and section 11 explains why it sits there.)
 
 Two reasons for the order:
 
@@ -252,3 +258,47 @@ own instruction count on this corpus, but it is a prerequisite for R1-R4 alike.
 The 64-line forward-scan cap in `ad_dead_after` means that if the intermediate
 register is used more than 64 instructions later, the fold is dropped. That is
 the other side of "rather miss than be wrong".
+
+## 11. The second run (0.9.1-wip, 2026-11-24)
+
+`ark_addr_function()` runs twice in the backend: the first time still after
+`vstack` and before `regalloc` (section 9), the second time after **every** pass
+that manufactures register copies -- `regalloc` (with `-fopt-vreg`),
+`-fopt-slotreg`, `-fopt-cmat`, `-fopt-litpool`, the second `-fopt-live` and the
+second `-fopt-peep` -- and still before `ark_fix_far_offset()`. The reason is
+the same shape as the second liveness sweep:
+
+- R2/R3 fold "`ADD rD, ...` / `MOV rD, rX` immediately followed by an access
+  through `rD`". On the first run a large share of those `MOV rX, r0` **do not
+  exist yet**: slot promotion (vreg) is precisely what turns `LDR [r6, #n]` into
+  "`MOV rX, r0` then access through `rX`", slotreg renames them again, cmat
+  merges paired accesses, and the second liveness sweep deletes lines that
+  change adjacency. The first fold never sees any of it.
+- The second run uses the same rule set, the same 64-line cap in
+  `ad_dead_after()`, and the same "at worst it misses, it never emits a wrong
+  instruction" property. Only the position changes.
+
+Reading (95 TUs, all nineteen switches):
+
+| Stage | Instructions | Bytes |
+| --- | ---: | ---: |
+| first addr + second live + second peep (previous version, commit `b2e915c`) | 12,795 | 33,464 |
+| **+ second addr** | **12,346** | **32,744** |
+
+That is -449 instructions (-3.51%) / -720 bytes (-2.15%), and none of the 95 TUs
+grows. R6 from the same round (see [PEEPHOLE.en.md](PEEPHOLE.en.md) section 2)
+takes it the rest of the way to 12,304 / 32,690.
+
+Switches and trimming are unchanged: the second run hangs off the same
+`g_config.enable_opt_addr` and `ARKCC_FEATURE_OPT_ADDR` -- **it is not a new
+flag**, so the cropping table in `include/arkcc_config.h` and the `C3900U`
+by-name refusal list in `src/main.c` are untouched. OFF IS OFF still holds:
+under `-fno-opt-addr` (or `ARKCC_PROFILE_STM32_MIN`) the second run is not even
+compiled in, `tests/run_addr_tests.py`'s four arms (`base` / `off` / `on` /
+`both`) all pass, and the whole `tests/arm_exec` corpus reports 0 failures.
+
+One note worth keeping: this run is the first time we could *measure* how much
+the first fold was missing -- and the miss was not a rule shortage, it was **the
+rules running too early**. Any future text pass that recognises an adjacent
+pattern should ask the same question: does the pass that builds this pattern run
+after me?

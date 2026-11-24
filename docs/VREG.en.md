@@ -783,3 +783,62 @@ the current one both compile the same 95 TUs under `-fno-opt-peep` (the other ei
 
 The seven frozen gates of section 5 and the F1-F4 falsifiers of section 6 remain **unchanged
 character for character**. This round removes instructions; it does not move a judgement line.
+
+## 18 The second and third steps of the value-stack direction: the second addressing fold and R6 (0.9.1-wip, 2026-11-24)
+
+After section 17, the next step on this line is **not** changing the model itself but
+running two text passes a second time where they were simply scheduled too early. Two
+changes, three readings (95 TUs, all nineteen switches):
+
+| Stage | Instructions | Bytes | vs. the line above |
+| --- | ---: | ---: | --- |
+| end of section 17 (commit `b2e915c`) | 12,795 | 33,464 | -- |
+| + second `-fopt-addr` run | 12,346 | 32,744 | -449 / -720 B (-3.51% / -2.15%) |
+| + R6 and `ip` recognition in `-fopt-peep` | **12,304** | **32,690** | -42 / -54 B (-0.34% / -0.16%) |
+
+Neither change is **a new flag**: the second addressing fold hangs off `-fopt-addr` and R6
+off `-fopt-peep`, so the cropping table in `include/arkcc_config.h` and the `C3900U`
+by-name refusal list in `src/main.c` are **untouched**. Design details are in
+`docs/ADDR_FOLD.en.md` section 11 and in R6 of `docs/PEEPHOLE.en.md` section 2; what
+belongs here is *why this is about vreg*:
+
+- **What the second fold eats is exactly the shape vreg manufactures.** Slot promotion
+  turns `LDR r0, [r6, #n]` into "`MOV rX, r0` then an access through `rX`", and the first
+  `-fopt-addr` run sits before vreg -- that `MOV` did not exist then. So **the amount the
+  first fold misses is a subset of what vreg produces**.
+- **What R6 eats is the value stack's "push a value -> materialise the next one -> pop"
+  path routed through memory.** Once vreg keeps more intermediates in registers, the
+  surviving pairs show up in the shape "one `MOV r0, #k` / `MOV r0, r8` in between"; and
+  teaching the single-register `PUSH`/`POP` recogniser about `ip` (= r12) stops the nine
+  `POP {ip}` in the corpus from being silently skipped.
+
+Per TU: none of the 95 grows. Gates: `run_vreg_tests` / `run_cmat_tests` /
+`run_litpool_tests` / `run_peep_tests` / `run_addr_tests` all report `all checks passed`,
+`arm_exec` reports 0 failures, and `stm32_build_check --layout both` passes. OFF IS OFF was
+checked with BASE17 (both `-fopt-peep` and `-fopt-addr` off, the other seventeen on) by
+comparing `.s` + `.o` per TU against a binary built from the previous HEAD: **all 95 TUs
+identical**, digest `9bcfdc876973c34684f61fc222b2b3f6fa98433a7ac675d0eca0a952c0e6eb7b`.
+
+### 18.1 One refuted road: "delete the dead pushes"
+
+This round started by counting 354 sites where "nothing reads what was pushed", using a
+**linear scan of the text** -- it looked like a two-digit win. But at the end of
+`-fopt-vstack` **both depth and nmem are 0**: the value stack's pushes and pops are
+**balanced**. All 354 were artifacts of a linear scan misreading a **cross-branch LIFO**
+(one `PUSH` in branch A, the matching `POP` in branch B, with a label and a `B` in
+between). The road does not exist: no code, no project, no criterion was written. It is
+recorded here only so nobody counts it a second time -- **judging the liveness of a push
+needs a real CFG and join-level state, which is an engineering effort of a different
+order**.
+
+### 18.2 Still registered and not done
+
+- **Join-aware pool-register retention across labels/branches** (569 pins concentrate
+  here): a real model change that needs a new pre-registered criterion, and the seven
+  frozen gates of section 5 plus the F1-F4 falsifiers of section 6 must not move a
+  character. Do a read-only feasibility measurement first.
+- **Widening the pool to r8-r11**: competes with `-fopt-vreg` for `cc_hregs`; it needs a
+  measured independent vreg gain before it can even be judged.
+- **Widening the pool to r12**: conflicts with `ark_fix_far_offset()` (a `[r12, #n]`
+  access costs 4 B).
+- **Keeping pool values across calls**: only 2 call-only pins exist; already refuted.

@@ -917,7 +917,10 @@ static int pp_trim(const char *ln, int len, char *dst, int cap) {
     return o;
 }
 
-/* Exact "PUSH {rN}" / "POP {rN}" naming a single low register. */
+/* Exact "PUSH {rN}" / "POP {rN}" naming a single register, either as `rN` or
+ * as `ip` -- the emitter spells r12 both ways depending on the site, and a
+ * rule that only knows `r12` silently skips the pairs the emitter writes as
+ * `POP {ip}` (nine of them in the STM32 corpus). */
 static int pp_pushpop(const char *t, int *is_push, int *reg) {
     int i, r = 0;
     if (!((t[0] == 'P' && t[1] == 'U' && t[2] == 'S' && t[3] == 'H') ||
@@ -928,12 +931,45 @@ static int pp_pushpop(const char *t, int *is_push, int *reg) {
     i += 2;
     if (t[i] != 'r' || !t[i + 1]) return 0;
     i++;
-    if (t[i] < '0' || t[i] > '9') return 0;
-    while (t[i] >= '0' && t[i] <= '9') { r = r * 10 + (t[i] - '0'); i++; }
+    if (t[i] == 'i' && t[i + 1] == 'p') {
+        r = 12;
+        i += 2;
+    } else if (t[i] >= '0' && t[i] <= '9') {
+        while (t[i] >= '0' && t[i] <= '9') { r = r * 10 + (t[i] - '0'); i++; }
+    } else {
+        return 0;
+    }
     if (r > 12 || t[i] != '}' || t[i + 1] != 0) return 0;
     *is_push = (t[1] == 'U');
     *reg = r;
     return 1;
+}
+
+/* The name the emitter prints for a register: `ip` for r12, `rN` otherwise. */
+static void pp_rname(int r, char *buf, int cap) {
+    if (r == 12) snprintf(buf, cap, "ip");
+    else snprintf(buf, cap, "r%d", r);
+}
+
+/* Does this line name the register whose text is `name` as a whole token?
+ * `r1` must not match inside `r10`, and `ip` must not match inside a label. */
+static int pp_mentions(const char *t, const char *name) {
+    int nl = ark_strlen(name), k;
+    const char *p = t;
+    while ((p = strstr(p, name)) != 0) {
+        char before = (p == t) ? ' ' : p[-1];
+        char after = p[nl];
+        int bok = !((before >= 'a' && before <= 'z') ||
+                    (before >= 'A' && before <= 'Z') ||
+                    (before >= '0' && before <= '9') || before == '_');
+        int aok = !((after >= 'a' && after <= 'z') ||
+                    (after >= 'A' && after <= 'Z') ||
+                    (after >= '0' && after <= '9') || after == '_');
+        if (bok && aok) return 1;
+        p += nl;
+        k = 0; (void)k;
+    }
+    return 0;
 }
 
 /* A line that carries no code: blank, comment, or directive.  A label also
@@ -1153,9 +1189,111 @@ static void pp_r5(AsmBuffer *b, int from) {
     if (changed) pp_splice(b, from, &out);
 }
 
+/* How far R6 looks for the matching POP.  The value stack pushes and pops
+ * within a handful of instructions when the pool is short; a longer window
+ * only risks reaching into unrelated code for no extra match. */
+#define PP_R6_WINDOW 12
+
+/* A line that ends R6's search: a label, anything that can transfer control,
+ * a nested stack access, or any use of sp (a push, pop or `SUB sp` between
+ * the halves would make the POP read a different slot). */
+static int pp_r6_stops(const char *t) {
+    int n = ark_strlen(t), k = 0;
+    char mn[16];
+    if (n > 0 && t[n - 1] == ':') return 1;
+    while (t[k] && t[k] != ' ' && t[k] != '\t' && k < (int)sizeof mn - 1) {
+        mn[k] = t[k];
+        k++;
+    }
+    mn[k] = 0;
+    if (pp_mentions(t, "sp")) return 1;
+    if (mn[0] == 'B') return 1;              /* B, Bcc, BL, BLX, BX, BIC, BFI */
+    if (mn[0] == 'I' && mn[1] == 'T') return 1;
+    if (mn[0] == 'C' && (mn[1] == 'B')) return 1;
+    if (mn[0] == 'P') return 1;              /* PUSH, POP handled by the caller */
+    return 0;
+}
+
+/* R6: `PUSH {rX}` ... `POP {rY}` with real code in between, as long as
+ * nothing there can observe the value.  The emitted shape is
+ *
+ *      PUSH {r0}          ; keep arg 1 while arg 0 is materialised
+ *      MOV  r0, r8
+ *      POP  {r1}          ; arg 1, one instruction late
+ *
+ * which is a register copy routed through memory: `MOV r1, r0` at the PUSH
+ * does the same job and never touches sp.  Rewriting at the PUSH is sound
+ * because rX still holds the pushed value there -- a later write to rX is
+ * harmless -- so the only requirement is that rY is not mentioned between
+ * the two halves (rY would see the value too early, or lose it).  When
+ * X == Y the pair is a no-op and both lines go, but then rX itself must not
+ * be mentioned either.  Labels, branches, calls, IT blocks, nested stack
+ * accesses and any sp use end the search: they either reach the POP with a
+ * different value stack or move the slot it reads. */
+static void pp_r6(AsmBuffer *b, int from) {
+    static int ls[PP_MAX_LINES], ll[PP_MAX_LINES];
+    AsmBuffer out;
+    char t[256], u[256], nx[8], ny[8], mv[32];
+    int n, i, changed = 0;
+    n = pp_split_lines(b, from, ls, ll, PP_MAX_LINES);
+    if (n < 0) return;
+    asmbuf_init(&out);
+    i = 0;
+    while (i < n) {
+        int isp = 0, rx = 0;
+        if (ll[i] < (int)sizeof t &&
+            pp_trim(b->buf + ls[i], ll[i], t, sizeof t) >= 0 &&
+            pp_pushpop(t, &isp, &rx) && isp) {
+            int j, pop = -1, ry = 0, bad = 0, k;
+            for (j = i + 1; j < n && j <= i + PP_R6_WINDOW; j++) {
+                int isp2 = 0, r2 = 0;
+                if (ll[j] >= (int)sizeof u) { bad = 1; break; }
+                if (pp_trim(b->buf + ls[j], ll[j], u, sizeof u) < 0) { bad = 1; break; }
+                if (pp_pad(u)) continue;
+                if (pp_pushpop(u, &isp2, &r2)) {
+                    if (!isp2) { pop = j; ry = r2; }
+                    else bad = 1;
+                    break;
+                }
+                if (pp_r6_stops(u)) { bad = 1; break; }
+            }
+            if (!bad && pop > 0) {
+                pp_rname(ry, ny, (int)sizeof ny);
+                pp_rname(rx, nx, (int)sizeof nx);
+                for (k = i + 1; k < pop; k++) {
+                    if (ll[k] >= (int)sizeof u) { bad = 1; break; }
+                    if (pp_trim(b->buf + ls[k], ll[k], u, sizeof u) < 0) { bad = 1; break; }
+                    if (pp_pad(u)) continue;
+                    if (pp_mentions(u, ny)) { bad = 1; break; }
+                    if (rx == ry && pp_mentions(u, nx)) { bad = 1; break; }
+                }
+            } else {
+                bad = 1;
+            }
+            if (!bad) {
+                /* The copy must come first: the code in between may
+                 * overwrite rX, which is exactly what the PUSH protected. */
+                if (rx != ry) {
+                    snprintf(mv, sizeof mv, "    MOV %s, %s\n", ny, nx);
+                    asmbuf_puts(&out, mv);
+                }
+                for (k = i + 1; k < pop; k++)
+                    pp_copy_line(&out, b->buf + ls[k], ll[k]);
+                changed++;
+                i = pop + 1;
+                continue;
+            }
+        }
+        pp_copy_line(&out, b->buf + ls[i], ll[i]);
+        i++;
+    }
+    if (changed) pp_splice(b, from, &out);
+}
+
 static void ark_peep_function(AsmBuffer *b, int from) {
     if (!pp_enabled()) return;
     pp_r5(b, from);
+    pp_r6(b, from);
     pp_r1(b, from);
     pp_r3(b, from);
 }
@@ -13240,6 +13378,15 @@ static char *codegen_arm(IrProgram *prog) {
          * the text is final now. */
         if (g_config.enable_opt_peep)
             ark_peep_function(&buf, fstart);
+#endif
+#if ARKCC_FEATURE_OPT_ADDR
+        /* Second addressing fold, for the same reason as the second liveness
+         * sweep and the second peep: the copies this pass eats -- a base
+         * staged out of a promoted slot, a scratch the register allocator
+         * named -- are created by regalloc, vreg, slotreg and cmat, all of
+         * which run after the first fold.  Same rule set, same gate. */
+        if (g_config.enable_opt_addr)
+            ark_addr_function(&buf, fstart);
 #endif
         /* Correctness, not an option: a frame slot beyond 4095 bytes cannot be
          * reached by "[r6, #off]" at all. */
