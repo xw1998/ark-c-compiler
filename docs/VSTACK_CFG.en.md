@@ -154,11 +154,14 @@ single TU, `stm32f4xx_hal_dma_ex.c`, followed by `hal_rcc.c` 123, `hal_rcc_ex.c`
 and `hal_dma.c` 26. Even on the most optimistic reading the gain sits in three or four large
 functions, not in the corpus as a whole.
 
-**Basis caveat**: only **17** of the 95 TUs produce a non-zero reading; the other 78 produce none
-(most of them emitting five lines of empty assembly, a 20-byte `.o`). That is a **pre-existing** condition, unrelated to this probe
-(removing `ARKCC_VSTACK_CFG` or switching to `-O0` changes nothing; the root cause was not chased
-this round), but it means the "12,304 instructions" actually come from about 18 TUs and "95 TU" is
-only a nominal basis. Every percentage in this document divides by 12,304, not by TU count.
+**Basis caveat**: only **17** of the 95 TUs produce a non-zero reading; the other 78 produce none.
+The root cause was found this round and it is **not a compiler defect**:
+`examples/ark_test/Core/Inc/stm32f4xx_hal_conf.h` enables only seven modules
+(`HAL_GPIO/EXTI/DMA/RCC/FLASH/PWR/CORTEX_MODULE_ENABLED`), so every other peripheral driver source
+sits entirely inside `#ifdef HAL_xxx_MODULE_ENABLED` and is an empty translation unit after
+preprocessing - five lines of `.s` (`.thumb` / `.text` / `.file` ...) and a 20-byte `.o`. So "12,304
+instructions from about 18 TUs" is a property of the corpus configuration, not missed compilation;
+"95 TU" is a nominal basis and every percentage here divides by 12,304, not by TU count.
 
 **Verdict (per the frozen §5 criteria)**: `net = 220 < 300` ⇒ **S7b is not started; the value stack
 keeps its linear scan + boundary flush**. §4.2/§4.3 stay as design records and are not implemented.

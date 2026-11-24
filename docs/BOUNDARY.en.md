@@ -256,6 +256,17 @@ all three.
   say the pool is already tight), so the net win is necessarily below 1,178. See
   `docs/VREG.md` section 18.3.
 
+
+**Measured (2026-11-24; S7a ran and the line is closed)**: a read-only shadow solve (a CFG run
+in parallel over the same `VsLine` array inside `ark_vstack_function()`, removed with
+`git checkout` right after) gives, at the nineteen-switch setting: `retainable` **591** (baseline
+589 pins, nearly all retainable), `must_spill` **0**, `poolfull_after` **952** (baseline 471), and
+`net = 2x591 - 2x(952-471) = 220` instructions = **1.79%**, cross-checked by
+`2x(sim_r 4,203 - cur_r 4,079) = 248`. Both are below 300, so under the pre-registered rule the
+line is **closed and the value stack keeps its linear scan plus boundary flush**. The mechanism is
+exactly what this section predicted, "the net win is necessarily below 1,178": 1,182 saved, 962
+paid back. Full write-up in `docs/VSTACK_CFG.md` section 4.1.1.
+
 ## 6 What is already done (do not re-invest)
 
 | Stage | Content | Reading |
