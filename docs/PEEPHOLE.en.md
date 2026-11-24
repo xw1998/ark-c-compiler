@@ -96,10 +96,14 @@ Two more candidates were deliberately dropped:
 | **R2**: after `MOV rM, #k`, rewrite all uses of `rM` to `#k` | Needs backwards liveness (can this constant register be killed at all); getting it wrong emits wrong instructions, and `-fopt-imm` (at emission time) already covers most of the same gain |
 | **R4**: fuse `MOV rD, r0` with the following three-operand instruction | Needs cross-instruction read/write analysis, again a liveness problem |
 
-What R1 and R3 share is that they are **pure text equivalences**: no
+What R1, R3 and R5 share is that they are **pure text equivalences**: no
 instruction's operand meaning changes, and nothing has to be known about whether
 some other register is still live. That is the only reason they could go into
-0.9.1.
+0.9.1. R5 is a notch weaker than R1/R3 -- it does not even need "two adjacent
+instructions", it looks at a single line; that `ADD #0` with `D != S` exists at all
+is because the value stack materialises copies and zero-displacement addresses as
+a three-operand `ADD` (see `docs/VREG.md` section 17). R2 and R4 stay out, for the
+same reasons as before.
 
 ## 4. Measurements
 
@@ -170,7 +174,7 @@ The run-time default is **off** (`g_config.enable_opt_peep = 0`).
 ark_vstack_function()      # first remove the cheapest layer of adjacent PUSH/POP
 ark_addr_function()        # then fold ADD/MOV into addressing
 ark_cbz_function()         # then CMP #0 + branch -> CBZ
-ark_peep_function()        # only here do the remaining stack round trips show up (R1 then R3)
+ark_peep_function()        # only here do the remaining stack round trips show up (R5, R1, R3)
 ark_regalloc_function()    # finally pick registers on a shorter instruction stream
 ark_fix_far_offset()       # correctness backstop, always last
 ```
@@ -179,10 +183,19 @@ Running after `-fopt-cbz` has a concrete reason: cbz deletes `CMP`, and `CMP` is
 very often exactly the line sitting between `PUSH` and `POP` -- **only after cbz
 are the two sides adjacent**.
 
-`pp_r1` runs first, `pp_r3` second: R1 inserts a `MOV rY, rX`, which is neither
-`STR` nor `LDR`, so it never creates a false opportunity for R3; conversely,
-deleting `LDR`s in R3 never creates one for R1. The order is fixed, and there was
-no A/B of "run each rule twice".
+`pp_r5` runs first, `pp_r1` second, `pp_r3` last: R5 rewrites single lines and neither
+creates nor destroys an opportunity for R1; R1 inserts a `MOV rY, rX`, which is neither
+`STR` nor `LDR`, so it never creates a false opportunity for R3; conversely, deleting
+`LDR`s in R3 never creates one for R1.
+
+**The second peephole run**: the renames done by `-fopt-live` and `-fopt-coalesce` create
+*fresh* adjacent `PUSH {rX}` / `POP {rX}` dead pairs **in the final text** (on the corpus
+34 such pairs had 25 same-register ones before the value-stack work; afterwards only 9
+pairs are left and none of them is same-register). So `ark_emit_program()` calls
+`ark_peep_function()` once more, after the second liveness run and before
+`ark_fix_far_offset()` -- same gate, same rule set, worth -52 instructions / -108 B. It
+has to be before `ark_fix_far_offset()`: afterwards frame offsets become indirect
+accesses through `r12` and there is no `[r6, #off]` left to pair.
 
 ## 8. Deliberately not done
 
@@ -199,6 +212,9 @@ no A/B of "run each rule twice".
   `PP_MAX_LINES = 8192` `int` arrays (`ls` / `ll`, 64 KB in total, `static` so not
   on the stack). A function longer than 8192 lines is skipped entirely -- not
   optimised, but never wrong.
+- Two runs: one after `-fopt-cbz`, one after the second liveness run (see section 7).
+  The first run's output is the second run's input; no state is shared between them, so
+  every extra run is another full function scan.
 - Only the emitter's own text shapes are recognised. If the emitter ever changes
   a line length or a mnemonic spelling (say `STR` becomes `STR.W`), the matching
   rule silently stops firing -- which is why both rules use **exact matching**

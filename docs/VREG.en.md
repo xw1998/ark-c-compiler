@@ -656,3 +656,130 @@ probe must never enter a real build.
 
 The seven frozen gates of section 5 and the F1-F4 falsifiers of section 6 remain **unchanged
 character for character**.
+
+## 17 The first step of the value-stack rework: `ADD #0` becomes `MOV`, plus a second peephole run on the final text (0.9.1-wip)
+
+Sections 15 and 16 were both "run the same switch a second time". This round takes a different
+angle: **no new rule and no new flag -- just rewrite the lines the value stack emits that are a
+copy by meaning and arithmetic by text into the shape the later passes already understand.**
+
+### 17.1 Why the text layer, and not the emitter
+
+The value stack emits one instruction for three different things -- a register copy (`x = y`), a
+frame base moved into a scratch, and a zero-displacement address -- namely `ADD rD, rS, #0`. By
+meaning all three are copies; by text it is arithmetic.
+
+| Text | Bytes | Encoding |
+| --- | ---: | --- |
+| `ADD r5, r8, #0` (D!=S) | **4** | `addw r5, r8, #0` (`08f1 0005`) |
+| `ADD r0, r0, #0` (D==S, `rd` <= r7) | 2 | the `0x3000` form (`ADDS r0, #0`, **writes flags**) |
+| `MOV r5, r8` | **2** | `0x4600` |
+
+`ADD` (without `S`) has exactly one immediate encoding, the 32-bit `ADDW`, so anything with
+D!=S costs four bytes; a register-to-register `MOV` is always the 16-bit form and always two
+bytes, and neither writes flags (see 17.4).
+
+**Why not emit the `MOV` directly**: the two downstream rules that could exploit it only
+recognise `MOV`. `-fopt-live`'s L1 deletes a `MOV rD, rS` whose destination is dead, and
+`-fopt-coalesce` forwards a live copy; both look for `MOV` in the text and neither matches an
+`ADD`. Rewriting here is what hands those passes the same values: of the 463 sites, 215 are
+deleted outright afterwards and 202 are forwarded or kept.
+
+**Why no new flag**: this is a pure text equivalence, the same family as R1/R3 (see
+`docs/PEEPHOLE.en.md`), so it belongs to `-fopt-peep`. No new flag means the crop table and the
+`C3900U` by-name rejection table do not change by a single character, and the whole block is
+still cropped out under `ARKCC_PROFILE_STM32_MIN`.
+
+### 17.2 The second peephole run (the same shape as the second liveness run in section 16)
+
+R1 (`PUSH {rX}` ... `POP {rY}` becomes `MOV`) hardly ever matches during the first peephole
+run: at that point the two ends of the stack round trip are still the temporaries the value
+stack picked, and the pushed and popped registers are usually not the same one. What makes them
+**equal** is the renaming done by the passes below -- `-fopt-coalesce`, `-fopt-live`,
+`-fopt-vreg`, `-fopt-slotreg`. The dead pair is **created by the later passes**, so the text has
+to be looked at once more when it is final.
+
+Measured (95 TUs, nineteen switches):
+
+| Corpus | Adjacent `PUSH`/`POP` pairs | of which name the same register set (true dead pairs) |
+| --- | ---: | ---: |
+| Before (13,116) | 34 | **25** |
+| After (12,795) | 9 | **0** |
+
+The final order is therefore: second liveness run -> **second peephole** -> `ark_fix_far_offset`
+-> init/fini_array. The peephole has to stay **before** `ark_fix_far_offset`: the latter turns a
+far frame offset into an indirect access through `r12`, after which the text no longer contains
+the "same `[r6, #off]`" shape the rule pairs.
+
+### 17.3 Measured numbers (95 TUs, Cortex-M4, all nineteen `-fopt-*`)
+
+| Configuration | Instructions | Bytes |
+| --- | ---: | ---: |
+| Baseline (`a6f3c94`) | 13,116 | 34,200 |
+| + R5 (isolated build with the second peephole disabled) | 12,847 (-269) | 33,572 (-628) |
+| **+ R5 + second peephole (final)** | **12,795 (-321, -2.45%)** | **33,464 (-736, -2.15%)** |
+| Second peephole's own share (difference of the two rows) | -52 | -108 |
+
+Of that -52, **50 instructions (100 B) are accounted for line by line** -- they are exactly the
+25 adjacent `PUSH`/`POP` pairs above, two bytes each. The remaining -2 instructions / -8 bytes
+fall on the few extra shapes the second R1/R3 round folds and on the alignment padding that
+moves with them; **they are not attributed further**.
+
+Per column (eighteen columns, only five move):
+
+| Column | Before | After | Delta |
+| --- | ---: | ---: | ---: |
+| `ADD`/`SUB`/`ADC`/`SBC`/`RSB`/`NEG` | 1,493 | 1,030 | -463 |
+| `MOV` register to register | 1,571 | 1,773 | +202 |
+| `PUSH`/`POP` | 1,239 | 1,189 | -50 |
+| Frame access `[r6, #n]` | 922 | 916 | -6 |
+| `MOV` immediate | 1,202 | 1,198 | -4 |
+| The other thirteen columns | -- | -- | 0 |
+| **Total** | **13,116** | **12,795** | **-321** |
+
+Line by line: there are **463** `ADD rD, rS, #0` sites. **46** have D==S and are identities
+(the whole line goes) and **417** become `MOV`; of those 417, **202** survive in the final text
+(the `MOV` register column is a net +202) and the other **215** are deleted as dead by the
+second liveness run. -463 + 202 - 50 - 6 - 4 = -321, matching the total exactly.
+
+**The byte figure of -736 is not split line by line**: each rewrite saves a fixed 2 B and each
+deleted line saves its own width, but as soon as a pool label changes number the literal-pool
+grouping and the `.align` padding move as a whole, so a line-by-line sum does not reproduce the
+measurement (-736 is 2.29 B per removed instruction on average). Only the measured totals and
+the per-column deltas are reported; no cause is claimed.
+
+Per TU: **13 TUs change, every one of them smaller, none grows**, the other 82 are
+byte-identical.
+
+### 17.4 Semantics: the flags
+
+- **D!=S**: `ADDW` writes no flags and `MOV rD, rS` (`0x4600`) writes no flags, so the flag
+  state is the same on both sides of the rewrite.
+- **D==S**: `ADD rd, rd, #0` takes the `0x3000` form, which is `ADDS` and **does** write flags.
+  Deleting it removes one flag write. That direction is safe: this backend never carries flags
+  across a statement (every conditional branch is immediately preceded by its own
+  `CMP`/`CMN`/`TST`/`TEQ`), so one fewer flag write can neither revive nor break any existing
+  dependency.
+- **Evidence**: scanning the pre-change 13,116 corpus for the shape
+  "`CMP`/`CMN`/`TST`/`TEQ` -> `ADD rX, rX, #0` -> conditional branch/`IT`" finds **0 sites**;
+  the post-change corpus has **0** remaining `ADD .* #0` and **0** self-assignments
+  `MOV rX, rX` (`pp_r5` emits a `MOV` only when D!=S).
+
+### 17.5 OFF IS OFF and the gates (all green this round)
+
+OFF IS OFF is compared with **real binaries**: the old binary built from HEAD (`a6f3c94`) and
+the current one both compile the same 95 TUs under `-fno-opt-peep` (the other eighteen
+`-fopt-*` all on), and the `.s` and `.o` files are hashed together:
+
+| Check | Result |
+| --- | --- |
+| OFF IS OFF (95 TUs, only `-fopt-peep` off) | both sides equal `95b7fa7b2127a96c56b32dcf1ab5bdacd113e9593add1af67a0e2e8be3ec39bd` |
+| `tests/run_vreg_tests.py ./arkcc.exe` | all checks passed |
+| `tests/run_cmat_tests.py ./arkcc.exe` | all checks passed |
+| `tests/run_litpool_tests.py ./arkcc.exe` | all checks passed |
+| `tests/arm_exec/run_arm_exec.py --arkcc ./arkcc.exe` | 0 failure(s) |
+| Cropping (`ARKCC_PROFILE_STM32_MIN` host build) | 0 error; `-fopt-peep` still `C3900U` |
+| Real MCU link (`tools/stm32_build_check.py --layout both`) | all checks passed (2 layouts) |
+
+The seven frozen gates of section 5 and the F1-F4 falsifiers of section 6 remain **unchanged
+character for character**. This round removes instructions; it does not move a judgement line.

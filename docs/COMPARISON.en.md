@@ -51,7 +51,7 @@ Totals over the 95 effective units:
 | compiler | options | instructions | code bytes |
 | --- | --- | ---: | ---: |
 | **arkc** | `-O2` (no `-fopt-*`) | 49,186 | 110,468 |
-| **arkc** | `-O2` + all nineteen `-fopt-*` (see section 3) | **13,116** | **34,200** |
+| **arkc** | `-O2` + all nineteen `-fopt-*` (see section 3) | **12,795** | **33,464** |
 | armcc | `-O1` | 6,051 | 14,888 |
 | armcc | `-O2` | 5,619 | 13,920 |
 | armcc | `-O3 -Otime` | 5,740 | 15,300 |
@@ -64,10 +64,10 @@ Against armcc `-O2` (5,619 instructions / 13,920 B):
 | comparison | instructions | code bytes |
 | --- | ---: | ---: |
 | arkc `-O2` (no `-fopt-*`) | 8.8× | 7.9× |
-| arkc `-O2` + every `-fopt-*` | **2.33×** | **2.46×** |
+| arkc `-O2` + every `-fopt-*` | **2.28×** | **2.40×** |
 
-**The switches take the gap from 8.8× down to 2.3×** (instructions -73.3%, code
-bytes -69.0%).
+**The switches take the gap from 8.8× down to 2.3×** (instructions -74.0%, code
+bytes -69.7%).
 
 **IAR did not take part**: IAR EWARM 9.70 is installed on this machine
 (`D:\tools\IAR_EWARM_9.70\arm\bin\iccarm.exe`, V9.70.1.475/W64) but **has no
@@ -157,8 +157,8 @@ Two further ceilings that were **quantified and judged not worth doing**:
 
 > **This section is the historical ladder**: it is the reading taken when the ten
 > switches landed, accumulated one at a time, and it exists to explain what each
-> rule is worth. **The current total is section 2** (13,116 instructions /
-> 34,200 B); the ladder no longer adds up to it, because dead-static suppression
+> rule is worth. **The current total is section 2** (12,795 instructions /
+> 33,464 B); the ladder no longer adds up to it, because dead-static suppression
 > and the on-demand run-time helper landed in between and four more tables were
 > added.
 

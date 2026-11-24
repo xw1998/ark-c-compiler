@@ -15,16 +15,16 @@
 
 | Compiler | Instructions | Code bytes |
 | --- | ---: | ---: |
-| arkc (all nineteen `-fopt-*` on) | 13,116 | 34,200 |
+| arkc (all nineteen `-fopt-*` on) | 12,795 | 33,464 |
 | armcc 5.06u7 `-O2` | 5,619 | 13,920 |
 | armclang `-O2` | 5,064 | 13,848 |
 | armclang `-Oz` | 4,246 | 11,284 |
 
-Against armcc `-O2` that is **2.33x instructions / 2.46x bytes**; against armclang `-O2`
-2.59x / 2.47x, and against `-Oz` 3.09x / 3.03x.
+Against armcc `-O2` that is **2.28x instructions / 2.40x bytes**; against armclang `-O2`
+that is 2.53x / 2.42x, and against `-Oz` 3.01x / 2.97x.
 
-**In one line**: of the 7,497 instruction gap, **4,468 (59.6%) sit in one group of
-"value transport" categories** (section 3); the remaining 3,029 are spread over address
+**In one line**: of the 7,176 instruction gap, **4,610 (64.2%) sit in one group of
+"value transport" categories** (section 3); the remaining 2,566 are spread over address
 computation, comparisons, branches and barriers. This is not "some passes are missing" --
 it is the model-level price of **every intermediate value crossing a register or memory**.
 
@@ -36,25 +36,25 @@ percentages are of each arm's own total. The reproduction script is in section 7
 
 | Category | arkc | armcc `-O2` | armclang `-O2` |
 | --- | ---: | ---: | ---: |
-| `MOV` immediate | 1,202 (9.2%) | 389 (6.9%) | 693 (13.7%) |
+| `MOV` immediate | 1,198 (9.4%) | 389 (6.9%) | 693 (13.7%) |
 | `MOVW`+`MOVT` | 338 (2.6%) | **0** | 380 (7.5%) |
-| literal pool `LDR [pc]` | **705 (5.4%)** | 391 (7.0%) | **0** |
-| `MOV` register to register | 1,571 (12.0%) | 214 (3.8%) | 109 (2.2%) |
-| `PUSH`/`POP` | 1,239 (9.4%) | 156 (2.8%) | 146 (2.9%) |
-| frame access `[r6, #n]` | 922 (7.0%) | 45 (0.8%) | 147 (2.9%) |
-| other memory | 1,746 (13.3%) | 1,207 (21.5%) | 1,190 (23.5%) |
+| literal pool `LDR [pc]` | **705 (5.5%)** | 391 (7.0%) | **0** |
+| `MOV` register to register | 1,773 (13.9%) | 214 (3.8%) | 109 (2.2%) |
+| `PUSH`/`POP` | 1,189 (9.3%) | 156 (2.8%) | 146 (2.9%) |
+| frame access `[r6, #n]` | 916 (7.2%) | 45 (0.8%) | 147 (2.9%) |
+| other memory | 1,746 (13.6%) | 1,207 (21.5%) | 1,190 (23.5%) |
 | `[sp]` access | 0 | 46 (0.8%) | 116 (2.3%) |
-| `ADD`/`SUB`/`ADC`/`SBC`/`RSB`/`NEG` | 1,493 (11.4%) | 302 (5.4%) | 186 (3.7%) |
-| compare `CMP`/`CMN`/`TST`/`TEQ` | 845 (6.4%) | 479 (8.5%) | 311 (6.1%) |
-| branch (incl. `BX`) | 1,546 (11.8%) | 1,284 (22.9%) | 672 (13.3%) |
+| `ADD`/`SUB`/`ADC`/`SBC`/`RSB`/`NEG` | 1,030 (8.1%) | 302 (5.4%) | 186 (3.7%) |
+| compare `CMP`/`CMN`/`TST`/`TEQ` | 845 (6.6%) | 479 (8.5%) | 311 (6.1%) |
+| branch (incl. `BX`) | 1,546 (12.1%) | 1,284 (22.9%) | 672 (13.3%) |
 | `BL`/`BLX` | 182 (1.4%) | 153 (2.7%) | 115 (2.3%) |
-| logic `AND`/`ORR`/`EOR`/`BIC`/`MVN`/`ORN` | 772 (5.9%) | 394 (7.0%) | 498 (9.8%) |
+| logic `AND`/`ORR`/`EOR`/`BIC`/`MVN`/`ORN` | 772 (6.0%) | 394 (7.0%) | 498 (9.8%) |
 | shift | 219 (1.7%) | 309 (5.5%) | 246 (4.9%) |
 | extend / bitfield / `REV` | 81 (0.6%) | 202 (3.6%) | 31 (0.6%) |
 | `IT` blocks | 69 (0.5%) | 0 | 130 (2.6%) |
 | barriers / system | 158 (1.2%) | 22 (0.4%) | 25 (0.5%) |
 | other | 28 (0.2%) | 26 (0.5%) | 69 (1.4%) |
-| **total** | **13,116** | **5,619** | **5,064** |
+| **total** | **12,795** | **5,619** | **5,064** |
 
 Two readings have to be stated up front:
 
@@ -68,30 +68,30 @@ Two readings have to be stated up front:
 - **armcc's branch share (22.9%) is higher than ours**: its control flow is merged less
   and every function ends in `BX lr`. We are 262 instructions *ahead* in that row.
 
-**The rows now add up exactly**: the eighteen rows above sum to **13,116**, matching the
+**The rows now add up exactly**: the eighteen rows above sum to **12,795**, matching the
 total. The 13 unmatched shapes of the old table are absorbed by one uniform rule set
 (`classify2.py`: `[pc` always counts as pool, data directives are not counted, condition
 codes and `S` suffixes are folded, `MOVW`/`MOVT` are their own row).
 
-## 3 Decomposition of the gap: 60% is value transport
+## 3 Decomposition of the gap: 64% is value transport
 
 Adding up the five rows of section 2 that move a value from where it is produced to where
 it is used:
 
 | Category | arkc | armcc | difference |
 | --- | ---: | ---: | ---: |
-| `MOV` immediate | 1,202 | 389 | +813 |
+| `MOV` immediate | 1,198 | 389 | +809 |
 | `MOVW`+`MOVT` | 338 | 0 | +338 |
-| `MOV` register to register | 1,571 | 214 | +1,357 |
-| `PUSH`/`POP` | 1,239 | 156 | +1,083 |
-| frame access `[r6, #n]` | 922 | 45 | +877 |
-| **subtotal** | **5,272 (40.2%)** | **804 (14.3%)** | **+4,468** |
+| `MOV` register to register | 1,773 | 214 | +1,559 |
+| `PUSH`/`POP` | 1,189 | 156 | +1,033 |
+| frame access `[r6, #n]` | 916 | 45 | +871 |
+| **subtotal** | **5,414 (42.3%)** | **804 (14.3%)** | **+4,610** |
 
-**Those 4,468 instructions are 59.6% of the 7,497 total gap.** The other 40%:
+**Those 4,610 instructions are 64.2% of the 7,176 total gap.** The other 35.8%:
 
 | Category | difference |
 | --- | ---: |
-| `ADD`/`SUB` etc. (address recomputed every time) | +1,191 |
+| `ADD`/`SUB` etc. (address recomputed every time) | +728 |
 | other memory | +539 |
 | logic | +378 |
 | compare | +366 |
@@ -104,7 +104,7 @@ it is used:
 | extend / bitfield | -121 |
 | shift | -90 |
 | other | +2 |
-| **subtotal** | **+3,029** |
+| **subtotal** | **+2,566** |
 
 ## 4 Three structural causes (each maps to the numbers above)
 
@@ -113,23 +113,24 @@ it is used:
 The backend evaluates expressions on a value stack: push a value, pop two, push the
 result. `-fopt-vstack` folds **adjacent** `PUSH`/`POP` pairs into register moves, and
 `-fopt-vreg` promotes every slot mentioned only as `LDR`/`STR [r6, #n]` into `r8-r11`;
-together they cut frame accesses from 3,213 to **922** (-71%). But **the model is unchanged**:
+together they cut frame accesses from 3,213 to **916** (-72%). But **the model is unchanged**:
 an intermediate value that lives past one statement boundary can only go to a frame slot
-or a pool register, so `MOV` immediate 1,492 + `MOV` register 1,731 + `PUSH`/`POP` 1,239
-stay right where they were. armcc keeps intermediates in `r0-r3`; its three rows total 759.
+or a pool register, so `MOV` immediate 1,198 + `MOV` register 1,773 + `PUSH`/`POP` 1,189
+(4,160 in all) stay right where they were. armcc keeps intermediates in `r0-r3`; its three
+rows total 759.
 
 ### 4.2 Every intermediate value passes through `r0`
 
 The backend is single-accumulator: any "result the next node will consume" goes through
-`r0`. Of the 370 `MOV r0, rX`, only 16 sit within three lines after a `BL`; of the 398
-`MOV rX, r0`, only 7 sit within three lines before a `BL` -- the rest are nodes handing
-values to each other. The 532 `PUSH {… r0 …}` are the direct bill for this design: only 46
-of them are followed by a matching `POP {r0}` within six lines, so the other 486 really do
-**store an intermediate to memory and load it back**.
+`r0`. Of the 361 `MOV r0, rX`, only 18 sit within three lines after a `BL`; of the 533
+`MOV rX, r0`, only 22 sit within three lines before a `BL` -- the rest are nodes handing
+values to each other. The 507 `PUSH {… r0 …}` are the direct bill for this design: only 38
+of them are followed by a matching `POP {r0}` within the next two instructions, so the
+other 469 really do **store an intermediate to memory and load it back**.
 
 ### 4.3 Addresses are recomputed every time
 
-`ADD`/`SUB` 1,493 against armcc's 302 (+1,191). Every struct-field access recomputes
+`ADD`/`SUB` 1,030 against armcc's 302 (+728). Every struct-field access recomputes
 "base + offset"; there is no "keep the base in a register, put the offset straight into
 the addressing mode". This shares its cause with 4.1: the base is an intermediate value
 too, and the value stack drops it back into the frame.
@@ -164,26 +165,26 @@ So "the only two-digit win" was the right call, but it is 13% smaller than estim
 Design, refusal list, region cutting and the 21 gates are in
 [LITPOOL.en.md](LITPOOL.en.md); **this item moves from "to do" to "done"**.
 
-### 5.2 `PUSH {… r0 …}` 532 (4.1%)
+### 5.2 `PUSH {… r0 …}` 507 (4.0%)
 
-Only 46 of them are followed by `POP {r0}`. Removing the other 486 means changing the
+Only 38 of them are followed by `POP {r0}`. Removing the other 469 means changing the
 value-stack model (keeping the intermediate in a register) -- the same thing as 4.1,
 bounded by the F1 falsifier (close the slice if under 5%).
 
-### 5.3 Repeated constant materialisation 1,202 (9.2%)
+### 5.3 Repeated constant materialisation 1,198 (9.4%)
 
-`MOV r0, #imm` 1,052 + `MOV rX, #imm` 150. This **must not be double counted** with 5.1:
+`MOV r0, #imm` 1,048 + `MOV rX, #imm` 150. This **must not be double counted** with 5.1:
 after pooling most of these sites still need one `LDR`; what can still go is only "the
 same constant materialised several times in one basic block" (`-fopt-constcache` already
 took 159).
 
 **Measured upper bound (2026-11-24, measure first, then close)**: counting "the same
 immediate materialised a second time or later inside the same basic block" over the
-nineteen-switch corpus gives **1,540** `MOV rX, #imm` (including `#0`, epilogue return
-codes and so on -- a wider rule than the 1,202 classifier reading above, so the bound can
-only come out too high), of which **237** are same-block repeats; the pooled form
+nineteen-switch corpus gives **1,536** `MOV rX, #imm` (including `#0`, epilogue return
+codes and so on -- a wider rule than the 1,198 classifier reading above, so the bound can
+only come out too high), of which **235** are same-block repeats; the pooled form
 `LDR rX, .Llit_*` appears 705 times with **87** same-block repeats of the same pool label.
-Together that is **324 instructions = 2.47%**, and it is a **ceiling** -- actually
+Together that is **322 instructions = 2.52%**, and it is a **ceiling** -- actually
 deleting one also requires the destination register to still hold the value on that line
 (liveness), so the real number is smaller. Under F1 (a win below 5% means close it) the
 item is **closed**; no same-block constant reuse will be implemented.
@@ -193,7 +194,7 @@ item is **closed**; no same-block constant reuse will be implemented.
 > register on. What is left is one or two repeats inside a block; deleting one `MOV` would
 > cost a liveness analysis for a ceiling of 2.5%.
 
-### 5.4 Register copies 1,571 (12.0%)
+### 5.4 Register copies 1,773 (13.9%)
 
 `-fopt-copyprop` / `-fopt-coalesce` / `-fopt-live` already removed the redundant copies
 that do not cross a block boundary; what remains needs **inter-block** liveness (the S6b-2
@@ -202,17 +203,17 @@ range).
 **Measured upper bound (2026-11-24, measure first, then close)**: each `MOV rD,rS` was
 counted under the rule "its destination is not read again in the rest of its block but is
 in the block's `live_out` set" (the counter self-checks: across the 95-TU corpus it counts
-13,116 instructions and 1,571 `MOV rD,rS`, exactly the classifier readings in section 2 and
-this section). Only **245** of them qualify -- **1.87% of all instructions, 15.6% of the
+12,795 instructions and 1,773 `MOV rD,rS`, exactly the classifier readings in section 2 and
+this section). Only **208** of them qualify -- **1.63% of all instructions, 11.7% of the
 copies themselves**. That is an **upper bound** (anything uncertain counts as live), so
-under F1 (< 5% means close it) **S6b-2 is closed and not implemented**. The other 1,326
+under F1 (< 5% means close it) **S6b-2 is closed and not implemented**. The other 1,565
 copies have a consumer inside their own block; removing those needs a change to the value
 stack / allocation model and is not part of the register-copy item.
 
 **A weaker avenue was measured too**: folding "`MOV rD, rS` immediately followed by one
 instruction that only reads `rD`, with `rD` dead for the rest of the block" (feeding the
 source register straight into the next instruction, `CMP r0, #0` -> `CMP r5, #0`) yields
-**32 instructions = 0.24%**, also closed under F1. Together still under 5%, so there is
+**32 instructions = 0.25%**, also closed under F1. Together still under 5%, so there is
 nothing else to do in the register-copy column short of the value-stack model -- rule B of
 `-fopt-copyprop` (an `OP rD, rD, X` right after) already took the well-formed part.
 
@@ -235,6 +236,7 @@ nothing else to do in the register-copy column short of the value-stack model --
 | S6c | region crosses a call (callee-saved release + two implicit-reader defects) | seventeen switches 14,954 -> eighteen 14,218 (-736; reading of that time, the 0.9.1-wip vreg frame-save fix lifts eighteen switches to 14,271) |
 | `-fopt-litpool` | 32-bit constants into a literal pool (region-shaped, one pool per group) | eighteen switches 14,271 -> **nineteen 13,566** (-705 / -1,134 B) |
 | Second liveness run (`-fopt-live` runs **a second time** after litpool) | lets rules L1/L2 see the pooled text -- `MOVW`/`MOVT` became `LDR`, so the value stack's in-flight copies changed shape and a batch the first run saw as live is now dead | nineteen switches 13,566 -> **13,116** (-450 / -780 B = -3.32% / -2.23%); no TU of the 95 grows |
+| R5 + a second peephole run (`ADD #0` becomes `MOV`; `-fopt-peep` runs again after the second liveness sweep) | the value stack materialises copies and zero-displacement addresses as a three-operand `ADD`, and a zero immediate has no 16-bit encoding (4 B); rewriting it to `MOV` (2 B) in the text layer lets `-fopt-live`/`-fopt-coalesce` take over, and because the dead pairs are created by the later renames the peephole runs once more on the final text | nineteen switches 13,116 -> **12,795** (-321 / -736 B = -2.45% / -2.15%); no TU of the 95 grows, see `docs/VREG.md` section 17 |
 | rest | `-fopt-vstack` / `-fopt-cmat` / `-fopt-slotreg` / `-fopt-constcache` / `-fopt-pair` etc. | see `docs/COMPARISON.en.md` section 5 |
 
 All nineteen `-fopt-*` switches are **off by default**, and each one has an OFF IS OFF gate

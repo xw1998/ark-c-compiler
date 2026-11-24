@@ -883,6 +883,18 @@ static void ark_fix_far_offset(AsmBuffer *b, int from) {
  *       all match, and the two lines must be adjacent: a volatile access is
  *       separated from its partner by a DMB SY, so it never matches, and the
  *       store itself is kept, so no memory write is ever removed.
+ *
+ *   R5  ADD rD, rS, #0   ->  MOV rD, rS        (deleted outright when D == S)
+ *       The stack machine materialises a copy -- `x = y`, a frame base moved
+ *       into a scratch, an address with a zero displacement -- as a three
+ *       operand ADD with a zero immediate.  `ADD` without `S` writes no flags,
+ *       so a zero displacement is exactly a copy; but that form has no 16-bit
+ *       encoding for a zero immediate, so it costs four bytes and says nothing
+ *       a two-byte `MOV` does not say.  The rewrite is done here rather than at
+ *       emission because the later passes only know MOV: the liveness sweep
+ *       deletes a dead `MOV` and copy propagation forwards a live one, and
+ *       neither rule fires on an `ADD`.  Rewriting first is what turns those
+ *       four-byte copies into zero instructions.
  */
 #define PP_MAX_LINES 8192
 
@@ -1094,8 +1106,56 @@ static void pp_r3(AsmBuffer *b, int from) {
     if (changed) pp_splice(b, from, &out);
 }
 
+/* Exact "ADD rD, rS, #0".  `ADDS` is rejected by the literal prefix, and so is
+ * a `` symbol, which keeps the rule off label-looking text. */
+static int pp_add0(const char *t, int *pd, int *ps) {
+    const char *p = t;
+    int d = 0, s = 0;
+    if (strncmp(p, "ADD r", 5)) return 0;
+    p += 5;
+    if (*p < '0' || *p > '9') return 0;
+    while (*p >= '0' && *p <= '9') { d = d * 10 + (*p - '0'); p++; }
+    if (p[0] != ',' || p[1] != ' ' || p[2] != 'r') return 0;
+    p += 3;
+    if (*p < '0' || *p > '9') return 0;
+    while (*p >= '0' && *p <= '9') { s = s * 10 + (*p - '0'); p++; }
+    if (strcmp(p, ", #0")) return 0;
+    if (d > 15 || s > 15) return 0;
+    *pd = d;
+    *ps = s;
+    return 1;
+}
+
+/* R5: `ADD rD, rS, #0` -> `MOV rD, rS`, and nothing at all when D == S.
+ * One line in, one line out, so nothing else in the function moves. */
+static void pp_r5(AsmBuffer *b, int from) {
+    static int ls[PP_MAX_LINES], ll[PP_MAX_LINES];
+    AsmBuffer out;
+    char t[256], mv[32];
+    int n, i, changed = 0;
+    n = pp_split_lines(b, from, ls, ll, PP_MAX_LINES);
+    if (n < 0) return;
+    asmbuf_init(&out);
+    for (i = 0; i < n; i++) {
+        int d = 0, s = 0;
+        if (ll[i] < (int)sizeof t &&
+            pp_trim(b->buf + ls[i], ll[i], t, sizeof t) >= 0 &&
+            pp_add0(t, &d, &s)) {
+            if (d != s) {
+                snprintf(mv, sizeof mv, "    MOV r%d, r%d\n", d, s);
+                asmbuf_puts(&out, mv);
+            }
+            changed++;
+            continue;
+        }
+        pp_copy_line(&out, b->buf + ls[i], ll[i]);
+    }
+    if (changed) pp_splice(b, from, &out);
+}
+
 static void ark_peep_function(AsmBuffer *b, int from) {
     if (!pp_enabled()) return;
+    pp_r5(b, from);
     pp_r1(b, from);
     pp_r3(b, from);
 }
@@ -13169,6 +13229,17 @@ static char *codegen_arm(IrProgram *prog) {
          * Gated by -fopt-live, so a build without it is byte-identical. */
         if (g_config.enable_opt_live)
             ark_live_function(&buf, fstart, ark_ret_mask(f->ret_type));
+#endif
+#if ARKCC_FEATURE_OPT_PEEP
+        /* Second peep, for the same reason as the second liveness sweep: a
+         * PUSH/POP pair only becomes removable *after* the passes below this
+         * point have renamed registers.  A pair whose two halves now name the
+         * same register is a copy routed through memory, and the renames that
+         * make them equal happen in regalloc, vreg, slotreg and coalescing --
+         * all of which run after the first peep.  Same gates, same rules, only
+         * the text is final now. */
+        if (g_config.enable_opt_peep)
+            ark_peep_function(&buf, fstart);
 #endif
         /* Correctness, not an option: a frame slot beyond 4095 bytes cannot be
          * reached by "[r6, #off]" at all. */

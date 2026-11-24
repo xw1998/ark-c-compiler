@@ -131,9 +131,11 @@ allocation.
 
 > This table is the reading **at the moment `-fopt-litpool` landed**. 0.9.1-wip later added
 > a second liveness run after litpool, which pushes the nineteen-switch total to 13,116
-> instructions / 34,200 B (see `docs/BOUNDARY.md` section 6 and `docs/VREG.md` section 16).
-> The litpool delta itself, -705 / -1,134, is unaffected: its site and pool counts on the
-> corpus did not change, only a batch of dead copies that were removed afterwards.
+> instructions / 34,200 B (see `docs/BOUNDARY.md` section 6 and `docs/VREG.md` section 16);
+> after that R5 (`ADD #0` becomes `MOV`) and a second peephole run on the final text pushed
+> it again to **12,795 instructions / 33,464 B** (`docs/VREG.md` section 17). The litpool
+> delta itself, -705 / -1,134, is unaffected: its site and pool counts on the corpus did
+> not change, only rows that other passes removed around it.
 
 The byte bill reconciles line by line (counted with `grep -c` on the `.s` files the
 19-switch build produces): **705 sites** (`LDR rD, .Llit_*`) and **359 pools**
