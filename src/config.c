@@ -76,6 +76,7 @@ void config_init(void) {
     g_config.enable_opt_slotreg   = 0;
     g_config.enable_opt_vreg      = 0;
     g_config.enable_opt_constcache = 0;
+    g_config.enable_opt_litpool   = 0;
     g_config.enable_opt_coalesce = 0;
     g_config.enable_opt_copyprop  = 0;
     g_config.enable_opt_live      = 0;
@@ -500,6 +501,8 @@ void config_apply_args(int argc, char **argv) {
                 g_config.enable_opt_slotreg             = enable;
             else if (ark_streq(name, "opt-vreg") || ark_streq(name, "vreg"))
                 g_config.enable_opt_vreg                = enable;
+            else if (ark_streq(name, "opt-litpool") || ark_streq(name, "litpool"))
+                g_config.enable_opt_litpool             = enable;
             else if (ark_streq(name, "opt-constcache") || ark_streq(name, "constcache"))
                 g_config.enable_opt_constcache          = enable;
             else if (ark_streq(name, "opt-copyprop") || ark_streq(name, "copyprop"))
@@ -545,7 +548,8 @@ void config_print(void) {
             g_config.enable_opt_prop, g_config.enable_opt_deadpush,
             g_config.enable_opt_cmat, g_config.enable_opt_slotreg);
     ark_log("  opt_vreg=%d\n", g_config.enable_opt_vreg);
-    ark_log("  opt_constcache=%d\n", g_config.enable_opt_constcache);
+    ark_log("  opt_constcache=%d opt_litpool=%d\n", g_config.enable_opt_constcache,
+            g_config.enable_opt_litpool);
     ark_log("  opt_coalesce=%d\n", g_config.enable_opt_coalesce);
     ark_log("  dce_cfg=%d reloc_data=%d reg_top=%d rt_lazy=%d asm_extra=%d\n",
             g_config.enable_dce_cfg, g_config.enable_reloc_data,

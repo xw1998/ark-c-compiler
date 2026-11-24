@@ -31,7 +31,7 @@ endif
         test-inline test-vstack test-addr test-strength test-cbz test-branch \
         test-imm test-peep test-cbranch test-copyprop test-live test-movimm test-pair \
         test-prop test-deadpush test-cmat test-slotreg test-opalloc \
-        test-coalesce install \
+        test-litpool test-coalesce install \
         stm32 stm32-check
 
 all: $(ARKCC)
@@ -47,7 +47,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch test-imm test-peep test-cbranch test-copyprop test-cmat test-slotreg test-opalloc test-live test-movimm test-coalesce
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch test-imm test-peep test-cbranch test-copyprop test-cmat test-slotreg test-opalloc test-live test-movimm test-litpool test-coalesce
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -346,6 +346,20 @@ test-slotreg: $(ARKCC)
 # (-DARKCC_FEATURE_OPT_CONSTCACHE=0) refuses the flag by name.
 test-opalloc: $(ARKCC)
 	$(PYTHON) tests/run_operand_alloc_tests.py ./$(ARKCC)
+
+# Gate for -fopt-litpool: a 32-bit constant costs two instructions
+# (MOVW+MOVT); loading it from a literal pool costs one load per site plus one
+# word per distinct value.  The pool is PC-relative and reaches 4095 bytes, so
+# the text is cut into regions at every terminating instruction and the pools
+# follow them.  The gate pins OFF IS OFF, that the instruction count falls by
+# one per materialisation, that the image shrinks when a value is shared and
+# never grows when it is not, that every pool sits after a terminator and every
+# site names a defined word, that a function too big for one load gets several
+# pools and still assembles (the reach gate), that .arkdata-marked pairs are
+# untouched, that every fixture returns the Python answer in three arms, and
+# that a cropped build (-DARKCC_FEATURE_OPT_LITPOOL=0) refuses the flag by name.
+test-litpool: $(ARKCC)
+	$(PYTHON) tests/run_litpool_tests.py ./$(ARKCC)
 
 
 

@@ -34,6 +34,7 @@ typedef struct {
     int enable_opt_slotreg;         /* -fopt-slotreg: 块内冗余帧读与死帧写的删除 */
     int enable_opt_vreg;            /* -fopt-vreg: 槽提升到 r8-r11（改名消除，S6a） */
     int enable_opt_constcache;      /* -fopt-constcache: 函数级 32 位常量缓存（callee-saved） */
+    int enable_opt_litpool;         /* -fopt-litpool: 32 位常量放进函数尾的字面量池 */
     int enable_opt_copyprop;        /* -fopt-copyprop: 删死拷贝、把拷贝推进到消费者 */
     int enable_opt_live;            /* -fopt-live: 用 CFG+活跃性删只活跃性看得见的拷贝 */
     int enable_opt_coalesce;        /* -fopt-coalesce: 本地拷贝合并（MOV rD,rS 重命名为 rS 并删掉） */

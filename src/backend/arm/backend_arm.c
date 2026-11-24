@@ -5203,6 +5203,341 @@ static void ark_cmat_function(AsmBuffer *b, int from) {
     b->len = from + out.len;
 }
 #endif /* ARKCC_FEATURE_OPT_CMAT */
+#if ARKCC_FEATURE_OPT_LITPOOL
+/* ------------------ 32-bit constants in a literal pool (-fopt-litpool) ------
+ *
+ * A 32-bit constant is materialised as "MOVW rD, #lo" + "MOVT rD, #hi": eight
+ * bytes of code for four bytes of value.  Loading it out of a literal pool
+ * ("LDR rD, <label>", four bytes) costs four bytes per site plus four bytes per
+ * distinct constant, so a constant used c times costs 4c + 4 instead of 8c and
+ * the saving is 4(c - 1): nothing for a single use, one instruction per extra
+ * use.
+ *
+ * One pool per function is too coarse.  The load is a PC-relative LDR whose
+ * 12-bit field reaches 4,095 bytes, so a single function bigger than roughly
+ * 1,000 instructions can host no pool at all -- and on the 95-TU corpus two
+ * such functions alone held 225 of the 707 convertible MOVW/MOVT pairs.  The
+ * text is therefore cut into regions at every instruction that ends the
+ * control flow (POP {.., pc} / BX / unconditional B), and consecutive regions
+ * are merged forward while the accumulated size stays within LP_REACH_INS
+ * instructions (counted at the conservative 4 bytes each).  A pool is appended
+ * right after the terminator that closes its group, i.e. on a path control has
+ * already left: no branch can reach it, because every branch targets a label
+ * and every label follows the pool.
+ *
+ * Text-level on purpose.  It sees the final register names (so the pool load
+ * can name any register) and it runs after every pass that could otherwise
+ * have to reason about data in the middle of a function -- -fopt-cmat has
+ * already folded a constant into an operand where it could, so what is left
+ * here is the residue that really needs the pool.
+ *
+ * Refused on purpose:
+ *   - a function whose text does not end in a terminator (POP {.., pc}, BX or
+ *     an unconditional B).  The pool is data and control must never run into
+ *     it; a function that falls off its last instruction has a bug anyway, and
+ *     appending data would turn that bug into a jump into a constant.
+ *   - a MOVW/MOVT pair whose value comes from .arkdata/.arkdatasym: the
+ *     linker patches the pair's two halfwords, so the pair has to stay a pair.
+ *     (See emit_mov_addr32().)
+ *   - a region too large for LP_REACH_INS on its own: it is left unpooled,
+ *     which is correct and merely less compact.
+ *   - a distinct constant beyond LP_MAX_POOL in one pool: the site is left as
+ *     it was, also correct and merely less compact.
+ * ------------------------------------------------------------------------- */
+#define LP_MAX_LINES  4096
+#define LP_MAX_POOL   128
+#define LP_MAX_GROUPS 1024
+/* 4 * LP_REACH_INS + 4 * LP_MAX_POOL must stay below 4095, with slack for the
+ * `.align 4` in front of the pool. */
+#define LP_REACH_INS  800
+
+static int      lp_ls[LP_MAX_LINES];    /* byte offset of each line */
+static int      lp_ll[LP_MAX_LINES];    /* its length, without the newline */
+static int      lp_site[LP_MAX_LINES];  /* site register, -1 none, -2 the MOVT half */
+static short    lp_pool[LP_MAX_LINES];  /* pool index of that site */
+static short    lp_grp[LP_MAX_LINES];   /* group of that line, -1 none */
+static int      lp_rend[LP_MAX_LINES];  /* region: line index of its terminator */
+static int      lp_rins[LP_MAX_LINES];  /* region: instruction count */
+static int      lp_gstart[LP_MAX_GROUPS];
+static int      lp_gcut[LP_MAX_GROUPS];
+static int      lp_gcnt[LP_MAX_GROUPS]; /* distinct constants in that pool */
+static unsigned lp_val[LP_MAX_POOL];    /* one word per distinct constant */
+static int      lp_seq;                 /* makes the labels unique per function */
+
+/* Copy one line with the leading blanks and the trailing CR removed. */
+static int lp_trim(const char *ln, int len, char *dst, int cap) {
+    int i = 0, o = 0;
+    while (i < len && (ln[i] == ' ' || ln[i] == '\t')) i++;
+    while (i < len) {
+        if (o + 1 >= cap) return -1;
+        dst[o++] = ln[i++];
+    }
+    while (o > 0 && (dst[o - 1] == ' ' || dst[o - 1] == '\t' || dst[o - 1] == '\r'))
+        o--;
+    dst[o] = 0;
+    return o;
+}
+
+/* Is this trimmed line an instruction (not a label, not a directive)? */
+static int lp_is_ins(const char *t) {
+    int n;
+    if (!t[0] || t[0] == '.') return 0;
+    n = (int)strlen(t);
+    if (n > 0 && t[n - 1] == ':') return 0;
+    return 1;
+}
+
+/* "MOVW rD, #12345" around `mn` (four upper-case letters). */
+static int lp_parse_mov(const char *t, const char *mn, int *reg, unsigned *imm) {
+    int i, r = 0;
+    unsigned v = 0;
+    for (i = 0; i < 4; i++) {
+        char c = t[i];
+        if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
+        if (c != mn[i]) return 0;
+    }
+    if (t[4] != ' ' && t[4] != '\t') return 0;
+    i = 5;
+    while (t[i] == ' ' || t[i] == '\t') i++;
+    if (t[i] != 'r') return 0;
+    i++;
+    if (t[i] < '0' || t[i] > '9') return 0;
+    while (t[i] >= '0' && t[i] <= '9') { r = r * 10 + (t[i] - '0'); i++; }
+    if (r > 15) return 0;
+    while (t[i] == ' ' || t[i] == '\t') i++;
+    if (t[i] != ',') return 0;
+    i++;
+    while (t[i] == ' ' || t[i] == '\t') i++;
+    if (t[i] != '#') return 0;
+    i++;
+    if (t[i] < '0' || t[i] > '9') return 0;
+    while (t[i] >= '0' && t[i] <= '9') { v = v * 10u + (unsigned)(t[i] - '0'); i++; }
+    /* Anything after the immediate is a shape this pass does not model; the
+     * emitter never prints one, and guessing would change the value. */
+    while (t[i] == ' ' || t[i] == '\t') i++;
+    if (t[i]) return 0;
+    *reg = r;
+    *imm = v;
+    return 1;
+}
+
+/* Does this instruction end the control flow?  Only the unconditional forms
+ * count: "POPNE {.., pc}" and "BXEQ lr" come back, so a pool after them would
+ * sit on a live path. */
+static int lp_ends_flow(const char *t) {
+    if ((t[0] == 'B' || t[0] == 'b') && (t[1] == 'X' || t[1] == 'x'))
+        return t[2] == ' ' || t[2] == '\t';
+    if ((t[0] == 'B' || t[0] == 'b') && (t[1] == ' ' || t[1] == '\t')) return 1;
+    if ((t[0] == 'P' || t[0] == 'p') && (t[1] == 'O' || t[1] == 'o') &&
+        (t[2] == 'P' || t[2] == 'p') && (t[3] == ' ' || t[3] == '\t')) {
+        const char *p = t + 4;
+        while (*p) {
+            if ((p[0] == 'p' || p[0] == 'P') && (p[1] == 'c' || p[1] == 'C'))
+                return 1;              /* POP {.., pc} returns */
+            p++;
+        }
+    }
+    return 0;
+}
+
+/* ".arkdata" / ".arkdatasym" / anything else the linker patches. */
+static int lp_is_ark(const char *t) {
+    return t[0] == '.' && (t[1] == 'a' || t[1] == 'A') &&
+           (t[2] == 'r' || t[2] == 'R') && (t[3] == 'k' || t[3] == 'K');
+}
+
+static void lp_put_hex(AsmBuffer *b, unsigned v) {
+    static const char hx[] = "0123456789abcdef";
+    char s[9];
+    int i;
+    for (i = 7; i >= 0; i--) { s[i] = hx[v & 0xFu]; v >>= 4; }
+    s[8] = 0;
+    asmbuf_puts(b, s);
+}
+
+/* Register one group covering regions [r0, r1].  Returns 0 when the group
+ * table is full. */
+static int lp_group_make(int r0, int r1, int *ng) {
+    int i, lo;
+    if (r0 > r1) return 1;
+    if (*ng >= LP_MAX_GROUPS) return 0;
+    lo = (r0 == 0) ? 0 : lp_rend[r0 - 1] + 1;
+    lp_gstart[*ng] = lo;
+    lp_gcut[*ng] = lp_rend[r1];
+    lp_gcnt[*ng] = 0;
+    for (i = lo; i <= lp_rend[r1]; i++) lp_grp[i] = (short)(*ng);
+    (*ng)++;
+    return 1;
+}
+
+/* Collect the MOVW/MOVT pairs of one group into lp_val[].  Returns the number
+ * of distinct constants (or -1 on a buffer that no longer parses).  With
+ * `assign` set it also records lp_site[]/lp_pool[] for the group's sites.  The
+ * two calls for a group walk the same lines in the same order, so a site's
+ * pool index is the same both times. */
+static int lp_group_scan(AsmBuffer *b, int g, int assign) {
+    char t[160], t2[160];
+    int i, r1, r2, pi, nval = 0, hi = lp_gcut[g];
+    unsigned v1, v2, val;
+
+    for (i = lp_gstart[g]; i + 1 <= hi; i++) {
+        if (lp_grp[i] != (short)g || lp_site[i] != -1) continue;
+        if (lp_trim(b->buf + lp_ls[i], lp_ll[i], t, (int)sizeof t) < 0) return -1;
+        if (!lp_parse_mov(t, "MOVW", &r1, &v1)) continue;
+        if (lp_grp[i + 1] != (short)g) continue;
+        if (lp_trim(b->buf + lp_ls[i + 1], lp_ll[i + 1], t2, (int)sizeof t2) < 0)
+            return -1;
+        if (!lp_parse_mov(t2, "MOVT", &r2, &v2) || r2 != r1) continue;
+        if (i > 0 &&
+            lp_trim(b->buf + lp_ls[i - 1], lp_ll[i - 1], t2, (int)sizeof t2) >= 0 &&
+            lp_is_ark(t2)) continue;
+        val = ((v2 & 0xFFFFu) << 16) | (v1 & 0xFFFFu);
+        for (pi = 0; pi < nval; pi++) if (lp_val[pi] == val) break;
+        if (pi == nval) {
+            if (nval >= LP_MAX_POOL) continue;   /* table full: leave it be */
+            lp_val[nval++] = val;
+        }
+        if (assign) {
+            lp_site[i] = r1;
+            lp_pool[i] = (short)pi;
+            lp_site[i + 1] = -2;                /* the MOVT half goes away */
+            i++;
+        }
+    }
+    return nval;
+}
+
+static void ark_litpool_function(AsmBuffer *b, int from) {
+    AsmBuffer out;
+    char t[160];
+    int n = 0, pos, len, i, k, last, nreg, ng, acc, gfirst, r, g, curg, site;
+
+    if (!g_config.enable_opt_litpool) return;
+
+    /* 1. line table */
+    pos = from;
+    while (pos < b->len) {
+        len = 0;
+        while (pos + len < b->len && b->buf[pos + len] != '\n') len++;
+        if (n >= LP_MAX_LINES) return;      /* function too large: leave alone */
+        lp_ls[n] = pos;
+        lp_ll[n] = len;
+        n++;
+        pos += len + 1;
+    }
+    if (n < 3) return;
+
+    /* 2. control must not run into a pool: the last instruction has to leave */
+    last = -1;
+    for (i = n - 1; i >= 0; i--) {
+        if (lp_trim(b->buf + lp_ls[i], lp_ll[i], t, (int)sizeof t) < 0) return;
+        if (!lp_is_ins(t)) continue;
+        last = i;
+        break;
+    }
+    if (last < 0) return;
+    if (!lp_ends_flow(t)) return;
+
+    /* 3. regions: one per terminating instruction */
+    nreg = 0;
+    acc = 0;
+    for (i = 0; i <= last; i++) {
+        if (lp_trim(b->buf + lp_ls[i], lp_ll[i], t, (int)sizeof t) < 0) return;
+        if (!lp_is_ins(t)) continue;
+        acc++;
+        if (!lp_ends_flow(t)) continue;
+        if (nreg >= LP_MAX_LINES) return;
+        lp_rend[nreg] = i;
+        lp_rins[nreg] = acc;
+        nreg++;
+        acc = 0;
+    }
+    if (!nreg || acc) return;               /* acc != 0 contradicts step 2 */
+
+    /* 4. merge regions forward while the merged pool stays within one LDR's
+     *    reach; a region too large on its own is left unpooled */
+    for (i = 0; i < n; i++) { lp_grp[i] = -1; lp_site[i] = -1; }
+    ng = 0;
+    gfirst = 0;
+    acc = 0;
+    for (r = 0; r < nreg; r++) {
+        if (lp_rins[r] > LP_REACH_INS) {
+            if (!lp_group_make(gfirst, r - 1, &ng)) return;
+            gfirst = r + 1;
+            acc = 0;
+            continue;
+        }
+        if (acc + lp_rins[r] > LP_REACH_INS) {
+            if (!lp_group_make(gfirst, r - 1, &ng)) return;
+            gfirst = r;
+            acc = 0;
+        }
+        acc += lp_rins[r];
+    }
+    if (!lp_group_make(gfirst, nreg - 1, &ng)) return;
+    if (!ng) return;
+
+    /* 5. rebuild: one load per site, one pool after each group's terminator.
+     *    A group's value table is rebuilt when its first line is reached, so
+     *    lp_val[] still holds this group's constants when its terminator (and
+     *    therefore its pool) comes round. */
+    lp_seq++;
+    asmbuf_init(&out);
+    curg = -2;
+    for (i = 0; i < n; i++) {
+        site = (i <= last) ? lp_site[i] : -1;
+        if (i <= last) {
+            g = (int)lp_grp[i];
+            if (g >= 0 && g != curg) {
+                curg = g;
+                lp_gcnt[g] = lp_group_scan(b, g, 1);
+                if (lp_gcnt[g] < 0) return;
+            }
+        }
+        if (site == -2) {
+            /* the MOVT half goes away */
+        } else if (site >= 0) {
+            asmbuf_puts(&out, "    LDR r");
+            asmbuf_int(&out, site);
+            asmbuf_puts(&out, ", .Llit_");
+            asmbuf_int(&out, lp_seq);
+            asmbuf_putc(&out, '_');
+            asmbuf_int(&out, (int)lp_grp[i]);
+            asmbuf_putc(&out, '_');
+            asmbuf_int(&out, (int)lp_pool[i]);
+            asmbuf_putc(&out, '\n');
+        } else {
+            for (k = 0; k < lp_ll[i]; k++) asmbuf_putc(&out, b->buf[lp_ls[i] + k]);
+            asmbuf_putc(&out, '\n');
+        }
+        if (i <= last) {
+            g = (int)lp_grp[i];
+            if (g >= 0 && lp_gcut[g] == i && lp_gcnt[g] > 0) {
+                asmbuf_puts(&out, "    .align 4\n");
+                for (k = 0; k < lp_gcnt[g]; k++) {
+                    asmbuf_puts(&out, ".Llit_");
+                    asmbuf_int(&out, lp_seq);
+                    asmbuf_putc(&out, '_');
+                    asmbuf_int(&out, g);
+                    asmbuf_putc(&out, '_');
+                    asmbuf_int(&out, k);
+                    asmbuf_puts(&out, ":\n    .word 0x");
+                    lp_put_hex(&out, lp_val[k]);
+                    asmbuf_putc(&out, '\n');
+                }
+            }
+        }
+    }
+    /* Nothing changed?  Then leave the buffer exactly as it was. */
+    if (out.len == b->len - from &&
+        memcmp(out.buf, b->buf + from, (size_t)out.len) == 0) return;
+    asmbuf_reserve(b, from + out.len + 1);
+    if (from + out.len + 1 > b->cap) return;
+    for (i = 0; i < out.len; i++) b->buf[from + i] = out.buf[i];
+    b->buf[from + out.len] = 0;
+    b->len = from + out.len;
+}
+#endif /* ARKCC_FEATURE_OPT_LITPOOL */
 #if ARKCC_FEATURE_OPT_SLOTREG
 /* ------------------ redundant frame access removal (-fopt-slotreg) ------
  * docs/SLOT_REGISTERS.md (section 3, amended 2026-11-23) pre-registered this
@@ -12750,6 +13085,14 @@ static char *codegen_arm(IrProgram *prog) {
          * the far-offset fixer below has nothing to undo. */
         if (g_config.enable_opt_cmat) ark_cmat_function(&buf, fstart);
 #endif
+#if ARKCC_FEATURE_OPT_LITPOOL
+        /* 32-bit constants leave the instruction stream: a MOVW/MOVT pair
+         * becomes one pool word plus a load per use.  Last of the text
+         * passes, for the same reason cmat is: it only replaces a pair with a
+         * single load, so every pass above has already seen the pair in its
+         * original shape. */
+        if (g_config.enable_opt_litpool) ark_litpool_function(&buf, fstart);
+#endif
         /* Correctness, not an option: a frame slot beyond 4095 bytes cannot be
          * reached by "[r6, #off]" at all. */
         ark_fix_far_offset(&buf, fstart);
@@ -14712,6 +15055,15 @@ static void pass1_a(ArmAsm *a) {
                     n = read_word_a(&p, name, (int)sizeof(name));
                     (void)n;
                     pc += 8;
+                } else if (*p != '[') {
+                    /* LDR rd, <label> -- -fopt-litpool's literal load.  The
+                     * 32-bit PC-relative form is always four bytes, so the
+                     * size does not depend on the distance, which pass 1
+                     * cannot know anyway. */
+                    char name[64];
+                    n = read_word_a(&p, name, (int)sizeof(name));
+                    (void)n;
+                    pc += 4;
                 } else {
                     ArmMemOp m1;
                     parse_memop_a(a, &p, &m1, 1);
@@ -16837,8 +17189,44 @@ static void pass2_a(ArmAsm *a) {
                 if (*p == '\n') p++;
                 continue;
             }
-            parse_memop_a(a, &p, &m, 0);
-            emit_ldr_str_a(a, kind, is_load, rd, &m);
+            if (rd >= 0 && *p != '[') {
+                /* LDR rd, <label> -- -fopt-litpool's literal load.  Same
+                 * reach rule as the VLDR pool below: the encoding covers
+                 * 0..4095 bytes from the aligned PC in steps of four, and an
+                 * unreachable target is an error rather than a wrong value. */
+                char sym[64];
+                int addr, pbase, off;
+                read_word_a(&p, sym, (int)sizeof(sym));
+                addr = find_label_a(a, sym);
+                if (addr < 0) {
+                    diag_tool(DIAG_SEV_ERROR, "arkcc",
+                              "LDR literal-pool target %sq must be a label in "
+                              "this file", sym, 0,0,0,0,0);
+                    a->hard_errors++;
+                    out16(a, 0xBF00); out16(a, 0xBF00);
+                } else {
+                    /* Unaligned PC base on purpose: the 32-bit form takes a
+                     * byte offset (0..4095, unscaled), unlike the 16-bit T1
+                     * form whose imm8 counts words. */
+                    pbase = (a->pc + 4) & ~3;
+                    off = addr - pbase;
+                    if (off < 0 || off > 4095) {
+                        char b1[12];
+                        diag_tool(DIAG_SEV_ERROR, "arkcc",
+                                  "LDR literal-pool target %sq is %s bytes from "
+                                  "the aligned PC; the encoding covers 0..4095 "
+                                  "bytes", sym, diag_num(b1, off),
+                                  0,0,0,0);
+                        a->hard_errors++;
+                        off = 0;
+                    }
+                    out16(a, 0xF8D0u | 15u);            /* LDR.W rt, [pc, #off] */
+                    out16(a, ((unsigned)(rd & 0xF) << 12) | (unsigned)(off & 0xFFF));
+                }
+            } else {
+                parse_memop_a(a, &p, &m, 0);
+                emit_ldr_str_a(a, kind, is_load, rd, &m);
+            }
         }
         else if (strieq_a(first, "BX")) {
             int rm = parse_reg_a(&p);

@@ -3,7 +3,7 @@
 English | [中文](COMPARISON.md)
 
 > In one sentence: **on the full STM32F4 HAL corpus, arkc with every
-> optimization on is 2.5× the instruction count and 2.6× the code bytes of
+> optimization on is 2.4× the instruction count and 2.5× the code bytes of
 > armcc `-O2`; the gap is not encoding quality, it is structural -- a value-stack
 > machine, liveness used only to delete copies, and intermediate results still
 > going through the frame.**
@@ -51,7 +51,7 @@ Totals over the 95 effective units:
 | compiler | options | instructions | code bytes |
 | --- | --- | ---: | ---: |
 | **arkc** | `-O2` (no `-fopt-*`) | 49,186 | 110,468 |
-| **arkc** | `-O2` + all eighteen `-fopt-*` (see section 3) | **14,218** | **36,072** |
+| **arkc** | `-O2` + all nineteen `-fopt-*` (see section 3) | **13,517** | **34,932** |
 | armcc | `-O1` | 6,051 | 14,888 |
 | armcc | `-O2` | 5,619 | 13,920 |
 | armcc | `-O3 -Otime` | 5,740 | 15,300 |
@@ -64,10 +64,10 @@ Against armcc `-O2` (5,619 instructions / 13,920 B):
 | comparison | instructions | code bytes |
 | --- | ---: | ---: |
 | arkc `-O2` (no `-fopt-*`) | 8.8× | 7.9× |
-| arkc `-O2` + every `-fopt-*` | **2.53×** | **2.59×** |
+| arkc `-O2` + every `-fopt-*` | **2.40×** | **2.51×** |
 
-**The switches take the gap from 8.8× down to 2.5×** (instructions -71.3%, code
-bytes -67.3%).
+**The switches take the gap from 8.8× down to 2.4×** (instructions -72.5%, code
+bytes -68.4%).
 
 **IAR did not take part**: IAR EWARM 9.70 is installed on this machine
 (`D:\tools\IAR_EWARM_9.70\arm\bin\iccarm.exe`, V9.70.1.475/W64) but **has no
@@ -78,18 +78,19 @@ mechanisms reverse-engineered into `D:/工作/git_project/c_compiler/iar/docs/`
 (`-fopt-cbranch`, `-fopt-copyprop` and M6/M7 of `-fopt-cmat` came from there), not
 to invent a number.
 
-## 3. Which eighteen switches "all `-fopt-*`" means
+## 3. Which nineteen switches "all `-fopt-*`" means
 
 ```
 -fopt-vstack  -fopt-addr     -fopt-strength -fopt-cbz      -fopt-branch
 -fopt-imm     -fopt-peep     -fopt-cbranch  -fopt-copyprop -fopt-live
 -fopt-prop    -fopt-deadpush -fopt-coalesce -fopt-slotreg  -fopt-constcache
--fopt-vreg    -fopt-cmat     -fopt-pair
+-fopt-vreg    -fopt-cmat     -fopt-pair     -fopt-litpool
 ```
 
 All of them are **off by default**; each has its own cropping macro in its own
 document (`-fopt-cmat` is `ARKCC_FEATURE_OPT_CMAT`, `-fopt-slotreg` is
-`ARKCC_FEATURE_OPT_SLOTREG`, `-fopt-constcache` is `ARKCC_FEATURE_OPT_CONSTCACHE`).
+`ARKCC_FEATURE_OPT_SLOTREG`, `-fopt-constcache` is `ARKCC_FEATURE_OPT_CONSTCACHE`,
+`-fopt-litpool` is `ARKCC_FEATURE_OPT_LITPOOL`).
 
 Four of them are new relative to the previous version of this table: `-fopt-cmat`
 (nine rules, -1,802 instructions / -4,062 B, see [CMAT.en.md](CMAT.en.md)),
@@ -98,11 +99,15 @@ Four of them are new relative to the previous version of this table: `-fopt-cmat
 [OPERAND_ALLOC.en.md](OPERAND_ALLOC.en.md) section 8) and `-fopt-pair`
 (-10 instructions). `-fopt-vreg` / `-fopt-coalesce` / `-fopt-prop` /
 `-fopt-deadpush` are described in [VREG.en.md](VREG.en.md) and their own documents.
+The fifth one added after that set is `-fopt-litpool` (-701 instructions / -1,140 B,
+turning `MOVW`+`MOVT` into literal-pool `LDR`, see [LITPOOL.en.md](LITPOOL.en.md)).
 
 ## 4. Where the gap comes from: four structural reasons
 
-Take `HAL_RCC_OscConfig()` (`stm32f4xx_hal_rcc.c`): 2,166 instructions with arkc
-fully optimized (2,177 before `-fopt-live`), 336 with armcc `-O2`. Look at the opening
+Take `HAL_RCC_OscConfig()` (`stm32f4xx_hal_rcc.c`): **1,186 instructions** with arkc
+fully optimized (2,166 in the previous version; the function is now long enough to need
+four region pools, see section 4 of [LITPOOL.en.md](LITPOOL.en.md)), 336 with armcc
+`-O2`. Look at the opening
 `if (RCC_OscInitStruct == 0)`:
 
 ```asm
@@ -152,8 +157,8 @@ Two further ceilings that were **quantified and judged not worth doing**:
 
 > **This section is the historical ladder**: it is the reading taken when the ten
 > switches landed, accumulated one at a time, and it exists to explain what each
-> rule is worth. **The current total is section 2** (14,218 instructions /
-> 36,072 B); the ladder no longer adds up to it, because dead-static suppression
+> rule is worth. **The current total is section 2** (13,517 instructions /
+> 34,932 B); the ladder no longer adds up to it, because dead-static suppression
 > and the on-demand run-time helper landed in between and four more tables were
 > added.
 
@@ -201,8 +206,11 @@ authoritative reading for the current binary.**
 # 1) the six armcc/armclang arms in one run (detail -> D:/tmp/fr/cmp_arm.json)
 python D:/tmp/fr/cmp_arm.py
 
-# 2) the two arkc arms: -O2 with no flag / all eighteen -fopt-*
+# 2) the two arkc arms: -O2 with no flag / all nineteen -fopt-*
 python D:/tmp/fr/cmpark_all.py
+
+# 3) the two literal-pool arms (eighteen / nineteen switches) -> cmpark_lp.json
+python D:/tmp/fr/cmpark_lp.py
 ```
 
 Both scripts assume: `D:/工作/git_project/ark c compiler` is the repository root,
@@ -222,7 +230,7 @@ corpus.
   (intermediate results spilling to the frame), which does need liveness and is
   real engineering work.
 - **Not "only a few passes are missing"**: categorising the current binary by
-  mnemonic, 6,277 of the 8,599 instruction gap (73%) fall in one group of "value
+  mnemonic, 4,875 of the 7,898 instruction gap (62%) fall in one group of "value
   transport" categories (`MOV` immediate / `MOVW`+`MOVT` / `MOV` register /
   `PUSH`+`POP` / frame access). That is a model-level price, not a missing pass;
   what is left to win and what each item costs is written down item by item in

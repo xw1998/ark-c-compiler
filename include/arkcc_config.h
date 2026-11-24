@@ -323,6 +323,20 @@
 #   define ARKCC_FEATURE_OPT_CONSTCACHE 1
 # endif
 #endif
+/* ARKCC_FEATURE_OPT_LITPOOL: -fopt-litpool puts 32-bit constants in a
+ * literal pool at the end of the function instead of materialising each one
+ * with a MOVW/MOVT pair (see docs/LITPOOL.md).  The pass needs one 4096-entry
+ * line table (~16 KB BSS) and the assembler learns one instruction form
+ * ("LDR rd, <.Llabel>"), so it stays off the STM32 profile for the same reason
+ * as the other text passes: a board build that ships the default configuration
+ * never enters the pass. */
+#ifndef ARKCC_FEATURE_OPT_LITPOOL
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_OPT_LITPOOL   0   /* 板上裁掉：只在宿主/交叉编译用 */
+# else
+#   define ARKCC_FEATURE_OPT_LITPOOL   1
+# endif
+#endif
 #ifndef ARKCC_FEATURE_OPT_COPYPROP
 # if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
 #   define ARKCC_FEATURE_OPT_COPYPROP   0

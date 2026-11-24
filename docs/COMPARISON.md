@@ -2,8 +2,8 @@
 
 [English](COMPARISON.en.md) | 中文
 
-> 一句话：**在 STM32F4 HAL 全语料上，arkc 打开全部优化后是 armcc `-O2` 的 2.5 倍指令数、
-> 2.6 倍代码字节；差距不是编码质量问题，是结构性的——值栈机、活跃性只用来删拷贝、
+> 一句话：**在 STM32F4 HAL 全语料上，arkc 打开全部优化后是 armcc `-O2` 的 2.4 倍指令数、
+> 2.5 倍代码字节；差距不是编码质量问题，是结构性的——值栈机、活跃性只用来删拷贝、
 > 中间结果仍要落帧。**
 >
 > 测量脚本：`D:/tmp/fr/cmp_arm.py`（armcc / armclang 六臂）与 `D:/tmp/fr/cmpark_all.py`
@@ -41,7 +41,7 @@
 | 编译器 | 选项 | 指令数 | 代码字节 |
 | --- | --- | ---: | ---: |
 | **arkc** | `-O2`（无 `-fopt-*`） | 49,186 | 110,468 |
-| **arkc** | `-O2` + 全部十八个 `-fopt-*`（见 §3） | **14,218** | **36,072** |
+| **arkc** | `-O2` + 全部十九个 `-fopt-*`（见 §3） | **13,517** | **34,932** |
 | armcc | `-O1` | 6,051 | 14,888 |
 | armcc | `-O2` | 5,619 | 13,920 |
 | armcc | `-O3 -Otime` | 5,740 | 15,300 |
@@ -54,9 +54,9 @@
 | 比较 | 指令数 | 代码字节 |
 | --- | ---: | ---: |
 | arkc `-O2`（无 `-fopt-*`） | 8.8× | 7.9× |
-| arkc `-O2` + 全部 `-fopt-*` | **2.53×** | **2.59×** |
+| arkc `-O2` + 全部 `-fopt-*` | **2.40×** | **2.51×** |
 
-**优化开关把差距从 8.8× 压到 2.5×**（指令数 −71.3%，代码字节 −67.3%）。
+**优化开关把差距从 8.8× 压到 2.4×**（指令数 −72.5%，代码字节 −68.4%）。
 
 **IAR 未参与**：本机装了 IAR EWARM 9.70（`D:\tools\IAR_EWARM_9.70\arm\bin\iccarm.exe`，
 V9.70.1.475/W64），但**没有 license**——任何编译都停在
@@ -65,30 +65,34 @@ V9.70.1.475/W64），但**没有 license**——任何编译都停在
 `D:/工作/git_project/c_compiler/iar/docs/` 里逆向出的机制去实现（`-fopt-cbranch`、
 `-fopt-copyprop`、`-fopt-cmat` 的 M6/M7 就是这么来的），不是去编一个数出来。
 
-## 3. 表里「全部 `-fopt-*`」是哪十八个
+## 3. 表里「全部 `-fopt-*`」是哪十九个
 
 ```
 -fopt-vstack  -fopt-addr     -fopt-strength -fopt-cbz     -fopt-branch
 -fopt-imm     -fopt-peep     -fopt-cbranch  -fopt-copyprop -fopt-live
 -fopt-prop    -fopt-deadpush -fopt-coalesce -fopt-slotreg -fopt-constcache
--fopt-vreg    -fopt-cmat     -fopt-pair
+-fopt-vreg    -fopt-cmat     -fopt-pair    -fopt-litpool
 ```
 
 全部**默认关闭**，各自的裁剪宏见对应文档（`-fopt-cmat` 是
 `ARKCC_FEATURE_OPT_CMAT`，`-fopt-slotreg` 是 `ARKCC_FEATURE_OPT_SLOTREG`，
-`-fopt-constcache` 是 `ARKCC_FEATURE_OPT_CONSTCACHE`）。
+`-fopt-constcache` 是 `ARKCC_FEATURE_OPT_CONSTCACHE`，`-fopt-litpool` 是
+`ARKCC_FEATURE_OPT_LITPOOL`）。
 
 `-fopt-cmat`（九条规则，−1,802 条 / −4,062 B，见 [CMAT.md](CMAT.md)）与
 `-fopt-slotreg`（−64 条，已按预注册否证线收档，见 [SLOTREG.md](SLOTREG.md)）、
 `-fopt-constcache`（−159 条，见 [OPERAND_ALLOC.md](OPERAND_ALLOC.md) §8）、
-`-fopt-pair`（−10 条）是这张表相对上一版新增的四条；
+`-fopt-pair`（−10 条）是这张表相对上一版新增的四条；本条之后新增的第五条是
+`-fopt-litpool`（−701 条 / −1,140 B，把 `MOVW`+`MOVT` 换成字面量池 `LDR`，见
+[LITPOOL.md](LITPOOL.md)）；
 `-fopt-vreg` / `-fopt-coalesce` / `-fopt-prop` / `-fopt-deadpush` 见
 [VREG.md](VREG.md) 等各自文档。
 
 ## 4. 差距在哪：四条结构性原因
 
-以 `HAL_RCC_OscConfig()`（`stm32f4xx_hal_rcc.c`）为例，arkc 全优化后是 2,166 条
-（`-fopt-live` 之前是 2,177 条），armcc `-O2` 是 336 条。看开头那段 `if (RCC_OscInitStruct == 0)`：
+以 `HAL_RCC_OscConfig()`（`stm32f4xx_hal_rcc.c`）为例，arkc 全优化后是 **1,186 条**
+（上一版 2,166 条；该函数长到必须切成 4 个区域池，见 [LITPOOL.md](LITPOOL.md) §4），
+armcc `-O2` 是 336 条。看开头那段 `if (RCC_OscInitStruct == 0)`：
 
 ```asm
 ; arkc，全优化（含 -fopt-cbranch -fopt-cbz）
@@ -128,7 +132,7 @@ V9.70.1.475/W64），但**没有 license**——任何编译都停在
 ## 5. 逐优化项的实测（同一语料）
 
 > **这一节是历史阶梯**：它是那十个开关上线时逐个累加的读数，只用来解释各条规则
-> 各值多少。**当前总数以 §2 为准**（14,218 条 / 36,072 B），下面的阶梯因为中途
+> 各值多少。**当前总数以 §2 为准**（13,517 条 / 34,932 B），下面的阶梯因为中途
 > 落地了默认生效的死静态函数屏蔽与按需运行时助手、又加了四张新表，合计已不再等于 §2。
 
 **逐级累加**（每一行 = 在上一行基础上再开一个开关），95 个有效 TU，
@@ -170,8 +174,11 @@ V9.70.1.475/W64），但**没有 license**——任何编译都停在
 # 1) 六条 armcc/armclang 臂，一次跑完（明细写 D:/tmp/fr/cmp_arm.json）
 python D:/tmp/fr/cmp_arm.py
 
-# 2) 两条 arkc 臂：-O2 无旗标 / 全部十八个 -fopt-*
+# 2) 两条 arkc 臂：-O2 无旗标 / 全部十九个 -fopt-*
 python D:/tmp/fr/cmpark_all.py
+
+# 3) 常量池两臂（十八 / 十九开关），产出 cmpark_lp.json
+python D:/tmp/fr/cmpark_lp.py
 ```
 
 两个脚本都假定：`D:/工作/git_project/ark c compiler` 是仓库根、`arkcc.exe` 是刚
@@ -186,7 +193,7 @@ python D:/tmp/fr/cmpark_all.py
   2,601 条指令，是与活跃性分析无关的纯代码生成改动；剩下的第 1 条（中间结果落帧）
   要活跃性分析，是真正的工程量。
 - **不是「IAR 更差或更好」**：没测，没有数字，所以这里没有说法。
-- **不是「差距只剩几个 pass」**：把当前二进制的指令按助记符归类后，8,599 条差里有
-  6,277 条（73%）落在同一组「值运输」类别（`MOV` 立即数 / `MOVW`+`MOVT` / `MOV` 寄存器 /
+- **不是「差距只剩几个 pass」**：把当前二进制的指令按助记符归类后，7,898 条差里有
+  4,875 条（62%）落在同一组「值运输」类别（`MOV` 立即数 / `MOVW`+`MOVT` / `MOV` 寄存器 /
   `PUSH`+`POP` / 帧访问）。这是模型性代价，不是漏了某个 pass；还剩多少能省、每项要付
   什么，逐条写在 **[BOUNDARY.md](BOUNDARY.md)**（英文 [BOUNDARY.en.md](BOUNDARY.en.md)）。
