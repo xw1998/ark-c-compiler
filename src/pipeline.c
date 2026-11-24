@@ -117,6 +117,7 @@ static int ir_wanted_unreachable(void)   { return g_config.enable_warn_unreachab
 static int ir_wanted_unused_static(void) { return g_config.enable_warn_unused_static; }
 static int ir_wanted_recursion(void)     { return g_config.enable_warn_recursion; }
 static int ir_wanted_constfold(void)  { return g_config.enable_opt_constfold; }
+static int ir_wanted_constcond(void)  { return g_config.enable_opt_constcond; }
 static int ir_wanted_dce(void)        { return g_config.enable_opt_dce; }
 static int ir_wanted_dce_cfg(void)    { return g_config.enable_dce_cfg; }
 static int ir_wanted_inline(void)     { return g_config.enable_opt_inline; }
@@ -164,6 +165,15 @@ static const IrStage g_ir_stages[] = {
 #endif
     { PIPE_NAME("ir.constfold"), ARK_PROFILE_LITE, 1, GATE_FLAG_AND_LEVEL, ARKCC_FEATURE_OPT_CONSTFOLD,
       ir_wanted_constfold, PIPE_NAME("off (-fno-opt-constfold)"), 0, 0, opt_constfold_func, 0 },
+    /* 常量条件紧跟折叠：irgen 直接给出的「字面量条件」分支（HAL 宏的
+     * while (0U)、assert_param 的常量条件）在这里被定成无条转移或者直接消失。
+     * 放在 dce 之前，让被无条转移变成不可达的那段顺手被清掉。 */
+#if ARKCC_FEATURE_OPT_CONSTCOND
+    { PIPE_NAME("ir.constcond"), ARK_PROFILE_LITE, 1, GATE_FLAG_AND_LEVEL, 1,
+      ir_wanted_constcond, PIPE_NAME("off (-fopt-constcond)"),    0, 0, opt_constcond_func, 0 },
+#else
+    { PIPE_NAME("ir.constcond"), ARK_PROFILE_LITE, 1, GATE_FLAG_AND_LEVEL, 0, 0, 0, 0, 0, 0, 0 },
+#endif
     { PIPE_NAME("ir.dce"),       ARK_PROFILE_LITE, 1, GATE_FLAG_AND_LEVEL, ARKCC_FEATURE_OPT_DCE,
       ir_wanted_dce,       PIPE_NAME("off (-fno-opt-dce)"),       0, 0, opt_dce_func,       0 },
     /* 局部槽常量传播紧跟折叠：折叠先把 `x = 1 + 2` 这种存储值变成一个常数，

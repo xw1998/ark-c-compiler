@@ -19,6 +19,12 @@
 /* Per-function constant folding: folds PUSH_INT + PUSH_INT + BINARY patterns. */
 void opt_constfold_func(IrFunc *f);
 
+/* -fopt-constcond: decide a branch whose condition is a literal -- the
+ * `do { ... } while (0U)` that wraps every HAL macro, and `if (const)` from
+ * assert_param.  The two instructions become an unconditional jump or nothing,
+ * never anything else.  See the comment on the definition in src/opt.c. */
+void opt_constcond_func(IrFunc *f);
+
 /* Per-function dead code elimination: removes unreachable instructions
  * after RETURN/JMP up to the next label. */
 void opt_dce_func(IrFunc *f);

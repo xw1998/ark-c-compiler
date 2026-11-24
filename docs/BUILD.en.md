@@ -200,7 +200,7 @@ host `-O2` build over **95 HAL/Core TUs**; after dropping the
 arena peak of 4,292,040 B. The board therefore emits the same assembly as the
 workstation, which is what makes a board bug reproducible locally.
 
-### 5.2 What was cropped must be **refused**, not silently degraded (21/21 measured)
+### 5.2 What was cropped must be **refused**, not silently degraded (23/23 measured)
 
 The danger of trimming is not "it will not build" -- it is "it builds but behaves
 differently". So every optimisation the profile crops has to be **refused by name**
@@ -214,7 +214,7 @@ Method: build a real binary from the same sources with the **host gcc** plus
 | --- | --- |
 | full host build, default profile (`make`) | 0 error |
 | STM32_MIN profile host build | 0 error, runnable binary |
-| the 22 `-fopt-*` (addr/branch/cbranch/cbz/cmat/coalesce/constcache/copyprop/deadpush/frame/imm/litpool/live/pair/peep/prop/slotreg/strength/volbar/voldmb/vreg/vstack) | **22/22 refused with `C3900U` and the flag named** |
+| the 23 `-fopt-*` (addr/branch/cbranch/cbz/cmat/coalesce/constcache/constcond/copyprop/deadpush/frame/imm/litpool/live/pair/peep/prop/slotreg/strength/volbar/voldmb/vreg/vstack) | **23/23 refused with `C3900U` and the flag named** |
 | conversely: `constfold` / `dce` / `inline` / `regalloc` / `vectorize` are **kept** in the profile (not in the crop table) | `rc=0` with the flag |
 | the same source with no `-fopt-*` at all | exit 0, valid Thumb-2 assembly |
 | `make stm32-check` (armclang + real scatter, both layouts) | see section 4, all PASS |

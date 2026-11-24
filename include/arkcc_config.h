@@ -327,6 +327,20 @@
 #   define ARKCC_FEATURE_OPT_VOLDBM  1
 # endif
 #endif
+/* ARKCC_FEATURE_OPT_CONSTCOND: -fopt-constcond, resolve a branch whose
+ * condition is a compile-time literal at IR level.  `do { ... } while (0U)`
+ * (every HAL macro) and `if (const)` (assert_param) currently cost a
+ * materialisation plus a compare each -- 157 pairs / 2.6% of the final
+ * instruction count on the 95-TU corpus.  Pure deletion, no tables, but kept
+ * off the STM32 profile with the rest of the -fopt-* family so the crop table
+ * stays one story (see docs/BUILD.md 5.2).  See docs/CONSTCOND.md. */
+#ifndef ARKCC_FEATURE_OPT_CONSTCOND
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_OPT_CONSTCOND  0   /* 板上裁掉：只在宿主/交叉编译用 */
+# else
+#   define ARKCC_FEATURE_OPT_CONSTCOND  1
+# endif
+#endif
 /* ARKCC_FEATURE_OPT_VOLBAR: -fopt-volbar, also emit the DMB SY pair around a
  * volatile access to an object that is *not* a frame slot -- a global, a
  * volatile struct member reached through a pointer, or a dereferenced

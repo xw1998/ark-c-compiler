@@ -141,6 +141,84 @@ void opt_constfold_func(IrFunc *f) {
     }
 }
 
+/* --- Constant conditions (-fopt-constcond) --------------------------------
+ * Why this exists: vendor HAL macros are wrapped in `do { ... } while (0U)`, and
+ * `assert_param()` becomes a comparison against a literal, so irgen really does
+ * hand the emitter branches whose condition is a constant.  Constant folding
+ * cannot touch them -- it only folds PUSH_INT + PUSH_INT + BINARY -- so the
+ * emission faithfully materialises the constant, compares it with zero and
+ * jumps, and only afterwards does the text layer notice that the jump goes to
+ * the very next label.  What survives into the .s file is the pair
+ *
+ *     MOV  r0, #0
+ *     CMP  r0, #0            ; the conditional branch that used it is gone
+ *
+ * Measured on the 95-TU HAL corpus: 157 such pairs, i.e. 2.6% of the final
+ * instruction count, all of them `while (0U)`.
+ *
+ * The rewrite is a decision, never a guess -- `k` is a literal in the IR:
+ *   PUSH_INT k ; JZ  L           -> JMP L (k == 0)   | neither (k != 0)
+ *   PUSH_INT k ; JNZ L           -> JMP L (k != 0)   | neither (k == 0)
+ *   PUSH_INT k ; CMP_JMP_EQ L, m -> JMP L (k == m)   | neither (k != m)
+ * The pair always has net stack effect zero (a one-word push against a one-word
+ * pop), so no other instruction's evaluation depth changes.  When the branch is
+ * dropped, whatever followed stays exactly where it was; when it becomes
+ * unconditional, the linear DCE that runs immediately after this stage removes
+ * what the jump made unreachable.
+ *
+ * Deliberately not handled, each of which leaves the code byte-identical:
+ *   - a 64-bit constant condition (IR_64PUSH): two pushes and a compare on the
+ *     high word, i.e. a shape this window does not describe;
+ *   - a condition that is only constant after dataflow (-fopt-prop's job);
+ *   - a push carrying IR_AUX_VOLATILE (a literal cannot, but the check keeps
+ *     the invariant that every pass honours it visible in one place).
+ */
+void opt_constcond_func(IrFunc *f) {
+#if ARKCC_FEATURE_OPT_CONSTCOND
+    int i, changed = 0;
+    if (f->code_count < 2) return;
+    for (i = 0; i + 1 < f->code_count; i++) {
+        IrInst *a = &f->code[i];
+        IrInst *b;
+        int j, take;
+        if (a->op != IR_PUSH_INT) continue;
+        /* `x = (a != 0); if (x)` reaches this pass as PUSH_INT k, one IR_DUP
+         * per reader that keeps the value alive, then the branch.  The dups
+         * are transparent for the decision: every copy holds the same literal,
+         * and the word the branch pops is one of them.  Leaving the dups alone
+         * is also what keeps the stack balanced -- the branch's pop is what the
+         * push supplied, so removing both leaves exactly the copies that were
+         * there for the other readers. */
+        for (j = i + 1; j < f->code_count; j++) {
+            if (f->code[j].op == IR_DUP && f->code[j].val <= 1 &&
+                !(f->code[j].aux & IR_AUX_VOLATILE)) continue;
+            break;
+        }
+        if (j >= f->code_count) continue;
+        b = &f->code[j];
+        if ((a->aux | b->aux) & IR_AUX_VOLATILE) continue;
+        if (b->op == IR_JZ || b->op == IR_JNZ) {
+            take = (b->op == IR_JZ) ? (a->val == 0) : (a->val != 0);
+            if (take) b->op = IR_JMP;   /* IR_JMP carries its target in val */
+            else      b->op = IR_NOP;
+        } else if (b->op == IR_CMP_JMP_EQ) {
+            /* pops the value, compares it with val, jumps to aux */
+            take = (a->val == (long long)b->val);
+            if (take) { b->op = IR_JMP; b->val = b->aux; }
+            else      b->op = IR_NOP;
+        } else {
+            continue;
+        }
+        a->op = IR_NOP;
+        changed = 1;
+        i = j;
+    }
+    if (changed) compact_func(f);
+#else
+    (void)f;
+#endif
+}
+
 /* --- Strength reduction (-fopt-strength) ---------------------------------
  * `x * k` with k = 2^sh is `x << sh`: a left shift keeps the same low 32 bits
  * as the product does, so the rewrite is exact for signed and unsigned

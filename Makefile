@@ -31,7 +31,7 @@ endif
         test-inline test-vstack test-addr test-strength test-cbz test-branch \
         test-imm test-peep test-cbranch test-copyprop test-live test-movimm test-pair \
         test-prop test-deadpush test-cmat test-slotreg test-opalloc \
-        test-voldmb test-volmem \
+        test-voldmb test-volmem test-constcond \
         test-litpool test-coalesce install \
         stm32 stm32-check
 
@@ -48,7 +48,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch test-imm test-peep test-cbranch test-copyprop test-cmat test-slotreg test-opalloc test-live test-movimm test-litpool test-coalesce test-voldmb test-volmem
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch test-imm test-peep test-cbranch test-copyprop test-cmat test-slotreg test-opalloc test-live test-movimm test-litpool test-coalesce test-voldmb test-volmem test-constcond
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -356,6 +356,18 @@ test-voldmb: $(ARKCC)
 # (-DARKCC_FEATURE_OPT_VOLBAR=0) refuses the flag by name.  See docs/VOLMEM.md.
 test-volmem: $(ARKCC)
 	$(PYTHON) tests/run_volmem_tests.py ./$(ARKCC)
+
+# Gate for -fopt-constcond: a branch whose condition is a literal is decided at
+# compile time.  The front end really hands `if (0)`, `while (0)`, `do {} while
+# (0)` (the HAL lock macros) and `assert_param` to the emitter as a PUSH_INT
+# plus a JZ/JNZ against it; deciding it is bookkeeping, with no guess, and the
+# net stack effect of the pair is zero.  The gate pins OFF IS OFF, that the
+# false body and the empty-loop back-edge disappear, that the taken body stays,
+# that a parameter branch in the same translation unit is byte-identical, that
+# every arm returns the Python answer on the emulator, and that a cropped build
+# (-DARKCC_FEATURE_OPT_CONSTCOND=0) refuses the flag by name.  See docs/CONSTCOND.md.
+test-constcond: $(ARKCC)
+	$(PYTHON) tests/run_constcond_tests.py ./$(ARKCC)
 
 # Gate for the operand-allocation family (slice S3a, -fopt-constcache): a
 # 32-bit constant rebuilt at every use is built once at the entry into a

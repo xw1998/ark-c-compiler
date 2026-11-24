@@ -35,6 +35,7 @@ typedef struct {
     int enable_opt_vreg;            /* -fopt-vreg: 槽提升到 r8-r11（改名消除，S6a） */
     int enable_opt_frame;           /* -fopt-frame: 帧保存表裁剪（删未用 callee-saved 槽与空帧） */
     int enable_opt_voldmb;          /* -fopt-voldmb: 非取址 volatile 局部量的 DMB SY 对省略 */
+    int enable_opt_constcond;       /* -fopt-constcond: fold a literal condition + branch */
     int enable_opt_volbar;          /* -fopt-volbar: 帧外 volatile 访存（成员/全局/指针）也发 DMB SY 对 */
     int enable_opt_constcache;      /* -fopt-constcache: 函数级 32 位常量缓存（callee-saved） */
     int enable_opt_litpool;         /* -fopt-litpool: 32 位常量放进函数尾的字面量池 */
