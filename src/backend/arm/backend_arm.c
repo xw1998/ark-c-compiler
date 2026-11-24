@@ -13160,6 +13160,16 @@ static char *codegen_arm(IrProgram *prog) {
          * original shape. */
         if (g_config.enable_opt_litpool) ark_litpool_function(&buf, fstart);
 #endif
+#if ARKCC_FEATURE_OPT_LIVE
+        /* Second liveness sweep.  The first one runs before regalloc, so every
+         * copy the register allocator and the three passes after it create --
+         * an operand staged out of a promoted slot, a constant materialised
+         * into a scratch that is then copied -- is seen by nobody.  Running
+         * the same analysis again on the final text removes exactly those.
+         * Gated by -fopt-live, so a build without it is byte-identical. */
+        if (g_config.enable_opt_live)
+            ark_live_function(&buf, fstart, ark_ret_mask(f->ret_type));
+#endif
         /* Correctness, not an option: a frame slot beyond 4095 bytes cannot be
          * reached by "[r6, #off]" at all. */
         ark_fix_far_offset(&buf, fstart);
@@ -13932,6 +13942,10 @@ typedef struct {
     int            align_count, align_cap;
 #endif
     int            pass2;
+    /* Total byte count laid out by pass 1.  Pass 2 compares against its own
+     * pc at the end; a disagreement means the two passes sized some line
+     * differently, which shifts every label after it. */
+    int            pass1_size;
 } ArmAsm;
 
 static int is_alpha_a(char c) {
@@ -15195,14 +15209,22 @@ static void pass1_a(ArmAsm *a) {
                      * ADD with Rd == Rn has a 16-bit form for every register;
                      * SUB has one only for low registers.  Same rule as pass 2. */
                     int rm1 = parse_reg_a(&p);
-                    int is_sub1 = strieq_a(first, "SUB") || strieq_a(first, "SUBS");
-                    if (rm1 >= 0) {
-                        if (rd <= 7 && rn <= 7 && rm1 <= 7) pc += 2;
-                        else                                  pc += 4;
-                    } else {
-                        if (is_sub1) pc += (rd >= 0 && rd <= 7 && rn >= 0 && rn <= 7) ? 2 : 4;
-                        else         pc += 2;
-                    }
+                    /* Two-operand `ADD/SUB Rd, Rm` doubles Rd as the source, so
+                     * the register parsed as "rn" above is the source operand.
+                     * Widths, exactly as pass 2 encodes them:
+                     *   ADD (no flags)  -> 0x4400 T2, two bytes for ANY two
+                     *                      registers, high ones included;
+                     *   everything else -> two bytes only when both operands
+                     *                      are r0-r7, four otherwise. */
+                    int sets1 = strieq_a(first, "ADDS") || strieq_a(first, "SUBS");
+                    int is_add1 = strieq_a(first, "ADD") || strieq_a(first, "ADDS");
+                    if (rm1 < 0) {
+                        if (is_add1 && !sets1)                             pc += 2;
+                        else if (rd >= 0 && rd <= 7 && rn >= 0 && rn <= 7) pc += 2;
+                        else                                               pc += 4;
+                    } else if (rd >= 0 && rd <= 7 && rn >= 0 && rn <= 7 &&
+                               rm1 >= 0 && rm1 <= 7)                       pc += 2;
+                    else                                                       pc += 4;
                 }
             } else if (strieq_a(first, "MUL") || strieq_a(first, "LSL") ||
                        strieq_a(first, "LSR") || strieq_a(first, "ASR")) {
@@ -15398,6 +15420,12 @@ static void pass1_a(ArmAsm *a) {
     }
     /* LDR =label uses MOVW+MOVT (8 bytes), no literal pool needed */
     a->literal_pool_start = -1;
+    a->pass1_size = pc;
+#if defined(ARKCC_ASM_SIZECHECK_PROBE)
+    /* Test-only: deliberately make the two passes disagree so the check below
+     * can be shown to fire.  Compiled out of every real build (OFF IS OFF). */
+    a->pass1_size += 2;
+#endif
 }
 
 static int parse_reglist_a(ArmAsm *a, const char **p, int *has_lr, int *has_pc) {
@@ -16690,22 +16718,66 @@ static void pass2_a(ArmAsm *a) {
             }
             if (imm >= 0) {
                 if (rd == 13 && rn == 13) {
-                    out16(a, (is_sub ? 0xB080u : 0xB000u) | (((imm + 3) / 4) & 0x7F));
-                } else if (rd == rn && imm >= 0 && imm <= 255) {
+                    /* ADD/SUB sp, sp, #imm.  The 16-bit form carries a 7-bit
+                     * scaled immediate (0..508, multiple of 4) and there is no
+                     * flag-setting form for SP, so anything else used to be
+                     * masked with 0x7F -- a wrong stack pointer.  Bigger
+                     * adjustments use ADDW/SUBW sp, sp, #imm12 (S=0, since
+                     * S=1 with Rd=SP is UNPREDICTABLE in ARMv7-M). */
+                    if (imm >= 0 && imm <= 508 && (imm & 3) == 0) {
+                        out16(a, (is_sub ? 0xB080u : 0xB000u) | (((imm + 3) / 4) & 0x7F));
+                    } else if (imm >= 0 && imm <= 4095) {
+                        int i = (imm >> 11) & 1;
+                        int imm3 = (imm >> 8) & 7;
+                        out16(a, (is_sub ? 0xF2A0u : 0xF200u) | (unsigned)(i << 10) |
+                                 (unsigned)(rn & 0xF));
+                        out16(a, (unsigned)((imm3 << 12) | ((13 & 0xF) << 8) | (imm & 0xFF)));
+                    } else {
+                        char b1[16];
+                        diag_tool(DIAG_SEV_ERROR, "arkcc",
+                                  "sp adjustment of %s bytes does not fit one encoding",
+                                  diag_num(b1, imm), 0,0,0,0,0);
+                        a->hard_errors++;
+                    }
+                } else if (rd == rn && rd >= 0 && rd <= 7 && imm >= 0 && imm <= 255) {
+                    /* ADDS/SUBS rdn, #imm8 names r0-r7 only; a high register
+                     * used to be masked with 7 and silently hit the wrong one. */
                     out16(a, (is_sub ? 0x3800u : 0x3000u) | ((rd & 7) << 8) | (imm & 0xFF));
-                } else if (imm >= 0 && imm <= 7 && rd <= 7 && rn <= 7) {
+                } else if (imm >= 0 && imm <= 7 && rd >= 0 && rd <= 7 && rn >= 0 && rn <= 7) {
                     out16(a, (is_sub ? 0x1E00u : 0x1C00u) | ((imm & 7) << 6) |
                              ((rn & 7) << 3) | (rd & 7));
-                } else {
+                } else if (imm >= 0 && imm <= 4095 && rd >= 0 && rn >= 0) {
                     int i = (imm >> 11) & 1;
                     int imm3 = (imm >> 8) & 7;
                     unsigned base = is_sub ? 0xF1B0u : 0xF110u;  /* op=1101/1000, S=1 */
                     out16(a, base | (unsigned)(i << 10) | (unsigned)(rn & 0xF));
                     out16(a, (unsigned)((imm3 << 12) | ((rd & 0xF) << 8) | (imm & 0xFF)));
+                } else {
+                    char b1[16];
+                    diag_tool(DIAG_SEV_ERROR, "arkcc",
+                              "ADDS/SUBS immediate %s does not fit any encoding",
+                              diag_num(b1, imm), 0,0,0,0,0);
+                    a->hard_errors++;
+                }
+            } else if (rm >= 0) {
+                if (rd >= 0 && rd <= 7 && rn >= 0 && rn <= 7 && rm <= 7) {
+                    out16(a, (is_sub ? 0x1A00u : 0x1800u) | ((rm & 7) << 6) |
+                             ((rn & 7) << 3) | (rd & 7));
+                } else {
+                    /* 32-bit T2 form.  The 16-bit encodings name r0-r7 only, so
+                     * a high register used to be masked with 7 -- silently
+                     * adding the wrong register while pass 1 had already laid
+                     * the instruction out at four bytes.  S=1 for ADDS/SUBS:
+                     * 0xEB1x = ADD (reg) T2, 0xEBBx = SUB (reg) T2. */
+                    out16(a, (is_sub ? 0xEBB0u : 0xEB10u) | (unsigned)(rn & 0xF));
+                    out16(a, (unsigned)(((rd & 0xF) << 8) | (rm & 0xF)));
                 }
             } else {
-                out16(a, (is_sub ? 0x1A00u : 0x1800u) | ((rm & 7) << 6) |
-                         ((rn & 7) << 3) | (rd & 7));
+                char b1[16];
+                diag_tool(DIAG_SEV_ERROR, "arkcc",
+                          "%s at code offset %s has no source register",
+                          first, diag_num(b1, a->pc), 0,0,0,0);
+                a->hard_errors++;
             }
         }
         else if (strieq_a(first, "ANDS") || strieq_a(first, "ORRS") ||
@@ -18173,6 +18245,21 @@ static void pass2_a(ArmAsm *a) {
         }
         skip_to_eol_a(&p);
         if (*p == '\n') p++;
+    }
+    /* Self-check: the size pass and the emit pass must agree on the total
+     * length of the text.  A per-line disagreement moves every label after
+     * that line by 2 or 4 bytes, which is how "ADDS r0, r0, r9" used to be
+     * encoded as the two-byte "adds r0, r0, r1" while pass 1 had already
+     * counted four -- a silent wrong answer that only showed up as a branch
+     * landing two bytes off.  One comparison covers the whole class. */
+    if (a->pc != a->pass1_size) {
+        char b1[16], b2[16];
+        diag_tool(DIAG_SEV_ERROR, "arkcc",
+                  "assembler size pass disagrees with the emit pass "
+                  "(%s bytes laid out, %s emitted): some line is encoded at a "
+                  "different width than pass 1 counted",
+                  diag_num(b1, a->pass1_size), diag_num(b2, a->pc), 0,0,0,0);
+        a->hard_errors++;
     }
 }
 

@@ -1191,6 +1191,48 @@ ark_sp_read:
         "expect": 29,
     },
     {
+        "name": "addsub_high",
+        "why": "ADDS/SUBS name r0-r7 in their 16-bit forms, so a high register has to "
+               "take the 32-bit T2 encoding.  The encoder used to mask every operand "
+               "with &7 and quietly add r1/r2 instead of r9/r10, while the size pass "
+               "had already counted four bytes -- a wrong answer *and* a two-byte "
+               "shift of every later label.  64 is reachable only if r9 and r10 "
+               "really took part.  The two plain-ADD lines hold the other half "
+               "honest: ADD (reg) T2 0x4400 does name r8-r15, the three-operand "
+               "T1 form does not.",
+        "files": {
+            "hi.s": """\
+        .text
+        .global addsub_hi
+        .thumb
+addsub_hi:
+        PUSH    {r4, lr}
+        MOV     r9, r0
+        MOV     r10, r1
+        MOVS    r0, #11
+        ADDS    r0, r0, r9
+        SUBS    r0, r0, r10
+        MOVS    r1, #5
+        ADDS    r1, r1, r9
+        SUBS    r4, r1, r10
+        ADD     r0, r0, r4
+        ADD     r9, r0
+        MOV     r0, r9
+        POP     {r4, pc}
+""",
+            "h.c": STARTUP + """\
+extern int addsub_hi(int a, int b);
+int main(void) { return addsub_hi(20, 6); }
+""",
+        },
+        "build": [
+            (["hi.s", "-target", "arm", "-c", "-o", "hi.obj"], None),
+            (["h.c", "-target", "arm", "-c", "--vector-table", "-o", "h.obj"], None),
+            (["-link", "h.obj", "hi.obj", "--vector-table", "-o", "out.bin"], "out.bin"),
+        ],
+        "expect": 64,
+    },
+    {
         "name": "atomic_reject",
         "why": "_Atomic is parsed, not ignored: an array, a function, a struct and a "
                "parenthesised specifier after '*' are four separate diagnostics and "

@@ -511,15 +511,148 @@ Anything uncertain counts as live (an unknown mnemonic reads every operand it na
 writes nothing), so the number is a ceiling.
 
 **Self-check (the counter must agree with the classifier)**: the 95-TU corpus yields
-**13,566** instructions and **1,731** `MOV rD,rS` -- exactly the totals in
-`docs/BOUNDARY.md` section 2 and the register-copy count in section 5.4.
+**13,116** instructions and **1,571** `MOV rD,rS` -- exactly the totals in
+`docs/BOUNDARY.md` section 2 and the register-copy count in section 5.4 (both numbers were
+re-measured after the second liveness run of section 16; the S6b-2 verdict itself does not
+depend on the corpus snapshot).
 
-**Result**: **266** candidates -- **1.96%** of all instructions, 15.4% of the copies
+**Result**: **245** candidates -- **1.87%** of all instructions, 15.6% of the copies
 themselves. A weaker fold (`MOV rD,rS` immediately followed by one instruction that only
-reads `rD`, with `rD` dead for the rest of the block) adds **73 = 0.54%** and is closed
+reads `rD`, with `rD` dead for the rest of the block) adds **32 = 0.24%** and is closed
 together with it.
 
 **Verdict**: under F1 (a win below 5% means close it) the range is **closed and S6b-2 is not
-implemented**. The remaining 1,465 copies have a consumer inside their own block; removing
+implemented**. The remaining 1,326 copies (1,571 minus 245) have a consumer inside their own block; removing
 them requires touching the value stack / allocation model (the same class as the
 `PUSH {... r0 ...}` item registered after S6c) and is not part of this budget. Registered.
+
+## 16 Second liveness run (after litpool), and the fifth real defect it flushed out (0.9.1-wip)
+
+### 16.1 Why the same L1/L2 rules are worth running twice
+
+**Placement**: in `ark_emit_program` the second run sits **after** `cmat` -> `litpool` and
+**before** `ark_fix_far_offset`, behind the same single `-fopt-live` gate (with the switch
+off nothing runs at all and OFF IS OFF stays byte-identical):
+
+```c
+#if ARKCC_FEATURE_OPT_LIVE
+        if (g_config.enable_opt_live)
+            ark_live_function(&buf, fstart, ark_ret_mask(f->ret_type));
+#endif
+```
+
+**Why**: liveness is a property of *the text*. The first run sees the text as it stands
+before cmat / litpool rewrite it, so the `live_out` it computes no longer holds afterwards
+-- `-fopt-litpool` turns `MOVW`+`MOVT rD` into one `LDR rD, .Llit_*`, which changes the
+whole shape of the value stack's "materialise into `rD`, then `MOV` into the user" copies;
+`-fopt-cmat` moves the materialisation point the same way. A batch of `MOV`s the first run
+called live now have no reader at all.
+
+**Readings (95 TUs, Cortex-M4, `-O2`, nineteen switches)**:
+
+| Setup | Instructions | Code bytes |
+| --- | ---: | ---: |
+| one run (the first) | 13,566 | 34,980 |
+| plus the second run | **13,116** | **34,200** |
+| delta | **-450 (-3.32%)** | **-780 (-2.23%)** |
+
+**The saving lands cleanly**: compared column by column against the eighteen categories of
+`docs/BOUNDARY.en.md` section 2, only two move -- `MOV` immediate 1,492 -> **1,202**
+(-290) and `MOV rD,rS` 1,731 -> **1,571** (-160) -- while the other sixteen are
+**identical** (`PUSH`/`POP` 1,239, frame access 922, literal pool 705 included). That is
+exactly what "it only deletes dead copies" predicts: the second run rewrites nothing but
+`MOV`.
+
+**No third run was made**: after the second run the text has settled to the point where
+L1/L2 change nothing, but asserting "a third run is certainly worth 0" needs one more
+code change for the control arm, which was not done this round -- **registered as
+untested**. What is certain is that the second run is not the identity: it removed 450.
+
+**Cost**: one more CFG build plus fixed-point iteration (the ~1.5 MB of static tables
+behind `ARKCC_FEATURE_OPT_LIVE` are already cropped out of the MCU profile, so the board
+pays nothing new); on the host the compile-time increment at corpus scale is on the order
+of a few seconds (95 TUs of `-S` in roughly 20 s).
+
+### 16.2 The fifth real defect it flushed out: `ADDS`/`SUBS` masked high registers with `& 7`
+
+The four defects of section 12.4 "all surfaced only once slots reached `r8-r11`"; this one
+is the same family. With the second run deleting more `MOV`s the backend more readily emits
+**an add/subtract whose operand is a high register** (`ADDS r0, r0, r9`), and the built-in
+assembler's `ADDS`/`SUBS` emitter (pass 2) then **unconditionally emitted the 16-bit form
+and masked with `& 7`**:
+
+- **Wrong answer**: `ADDS r0, r0, r9` assembled as `adds r0, r0, r1` -- silently, no
+  diagnostic.
+- **Worse knock-on**: pass 1 allotted 4 bytes unless all of `rd/rn/rm` were `r0-r7`, while
+  pass 2 always emitted 2 bytes, so **every following label shifted by two bytes**; on the
+  `wide` case this showed up as a crash with `PC=0` (unicorn `UcError UC_ERR_EXCEPTION`).
+
+**Fix (pass-2 encoder plus the matching pass-1 size table)**:
+
+| Shape | Encoding | Width |
+| --- | --- | --- |
+| `ADDS`/`SUBS Rd, Rn, #imm3`, all three `r0-r7` | 16-bit `0x1C00/0x1E00` | 2 B |
+| `ADDS`/`SUBS Rd, Rn, #imm8`, `Rd == Rn`, `r0-r7` | 16-bit `0x3000/0x3800` | 2 B |
+| `ADDS`/`SUBS Rd, Rn, Rm`, all three `r0-r7` | 16-bit `0x1800/0x1A00` | 2 B |
+| register form with any operand outside `r0-r7` | 32-bit `adds.w`/`subs.w`: `0xEB10/0xEBB0 \| Rn`, then `(Rd<<8)\|Rm` | 4 B |
+| two-operand `ADD Rd, Rm` (no `S`) | 16-bit `0x4400` T2, **any register** | 2 B |
+
+Out-of-range is an error, never a truncation: an immediate that does not fit 12 bits reports
+`ADDS/SUBS immediate %s does not fit any encoding`, an `sp` adjustment past 508 bytes that
+is not 4-aligned and does not fit 12 bits reports `sp adjustment of %s bytes does not fit
+one encoding`, and a missing source register reports `%s at code offset %s has no source
+register`.
+
+**Evidence (capstone disassembly of the `addsub_high` case)**:
+
+```
+0x043e  adds.w r0, r0, sb     4 B
+0x0442  subs.w r0, r0, sl     4 B
+0x0448  adds.w r1, r1, sb     4 B
+0x044c  subs.w r4, r1, sl     4 B
+0x0450  adds   r0, r0, r4     2 B
+0x0452  add    sb, r0         2 B    ; 0x4400 T2, target r9
+0x0454  mov    r0, sb         2 B
+```
+
+The new case `addsub_high` is in `tests/arm_exec/run_arm_exec.py` (`main` returns
+`addsub_hi(20, 6)` = **64**): `MOV r9/r10` take the arguments, four `ADDS`/`SUBS` hit the
+high-register 32-bit form, one 16-bit `ADDS` follows, then `ADD r9, r0` (T2) and
+`MOV r0, r9`. It pins down both "the 32-bit form computes the right value" and "T2
+two-operand takes any register".
+
+### 16.3 The assembler's two-pass size self-check (a hard error, not a warning)
+
+The common shape of this class of defect is "pass 1 counted one width, pass 2 emitted
+another"; once that happens every later label is off, and **the text itself shows nothing**.
+So instead of adding a case per shape, the fix adds one grand-total check:
+
+- `ArmAsm` gains `pass1_size`; `pass1_a` ends with `a->pass1_size = pc`;
+- `pass2_a` ends by comparing `a->pc` with `a->pass1_size`; on a mismatch it calls
+  `diag_tool(DIAG_SEV_ERROR, ...)` with
+  `assembler size pass disagrees with the emit pass (%s bytes laid out, %s emitted):
+  some line is encoded at a different width than pass 1 counted` and bumps `hard_errors`.
+
+**Why a total rather than a per-line check**: one comparison covers the whole class, and it
+is read-only, so it cannot change a single output byte.
+
+**The self-check must be able to fail**: a compile-time probe `ARKCC_ASM_SIZECHECK_PROBE`
+(adds 2 to `pass1_size` at the end of `pass1_a`) makes a probe build report
+`(1122 bytes laid out, 1120 emitted)`, while the release build stays silent. It is a
+compile-time macro rather than `getenv` because the MCU profile has no libc `getenv` and a
+probe must never enter a real build.
+
+### 16.4 Gates and invariants (all green this round)
+
+| Check | Result |
+| --- | --- |
+| `tests/run_vreg_tests.py ./arkcc.exe` (10 cases, 75 assertions) | all checks passed |
+| `tests/run_cmat_tests.py ./arkcc.exe` | all checks passed |
+| `tests/run_litpool_tests.py ./arkcc.exe` (21 items) | all checks passed |
+| `tests/arm_exec/run_arm_exec.py --arkcc ./arkcc.exe` (incl. the new `addsub_high`) | 0 failure(s) |
+| OFF IS OFF (95 TUs, no `-fopt-*`, assembly sha256) | before = after = `40edf7d8076fc5be5f0d48e41741f0cb82342c75fa21096cec6b8efd1da13f62` |
+| Cropping (`ARKCC_PROFILE_STM32_MIN` host build) | 0 error; `-fopt-live`/`-fopt-vreg`/`-fopt-slotreg`/`-fopt-cmat` all `C3900U` |
+| Real MCU link (`tools/stm32_build_check.py --layout both`) | all checks passed (2 layouts) |
+
+The seven frozen gates of section 5 and the F1-F4 falsifiers of section 6 remain **unchanged
+character for character**.

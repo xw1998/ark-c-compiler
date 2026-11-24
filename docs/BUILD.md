@@ -83,7 +83,7 @@ make stm32-check
 # --- layout: sram ---
 # PASS  every STM32 profile source compiles  [34 file(s), 0 failed]
 # PASS  .ark_buf fits its sram region  [475192 / 520192 bytes (91%)]
-# PASS  code + rodata fits the 2 MB flash  [378100 / 2097152 bytes (18.0%)]
+# PASS  code + rodata fits the 2 MB flash  [378796 / 2097152 bytes (18.1%)]
 # PASS  ordinary .data/.bss fits SRAM1-3 (288 KB)  [30944 / 294912 bytes (10%)]
 # --- layout: sdram ---
 # PASS  .ark_buf fits its sdram region  [29434192 / 33554432 bytes (88%)]
@@ -96,7 +96,7 @@ make stm32-check
 | `sdram`（部署档） | `0xC0000000` UNINIT 32 MB | 29,434,192 B（88%） | 15 项实测覆盖（§5.1），profile 默认尺寸远不够；SDRAM 由 `SystemInit()` 起 |
 | `sram`（无 SDRAM 回退档） | `0x24000000` 起 508 KB | 475,192 B（91%） | 必须裁，见 §5 |
 
-代码 + 只读数据 **378,072–378,100 B / 18.0%**，两种布局几乎一样——因为裁的是**零初始化的
+代码 + 只读数据 **378,768（sdram）–378,796 B（sram）/ 18.1%**，两种布局几乎一样——因为裁的是**零初始化的
 工作区**，不是代码。`.ark_buf` 在 SDRAM 布局里是 `UNINIT`，所以 29.4 MB 的工作区
 **不进 flash 镜像**；这一条也在门禁里（`the arena is not loaded as initialised data`）。
 
@@ -165,7 +165,7 @@ SDRAM 档不是"默认尺寸就够"，而是**必须显式给齐**：STM32 默�
 | `ARM_MAX_SYMBOLS` / `_RELOCS` / `_GVARS` | 4096 / 4096 / 2048 | ARM 后端符号表 |
 | `ARKCC_FEATURE_OPT_INLINE` | 1 | **保留内联**：裁掉它后 95 个 TU 里有 8 个与宿主 `-O2` 不同 |
 
-`.ark_buf` 合计 **29,434,192 / 33,554,432 B（88%）**，代码 + 只读 378,072 B（18.0%），
+`.ark_buf` 合计 **29,434,192 / 33,554,432 B（88%）**，代码 + 只读 378,768 B（18.1%），
 普通 RW/ZI 86,244 B（29%，在另一块 288 KB SRAM1-3 上）。
 
 arena 取 8 MB 而不是 4.5 MB：peak 4.29 MB 之外还要给 `--ipo` 这类"一次装多个 TU"的
@@ -194,7 +194,9 @@ arena 取 8 MB 而不是 4.5 MB：peak 4.29 MB 之外还要给 `--ipo` 这类"�
 | `make stm32-check`（armclang + 真实 scatter，两种布局） | 见 §4，全 PASS |
 
 最后两行合起来才有意义：**旗标被拒 ≠ 编译器坏了**，不带旗标它照样把 `stm32f4xx` 那样的
-代码编成正确的汇编。`tests/run_vreg_tests.py` 的第 6 项把其中 `-fopt-vreg` 这一条
+代码编成正确的汇编。剖面构建顺带证明了一件与本轮缺陷相关的事：裁掉 `-fopt-live` 之后
+后端仍会发高寄存器形态（`ADDS`/`SUBS` 的 32 位 `adds.w`/`subs.w`），这条编码路径与宿主
+完全相同，所以 §16.3（`docs/VREG.md`）那条装配器两遍尺寸自检在三个平台上守的是同一件事。`tests/run_vreg_tests.py` 的第 6 项把其中 `-fopt-vreg` 这一条
 固化成常规门禁（`-DARKCC_FEATURE_OPT_VREG=0` 构建必须拒绝该旗标、无旗标仍可编）。
 
 ### 5.3 三个平台的验证状态（如实）

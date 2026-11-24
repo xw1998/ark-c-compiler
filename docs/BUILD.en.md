@@ -93,7 +93,7 @@ make stm32-check
 # --- layout: sram ---
 # PASS  every STM32 profile source compiles  [34 file(s), 0 failed]
 # PASS  .ark_buf fits its sram region  [475192 / 520192 bytes (91%)]
-# PASS  code + rodata fits the 2 MB flash  [378100 / 2097152 bytes (18.0%)]
+# PASS  code + rodata fits the 2 MB flash  [378796 / 2097152 bytes (18.1%)]
 # PASS  ordinary .data/.bss fits SRAM1-3 (288 KB)  [30944 / 294912 bytes (10%)]
 # --- layout: sdram ---
 # PASS  .ark_buf fits its sdram region  [29434192 / 33554432 bytes (88%)]
@@ -106,8 +106,8 @@ make stm32-check
 | `sdram` (deployed) | `0xC0000000` UNINIT, 32 MB | 29,434,192 B (88%) | 15 measured overrides (sec. 5.1); the profile defaults are far too small; SDRAM is brought up by `SystemInit()` |
 | `sram` (no-SDRAM fallback) | from `0x24000000`, 508 KB | 475,192 B (91%) | has to be trimmed, see §5 |
 
-Code plus read-only data is **378,072--378,100 B / 18.0%** and barely differs between the
-two layouts, because what gets trimmed is the **zero-initialised working set**,
+Code plus read-only data is **378,768 (sdram) -- 378,796 B (sram) / 18.1%** and barely differs
+between the two layouts, because what gets trimmed is the **zero-initialised working set**,
 not code. In the SDRAM layout `.ark_buf` is `UNINIT`, so 29.4 MB of working set
 **never enters the flash image**; that is asserted by the gate too
 (`the arena is not loaded as initialised data`).
@@ -185,7 +185,7 @@ compile a single HAL unit. The 15 values in `LAYOUTS["sdram"]` of
 | `ARKCC_FEATURE_OPT_INLINE` | 1 | **keep the inliner**: with it compiled out, 8 of the 95 TUs differ from the host `-O2` build |
 
 `.ark_buf` totals **29,434,192 / 33,554,432 B (88%)**, code + read-only is
-378,072 B (18.0%), and ordinary RW/ZI is 86,244 B (29%, on the separate 288 KB
+378,768 B (18.1%), and ordinary RW/ZI is 86,244 B (29%, on the separate 288 KB
 SRAM1-3 block).
 
 The arena is 8 MB rather than 4.5 MB because the 4.29 MB peak still has to leave
@@ -220,7 +220,10 @@ Method: build a real binary from the same sources with the **host gcc** plus
 
 The last two rows only mean something together: **a refused flag is not a broken
 compiler** -- without the flags it still compiles `stm32f4xx`-shaped code into correct
-assembly. Check 6 of `tests/run_vreg_tests.py` freezes the `-fopt-vreg` case as a regular
+assembly. The profile build also proves something relevant to this round's defect: with
+`-fopt-live` cropped out the backend still emits high-register forms (`adds.w`/`subs.w`),
+through exactly the same encoder as the host, so the assembler's two-pass size self-check
+(section 16.3 of `docs/VREG.md`) guards one and the same thing on all three platforms. Check 6 of `tests/run_vreg_tests.py` freezes the `-fopt-vreg` case as a regular
 gate (a `-DARKCC_FEATURE_OPT_VREG=0` build must refuse the flag and still compile without it).
 
 ### 5.3 Verification status of the three platforms (honest)

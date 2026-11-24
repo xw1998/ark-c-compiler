@@ -480,12 +480,129 @@ S6b 做的是**块内**全量重命名；把重命名扩大到「块间」是 S6
 「`MOV rD,rS` 且 `rD != rS`、`rD` 不在本块后续任何 use 里、`rD` 在 `live_out` 里」的条数。
 不确定的地方一律算「活」（未知助记符视作读遍所有操作数、写空集），所以这个数是天花板。
 
-**自检（证明口径对得上分类器）**：95 TU 共数出 **13,566** 条指令、**1,731** 条
-`MOV rD,rS`——与 `docs/BOUNDARY.md` §2 的合计、§5.4 的寄存器拷贝条数**逐条相同**。
+**自检（证明口径对得上分类器）**：95 TU 共数出 **13,116** 条指令、**1,571** 条
+`MOV rD,rS`——与 `docs/BOUNDARY.md` §2 的合计、§5.4 的寄存器拷贝条数**逐条相同**
+（这两个数在 §16 的第二次活跃性落地后重测；S6b-2 的判定本身与语料快照无关）。
 
-**结果**：候选 **266 条**，占全部指令 **1.96%**，占寄存器拷贝本身 15.4%。另一条更弱的折叠
-（`MOV rD,rS` 紧跟一条只读 `rD` 且 `rD` 在本块之后不再被读）只有 **73 条 = 0.54%**，一并收档。
+**结果**：候选 **245 条**，占全部指令 **1.87%**，占寄存器拷贝本身 15.6%。另一条更弱的折叠
+（`MOV rD,rS` 紧跟一条只读 `rD` 且 `rD` 在本块之后不再被读）只有 **32 条 = 0.24%**，一并收档。
 
-**判定**：按 F1（收益 < 5% 即收档）**收档**，S6b-2 不实现。剩余 1,465 条拷贝在本块内
+**判定**：按 F1（收益 < 5% 即收档）**收档**，S6b-2 不实现。剩余 1,326 条拷贝（1,571 减 245）在本块内
 就有消费者，删它们必须动值栈/分配模型（与 S6c 之后的 `PUSH {… r0 …}` 问题同属一类），
 不在寄存器拷贝这项预算里，已登记。
+
+## 16 第二次活跃性（litpool 之后）与被它顶出的第五个真缺陷（0.9.1-wip）
+
+### 16.1 同一套 L1/L2 为什么值得跑第二遍
+
+**位置**：`ark_emit_program` 的 pass 顺序里放在 `cmat` → `litpool` **之后**、
+`ark_fix_far_offset` **之前**，仍是 `-fopt-live` 一个门控（不开这个开关就一遍都不跑，
+OFF IS OFF 逐字节不变）：
+
+```c
+#if ARKCC_FEATURE_OPT_LIVE
+        if (g_config.enable_opt_live)
+            ark_live_function(&buf, fstart, ark_ret_mask(f->ret_type));
+#endif
+```
+
+**理由**：活跃性是一个**关于文本**的判定。第一遍看到的是「cmat / litpool 改写之前」的
+文本，它算出来的 `live_out` 在那之后已经不成立——`-fopt-litpool` 把 `MOVW`+`MOVT rD`
+换成一条 `LDR rD, .Llit_*`，值栈里那些「材料化完的常量先落 `rD`、再 `MOV` 到使用者」
+的拷贝形态整体变了；`-fopt-cmat` 同理换掉了材料化点。第一遍判「活」的一批 `MOV`，
+在改写后的文本里目标已经没人读了。
+
+**读数（95 TU，Cortex-M4，`-O2`，十九开关）**：
+
+| 口径 | 指令 | 代码字节 |
+| --- | ---: | ---: |
+| 只跑一遍（第一遍） | 13,566 | 34,980 |
+| 加跑第二遍 | **13,116** | **34,200** |
+| 差 | **−450（−3.32%）** | **−780（−2.23%）** |
+
+**省的落点是干净的**：按 `docs/BOUNDARY.md` §2 的十八栏口径逐栏对拍，只有两栏动了——
+`MOV` 立即数 1,492 → **1,202**（−290）、`MOV rD,rS` 1,731 → **1,571**（−160），
+其余十六栏**一条不差**（含 `PUSH`/`POP` 1,239、帧访问 922、字面量池 705）。这正好对上
+「删的全是死拷贝」这个预期：第二遍不做别的改写，只删 `MOV`。
+
+**没有跑第三遍**：第二遍之后文本已收敛到「L1/L2 不动」，但要断言「第三遍一定 0 收益」
+需要再改一次代码做对照，本轮没做，**登记为未测**。可以确认的是第二遍本身不是恒等：
+它删了 450 条。
+
+**代价**：多一遍 CFG 构建 + 不动点迭代（`ARKCC_FEATURE_OPT_LIVE` 的静态表约 1.5 MB，
+板端剖面本来就裁掉整个 pass，所以 MCU 侧没有新增代价）；宿主编译时间增量在语料规模下
+落在秒级（95 TU 全量 `-S` 约 20 s 量级）。
+
+### 16.2 顺带被顶出的第五个真缺陷：`ADDS`/`SUBS` 的高寄存器被 `& 7` 掩码
+
+§12.4 那四个缺陷「都是在槽被提升到 `r8-r11` 之后才现形」，这一条同族：第二次活跃性
+删掉更多 `MOV` 之后，后端更容易直接产出**高寄存器做加法/减法**的形态（`ADDS r0, r0, r9`），
+而内建汇编器的 `ADDS`/`SUBS` 发射器（pass 2）当时对寄存器形式**无条件发 16 位并 `& 7`**：
+
+- **错答案**：`ADDS r0, r0, r9` 编成 `adds r0, r0, r1`——静默算错，不报错。
+- **更糟的连带**：pass 1 按 `rd/rn/rm` 全 ≤7 才给 2 字节、否则给 4 字节，pass 2 却恒发
+  2 字节 ⇒ 其后**所有标签整体偏移 2 字节**，`wide` 夹具上表现为 `PC=0` 崩溃
+  （unicorn `UcError UC_ERR_EXCEPTION`）。
+
+**修法（pass 2 编码器 + pass 1 尺寸表同步）**：
+
+| 形态 | 编码 | 宽度 |
+| --- | --- | --- |
+| `ADDS`/`SUBS Rd, Rn, #imm3`，三者 `r0-r7` | 16 位 `0x1C00/0x1E00` | 2 B |
+| `ADDS`/`SUBS Rd, Rn, #imm8`，`Rd == Rn`，`r0-r7` | 16 位 `0x3000/0x3800` | 2 B |
+| `ADDS`/`SUBS Rd, Rn, Rm`，三者 `r0-r7` | 16 位 `0x1800/0x1A00` | 2 B |
+| 任一寄存器不在 `r0-r7` 的寄存器形式 | 32 位 `adds.w`/`subs.w`：`0xEB10/0xEBB0 \| Rn`，后接 `(Rd<<8)\|Rm` | 4 B |
+| 两操作数 `ADD Rd, Rm`（无 `S`） | 16 位 `0x4400` T2，**任意寄存器** | 2 B |
+
+越界一律报错而不是截断：`imm` 放不进 12 位报 `ADDS/SUBS immediate %s does not fit any
+encoding`，`sp` 调整超出 508 字节且非 4 对齐又放不进 12 位报 `sp adjustment of %s bytes
+does not fit one encoding`，缺源寄存器报 `%s at code offset %s has no source register`。
+
+**取证（capstone 反汇编，`addsub_high` 夹具）**：
+
+```
+0x043e  adds.w r0, r0, sb     4 B
+0x0442  subs.w r0, r0, sl     4 B
+0x0448  adds.w r1, r1, sb     4 B
+0x044c  subs.w r4, r1, sl     4 B
+0x0450  adds   r0, r0, r4     2 B
+0x0452  add    sb, r0         2 B    ; 0x4400 T2，目标 r9
+0x0454  mov    r0, sb         2 B
+```
+
+新夹具 `addsub_high` 已进 `tests/arm_exec/run_arm_exec.py`（`main` 返回 `addsub_hi(20, 6)`
+= **64**）：`MOV r9/r10` 取参数 → 四条 `ADDS/SUBS` 命中高寄存器 32 位形态 → 一条 16 位
+`ADDS` → `ADD r9, r0`（T2）→ `MOV r0, r9`。它同时钉住「32 位形态算得对」与「T2 两操作数
+任意寄存器」两条。
+
+### 16.3 装配器两遍尺寸一致性自检（硬错误，不是警告）
+
+这类缺陷的共同形状是「pass 1 算的宽度与 pass 2 发的宽度不一致」，一旦发生，其后所有
+标签偏移全错，而**文本本身看不出来**。所以修完不逐条补用例，而是加一条总账自检：
+
+- `ArmAsm` 加字段 `pass1_size`，`pass1_a` 末尾 `a->pass1_size = pc`；
+- `pass2_a` 末尾比较 `a->pc` 与 `a->pass1_size`，不等就
+  `diag_tool(DIAG_SEV_ERROR, ...)` 报
+  `assembler size pass disagrees with the emit pass (%s bytes laid out, %s emitted):
+  some line is encoded at a different width than pass 1 counted`，并 `hard_errors++`。
+
+**为什么比总长而不是逐条**：一次比较覆盖整类错配；且它对输出字节零影响（只读）。
+
+**自检必须能失败**：加了编译期探针 `ARKCC_ASM_SIZECHECK_PROBE`（在 `pass1_a` 末尾把
+`pass1_size` 人为 `+2`），用 `-DARKCC_ASM_SIZECHECK_PROBE` 构建出的二进制实测报
+`(1122 bytes laid out, 1120 emitted)`；正式构建静默通过。用编译期宏而不是 `getenv`，
+是因为 MCU 剖面没有 libc 的 `getenv`，探针也绝不能进任何真实构建。
+
+### 16.4 门禁与不变量（本轮全绿）
+
+| 检查 | 结果 |
+| --- | --- |
+| `tests/run_vreg_tests.py ./arkcc.exe`（10 夹具 75 条断言） | all checks passed |
+| `tests/run_cmat_tests.py ./arkcc.exe` | all checks passed |
+| `tests/run_litpool_tests.py ./arkcc.exe`（21 项） | all checks passed |
+| `tests/arm_exec/run_arm_exec.py --arkcc ./arkcc.exe`（含新夹具 `addsub_high`） | 0 failure(s) |
+| OFF IS OFF（95 TU，不带任何 `-fopt-*`，汇编 sha256） | 修前 = 修后 = `40edf7d8076fc5be5f0d48e41741f0cb82342c75fa21096cec6b8efd1da13f62` |
+| 可裁切（`ARKCC_PROFILE_STM32_MIN` 宿主构建） | 0 error；`-fopt-live`/`-fopt-vreg`/`-fopt-slotreg`/`-fopt-cmat` 均 `C3900U` |
+| MCU 真实链接（`tools/stm32_build_check.py --layout both`） | all checks passed (2 layouts) |
+
+§5 的七条冻结门禁与 §6 的 F1–F4 否证线仍然**一字未改**。
