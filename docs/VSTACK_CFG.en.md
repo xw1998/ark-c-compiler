@@ -1,6 +1,7 @@
 # A control-flow value stack (S7 pre-registration): from "linear scan, clear at boundaries" to "solve per block, keep values across joins"
 
-> Status: **pre-registered, not implemented**. This document does not change a single line of
+> Status: **pre-registered, and S7a (the read-only shadow solve) has been run and closed**
+> (§4.1.1, `net = 220` instructions < 300). This document does not change a single line of
 > emission code. It pins three things down first: how the current state and the upper bounds were
 > measured (§1), why the text layer has nothing left (§2), and what the criteria, equal budget and
 > exit conditions will be when the work happens (§3–§8). The criteria are **frozen before the run**;
@@ -115,6 +116,58 @@ rules), **without changing any output line**, and report four numbers:
 `net` is the number the criteria look at. `retainable` alone means nothing — §18.3's 1,178 is
 exactly that half-a-number.
 
+### 4.1.1 Measured (S7a is done; the `net ≥ 300` bar was not met, so the line is closed)
+
+The probe is **read-only**: inside `ark_vstack_function()` it runs a parallel CFG solve over the
+same `VsLine` array and writes no output line at all. It was removed afterwards with
+`git checkout -- src/backend/arm/backend_arm.c`, and `lp19.py` on the rebuilt compiler still reports
+`12,304 insns / 32,690 B / 95 units / 0 err` — byte-identical to the state before pre-registration.
+
+**The first version tripped over its own bug**: it split blocks only at labels. `reach` collapsed to
+single digits (in `hal_dma_ex.c`'s first big function only 2 of 10 blocks were reachable), because a
+conditional branch *in the middle* of a straight run is a real edge; splitting only at labels
+declares the whole tail unreachable. After also splitting after every branch terminator, 2,763 of
+3,061 blocks are reachable (90.3%), 212 functions take part, and `unk = 0` (an instruction `vs_form`
+does not know is treated as a no-op instead of killing the block). That is a reusable lesson in
+itself: **a text-layer CFG must split on branches, not only on labels.**
+
+Corpus readings (19-switch basis, 95 TUs):
+
+| Report | Measured | Pre-registered baseline | Note |
+| --- | --- | --- | --- |
+| `retainable` | **591** | 589 pins | nearly every pin has agreeing predecessors at the join |
+| `must_spill` | **0** | — | no pin is forced to memory by a full pool |
+| `poolfull_after` | **952** | 471 pool-full sites | retention keeps registers busy and doubles it |
+| `net` | **220** | criterion ≥300 | `2×591 − 2×(952−471)` |
+| cross-check | 248 | — | `2×(sim_r 4,203 − cur_r 4,079)` |
+
+`retainable` exceeds the 589 baseline by 2 because the simulation also finishes a few functions
+the real pass bails out of early; the 0.3% difference does not affect the verdict.
+
+Two independent formulas give 220 and 248; both are below 300. **The mechanism is clear**: retention
+does turn 591 pins (≈ all 589) into pooled values, saving 1,182 instructions, but holding registers
+across boundaries pushes later pushes into a full pool, so pool-full goes 471 → 952 and pays back
+962. The net is 220 instructions = **1.79%**, short of the 2.4% bar.
+
+The distribution is very concentrated: 306 of the 591 retainable pins (more than half) come from a
+single TU, `stm32f4xx_hal_dma_ex.c`, followed by `hal_rcc.c` 123, `hal_rcc_ex.c` 36, `ll_utils.c` 28
+and `hal_dma.c` 26. Even on the most optimistic reading the gain sits in three or four large
+functions, not in the corpus as a whole.
+
+**Basis caveat**: only **17** of the 95 TUs produce a non-zero reading; the other 78 produce none
+(most of them emitting five lines of empty assembly, a 20-byte `.o`). That is a **pre-existing** condition, unrelated to this probe
+(removing `ARKCC_VSTACK_CFG` or switching to `-O0` changes nothing; the root cause was not chased
+this round), but it means the "12,304 instructions" actually come from about 18 TUs and "95 TU" is
+only a nominal basis. Every percentage in this document divides by 12,304, not by TU count.
+
+**Verdict (per the frozen §5 criteria)**: `net = 220 < 300` ⇒ **S7b is not started; the value stack
+keeps its linear scan + boundary flush**. §4.2/§4.3 stay as design records and are not implemented.
+This is a negative result, not an unfinished one: the bound (1,178) and the real net (220) differ by
+5.4×, and the gap is exactly the `poolfull_after` term §4.1 already named — it now has a measured
+number behind it.
+
+
+
 ### 4.2 S7b: implementation (new switch, off by default)
 
 A new switch `-fopt-vstack-cfg` (macro `ARKCC_FEATURE_OPT_VSTACK_CFG`, host 1, on-board 0, off by
@@ -132,6 +185,9 @@ instructions**, not worth a slice of its own; after S7b lands, if the structure 
 criteria.
 
 ## 5 Criteria (frozen, not to be changed before implementation)
+
+> **S7a verdict (executed)**: `net = 220 instructions` (1.79%) < 300 ⇒ closed under the second
+> bullet of this section; the value stack keeps its linear scan. Readings and reasoning: §4.1.1.
 
 **S7a** (decides whether S7b is started at all):
 
