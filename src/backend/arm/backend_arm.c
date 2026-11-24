@@ -4385,6 +4385,8 @@ static short    cm_bsucc[CM_MAX_BLOCKS][2];
 static unsigned char cm_bns[CM_MAX_BLOCKS];
 static unsigned char cm_bskip[CM_MAX_BLOCKS];   /* unknown effect: reads all */
 static unsigned char cm_itcov[CM_MAX_UNITS];
+static int      cm_m9del[CM_MAX_BLOCKS + 4];   /* units M9 wants gone */
+static short    cm_canon[CM_MAX_BLOCKS];       /* label-only blocks folded */
 
 static int cm_is_label(const CmUnit *u) {
     int l;
@@ -4450,6 +4452,17 @@ static int cm_mov_const(const char *ops) {
     while (*rest == ' ') rest++;
     if (*rest == '#') return cm_imm(rest, &v);
     return cm_reg(rest, &rs);
+}
+
+/* `PUSH {rX}` for exactly the one-register list `mask`.  M9's only candidate
+ * shape: a push whose whole payload is the value already sitting in the
+ * register. */
+static int cm_push_one(const CmUnit *u, unsigned mask) {
+    unsigned m = 0;
+    if (u->dead) return 0;
+    if (!cm_streq(u->mn, "PUSH")) return 0;
+    if (!cm_list_mask(u->ops, &m)) return 0;
+    return m == mask;
 }
 
 /* The pass over one function's text. */
@@ -4866,6 +4879,85 @@ static void ark_cmat_function(AsmBuffer *b, int from) {
                 continue;
             }
             if (nx >= 0) cm_bsucc[j2][cm_bns[j2]++] = (short)nx;
+        }
+
+        /* 4c-1. M9: a value pushed on every path into a join and popped again
+         *       as the join's first instruction never went anywhere.  The join
+         *       begins with `POP {rX}`; every predecessor ends with `PUSH {rX}`
+         *       and then either branches to the join or falls into it.  rX is
+         *       not touched in between -- the push is the last thing a
+         *       predecessor does -- so it already holds the value the pop would
+         *       load.  Both halves are dropped together, which keeps sp balanced
+         *       on every path, and nothing can have read the stack in between. */
+        {
+            int m9ok = 1;
+            for (j2 = 0; j2 < nu; j2++) {
+                CmUnit *u = &cm_units[j2];
+                if (cm_streq(u->mn, "TBB") || cm_streq(u->mn, "TBH")) { m9ok = 0; break; }
+                if (cm_streq(u->mn, "BX")) {
+                    const char *p = u->ops;
+                    while (*p == ' ') p++;
+                    if (!cm_streq(p, "lr")) { m9ok = 0; break; }   /* computed target */
+                }
+            }
+            /* A run of consecutive labels produces blocks that hold nothing but
+             * a label; walk them forward so a predecessor that branches to the
+             * first label of a chain still meets the block that does the work. */
+            for (j2 = 0; j2 < nb; j2++) {
+                int k3 = j2, step = 0;
+                while (step++ < nb) {
+                    int e3, only_labels = 1;
+                    for (e3 = cm_bs[k3]; e3 <= cm_be[k3]; e3++)
+                        if (!cm_is_label(&cm_units[e3])) { only_labels = 0; break; }
+                    if (!only_labels || cm_bns[k3] != 1) break;
+                    k3 = cm_bsucc[k3][0];
+                    if (k3 < 0 || k3 >= nb) break;
+                }
+                cm_canon[j2] = (short)k3;
+            }
+            for (j2 = 0; j2 < nb && m9ok; j2++) {
+                CmUnit *pop;
+                unsigned pmask = 0;
+                int k2 = cm_bs[j2], p2, npred = 0, ndel = 0, ok = 1;
+                if (cm_canon[j2] != j2) continue;                  /* folded away */
+                while (k2 <= cm_be[j2] && cm_is_label(&cm_units[k2])) k2++;
+                if (k2 > cm_be[j2]) continue;
+                pop = &cm_units[k2];
+                if (!cm_streq(pop->mn, "POP") || pop->dead || cm_itcov[k2]) continue;
+                if (!cm_list_mask(pop->ops, &pmask)) continue;
+                if (pmask == 0 || (pmask & (pmask - 1)) != 0) continue;  /* one reg */
+                if (pmask & 0xe000u) continue;                    /* not sp / lr / pc */
+                for (p2 = 0; p2 < nb; p2++) {
+                    int e, ispred = 0;
+                    CmUnit *term;
+                    if (p2 == j2) continue;
+                    for (e = 0; e < (int)cm_bns[p2]; e++) {
+                        int t3 = cm_bsucc[p2][e];
+                        if (t3 >= 0 && t3 < nb && cm_canon[t3] == j2) { ispred = 1; break; }
+                    }
+                    if (!ispred) continue;
+                    npred++;
+                    term = &cm_units[cm_be[p2]];
+                    if (cm_streq(term->mn, "B") || cm_streq(term->mn, "BAL")) {
+                        int q = cm_be[p2] - 1;
+                        while (q >= cm_bs[p2] && cm_is_label(&cm_units[q])) q--;
+                        if (q < cm_bs[p2] || cm_itcov[q] ||
+                            !cm_push_one(&cm_units[q], pmask)) { ok = 0; break; }
+                        cm_m9del[ndel++] = q;
+                        continue;
+                    }
+                    if (p2 + 1 >= nb || cm_canon[p2 + 1] != j2 ||
+                        cm_itcov[cm_be[p2]] || !cm_push_one(term, pmask)) { ok = 0; break; }
+                    cm_m9del[ndel++] = cm_be[p2];
+                }
+                if (!ok || npred == 0) continue;
+                for (p2 = 0; p2 < ndel; p2++) {
+                    cm_units[cm_m9del[p2]].dead = 1;
+                    changed++;
+                }
+                pop->dead = 1;
+                changed++;
+            }
         }
 
         /* use / def per block.  Units an earlier rule already deleted are not

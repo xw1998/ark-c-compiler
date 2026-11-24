@@ -2,94 +2,88 @@
 
 [English](COMPARISON.en.md) | 中文
 
-> 一句话：**在 STM32F4 HAL 全语料上，arkc 打开全部优化后是 armcc `-O2` 的 3.4 倍指令数、
-> 3.3 倍代码字节；差距不是编码质量问题，是结构性的——值栈机、活跃性只用来删拷贝、
+> 一句话：**在 STM32F4 HAL 全语料上，arkc 打开全部优化后是 armcc `-O2` 的 2.5 倍指令数、
+> 2.6 倍代码字节；差距不是编码质量问题，是结构性的——值栈机、活跃性只用来删拷贝、
 > 中间结果仍要落帧。**
 >
-> 测量脚本：`D:/tmp/cmp_final.py`（不进仓库），下表全部由它一次跑出，同一批源文件、
-> 同一组宏与头路径。
+> 测量脚本：`D:/tmp/fr/cmp_arm.py`（armcc / armclang 六臂）与 `D:/tmp/fr/cmpark_all.py`
+> （arkc 两臂）——都不进仓库，但口径与 `docs/CMAT.md` §6 用的是同一套计数正则与
+> `ARKOBJ2` 头。下表全部由它们一次跑出，同一批源文件、同一组宏与头路径。
 
 ---
 
 ## 1. 语料与口径
 
-- **源文件**：`examples/ark_test/Core/Src/*.c` + `Drivers/STM32F4xx_HAL_Driver/Src/*.c`，
-  共 99 个 TU。其中 3 个 `*_template.c` 三家编译器都产出空代码，**对称跳过** ⇒ 96 个有效。
+- **源文件**：`examples/ark_test/Core/Src/*.c`（5 个）+ `Drivers/STM32F4xx_HAL_Driver/Src/*.c`
+  （94 个），共 99 个 TU。其中 4 个 `*_template.c` 三家编译器都产出空代码，**对称跳过**
+  ⇒ **95 个有效 TU**。
 - **宏与头**：`-D STM32F401xE -D USE_HAL_DRIVER`，`-I examples/ark_test`、HAL `Inc`、
   `Core/Inc`、CMSIS `Device`/`Core`、`-I include`。
 - **CPU**：`-mcpu Cortex-M4`（armclang 用 `--target=arm-arm-none-eabi -mcpu=cortex-m4`）。
-- **指令数**：arkc 数 `.s` 里非空、非指示、非标签的行；armcc / armclang 用
-  `fromelf --text -c` 抽可执行段里的指令行，排除 `DCD/DCW/DCB/DCQ/ALIGN/SPACE/FIELD/EQU/DCI`。
-- **代码字节**：arkc 取自己的目标文件头里的代码字节数；armcc / armclang 取 `fromelf`
-  列出的 `SHF_EXECINSTR` 段 `Size` 之和。
-- **工具链**：ARM Compiler 5.06 update 7（armcc/armasm/fromelf）、ARM Compiler 6（armclang）。
+- **指令数**：arkc 数 `.s` 里非空、非指示、非标签的行（正则 `^\s+[A-Za-z][A-Za-z0-9.]*\s`）；
+  armcc / armclang 用 `fromelf --text -c` 抽可执行段里的指令行，排除
+  `DCD/DCW/DCB/DCQ/ALIGN/SPACE/FIELD/EQU/DCI`。
+- **代码字节**：arkc 取自己的目标文件头（`ARKOBJ2`）里的代码段长度；armcc / armclang 取
+  `fromelf` 列出的 `SHF_EXECINSTR` 段 `Size` 之和。
+- **工具链**：ARM Compiler 5.06 update 7（`D:/Keil_v5/ARM/ARMCC/bin`）、ARM Compiler 6
+  （`D:/Keil_v5/ARM/ARMCLANG/bin`）。
 
 这套口径只比「编译这一批 `.c` 产生的代码」，不含链接期优化（LTO）、不含库函数。
-**arkc 每一份 TU 自带运行时助手**（`__aeabi_memcpy`、`__arkcc_init_globals`、浮点胶水等），
-armcc/armclang 则从 C 库取同名例程——在「全部优化」那份产物里，按 `__aeabi_*` /
-`__arkcc_*` / `__REV16` / `__REVSH` / `__RRX` 这些符号统计是 **920 条 / 4.8%**
-（`__aeabi_memcpy` 380、`__REV16`/`__REVSH`/`__RRX` 各 156、`__arkcc_init_globals` 72），
-去掉它 arkc 的用户代码是 **18,192 条**。下表不做这个扣减，因为它是真实占用的 Flash。
-
-> **2026-11 注记**：上面「每份 TU 自带运行时助手」是这份快照拍摄时的形态。之后落地了
-> 两件默认生效、无开关的事：① 未被引用的 `static` 函数不再发射
-> （[DEADSTATIC.md](DEADSTATIC.md)）——`__REV16` / `__REVSH` / `__RRX` 这些头文件助手只在
-> 真被调用时才留在镜像里；② `__aeabi_memcpy` 改为按需发射——只有本 TU 真的出现
-> `BL __aeabi_memcpy` 才把那段文本拼进去。所以「920 条 / 4.8%」这个扣减项现在会显著
-> 变小，而 §2 的表仍是快照读数、**未重测**。在 95 TU 的 HAL 语料上这两件事合计省
-> 1,737 条（−9.57%），叠 `-fopt-vreg` 共省 2,538 条（−13.98%）。
+**arkc 每份 TU 可能自带运行时助手**（`__aeabi_memcpy`、`__arkcc_init_globals`、`__REV16`
+一类），armcc/armclang 则从 C 库取同名例程。两个默认生效、无开关的机制把这一项压了下来：
+① 未被引用的 `static` 函数不再发射（[DEADSTATIC.md](DEADSTATIC.md)）；② `__aeabi_memcpy`
+改为按需发射。本表**不做**这项扣减，因为它确实是真实占用的 Flash。
 
 ## 2. 结果
 
-96 个有效 TU 的总和：
+95 个有效 TU 的总和：
 
 | 编译器 | 选项 | 指令数 | 代码字节 |
 | --- | --- | ---: | ---: |
-| **arkc** | `-O2` | 50,965 | 114,576 |
-| **arkc** | `-O2` + 全部 `-fopt-*`（见 §3） | **19,112** | **45,760** |
-| armcc | `-O0` | 7,969 | 18,788 |
-| armcc | `-O1` | 6,061 | 14,910 |
-| armcc | `-O2` | 5,629 | 13,942 |
-| armcc | `-O3 -Otime` | 5,750 | 15,322 |
-| armcc | `-O3 -Ospace` | 5,642 | 14,102 |
-| armclang | `-O2` | 5,068 | 13,856 |
-| armclang | `-Oz` | 4,250 | 11,292 |
+| **arkc** | `-O2`（无 `-fopt-*`） | 49,186 | 110,468 |
+| **arkc** | `-O2` + 全部十八个 `-fopt-*`（见 §3） | **14,121** | **36,106** |
+| armcc | `-O1` | 6,051 | 14,888 |
+| armcc | `-O2` | 5,619 | 13,920 |
+| armcc | `-O3 -Otime` | 5,740 | 15,300 |
+| armcc | `-O3 -Ospace` | 5,632 | 14,080 |
+| armclang | `-O2` | 5,064 | 13,848 |
+| armclang | `-Oz` | 4,246 | 11,284 |
 
-相对 armcc `-O2`：
+相对 armcc `-O2`（5,619 条 / 13,920 B）：
 
 | 比较 | 指令数 | 代码字节 |
 | --- | ---: | ---: |
-| arkc `-O2`（无 `-fopt-*`） | 9.1× | 8.2× |
-| arkc `-O2` + 全部 `-fopt-*` | **3.4×** | **3.3×** |
+| arkc `-O2`（无 `-fopt-*`） | 8.8× | 7.9× |
+| arkc `-O2` + 全部 `-fopt-*` | **2.51×** | **2.59×** |
 
-**0.9.1 的十个优化开关把差距从 9.1× 压到 3.4×**（指令数 −62.5%，代码字节 −60.1%）。
+**优化开关把差距从 8.8× 压到 2.5×**（指令数 −71.3%，代码字节 −67.3%）。
 
 **IAR 未参与**：本机装了 IAR EWARM 9.70（`D:\tools\IAR_EWARM_9.70\arm\bin\iccarm.exe`，
 V9.70.1.475/W64），但**没有 license**——任何编译都停在
 `Fatal error[LMS001]: License check failed`，拿不到一行字节。
 **因此不估 IAR 的数字**：没有编译出来的字节就没有可比的东西。对照 IAR 的方式是照
 `D:/工作/git_project/c_compiler/iar/docs/` 里逆向出的机制去实现（`-fopt-cbranch`、
-`-fopt-copyprop` 就是这么来的），不是去编一个数出来。
+`-fopt-copyprop`、`-fopt-cmat` 的 M6/M7 就是这么来的），不是去编一个数出来。
 
-## 3. 表里「全部 `-fopt-*`」是哪十个
+## 3. 表里「全部 `-fopt-*`」是哪十八个
 
 ```
--fopt-tailmerge -fopt-tailcall -fopt-divconst -fopt-xblock -fopt-sizeweight
--fopt-inline   -fopt-vstack    -fopt-addr     -fopt-strength -fopt-cbz
--fopt-branch   -fopt-imm       -fopt-peep     -fopt-cbranch -fopt-copyprop
--fopt-live     -fopt-regalloc
+-fopt-vstack  -fopt-addr     -fopt-strength -fopt-cbz     -fopt-branch
+-fopt-imm     -fopt-peep     -fopt-cbranch  -fopt-copyprop -fopt-live
+-fopt-prop    -fopt-deadpush -fopt-coalesce -fopt-slotreg -fopt-constcache
+-fopt-vreg    -fopt-cmat     -fopt-pair
 ```
 
-上表实际使用的是**对本语料有作用**的那十个：
-`-fopt-vstack -fopt-addr -fopt-strength -fopt-cbz -fopt-branch -fopt-imm -fopt-peep
--fopt-cbranch -fopt-copyprop -fopt-live`。
+全部**默认关闭**，各自的裁剪宏见对应文档（`-fopt-cmat` 是
+`ARKCC_FEATURE_OPT_CMAT`，`-fopt-slotreg` 是 `ARKCC_FEATURE_OPT_SLOTREG`，
+`-fopt-constcache` 是 `ARKCC_FEATURE_OPT_CONSTCACHE`）。
 
-`-fopt-regalloc` 也在这一轮测了，但它在**本语料上一条指令都没改**（两种构型的指令数
-与代码字节完全相同）。原因写在它的选择规则里：默认模式只收「访问宽度超过 16 位
-寻址形（偏移 > 124 或非 4 的倍数）的槽」，因为这个 pass 不靠活跃性分析，要靠
-「把宽访存换成 `MOV` 才赚回加宽 `PUSH/POP` 的 4 字节」。HAL 的局部变量几乎都落在
-`0..124` 且 4 字节对齐，于是 `saves = 0`，一个槽都不选。**这不是缺陷，是它当前的
-设计边界**（`-fopt-regalloc-near` 是另一档，按访问次数收近槽，会改这些函数）。
+`-fopt-cmat`（九条规则，−1,802 条 / −4,062 B，见 [CMAT.md](CMAT.md)）与
+`-fopt-slotreg`（−64 条，已按预注册否证线收档，见 [SLOTREG.md](SLOTREG.md)）、
+`-fopt-constcache`（−159 条，见 [OPERAND_ALLOC.md](OPERAND_ALLOC.md) §8）、
+`-fopt-pair`（−10 条）是这张表相对上一版新增的四条；
+`-fopt-vreg` / `-fopt-coalesce` / `-fopt-prop` / `-fopt-deadpush` 见
+[VREG.md](VREG.md) 等各自文档。
 
 ## 4. 差距在哪：四条结构性原因
 
@@ -133,6 +127,10 @@ V9.70.1.475/W64），但**没有 license**——任何编译都停在
 
 ## 5. 逐优化项的实测（同一语料）
 
+> **这一节是历史阶梯**：它是那十个开关上线时逐个累加的读数，只用来解释各条规则
+> 各值多少。**当前总数以 §2 为准**（14,121 条 / 36,106 B），下面的阶梯因为中途
+> 落地了默认生效的死静态函数屏蔽与按需运行时助手、又加了四张新表，合计已不再等于 §2。
+
 **逐级累加**（每一行 = 在上一行基础上再开一个开关），95 个有效 TU，
 `-O2 --reloc-data -mcpu Cortex-M4`：
 
@@ -169,15 +167,15 @@ V9.70.1.475/W64），但**没有 license**——任何编译都停在
 ## 6. 怎么复现
 
 ```bash
-# 1) 三条 arkc 臂 + 五条 armcc 臂 + 两条 armclang 臂，一次跑完
-python D:/tmp/cmp_final.py          # 输出汇总表，明细写 D:/tmp/cmp_final.json
+# 1) 六条 armcc/armclang 臂，一次跑完（明细写 D:/tmp/fr/cmp_arm.json）
+python D:/tmp/fr/cmp_arm.py
 
-# 2) 只看 arkc 的四档（base / cbranch / imm+peep / 三者全开）
-python D:/tmp/cbr_bytes.py
+# 2) 两条 arkc 臂：-O2 无旗标 / 全部十八个 -fopt-*
+python D:/tmp/fr/cmpark_all.py
 ```
 
-两个脚本都假定：当前目录是仓库根、`./arkcc.exe` 是刚 `make` 出来的二进制、
-Keil 装在 `D:/Keil_v5`。语料路径写死在脚本里，换语料改 `srcs` 那一行。
+两个脚本都假定：`D:/工作/git_project/ark c compiler` 是仓库根、`arkcc.exe` 是刚
+`make` 出来的二进制、Keil 装在 `D:/Keil_v5`。语料路径写死在脚本里，换语料改 `srcs` 那一行。
 
 ## 7. 这张表不该被读成什么
 

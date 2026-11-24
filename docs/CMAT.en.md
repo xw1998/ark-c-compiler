@@ -35,7 +35,7 @@ These shapes need no liveness analysis to be proved safe -- either the address
 and the result are identical, or the value is provably overwritten before any
 read inside the same block. That is the whole domain of this pass.
 
-## 2. The eight rules
+## 2. The nine rules
 
 ### 2.1 M1: a copy of a known constant becomes an immediate
 
@@ -201,6 +201,50 @@ The block boundaries are the ones from section 3: `PUSH` is on the whitelist and
 so is *not* a boundary (a whole "constant up to the stack, back again" stretch
 can live in one block); `POP`/`LDM`/`STM`/`IT` and every branch are.
 
+### 2.9 M9: the `PUSH {rX}` / `POP {rX}` round trip at a join goes
+
+> If a `PUSH {rX}` reaches some `POP {rX}` **through labels only**, and **every**
+> predecessor of that `POP` meets the same condition (its `PUSH {rX}` is the last
+> thing that path does), then those pushes and that one pop all go together.
+
+The value-stack machine pushes a finished value at a join (`if`/`&&`/`?:`,
+a `switch` exit) and pops it back into the same register at the merge point.
+M7 can only reach the "same block, no branch in between" half of this, because it
+scans a block linearly; the cross-branch half needs the control-flow graph, so
+M9, like M8, is a rule over the graph.
+
+Three safety points:
+
+- **the push is the last action of its block**, and only labels lie between it
+  and the pop, so nothing in between can read the stack;
+- **`PUSH {rX}` touches no register**, and `POP {rX}` loads back the same
+  register, so at the join the value of `rX` is the value it had at the push --
+  remove both halves and nothing changes;
+- **every predecessor of the pop must lose its push** (`npred > 0`, each one
+  checked), so on every path the `sp` adjust vanishes with its counterpart and
+  the stack stays balanced.  One predecessor that does not qualify and the whole
+  block is left alone.
+
+Two details the implementation cannot do without:
+
+- **label-chain folding**.  Consecutive labels cut out "label-only empty blocks"
+  (`cm_be < cm_bs`), so the target of `B .L1` is *not* the block that holds the
+  `POP`.  A canon pass therefore follows each block while it "holds labels only
+  and has a single predecessor", recording the final block; branch targets are
+  then tested through the canon (`cm_canon[succ] == j2`) and never by label text.
+  Without it the first version almost never fired, and the debug output read
+  `npred=1` with a predecessor terminator that was not a `PUSH` -- every one of
+  them a false miss hidden behind a label block.
+- **where it is run**.  M9 goes *before* M8 builds its liveness graph, so once M9
+  removes the round trip, M8 can also bury the constant writes that just died
+  (16 more on the corpus, see section 6).
+
+Two function-wide bail-outs: a `TBB`/`TBH`, or a `BX` whose target is not `lr`.
+Neither target can be known from the text, so the successor table cannot be
+trusted and M9 gives up on that whole function.  `r13`/`r14`/`r15` are never
+candidates, an `LDM` (multiple registers or a write-back base) is not a `POP`,
+and neither line inside an IT block is touched.
+
 ## 3. Block boundaries and the read set
 
 A block ends (state is cleared) at:
@@ -297,13 +341,14 @@ instructions are counted line by line with `^\s+[A-Za-z][A-Za-z0-9.]*\s` (a
 | + `-fopt-cmat`, M1/M2/M3 only | 15,613 | -- | **-320** |
 | + `-fopt-cmat`, M1-M6 | 15,236 | -- | -697 (-4.37%) |
 | + `-fopt-cmat`, M1-M7 | 14,940 | 37,766 | -993 (-6.23%) |
-| + `-fopt-cmat`, all eight rules | **14,369** | **36,602** | **-1,564 (-9.81%)** |
+| + `-fopt-cmat`, M1-M8 | 14,369 | 36,602 | -1,564 (-9.81%) |
+| + `-fopt-cmat`, all nine rules | **14,131** | **36,126** | **-1,802 (-11.31%)** |
 
 So M1/M2/M3 account for -320, **M4/M5/M6 for another -377**, **M7 (with the two
-criterion extensions) for another -296** and **M8 for another -571**.  The byte
-figures are measured, not derived: the code-section length in each `ARKOBJ2`
-header, summed over the corpus -- -2,422 for M1-M7 and -1,164 more for M8,
-3,586 in total.
+criterion extensions) for another -296**, **M8 for another -571** and **M9 for
+another -238**.  The byte figures are measured, not derived: the code-section
+length in each `ARKOBJ2` header, summed over the corpus -- -2,422 for M1-M7,
+-1,164 more for M8 and -476 more for M9, 4,062 in total (-10.11%).
 
 M8's -571 reconciles just as cleanly, and this time the account **fits on one
 line**:
@@ -325,6 +370,24 @@ trees (M1-M7 and M1-M8) run through `difflib` line by line give **571 lines
 removed, 0 lines added, 0 other changes**, and every removed line matches
 `MOV rD, #imm` or `MOV rD, rS`.  In other words, on real code this rule can only
 touch those two shapes -- not one byte else.
+
+M9's -238 is three entries, and the pushes and the pops are **not equal**:
+
+| item | M1-M8 | M1-M9 | delta |
+| --- | ---: | ---: | ---: |
+| `PUSH {r0}` (whole corpus) | 674 | 532 | **-142** |
+| `POP {r0}` (whole corpus) | 202 | 122 | **-80** |
+| `MOV r0, #0` / `MOV r0, #1` (M8, secondary) | -- | -- | -16 |
+| every mnemonic | 14,369 | 14,131 | **-238** |
+
+The 142 : 80 asymmetry is the normal shape of this rule: a merge point can have
+several predecessors each pushing, while it has exactly one pop, so the pushes
+removed are never fewer than the pops.  The same diff (M1-M8 against M1-M9) is
+**11 `.s` files changed, 238 lines removed, 0 lines added**, and each removed line
+is one of `PUSH {r0}` / `POP {r0}` / `MOV r0, #0` / `MOV r0, #1`.  That last group
+of 16 `MOV`s is not M9's own doing: once the round trip is gone, M8's liveness
+can finally bury them -- which also confirms that running M9 before M8 is the
+right order.
 
 M7's -296 reconciles line by line (the same two counters over three trees,
 subtracted mnemonic by mnemonic):
@@ -380,9 +443,9 @@ difference.
 
 The byte figures in the table are the measured ones (`ARKOBJ2` code-section
 length, summed per TU): baseline 40,188 -> M1-M7 37,766 -> all eight rules
-36,602.  At the naive 4 bytes per Thumb-2 instruction the -697 lines of M1-M6
-would be 2,788 bytes; the measurement is smaller, because most of what goes is a
-2-byte 16-bit encoding.
+36,602 and 36,126 for the nine rules.  At the naive 4 bytes per Thumb-2
+instruction the -697 lines of M1-M6 would be 2,788 bytes; the measurement is
+smaller, because most of what goes is a 2-byte 16-bit encoding.
 
 ## 7. Where it lives
 
@@ -415,7 +478,8 @@ right after `-fopt-regalloc` and before `ark_fix_far_offset()`:
 | `cm_no_reg_effect` | ends a block without touching a general register: `IT*`, `DMB`/`DSB`/`ISB`, every branch |
 | `cm_label_block` | label to block number (M8 resolves branch targets), -1 when absent |
 | `cm_mov_const` | `rD, #imm` or `rD, rS` -- the only two shapes M8 may delete |
-| `ark_cmat_function` | the pass: line table -> unit table (fusing MOVW/MOVT) -> walk M1/M2/M4/M5/M6 -> M3 -> M7 -> M8 (IT coverage / blocks / successors / use-def / fixed point / backwards delete) -> rebuild |
+| `cm_push_one` | is this unit exactly `PUSH {mask}` (one register, no write-back) -- M9 tests predecessors with it |
+| `ark_cmat_function` | the pass: line table -> unit table (fusing MOVW/MOVT) -> walk M1/M2/M4/M5/M6 -> M3 -> M7 -> M9 (TBB/BX bail-out / canon fold / per-predecessor push check / paired delete) -> M8 (IT coverage / blocks / successors / use-def / fixed point / backwards delete) -> rebuild |
 
 `-fopt-cmat` is **off by default**. Under `ARKCC_PROFILE_STM32_MIN` the macro is
 0, so neither the code nor the static tables are in the image, and a cropped
@@ -424,7 +488,7 @@ about 300 KB of BSS and exist only in host builds.
 
 ## 8. Gate (`make test-cmat`)
 
-`tests/run_cmat_tests.py`, forty-three checks:
+`tests/run_cmat_tests.py`, fifty-three checks:
 
 1. **OFF IS OFF**: the default build and `-fno-opt-cmat` are byte-identical;
 2. **M2 fires**: the `LSL #2]` shape goes to zero, `[rB, #off]` becomes more
@@ -466,6 +530,16 @@ about 300 KB of BSS and exist only in host builds.
     anti-over-deletion half: deleting a unit inside an `IT` silently changes how
     far the condition reaches, and nothing in the text shows it), labels
     264/264 and functions 15/15 unchanged.
+
+12. **M9 fires (synthetic join)**: the `join` fixture does one thing --
+    `if (a) r = 7; else r = 9;` and then `cm_sink = r`.  The value-stack machine
+    cannot avoid leaving one `PUSH {r0}` / `POP {r0}` round trip at that merge.
+    The check asserts that `PUSH {r0}` and `POP {r0}` both drop, that the two
+    drops differ by no more than 2 (proof that a pair goes and not one half),
+    that the instruction count falls, that the prologue
+    `PUSH {r5, r6, r7, lr}` and the epilogue `POP {r5, r6, r7, pc}` keep their
+    counts (multi-register push/pop is never touched), and that the label count
+    and the `.size` count stay put.
 
 As a stronger layer, `tests/arm_exec/run_arm_exec.py --extra=-fopt-cmat` ran the
 whole execution suite (function pointers, 64-bit, soft-float, atomics, TLS,

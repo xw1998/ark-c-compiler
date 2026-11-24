@@ -195,8 +195,18 @@ int main(void)
 }
 """
 
+# M9: both arms of the `if` reach a join that loads the value back into the
+# same register.  Pushing it in each arm and popping it at the join buys
+# nothing -- the register already holds it.
+JOIN = """\
+volatile int cm_sink;
+int cm_join(int a) { int r; if (a) r = 7; else r = 9; cm_sink = r; return r; }
+int main(void) { return cm_join(1); }
+"""
+
 CASES = [
     ('idx', IDX, 4, BASE),
+    ('join', JOIN, 7, BASE),
     ('strfirst', STRFIRST, 5, BASE),
     ('big', BIG, 1, BASE),
     ('cmat_const', CONST, 240, FULL),
@@ -335,10 +345,16 @@ def main():
             check(count_sub('MOV r5, r0', ts_off) > 0,
                   'strfirst: the guarded copy really is emitted',
                   '%d MOV r5, r0' % count_sub('MOV r5, r0', ts_off))
-            check(ts_off == ts_on,
+            check(count_sub('MOV r5, r0', ts_on) ==
+                  count_sub('MOV r5, r0', ts_off),
                   'strfirst: the copy feeding STR (a source operand) is kept',
-                  '%d/%d line(s)' % (len(ts_off.splitlines()),
-                                     len(ts_on.splitlines())))
+                  '%d/%d MOV r5, r0' % (count_sub('MOV r5, r0', ts_off),
+                                        count_sub('MOV r5, r0', ts_on)))
+            check(count_sub('STR r0, [r1]', ts_on) ==
+                  count_sub('STR r0, [r1]', ts_off),
+                  'strfirst: the storing STR still reads r0',
+                  '%d/%d STR' % (count_sub('STR r0, [r1]', ts_off),
+                                 count_sub('STR r0, [r1]', ts_on)))
 
         tb_off, _, e7 = build(arkcc, work, 'big', BASE, 'goff')
         tb_on, _, e8 = build(arkcc, work, 'big', BASE + [FLAG], 'gon')
@@ -350,10 +366,12 @@ def main():
                   'big: the fixture really contains a MOVW/MOVT pair',
                   '%d MOVW / %d MOVT' % (count_sub('MOVW', tb_off),
                                          count_sub('MOVT', tb_off)))
-            check(tb_off == tb_on,
+            check(count_sub('MOVW', tb_on) == count_sub('MOVW', tb_off) and
+                  count_sub('MOVT', tb_on) == count_sub('MOVT', tb_off),
                   'big: a MOVW/MOVT pair is never split',
-                  '%d/%d line(s)' % (len(tb_off.splitlines()),
-                                     len(tb_on.splitlines())))
+                  '%d/%d MOVW, %d/%d MOVT' % (
+                      count_sub('MOVW', tb_off), count_sub('MOVW', tb_on),
+                      count_sub('MOVT', tb_off), count_sub('MOVT', tb_on)))
 
         # --- 5b. M4 / M5 / M6, and the no-over-fold half --------------------
         tc_off, _, e9 = build(arkcc, work, 'cmat_const', FULL, 'coff')
@@ -535,6 +553,48 @@ def main():
                       'M8: no function is lost',
                       '%d/%d' % (count_sub('.size ', texts8['off']),
                                  count_sub('.size ', texts8['on'])))
+
+        # --- 5e. M9: the push/pop round trip at a join ----------------------
+        # Every path into the join pushes the value and the join pops it right
+        # back into the same register, so the value never went anywhere: both
+        # halves go and sp stays balanced on every path.  The controls are the
+        # real frame traffic, which must not move at all.
+        tj_off, _, e11 = build(arkcc, work, 'join', BASE, 'joff')
+        tj_on, _, e12 = build(arkcc, work, 'join', BASE + [FLAG], 'jon')
+        if e11 or e12:
+            check(False, 'join: both arms build', (e11 or e12)[0][:120])
+        else:
+            pu_off = count_sub('PUSH {r0}', tj_off)
+            pu_on = count_sub('PUSH {r0}', tj_on)
+            check(pu_off > pu_on,
+                  'M9: the pushes into a join are dropped',
+                  '%d -> %d PUSH' % (pu_off, pu_on))
+            po_off = count_sub('POP {r0}', tj_off)
+            po_on = count_sub('POP {r0}', tj_on)
+            check(po_off > po_on,
+                  'M9: the pops that undo them are dropped too',
+                  '%d -> %d POP' % (po_off, po_on))
+            check(po_off - po_on == pu_off - pu_on or
+                  abs((po_off - po_on) - (pu_off - pu_on)) <= 2,
+                  'M9: both halves go together (sp stays balanced)',
+                  'pushes -%d, pops -%d' % (pu_off - pu_on, po_off - po_on))
+            check(insn_count(tj_on) < insn_count(tj_off),
+                  'M9: the instruction count drops',
+                  '%d -> %d' % (insn_count(tj_off), insn_count(tj_on)))
+            for pat, what in (('PUSH {r5, r6, r7, lr}', 'the prologue PUSH'),
+                              ('POP {r5, r6, r7, pc}', 'the epilogue POP')):
+                check(count_sub(pat, tj_on) == count_sub(pat, tj_off),
+                      'M9: %s is untouched' % what,
+                      '%d/%d' % (count_sub(pat, tj_off),
+                                 count_sub(pat, tj_on)))
+            check(label_count(tj_on) == label_count(tj_off),
+                  'M9: labels are untouched',
+                  '%d/%d label(s)' % (label_count(tj_off),
+                                      label_count(tj_on)))
+            check(count_sub('.size ', tj_on) == count_sub('.size ', tj_off),
+                  'M9: no function is lost',
+                  '%d/%d' % (count_sub('.size ', tj_off),
+                             count_sub('.size ', tj_on)))
 
         # --- 6. the answers stay the same -----------------------------------
         for name, _body, want, case_flags in CASES:

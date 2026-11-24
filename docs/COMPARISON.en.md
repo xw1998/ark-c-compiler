@@ -3,115 +3,101 @@
 English | [中文](COMPARISON.md)
 
 > In one sentence: **on the full STM32F4 HAL corpus, arkc with every
-> optimization on is 3.4× the instruction count and 3.3× the code bytes of
+> optimization on is 2.5× the instruction count and 2.6× the code bytes of
 > armcc `-O2`; the gap is not encoding quality, it is structural -- a value-stack
 > machine, liveness used only to delete copies, and intermediate results still
 > going through the frame.**
 >
-> Measurement script: `D:/tmp/cmp_final.py` (not in the repository). The whole
-> table below comes from one run of it, on the same source files with the same
-> macros and include paths.
+> Measurement scripts: `D:/tmp/fr/cmp_arm.py` (the six armcc/armclang arms) and
+> `D:/tmp/fr/cmpark_all.py` (the two arkc arms) -- neither is in the repository,
+> but both use the same counting regex and `ARKOBJ2` header as `docs/CMAT.md`
+> section 6. The whole table below comes from one run of each, on the same source
+> files with the same macros and include paths.
 
 ---
 
 ## 1. Corpus and method
 
-- **Sources**: `examples/ark_test/Core/Src/*.c` + `Drivers/STM32F4xx_HAL_Driver/Src/*.c`,
-  99 translation units. Three `*_template.c` produce empty code in all three
-  compilers, so they are **skipped symmetrically** => 96 effective.
+- **Sources**: `examples/ark_test/Core/Src/*.c` (5) + `Drivers/STM32F4xx_HAL_Driver/Src/*.c`
+  (94), 99 translation units. Four `*_template.c` produce empty code in all three
+  compilers, so they are **skipped symmetrically** => **95 effective units**.
 - **Macros and headers**: `-D STM32F401xE -D USE_HAL_DRIVER`, `-I examples/ark_test`,
   HAL `Inc`, `Core/Inc`, CMSIS `Device`/`Core`, `-I include`.
 - **CPU**: `-mcpu Cortex-M4` (`--target=arm-arm-none-eabi -mcpu=cortex-m4` for
   armclang).
 - **Instruction count**: for arkc, the lines in the `.s` that are non-empty, not
-  directives and not labels; for armcc / armclang, `fromelf --text -c` on the
-  executable sections, excluding `DCD/DCW/DCB/DCQ/ALIGN/SPACE/FIELD/EQU/DCI`.
-- **Code bytes**: arkc takes the code byte count from its own object header;
-  armcc / armclang sum the `Size` of the `SHF_EXECINSTR` sections reported by
-  `fromelf`.
-- **Toolchains**: ARM Compiler 5.06 update 7 (armcc/armasm/fromelf), ARM Compiler 6
-  (armclang).
+  directives and not labels (regex `^\s+[A-Za-z][A-Za-z0-9.]*\s`); for
+  armcc / armclang, `fromelf --text -c` on the executable sections, excluding
+  `DCD/DCW/DCB/DCQ/ALIGN/SPACE/FIELD/EQU/DCI`.
+- **Code bytes**: arkc takes the code-section length from its own object header
+  (`ARKOBJ2`); armcc / armclang sum the `Size` of the `SHF_EXECINSTR` sections
+  reported by `fromelf`.
+- **Toolchains**: ARM Compiler 5.06 update 7 (`D:/Keil_v5/ARM/ARMCC/bin`), ARM
+  Compiler 6 (`D:/Keil_v5/ARM/ARMCLANG/bin`).
 
 This method only compares "the code produced by compiling this batch of `.c`": no
-link-time optimization (LTO), no library functions. **Each arkc translation unit
-carries its own run-time helpers** (`__aeabi_memcpy`, `__arkcc_init_globals`,
-floating-point glue, ...), whereas armcc/armclang take the same routines from the C
-library -- on the arkc side that item is **920 instructions / 4.8%**
-(`__aeabi_memcpy` 380, `__REV16`/`__REVSH`/`__RRX` 156 each,
-`__arkcc_init_globals` 72), and without it arkc's user code is **18,192
-instructions**. The table does not deduct it, because that is Flash really
-occupied.
-
-> **Note (2026-11)**: the "each translation unit carries its own run-time
-> helpers" paragraph above describes the snapshot this document was taken from.
-> Two always-on, switchless changes have landed since: (1) unreferenced
-> `static` functions are no longer emitted ([DEADSTATIC.en.md](DEADSTATIC.en.md)),
-> so helpers such as `__REV16` / `__REVSH` / `__RRX` only stay in the image when
-> they are really called; (2) `__aeabi_memcpy` is emitted on demand, only when a
-> `BL __aeabi_memcpy` actually occurs in the unit. The "920 instructions / 4.8%"
-> deduction therefore shrinks considerably, while the table in SS2 is still the
-> snapshot reading and has **not been re-measured**. On the 95-TU HAL corpus the
-> two changes together save 1,737 instructions (-9.57%), and 2,538 (-13.98%)
-> with `-fopt-vreg` stacked on top.
+link-time optimization (LTO), no library functions. **An arkc translation unit may
+carry its own run-time helpers** (`__aeabi_memcpy`, `__arkcc_init_globals`,
+`__REV16` and friends), whereas armcc/armclang take the same routines from the C
+library. Two always-on, switchless mechanisms have already pushed that item down:
+(1) unreferenced `static` functions are no longer emitted
+([DEADSTATIC.en.md](DEADSTATIC.en.md)); (2) `__aeabi_memcpy` is emitted on demand.
+The table does **not** deduct it, because that Flash really is occupied.
 
 ## 2. Results
 
-Totals over the 96 effective translation units:
+Totals over the 95 effective units:
 
-| Compiler | Options | Instructions | Code bytes |
+| compiler | options | instructions | code bytes |
 | --- | --- | ---: | ---: |
-| **arkc** | `-O2` | 50,965 | 114,576 |
-| **arkc** | `-O2` + all `-fopt-*` (see §3) | **19,112** | **45,760** |
-| armcc | `-O0` | 7,969 | 18,788 |
-| armcc | `-O1` | 6,061 | 14,910 |
-| armcc | `-O2` | 5,629 | 13,942 |
-| armcc | `-O3 -Otime` | 5,750 | 15,322 |
-| armcc | `-O3 -Ospace` | 5,642 | 14,102 |
-| armclang | `-O2` | 5,068 | 13,856 |
-| armclang | `-Oz` | 4,250 | 11,292 |
+| **arkc** | `-O2` (no `-fopt-*`) | 49,186 | 110,468 |
+| **arkc** | `-O2` + all eighteen `-fopt-*` (see section 3) | **14,121** | **36,106** |
+| armcc | `-O1` | 6,051 | 14,888 |
+| armcc | `-O2` | 5,619 | 13,920 |
+| armcc | `-O3 -Otime` | 5,740 | 15,300 |
+| armcc | `-O3 -Ospace` | 5,632 | 14,080 |
+| armclang | `-O2` | 5,064 | 13,848 |
+| armclang | `-Oz` | 4,246 | 11,284 |
 
-Relative to armcc `-O2`:
+Against armcc `-O2` (5,619 instructions / 13,920 B):
 
-| Comparison | Instructions | Code bytes |
+| comparison | instructions | code bytes |
 | --- | ---: | ---: |
-| arkc `-O2` (no `-fopt-*`) | 9.1× | 8.2× |
-| arkc `-O2` + all `-fopt-*` | **3.4×** | **3.3×** |
+| arkc `-O2` (no `-fopt-*`) | 8.8× | 7.9× |
+| arkc `-O2` + every `-fopt-*` | **2.51×** | **2.59×** |
 
-**The ten optimization switches of 0.9.1 take the gap from 9.1× down to 3.4×**
-(−62.5% instructions, −60.1% code bytes).
+**The switches take the gap from 8.8× down to 2.5×** (instructions -71.3%, code
+bytes -67.3%).
 
-**IAR does not take part**: IAR EWARM 9.70 is installed
-(`D:\tools\IAR_EWARM_9.70\arm\bin\iccarm.exe`, V9.70.1.475/W64), but it has
-**no license** -- every compile stops at
-`Fatal error[LMS001]: License check failed` and not a single byte comes out.
-**So no IAR numbers are estimated**: without compiled bytes there is nothing to
-compare. The way to align with IAR is to implement the mechanisms reverse-
-engineered in `D:/工作/git_project/c_compiler/iar/docs/` (that is where
-`-fopt-cbranch` and `-fopt-copyprop` come from), not to invent a number.
+**IAR did not take part**: IAR EWARM 9.70 is installed on this machine
+(`D:\tools\IAR_EWARM_9.70\arm\bin\iccarm.exe`, V9.70.1.475/W64) but **has no
+license** -- every compile stops at `Fatal error[LMS001]: License check failed` and
+not one byte comes out. **So no IAR figure is estimated**: without compiled bytes
+there is nothing to compare. The way to line up with IAR is to implement the
+mechanisms reverse-engineered into `D:/工作/git_project/c_compiler/iar/docs/`
+(`-fopt-cbranch`, `-fopt-copyprop` and M6/M7 of `-fopt-cmat` came from there), not
+to invent a number.
 
-## 3. Which ten switches "all `-fopt-*`" means
+## 3. Which eighteen switches "all `-fopt-*`" means
 
 ```
--fopt-tailmerge -fopt-tailcall -fopt-divconst -fopt-xblock -fopt-sizeweight
--fopt-inline   -fopt-vstack    -fopt-addr     -fopt-strength -fopt-cbz
--fopt-branch   -fopt-imm       -fopt-peep     -fopt-cbranch -fopt-copyprop
--fopt-live     -fopt-regalloc
+-fopt-vstack  -fopt-addr     -fopt-strength -fopt-cbz      -fopt-branch
+-fopt-imm     -fopt-peep     -fopt-cbranch  -fopt-copyprop -fopt-live
+-fopt-prop    -fopt-deadpush -fopt-coalesce -fopt-slotreg  -fopt-constcache
+-fopt-vreg    -fopt-cmat     -fopt-pair
 ```
 
-The table actually uses the ten **that do something on this corpus**:
-`-fopt-vstack -fopt-addr -fopt-strength -fopt-cbz -fopt-branch -fopt-imm -fopt-peep
--fopt-cbranch -fopt-copyprop -fopt-live`.
+All of them are **off by default**; each has its own cropping macro in its own
+document (`-fopt-cmat` is `ARKCC_FEATURE_OPT_CMAT`, `-fopt-slotreg` is
+`ARKCC_FEATURE_OPT_SLOTREG`, `-fopt-constcache` is `ARKCC_FEATURE_OPT_CONSTCACHE`).
 
-`-fopt-regalloc` was also measured this round, but it **changes not a single
-instruction on this corpus** (identical instruction count and code bytes in both
-configurations). The reason is in its selection rule: the default mode only takes
-slots whose access width exceeds the 16-bit addressing form (offset > 124 or not a
-multiple of 4), because this pass does not rely on liveness and has to earn back
-the 4 extra bytes of the widened `PUSH/POP` by turning a wide access into a `MOV`.
-HAL locals almost all fall in `0..124` and are 4-byte aligned, so `saves = 0` and
-no slot is selected. **That is not a defect but its current design boundary**
-(`-fopt-regalloc-near` is the other mode, which takes near slots by access count
-and does change these functions).
+Four of them are new relative to the previous version of this table: `-fopt-cmat`
+(nine rules, -1,802 instructions / -4,062 B, see [CMAT.en.md](CMAT.en.md)),
+`-fopt-slotreg` (-64 instructions, archived by its pre-registered falsifier, see
+[SLOTREG.en.md](SLOTREG.en.md)), `-fopt-constcache` (-159 instructions, see
+[OPERAND_ALLOC.en.md](OPERAND_ALLOC.en.md) section 8) and `-fopt-pair`
+(-10 instructions). `-fopt-vreg` / `-fopt-coalesce` / `-fopt-prop` /
+`-fopt-deadpush` are described in [VREG.en.md](VREG.en.md) and their own documents.
 
 ## 4. Where the gap comes from: four structural reasons
 
@@ -164,6 +150,13 @@ Two further ceilings that were **quantified and judged not worth doing**:
 
 ## 5. Per-optimization measurements (same corpus)
 
+> **This section is the historical ladder**: it is the reading taken when the ten
+> switches landed, accumulated one at a time, and it exists to explain what each
+> rule is worth. **The current total is section 2** (14,121 instructions /
+> 36,106 B); the ladder no longer adds up to it, because dead-static suppression
+> and the on-demand run-time helper landed in between and four more tables were
+> added.
+
 **Cumulative** (each row adds one switch on top of the row above), 95 valid TUs,
 `-O2 --reloc-data -mcpu Cortex-M4`:
 
@@ -205,16 +198,17 @@ authoritative reading for the current binary.**
 ## 6. How to reproduce
 
 ```bash
-# 1) three arkc arms + five armcc arms + two armclang arms, all in one run
-python D:/tmp/cmp_final.py          # prints the summary, detail goes to D:/tmp/cmp_final.json
+# 1) the six armcc/armclang arms in one run (detail -> D:/tmp/fr/cmp_arm.json)
+python D:/tmp/fr/cmp_arm.py
 
-# 2) just arkc's four arms (base / cbranch / imm+peep / all three)
-python D:/tmp/cbr_bytes.py
+# 2) the two arkc arms: -O2 with no flag / all eighteen -fopt-*
+python D:/tmp/fr/cmpark_all.py
 ```
 
-Both scripts assume: current directory is the repository root, `./arkcc.exe` is a
-fresh `make` output, and Keil is installed at `D:/Keil_v5`. The corpus paths are
-hard-coded in the scripts; change the `srcs` line to use another corpus.
+Both scripts assume: `D:/工作/git_project/ark c compiler` is the repository root,
+`arkcc.exe` is a fresh `make` output, and Keil is installed at `D:/Keil_v5`. The
+corpus paths are hard-coded in the scripts; change the `srcs` line to use another
+corpus.
 
 ## 7. What this table must not be read as
 
