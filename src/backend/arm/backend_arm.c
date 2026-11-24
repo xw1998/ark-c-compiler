@@ -5656,7 +5656,7 @@ static void ark_frame_function(AsmBuffer *b, int from) {
     int used[16], base_used = 0;
     char base[8];
     int pi = -1, qi = -1, sub_i = -1, mov1_i = -1;
-    int oldN = 0, nkeep = 0, newN = 0, dropped = 0;
+    int oldN = 0, nkeep = 0, newN = 0, dropped = 0, pad_done = 0;
     int keep[16];
     AsmBuffer body, out;
 
@@ -5797,6 +5797,46 @@ static void ark_frame_function(AsmBuffer *b, int from) {
 
     fr_mark_used(body.buf, body.len, pn, np, used, base, &base_used);
 
+    /* 4b. every return path must arrive with the machine stack balanced.
+     *
+     * The frame base is what used to hide this: `MOV sp, base` restores sp from
+     * a saved value, so a `PUSH` that no `POP` ever matched still left the
+     * epilogue reading the right words.  With the base gone it does not --
+     * `-fopt-vstack` can leave exactly such a push at a branch that jumps to
+     * the common return block (`HAL_Init`: `MOV r0, #0` / `PUSH {r0}` /
+     * `B .L_ret`), and trimming the epilogue then popped the saved r5 into pc.
+     *
+     * Linear word depth is enough to see it: on reaching a return path the
+     * depth must be exactly the number of registers that POP names.  Anything
+     * else and this pass leaves the function alone, keeping its `MOV sp, base`.
+     * A depth that looks wrong only because two arms of an if/else share text
+     * order is a false bail, which costs code size and nothing else. */
+    {
+        int depth = np;
+        for (i = pi + 1; i < n; i++) {
+            const char *s;
+            int m, isret = 0;
+            if (i == mov1_i || i == sub_i || fr_fl[i]) continue;
+            if (fr_trim(b->buf + fr_ls[i], fr_ll[i], t, sizeof t) < 0) goto bail;
+            s = fr_skip_ws(t);
+            if (*s == '.' || *s == 0) continue;
+            if (strncmp(s, "PUSH", 4) == 0) {
+                if (!fr_braces(s, &qopen, &qclose)) goto bail;
+                m = fr_names(s, qopen, qclose, qn, 16);
+                if (m <= 0) goto bail;
+                depth += m;
+            } else if (strncmp(s, "POP", 3) == 0) {
+                if (!fr_braces(s, &qopen, &qclose)) goto bail;
+                m = fr_names(s, qopen, qclose, qn, 16);
+                if (m <= 0) goto bail;
+                for (k = 0; k < nepi; k++)
+                    if (fr_epi[k] == i) isret = 1;
+                if (isret && depth != m) goto bail;
+                depth -= m;
+            }
+        }
+    }
+
     /* 5. keep[]: the PUSH slots that are still needed */
     for (i = 0; i < np; i++) {
         keep[i] = 0;
@@ -5854,6 +5894,20 @@ static void ark_frame_function(AsmBuffer *b, int from) {
                 goto bail;
             en_n = fr_names(s, qopen, qclose, en, 16);
             if (en_n <= 0) goto bail;
+            /* Undo the padding in front of the POP.  The old code only
+             * rewrote an `ADD sp, sp, #n` it found in the text, which assumes
+             * the input had one -- but when the frame was torn down by
+             * `MOV sp, base` alone (the padding is covered by the base
+             * restore), there is no such line, and dropping the base then
+             * left `SUB sp, sp, #4` with nothing to undo it: HAL_SuspendTick
+             * ended in `POP {r5, r7, pc}` off a 16-byte frame and popped the
+             * saved r7 into pc. */
+            if (newN > 0 && !pad_done) {
+                asmbuf_puts(&out, "    ADD sp, sp, #");
+                asmbuf_int(&out, newN);
+                asmbuf_putc(&out, '\n');
+            }
+            pad_done = 0;
             asmbuf_puts(&out, "    POP {");
             k = 0;
             for (j = 0; j < en_n; j++) {
@@ -5871,14 +5925,27 @@ static void ark_frame_function(AsmBuffer *b, int from) {
             asmbuf_puts(&out, "}\n");
             continue;
         }
-        if (i == sub_i || fr_is_add_sp(s)) {
+        if (i == sub_i) {
             if (newN == 0) continue;
             if (newN != oldN) {
-                asmbuf_puts(&out, (i == sub_i) ? "    SUB sp, sp, #" : "    ADD sp, sp, #");
+                asmbuf_puts(&out, "    SUB sp, sp, #");
                 asmbuf_int(&out, newN);
                 asmbuf_putc(&out, '\n');
                 continue;
             }
+        } else if (fr_is_add_sp(s)) {
+            /* An `ADD sp, sp, #oldN` in front of a return path is the same
+             * teardown this pass now synthesises for every path (see below);
+             * emitting both would undo the padding twice. */
+            if (newN == 0) continue;
+            if (newN != oldN) {
+                asmbuf_puts(&out, "    ADD sp, sp, #");
+                asmbuf_int(&out, newN);
+                asmbuf_putc(&out, '\n');
+                pad_done = 1;
+                continue;
+            }
+            pad_done = 1;
         } else if (!base_used && (i == mov1_i || fr_is_mov_sp_base(s, base))) {
             /* The frame base is only ever built by `MOV base, sp` and torn down
              * by `MOV sp, base`, and both are excluded from `body` above -- so
@@ -5893,6 +5960,7 @@ static void ark_frame_function(AsmBuffer *b, int from) {
              * return path. */
             continue;
         }
+        if (t[0] != 0 && t[strlen(t) - 1] == ':') pad_done = 0;
         for (k = 0; k < fr_ll[i]; k++)
             asmbuf_putc(&out, b->buf[fr_ls[i] + k]);
         asmbuf_putc(&out, '\n');

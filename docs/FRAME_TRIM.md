@@ -123,3 +123,102 @@ padding，`SUB` 仍是原来的立即数）。若原帧长本来就不是 8 的�
 
 `abi_stack_args` 单开关 `-fopt-frame` = 50（修前 1）；`shift64` 五开关 = 50；
 23 开关 `tests/arm_exec` 40/40；`make test-frame` 全过；95 TU 编译 0 err。
+
+## 7 修订（2026-11-25）：两处误编译与栈平衡守卫
+
+上一节的补偿只覆盖「帧基址还在用」（`base_used == 1`）与「输入里本来就有一行
+`ADD sp, sp, #n`」两条路。全语料普查时发现剩下两条路都是误编译，二者都是
+**「删了槽，但 sp 的拆除少做了一步」**。
+
+### 7.1 缺陷 A：合成出来的 padding 没人拆
+
+`base_used == 0`（帧基址建了但 body 从不引用）时，本 pass 按
+`newN = (nkeep % 2 == 0) ? 0 : 4` 合成对齐 padding，并在序言发 `SUB sp, sp, #newN`。
+旧实现的拆除侧却只在**输入文本里本来就有 `ADD sp, sp, #oldN` 行**时才改写/保留它；
+当原来的拆除是 `MOV sp, base` 单条（padding 被基址复原顺带覆盖，没有 ADD 行）时，
+`MOV sp, base` 会因为 `base_used == 0` 被删掉，而 `newN == oldN` 又让 `SUB` 原样留下
+——**没有任何一条指令把 padding 还回去**。
+
+`HAL_SuspendTick`（22 开关）修前输出：
+
+```
+    PUSH {r5, r7, lr}          ; 3 个字
+    SUB sp, sp, #4             ; 帧 16 字节
+    ...
+    POP {r5, r7, pc}           ; 只弹 3 个字：r5 取到空洞、pc 取到保存的 r7
+```
+
+这是必崩的误编译：返回时 pc 被写成保存的 r7，sp 也高 4 字节。
+
+修法：拆除侧不再依赖输入里有没有 ADD 行 —— 每个返回路径在 `POP` 之前，只要
+`newN > 0` 且本路径还没有做过拆除（`pad_done`），就合成 `ADD sp, sp, #newN`。
+对 `base_used == 1`（`MOV sp, base` + `ADD #newN`）与 `base_used == 0`（无基址）两种
+情形，`ADD #newN` 都恰好把 sp 送到 `sp_entry - 4 * nkeep`，于是两条路合并成一条。
+`pad_done` 在每个标签行清零，防止上一条路径的拆除状态泄漏到下一条（重复或漏加）。
+
+修后：
+
+```
+    PUSH {r5, r7, lr}
+    SUB sp, sp, #4
+    ...
+    ADD sp, sp, #4
+    POP {r5, r7, pc}
+```
+
+### 7.2 缺陷 B：分支上未配对的 `PUSH {r0}`
+
+`-fopt-vstack` 在「跳到公共返回块」的分支前会留一个永不弹出的 `PUSH {r0}`
+（`return expr` 在跳转前把值压栈，目标处又用 `MOV r0, #imm` 重新物化）：
+
+```
+    MOV r0, #0
+    PUSH {r0}                  ; 没有配对的 POP
+    B .L_HAL_Init_0
+```
+
+这在 0.9.1 之前一直无害，**只因为 `MOV sp, r6` 会把 sp 绝对复原**。帧基址一旦被
+`-fopt-frame` 删掉，epilogue 的 `POP` 就从错位的栈上取字：`HAL_Init` 修前
+`PUSH {r5, lr}` + `POP {r5, pc}` 看似平衡，实际 `r5` 被恢复成那个泄漏的 0
+（调用者的被调用者保存寄存器被踩），只是 pc 恰好落在 lr 上才没有立刻崩。
+
+修法不是补偿而是**守卫**：本 pass 在 `fr_mark_used` 之后做一次线性栈深度扫描，从
+`np` 起沿函数文本累加（`PUSH` 加、`POP` 减），到每个返回路径时深度必须正好等于该
+`POP` 命名的寄存器数，否则整函数弃权（保留 `MOV sp, base` 与原始拆除）。
+
+**为什么是弃权**：路径相关的栈不平衡没有单一常量可补偿；而线性扫描看不见分支汇合，
+只会在「两条臂共享文本顺序」时假弃权 —— 假弃权的代价是**只损失体积**，方向与
+「宁可报错，不给错答案」一致。注释里写清了这一点。
+
+代价（本语料）：22 开关输入文本上 **45 个函数**的返回路径栈深度不平衡，这 45 个
+一律不再裁剪。真正的根因（前端在 `return` 路径上多压一个字、目标处重新物化常量）
+在文本层不能安全判定该死，登记为后续项（需要 CFG 或 IR 侧修）。
+
+### 7.3 代价与读数
+
+95 TU、22 开关（`off` / 19 开关两臂不受影响，读数与 `docs/VREG.md` §18.5 一致）：
+
+| 口径 | 指令 | 字节 |
+| --- | ---: | ---: |
+| 修前（`0521238`） | 12,215 | 404,970 |
+| 修后 | **12,258（+43 / +0.35%）** | **406,264（+1,294 B / +0.32%）** |
+
+逐函数：**40 个函数**的文本变化，其中 **28 个是守卫弃权**（`HAL_Init`、`HAL_InitTick`、
+`HAL_DMA_DeInit`、`HAL_DMA_Start`、`HAL_RCCEx_PeriphCLKConfig`、`LL_PLL_ConfigSystemClock_*`
+等），**12 个是缺陷 A 修好后补了一条 `ADD sp, sp, #4`**（`HAL_SuspendTick`、
+`HAL_DBGMCU_DisableDBG{Sleep,Stop,Standby}Mode`、`HAL_MPU_Disable`、`HAL_FLASH_OB_Launch`、
+`HAL_PWR_DeInit`、`HAL_PWR_DisableSleepOnExit`、`HAL_RCC_GetPCLK{1,2}Freq`、
+`FLASH_FlushCaches`、`HAL_PWR_DisableSEVOnPend`）。`DMB SY` 1 处、`CMP #0`+条件跳相邻对
+95 处均未变。
+
+这 +1,294 B 是**修误编译的价格，不是新特性**：同一份语料里，`-fopt-frame` 现在在
+40 个函数上退化为「不动」，而不是产出会崩或会踩寄存器的代码。
+
+### 7.4 门禁
+
+- `make test` 全绿（21 套，0 failed / 1 skipped）；
+- `tests/arm_exec` 23 开关 **40/40**；`make test-frame` 全过；
+- 裁剪建置（`ARKCC_FEATURE_OPT_FRAME=0`）按名拒绝 `-fopt-frame`（`C3900U`），
+  lite 档的 5 个开关照常接受（23/23 拒绝、5/5 接受）；
+- 95 TU 编译 0 err；`-fopt-frame` 关闭时产物逐字节不变（`make test` 的
+  byte-identical 套件覆盖）。

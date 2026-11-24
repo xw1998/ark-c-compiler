@@ -144,3 +144,116 @@ the real win is stack, see §3).
 `abi_stack_args` with `-fopt-frame` alone = 50 (1 before the fix); `shift64` with five
 flags = 50; `tests/arm_exec` under 23 switches 40/40; `make test-frame` fully green;
 95 TUs compile without error.
+
+## 7 Revision (2026-11-25): two miscompiles and a stack-balance guard
+
+The compensation in §6 covers only two paths: "the frame base is still used"
+(`base_used == 1`) and "the input already carried an `ADD sp, sp, #n` line". Sweeping the
+whole corpus showed the two remaining paths are both miscompiles, and both have the same
+shape: **a slot was dropped, but one step of the sp teardown was skipped**.
+
+### 7.1 Defect A: synthesised padding that nobody removes
+
+When `base_used == 0` (the base was built but the body never names it) the pass computes
+the alignment padding itself, `newN = (nkeep % 2 == 0) ? 0 : 4`, and emits
+`SUB sp, sp, #newN` in the prologue. The teardown side, however, only rewrote or kept an
+`ADD sp, sp, #oldN` **that was already in the input text**. When the original teardown was a
+single `MOV sp, base` (the padding is covered by restoring the base, so there is no ADD
+line), dropping the base because `base_used == 0` left `newN == oldN`, so the `SUB` stayed
+as it was and **nothing gave the padding back**.
+
+`HAL_SuspendTick` under 22 switches, before the fix:
+
+```
+    PUSH {r5, r7, lr}          ; three words
+    SUB sp, sp, #4             ; a 16-byte frame
+    ...
+    POP {r5, r7, pc}           ; pops three words only: r5 takes the hole, pc takes the saved r7
+```
+
+That is a guaranteed crash: the return jumps to the saved value of r7, and sp is 4 bytes
+high.
+
+Fix: the teardown no longer depends on the input carrying an ADD line — in front of every
+return path's `POP`, if `newN > 0` and this path has not already undone the padding
+(`pad_done`), the pass synthesises `ADD sp, sp, #newN`. For both `base_used == 1`
+(`MOV sp, base` + `ADD #newN`) and `base_used == 0` (no base) that single `ADD #newN` lands
+sp exactly at `sp_entry - 4 * nkeep`, so the two paths merge into one. `pad_done` is reset on
+every label line so that one path's teardown state cannot leak into the next (adding it
+twice or not at all).
+
+After the fix:
+
+```
+    PUSH {r5, r7, lr}
+    SUB sp, sp, #4
+    ...
+    ADD sp, sp, #4
+    POP {r5, r7, pc}
+```
+
+### 7.2 Defect B: an unmatched `PUSH {r0}` on a branch
+
+`-fopt-vstack` leaves a `PUSH {r0}` that no `POP` ever matches in front of a branch that
+jumps to the common return block (`return expr` pushes the value, then the target
+re-materialises it with `MOV r0, #imm`):
+
+```
+    MOV r0, #0
+    PUSH {r0}                  ; no matching POP
+    B .L_HAL_Init_0
+```
+
+This was harmless before 0.9.1 **only because `MOV sp, r6` restores sp absolutely**. Once
+`-fopt-frame` removes the frame base the epilogue's `POP` reads from a shifted stack:
+`HAL_Init` was emitted as `PUSH {r5, lr}` + `POP {r5, pc}`, which looks balanced, but r5 was
+restored from the leaked 0 (the caller's callee-saved register was clobbered); only because
+pc happened to land on the saved lr did it not crash outright.
+
+The fix is a **guard**, not a compensation: after `fr_mark_used` the pass walks the function
+text once, linearly, keeping a word depth that starts at `np` (`PUSH` adds, `POP`
+subtracts). On reaching every return path the depth must equal exactly the number of
+registers that `POP` names; otherwise the whole function is bailed (its `MOV sp, base` and
+original teardown are kept).
+
+**Why bail.** A path-dependent stack imbalance has no single constant that compensates it,
+and a linear scan cannot see branch joins, so it will sometimes bail on a function that is
+really fine — and a false bail costs **code size only**, which is the same direction as
+"rather report an error than give a wrong answer". The code comments say so.
+
+Cost on this corpus: **45 functions** have an unbalanced return depth in the 22-switch input
+text, and all 45 are now left untrimmed. The root cause (the front end pushing a word on a
+`return` path and re-materialising the constant at the target) cannot be decided safely in
+the text layer; it is registered as follow-up work (needs a CFG or an IR-side fix).
+
+### 7.3 Cost and readings
+
+95 TUs, 22 switches (`off` and the 19-switch arms are unaffected and still read exactly as
+in `docs/VREG.md` §18.5):
+
+| Configuration | Instructions | Bytes |
+| --- | ---: | ---: |
+| before (`0521238`) | 12,215 | 404,970 |
+| after | **12,258 (+43 / +0.35%)** | **406,264 (+1,294 B / +0.32%)** |
+
+Per function: **40 functions** change, of which **28 are guard bails** (`HAL_Init`,
+`HAL_InitTick`, `HAL_DMA_DeInit`, `HAL_DMA_Start`, `HAL_RCCEx_PeriphCLKConfig`,
+`LL_PLL_ConfigSystemClock_*`, and so on) and **12 are defect A being fixed, one synthesised
+`ADD sp, sp, #4` each** (`HAL_SuspendTick`, `HAL_DBGMCU_DisableDBG{Sleep,Stop,Standby}Mode`,
+`HAL_MPU_Disable`, `HAL_FLASH_OB_Launch`, `HAL_PWR_DeInit`, `HAL_PWR_DisableSleepOnExit`,
+`HAL_RCC_GetPCLK{1,2}Freq`, `FLASH_FlushCaches`, `HAL_PWR_DisableSEVOnPend`). The single
+`DMB SY` and the 95 adjacent `CMP #0` + conditional-branch pairs are unchanged.
+
+The +1,294 B is **the price of fixing miscompiles, not a new feature**: on the same corpus
+`-fopt-frame` now degrades to "leave the function alone" on those 40 functions instead of
+producing code that crashes or clobbers registers.
+
+### 7.4 Gates
+
+- `make test` fully green (21 suites, 0 failed / 1 skipped);
+- `tests/arm_exec` under 23 switches **40/40**; `make test-frame` fully green;
+- the cropped build (`ARKCC_FEATURE_OPT_FRAME=0`) refuses `-fopt-frame` by name
+  (`C3900U`), while the 5 lite-profile switches are still accepted (23/23 refused,
+  5/5 accepted);
+- 95 TUs compile with 0 err; with `-fopt-frame` off the output is byte-identical (covered by
+  the byte-identical suites in `make test`).
