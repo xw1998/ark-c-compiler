@@ -5532,6 +5532,7 @@ static int fr_ls[FR_MAX_LINES];
 static int fr_ll[FR_MAX_LINES];
 static int fr_epi[FR_MAX_EPI];             /* line of each return path's POP */
 static unsigned char fr_fl[FR_MAX_LINES];  /* line restores sp for a return */
+static unsigned char fr_eb[FR_MAX_EPI];    /* return path undoes the frame with MOV sp, base */
 
 static int fr_ident(int c);
 
@@ -5657,6 +5658,7 @@ static void ark_frame_function(AsmBuffer *b, int from) {
     char base[8];
     int pi = -1, qi = -1, sub_i = -1, mov1_i = -1;
     int oldN = 0, nkeep = 0, newN = 0, dropped = 0, pad_done = 0;
+    int keep_base = 0, need_base = 0;
     int keep[16];
     AsmBuffer body, out;
 
@@ -5760,12 +5762,14 @@ static void ark_frame_function(AsmBuffer *b, int from) {
     memset(fr_fl, 0, (size_t)n);
     for (i = 0; i < nepi; i++) {
         int q = fr_epi[i] - 1, seen = 0;
+        fr_eb[i] = 0;
         while (q > pi && seen < 3) {
             const char *s;
             if (fr_trim(b->buf + fr_ls[q], fr_ll[q], t, sizeof t) < 0) goto bail;
             s = fr_skip_ws(t);
             if (*s == 0 || *s == '.') { q--; continue; }
             if (fr_is_mov_sp_base(s, base) || fr_is_add_sp(s)) {
+                if (fr_is_mov_sp_base(s, base)) fr_eb[i] = 1;
                 fr_fl[q] = 1;
                 seen++;
                 q--;
@@ -5808,7 +5812,12 @@ static void ark_frame_function(AsmBuffer *b, int from) {
      *
      * Linear word depth is enough to see it: on reaching a return path the
      * depth must be exactly the number of registers that POP names.  Anything
-     * else and this pass leaves the function alone, keeping its `MOV sp, base`.
+     * else and this pass asks for `keep_base`: it keeps `MOV sp, base` and the
+     * base register slot, so every return path recomputes sp from the saved
+     * base and a leaked `PUSH` cannot move the words its POP reads -- the leak
+     * becomes harmless instead of fatal.  That only works when every path
+     * really restores sp from the base (checked against fr_eb below); a path
+     * that does not still bails.
      * A depth that looks wrong only because two arms of an if/else share text
      * order is a false bail, which costs code size and nothing else. */
     {
@@ -5831,10 +5840,17 @@ static void ark_frame_function(AsmBuffer *b, int from) {
                 if (m <= 0) goto bail;
                 for (k = 0; k < nepi; k++)
                     if (fr_epi[k] == i) isret = 1;
-                if (isret && depth != m) goto bail;
+                if (isret && depth != m) need_base = 1;
                 depth -= m;
             }
         }
+    }
+    if (need_base) {
+        /* keep_base only protects a leaked push if each path's sp is rebuilt
+         * from the base frame pointer.  Any path that tears the frame down by
+         * padding arithmetic alone is not covered, so it still bails. */
+        for (k = 0; k < nepi; k++) if (!fr_eb[k]) goto bail;
+        keep_base = 1;
     }
 
     /* 5. keep[]: the PUSH slots that are still needed */
@@ -5842,16 +5858,22 @@ static void ark_frame_function(AsmBuffer *b, int from) {
         keep[i] = 0;
         if (strcmp(pn[i], "lr") == 0) keep[i] = 1;
         else if (used[i]) keep[i] = 1;
-        else if (base_used && strcmp(pn[i], base) == 0) keep[i] = 1;
+        else if ((base_used || keep_base) && strcmp(pn[i], base) == 0) keep[i] = 1;
     }
     nkeep = 0;
     for (i = 0; i < np; i++) if (keep[i]) nkeep++;
     dropped = np - nkeep;
-    if (dropped <= 0 && base_used) goto bail;
+    if (dropped <= 0 && base_used && !keep_base) goto bail;
 
     /* 6. new padding: sp must stay 8-byte aligned (nkeep counts lr, which is
      *    4 bytes like every other slot). */
-    if (base_used) {
+    if (keep_base && !base_used) {
+        /* `MOV sp, base` alone restores sp, so the padding has nothing left
+         * to cover and every byte of it can go: base is sp right after the
+         * PUSH, and the epilogue unwinds straight from there.  The body never
+         * names base, so no stack argument is read through it. */
+        newN = 0;
+    } else if (base_used) {
         /* The frame base is sp after the padding, so the incoming stack
          * arguments sit at [base, #(4*np + oldN) + k] -- the distance is the
          * PUSH list plus the padding.  Dropping slots therefore has to be
@@ -5946,7 +5968,7 @@ static void ark_frame_function(AsmBuffer *b, int from) {
                 continue;
             }
             pad_done = 1;
-        } else if (!base_used && (i == mov1_i || fr_is_mov_sp_base(s, base))) {
+        } else if (!base_used && !keep_base && (i == mov1_i || fr_is_mov_sp_base(s, base))) {
             /* The frame base is only ever built by `MOV base, sp` and torn down
              * by `MOV sp, base`, and both are excluded from `body` above -- so
              * `base_used == 0` means the body never names the base, i.e. the

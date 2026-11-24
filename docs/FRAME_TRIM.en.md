@@ -251,9 +251,88 @@ producing code that crashes or clobbers registers.
 ### 7.4 Gates
 
 - `make test` fully green (21 suites, 0 failed / 1 skipped);
-- `tests/arm_exec` under 23 switches **40/40**; `make test-frame` fully green;
+- `tests/arm_exec` under 23 switches **40/40**; `tests/arm_exec --extra=-fopt-frame
+  --extra=-fopt-voldmb` **40/40** (there is no `make test-frame` target);
 - the cropped build (`ARKCC_FEATURE_OPT_FRAME=0`) refuses `-fopt-frame` by name
   (`C3900U`), while the 5 lite-profile switches are still accepted (23/23 refused,
   5/5 accepted);
 - 95 TUs compile with 0 err; with `-fopt-frame` off the output is byte-identical (covered by
   the byte-identical suites in `make test`).
+
+---
+
+## 8 Revision 2 (2026-11-25): `keep_base` -- taking the whole-function bail back
+
+### 8.1 Why a second revision
+
+Section 7 traded safety for a whole-function bail, and the price was 28 functions losing
+trimming entirely. Read the root cause of Section 7.2 backwards and it says something else:
+the leaked `PUSH` is only fatal **because the frame base was deleted with it**. As long as
+every return path still runs `MOV sp, base`, the epilogue does not read from wherever sp
+happens to point -- it rebuilds sp from the saved base, so the leak is still there but it can
+no longer move the words the `POP` reads.
+
+So the guard becomes three-way instead of two-way:
+
+1. return path balanced -> trim as before (the behaviour prior to Section 7);
+2. unbalanced, but every return path can rebuild sp with `MOV sp, base` -> **`keep_base`**:
+   keep the base, keep trimming the PUSH/POP slots and the padding;
+3. unbalanced and some path can only tear the frame down with `ADD sp` -> only then fall back
+   to the Section 7 bail.
+
+### 8.2 Implementation (`ark_frame_function`)
+
+- the depth scan no longer `goto bail`s when a `POP {..pc}` arrives at a depth that differs
+  from its register count; it only sets `need_base`;
+- after the scan every return path is checked against `fr_eb[]` (recorded by the backwards scan
+  in step 3b: "this path's teardown contains `MOV sp, base`"). Any path without it still
+  bails, otherwise `keep_base = 1`;
+- under `keep_base` the base register slot stays in the PUSH/POP lists (otherwise `MOV sp, base`
+  reads a register nothing saved), and both `MOV base, sp` and `MOV sp, base` are kept;
+- padding splits two ways: when the body never names the base (`base_used == 0`) the whole
+  padding goes (`newN = 0`, sp is restored by `MOV sp, base`, and no stack argument is read
+  through the base anyway); when the body does use the base, Section 7's rule applies
+  (`newN = oldN + 4 * dropped`) because stack-argument offsets are computed from
+  "base = sp minus padding", so the total frame size must be preserved.
+
+### 8.3 Readings
+
+| Configuration | Instructions | Bytes |
+| --- | ---: | ---: |
+| before (`0521238`, with the miscompiles) | 12,215 | 404,970 |
+| Section 7 guard (whole-function bail) | 12,258 | 406,264 |
+| Section 8 `keep_base` | **12,239** | **405,426** |
+
+That is **-19 instructions / -838 B** against the guard build and **+24 instructions / +456 B**
+against the pre-fix build -- the net price of the miscompile fixes, cut down from +43 / +1,294 B.
+`off` (49,186 / 927,055) and the 19-switch arm (12,602 / 412,756) are byte-identical: with frame
+off this path never runs, so OFF IS OFF still holds.
+
+Per function (against the "frame off" input text): **123 functions are rewritten, 51 of them
+with fewer instructions, none with more.** Typical: `HAL_InitTick` 40->36, `HAL_ResumeTick`
+9->6, `HAL_NVIC_EnableIRQ` 7->5, `HAL_DMA_Abort_IT` 29->26, `HAL_Init` 26->25.
+
+### 8.4 Self-check: one recomputable invariant
+
+New check (reads the emitted text only, no pass-internal state): for every function in the
+95-TU, 22-switch output, run a linear stack-depth scan; whenever a `POP {..pc}` arrives at a
+depth that does not match its register count, that function **must** contain `MOV sp, rX`.
+
+| Build | Functions | with `MOV sp, base` | unbalanced **and** no base |
+| --- | ---: | ---: | ---: |
+| before (`0521238`) | 216 | 161 | **6 functions / 13 paths** (`HAL_Init`, `HAL_InitTick`, `HAL_DMA_Abort_IT`, `HAL_PWR_PVD_IRQHandler`, `HAL_RCC_NMI_IRQHandler`, `HAL_RCC_DeInit`) |
+| Section 8 `keep_base` | 216 | 167 | **0** |
+
+Note this invariant is **not** "the stack is always balanced" -- the leak from Section 7.2 is
+still there (that is the value-stack pass's debt, registered at the end of Section 7.2). What it
+proves is that an imbalance can no longer misalign the epilogue's `POP`.
+
+### 8.5 Gates
+
+- `make test` fully green: `RC=0`, 612 `PASS`, 486 `[ok]`, `0 failure(s)`; the single `FAIL
+  selftest` line is the soft-float comparator's **deliberate negative self-check**, immediately
+  followed by `self check: comparator rejects a wrong answer (ok)`;
+- `tests/arm_exec` under 23 switches **40/40**;
+- cropped build (`ARKCC_PROFILE_STM32_MIN`), all 28 switch names tried: **23/23 refused
+  (`C3900U`)**, the 5 lite-profile switches **5/5 accepted**;
+- 95 TUs compile with **0 err**; with `-fopt-frame` off the output is byte-identical to `dcc43ea`.

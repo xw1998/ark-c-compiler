@@ -217,8 +217,80 @@ padding，`SUB` 仍是原来的立即数）。若原帧长本来就不是 8 的�
 ### 7.4 门禁
 
 - `make test` 全绿（21 套，0 failed / 1 skipped）；
-- `tests/arm_exec` 23 开关 **40/40**；`make test-frame` 全过；
+- `tests/arm_exec` 23 开关 **40/40**；`tests/arm_exec --extra=-fopt-frame --extra=-fopt-voldmb` **40/40**
+  （没有 `make test-frame` 这个目标）；
 - 裁剪建置（`ARKCC_FEATURE_OPT_FRAME=0`）按名拒绝 `-fopt-frame`（`C3900U`），
   lite 档的 5 个开关照常接受（23/23 拒绝、5/5 接受）；
 - 95 TU 编译 0 err；`-fopt-frame` 关闭时产物逐字节不变（`make test` 的
   byte-identical 套件覆盖）。
+
+---
+
+## 8 修订二（2026-11-25）：`keep_base` —— 把「整函数弃权」收回成「保留帧基址」
+
+### 8.1 为什么还要再改一次
+
+§7 用「整函数弃权」换安全，价格是 28 个函数彻底失去裁剪。但把 §7.2 的根因倒过来读会发现：
+泄漏的 `PUSH` 之所以致命，**只因为帧基址被一起删掉了**。只要每个返回路径仍保留
+`MOV sp, base`，epilogue 就不是从 sp 的当下位置取字，而是先把 sp 从保存的基址绝对复原 ——
+泄漏仍然存在，但已经不可能把 `POP` 读错位。
+
+于是守卫从二值改成三分：
+
+1. 返回路径栈平衡 → 照旧裁（§7 之前的行为）；
+2. 不平衡，但每条返回路径都能用 `MOV sp, base` 复原 → **`keep_base`**：保留基址，继续裁
+   PUSH/POP 槽与 padding；
+3. 不平衡且某条路径只能靠 `ADD sp` 拆除 → 才退回 §7 的整函数弃权。
+
+### 8.2 实现（`ark_frame_function`）
+
+- 深度扫描遇到 `POP {..pc}` 且深度不等于该 `POP` 的寄存器数时，不再 `goto bail`，只置
+  `need_base`；
+- 扫描结束后逐条返回路径查 `fr_eb[]`（§3b 倒序扫描时记下的「这条路径的拆除里有
+  `MOV sp, base`」）；任一路径没有它才 `goto bail`，否则 `keep_base = 1`；
+- `keep_base` 下：基址寄存器槽保留在 PUSH/POP 名单里（否则 `MOV sp, base` 会读一个没被
+  保存的寄存器）；`MOV base, sp` 与 `MOV sp, base` 两条 mov 都保留；
+- padding 分两种：函数体从不使用基址（`base_used == 0`）时整块 padding 删掉
+  （`newN = 0`，由 `MOV sp, base` 复原 sp，此时也没有任何栈参数经基址读取）；函数体使用
+  基址时按 §7 的旧规则把删掉的槽补回 padding（`newN = oldN + 4*dropped`），因为栈参数的
+  偏移是按「基址 = sp 减 padding」算的，帧总大小必须守恒。
+
+### 8.3 读数
+
+| 口径 | 指令 | 字节 |
+| --- | ---: | ---: |
+| 修前（`0521238`，含误编译） | 12,215 | 404,970 |
+| §7 守卫（整函数弃权） | 12,258 | 406,264 |
+| §8 `keep_base` | **12,239** | **405,426** |
+
+相对守卫版 **−19 条 / −838 B**；相对修前 **+24 条 / +456 B**（修误编译的净价，已从 +43 /
++1,294 B 收窄）。`off`（49,186 / 927,055）与 19 开关（12,602 / 412,756）逐字不变 ——
+frame 关闭时本条路径根本不执行，OFF IS OFF 保持。
+
+逐函数（相对「frame 关闭」的输入文本）：**123 个函数被改写，51 个指令变少，没有一个变多**。
+典型：`HAL_InitTick` 40→36、`HAL_ResumeTick` 9→6、`HAL_NVIC_EnableIRQ` 7→5、
+`HAL_DMA_Abort_IT` 29→26、`HAL_Init` 26→25。
+
+### 8.4 自检：一条可复算的不变量
+
+新增检查（只读产物、不依赖 pass 内部状态）：对 95 TU 的 22 开关文本逐函数做线性栈深度
+扫描；只要某条 `POP {..pc}` 的深度与累计深度不符，该函数就**必须**含 `MOV sp, rX`。
+
+| 构建 | 函数数 | 含 `MOV sp, base` | 不平衡**且**无 base 的函数 |
+| --- | ---: | ---: | ---: |
+| 修前（`0521238`） | 216 | 161 | **6 个函数 / 13 条路径**（`HAL_Init`、`HAL_InitTick`、`HAL_DMA_Abort_IT`、`HAL_PWR_PVD_IRQHandler`、`HAL_RCC_NMI_IRQHandler`、`HAL_RCC_DeInit`） |
+| §8 `keep_base` | 216 | 167 | **0** |
+
+注意这条不变量**不是**「栈一定平衡」—— §7.2 的泄漏仍然在（那是值栈 pass 的欠账，见
+`docs/FRAME_TRIM.md` §7.2 末尾登记的后续项），它证明的是「不平衡已经不可能把 epilogue
+的 `POP` 读错位」。
+
+### 8.5 门禁
+
+- `make test` 全绿：`RC=0`、612 个 `PASS`、486 个 `[ok]`、`0 failure(s)`，日志里唯一一行
+  `FAIL selftest` 是软浮点比较器的**故意负自检**，紧跟
+  `self check: comparator rejects a wrong answer (ok)`；
+- `tests/arm_exec` 23 开关 **40/40**；
+- 裁剪建置（`ARKCC_PROFILE_STM32_MIN`）28 个开关逐个试名：**23/23 拒绝（`C3900U`）**、
+  lite 档 **5/5 接受**；
+- 95 TU 编译 **0 err**；`-fopt-frame` 关闭时产物与 `dcc43ea` 逐字一致。
