@@ -6048,6 +6048,264 @@ bail:
     return;
 }
 #endif /* ARKCC_FEATURE_OPT_FRAME */
+#if ARKCC_FEATURE_OPT_EXIT
+/* ------------------ dead frame maintenance at the exits (-fopt-exit) -------
+ *
+ * Every function with a frame pointer prints `MOV <base>, sp` in the prologue
+ * and `MOV sp, <base>` in front of every return POP: the epilogue rebuilds sp
+ * from the saved base instead of trusting the body to leave the machine stack
+ * balanced.  That is the right default -- a push leaked inside one arm of an
+ * if would otherwise move the words its POP reads -- but it is pure overhead
+ * when the body never touches sp at all, because then sp is still equal to the
+ * base at every single return.
+ *
+ * This pass deletes, in exactly that case:
+ *
+ *   E1  every `MOV sp, <base>` -- the value it writes is the value sp already
+ *       holds, so the instruction is a no-op, and
+ *   E2  the prologue's `MOV <base>, sp` too, when the base register appears
+ *       nowhere else in the function: the frame base was built and then
+ *       thrown away without ever being read as a base.
+ *
+ * Both are deletions: no label is added, no branch is rewritten, and the frame
+ * size is untouched, so the control flow, the literal-pool offsets and the
+ * far-offset fixer below all see the same function they saw before.
+ *
+ * Every line after the prologue is classified, and anything not modelled makes
+ * the whole function refuse:
+ *   - a POP that names pc is a return path and is left alone,
+ *   - `MOV sp, <base>` is E1's candidate; the `ADD sp, sp, #N` that may follow
+ *     it is the epilogue's own frame teardown and is kept (sp has to walk back
+ *     over the frame before the POP), but it is only accepted in that position,
+ *   - PUSH, a POP without pc, `LDR sp` / `STR sp`, an sp adjustment anywhere
+ *     else, in short any other mention of sp: the body moves the stack, so the
+ *     base is load-bearing and nothing is deleted,
+ *   - any other mention of the base register means the frame is really used,
+ *     which only rules E2 out (a PUSH/POP naming it is its save slot, not a
+ *     use, and those live in the prologue and the epilogues anyway).
+ * Directives and blank lines are skipped; comments are not stripped, so a line
+ * that only *mentions* sp in a comment simply makes the pass decline.  The
+ * emitter does not put comments inside function bodies, so that costs nothing.
+ *
+ * HAL corpus (95 TUs, Cortex-M4, -O2, the other 24 switches on): E1 fires on
+ * 139 of the 166 frame-pointer functions and deletes 185 lines, E2 fires on 48
+ * more functions; 233 instructions in total, no TU grows.  See docs/EXIT.md.
+ */
+#define EX_MAX_LINES 8192
+
+static int ex_ls[EX_MAX_LINES];
+static int ex_ll[EX_MAX_LINES];
+static unsigned char ex_del[EX_MAX_LINES];
+
+static int ex_ident(int c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+           (c >= '0' && c <= '9') || c == '_';
+}
+
+/* One line, minus the CRLF tail.  Returns -1 for an over-long line, and the
+ * pass then refuses to touch the function. */
+static int ex_trim(const char *p, int len, char *out, int cap) {
+    int i = 0;
+    while (i < len && p[i] != '\r' && p[i] != '\n') i++;
+    if (i >= cap) return -1;
+    memcpy(out, p, (size_t)i);
+    out[i] = 0;
+    return i;
+}
+
+static const char *ex_skip_ws(const char *s) {
+    while (*s == ' ' || *s == '\t') s++;
+    return s;
+}
+
+/* "PUSH {r4, r5, lr}" -> span of the brace list. */
+static int ex_braces(const char *s, int *open, int *close) {
+    const char *a = strchr(s, '{');
+    const char *b = strchr(s, '}');
+    if (!a || !b || b < a) return 0;
+    *open = (int)(a - s) + 1;
+    *close = (int)(b - s);
+    return 1;
+}
+
+static int ex_names(const char *s, int open, int close, char names[][8], int max) {
+    int n = 0, i = open;
+    while (i < close) {
+        int st, ln;
+        while (i < close && (s[i] == ' ' || s[i] == '\t' || s[i] == ',')) i++;
+        if (i >= close) break;
+        st = i;
+        while (i < close && s[i] != ',' && s[i] != ' ' && s[i] != '\t') i++;
+        ln = i - st;
+        if (ln <= 0 || ln >= 8 || n >= max) return -1;
+        memcpy(names[n], s + st, (size_t)ln);
+        names[n][ln] = 0;
+        n++;
+    }
+    return n;
+}
+
+static int ex_has(char names[][8], int n, const char *want) {
+    int i;
+    for (i = 0; i < n; i++)
+        if (strcmp(names[i], want) == 0) return 1;
+    return 0;
+}
+
+/* Does `s` name register `r` as a standalone token? */
+static int ex_mentions(const char *s, const char *r) {
+    size_t L = strlen(r);
+    const char *p = s;
+    while (*p) {
+        const char *st;
+        if (!ex_ident((unsigned char)*p)) { p++; continue; }
+        st = p;
+        while (*p && ex_ident((unsigned char)*p)) p++;
+        if ((size_t)(p - st) == L && memcmp(st, r, L) == 0) return 1;
+    }
+    return 0;
+}
+
+/* `MOV <base>, sp` -- the line that builds the frame base. */
+static int ex_is_mov_base_sp(const char *s, char *out, int cap) {
+    const char *d, *c;
+    int ln = 0;
+    if (strncmp(s, "MOV", 3) != 0) return 0;
+    d = s + 3;
+    while (*d == ' ' || *d == '\t') d++;
+    while (ex_ident((unsigned char)d[ln])) ln++;
+    if (ln <= 0 || ln >= cap) return 0;
+    c = strchr(s, ',');
+    if (!c) return 0;
+    c++;
+    while (*c == ' ' || *c == '\t') c++;
+    if (!(strncmp(c, "sp", 2) == 0 && !ex_ident((unsigned char)c[2]))) return 0;
+    memcpy(out, d, (size_t)ln);
+    out[ln] = 0;
+    return 1;
+}
+
+/* `MOV sp, <base>` -- the line that tears the frame down. */
+static int ex_is_mov_sp_base(const char *s, const char *base) {
+    const char *d, *c;
+    if (strncmp(s, "MOV", 3) != 0) return 0;
+    d = s + 3;
+    while (*d == ' ' || *d == '\t') d++;
+    if (!(strncmp(d, "sp", 2) == 0 && !ex_ident((unsigned char)d[2]))) return 0;
+    c = strchr(s, ',');
+    if (!c) return 0;
+    c++;
+    while (*c == ' ' || *c == '\t') c++;
+    if (!base[0] || strncmp(c, base, strlen(base)) != 0) return 0;
+    return !ex_ident((unsigned char)c[strlen(base)]);
+}
+
+/* `ADD sp, sp, #N` -- the epilogue's own frame teardown, the line that walks
+ * sp back over the frame so the POP reads the callee-saved words.  It is not a
+ * no-op and it is *kept*: only `MOV sp, <base>` in front of it goes.  It is
+ * legal only directly after such a `MOV`, because that is the emitter's
+ * epilogue shape; anywhere else an sp adjustment means the body moves the
+ * stack and the whole function is refused. */
+static int ex_is_sp_adjust(const char *s) {
+    const char *p;
+    if (strncmp(s, "ADD", 3) != 0 && strncmp(s, "SUB", 3) != 0) return 0;
+    p = ex_skip_ws(s + 3);
+    if (!(p[0] == 's' && p[1] == 'p' && !ex_ident((unsigned char)p[2]))) return 0;
+    p = ex_skip_ws(p + 2);
+    if (*p != ',') return 0;
+    p = ex_skip_ws(p + 1);
+    if (!(p[0] == 's' && p[1] == 'p' && !ex_ident((unsigned char)p[2]))) return 0;
+    p = ex_skip_ws(p + 2);
+    if (*p != ',') return 0;
+    p = ex_skip_ws(p + 1);
+    return *p == '#';
+}
+
+/* A frame base is a callee-saved general register.  Anything else (r0-r3, sp,
+ * pc) means this is not the shape the emitter produces for a frame and the
+ * pass stays out. */
+static int ex_is_base_reg(const char *r) {
+    if (r[0] != 'r') return 0;
+    if (r[1] >= '4' && r[1] <= '9' && r[2] == 0) return 1;
+    if (r[1] == '1' && (r[2] == '0' || r[2] == '1') && r[3] == 0) return 1;
+    return 0;
+}
+
+static void ark_exit_function(AsmBuffer *b, int from)
+{
+    int pos = from, n = 0, i, j, pi = -1, nret = 0, ncan = 0, base_used = 0;
+    int epi = 0;
+    char t[512], base[8], nm[16][8];
+    AsmBuffer out;
+
+    /* 1. line table */
+    while (pos < b->len) {
+        int len = 0;
+        while (pos + len < b->len && b->buf[pos + len] != '\n') len++;
+        if (n >= EX_MAX_LINES) return;
+        ex_ls[n] = pos;
+        ex_ll[n] = len;
+        n++;
+        pos += len + 1;
+    }
+    if (n < 4) return;
+    memset(ex_del, 0, (size_t)n);
+
+    /* 2. the prologue: the first `MOV <base>, sp` */
+    base[0] = 0;
+    for (i = 0; i < n; i++) {
+        const char *s;
+        if (ex_trim(b->buf + ex_ls[i], ex_ll[i], t, sizeof t) < 0) return;
+        s = ex_skip_ws(t);
+        if (*s == '.') continue;
+        if (!ex_is_mov_base_sp(s, base, sizeof base)) continue;
+        pi = i;
+        break;
+    }
+    if (pi < 0 || !ex_is_base_reg(base)) return;
+
+    /* 3. everything after the prologue */
+    for (i = pi + 1; i < n; i++) {
+        const char *s;
+        int open_, close_;
+        if (ex_trim(b->buf + ex_ls[i], ex_ll[i], t, sizeof t) < 0) return;
+        s = ex_skip_ws(t);
+        if (*s == 0 || *s == '.' || *s == ';') continue;
+        if (ex_is_mov_sp_base(s, base)) { ex_del[i] = 1; ncan++; epi = 1; continue; }
+        if (epi && ex_is_sp_adjust(s)) { epi = 0; continue; }
+        epi = 0;
+        if (strncmp(s, "POP", 3) == 0 && ex_braces(s, &open_, &close_)) {
+            int m = ex_names(s, open_, close_, nm, 16);
+            if (m > 0 && ex_has(nm, m, "pc")) { nret++; continue; }
+            return;                  /* a POP the epilogue does not own */
+        }
+        if (strncmp(s, "PUSH", 4) == 0) return;
+        if (ex_mentions(s, "sp")) return;
+        if (ex_mentions(s, base)) base_used = 1;
+    }
+    if (nret == 0 || ncan == 0) return;
+
+    /* 4. E2: a base that is never read as a base never had to be built */
+    if (!base_used) ex_del[pi] = 1;
+
+    /* 5. rebuild */
+    asmbuf_init(&out);
+    for (i = 0; i < n; i++) {
+        if (ex_del[i]) continue;
+        for (j = 0; j < ex_ll[i]; j++) asmbuf_putc(&out, b->buf[ex_ls[i] + j]);
+        asmbuf_putc(&out, '\n');
+    }
+    /* Nothing changed?  Leave the buffer exactly as it was. */
+    if (out.len == b->len - from &&
+        memcmp(out.buf, b->buf + from, (size_t)out.len) == 0) return;
+
+    asmbuf_reserve(b, from + out.len + 1);
+    if (from + out.len + 1 > b->cap) return;
+    for (i = 0; i < out.len; i++) b->buf[from + i] = out.buf[i];
+    b->buf[from + out.len] = 0;
+    b->len = from + out.len;
+}
+#endif /* ARKCC_FEATURE_OPT_EXIT */
 #if ARKCC_FEATURE_OPT_LITPOOL
 /* ------------------ 32-bit constants in a literal pool (-fopt-litpool) ------
  *
@@ -14127,6 +14385,13 @@ static char *codegen_arm(IrProgram *prog) {
          * registers, and the far-offset fixer below must see the final
          * frame size. */
         if (g_config.enable_opt_frame) ark_frame_function(&buf, fstart);
+#endif
+#if ARKCC_FEATURE_OPT_EXIT
+        /* Dead frame maintenance, right after the frame trimmer: it sees the
+         * final frame save list, and the far-offset fixer below sees the final
+         * text.  It only deletes `MOV sp, base` / `MOV base, sp` when the body
+         * provably never moves sp, so no other pass has anything to re-derive. */
+        if (g_config.enable_opt_exit) ark_exit_function(&buf, fstart);
 #endif
         /* Correctness, not an option: a frame slot beyond 4095 bytes cannot be
          * reached by "[r6, #off]" at all. */

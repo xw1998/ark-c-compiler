@@ -341,6 +341,21 @@
 #   define ARKCC_FEATURE_OPT_CONSTCOND  1
 # endif
 #endif
+/* ARKCC_FEATURE_OPT_EXIT: -fopt-exit, drop frame maintenance that provably
+ * rewrites a value the register already holds.  A function whose body never
+ * touches sp arrives at every return with sp still equal to the frame base, so
+ * the `MOV sp, base` in front of its POP is a no-op; and when the base is
+ * never used as a base at all, the `MOV base, sp` that built it is dead too.
+ * Pure deletion, no tables and no new labels.  Kept off the STM32 profile with
+ * the rest of the -fopt-* family so the crop table stays one story (see
+ * docs/BUILD.md 5.2).  See docs/EXIT.md. */
+#ifndef ARKCC_FEATURE_OPT_EXIT
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_OPT_EXIT  0   /* 板上裁掉：只在宿主/交叉编译用 */
+# else
+#   define ARKCC_FEATURE_OPT_EXIT  1
+# endif
+#endif
 /* ARKCC_FEATURE_OPT_BOOLMAT: -fopt-boolmat, delete a one-word
  * `STORE v ; PUSH_VAR v` pair.  `int t = (a < b); if (t)` is two statements,
  * so irgen spills the comparison result and reads it back one instruction
