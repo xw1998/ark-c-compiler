@@ -727,3 +727,123 @@ with the on-board name-based refusal of `-fopt-ldhoist` (`C3900U`) along the sam
    liveness backing it.
 3. Never take `D` from `r0`-`r3`: those are caller-saved scratch and a `BL` will clobber them.
 4. Never count "changed the destination register without deleting a load" as a gain.
+
+## 11 S12-1 measurement and verdict (2026-11-25)
+
+The seven rules of S10.10 are implemented verbatim in `ark_ldhoist_function()` in
+`src/backend/arm/backend_arm.c`, behind `-fopt-ldhoist` / `ARKCC_FEATURE_OPT_LDHOIST`
+(forced to 0 under `ARKCC_PROFILE_STM32_MIN`).  This section is the honest accounting
+after the run.
+
+### 11.1 Readings
+
+| Configuration | Insns | Bytes |
+| --- | ---: | ---: |
+| 25 flags (no `-fopt-spill`, no `-fopt-ldhoist`) | 11,375 | 392,476 |
+| 26 flags (+ `-fopt-spill`) = S12-1 baseline | **11,044** | **387,872** |
+| 26 flags + `-fopt-ldhoist` | **10,917** | **385,260** |
+| Net | **-127** | **-2,612** |
+| gcc `arm-none-eabi-gcc 13.2.1 -O2`, same corpus | 4,976 | - |
+
+127 / 11,044 = **1.15%**.
+
+**Verdict: register tier.**  Under the three tiers frozen in S10.10, 1.0%-2.0% is
+"register": the switch stays, default off, judged "below the project threshold
+(>= 2.0%)".  That is the criterion being applied, not an implementation failure -- 11.2
+shows the candidates the rules allow have been taken.
+
+### 11.2 Where the gain lands
+
+| TU | Before | After | Net |
+| --- | ---: | ---: | ---: |
+| `stm32f4xx_hal_dma_ex.c` | 2,186 | 2,060 | **-126** |
+| `stm32f4xx_hal_pwr.c` | - | - | -1 |
+| the other 93 TUs | - | - | 0 |
+
+`HAL_DMAEx_MultiBufferStart_IT` is the only real battlefield in this slice:
+
+- `LDR r?, [r8, #0]` (`hdma->Instance`) goes from **266 to 140** in that function;
+- `PUSH {r5, r6, r7, r8, lr}` becomes `PUSH {r4, r5, r6, r7, r8, r9, lr}` (`D = r4`;
+  the frame is 52 bytes, so 7 registers = 28 bytes and 28 + 52 = **80**, still a
+  multiple of 8);
+- all 3 exits `POP {r5, r6, r7, r8, pc}` become `POP {r4, r5, r6, r7, r8, r9, pc}`;
+- 12 anchor loads and 19 levels of nested ternaries fold into `CMP r4, ...` with
+  **no instruction ever added**.
+
+### 11.3 Why 127 is below the 270 bound
+
+The bound script (S10.9's `s12_1_ub.py`) counts every load whose `(Rb,#imm)` key occurs
+>= 2 times in the **function**, without asking whether the two fall into one region.
+Rule 4 ends the region at a write to `Rb`, an aliasing store, a call, or a
+multi-predecessor label -- so cross-region repeats can never be deleted under the rules.
+
+Re-running the same bound script on the `lh_on` output gives **142** (128 of them in
+dma_ex), i.e. only about half of the "bound" is intra-region duplication.  What is left
+untaken:
+
+- 12 `LDR r0, ...` loads whose consumers are `ADD` / `STR`, not `CMP` (rule 5 knows three
+  shapes only);
+- 116 `LDR r5, [r8, #0]` loads, likewise not candidates (consumer outside the three
+  shapes, or region cut by an aliasing store).
+
+**Conclusion: the candidates the frozen rules allow are essentially exhausted.**
+127 / 142 = 89%.
+
+### 11.4 The one clear remaining direction (registered, rules unchanged)
+
+Rule 5's three shapes are `CMP Rd,Rn` / `CMP Rn,Rd` / `MOV Rn2,Rd` and **not
+`CMP Rd,#imm`**, while a large share of armcc's compares are immediate forms
+(`CMP r0, #1`).  Relaxing that would likely take another batch, but S10.10 says "no rule
+changes after the run", so this slice **does not touch the rules** and only registers the
+relaxation as a candidate for the next S12 slice (which needs a new preregistration).
+
+### 11.5 Gates
+
+New `make test-ldhoist` (`tests/run_ldhoist_tests.py`, 20 checks, all green):
+
+1. **OFF IS OFF**: `-O2 <passes>` and `-O2 <passes> -fno-opt-ldhoist` are byte-identical
+   as assembly text and as image; a cropped build (`-DARKCC_FEATURE_OPT_LDHOIST=0`)
+   writes the same text as the full build when the flag is absent.
+2. **Must fire**: two `[r8,#0]` loads collapse to one; it lands on `r4` (a register the
+   function never names); both `CMP`s read it; `PUSH` and every exit `POP` are widened by
+   the same set; sp stays 8-byte aligned (6 saved registers + 16-byte frame = 40); the
+   instruction count drops by exactly one; no dangling label; the image never grows.
+3. **Must not fire**: an aliasing `STR`, a `BL`, and a two-predecessor label between the
+   two loads, plus a plain-C fixture, all come out byte-identical (the plain-C arm also
+   returns 26 on the emulator in both arms, matching Python).
+4. **Cropped out**: a `-DARKCC_FEATURE_OPT_LDHOIST=0` build refuses `-fopt-ldhoist` by
+   name (`C3900U`) and still compiles the same file without the flag.
+
+Companion regressions: `make test-arm-exec` **0 failure**; `tests/run_vreg_tests.py` all
+green; `tests/run_regalloc_tests.py` "all claims hold"; `test-spill` / `test-option` /
+`test-live` / `test-slotreg` / `test-addr` / `test-coalesce` / `test-deadpush` /
+`test-exit` all green.
+
+### 11.6 An engineering fact: plain C cannot build the must-fire fixture
+
+The seven rules are narrow enough that **no qualifying function can be built out of C**
+with arkc's current code generation.  Six shapes were tried and none fires, each for its
+own reason:
+
+- the address of a pointer parameter is recomputed (`MOV r5, #0x20000000` / `ADD`),
+  writing `Rb` and ending the region immediately;
+- with `-fopt-vreg` promoting the pointer to `r8`, the `STR [r6, #8]` at the head of a
+  branch body is an aliasing store, cutting the region to a single load;
+- the nested-ternary shape is right, but rule 7's conservative implementation requires
+  the deleted load's `Rd` to be written inside the region, and in a small function the
+  result constant lands on a different register => `killed == 0` => decline.
+
+The fixtures therefore use `__asm volatile`, which the assembler copies through
+**verbatim**.  One trap worth recording: the text pass compares mnemonics literally, so
+**inline assembly must be upper case**; a lower-case `ldr` is silently skipped (the first
+fixture in this round did not fire for exactly that reason, and looked plausible).
+
+### 11.7 Forbidden readings
+
+1. 1.15% is **not** "the pass is not implemented" -- dma_ex's 126 instructions were
+   checked one by one.
+2. Never add 1.15% to S10.9's 1.01% and call the result "gap removed": they measure
+   different layers, and together they are still a 2% effect that cannot move the +122%.
+3. "Register tier" does not mean the next slice is worth opening: whether to do the S11.4
+   relaxation still needs a project-level ruling (S10.9's precedent: below 5% margin, do
+   not open a new slice).

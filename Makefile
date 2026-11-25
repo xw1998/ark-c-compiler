@@ -30,7 +30,7 @@ endif
         test-tailcall test-divconst test-xblock test-sizeweight \
         test-inline test-vstack test-addr test-strength test-cbz test-branch \
         test-imm test-peep test-cbranch test-copyprop test-live test-movimm test-pair \
-        test-spill \
+        test-spill test-ldhoist \
         test-prop test-deadpush test-cmat test-slotreg test-opalloc test-boolmat \
         test-exit test-bitmask \
         test-voldmb test-volmem test-constcond \
@@ -273,6 +273,19 @@ test-copyprop: $(ARKCC)
 # (-DARKCC_FEATURE_OPT_SPILL=0) refuses the flag by name (C3900U).
 test-spill: $(ARKCC)
 	$(PYTHON) tests/run_spill_tests.py ./$(ARKCC)
+
+# Gate for -fopt-ldhoist (S12-1): a reload of the same [Rb,#imm] further down
+# one straight chain is deleted by keeping the first value in a register the
+# function never names.  The fixtures are inline assembly, because the seven
+# frozen rules are narrow enough that arkcc's own code generation cannot build
+# a qualifying function out of C.  The gate pins OFF IS OFF, that the two loads
+# collapse to one on the register the compares read, that the frame save and
+# every return restore are widened by exactly the same set without breaking
+# 8-byte alignment, that a store / a call / a two-predecessor label between the
+# loads and any plain C leave the text byte-identical, and that a cropped build
+# (-DARKCC_FEATURE_OPT_LDHOIST=0) refuses the flag by name (C3900U).
+test-ldhoist: $(ARKCC)
+	$(PYTHON) tests/run_ldhoist_tests.py ./$(ARKCC)
 
 test-live: $(ARKCC)
 	$(PYTHON) tests/run_live_tests.py ./$(ARKCC)

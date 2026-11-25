@@ -46,6 +46,7 @@ typedef struct {
     int enable_opt_live;            /* -fopt-live: 用 CFG+活跃性删只活跃性看得见的拷贝 */
     int enable_opt_coalesce;        /* -fopt-coalesce: 本地拷贝合并（MOV rD,rS 重命名为 rS 并删掉） */
     int enable_opt_spill;           /* -fopt-spill: 删跨块的栈往返（各臂 PUSH、汇合点 POP 的同一寄存器） */
+    int enable_opt_ldhoist;         /* -fopt-ldhoist: 同一地址的重复装载提升到专用寄存器（S12-1） */
     int enable_opt_inline;   /* --autoinline / -O2 */
     int enable_opt_vectorize;/* --vectorize / -O2 */
     int opt_level;          /* 0=none, 1=basic, 2=aggressive */

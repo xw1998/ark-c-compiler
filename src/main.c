@@ -608,6 +608,14 @@ int main(int argc, char **argv) {
             return 1;
         }
 #endif
+#if !ARKCC_FEATURE_OPT_LDHOIST
+        else if (strcmp(a, "-fopt-ldhoist") == 0) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: -fopt-ldhoist is not compiled into "
+                    "this build (rebuild with -DARKCC_FEATURE_OPT_LDHOIST=1)\n");
+            return 1;
+        }
+#endif
 #if !ARKCC_FEATURE_OPT_FRAME
         else if (strcmp(a, "-fopt-frame") == 0) {
             fprintf(stderr,

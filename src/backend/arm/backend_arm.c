@@ -7752,6 +7752,520 @@ static void ark_slotreg_function(AsmBuffer *b, int from, IrFunc *f, int local_si
     }
 }
 #endif /* ARKCC_FEATURE_OPT_SLOTREG */
+#if ARKCC_FEATURE_OPT_LDHOIST
+/* ------------------ S12-1: same-address load hoisting ---------------------
+ * The reference model expands a chain of nested `?:` over the same lvalue into
+ * one compare per level, and every level reloads the compared value:
+ *
+ *     LDR r0, [r8, #0]        ; hdma->Instance, once per level
+ *     LDR r7, .Llit_2_0_6
+ *     CMP r0, r7
+ *     BNE .Lnext
+ *     MOVW r0, #2048          ; the per-level result constant
+ *     B .Ljoin
+ *   .Lnext:
+ *     LDR r0, [r8, #0]        ; ... and again
+ *
+ * HAL_DMAEx_MultiBufferStart_IT carries nineteen of these levels: 254
+ * redundant loads in one function.  A local peephole cannot remove them --
+ * each level's `MOV r0, #k` overwrites the register that held the value, which
+ * is why the emission-level ceiling in docs/EXPR_MODEL.md S11-1 was only 1.01%.
+ * What removes them is picking a register the function never names, loading
+ * once into it, and letting the compares read that register.
+ *
+ * The rules are frozen in docs/EXPR_MODEL.md S12-1 and are implemented here
+ * verbatim:
+ *   1. a candidate is `LDR Rd, [Rb, #imm]`; widths are never mixed;
+ *   2. the dedicated register D is the lowest of r4..r11 that the whole
+ *      function never names (read, written, or listed in a PUSH/POP);
+ *   3. the function must have one frame `PUSH {..., lr}` and every exit must
+ *      be a `POP {..., pc}` restoring exactly the same set; D is added to all
+ *      of them, plus one pad register when the parity demands it, so that sp
+ *      stays 8-byte aligned (AAPCS) without touching the frame size;
+ *   4. a region runs forward from a candidate load and ends at the first of:
+ *      a write to D (impossible -- D is unnamed), a possibly-aliasing store, a
+ *      call, a write to Rb, or a label with more than one predecessor;
+ *   5. every later load of the same `(Rb, #imm)` inside the region is deleted;
+ *      the uses of its destination, up to the next write of that destination,
+ *      must be one of `CMP Rd,Rn` / `CMP Rn,Rd` / `MOV Rn2,Rd`, and its Rd
+ *      becomes D there;
+ *   6. the first candidate becomes `LDR D, [Rb, #imm]` and its uses are
+ *      rewritten the same way -- no instruction is ever added anywhere;
+ *   7. a deleted load whose destination is still read outside the region
+ *      disqualifies the whole region.  The implementation only ever relies on
+ *      "a write inside the region killed the old value"; it never infers
+ *      liveness from the listing.
+ * Anything not provable declines with a named reason and leaves the text as it
+ * was.  Registered, off by default: docs/EXPR_MODEL.md S12-1.
+ */
+#define LDH_MAX_LINES   PP_MAX_LINES
+#define LDH_MAX_LABELS  2048
+#define LDH_LAB_LEN     72
+
+static int      ldh_n;
+static int      ldh_ls[LDH_MAX_LINES], ldh_ll[LDH_MAX_LINES];
+static cp_ins   ldh_iv[LDH_MAX_LINES];
+static unsigned char ldh_kd[LDH_MAX_LINES];   /* 0 other, 1 insn, 2 label */
+static int      ldh_lidx[LDH_MAX_LINES];      /* label table index, else -1 */
+static char     ldh_lname[LDH_MAX_LABELS][LDH_LAB_LEN];
+static int      ldh_lat[LDH_MAX_LABELS];      /* line index of the label text */
+static int      ldh_lhit[LDH_MAX_LABELS];     /* branches targeting it */
+static int      ldh_ltgt[LDH_MAX_LABELS];     /* line of the last such branch */
+static int      ldh_lpred[LDH_MAX_LABELS];    /* its single predecessor block  */
+static int      ldh_nlab;
+static unsigned char ldh_drop[LDH_MAX_LINES];
+static unsigned char ldh_rep[LDH_MAX_LINES];  /* operand index + 1 */
+static unsigned   ldh_pmask[LDH_MAX_LINES];   /* widened PUSH/POP mask, 0 = none */
+static unsigned char ldh_plan_drop[LDH_MAX_LINES];
+static unsigned char ldh_plan_rep[LDH_MAX_LINES];
+static int      ldh_touched[LDH_MAX_LINES];
+static int      ldh_ntouch;                   /* entries used in ldh_touched */
+static int      ldh_dr;                       /* dedicated register D (r4..r11) */
+
+/* `[rN, #imm]` or `[rN]` and nothing else -> base register and byte offset. */
+static int ldh_mem(const char *s, int *rb, int *imm) {
+    int i = 1, r = 0, v = 0;
+    if (s[0] != '[' || s[i] != 'r') return 0;
+    i++;
+    if (s[i] < '0' || s[i] > '9') return 0;
+    while (s[i] >= '0' && s[i] <= '9') { r = r * 10 + (s[i] - '0'); i++; }
+    if (r > 15) return 0;
+    if (s[i] == ']') {
+        if (s[i + 1]) return 0;
+        *rb = r; *imm = 0;
+        return 1;
+    }
+    if (s[i] != ',' || s[i + 1] != ' ' || s[i + 2] != '#') return 0;
+    i += 3;
+    if (s[i] < '0' || s[i] > '9') return 0;
+    while (s[i] >= '0' && s[i] <= '9') { v = v * 10 + (s[i] - '0'); i++; }
+    if (s[i] != ']' || s[i + 1]) return 0;
+    *rb = r; *imm = v;
+    return 1;
+}
+
+/* A load this pass may hoist: one destination, a plain `[rN, #imm]` operand
+ * with a base that is neither sp nor the destination, and an offset the
+ * far-offset fixer below cannot rewrite into extra instructions. */
+static int ldh_is_load(const cp_ins *o, int *rd, int *rb, int *imm) {
+    if (strncmp(o->mn, "LDR", 3) != 0) return 0;
+    if (o->nops != 2) return 0;           /* LDRD and writeback forms: no */
+    if (!cp_reg(o->op[0], rd)) return 0;
+    if (!ldh_mem(o->op[1], rb, imm)) return 0;
+    if (*rd < 0 || *rb < 0 || *rd > 12 || *rb > 12) return 0;
+    if (*rb == *rd) return 0;
+    if (*imm > 4095) return 0;
+    return 1;
+}
+
+/* A store that could alias any address: everything that writes memory except
+ * PUSH, whose slot is always below sp and therefore below every frame-relative
+ * or heap address this pass can name. */
+static int ldh_is_store(const cp_ins *o) {
+    const char *m = o->mn;
+    if (!strncmp(m, "STR", 3) || !strncmp(m, "STM", 3)) return 1;
+    if (!strncmp(m, "VSTR", 4) || !strncmp(m, "VSTM", 4)) return 1;
+    return 0;
+}
+
+/* Does control fall through from the item at line j into the next one? */
+static int ldh_falls(int j) {
+    unsigned rd, wr;
+    int k;
+    if (ldh_kd[j] != 1) return 1;
+    k = lv_branch_kind(ldh_iv[j].mn);
+    if (k == 1 || k == 4) return 0;       /* B, BX: no fall-through */
+    lv_rw(&ldh_iv[j], &rd, &wr);
+    if (wr & lv_bit(15)) return 0;        /* POP {..pc}, MOV pc, .., LDM ..,pc */
+    return 1;
+}
+
+static int ldh_labfind(const char *name) {
+    int i;
+    for (i = 0; i < ldh_nlab; i++)
+        if (!strcmp(ldh_lname[i], name)) return i;
+    return -1;
+}
+
+/* The label a branch targets, or -1 if it cannot be resolved exactly. */
+static int ldh_target(const cp_ins *o) {
+    int q;
+    for (q = 0; q < o->nops; q++) {
+        const char *p = o->op[q];
+        if (!p[0] || p[0] == '#' || p[0] == '[' || p[0] == '{') continue;
+        if (p[0] >= '0' && p[0] <= '9') continue;
+        if (lv_regs(p)) continue;
+        return ldh_labfind(p);
+    }
+    return -1;
+}
+
+/* Can this label be crossed without letting control enter the region from
+ * outside?  Exactly one branch targets it, and that branch is either the item
+ * immediately before it (so the fall-through is the branch's own) or the item
+ * before it does not fall through.  Either way the only predecessor block is
+ * the branch itself, which is recorded in ldh_lpred. */
+static int ldh_safe_cross(int L) {
+    int b, p, j;
+    if (ldh_lhit[L] != 1) return 0;
+    b = ldh_ltgt[L];
+    p = -1;
+    for (j = ldh_lat[L] - 1; j >= 0; j--)
+        if (ldh_kd[j] == 1) { p = j; break; }
+    if (p < 0) return 0;
+    if (p != b && ldh_falls(p)) return 0;
+    ldh_lpred[L] = b;
+    return 1;
+}
+
+/* Is a read of rd2 by this instruction one of the three frozen shapes?  The
+ * return value is the operand to rewrite, or -1 for "not one of them". */
+static int ldh_shape(const cp_ins *o, int rd2) {
+    int a = -1, b = -1;
+    if (!strcmp(o->mn, "CMP") && o->nops == 2) {
+        if (!cp_reg(o->op[0], &a) || !cp_reg(o->op[1], &b)) return -1;
+        if (a == rd2 && b != rd2) return 0;
+        if (b == rd2 && a != rd2) return 1;
+        return -1;
+    }
+    if (!strcmp(o->mn, "MOV") && o->nops == 2) {
+        if (!cp_reg(o->op[1], &b)) return -1;
+        if (b == rd2 && !cp_mentions(o->op[0], rd2)) return 1;
+        return -1;
+    }
+    return -1;
+}
+
+/* Plan one line.  1 = accepted (or already planned the same way), 0 = clash. */
+static int ldh_put(int line, int drop, int opi) {
+    if (drop) {
+        if (ldh_plan_drop[line]) return 1;
+        if (ldh_plan_rep[line]) return 0;
+        ldh_plan_drop[line] = 1;
+    } else {
+        if (ldh_plan_rep[line]) return ldh_plan_rep[line] == (unsigned char)(opi + 1);
+        if (ldh_plan_drop[line]) return 0;
+        ldh_plan_rep[line] = (unsigned char)(opi + 1);
+    }
+    ldh_touched[ldh_ntouch++] = line;
+    return 1;
+}
+
+/* `{r4, r5, lr}` -> ordered array.  -1 if the list is not modelled exactly. */
+static int ldh_list(const char *s, int *regs) {
+    int i = 1, n = 0;
+    if (s[0] != '{') return -1;
+    for (;;) {
+        while (s[i] == ' ' || s[i] == '\t') i++;
+        if (s[i] == '}') { i++; break; }
+        if (!s[i]) return -1;
+        if (!strncmp(s + i, "lr", 2) && !(s[i + 2] >= 'a' && s[i + 2] <= 'z') &&
+            !(s[i + 2] >= '0' && s[i + 2] <= '9') && s[i + 2] != '_') {
+            regs[n++] = 14; i += 2;
+        } else if (!strncmp(s + i, "pc", 2) && !(s[i + 2] >= 'a' && s[i + 2] <= 'z') &&
+                   !(s[i + 2] >= '0' && s[i + 2] <= '9') && s[i + 2] != '_') {
+            regs[n++] = 15; i += 2;
+        } else if (s[i] == 'r' && s[i + 1] >= '0' && s[i + 1] <= '9') {
+            int v = s[i + 1] - '0';
+            i += 2;
+            if (s[i] >= '0' && s[i] <= '9') { v = v * 10 + (s[i] - '0'); i++; }
+            if (v > 15) return -1;
+            regs[n++] = v;
+        } else {
+            return -1;
+        }
+        if (n > 15) return -1;
+        while (s[i] == ' ' || s[i] == '\t') i++;
+        if (s[i] == ',') { i++; continue; }
+        if (s[i] == '}') { i++; break; }
+        return -1;
+    }
+    if (s[i]) return -1;
+    return n;
+}
+
+/* Rebuild an instruction with operand k replaced by r. */
+static void ldh_emit_rep(AsmBuffer *out, const cp_ins *o, int k, int r) {
+    char tmp[8];
+    int q;
+    snprintf(tmp, sizeof tmp, "r%d", r);
+    asmbuf_puts(out, "    ");
+    asmbuf_puts(out, o->mn);
+    asmbuf_puts(out, " ");
+    for (q = 0; q < o->nops; q++) {
+        if (q) asmbuf_puts(out, ", ");
+        asmbuf_puts(out, (q == k) ? tmp : o->op[q]);
+    }
+    asmbuf_putc(out, '\n');
+}
+
+/* Rebuild a PUSH/POP brace list from a mask, ascending (the order the emitter
+ * and both widening passes use, and the order that keeps PUSH and POP paired). */
+static void ldh_emit_list(AsmBuffer *out, const char *mn, unsigned mask) {
+    int r, first = 1;
+    asmbuf_puts(out, "    ");
+    asmbuf_puts(out, mn);
+    asmbuf_puts(out, " {");
+    for (r = 0; r < 16; r++) {
+        char tmp[8];
+        if (!(mask & lv_bit(r))) continue;
+        if (!first) asmbuf_puts(out, ", ");
+        first = 0;
+        if (r == 13) { asmbuf_puts(out, "sp"); continue; }
+        if (r == 14) { asmbuf_puts(out, "lr"); continue; }
+        if (r == 15) { asmbuf_puts(out, "pc"); continue; }
+        snprintf(tmp, sizeof tmp, "r%d", r);
+        asmbuf_puts(out, tmp);
+    }
+    asmbuf_puts(out, "}\n");
+}
+
+static void ark_ldhoist_function(AsmBuffer *b, int from) {
+    int i, j, n, del = 0;
+    int ipush = -1, iframe = -1, fbytes = 0, kadd = 0, pad = -1;
+    unsigned pushmask = 0, usedmask = 0;
+    int regs[16], nregs, exmask = 0, nexits = 0, nfree = 0, freereg[8];
+    AsmBuffer out;
+
+    n = pp_split_lines(b, from, ldh_ls, ldh_ll, LDH_MAX_LINES);
+    if (n <= 0) return;
+    ldh_n = n;
+    ldh_nlab = 0;
+    for (i = 0; i < n; i++) {
+        char t[256];
+        int L;
+        ldh_kd[i] = 0;
+        ldh_lidx[i] = -1;
+        ldh_drop[i] = 0; ldh_rep[i] = 0; ldh_pmask[i] = 0;
+        ldh_plan_drop[i] = 0; ldh_plan_rep[i] = 0;
+        if (ldh_ll[i] >= (int)sizeof t) return;      /* too long: leave it alone */
+        if (pp_trim(b->buf + ldh_ls[i], ldh_ll[i], t, sizeof t) < 0) return;
+        if (!t[0] || t[0] == ';' || t[0] == '@') continue;
+        L = ark_strlen(t);
+        if (L > 0 && t[L - 1] == ':') {
+            if (ldh_nlab >= LDH_MAX_LABELS) return;
+            if (L - 1 >= LDH_LAB_LEN) return;
+            for (j = 0; j < L - 1; j++) ldh_lname[ldh_nlab][j] = t[j];
+            ldh_lname[ldh_nlab][L - 1] = 0;
+            ldh_lidx[i] = ldh_nlab;
+            ldh_lat[ldh_nlab] = i;
+            ldh_lhit[ldh_nlab] = 0;
+            ldh_ltgt[ldh_nlab] = -1;
+            ldh_lpred[ldh_nlab] = -1;
+            ldh_nlab++;
+            ldh_kd[i] = 2;
+            continue;
+        }
+        if (t[0] == '.') continue;
+        if (cp_parse(t, &ldh_iv[i])) ldh_kd[i] = 1;
+    }
+
+    /* Branch targets: count the branches that name each label. */
+    for (i = 0; i < n; i++) {
+        int k, L;
+        if (ldh_kd[i] != 1) continue;
+        k = lv_branch_kind(ldh_iv[i].mn);
+        if (k != 1 && k != 2) continue;
+        L = ldh_target(&ldh_iv[i]);
+        if (L < 0) continue;
+        ldh_lhit[L]++;
+        ldh_ltgt[L] = i;
+    }
+
+    /* The frame save: one `PUSH {.., lr}` as the first instruction, then the
+     * frame drop and `MOV r6, sp`.  Anything else (variadic, __naked, a body
+     * that builds sp by hand) is not the shape this pass may widen. */
+    for (i = 0; i < n; i++) {
+        int cnt;
+        if (ldh_kd[i] != 1) continue;
+        if (strcmp(ldh_iv[i].mn, "PUSH") || ldh_iv[i].nops != 1) return;
+        cnt = ldh_list(ldh_iv[i].op[0], regs);
+        if (cnt < 2) return;
+        for (j = 0; j < cnt; j++) {
+            if (j && regs[j] <= regs[j - 1]) return;   /* not ascending: refuse */
+            pushmask |= lv_bit(regs[j]);
+        }
+        if (regs[cnt - 1] != 14) return;               /* must end in lr */
+        if (!(pushmask & lv_bit(5)) || !(pushmask & lv_bit(6)) ||
+            !(pushmask & lv_bit(7))) return;
+        ipush = i;
+        nregs = cnt;
+        break;
+    }
+    if (ipush < 0) return;
+    /* frame bytes: `SUB sp, sp, #N` then `MOV r6, sp` */
+    for (i = ipush + 1; i < n && iframe < 0; i++) {
+        if (ldh_kd[i] != 1) continue;
+        if (!strcmp(ldh_iv[i].mn, "SUB") && ldh_iv[i].nops == 3 &&
+            !strcmp(ldh_iv[i].op[0], "sp") && !strcmp(ldh_iv[i].op[1], "sp")) {
+            const char *p = ldh_iv[i].op[2];
+            if (p[0] != '#') return;
+            fbytes = 0; p++;
+            if (!*p) return;
+            while (*p >= '0' && *p <= '9') { fbytes = fbytes * 10 + (*p - '0'); p++; }
+            if (*p) return;
+            continue;
+        }
+        if (!strcmp(ldh_iv[i].mn, "MOV") && ldh_iv[i].nops == 2 &&
+            !strcmp(ldh_iv[i].op[0], "r6") && !strcmp(ldh_iv[i].op[1], "sp")) {
+            iframe = i;
+            break;
+        }
+        return;                                  /* unexpected prologue shape */
+    }
+    if (iframe < 0) return;
+    if (fbytes & 3) return;
+
+    /* Every exit must be a `POP {.., pc}` restoring exactly the saved set. */
+    for (i = 0; i < n; i++) {
+        int cnt;
+        unsigned m = 0;
+        if (ldh_kd[i] != 1) continue;
+        if (strcmp(ldh_iv[i].mn, "POP") || ldh_iv[i].nops != 1) continue;
+        cnt = ldh_list(ldh_iv[i].op[0], regs);
+        if (cnt < 1) return;
+        for (j = 0; j < cnt; j++) {
+            if (j && regs[j] <= regs[j - 1]) return;
+            m |= lv_bit(regs[j]);
+        }
+        if (!(m & lv_bit(15))) continue;               /* value-stack pop: not an exit */
+        if (regs[cnt - 1] != 15) return;
+        if ((m & ~lv_bit(15)) != (pushmask & ~lv_bit(14))) return;
+        ldh_pmask[i] = m;
+        exmask |= m;
+        nexits++;
+    }
+    if (nexits == 0) return;
+
+    /* Registers the function names anywhere. */
+    for (i = 0; i < n; i++) {
+        int q;
+        if (ldh_kd[i] != 1) continue;
+        for (q = 0; q < ldh_iv[i].nops; q++) usedmask |= lv_regs(ldh_iv[i].op[q]);
+    }
+    for (j = 4; j <= 11; j++)
+        if (!(usedmask & lv_bit(j))) freereg[nfree++] = j;
+    if (nfree < 1) return;                                 /* ldhoist: no dedicated reg */
+    /* Alignment: (nregs + k)*4 + fbytes must be a multiple of 8.  The frame
+     * size is never touched, so every r6-relative offset stays valid. */
+    {
+        int m = ((fbytes % 8) == 4) ? 1 : 0;
+        if (((nregs + 1) % 2) == m) kadd = 1;
+        else if ((nregs % 2) == m) kadd = 2;
+        else return;
+    }
+    if (nfree < kadd) return;
+    ldh_dr = freereg[0];
+    if (kadd == 2) pad = freereg[1];
+
+    /* Regions. */
+    for (i = 0; i < n; i++) {
+        int rd, rb, imm, end, ndelete = 0, ok = 1;
+        if (ldh_kd[i] != 1) continue;
+        if (!ldh_is_load(&ldh_iv[i], &rd, &rb, &imm)) continue;
+        end = n;
+        for (j = i + 1; j < n; j++) {
+            unsigned rr, ww;
+            int k;
+            if (ldh_kd[j] == 2) {
+                int L = ldh_lidx[j];
+                if (L < 0 || !ldh_safe_cross(L)) { end = j; break; }
+                continue;
+            }
+            if (ldh_kd[j] != 1) continue;
+            if (ldh_is_store(&ldh_iv[j])) { end = j; break; }
+            k = lv_branch_kind(ldh_iv[j].mn);
+            if (k == 3 || k == 4) { end = j; break; }
+            lv_rw(&ldh_iv[j], &rr, &ww);
+            if (ww & lv_bit(rb)) { end = j; break; }
+        }
+        if (end <= i + 1) continue;
+        /* Every branch inside must stay inside, jump out, or reach a label
+         * whose only predecessor is a branch inside the region. */
+        for (j = i + 1; j < end && ok; j++) {
+            int k, L;
+            if (ldh_kd[j] != 1) continue;
+            k = lv_branch_kind(ldh_iv[j].mn);
+            if (k != 1 && k != 2) continue;
+            L = ldh_target(&ldh_iv[j]);
+            if (L < 0) { ok = 0; break; }
+            if (ldh_lat[L] <= i) { ok = 0; break; }
+            if (ldh_lat[L] >= end) continue;
+            if (ldh_lhit[L] != 1) { ok = 0; break; }
+            if (ldh_lpred[L] <= i || ldh_lpred[L] >= end) { ok = 0; break; }
+        }
+        if (!ok) continue;
+        /* Plan: retarget the anchor, delete every later load of the same
+         * address, and rewrite each one's consumer chain onto D. */
+        ldh_ntouch = 0;
+        for (j = i; j < end && ok; j++) {
+            int rd2, rb2, imm2, q, killed = 0;
+            if (ldh_kd[j] != 1) continue;
+            if (!ldh_is_load(&ldh_iv[j], &rd2, &rb2, &imm2)) continue;
+            if (rb2 != rb || imm2 != imm) continue;
+            if (strcmp(ldh_iv[j].mn, ldh_iv[i].mn)) continue;
+            for (q = j + 1; q < end; q++) {
+                unsigned rr, ww;
+                int k;
+                if (ldh_kd[q] != 1) continue;
+                lv_rw(&ldh_iv[q], &rr, &ww);
+                if (rr & lv_bit(rd2)) {
+                    k = ldh_shape(&ldh_iv[q], rd2);
+                    if (k < 0 || (ww & lv_bit(rd2))) { ok = 0; break; }
+                    if (!ldh_put(q, 0, k)) { ok = 0; break; }
+                    continue;
+                }
+                if (ww & lv_bit(rd2)) { killed = 1; break; }
+            }
+            if (!ok) break;
+            if (!killed) { ok = 0; break; }      /* rule 7: no write in region */
+            if (j == i) {
+                if (!ldh_put(j, 0, 0)) { ok = 0; break; }
+            } else {
+                if (!ldh_put(j, 1, 0)) { ok = 0; break; }
+                ndelete++;
+            }
+        }
+        if (!ok || ndelete == 0) {
+            while (ldh_ntouch > 0) {
+                int ln = ldh_touched[--ldh_ntouch];
+                ldh_plan_drop[ln] = 0;
+                ldh_plan_rep[ln] = 0;
+            }
+            continue;
+        }
+        while (ldh_ntouch > 0) {
+            int ln = ldh_touched[--ldh_ntouch];
+            ldh_drop[ln] = ldh_plan_drop[ln];
+            ldh_rep[ln] = ldh_plan_rep[ln];
+            ldh_plan_drop[ln] = 0;
+            ldh_plan_rep[ln] = 0;
+        }
+        del += ndelete;
+        i = end - 1;
+    }
+    if (del == 0) return;
+
+    asmbuf_init(&out);
+    for (j = 0; j < n; j++) {
+        if (ldh_drop[j]) continue;
+        if (j == ipush || ldh_pmask[j]) {
+            unsigned m = ldh_pmask[j] ? ldh_pmask[j] : pushmask;
+            m |= lv_bit(ldh_dr);
+            if (pad >= 0) m |= lv_bit(pad);
+            ldh_emit_list(&out, ldh_iv[j].mn, m);
+            continue;
+        }
+        if (ldh_rep[j]) {
+            ldh_emit_rep(&out, &ldh_iv[j], ldh_rep[j] - 1, ldh_dr);
+            continue;
+        }
+        pp_copy_line(&out, b->buf + ldh_ls[j], ldh_ll[j]);
+    }
+    pp_splice(b, from, &out);
+}
+#endif /* ARKCC_FEATURE_OPT_LDHOIST */
+
 
 #if ARKCC_FEATURE_OPT_VSTACK
 /* ------------------- value stack -> register allocation -------------------
@@ -15629,6 +16143,16 @@ static char *codegen_arm(IrProgram *prog) {
          * text.  It only deletes `MOV sp, base` / `MOV base, sp` when the body
          * provably never moves sp, so no other pass has anything to re-derive. */
         if (g_config.enable_opt_exit) ark_exit_function(&buf, fstart);
+#endif
+#if ARKCC_FEATURE_OPT_LDHOIST
+        /* Same-address load hoisting (S12-1) runs last among the text passes:
+         * it widens the frame PUSH/POP by a dedicated callee-saved register, so
+         * it must come after -fopt-frame (which would otherwise delete a pad
+         * register the body never mentions) and after -fopt-exit (which reads
+         * the final save list).  It sits before the far-offset fixer, but only
+         * ever touches "[Rb, #imm]" loads with imm <= 4095, so the fixer has
+         * nothing to rewrite in what it produces. */
+        if (g_config.enable_opt_ldhoist) ark_ldhoist_function(&buf, fstart);
 #endif
         /* Correctness, not an option: a frame slot beyond 4095 bytes cannot be
          * reached by "[r6, #off]" at all. */

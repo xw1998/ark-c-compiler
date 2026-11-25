@@ -308,6 +308,21 @@
 #   define ARKCC_FEATURE_OPT_SLOTREG   1
 # endif
 #endif
+/* ARKCC_FEATURE_OPT_LDHOIST: -fopt-ldhoist, S12-1 load hoisting -- one
+ * `LDR D, [Rb, #imm]` per region instead of one per level of a nested
+ * ternary chain (docs/EXPR_MODEL.md S12-1).  It widens the frame
+ * PUSH/POP by a dedicated callee-saved register, so it is purely a
+ * text rewrite on registers the function never names.  Large tables
+ * (8192 parsed lines ~1.4 MB + a 2048-entry label table ~144 KB BSS),
+ * so it stays off the STM32 profile for the same reason as the other
+ * text passes. */
+#ifndef ARKCC_FEATURE_OPT_LDHOIST
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_OPT_LDHOIST   0   /* 板上裁掉：只在宿主/交叉编译用 */
+# else
+#   define ARKCC_FEATURE_OPT_LDHOIST   1
+# endif
+#endif
 
 /* ARKCC_FEATURE_OPT_FRAME: -fopt-frame, callee-saved list trimming.
  * A slot the body never mentions is deleted from PUSH/POP; when that
