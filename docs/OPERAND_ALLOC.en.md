@@ -328,3 +328,39 @@ functions), leaving 8 B net -- while introducing live intervals and a spill poli
   a hot loop; or, once P12's S4 (enable `r8`-`r11` only when the account is positive) exists, a global
   colouring that promotes memory-resident live values into registers -- at which point S3b is a
   sub-problem of it.
+
+## 10 Relationship to `-fopt-litpool` (measured, 2026-11-25)
+
+The cost model in §5 -- "a constant built `c` times in one function costs `2c` instructions; cached
+it costs `2 + c`" -- was derived **in the absence of litpool**. Once `-fopt-litpool` is present the
+model no longer holds: litpool has already collapsed the repeated 32-bit constant of a TU into one
+`.Llit` load plus one `LDR`, leaving the cache nothing to save.
+
+24-flag baseline (neither switch is in it by default, 95 TUs / Cortex-M4 / `-O2`):
+
+| Combination | insns / bytes |
+| --- | ---: |
+| Neither (24-flag baseline) | 12,317 / 392,598 |
+| `-fopt-constcache` only | 12,165 / 389,790 (-152) |
+| `-fopt-litpool` only | 11,436 / 393,648 (-881) |
+| Both | 11,436 / 393,648 (**delta 0**, bytes +808 over litpool alone) |
+
+Three readings:
+
+1. **With both on, the marginal gain of the constant cache is 0 and the byte account is negative**
+   (the extra `LDR`s push the raw text up by 808 bytes). The cache is not wrong; litpool simply ate
+   its profit first.
+2. **Making the cache yield to litpool is not worth it either.** A priority ruling was written once
+   that frees `r8`-`r11` in the cache fill so litpool could keep them for long-lived bases: +50
+   instructions at 25 flags, +32 at 26 flags, winning only a rounding error in `hal_rcc` /
+   `hal_rcc_ex` => **rejected by measurement, patch reverted** (`cc_subsumed` count is 0).
+3. **One switch, one meaning, unchanged**: neither switch manages the other, and neither changes
+   semantics because the other exists; when trimming, `ARKCC_FEATURE_OPT_LITPOOL=0` and
+   `ARKCC_FEATURE_OPT_CONSTCACHE=0` stay independent.
+
+**Registered as a debt item (not changed here)**: the cache's cost model needs a "litpool present"
+branch, or the cache survey should simply not run when `-fopt-litpool` is on. That is a separate
+topic requiring its own pre-registration and gates; it is outside both S3a and §11.8 (`RA_MODEL.md`).
+The §11.8 measurement confirms the same point: lifting visibility over 91 functions and 489 frame
+accesses ultimately paid only -18 instructions, 100% of it from the constant cache.
+

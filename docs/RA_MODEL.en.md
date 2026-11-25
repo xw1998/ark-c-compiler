@@ -553,3 +553,142 @@ regalloc backs out of the frame, and without it an earlier pass has already dele
 promotable load (measured: the function is byte-identical with and without `-fopt-vreg`). The
 case keeps its frame, offset, duplicate-list and answer checks; only that one claim became a skip,
 and no existing check was weakened.
+### 11.8 Revision: generalising the prologue shape (pre-registered, 2026-11-25)
+
+The two lines that §11.6 registered are a **defect**, not a new optimisation:
+`ra_is_prologue_push()` accepts the literal string `PUSH {r5, r6, r7, lr}` and nothing else,
+and `base = local_eff + 16` hard-codes "the saved block is four words". Any other shape --
+`-fopt-vstack` adding the third pool slot `r4`, or a future pass widening the save again --
+trips `if (!have_prologue) return;` on the very first pass, so **the constant cache and
+regalloc both go silently dead for that whole function**.
+
+**The gap is measured** (27 flags, 95 TU products, `D:/tmp/pro/gap3.py`, read-only scan of the
+`.s` files):
+
+| shape class | functions | frame accesses | repeated 32-bit constants in the same function (dedup ceiling) |
+| --- | ---: | ---: | ---: |
+| `PUSH {r5, r6, r7, lr}` (accepted today) | 75 | 119 | 1 |
+| **has a frame, shape is not those four words** (backs out today) | **91** | **489** | **47** |
+| no `r6` at all (no frame pointer; out of scope here) | 46 | 0 | 7 |
+
+So today **91 functions, 489 frame accesses and 47 dedupable 32-bit constants** are never seen by
+either pass. §11.6's "per function, not global" is right, but the coverage hole is bigger than it
+looked at the time.
+
+**Design (judgement and base derivation only; no optimisation rule changes)**:
+
+1. The frame-save line is recognised structurally rather than by string equality: a `PUSH {list}`
+   whose list **contains `r6`** (the frame pointer must be in it, otherwise `[r6, #o]` has no
+   meaning), **ends in `lr`**, and every element is a plain `rN`/`lr` name. The first such line in
+   the function is the frame save (the variadic prologue's `PUSH {r0, r1}` names no `r6` and drops
+   out by itself).
+2. `saved_words` = the number of registers the line names (`r5,r6,r7,lr` => 4) and
+   `base = local_eff + 4 * saved_words`. That is the same rule `ark_vreg_function()` already uses
+   (`base = local_eff + 4 * saved_words` in the vreg section of
+   `src/backend/arm/backend_arm.c`), so the two no longer disagree.
+3. The epilogue is recognised the same way: a `POP {list}` ending in `pc` or `lr`, containing `r6`,
+   and naming **a subset of the prologue's register set** (`-fopt-vstack` lets different return
+   paths of one function save different registers; measured: `POP {r4, r5, r6, r7, pc}` and
+   `POP {r5, r6, r7, pc}` coexist in one function). Widening still inserts before the last element
+   (`ra_last_elem_at`, unchanged).
+4. No prologue line found, or no epilogue line found => back out of the function as before. **No
+   guessing is added.**
+
+**Criteria (frozen). This is a defect fix, so the gain is not gated by a threshold; correctness and
+"must not get worse" are:**
+
+- **P1 must not grow**: 26 flags, 95 TUs, instruction total <= 11,404 **and no single TU may grow**
+  (any growth means revert, code included);
+- **P2 gates green**: `test-option`, `test-slotreg`, `test-live`, `test-addr`, `test-arm-exec`
+  (four arms, **0 failure**), `test-spill`, `test-vreg`, `test-regalloc`, `test-slotreg-*`, plus
+  `tools/stm32_build_check.py --layout both`;
+- **P3 OFF IS OFF**: with `-fopt-constcache` and `-fopt-vreg` removed from the 24-flag profile, all
+  18 TUs that produce output are byte-identical (**0 differing**) -- the change only fires on the
+  path that used to back out, so switching it off must not move a byte;
+- **P4 honest accounting**: report the net line delta and, separately, what `-fopt-regalloc` (off by
+  default) reads on those 91 functions. Do **not** write "defect fixed" as "optimisation achieved".
+
+**Anti-false-green (fixed in advance)**:
+
+1. **The self-check must be able to fail**: a fixture with `PUSH {r5, r6, r7, lr}`, five parameters
+   and a variadic tail must trip the gate if `base` is off by four bytes -- "reading 0" is not a
+   pass;
+2. **The variadic `PUSH {r0, r1}` must never be taken for the frame save**: for `va_pad > 0` the
+   `base` still has to skip it, or every stack argument moves by eight bytes and the varargs arm of
+   `arm_exec` explodes; the gate keeps a sample of exactly that;
+3. **No loosening of the taint rule to buy numbers**: `off >= base` ("stack argument or escaped
+   address") stays as it is; `base` moves only by rule 2 above;
+4. **Do not fork `-fopt-vreg`'s `saved_words` logic into a second copy** -- the two derivations must
+   agree, and any change to one has to check the other (`VREG.md` §18 records the same constraint).
+
+### 11.8 Measurements and verdict (2026-11-25)
+
+#### Measurement: full 2x2 decomposition (95 TUs, Cortex-M4, `-O2`)
+
+The implementation landed exactly as pre-registered (three structural predicates + Pass 1 / Pass 2
+wiring + "bail when no epilogue is found"); `gcc -c` and `make all` both return 0. To separate the two
+variables -- the shape generalisation itself and whether the constant cache should yield to litpool --
+four control binaries were built (strict / generalised x cache on / cache bailed) and each was run over
+the same 95 TUs:
+
+| Shape | Constant cache | 25 flags insns / bytes | 26 flags (with `-fopt-spill`) |
+| --- | --- | ---: | ---: |
+| Strict (HEAD, byte-exact four-word match) | active | 11,404 / 392,907 | 11,073 / 388,303 |
+| Generalised (this item) | active | 11,386 / 392,372 | **11,055 / 387,768** |
+| Generalised (this item) | bails to litpool | 11,436 / 393,648 | 11,105 / 389,044 |
+| Strict | bails to litpool | 11,436 / 393,648 | 11,105 / 389,044 |
+
+How to read it:
+
+1. **The gain is -18 instructions (0.16%) and comes entirely from the constant cache.** Once the cache
+   bails out, the "generalised" and "strict" rows are **byte-identical** (`strict25 == p25`,
+   `strict26 == p26`) -- `regalloc` and `vreg` are instruction-neutral across those 91 functions;
+   "the defect is fixed" did not buy a single instruction.
+2. **The only TU that grows** is `stm32f4xx_ll_utils.c` (+1), in `LL_PLL_ConfigSystemClock_HSE`: the
+   cache fill costs 1 `LDR` plus 5 `MOVW`/`MOVT` pairs where litpool could have folded those 5 pairs
+   into 5 `LDR`s, net +1. This is litpool double-counting, not a wrong `base` (address reuse in the
+   sibling functions of `hal_rcc` / `hal_rcc_ex` wins a little back).
+3. **Writing "the cache yields to litpool" into the code is a net loss** (+50 at 25 flags, +32 at 26
+   flags), winning only a rounding error in two TUs => that priority ruling is rejected and the patch
+   has been reverted (`cc_subsumed` count is 0).
+
+Incidentally measured relationship between the constant cache and litpool (24-flag baseline, neither
+is in the baseline by default):
+
+| Combination | insns / bytes |
+| --- | ---: |
+| Neither (24-flag baseline) | 12,317 / 392,598 |
+| `-fopt-constcache` only | 12,165 / 389,790 (-152) |
+| `-fopt-litpool` only | 11,436 / 393,648 (-881) |
+| Both | 11,436 / 393,648 (gain **0**, bytes +808) |
+
+That is: **with litpool present the cache's cost model -- "built `c` times costs `2c`, cached costs
+`2 + c`" -- no longer holds** (litpool has already collapsed the repeated 32-bit constant of a TU into
+one `.Llit` plus one `LDR`, leaving the cache nothing to save). This is registered separately as a
+debt item (see `OPERAND_ALLOC.en.md`); this item does not change the cache semantics or any default.
+
+#### Verdict
+
+**`negative_by_frozen_criterion`.** Pre-registration P1 reads: "26 flags <= 11,404 **and no single TU
+may grow** (if it grows, revert, including the code)". The total of 11,055 passes, but
+`stm32f4xx_ll_utils.c` grows by one, so the sole violating condition holds => **revert
+`src/backend/arm/backend_arm.c` to HEAD by the frozen criterion and record documentation only**.
+
+Re-measured after the revert: 25 flags 11,404 / 392,907, 26 flags 11,073 / 388,303, byte-identical
+to HEAD.
+
+Three boundaries are fixed:
+
+- (a) the §11.6 gap is **measured-harmless**: across those 91 functions and 489 frame accesses
+  `regalloc` / `vreg` are instruction-neutral; the only consumer that could have eaten the meal is the
+  constant cache, and it is itself the weaker side against litpool;
+- (b) every instruction of the §11.8 gain comes from the constant cache, **not** from "more functions
+  being seen by regalloc / vreg" -- this falsifies the original assumption that the coverage gap
+  would be closed by the allocators;
+- (c) this item **does not claim an optimisation**, changes no default, and adds no trim row;
+  `-fopt-constcache` and `-fopt-litpool` remain default-off and each keeps a single meaning.
+
+Wide-scope note: if litpool is ever trimmed away (`ARKCC_FEATURE_OPT_LITPOOL=0` on a small-target
+build), those -18 instructions become visible again -- at that point it deserves reopening as a
+**defect fix**, verifiable against the very table on this page, with no need to redesign anything.
+
