@@ -431,3 +431,76 @@ this round leaves it registered only.
 function is still deleted"; the second check alone would silently pass as the back end drifts.
 The pre-fix instrumentation reading (`SPILLBAIL tgt-missing ... mn=BIC op2=[#0x10000]`,
 29 functions) is the measurement behind this entry.
+### 10.7 Census of the remaining text-level candidates (2026-11-25)
+
+With the BIC fix in (26 flags: 11,044 insns / 387,872 B), the open question is **how much of
+the remaining 6,068-instruction gap still lives in the text layer**. To answer it the same
+95 TUs were histogrammed by mnemonic and compared category by category against
+`arm-none-eabi-gcc 13.2.1 -O2` on the same corpus (`cats.py`; counting only lines that start
+with whitespace and do not start with `.`).
+
+| Category | arkc | gcc -O2 | Diff |
+| --- | ---: | ---: | ---: |
+| MOV | 2,319 | 510 | **+1,809** |
+| LDR | 2,229 | 1,030 | **+1,199** |
+| BRANCH | 1,383 | 496 | **+887** |
+| ADD/SUB | 768 | 147 | +621 |
+| CMP | 675 | 256 | +419 |
+| PUSH | 418 | 55 | +363 |
+| POP | 421 | 98 | +323 |
+| MOVW/MOVT | 339 | 17 | +322 |
+| STR | 965 | 674 | +291 |
+| LOGIC | 645 | 428 | +217 |
+| CBZ/CBNZ | 151 | 37 | +114 |
+| MVN | 87 | 3 | +84 |
+| MUL/DIV | 27 | 21 | +6 |
+| IT | 40 | 45 | -5 |
+| SHIFT | 212 | 224 | -12 |
+| CALL/BX | 182 | 296 | -114 |
+| other | 183 | 639 | -456 |
+| **Total** | **11,044** | **4,976** | **+6,068** |
+
+The top three categories (MOV / LDR / BRANCH) account for +3,895, i.e. **64%** of the whole
+gap, and none of them is reachable from the text layer alone: most MOVs are argument passing
+and write-back from the evaluation model, most LDRs are "each variable is re-read from its
+frame slot", and most branches are conditions recomputed statement by statement (no
+cross-statement condition reuse). Below is the breakdown and, per candidate, the upper bound
+of what a *text-only* rewrite could recover.
+
+**MOV breakdown** (`movscan.py` / `movpairs.py`): 1,090 immediates (376 `#0`, 270 `#1`),
+1,044 register copies, 185 stack-base moves (`MOV rB, sp` 118 = number of framed functions,
+`MOV sp, rB` 67). The hottest register copies are `MOV r0,r5` 174, `MOV r1,r7` 158,
+`MOV r5,r0` 137, `MOV r7,r0` 93, `MOV r8,r0` 68 -- all traces of "compute into r0, then move
+into/out of a variable slot or argument position", i.e. exactly what §3's target model
+(three-address evaluation within a statement) is meant to remove.
+
+**LDR/STR shapes** (`ldrscan.py`): `[rX],#imm` 1,497 (peripheral accesses through r5),
+literal-pool loads 809, `[r6],#imm` 644 (frame slots), `[rX]` 214, register offset 30.
+
+**Upper bounds of the five text-level candidates** (each is "do only this rewrite, no
+evaluation-model change"):
+
+| Candidate | Upper bound | Share of 26-flag total |
+| --- | ---: | ---: |
+| Redundant literal reload elimination (reuse `LDR rX, .Llit_*` while still valid) | 75 / 809 (9.3%) | 0.7% |
+| `STR` to a slot never `LDR`-ed in the same file (`cands.py`) | 67 | 0.6% |
+| `CMP rX,#0` + `BEQ/BNE` -> `CBZ/CBNZ` (`brscan.py`) | 58 | 0.5% |
+| `B` to the immediately following label (`brscan.py`) | 48 | 0.4% |
+| `MOVW #imm` + `UXTH` on the same register (`cands.py`) | 6 | 0.05% |
+
+**Verdict: the text layer is measured out.** The five bounds sum to 254 lines (2.3%), the
+largest single one is 0.7%, and no single item reaches the 4% tier of §10.2; under the frozen
+rule they can only be *registered*, not landed as an optimisation. On top of that, the first
+two (literal reuse, dead-slot STR) are tightly coupled to the register allocation result, so a
+pass for either costs about as much as an evaluation-model change while returning an order of
+magnitude less.
+
+**The remaining gap is therefore attributed to the evaluation/register model**, not to the
+text layer: recovering the "read once more / move once more / recompute the same condition"
+parts of MOV/LDR/BRANCH is precisely the surface of S9c/S11, and their bounds are set by the
+method of §4 (each statement evaluated once, each variable loaded at most once per block).
+That is a project-level change and cannot be reached by local rewriting.
+
+**No existing verdict changes**: §10.5's "bound falsified" and §10.6's "S10 saturated" both
+still hold; this section only measures the "how much is left in the text layer" question down
+to 2.3% and gives a reproducible decomposition.
