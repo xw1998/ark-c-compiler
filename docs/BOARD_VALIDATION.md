@@ -196,7 +196,7 @@ app.bin: Error: unresolved symbol "nope"
 | # | 欠账 | 现状 |
 | --- | --- | --- |
 | 1 | 每语句约 1.3 KB 的 arena | 大函数在板上仍受 RAM 限制；未改 |
-| 2 | 长 `double` 字面量差 1 ulp（例如 `.L_dbl_9` = `1:0x43e00000`） | 已记录，未修；不影响现有用例 |
+| 2 | 长 `double` 字面量差 1 ulp（例如 `.L_dbl_9` = `1:0x43e00000`） | **已修**（0.9.1-wip）：字面量改走 2304 bit 定点大数、单次舍入，宿主与板端同一份实现；见 `docs/FLOATLIT.md` |
 | 3 | 板端没有上传 `aeabi_float.c`（30 个软浮入口） | 板端用例都走 VFP 或整型路径，软浮由宿主门禁 `test-softfloat` 覆盖 |
 | 4 | 串口 RX 偶发丢字节 / 板子偶发失联 | 由门禁自动复位兜底；根因未定位到具体寄存器级 |
 | 5 | `pyocd -m` 需要固定 cwd | 已在 `reset_board()` 里固定 |

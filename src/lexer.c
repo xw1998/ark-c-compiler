@@ -378,6 +378,388 @@ static int lex_at_line_start(const Lexer *lex) {
     return 1;
 }
 
+/* ---------------------------------------------------------------------------
+ * Exact conversion of floating literals.
+ *
+ * `strtod` is what a hosted build would use, and the decimal path used to do
+ * exactly that for literals with an exponent while hand-accumulating the
+ * digits of everything else -- `intp = intp * 10.0 + digit` rounds at every
+ * step, so a long mantissa came out a few ulp away from what the source asked
+ * for (123456789012345678.0 became ...0f36 instead of ...0f35).  Hex floats
+ * were built the same way, and the same lexer has to run inside the
+ * freestanding board build, where there is no libc to lean on.
+ *
+ * So there is one implementation used everywhere, and it is exact: the digits
+ * are accumulated into a small bignum, scaled by 10^E (multiply for E >= 0,
+ * exact long division by 5^-E for E < 0), and the resulting integer times a
+ * power of two is rounded to nearest-even exactly once, at the very end.  No
+ * intermediate rounding means no double rounding.
+ *
+ * Short literals never pay for this: the bignum cost is linear in the number
+ * of digits and the exponent, and it is a handful of microseconds.
+ *
+ * tests/run_floatlit_tests.py compares every emitted bit pattern against
+ * Python's correctly rounded float()/struct decoding -- including the classic
+ * halfway cases and random 1..40 digit mantissas -- so this cannot silently
+ * drift into "close enough".
+ * ------------------------------------------------------------------------ */
+#define LIT_NW 72                       /* 72 * 32 = 2304 bits of bignum */
+typedef struct { int n; unsigned int w[LIT_NW]; } LitBig;
+/* Static, not on the stack: the board build runs this lexer with a 4 KB app
+ * stack, and one LitBig is 292 bytes.  The lexer is single threaded. */
+static LitBig lit_M, lit_num, lit_den, lit_quo, lit_rem;
+static int lit_overflow;
+
+static void lit_zero(LitBig *a) { a->n = 0; }
+
+static void lit_copy(LitBig *d, const LitBig *s) {
+    int i;
+    d->n = s->n;
+    for (i = 0; i < s->n; i++) d->w[i] = s->w[i];
+}
+
+static int lit_is_zero(const LitBig *a) { return a->n == 0; }
+
+static int lit_bits(const LitBig *a) {         /* bit length, 0 when zero */
+    unsigned int x;
+    int b = 0;
+    if (a->n <= 0) return 0;
+    x = a->w[a->n - 1];
+    while (x) { b++; x >>= 1; }
+    return (a->n - 1) * 32 + b;
+}
+
+static void lit_trim(LitBig *a) {
+    while (a->n > 0 && a->w[a->n - 1] == 0) a->n--;
+}
+
+static void lit_set_u64(LitBig *a, unsigned long long v) {
+    a->n = 0;
+    while (v) { a->w[a->n++] = (unsigned int)(v & 0xFFFFFFFFu); v >>= 32; }
+}
+
+/* a = a * m + add   (m, add < 2^32; a grows by at most one word). */
+static void lit_mul_add(LitBig *a, unsigned int m, unsigned int add) {
+    unsigned long long carry = add;
+    int i;
+    for (i = 0; i < a->n; i++) {
+        carry += (unsigned long long)a->w[i] * (unsigned long long)m;
+        a->w[i] = (unsigned int)(carry & 0xFFFFFFFFu);
+        carry >>= 32;
+    }
+    while (carry) {
+        if (a->n >= LIT_NW) { lit_overflow = 1; return; }
+        a->w[a->n++] = (unsigned int)(carry & 0xFFFFFFFFu);
+        carry >>= 32;
+    }
+}
+
+static void lit_shl(LitBig *a, int bits) {
+    int words, b, i;
+    if (a->n == 0 || bits <= 0) return;
+    words = bits / 32;
+    b = bits % 32;
+    if (words) {
+        if (a->n + words > LIT_NW) { lit_overflow = 1; return; }
+        for (i = a->n - 1; i >= 0; i--) a->w[i + words] = a->w[i];
+        for (i = 0; i < words; i++) a->w[i] = 0;
+        a->n += words;
+    }
+    if (b) {
+        unsigned int carry = 0;
+        for (i = words; i < a->n; i++) {
+            unsigned int nw = (a->w[i] << b) | carry;
+            carry = a->w[i] >> (32 - b);
+            a->w[i] = nw;
+        }
+        if (carry) {
+            if (a->n >= LIT_NW) { lit_overflow = 1; return; }
+            a->w[a->n++] = carry;
+        }
+    }
+}
+
+/* r = r * 2 + bit */
+static void lit_shl1_or(LitBig *a, int bit) {
+    unsigned int carry = (unsigned int)(bit ? 1 : 0);
+    int i;
+    for (i = 0; i < a->n; i++) {
+        unsigned int nw = (a->w[i] << 1) | carry;
+        carry = a->w[i] >> 31;
+        a->w[i] = nw;
+    }
+    if (carry) {
+        if (a->n >= LIT_NW) { lit_overflow = 1; return; }
+        a->w[a->n++] = carry;
+    }
+}
+
+static int lit_cmp(const LitBig *a, const LitBig *b) {
+    int i;
+    if (a->n != b->n) return a->n < b->n ? -1 : 1;
+    for (i = a->n - 1; i >= 0; i--)
+        if (a->w[i] != b->w[i]) return a->w[i] < b->w[i] ? -1 : 1;
+    return 0;
+}
+
+/* a -= b, requires a >= b. */
+static void lit_sub(LitBig *a, const LitBig *b) {
+    unsigned long long borrow = 0;
+    int i;
+    for (i = 0; i < a->n; i++) {
+        unsigned long long t = (unsigned long long)a->w[i]
+                             - (unsigned long long)(i < b->n ? b->w[i] : 0)
+                             - borrow;
+        a->w[i] = (unsigned int)(t & 0xFFFFFFFFu);
+        borrow = (t >> 32) & 1u;
+    }
+    lit_trim(a);
+}
+
+static int lit_bit(const LitBig *a, int i) {
+    int wi = i / 32;
+    if (i < 0 || wi >= a->n) return 0;
+    return (int)((a->w[wi] >> (i % 32)) & 1u);
+}
+
+/* any set bit with index < i ? */
+static int lit_any_below(const LitBig *a, int i) {
+    int wi, k, b;
+    if (i <= 0) return 0;
+    wi = i / 32;
+    b = i % 32;
+    for (k = 0; k < wi && k < a->n; k++)
+        if (a->w[k]) return 1;
+    if (b && wi < a->n && (a->w[wi] & ((1u << b) - 1u))) return 1;
+    return 0;
+}
+
+/* bits [shift, shift+nbits) of a, nbits <= 64. */
+static unsigned long long lit_slice(const LitBig *a, int shift, int nbits) {
+    unsigned long long v = 0;
+    int i;
+    for (i = 0; i < nbits && i < 64; i++)
+        v |= (unsigned long long)lit_bit(a, shift + i) << i;
+    return v;
+}
+
+/* q = floor(num / den), r = num % den.  den must be nonzero. */
+static void lit_divmod(const LitBig *num, const LitBig *den,
+                       LitBig *q, LitBig *r) {
+    int top = lit_bits(num) - 1;
+    int i;
+    lit_zero(q);
+    q->n = num->n;
+    for (i = 0; i < q->n; i++) q->w[i] = 0;
+    lit_zero(r);
+    for (i = top; i >= 0; i--) {
+        lit_shl1_or(r, lit_bit(num, i));
+        if (lit_cmp(r, den) >= 0) {
+            lit_sub(r, den);
+            q->w[i / 32] |= 1u << (i % 32);
+        }
+        if (lit_overflow) return;
+    }
+    lit_trim(q);
+    lit_trim(r);
+}
+
+/* value = num * 2^e2, rounded once, to nearest even.  `prec` is 53 for a
+ * double literal and 24 for one with an `f` suffix: rounding the decimal
+ * straight to the target format is what makes the result the one the source
+ * asked for -- going through double first would double-round. */
+static double lit_round(int neg, const LitBig *num, long e2, int sticky, int prec) {
+    const int emax = (prec == 24) ? 127 : 1023;
+    const int emin = (prec == 24) ? -126 : -1022;
+    const long gran = (long)emin - (long)(prec - 1);   /* -149 / -1074 */
+    int mant_bits = prec;
+    union { double d; unsigned long long u; } out;
+    unsigned long long signbit = neg ? 0x8000000000000000ULL : 0ULL;
+    int bl = lit_bits(num);
+    long t;
+    int shift, guard, st;
+    unsigned long long mant;
+
+    if (lit_overflow) {
+        out.u = signbit | 0x7FF0000000000000ULL;
+        return out.d;
+    }
+    if (bl == 0) { out.u = signbit; return out.d; }
+    t = (long)(bl - 1) + e2;
+    if (t > emax) { out.u = signbit | 0x7FF0000000000000ULL; return out.d; }
+    if (t < gran - 1) { out.u = signbit; return out.d; }
+
+    if (t >= emin) shift = bl - mant_bits;           /* keep `prec` significant bits */
+    else           shift = (int)(-(e2 - gran));      /* subnormal: fixed granularity */
+    if (shift < 0) shift = 0;
+    if (shift > bl) shift = bl + 1;
+
+    if (shift == 0) {
+        mant = lit_slice(num, 0, bl);
+        guard = 0;
+        st = sticky;
+    } else {
+        mant = lit_slice(num, shift, bl - shift);
+        guard = lit_bit(num, shift - 1);
+        st = sticky || lit_any_below(num, shift - 1);
+    }
+    if (guard && (st || (mant & 1ULL))) mant++;
+
+    {
+        long e = e2 + shift;
+        int mb = 0;
+        unsigned long long m2 = mant;
+        while (m2) { mb++; m2 >>= 1; }
+        if (mb == 0) { out.u = signbit; return out.d; }
+        {
+            long ex = e + mb - 1;
+            if (ex >= emin) {
+                unsigned long long frac;
+                long biased;
+                if (mb > mant_bits) { mant >>= 1; e++; mb--; }
+                ex = e + mb - 1;
+                frac = mant << (mant_bits - mb);
+                biased = ex + (prec == 24 ? 127 : 1023);
+                if (biased >= (prec == 24 ? 255 : 2047)) {
+                    out.u = signbit | 0x7FF0000000000000ULL;
+                    return out.d;
+                }
+                if (prec == 24) {
+                    union { float f; unsigned int u; } fo;
+                    fo.u = (unsigned int)((neg ? 0x80000000u : 0u)
+                          | ((unsigned int)biased << 23)
+                          | (unsigned int)(frac & 0x7FFFFFULL));
+                    return (double)fo.f;
+                }
+                out.u = signbit | ((unsigned long long)biased << 52)
+                       | (frac & 0x000FFFFFFFFFFFFFULL);
+            } else {
+                long sh = e - gran;
+                if (sh < 0 || sh > mant_bits - 1) { out.u = signbit; return out.d; }
+                if (prec == 24) {
+                    union { float f; unsigned int u; } fo;
+                    fo.u = (unsigned int)((neg ? 0x80000000u : 0u) | (mant << sh));
+                    return (double)fo.f;
+                }
+                out.u = signbit | (mant << sh);
+            }
+        }
+    }
+    return out.d;
+}
+
+#define LIT_MAXDIG 400
+
+/* s..end is a decimal floating literal ("[+-]digits[.digits][e[+-]digits]"). */
+static double lit_from_decimal(const char *s, const char *end, int prec) {
+    const char *q = s;
+    int neg = 0, seen_point = 0, nd = 0, extra = 0, sticky = 0;
+    long e10 = 0;
+    int bl;
+
+    lit_overflow = 0;
+    while (q < end && (*q == '-' || *q == '+')) { if (*q == '-') neg = 1; q++; }
+    lit_zero(&lit_M);
+    for (; q < end; q++) {
+        if (*q == '.') { seen_point = 1; continue; }
+        if (*q == 'e' || *q == 'E') break;
+        if (!is_digit(*q)) break;
+        if (seen_point) e10--;
+        if (nd < LIT_MAXDIG) {
+            lit_mul_add(&lit_M, 10u, (unsigned int)(*q - '0'));
+            nd++;
+        } else {
+            if (*q != '0') sticky = 1;
+            extra++;
+        }
+    }
+    if (q < end && (*q == 'e' || *q == 'E')) {
+        int eneg = 0;
+        long ev = 0;
+        q++;
+        if (q < end && (*q == '+' || *q == '-')) { eneg = (*q == '-'); q++; }
+        while (q < end && is_digit(*q)) {
+            if (ev < 100000) ev = ev * 10 + (*q - '0');
+            q++;
+        }
+        e10 += eneg ? -ev : ev;
+    }
+    e10 += extra;
+    bl = lit_bits(&lit_M);
+    if (bl == 0) { union { double d; unsigned long long u; } z;
+                   z.u = neg ? 0x8000000000000000ULL : 0ULL; return z.d; }
+    {   /* crude decimal magnitude, good to within one decade */
+        long pt = (long)((bl - 1) * 30103L / 100000L) + e10;
+        union { double d; unsigned long long u; } z;
+        if (pt > 310) { z.u = (neg ? 0x8000000000000000ULL : 0ULL) | 0x7FF0000000000000ULL; return z.d; }
+        if (pt < -330) { z.u = neg ? 0x8000000000000000ULL : 0ULL; return z.d; }
+    }
+    if (e10 >= 0) {
+        long k = e10;
+        lit_copy(&lit_num, &lit_M);
+        while (k >= 9) { lit_mul_add(&lit_num, 1000000000u, 0); k -= 9; }
+        while (k-- > 0) lit_mul_add(&lit_num, 10u, 0);
+        return lit_round(neg, &lit_num, 0, sticky, prec);
+    } else {
+        long kk = -e10, k = kk;
+        int t;
+        lit_set_u64(&lit_den, 1);
+        while (k >= 13) { lit_mul_add(&lit_den, 1220703125u, 0); k -= 13; }  /* 5^13 */
+        while (k-- > 0) lit_mul_add(&lit_den, 5u, 0);
+        lit_copy(&lit_num, &lit_M);
+        /* Scale the numerator so the quotient carries 56 bits: the final
+         * rounding then sees a guard bit and a sticky bit that mean what
+         * they say. */
+        t = 56 + lit_bits(&lit_den) - lit_bits(&lit_num);
+        if (t < 0) t = 0;
+        lit_shl(&lit_num, t);
+        lit_divmod(&lit_num, &lit_den, &lit_quo, &lit_rem);
+        return lit_round(neg, &lit_quo, -(long)t - kk,
+                         sticky || !lit_is_zero(&lit_rem), prec);
+    }
+}
+
+/* s..end is a hex floating literal: 0x<hex>[.<hex>][p[+-]<dec>] */
+static double lit_from_hex(const char *s, const char *end, int prec) {
+    const char *q = s;
+    int neg = 0, nd = 0, sticky = 0;
+    long e2 = 0, fracdig = 0;
+
+    lit_overflow = 0;
+    while (q < end && (*q == '-' || *q == '+')) { if (*q == '-') neg = 1; q++; }
+    if (q + 1 < end && q[0] == '0' && (q[1] == 'x' || q[1] == 'X')) q += 2;
+    lit_zero(&lit_M);
+    {
+        int after_point = 0;
+        for (; q < end; q++) {
+            if (*q == '.') { after_point = 1; continue; }
+            if (*q == 'p' || *q == 'P') break;
+            if (!is_hex(*q)) continue;
+            if (after_point) fracdig++;
+            if (nd < LIT_MAXDIG) {
+                lit_mul_add(&lit_M, 16u, (unsigned int)hex_val(*q));
+                nd++;
+            } else {
+                if (hex_val(*q) != 0) sticky = 1;
+                e2 += 4;
+            }
+        }
+    }
+    if (q < end && (*q == 'p' || *q == 'P')) {
+        int eneg = 0;
+        long ev = 0;
+        q++;
+        if (q < end && (*q == '+' || *q == '-')) { eneg = (*q == '-'); q++; }
+        while (q < end && is_digit(*q)) {
+            if (ev < 100000) ev = ev * 10 + (*q - '0');
+            q++;
+        }
+        e2 += eneg ? -ev : ev;
+    }
+    e2 -= 4 * fracdig;
+    return lit_round(neg, &lit_M, e2, sticky, prec);
+}
+
 static Token lexer_read_token(Lexer *lex) {
     const char *start;
     int line;
@@ -585,13 +967,9 @@ static Token lexer_read_token(Lexer *lex) {
                 has_exp = 1;
             }
             if (is_hfloat) {
-                double e = 1.0;
-                int i;
-                fval = (double)ipart + fpart / fscale;
-                for (i = 0; i < exp_v; i++) e *= 2.0;
-                if (has_exp) {
-                    if (exp_neg) fval /= e; else fval *= e;
-                }
+                /* Exact hex -> floating point, see lit_from_hex(). */
+                const char *num_end = lex->p;
+                fval = lit_from_hex(start, num_end, 53);
                 {
                     int is_float_suffix = 0;
                     while (*lex->p == 'f' || *lex->p == 'F' ||
@@ -599,6 +977,9 @@ static Token lexer_read_token(Lexer *lex) {
                         if (*lex->p == 'f' || *lex->p == 'F') is_float_suffix = 1;
                         lex->p++;
                     }
+                    /* `1.5f` must be rounded once, straight to binary32: going
+                     * through binary64 first can double-round. */
+                    if (is_float_suffix) fval = lit_from_hex(start, num_end, 24);
                     if (*lex->p == 'i' || *lex->p == 'I' ||
                         *lex->p == 'j' || *lex->p == 'J') {
                         lex->p++;
@@ -667,62 +1048,9 @@ static Token lexer_read_token(Lexer *lex) {
             while (is_digit(*lex->p)) lex->p++;
         }
         if (is_float) {
-            /* Parse decimal float by re-scanning from start. */
-            const char *q = start;
-            double sign = 1.0;
-            double intp = 0.0, fracp = 0.0, frac_scale = 1.0;
-            int has_exp = 0, exp_neg = 0, exp_v = 0;
-            int i;
-            if (*q == '-') { sign = -1.0; q++; }
-            while (is_digit(*q)) { intp = intp * 10.0 + (*q - '0'); q++; }
-            if (*q == '.') {
-                q++;
-                while (is_digit(*q)) {
-                    fracp = fracp * 10.0 + (*q - '0');
-                    frac_scale *= 10.0;
-                    q++;
-                }
-            }
-            if (*q == 'e' || *q == 'E') {
-                has_exp = 1;
-                q++;
-                if (*q == '-') { exp_neg = 1; q++; }
-                else if (*q == '+') q++;
-                while (is_digit(*q)) { exp_v = exp_v * 10 + (*q - '0'); q++; }
-            }
-            fval = sign * (intp + fracp / frac_scale);
-            if (has_exp) {
-                /* C99 requires correct rounding for subnormal range values
-                 * (e.g. 1e-320). Direct integer pow of 10^exp is unreliable
-                 * at extreme magnitudes:
-                 *   10^320 overflows to +inf, so fval/inf = 0;
-                 *   pow(10,-320) may return a subnormal value.
-                 * Use host pow() to inherit its subnormal handling.
-                 *
-                 * 宿主环境使用 strtod 进行正确舍入的浮点解析。
-                 * 手动计算 mantissa * pow(10, exp) 在 DBL_MAX
-                 * (1.7976931348623157e308) 等极端值时会因中间舍入溢出为 inf。
-                 * strtod 由宿主 libc 提供正确舍入，能精确解析所有 double 字面量。 */
-#if !defined(ARKCC_STM32)
-                {
-                    char lit[64];
-                    int lit_len = (int)(lex->p - start);
-                    extern double strtod(const char *, char **);
-                    if (lit_len >= (int)sizeof(lit)) lit_len = (int)sizeof(lit) - 1;
-                    { int ii; for (ii = 0; ii < lit_len; ii++) lit[ii] = start[ii]; }
-                    lit[lit_len] = 0;
-                    fval = strtod(lit, 0);
-                }
-#else
-                /* STM32 freestanding 环境：手动计算（对极端大数可能不够精确） */
-                {
-                    double e;
-                    extern double pow(double, double);
-                    e = pow(10.0, (double)(exp_neg ? -exp_v : exp_v));
-                    fval *= e;
-                }
-#endif
-            }
+            /* Exact decimal -> floating point, see lit_from_decimal(). */
+            const char *num_end = lex->p;
+            fval = lit_from_decimal(start, num_end, 53);
             {
                 int is_float_suffix = 0;
                 while (*lex->p == 'f' || *lex->p == 'F' ||
@@ -730,6 +1058,7 @@ static Token lexer_read_token(Lexer *lex) {
                     if (*lex->p == 'f' || *lex->p == 'F') is_float_suffix = 1;
                     lex->p++;
                 }
+                if (is_float_suffix) fval = lit_from_decimal(start, num_end, 24);
                 /* C99 imaginary suffix: the i/I/j/J suffix sets is_imag=1.
                  * For example, 1.0i becomes the pure imaginary 0+1i literal,
                  * which the parser converts into a TYPE_COMPLEX AST_NUM node. */

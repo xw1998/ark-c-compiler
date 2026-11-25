@@ -212,7 +212,7 @@ program would jump into the vector table.
 | # | Debt | Status |
 | --- | --- | --- |
 | 1 | about 1.3 KB of arena per statement | large functions are still RAM limited on the board; unchanged |
-| 2 | long `double` literals are off by 1 ulp (e.g. `.L_dbl_9` = `1:0x43e00000`) | recorded, not fixed; no case depends on it |
+| 2 | long `double` literals are off by 1 ulp (e.g. `.L_dbl_9` = `1:0x43e00000`) | **fixed** (0.9.1-wip): literals now go through a 2304-bit fixed-point bignum with a single rounding, one implementation for host and board; see `docs/FLOATLIT.en.md` |
 | 3 | `aeabi_float.c` (30 soft-float entries) is not uploaded to the board | every board case goes through VFP or integer paths; soft float is covered by the host `test-softfloat` gate |
 | 4 | the UART occasionally drops a byte / the board occasionally goes silent | the gate's automatic reset is the fallback; not localised to a specific register |
 | 5 | `pyocd -m` needs a fixed cwd | fixed inside `reset_board()` |

@@ -48,7 +48,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch test-imm test-peep test-cbranch test-copyprop test-cmat test-slotreg test-opalloc test-live test-movimm test-litpool test-coalesce test-voldmb test-volmem test-constcond
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-floatlit test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch test-imm test-peep test-cbranch test-copyprop test-cmat test-slotreg test-opalloc test-live test-movimm test-litpool test-coalesce test-voldmb test-volmem test-constcond
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -521,6 +521,14 @@ test-bitfield: $(ARKCC)
 # strict-binary64 answers of a few derived expressions.
 test-dblprec: $(ARKCC)
 	$(PYTHON) tests/run_arm_double_precision_tests.py --arkcc ./$(ARKCC)
+
+# Gate for floating literals: the value in the constant pool must be the
+# correctly rounded one, for decimal and hex forms, at binary64 and (with an
+# `f` suffix) at binary32.  The old lexer accumulated digits in a double and
+# was 1 ulp low on long mantissas; every case here is checked bit for bit
+# against an independent exact conversion.
+test-floatlit: $(ARKCC)
+	$(PYTHON) tests/run_floatlit_tests.py ./$(ARKCC)
 
 # Library gate: every stdlib entry point is compiled and run on the ARM
 # emulator, and each case asserts a number the program itself computed.  A

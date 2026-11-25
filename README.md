@@ -592,6 +592,7 @@ ark c compiler/
 ├── docs/OBJ_IR.md          对象里的 IR 载荷与链接期重编（--obj-ir / -link --lto）：载荷格式、合并的池 remap、逐字节等价、拒绝与诊断、裁剪与门禁（中文，UTF-8）
 ├── docs/PARTIAL_LINK.md    部分链接（-r）：机器码作准、符号/重定位 rebase、数据段不搬、三类拒绝、可替换性与幂等、裁剪与门禁（中文，UTF-8）
 ├── docs/BOARD_VALIDATION.md 板端全功能验证（0.9.0 判据）：54 用例 × 三档、实测读数、门禁自检与全部根因（中文，UTF-8）
+├── docs/FLOATLIT.md        浮点字面量的精确转换（单次舍入）：两个 1 ulp 错答案的实例、旧实现三处中途舍入、2304 bit 定点大数与除以 5^k 的二进制长除、prec=53/24 两档与 float 后缀为何不经过 double、400 位与 100000 指数的如实上限、板端 1,464 B `.bss` 与栈零占用、419 例门禁（含三条防假绿）与 178,549 例独立对拍、95 TU 语料逐字节不变（中文，UTF-8，另有 .en.md）
 ├── docs/从零写一个C编译器.md  教材体逐代码教程：19 章，从 30 行到 3 万行（中文，UTF-8）
 ├── docs/from-scratch-c-compiler.en.md  上述教材的英文摘要（结构、章目、阅读路线）
 └── README.md               项目简介（UTF-8）

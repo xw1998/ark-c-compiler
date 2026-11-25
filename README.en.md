@@ -686,6 +686,7 @@ ark c compiler/
 ├── docs/OBJ_IR.md         An IR payload in the object and link-time recompilation (--obj-ir / -link --lto): payload format, pool remapping on merge, byte equivalence, refusals and diagnostics, cropping, gate (Chinese, UTF-8)
 ├── docs/PARTIAL_LINK.md   Partial link (-r): machine code wins, symbol/relocation rebasing, data never moved, three refusals, substitutability and idempotence, cropping, gate (Chinese, UTF-8)
 ├── docs/BOARD_VALIDATION.md  On-board full validation (the 0.9.0 criterion): 54 cases x three levels, measured readings, the gate's own self-check and every root cause (Chinese, UTF-8)
+├── docs/FLOATLIT.md        Exact conversion of floating literals (one rounding): the two 1-ulp wrong answers, the three mid-way roundings in the old code, the 2304-bit fixed-point bignum and the binary long division by 5^k, the prec=53/24 split and why an `f` suffix never goes through double, the honest 400-digit / 100000-exponent limits, the 1,464 B of board `.bss` and zero stack, the 419-case gate (three anti-false-green checks) and the 178,549-case independent cross-check, and the byte-identical 95-TU corpus (Chinese, UTF-8, .en.md twin exists)
 ├── docs/从零写一个C编译器.md  Textbook-style walkthrough: 19 chapters, from 30 lines to 30 000 (Chinese, UTF-8)
 ├── docs/from-scratch-c-compiler.en.md  English summary of that textbook (structure, chapter map, reading routes)
 └── README.md               Project overview (Chinese, UTF-8)
