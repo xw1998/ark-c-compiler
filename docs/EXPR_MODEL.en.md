@@ -231,9 +231,19 @@ statement were already taken by `-fopt-pair` / `-fopt-vstack`, leaving S9b only 
 **Next levers (re-ordered by measurement, registered not promised)**:
 
 1. **Comparison-result materialisation** (`CMP`/`ITE`/`MOVEQ`/`MOVNE`) — the coverage of
-   `-fopt-cbranch`; the thickest residue;
-2. **Inter-block value passing** — the prerequisite of S9c in §5, i.e. in-block liveness in
-   `RA_MODEL.en.md` §4.1b;
+   `-fopt-cbranch`. Measured at only **120 instructions = 1.0%** (`ITE` 40, `MOVEQ` 36,
+   `MOVNE` 36, eight others), so **not** a major gap; registered, not the main lever;
+2. **Inter-block value passing** (now quantified, below) — the prerequisite of S9c in §5, i.e.
+   in-block liveness in `RA_MODEL.en.md` §4.1b;
+
+   > Measured on the same 26-flag output: **single-register `PUSH`/`POP` round trips total 641
+   > instructions = 5.5%** (`PUSH {r0}` 498, `POP {r0}` 96, `POP {r1}` 42, five others), 78% of
+   > them r0. The shape is a **join of nested conditional expressions**: every arm ends with
+   > `MOV*/PUSH {r0}` + `B .Ljoin` and one `POP {rY}` sits at the outermost join — e.g.
+   > `stm32f4xx_hal_dma_ex.c` alone has 317 `PUSH {r0}` against only 38 `POP {r0}`, the rest
+   > matching `POP {r1}` many blocks further out. Because the pop can be dozens of blocks away,
+   > **this is not peephole-solvable**; it needs cross-block value liveness. Removing all 641
+   > gives about 11,025 instructions = 1.96x.
 3. the 931-instruction frame-access gap (976 vs 45), already judged un-cashable by an ordinary
    allocator in `RA_MODEL.en.md` — a structural difference.
 
