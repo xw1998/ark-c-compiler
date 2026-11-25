@@ -847,3 +847,89 @@ fixture in this round did not fire for exactly that reason, and looked plausible
 3. "Register tier" does not mean the next slice is worth opening: whether to do the S11.4
    relaxation still needs a project-level ruling (S10.9's precedent: below 5% margin, do
    not open a new slice).
+
+## 12 S12-1b measurement and withdrawal (2026-11-25)
+
+S11.4 registered "rule 5 does not include `CMP Rd,#imm`" as the next candidate slice.
+This section is the **measurement** of that candidate, and the verdict is **withdraw**:
+after the relaxation the gain is **0 instructions**.
+
+### 12.1 Two probes (neither committed)
+
+Before touching any frozen wording, two throw-away probes measured what rule 5 is worth:
+
+| Probe | Change | Reading |
+| --- | --- | --- |
+| A (S12-1b proper) | in `ldh_shape`, the `CMP` branch first checks "`op[0]==D`, `op[1]` starts with `#`, and `op[1]` does not mention `D`" => return 0 | 10,917 / 385,260 |
+| B (ceiling of rule 5) | consumer test relaxed to "any instruction, provided exactly one operand is *exactly* that register and the instruction does not write it" | 10,917 / 385,260 |
+
+Both readings are **bit-identical** to S11.1's 10,917 / 385,260. Probe A was verified
+to really fire on a hand-written fixture (`CMP r5,#11` and `CMP r5,#22` both rewritten to
+`CMP r4,...`, the second load deleted, `PUSH`/`POP` widened to `{r4,r5,r6,r7,r9,lr}`),
+so the zero is not "the probe never connected".
+
+### 12.2 Why it is zero (root cause, measured)
+
+Immediate compares are **not** rare in this corpus: the 26-flag output has **331**
+`CMP Rd,Rn` and **344** `CMP Rd,#imm`. Something further upstream blocks it:
+
+- the region-aware ceiling (rerunning `s12_1_ub.py` on the `lh_on` output) is only **142**,
+  128 of them in dma_ex;
+- S12-1 already took **127** of those (89%);
+- the remaining 15 are stopped by rules 4/7 (region cut by a write to `Rb`, an aliasing
+  store, a call or a two-predecessor label; `killed == 0`), **not by rule 5**.
+
+**Conclusion, written down**: "rule 5 misses immediate compares" is a phantom gap.
+Relaxing it buys nothing, and the ceiling version buys nothing either; the two identical
+readings also rule out the "gained as many as it lost" coincidence (a real trade would
+still move the byte count).
+
+### 12.3 Verdict
+
+**S12-1b withdrawn** (0 instructions, below the <110 withdrawal line of S10.10's tiers).
+**The S12-1 line is closed at "register tier"**; `-fopt-ldhoist` stays (default off,
+same registration basis as `4b3fc25`). Both probes were reverted with `git checkout`;
+the tree is identical to `35b5a76`.
+
+### 12.4 Forbidden readings
+
+1. "0" does **not** mean immediate compares are rare: 344 `CMP Rd,#imm` versus 331
+   register-form `CMP`.
+2. "0" does **not** mean S12-1b was badly implemented: probe A *is* the relaxed
+   implementation, and the reading *is* the gain.
+3. Do not reopen S12-1's wording because of this withdrawal: S11.3 and S11.4 stand, this
+   section only appends.
+
+## 13 Residual survey of the text layer (2026-11-25, closing)
+
+Every remaining candidate family, measured in one pass on the 26-flag output `lh_base`
+(11,044 basis). This is the last survey of "what the text layer can still take":
+
+| Candidate family | Ceiling (insns) | Share of 11,044 |
+| --- | ---: | ---: |
+| Literal-base hoisting (one dedicated register per function, the most repeated `Llit`) | 140 | 1.27% |
+| Dead frame stores (`[r6,#n]` slots written and never read in the function) | 91 | 0.82% |
+| Alignment-only frames (`SUB/ADD sp` only for 8-byte alignment; body touches neither `[r6]` nor `[sp]`) | 66 | 0.60% |
+| In-block literal-load dedup (no extra dedicated register, per-block tracking) | 61 | 0.55% |
+| In-block frame-slot promotion (same slot accessed >=2 times in one block) | 25 | 0.23% |
+
+Reproduction scripts (`D:/tmp/bm/`): `litdup3.py`, `frameslot.py`, `framealign.py`,
+`litdup2.py`, `frameslot2.py`; `litdup.py` gives the whole-function count (438) but
+requires a dedicated register, so it is reference only.
+
+**Three conclusions**:
+
+1. Every family is below **1.3%**; together (they overlap, so they do not add cleanly)
+   they are a 3.5% effect at most -- enough to move 11,044 to roughly 10,650, still
+   **1.9x** armcc.
+2. Three of them (literal-base hoisting, dead frame stores, alignment-only frames) carry
+   the **same meaning** as `-fopt-ldhoist` (hoist a repeated materialisation into one
+   dedicated register, or trade an alignment-only frame for a register), so they could be
+   folded into the existing switch; but by S10.10's tiers, 140 = 1.27% is still
+   register tier.
+3. **The text layer closes here.** S4's judgement (reaching 5,619 requires changing the
+   emission model) now has reading support: in one accounting (25/26 flags, without
+   `-fopt-regalloc`) 25 flags **11,375** -> `-fopt-spill` **11,044** (-331) ->
+   `-fopt-ldhoist` **10,917** (-127) -> S12-1b **0**; with S9b (other accounting,
+   11,666 -> 11,650, -16) the whole round is **11,375 -> 10,917 (-458, -4.0%)**, still
+   **1.94x** armcc. The -49% has to come from the structural layer.
