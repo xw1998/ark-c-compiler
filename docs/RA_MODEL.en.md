@@ -456,4 +456,6 @@ Three sentences, final:
 3. to go further the entry point is the **expression-evaluation model** (not the allocator);
    its preregistration and frozen criteria are in [EXPR_MODEL.en.md](EXPR_MODEL.en.md)
    (S9: the four value-transport classes overrun by 3,802 = 32.6%; eating all of it gives 1.40x,
-   another 500-700 gives about 1.28x).
+   another 500-700 gives about 1.28x). **S9b was implemented and measured: -16 instructions =
+   0.137%, withdrawn per the frozen criterion, verdict `statement_local_three_address_insufficient`
+   (`EXPR_MODEL.en.md` §9).**

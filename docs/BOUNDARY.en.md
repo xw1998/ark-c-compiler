@@ -293,7 +293,9 @@ The conclusion is pinned: the 0.9.1 optimization line adds no further passes. To
 remaining 2.09x means changing the unit of allocation — see `docs/RA_MODEL.md` (the S8
 preregistration: IR virtual registers plus linear scan, with S8a's read-only pressure criterion
 frozen); its negative result points the next step at the expression-evaluation model, whose
-preregistration and ceiling are in [EXPR_MODEL.en.md](EXPR_MODEL.en.md) (S9).
+preregistration and ceiling are in [EXPR_MODEL.en.md](EXPR_MODEL.en.md) (S9); S9b measured at
+-16 instructions = 0.137% and was withdrawn per the frozen criterion (§9) — the measured
+bottleneck is comparison materialisation and inter-block passing, not intra-statement arithmetic.
 
 ## 6 What is already done (do not re-invest)
 

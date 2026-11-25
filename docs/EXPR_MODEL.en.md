@@ -7,7 +7,8 @@ English | [中文](EXPR_MODEL.md)
 > text rules of 0.9.1 have already shaved everything shavable off that round trip, and what is left
 > can only be taken by changing the emission model itself.**
 >
-> Status: **read-only measurement done (S9a), implementation not started**. Criteria and slicing are
+> Status: **S9a read-only measurement done; S9b (`-fopt-expr`) implemented and measured
+> at −16 instructions = 0.137%, withdrawn per the §6 criterion (see §9)**. Criteria and slicing are
 > in §5/§6.
 > See also: [BOUNDARY.en.md](BOUNDARY.en.md) (the structural-gap account), [RA_MODEL.en.md](RA_MODEL.en.md)
 > (the negative result of the allocator route), [VSTACK_CFG.en.md](VSTACK_CFG.en.md) /
@@ -136,7 +137,7 @@ the ceiling of text layer plus local model surgery.
 - Reproduce: `D:/tmp/bm/cmp26_ac.py` (full per-class table), `D:/tmp/bm/r0shapes.py` (the two `r0`
   families), `remeasure.py` (totals).
 
-### S9b Three-address emission inside a statement (not started)
+### S9b Three-address emission inside a statement (implemented and withdrawn, see §9)
 
 - Switch: `-fopt-expr` / `-fno-opt-expr`, config macro `ARKCC_FEATURE_OPT_EXPR` (host 1, board 0,
   **off by default**); the trim table and the `C3900U` by-name rejection table gain one row each
@@ -192,3 +193,49 @@ there).
   pairing positions stay untouched;
 - Do not extend in-statement buffering across basic blocks unless in-block liveness is proven first
   (`RA_MODEL.en.md` §4.1b).
+
+## 9 S9b measurement and withdrawal (2026-11-25)
+
+**Verdict up front**: `-fopt-expr` was implemented per §5 and measured per §6, and it removes
+**16 instructions (0.137%)** — landing in §6's "< 5% ⇒ withdraw the switch (revert the code too)".
+The switch and its four config hooks have been reverted; after a rebuild `arkcc.exe` is back to
+**11,666 instructions / 396,986 B** on the 26-flag corpus.
+
+**Measurement** (26 flags, 95 TUs; script `D:/tmp/bm/s9b_measure.py`, raw readings
+`D:/tmp/bm/s9b_res.json`):
+
+| Configuration | Instructions | Bytes |
+| --- | ---: | ---: |
+| 26 flags (no `-fopt-expr`) | 11,666 | 396,986 |
+| 26 flags + `-fopt-expr` | 11,650 | 396,706 |
+| **Delta** | **−16 (0.137%)** | −280 |
+
+Only 2 of the 95 TUs changed: `stm32f4xx_hal_gpio.c` −12 and `stm32f4xx_hal_cortex.c` −4; zero grew;
+errs=0, danglingTUs=0.
+
+**Why so small (root cause, measured)**: counting the surviving `PUSH`/`POP` per TU in the output with
+`-fopt-expr` on (`stm32f4xx_hal_dma_ex.c` 394, `hal_rcc` 137, `hal_dma` 133) shows the residue is
+**materialising a comparison result plus a conditional jump** (`CMP` / `ITE EQ` / `MOVEQ r0,#1` /
+`MOVNE r0,#0` / `PUSH {r0}` / `B .L…`) and **constant fill after a branch** (`MOV r0,#1` /
+`PUSH {r0}`). The first belongs to `-fopt-cbranch`, the second to inter-block value passing; neither
+is the "arithmetic inside one statement" that §5 scoped. In other words, `a+b` and `a+b*c` inside a
+statement were already taken by `-fopt-pair` / `-fopt-vstack`, leaving S9b only scraps.
+
+**Verdict**: `statement_local_three_address_insufficient`.
+
+- This refutes **only** the "three-address inside a statement" layer, not the §4 target model;
+- of the 4,606 value-transport instructions in §1, **the part attributable to intra-statement
+  arithmetic is close to zero on this corpus**;
+- the 1.40×/1.28× ceiling of §4 **cannot** be cashed by this layer — the delta lives elsewhere.
+
+**Next levers (re-ordered by measurement, registered not promised)**:
+
+1. **Comparison-result materialisation** (`CMP`/`ITE`/`MOVEQ`/`MOVNE`) — the coverage of
+   `-fopt-cbranch`; the thickest residue;
+2. **Inter-block value passing** — the prerequisite of S9c in §5, i.e. in-block liveness in
+   `RA_MODEL.en.md` §4.1b;
+3. the 931-instruction frame-access gap (976 vs 45), already judged un-cashable by an ordinary
+   allocator in `RA_MODEL.en.md` — a structural difference.
+
+**Evidence kept**: the pre-withdrawal implementation patch is at `D:/tmp/bm/s9b_expr_retract.patch`
+(391 lines, not in the repo).
