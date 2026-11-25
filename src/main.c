@@ -624,6 +624,14 @@ int main(int argc, char **argv) {
             return 1;
         }
 #endif
+#if !ARKCC_FEATURE_OPT_BOOLMAT
+        else if (strcmp(a, "-fopt-boolmat") == 0) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: -fopt-boolmat is not compiled into "
+                    "this build (rebuild with -DARKCC_FEATURE_OPT_BOOLMAT=1)\n");
+            return 1;
+        }
+#endif
 #if !ARKCC_FEATURE_OPT_VOLBAR
         else if (strcmp(a, "-fopt-volbar") == 0) {
             fprintf(stderr,

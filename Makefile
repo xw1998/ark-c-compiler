@@ -30,7 +30,7 @@ endif
         test-tailcall test-divconst test-xblock test-sizeweight \
         test-inline test-vstack test-addr test-strength test-cbz test-branch \
         test-imm test-peep test-cbranch test-copyprop test-live test-movimm test-pair \
-        test-prop test-deadpush test-cmat test-slotreg test-opalloc \
+        test-prop test-deadpush test-cmat test-slotreg test-opalloc test-boolmat \
         test-voldmb test-volmem test-constcond \
         test-litpool test-coalesce install \
         stm32 stm32-check
@@ -48,7 +48,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-floatlit test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch test-imm test-peep test-cbranch test-copyprop test-cmat test-slotreg test-opalloc test-live test-movimm test-litpool test-coalesce test-voldmb test-volmem test-constcond
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-floatlit test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch test-imm test-peep test-cbranch test-copyprop test-cmat test-slotreg test-opalloc test-live test-movimm test-litpool test-coalesce test-voldmb test-volmem test-constcond test-boolmat
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -323,6 +323,17 @@ test-deadpush: $(ARKCC)
 # cropped build (-DARKCC_FEATURE_OPT_CMAT=0) refuses the flag by name.
 test-cmat: $(ARKCC)
 	$(PYTHON) tests/run_cmat_tests.py ./$(ARKCC)
+
+# Gate for -fopt-boolmat: OFF IS OFF (byte-identical without the flag), the
+# boolean materialisations and the instruction count both drop (and neither
+# drop is zero, so a rule that never fires cannot pass), R2 (`!= 0`) and R3
+# (`== 0` whose value is used) each fire, R3 steps aside when -fopt-cbranch can
+# fold the branch itself, a re-test of a non-comparison value (`(a&3)!=0`, a
+# char, a pointer load, a call result, a long long compare) is left
+# byte-identical, five arms agree with a Python computation in unicorn, and a
+# cropped build (-DARKCC_FEATURE_OPT_BOOLMAT=0) refuses the flag by name.
+test-boolmat: $(ARKCC)
+	$(PYTHON) tests/run_boolmat_tests.py ./$(ARKCC)
 
 # Gate for -fopt-slotreg: the pass only ever deletes lines, never inserts, so
 # the gate pins that every dropped line is a frame load/store of r0, that the

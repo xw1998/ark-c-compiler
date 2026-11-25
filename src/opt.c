@@ -712,6 +712,188 @@ void opt_deadpush_func(IrFunc *f) {
 #endif
 }
 
+/* --- Boolean materialise / test round trip (-fopt-boolmat) ----------------
+ * Why this exists: `int t = (a < b); if (t)` is two statements, so irgen has to
+ * put the 0/1 result of the comparison somewhere the second statement can find
+ * it -- a frame slot.  The emitter then produces
+ *
+ *     CMP  r5, r7
+ *     ITE  LT                 the comparison materialised into r0
+ *     MOVLT r0, #1
+ *     MOVGE r0, #0
+ *     STR  r0, [r6, #16]      ... stored
+ *     CBZ  r0, .L_else        ... and immediately tested again
+ *
+ * six instructions where the flags of the first CMP can already answer the
+ * question.  Nothing downstream removes the pair: -fopt-prop only folds a
+ * constant, -fopt-live keeps the store because this load is its reader, and
+ * -fopt-deadpush only deletes a push that is thrown away by IR_POP.
+ *
+ * The rewrite is exact, not a guess, and it is the narrowest window that is
+ * exactly right:
+ *
+ *     STORE v ; PUSH_VAR v        (same slot, same width, nothing between)
+ *   ->
+ *     (both deleted)
+ *
+ * The stack effect of the pair is zero: the store pops exactly the one word the
+ * load pushes back, and what it pushes back are the bytes the store just wrote.
+ * So the IR stack is balanced before and after and every consumer sees the same
+ * value -- except that after the rewrite the comparison result is still the top
+ * of stack when the branch runs, which is what lets -fopt-cbranch collapse the
+ * whole thing into `CMP r5, r7` + `BGE .L_else`.
+ *
+ * Why the width test is exactly 4: a one- or two-byte round trip is not an
+ * identity.  `char c = 300;` stores 0x2C and reads back 44, so the rewritten
+ * code would carry 300 where the original carried 44.  Eight-byte pairs are two
+ * words each and are left to the passes that model them.
+ *
+ * The other conditions exist because deleting a store is only invisible when
+ * nothing else can observe the slot:
+ *   - no other instruction in the function may observe that word (a second
+ *     PUSH_VAR, a bitfield access to a neighbour inside it, or an address taken
+ *     near the slot).  Further *stores* to it are harmless once every reader is
+ *     gone, but they are refused as well: the check is one range test over the
+ *     same three opcodes, and keeping it that way means no second analysis to
+ *     get wrong;
+ *   - neither side may be volatile, 64-bit or _Complex (different stack shape);
+ *   - a function with inline asm or a VLA is skipped outright: asm can name a
+ *     frame slot by offset and an ALLOCA moves what "the frame" means, the same
+ *     conservative rule -fopt-prop applies to its byte map.
+ */
+static int bm_word_width(const IrInst *I) {
+    unsigned w;
+    if (I->aux & (IR_AUX_VOLATILE | IR_AUX_SLOT64 | IR_AUX_COMPLEX)) return 0;
+    w = (unsigned)I->aux & 0xFFu;
+    return (w == 0 || w == 4) ? 4 : 0;
+}
+
+/* 1 when some instruction other than the two candidates observes the word at
+ * `off`.  The +-3 window catches an overlapping byte/half store and a bitfield
+ * access to a neighbour living inside the same word. */
+static int bm_slot_observed(const IrFunc *f, long long off, int si, int li) {
+    int k;
+    for (k = 0; k < f->code_count; k++) {
+        const IrInst *I = &f->code[k];
+        long long d;
+        if (k == si || k == li || I->op == IR_NOP) continue;
+        if (I->op != IR_STORE && I->op != IR_PUSH_VAR && I->op != IR_PUSH_ADDR &&
+            I->op != IR_STORE_FLD && I->op != IR_LOAD_FLD)
+            continue;
+        d = I->val - off;
+        if (d >= -3 && d <= 3) return 1;
+    }
+    return 0;
+}
+
+void opt_boolmat_func(IrFunc *f) {
+#if ARKCC_FEATURE_OPT_BOOLMAT
+    int i, j, removed = 0;
+    if (f->code_count < 2) return;
+    for (i = 0; i < f->code_count; i++)
+        if (f->code[i].op == IR_ASM || f->code[i].op == IR_ALLOCA) return;
+
+    /* R2/R3: a comparison result is already 0 or 1, so re-testing it against
+     * zero is an identity (R2) or a negation (R3).
+     *
+     *    BINARY <cmp>          BINARY <cmp>
+     *    PUSH_INT 0      ==>   (R2: both middle and last instructions go)
+     *    BINARY NE             (the comparison result is left on the stack)
+     *
+     *    BINARY <cmp>          BINARY <cmp>
+     *    PUSH_INT 0      ==>   PUSH_INT 1
+     *    BINARY EQ             BINARY BXOR
+     *
+     * Both shapes are produced by C source like `if ((a < b) != 0)` and by the
+     * implicit "value used as a condition" materialisation.  Unlike R1 the pair
+     * does not involve the frame at all: the only correctness question is
+     * whether the leading IR_BINARY really yields 0/1, and all six relational
+     * operators do (C11 6.5.8p6, and the backend emits MOVEQ/MOVNE on both
+     * paths of the ITE).
+     *
+     * R2 is spelled as "delete", not as "rewrite to <cmp> then NE", because
+     * after the delete the comparison sits next to whatever consumed the
+     * boolean, and -fopt-cbranch turns `<cmp> + JZ/JNZ` into one conditional
+     * branch -- five instructions per site become two.  R3 keeps the compare
+     * (it is still needed) and replaces `== 0` with `^ 1`, which -fopt-imm
+     * folds to a single EOR.
+     *
+     * The middle instruction must be a plain integer zero push (no volatile
+     * flag) and the trailing operator must be an exact NE/EQ with no extra
+     * aux bits, so that a comparison carrying the unsigned bit (0x100) still
+     * matches but a rewritten/unusual instruction does not. */
+    for (i = 0; i + 2 < f->code_count; i++) {
+        IrInst *C = &f->code[i];
+        IrInst *P;
+        IrInst *T;
+        int op, jj, k;
+        if (C->op != IR_BINARY) continue;
+        op = C->aux & ~0x100;
+        if (op != (int)TOK_EQ && op != (int)TOK_NE && op != (int)TOK_LT &&
+            op != (int)TOK_GT && op != (int)TOK_LE && op != (int)TOK_GE)
+            continue;
+        if (C->aux & ~(0x100 | 0xFF)) continue;   /* only the unsigned bit is understood */
+        jj = i + 1;
+        while (jj < f->code_count && f->code[jj].op == IR_NOP) jj++;
+        if (jj >= f->code_count) continue;
+        P = &f->code[jj];
+        if (P->op != IR_PUSH_INT || P->val != 0) continue;
+        if (P->aux & IR_AUX_VOLATILE) continue;
+        k = jj + 1;
+        while (k < f->code_count && f->code[k].op == IR_NOP) k++;
+        if (k >= f->code_count) continue;
+        T = &f->code[k];
+        if (T->op != IR_BINARY) continue;
+        if (T->aux == (int)TOK_NE) {
+            P->op = IR_NOP;
+            T->op = IR_NOP;
+            removed++;
+            i = k;
+        } else if (T->aux == (int)TOK_EQ) {
+            /* Leave `== 0` alone when a conditional branch reads it straight
+             * away: -fopt-cbranch folds `<cmp> + JZ/JNZ` into one conditional
+             * branch on the *inverted* condition (two instructions), which is
+             * strictly better than the `^ 1` this rule would produce (the
+             * comparison would then have to be materialised before the EOR).
+             * R2 has no such exception -- deleting the pair hands the same
+             * comparison to -fopt-cbranch. */
+            int nx = k + 1;
+            while (nx < f->code_count && f->code[nx].op == IR_NOP) nx++;
+            if (nx < f->code_count &&
+                (f->code[nx].op == IR_JZ || f->code[nx].op == IR_JNZ))
+                continue;
+            P->val = 1;
+            T->aux = (int)TOK_BXOR;
+            removed++;
+            i = k;
+        }
+    }
+
+    /* R1: STORE of a 4-byte word immediately read back into the same stack
+     * word is a round trip through the frame that the value stack can skip. */
+    for (i = 0; i + 1 < f->code_count; i++) {
+        IrInst *S = &f->code[i];
+        IrInst *L;
+        if (S->op != IR_STORE) continue;
+        if (bm_word_width(S) != 4) continue;
+        j = i + 1;
+        while (j < f->code_count && f->code[j].op == IR_NOP) j++;
+        if (j >= f->code_count) continue;
+        L = &f->code[j];
+        if (L->op != IR_PUSH_VAR || bm_word_width(L) != 4) continue;
+        if (L->val != S->val) continue;
+        if (bm_slot_observed(f, S->val, i, j)) continue;
+        S->op = IR_NOP;
+        L->op = IR_NOP;
+        removed++;
+        i = j;
+    }
+    if (removed) compact_func(f);
+#else
+    (void)f;
+#endif
+}
+
 void opt_dce_func(IrFunc *f) {
     int i;
     int unreachable = 0;

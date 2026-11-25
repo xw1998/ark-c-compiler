@@ -96,4 +96,10 @@ void opt_prop_func(IrFunc *f);
  * (the read-back an assignment statement never uses). */
 void opt_deadpush_func(IrFunc *f);
 
+/* -fopt-boolmat: delete a one-word `STORE v ; PUSH_VAR v` pair (the
+ * materialise-then-test round trip of `int t = (a < b); if (t)`), so the
+ * comparison stays on the stack and -fopt-cbranch can branch on its flags.
+ * See the comment on the definition in src/opt.c. */
+void opt_boolmat_func(IrFunc *f);
+
 #endif /* ARK_OPT_H */

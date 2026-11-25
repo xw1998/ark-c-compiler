@@ -30,6 +30,7 @@ typedef struct {
     int enable_opt_pair;            /* -fopt-pair: 两个紧推 push 与二元运算合并，不走值栈 */
     int enable_opt_prop;            /* -fopt-prop: 局部槽常量传播，把载回读成立即数 */
     int enable_opt_deadpush;        /* -fopt-deadpush: 删掉紧跟 IR_POP 的单字压栈（赋值读回） */
+    int enable_opt_boolmat;         /* -fopt-boolmat: 删掉单字 STORE v ; PUSH_VAR v 往返（布尔物化后被测试） */
     int enable_opt_cmat;            /* -fopt-cmat: 常量二次材料化清理（立即数与索引折叠、死中性写） */
     int enable_opt_slotreg;         /* -fopt-slotreg: 块内冗余帧读与死帧写的删除 */
     int enable_opt_vreg;            /* -fopt-vreg: 槽提升到 r8-r11（改名消除，S6a） */

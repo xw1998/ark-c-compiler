@@ -341,6 +341,23 @@
 #   define ARKCC_FEATURE_OPT_CONSTCOND  1
 # endif
 #endif
+/* ARKCC_FEATURE_OPT_BOOLMAT: -fopt-boolmat, delete a one-word
+ * `STORE v ; PUSH_VAR v` pair.  `int t = (a < b); if (t)` is two statements,
+ * so irgen spills the comparison result and reads it back one instruction
+ * later; the pair is a frame store plus a frame load that no later pass can
+ * remove (-fopt-prop only folds constants, -fopt-live sees the load as a
+ * reader, -fopt-deadpush needs an IR_POP).  Deleting it keeps the comparison
+ * on the value stack, which is exactly the shape -fopt-cbranch turns into one
+ * `CMP` plus one conditional branch.  Pure deletion, no tables, but kept off
+ * the STM32 profile with the rest of the -fopt-* family so the crop table stays
+ * one story (see docs/BUILD.md 5.2).  See docs/BOOLMAT.md. */
+#ifndef ARKCC_FEATURE_OPT_BOOLMAT
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_OPT_BOOLMAT    0   /* 板上裁掉：只在宿主/交叉编译用 */
+# else
+#   define ARKCC_FEATURE_OPT_BOOLMAT    1
+# endif
+#endif
 /* ARKCC_FEATURE_OPT_VOLBAR: -fopt-volbar, also emit the DMB SY pair around a
  * volatile access to an object that is *not* a frame slot -- a global, a
  * volatile struct member reached through a pointer, or a dereferenced

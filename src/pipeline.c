@@ -129,6 +129,7 @@ static int ir_wanted_xblock(void)     { return g_config.enable_xblock; }
 static int ir_wanted_strength(void)   { return g_config.enable_opt_strength; }
 static int ir_wanted_prop(void)       { return g_config.enable_opt_prop; }
 static int ir_wanted_deadpush(void)   { return g_config.enable_opt_deadpush; }
+static int ir_wanted_boolmat(void)   { return g_config.enable_opt_boolmat; }
 #if ARKCC_FEATURE_CONST_GLOBAL
 static int ir_wanted_const_global(void) { return g_config.enable_const_global; }
 /* opt_const_global reports how many loads it replaced; the table wants a void
@@ -194,6 +195,16 @@ static const IrStage g_ir_stages[] = {
       ir_wanted_deadpush,  PIPE_NAME("off (-fopt-deadpush)"),     0, 0, opt_deadpush_func, 0 },
 #else
     { PIPE_NAME("ir.deadpush"),  ARK_PROFILE_LITE, 1, GATE_FLAG_AND_LEVEL, 0, 0, 0, 0, 0, 0, 0 },
+#endif    /* 布尔物化往返：`int t = (a < b); if (t)` 让 irgen 把比较结果落进帧槽再
+     * 读回一次，而读回的那条指令就是它的唯一读者，所以 live / prop / deadpush
+     * 都不会动它。删掉这一对之后比较结果仍留在值栈上，紧接着的条件跳转就能被
+     * -fopt-cbranch 折成一条 CMP + 一条条件转移。放在 prop 之后：prop 已经把
+     * 「存常量再读回」折成立即数，本 pass 只处理剩下的非常量情形。 */
+#if ARKCC_FEATURE_OPT_BOOLMAT
+    { PIPE_NAME("ir.boolmat"),   ARK_PROFILE_LITE, 1, GATE_FLAG_AND_LEVEL, 1,
+      ir_wanted_boolmat,   PIPE_NAME("off (-fopt-boolmat)"),      0, 0, opt_boolmat_func,  0 },
+#else
+    { PIPE_NAME("ir.boolmat"),   ARK_PROFILE_LITE, 1, GATE_FLAG_AND_LEVEL, 0, 0, 0, 0, 0, 0, 0 },
 #endif
 #if ARKCC_FEATURE_OPT_DCE_CFG
     { PIPE_NAME("ir.dce-cfg"),   ARK_PROFILE_FULL, 1, GATE_FLAG_AND_LEVEL, 1,
