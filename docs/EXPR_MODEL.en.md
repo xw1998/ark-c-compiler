@@ -646,3 +646,14 @@ changing how a statement is turned into code in the first place.  That is beyond
 of "one switch, one meaning", so by repository discipline it is a project-level change, registered
 as **S12 (IR structure layer)**; its scope and upper bounds are the dissection table of 10.8, and
 its criteria are not frozen here.
+
+The upper bound of S12's first slice (S12-1, "hoist a load of the same address") has been measured
+the same way (`D:/tmp/bm/s12_1_ub.py`): `LDR Rd,[Rb,#imm]` reaching a `CMP Rd,Rn` within three
+instructions, with the same `(Rb,imm)` loaded at least twice in the function, occurs **270 times
+(2.44%)**, 254 of them in `stm32f4xx_hal_dma_ex.c`.  That is more than twice S11-1's 112; the only
+difference is that S12-1 is allowed to move the value into a **dedicated register that the result
+constants do not clobber** — which is difference 1 of 10.8 verbatim.  The cost is that it needs a
+register the ABI lets us rewrite (one of `r4`-`r11` not referenced by that function, extending
+`PUSH/POP` when needed), and it must refuse every case with an aliasing store, a call, or a
+rewritten base inside the region.  This slice is still 2.44%, **below F1's 5%**, so it cannot be
+opened under F1 on its own; it is registered only as the first step of S12.
