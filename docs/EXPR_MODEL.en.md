@@ -657,3 +657,73 @@ register the ABI lets us rewrite (one of `r4`-`r11` not referenced by that funct
 `PUSH/POP` when needed), and it must refuse every case with an aliasing store, a call, or a
 rewritten base inside the region.  This slice is still 2.44%, **below F1's 5%**, so it cannot be
 opened under F1 on its own; it is registered only as the first step of S12.
+### 10.10 S12-1 pre-registration: hoisting a load of the same address (`-fopt-ldhoist`)
+
+Section 10.9 closed the emission-level margin at 1.01%, and the project-level ruling opened the
+first slice of S12.  This section freezes its rules, criteria, anti-false-green checks and
+trimming **before any code is touched**.  Upper bound from the end of 10.9: **270 instructions =
+2.44%** (`s12_1_ub.py`).
+
+**The transformation**: "the same `(Rb,#imm)` is loaded over and over inside a region" becomes
+"load it once into a dedicated register `D`, then delete every later load of the same kind".  The
+only difference from S11-1 in 10.9 is that **the destination register is allowed to change** —
+that is difference 1 of 10.8 verbatim, and it is the reason the 262 reloads in dma_ex can be
+recovered.
+
+**Frozen rules** (implementation and measurement both follow these seven; nothing changes after
+the run):
+
+1. The candidate is `LDR Rd,[Rb,#imm]` (`LDRB/H/SB/SH/D` treated alike; widths are never mixed).
+2. The **dedicated register** `D` is the lowest of `{r4,r5,r6,r7,r8,r9,r10,r11}` that appears
+   **nowhere** in the whole function text (neither read nor written, `PUSH/POP` lists included).
+   If none is available the whole function is abandoned (named give-up point
+   `ldhoist: no dedicated reg`).
+3. The function must have **exactly one** prologue `PUSH` containing `lr`, and **every** exit
+   `POP` must contain `pc`; `D` is added to each of them.  Otherwise abandon
+   (`ldhoist: prologue/epilogue shape`).
+4. A region starts at a candidate load and extends forward until the first of: a write to `D`,
+   a possibly aliasing `STR/STRB/STRH/STRD/STM`, a `BL/BLX`, a write to `Rb`, or a label with
+   more than one predecessor.
+5. Every load inside the region that matches rule 1 with the same `(Rb,#imm)` is deleted; each
+   use of its `Rd` between that load and the next write to `Rd` must be one of exactly three
+   forms — `CMP Rd,Rn` / `CMP Rn,Rd` / `MOV Rn2,Rd` — and the `Rd` operand is rewritten to `D`.
+   A fourth form abandons **that load only** (the rest of the region is left alone).
+6. The first candidate load of the region becomes `LDR D,[Rb,#imm]` (no instruction is added),
+   and its uses are rewritten by rule 5.
+7. A deletion is given up if `Rd` is still read outside the region.  This is guaranteed
+   conservatively by "every write to `Rd` inside the region has cleared its value"; no
+   cross-region liveness is introduced.
+
+**Criteria** (tiered in proportion to the bound, following the precedent of 10.2 rather than
+F1's 5%):
+
+| Tier | Net corpus reduction (26 flags, baseline 11,044) | Disposition |
+| --- | --- | --- |
+| Land | >= 2.0% (>= 221) | stays off by default, registered as a usable tier |
+| Register | 1.0% - 2.0% (110-220) | switch kept, default off, judged "below the project threshold" |
+| Retract | < 1.0% (< 110) | code reverted, only these readings kept |
+
+**Anti-false-green (all four required)**:
+
+1. `ARKCC_FEATURE_OPT_LDHOIST=0` and "compiled in but not passed" must both produce `.s` output
+   for the 95 TUs that is **byte-identical** to today (OFF IS OFF).
+2. A fixture that **must fire**: the same `(Rb,#imm)` loaded twice along a single-predecessor
+   chain with only a `MOV` to another register in between => exactly one `LDR` left, and its
+   destination is `D`.
+3. A fixture that **must not fire**: a `STR [Rb,#other]` (potential alias), a `BL`, or a
+   multi-predecessor label between the two loads => both `LDR`s kept verbatim.
+4. `make test-arm-exec`, `tests/run_vreg_tests.py` and `tests/run_regalloc_tests.py` all green:
+   one extra register in `PUSH/POP` makes any wrong restore path show up here.
+
+**Trimming**: a new `ARKCC_FEATURE_OPT_LDHOIST`, forced to 0 under `ARKCC_PROFILE_STM32_MIN`,
+with the on-board name-based refusal of `-fopt-ldhoist` (`C3900U`) along the same path as the
+21 existing `-fopt-*` names.  Off by default: `-fopt-ldhoist` must be given explicitly.
+
+**Forbidden (written down)**:
+
+1. Never insert a new `PUSH/POP` pair into a function that has none to extend — that changes the
+   frame and the calling convention.
+2. Never delete a load on the strength of "nothing seems to read it outside the region" without
+   liveness backing it.
+3. Never take `D` from `r0`-`r3`: those are caller-saved scratch and a `BL` will clobber them.
+4. Never count "changed the destination register without deleting a load" as a gain.
