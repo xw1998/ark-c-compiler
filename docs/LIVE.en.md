@@ -495,3 +495,46 @@ almost every block; the forward scan removes that leak at its source.)
 
 **Gates.** `one.py strinit_nul` (19 switches) 311436; whole `tests/arm_exec` corpus 0
 failures; `make test-live` fully green.
+
+## 14. Revision (2026-11-25): three cross-pass defects
+
+All three appear only when this pass runs together with other switches; the first two are
+**real miscompiles**.
+
+1. **`CBZ`/`CBNZ` were not treated as branches.** `lv_branch_kind` only recognised
+   mnemonics starting with `B`, so a block *ending* at a `CBZ` did not end
+   (`lv_ends_block` asks the same function) and the target edge was never added. The body
+   after `CBZ r0, .L_ret2` was merged into the same block, the target block looked
+   unreachable from the top, and liveness disagreed with the real control flow. Measured on
+   a synthetic fixture under `-fopt-cbz -fopt-vstack -fopt-vreg -fopt-live`: the parameter
+   `n` was promoted to `r9` by `-fopt-vreg`, its prologue store was then deleted as dead,
+   and the loop ran `CMP r5, r9` with `r9` never assigned -- the answer went from 17 to 2.
+   Fix: `lv_branch_kind` returns 2 (conditional branch) for `CBZ`/`CBNZ`; block end, target
+   edge and both successor edges follow automatically (`lv_rw` already reads op0 only).
+
+2. **A retarget must not move a `CBZ`/`CBNZ` operand into a high register.** When L2
+   forwards `MOV rD, rS` into its consumer it could rewrite `CBNZ r0` into `CBNZ r8`, but T1
+   only encodes r0-r7 and the encoder masks the register with `&7` -- so `CBNZ r8` would
+   **silently assemble as `CBNZ r0`**. Fix: decline the rewrite when the consumer is
+   `CBZ`/`CBNZ` and the source register is above r7 (`lv_lowreg_only`).
+
+3. **`lv_repl_reg` truncated long identifiers to 7 characters.** The function clamps a token
+   to 7 chars so `rN` can be recognised, but the path that copies a *non-register* token
+   back into the output copied only those 7 characters while advancing `i` past the whole
+   token. Every branch target passing through it was cut: `.L_HAL_RCC_OscConfig_0` became
+   `.L_HAL_R`, an undefined label the assembler can only report, never repair. Fix: copy
+   `j - i` characters in full (the 7-char clamp stays, for the register-name comparison).
+
+**Why (3) stayed hidden**: it only fires when L2 actually rewrites a line, and that line
+must also carry a long label. With six switches on (`cbranch/cbz/imm/live/vstack/vreg`),
+`stm32f4xx_hal_rcc.c`'s `HAL_RCC_OscConfig` has exactly that shape: `MOV r8, r0` /
+`MOV r0, r8` make L2 rewrite the `CBNZ` line, whose label carries the function's long name.
+
+**Gates** (`tests/run_cbz_tests.py` sections 6 and 7): the six-switch fixture returns 17, the
+output contains no `CBZ/CBNZ r8-r12`, every branch target is defined; the assembler rejects
+`CBZ r8` by name (r0-r7). Run against the pre-fix binary, three of them go red
+(`CBNZ r8`, value 2, assembler accepts r8).
+
+**Corpus reading** (95 TUs, 23 switches, same build): 12,239 -> 12,266 instructions (+27),
+405,426 -> 405,833 B (+407); no TU shrank. The growth is the `MOV r0,#0/#1` restored at
+joins plus the parameter stores no longer deleted by mistake -- the price of correctness.

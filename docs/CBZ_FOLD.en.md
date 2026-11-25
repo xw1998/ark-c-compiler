@@ -355,3 +355,44 @@ All 14 checks of `make test-cbz` pass (same assertions: `base=0 / on=6`,
 `va 216 → all 210`, the `long` arm fuses nothing, the cropped build answers
 `C3900U`); `tests/arm_exec` reports 0 failures over the whole corpus; the cropping
 self-check still reports 23/23 `C3900U`.
+## 13. Revision (2026-11-25): three more real defects when combined with `-fopt-cmat` / `-fopt-live`
+
+`-fopt-cbz` itself is not wrong; the defects are in the shape it hands to two other
+text passes, which then misread it. All three were real miscompiles or hard errors and are
+fixed.
+
+### 13.1 cmat's M8 read set missed the `CBZ`/`CBNZ` register
+
+`cm_modelled` did not list `CBZ`/`CBNZ` and `cm_no_reg_effect` called them branches that
+read nothing, so M8's per-block use set had no operand for them; the successor search used
+`cm_label_block(nb, u->ops)` over the *whole* operand string, while the target of
+`CBZ r0, .L_x` sits after the comma, so the branch edge was **missing entirely**. Result:
+`if ((a==b)&&(b==c))` under `-fopt-cbz -fopt-cmat` lost the `MOV r0, #0` before the join as
+a dead write, `CBZ r0` read a stale `r0`, and `&&` returned 1 instead of 0.
+
+Fix (four places): list `CBZ`/`CBNZ` in `cm_modelled`; keep them block boundaries in
+`cm_boundary`; make `cm_no_reg_effect` report that they read op0; add a CBZ/CBNZ successor
+branch that takes the label after the comma. See `docs/CMAT.md` section 3.2.
+
+### 13.2 live did not treat `CBZ`/`CBNZ` as branches
+
+See `docs/LIVE.md` section 14, item 1: `lv_branch_kind` only knew `B`-prefixed mnemonics, so
+the block end and the target edge were both missing, `-fopt-vreg` promoted a loop bound
+register without its prologue copy, and the loop compared garbage (17 -> 2).
+
+### 13.3 `CBZ r8`: live retarget plus encoder masking
+
+See `docs/LIVE.md` section 14, items 2 and 3. In short: L2 retargeted `CBNZ r0` onto `r8`,
+T1 only encodes r0-r7 and the encoder masks with `&7`, so it **silently** became `CBNZ r0`;
+and `lv_repl_reg` cut long labels to 7 characters, turning `.L_HAL_RCC_OscConfig_0` into
+`.L_HAL_R` (an undefined label). Both fixed; the assembler now rejects `CBZ r8` by name.
+
+### 13.4 Readings and gates
+
+Same build, 95 TUs, 23 switches: 12,239 -> 12,266 instructions (+27), 405,426 -> 405,833 B
+(+407); no TU shrank. The growth is the `MOV r0,#0/#1` restored at joins and the parameter
+stores that are no longer deleted by mistake.
+
+`make test-cbz` gains sections 6 and 7: a six-switch fixture (long function name plus a
+promoted parameter) returns 17, the output contains no `CBZ/CBNZ r8-r12`, every branch target
+is defined, and the assembler refuses `CBZ r8`. Against the pre-fix binary all three go red.

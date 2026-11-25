@@ -1667,6 +1667,15 @@ static unsigned lv_regs(const char *s) {
 /* 0 none, 1 unconditional branch, 2 conditional branch, 3 call, 4 BX/BLX r. */
 static int lv_branch_kind(const char *m) {
     size_t L = strlen(m);
+    /* CBZ/CBNZ read one register and jump conditionally, exactly like
+     * a BEQ with the compare folded in.  Missing this made the block
+     * that *ends* at a CBZ look like it ran on into the fallthrough,
+     * so its target edge disappeared, the loop body looked unreachable
+     * from the top and a parameter's prologue store was read as dead.
+     * Measured with -fopt-cbz -fopt-vstack -fopt-vreg -fopt-live: the
+     * promoted loop bound register was never written, and the loop
+     * compared against garbage (`CMP r5, r9` with r9 never set). */
+    if (!strcmp(m, "CBZ") || !strcmp(m, "CBNZ")) return 2;
     if (m[0] != 'B') return 0;
     if (L == 1) return 1;
     if (L == 2 && m[1] == 'L') return 3;
@@ -1695,6 +1704,15 @@ static int lv_dest_only(const char *m) {
  * assembler does not emit. */
 static int lv_rd_eq_rn(const char *m) {
     return !strcmp(m, "ADC") || !strcmp(m, "SBC") || !strcmp(m, "RSC");
+}
+
+/* CBZ/CBNZ have only the 16-bit T1 encoding, and it reaches r0-r7 only.
+ * A retarget (live L2, coalescing) that names a high register here would
+ * produce an instruction the assembler cannot encode; worse, the encoder
+ * masks the register with &7, so `CBNZ r8` would silently become `CBNZ r0`
+ * -- a wrong answer on the board.  Decline such a rewrite instead. */
+static int lv_lowreg_only(const char *m) {
+    return !strcmp(m, "CBZ") || !strcmp(m, "CBNZ");
 }
 
 /* Registers read and written by one instruction. */
@@ -1835,9 +1853,15 @@ static int lv_repl_reg(char *dst, int cap, const char *src, int from, int to) {
                     continue;
                 }
             }
-            if (k + L >= cap) return 0;
-            memcpy(dst + k, src + i, L);
-            k += L;
+            /* Copy the token in full: L is capped at 7 only for the
+             * register-name comparison above, and copying the capped
+             * length here silently truncated every longer identifier
+             * -- a branch target `.L_HAL_RCC_OscConfig_0` came out as
+             * `.L_HAL_R` (an undefined label the assembler can only
+             * report, never repair). */
+            if (k + (j - i) >= cap) return 0;
+            memcpy(dst + k, src + i, (size_t)(j - i));
+            k += j - i;
             i = j;
         } else {
             if (k + 1 >= cap) return 0;
@@ -2247,7 +2271,8 @@ static int lv_pass(AsmBuffer *b, int from, unsigned retmask) {
                     }
                     /* L2: retarget the consumer onto the copy's source. */
                     if (!done2 && touched && cp_reg(iv[i].op[1], &s) && s != d &&
-                        (rd & lv_bit(d)) && !lv_rd_eq_rn(iv[j].mn)) {
+                        (rd & lv_bit(d)) && !lv_rd_eq_rn(iv[j].mn) &&
+                        !(lv_lowreg_only(iv[j].mn) && s > 7)) {
                         int ok = 1;
                         for (v = 0; ok && v < iv[j].nops; v++) {
                             if (!lv_repl_reg(o2, sizeof o2, iv[j].op[v], d, s)) ok = 0;
@@ -4460,7 +4485,10 @@ static int cm_modelled(const char *mn) {
         "MUL", "MLA", "RSB", "ADC", "SBC", "BIC", "LSL", "LSR", "ASR", "ROR",
         "UXTB", "UXTH", "SXTB", "SXTH", "CLZ", "REV", "REV16", "REVSH",
         "LDR", "LDRB", "LDRH", "LDRSB", "LDRSH", "STR", "STRB", "STRH",
-        "CMP", "CMN", "TST", "PUSH", "NOP", "ADR", 0
+        "CMP", "CMN", "TST", "PUSH", "NOP", "ADR",
+        /* CBZ/CBNZ are *modelled* but not "no register effect": a compare
+         * folded into the branch still reads rN.  See cm_cond_branch. */
+        "CBZ", "CBNZ", 0
     };
     int i;
     for (i = 0; m[i]; i++) if (cm_streq(mn, m[i])) return 1;
@@ -4498,6 +4526,10 @@ static int cm_boundary(const char *mn) {
         return 1;
     }
     if ((mn[0] == 'I' || mn[0] == 'i') && (mn[1] == 'T' || mn[1] == 't')) return 1;
+    /* A fused compare-and-branch ends its block exactly like BEQ does, and it
+     * is modelled (so that its operand is seen as a use), so it needs its own
+     * line here: the !cm_modelled fallback below no longer covers it. */
+    if (cm_streq(mn, "CBZ") || cm_streq(mn, "CBNZ")) return 1;
     if (cm_streq(mn, "POP") || cm_streq(mn, "LDM") || cm_streq(mn, "LDMIA") ||
         cm_streq(mn, "LDMDB") || cm_streq(mn, "STM") || cm_streq(mn, "STMIA") ||
         cm_streq(mn, "STMDB") || cm_streq(mn, "TBB") || cm_streq(mn, "TBH"))
@@ -4836,6 +4868,9 @@ static int cm_no_reg_effect(const CmUnit *u) {
     if ((m[0] == 'I' || m[0] == 'i') && (m[1] == 'T' || m[1] == 't')) return 1;
     if (cm_streq(m, "DMB") || cm_streq(m, "DSB") || cm_streq(m, "ISB")) return 1;
     if (cm_streq(m, "B") || cm_streq(m, "BAL")) return 1;
+    /* CBZ/CBNZ read rN.  Treating them as register-free made M8 delete the
+     * `MOV rX, #0` that feeds them -- a wrong answer (see CBZ_FOLD.md). */
+    if (cm_streq(m, "CBZ") || cm_streq(m, "CBNZ")) return 0;
     return cm_cond_branch(m);
 }
 
@@ -5274,6 +5309,17 @@ static void ark_cmat_function(AsmBuffer *b, int from) {
                     if (nx >= 0) cm_bsucc[j2][cm_bns[j2]++] = (short)nx;
                 }
                 continue;                          /* `BX lr` returns         */
+            }
+            if (cm_streq(u->mn, "CBZ") || cm_streq(u->mn, "CBNZ")) {
+                /* `CBZ rN, .L_x`: the label is the second operand, not the
+                 * first, so cm_label_block(u->ops) above could never resolve
+                 * it and the branch edge was missing entirely. */
+                const char *p = strchr(u->ops, ',');
+                if (p) { if (p[1] == ' ') p++; tg = cm_label_block(nb, p); }
+                else tg = -1;
+                if (tg >= 0) cm_bsucc[j2][cm_bns[j2]++] = (short)tg;
+                if (nx >= 0) cm_bsucc[j2][cm_bns[j2]++] = (short)nx;
+                continue;
             }
             if (cm_cond_branch(u->mn)) {
                 if (tg >= 0) cm_bsucc[j2][cm_bns[j2]++] = (short)tg;
@@ -17810,6 +17856,16 @@ static void pass2_a(ArmAsm *a) {
             char name[64];
             eat_comma_a(&p);
             read_label_name_a(&p, name, sizeof(name));
+            /* T1 encodes only r0-r7 in the three register bits; masking a
+             * higher register with &7 would quietly assemble `CBZ r8` as
+             * `CBZ r0` -- an error nobody could see in the listing. */
+            if (rd < 0 || rd > 7) {
+                char rb[12];
+                diag_tool(DIAG_SEV_ERROR, "arkcc",
+                          "CBZ/CBNZ reach r0-r7 only (16-bit T1); r%s cannot be encoded",
+                          diag_num(rb, rd), 0,0,0,0,0);
+                a->hard_errors++;
+            }
             {
                 int addr = find_label_a(a, name);
                 if (addr < 0) {
@@ -19304,6 +19360,8 @@ static void resolve_refs_a(ArmAsm *a) {
         }
     }
 }
+
+
 
 static int arm_emit(IrProgram *m, char *out, int cap) {
     char *text = codegen_arm(m);

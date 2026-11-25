@@ -31,6 +31,17 @@ What is checked:
   5. CROPPED OUT, REFUSED.  A build with -DARKCC_FEATURE_OPT_CBZ=0 refuses
      `-fopt-cbz` by name (C3900U) instead of accepting it and doing nothing,
      and still compiles the same file without the flag.
+  6. THE RETARGET STAYS ENCODABLE.  -fopt-live may forward a `MOV r0, rS`
+     into the CBZ/CBNZ that tests it, but T1 encodes only r0-r7.  A retarget
+     that names r8-r12 must be declined: the encoder masks the register with
+     &7, so an accepted one would silently become `CBNZ r0` on the board.
+     The same fixture pins the register copy in lv_repl_reg: forwarding a
+     register past a branch target used to copy the label through a 7-char
+     buffer, turning `.L_HAL_RCC_OscConfig_0` into `.L_HAL_R` (an undefined
+     label).  Every branch target in the output must be defined.
+  7. THE ASSEMBLER REFUSES IT TOO.  `CBZ r8` is an error (naming r0-r7),
+     not a silent `CBZ r0`: an assembler that masks its operand is the other
+     half of the same wrong answer.
 
 Usage: run_cbz_tests.py [path-to-arkcc]
 Exit 0 = every check passed, 1 = a check failed, 2 = setup problem.
@@ -124,6 +135,27 @@ def py_long():
     s += 5
     return s & 0xFF
 
+RETARGET = """\
+int cbz_rt_pad = 1;
+int g_rt_buf[4] = {1, 2, 3, 4};
+static int cbz_label_keep_a_long_name(int *p, int n)
+{
+    int s = 0, i;
+    if (p == 0) return 1;
+    for (i = 0; i < n; i++) s += p[i];
+    if (s == 0) return 2;
+    s += p[0];
+    s += p[n > 0 ? n - 1 : 0];
+    s += p[1];
+    return s;
+}
+int main(void)
+{
+    return cbz_label_keep_a_long_name(g_rt_buf, 4) & 0xFF;
+}
+"""
+RETARGET_WANT = 17
+
 CASES = [
     ('short', SHORT, py_short(), True),
     ('long', LONG, py_long(), False),
@@ -172,6 +204,20 @@ INSN_RE = re.compile(r'^\s+[A-Za-z][A-Za-z0-9.]*\s')
 CBZ_RE = re.compile(r'^\s+(?:CBZ|CBNZ)\s+r[0-7]\s*,\s*\.L_')
 CMP0_RE = re.compile(r'^\s+CMP\s+r0\s*,\s*#0\s*$')
 BEQ_RE = re.compile(r'^\s+(?:BEQ|BNE)\s+\.L_')
+HIGH_CBZ_RE = re.compile(r'^\s+(?:CBZ|CBNZ)\s+r(?:[89]|1[0-2])\b')
+BRANCH_REF_RE = re.compile(
+    r'^\s+(?:B[A-Z]*|CBZ|CBNZ)\s+(\.[A-Za-z0-9_.]+)\s*$')
+LABEL_DEF_RE = re.compile(r'^(\.[A-Za-z0-9_.]+):', re.M)
+
+def dangling_labels(text):
+    """Branch targets that name no label defined in the same text."""
+    defs = set(LABEL_DEF_RE.findall(text))
+    refs = set()
+    for ln in text.splitlines():
+        m = BRANCH_REF_RE.match(ln)
+        if m:
+            refs.add(m.group(1))
+    return refs - defs
 
 def insn_count(text):
     return sum(1 for ln in text.splitlines() if INSN_RE.match(ln))
@@ -306,6 +352,45 @@ def main():
                       '%s: all five arms return %d' % (name, _want),
                       ' '.join('%s=%s' % (k, got[k]) for k in
                                ('base', 'off', 'on', 'va', 'all')))
+
+        # --- 6. retarget stays encodable, labels stay whole ----------------
+        write(os.path.join(work, 'retarget.c'), RETARGET)
+        rt_flags = ['-fopt-vstack', '-fopt-vreg', '-fopt-live',
+                    '-fopt-cbranch', '-fopt-imm', FLAG]
+        rt_text, rt_blob, rt_err = build(arkcc, work, 'retarget', rt_flags, 'all6')
+        if rt_err:
+            check(False, 'the six-pass fixture builds', rt_err[0][:120])
+        else:
+            check(count_cbz(rt_text) > 0,
+                  'the six-pass fixture really fuses a branch',
+                  'cbz=%d' % count_cbz(rt_text))
+            high = [ln for ln in rt_text.splitlines()
+                    if HIGH_CBZ_RE.match(ln)]
+            check(not high,
+                  'no CBZ/CBNZ is retargeted onto r8-r12',
+                  '; '.join(h.strip() for h in high[:3]) or 'none')
+            dangling = dangling_labels(rt_text)
+            check(not dangling,
+                  'every branch target is defined (no 7-char label truncation)',
+                  ', '.join(sorted(dangling)[:4]) or 'all resolve')
+            if HAVE_UNICORN:
+                st, val, _ = run_image(rt_blob)
+                check(st == 'returned' and val == RETARGET_WANT,
+                      'the six-pass fixture returns %d' % RETARGET_WANT,
+                      '%s=%s' % (st, val))
+            else:
+                skip('the six-pass fixture value', 'unicorn missing')
+
+        # --- 7. the assembler refuses a high CBZ register -------------------
+        asm_src = os.path.join(work, 'cbz_high.s')
+        with open(asm_src, 'w', newline='\n', encoding='utf-8') as fh:
+            fh.write('Reset_Handler:\n    MOV r0, #1\n    CBZ r8, L1\n'
+                     '    BX lr\nL1:\n    BX lr\n')
+        rc, log = run([arkcc, '-target', 'arm', '-c', '-o',
+                       os.path.join(work, 'cbz_high.o'), asm_src], work)
+        check(rc != 0 and 'r0-r7' in log,
+              'the assembler rejects `CBZ r8` instead of masking it',
+              'rc=%d' % rc)
 
         # --- 5. cropped out, refused ----------------------------------------
         trimmed, why = build_arkcc(work, ['-DARKCC_FEATURE_OPT_CBZ=0'], 'arkcc_nocbz')

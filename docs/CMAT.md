@@ -442,3 +442,19 @@ M1–M6 的 −697 条约合 2,788 字节；实测偏小，因为删掉的多是
 作为更强的一层，`tests/arm_exec/run_arm_exec.py --extra=-fopt-cmat` 把整套
 执行级对拍（函数指针、64 位、软浮点、原子、TLS、setjmp…）在开启 cmat 的构建上跑了一遍，
 **0 failure**。
+### 3.2 读集：第三个致命错误——`CBZ`/`CBNZ` 读首操作数
+
+`-fopt-cbz` 把 `CMP r0, #0` + `BEQ` 折成 `CBZ r0, label` 之后，M8 的块内 use 集里必须
+出现 `r0`。第一版既没把 `CBZ`/`CBNZ` 列进 `cm_modelled`，又让 `cm_no_reg_effect`
+走 `cm_cond_branch` 把它们当成「不读任何寄存器」，于是 `CBZ r0` 前那条唯一的写
+`MOV r0, #0` 看起来是死写，被 M8 删掉——`&&` 表达式因此在 `-fopt-cbz -fopt-cmat`
+下返回 1 而不是 0。
+
+第二个错误在同一规则里：块后继用 `cm_label_block(nb, u->ops)` 在**整串**操作数里找
+标签，而 `CBZ`/`CBNZ` 的目标标签在逗号之后，分支边完全缺失（`CMP`+`BEQ` 的目标是
+唯一操作数，所以没暴露）。
+
+修法：`cm_modelled` 收 `CBZ`/`CBNZ`；`cm_boundary` 显式保留它们为块边界；
+`cm_no_reg_effect` 对它们返回「读首操作数」；后继计算新增 CBZ/CBNZ 分支，从逗号后
+取目标标签，再补上顺序后继。门禁见 `tests/run_cmat_tests.py` 第 5f 节
+（`join_shapes` + untorn 值）。

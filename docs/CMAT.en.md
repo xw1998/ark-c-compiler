@@ -544,3 +544,21 @@ about 300 KB of BSS and exist only in host builds.
 As a stronger layer, `tests/arm_exec/run_arm_exec.py --extra=-fopt-cmat` ran the
 whole execution suite (function pointers, 64-bit, soft-float, atomics, TLS,
 setjmp, ...) on a build with cmat enabled: **0 failures**.
+### 3.2 Read set: the third fatal error -- `CBZ`/`CBNZ` read their first operand
+
+After `-fopt-cbz` folds `CMP r0, #0` + `BEQ` into `CBZ r0, label`, M8's per-block use set
+must contain `r0`. The first version neither listed `CBZ`/`CBNZ` in `cm_modelled` nor let
+`cm_no_reg_effect` report a read (it routed them through `cm_cond_branch`, "a branch that
+reads no register"), so the only write before `CBZ r0` -- `MOV r0, #0` -- looked dead and M8
+deleted it; a `&&` expression therefore returned 1 instead of 0 under
+`-fopt-cbz -fopt-cmat`.
+
+The second error sits in the same rule: the successor search called
+`cm_label_block(nb, u->ops)` over the *whole* operand string, while the target of a
+`CBZ`/`CBNZ` sits after the comma, so the branch edge was missing entirely (`CMP`+`BEQ`
+carries its target as the only operand, which is why this never showed before).
+
+Fix: list `CBZ`/`CBNZ` in `cm_modelled`; keep them block boundaries in `cm_boundary`; let
+`cm_no_reg_effect` report that they read op0; add a CBZ/CBNZ successor branch that takes the
+label after the comma and then adds the fall-through edge. Gate: `tests/run_cmat_tests.py`
+section 5f (`join_shapes` plus the untorn value).

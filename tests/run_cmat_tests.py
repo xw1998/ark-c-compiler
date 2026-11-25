@@ -85,6 +85,14 @@ Checks:
      may no label, and the instruction count must drop without the text
      growing.
 
+ 11b. M8 x CBZ: A FUSED COMPARE STILL READS ITS REGISTER.  `-fopt-cbz`
+     rewrites `CMP rX, #0` + `BEQ` into one `CBZ rX`.  To M8 that used to look
+     like a branch that reads no register at all, so the `MOV rX, #0` feeding
+     it was deleted as dead and the branch tested whatever the register held
+     -- a wrong answer on `if ((a == b) && (b == c))` compiled with both
+     passes.  CBZ/CBNZ are modelled now (block boundary, but a read), and the
+     label is the operand after the comma, so its branch edge exists too.
+
  11. M8 FIRES, ON A REAL DRIVER.  The HAL DMA driver leaves dead constant
      materialisations behind that only the function-level liveness can see:
      the `MOV rD, #imm` and `MOV rD, rS` counts both drop, the instruction
@@ -204,6 +212,21 @@ int cm_join(int a) { int r; if (a) r = 7; else r = 9; cm_sink = r; return r; }
 int main(void) { return cm_join(1); }
 """
 
+# M8 x CBZ: `&&`/`||` materialise 0/1 into r0, `-fopt-cbz` turns the test
+# that follows into `CBZ r0`, and the false arm of the `if` is a `MOV r0, #0`
+# right before the join label.  Deleting that MOV -- or losing the branch edge
+# into the join -- makes the branch read a stale register.
+BOOLCBZ = """\
+int cmb_g = 1;
+int cmb_and(int a, int b, int c) { if ((a == b) && (b == c)) return 1; return 0; }
+int cmb_or(int a, int b, int c) { if ((a == b) || (b == c)) return 1; return 0; }
+int main(void)
+{
+    return cmb_and(5, 6, 7) + cmb_or(5, 5, 7) * 2
+         + cmb_and(1, 1, 1) * 4 + cmb_or(1, 2, 3) * 8 + cmb_g - 1;
+}
+"""
+
 CASES = [
     ('idx', IDX, 4, BASE),
     ('join', JOIN, 7, BASE),
@@ -269,6 +292,50 @@ def label_count(text):
     return sum(1 for ln in text.splitlines()
                if ln.strip().startswith('.L') and ln.strip().endswith(':'))
 
+
+LABEL_LINE_RE = re.compile(r'^\.L\S+:$')
+CBZ_LINE_RE = re.compile(r'^CBZ r(\d+),')
+WRITE_HEAD_RE = re.compile(r'^(MOV|MOVW|MOVT|MVN|ADD|SUB|AND|ORR|EOR|MUL|'
+                           r'MLA|RSB|BIC|LSL|LSR|ASR|ROR|UXTB|UXTH|SXTB|'
+                           r'SXTH|LDR|LDRB|LDRH|LDRSB|LDRSH|ADR) r(\d+)')
+
+def join_shapes(text):
+    """(guarded, orphan): labels directly followed by `CBZ rN`.
+
+    `guarded` counts the ones whose register the line right before the label
+    writes -- the shape the `&&`/`||` materialiser leaves at a join once the
+    PUSH/POP round trip is gone.  `orphan` counts the ones that are not: at a
+    label the register can only come from a path that jumped there, so a
+    branch that reads it is reading a value nobody set on this path.  M8 must
+    never turn a guarded join into an orphan."""
+    code = []
+    for ln in (l.strip() for l in text.splitlines()):
+        if not ln or ln.startswith('.loc') or ln.startswith(';'):
+            continue
+        code.append(ln)
+    guarded = orphan = 0
+    for i in range(1, len(code) - 1):
+        if not LABEL_LINE_RE.match(code[i]):
+            continue
+        m = CBZ_LINE_RE.match(code[i + 1])
+        if not m:
+            continue
+        reg = m.group(1)
+        prev = code[i - 1]
+        writes = False
+        w = WRITE_HEAD_RE.match(prev)
+        if w and w.group(2) == reg:
+            writes = True
+        elif prev.startswith('POP ') or prev.startswith('LDM'):
+            a, b = prev.find('{'), prev.find('}')
+            if a >= 0 and b > a and ('r%s' % reg) in [
+                    x.strip() for x in prev[a + 1:b].split(',')]:
+                writes = True
+        if writes:
+            guarded += 1
+        else:
+            orphan += 1
+    return guarded, orphan
 
 def main():
     arkcc = sys.argv[1] if len(sys.argv) > 1 else (
@@ -595,6 +662,42 @@ def main():
                   'M9: no function is lost',
                   '%d/%d' % (count_sub('.size ', tj_off),
                              count_sub('.size ', tj_on)))
+
+        # --- 5f. M8 x CBZ: the fused compare still reads its register -------
+        # Off arm keeps -fopt-cbz so the interaction is actually exercised.
+        write(os.path.join(work, 'boolcbz.c'), BOOLCBZ)
+        cb_flags = FULL + ['-fopt-cbz']
+        tq_off, bq_off, e13 = build(arkcc, work, 'boolcbz', cb_flags, 'qoff')
+        tq_on, bq_on, e14 = build(arkcc, work, 'boolcbz',
+                                  cb_flags + [FLAG], 'qon')
+        if e13 or e14:
+            check(False, 'boolcbz: both arms build', (e13 or e14)[0][:120])
+        else:
+            check(count_sub('CBZ r', tq_off) > 0 and
+                  count_sub('CBZ r', tq_on) > 0,
+                  'M8 x CBZ: the fixture really exercises the fused branch',
+                  '%d / %d CBZ' % (count_sub('CBZ r', tq_off),
+                                   count_sub('CBZ r', tq_on)))
+            g_off, o_off = join_shapes(tq_off)
+            g_on, o_on = join_shapes(tq_on)
+            check(o_off == 0, 'M8 x CBZ: no CBZ after a label is orphaned '
+                  'without M8', '%d orphan(s), %d guarded' % (o_off, g_off))
+            check(g_on > 0,
+                  'M8 x CBZ: M9 leaves the guarded join as a bare CBZ',
+                  '%d guarded join(s)' % g_on)
+            check(o_on == 0,
+                  'M8 x CBZ: the `MOV rX, #0` feeding a CBZ survives M8',
+                  '%d orphan(s) (was %d without M8)' % (o_on, o_off))
+            if V.HAVE_UNICORN:
+                st_o, val_o, _ = V.run_image(bq_off)
+                st_n, val_n, _ = V.run_image(bq_on)
+                check(st_o == 'returned' and val_o == 6 and
+                      st_n == 'returned' and val_n == 6,
+                      'M8 x CBZ: `&&`/`||` still answer 6 with both passes on',
+                      'off=%s/%s on=%s/%s want=6' % (st_o, val_o, st_n, val_n))
+            else:
+                skip('M8 x CBZ: `&&`/`||` still answer 6',
+                     'python package unicorn missing')
 
         # --- 6. the answers stay the same -----------------------------------
         for name, _body, want, case_flags in CASES:

@@ -297,3 +297,40 @@ if (g_config.enable_opt_cbz) ark_cbz_function(&buf, fstart);
 `make test-cbz` 的 14 项全过（同一批断言，`base=0 / on=6`、`va 216 → all 210`、
 `long` 臂一处不折、裁切构建 `C3900U`）；`tests/arm_exec` 全语料执行等价 0 failure；
 裁切自检 23/23 仍全部 `C3900U`。
+## 13. 修订（2026-11-25）：与 `-fopt-cmat` / `-fopt-live` 同时开启时另外三处真缺陷
+
+`-fopt-cbz` 自己没错，错在它把文本变成另外两个 pass 看得懂、但**看错了**的形状。
+三处都是真误编译或硬错，全部已修：
+
+### 13.1 cmat 的 M8 读集漏了 `CBZ`/`CBNZ` 的寄存器
+
+`cm_modelled` 里没有 `CBZ`/`CBNZ`，`cm_no_reg_effect` 又把它们当「不读任何寄存器的分支」，
+于是 M8（函数级活跃性）算出的块内 use 集里没有 CBZ 的操作数；同时块后继用
+`cm_label_block(nb, u->ops)` 找**整串**里的标签，而 `CBZ r0, .L_x` 的目标在逗号之后，
+分支边**完全缺失**。后果：`if ((a==b)&&(b==c))` 在 `-fopt-cbz -fopt-cmat` 下，
+join 之前的 `MOV r0, #0` 被当死写删掉，`CBZ r0` 读到旧 `r0`，`&&` 返回 1 而不是 0。
+
+修法（四处）：`cm_modelled` 收 `CBZ`/`CBNZ`；`cm_boundary` 保留其为块边界；
+`cm_no_reg_effect` 明确「读首操作数」；后继计算新增 CBZ/CBNZ 分支，取逗号之后的目标标签。
+详见 `docs/CMAT.md` §3.2。
+
+### 13.2 live 不把 `CBZ`/`CBNZ` 当分支
+
+见 `docs/LIVE.md` §14 第 1 条：`lv_branch_kind` 只认 `B` 开头，导致块尾与目标边都缺，
+`-fopt-vreg` 提升出来的循环上界寄存器没有序言拷贝，循环拿垃圾比较（返回值 17 → 2）。
+
+### 13.3 `CBZ r8`：live 重定向 + 汇编器掩码两处叠加
+
+见 `docs/LIVE.md` §14 第 2、3 条。摘要：L2 会把 `CBNZ r0` 重定向到 `r8`，而 T1 只有
+r0–r7，编码器又与 `&7`，于是**静默**变成 `CBNZ r0`；同时 `lv_repl_reg` 按 7 字符截断
+长标签，把 `.L_HAL_RCC_OscConfig_0` 写成 `.L_HAL_R`（未定义标签）。两处都已修，
+汇编器现在对 `CBZ r8` 直接报错并点名 r0–r7。
+
+### 13.4 读数与门禁
+
+同构建、95 TU、23 开关：12,239 → 12,266 条（+27）、405,426 → 405,833 B（+407），
+无一 TU 变小；变化集中在 join 处恢复的 `MOV r0,#0/#1` 与被误删的参数存储。
+
+`make test-cbz` 新增第 6、7 节：六开关夹具（长函数名 + 参数提升）返回值 17、
+输出无 `CBZ/CBNZ r8-r12`、每个分支目标都有定义；汇编器拒绝 `CBZ r8`。
+用修复前的二进制跑，这三项红。
