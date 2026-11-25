@@ -176,7 +176,7 @@ arena 取 8 MB 而不是 4.5 MB：peak 4.29 MB 之外还要给 `--ipo` 这类"�
 **95/95 完全相同**，最大 arena peak 4,292,040 B。板上编出来的汇编与工作站一致，
 板端 bug 能在工作站复现。
 
-### 5.2 裁掉的东西必须**拒绝**，不能静默降级（26/26 实测）
+### 5.2 裁掉的东西必须**拒绝**，不能静默降级（27/27 实测）
 
 裁切的风险不是"编不过"——是"编得过但行为变了"。所以剖面裁掉的每一个优化都必须
 **按名字拒绝**（诊断码 `C3900U`），而不是收下旗标然后悄悄什么都不做。
@@ -189,7 +189,7 @@ arena 取 8 MB 而不是 4.5 MB：peak 4.29 MB 之外还要给 `--ipo` 这类"�
 | --- | --- |
 | `make` 全量宿主构建（默认档） | 0 error |
 | STM32_MIN 剖面宿主构建 | 0 error，二进制可执行 |
-| 26 个 `-fopt-*`（addr/bitmask/boolmat/branch/cbranch/cbz/cmat/coalesce/constcache/constcond/copyprop/deadpush/exit/frame/imm/litpool/live/pair/peep/prop/slotreg/strength/volbar/voldmb/vreg/vstack） | **26/26 全部 `C3900U` 且报出旗标名** |
+| 27 个 `-fopt-*`（addr/bitmask/boolmat/branch/cbranch/cbz/cmat/coalesce/constcache/constcond/copyprop/deadpush/exit/frame/imm/litpool/live/pair/peep/prop/slotreg/**spill**/strength/volbar/voldmb/vreg/vstack） | **27/27 全部 `C3900U` 且报出旗标名** |
 | 反过来：`constfold` / `dce` / `inline` / `regalloc` / `vectorize` 五个开关在剖面里**保留**（不在裁切表里） | 带旗标 `rc=0` |
 | 同一个源文件，不带任何 `-fopt-*` | 退出码 0，正常产出 Thumb-2 汇编 |
 | `make stm32-check`（armclang + 真实 scatter，两种布局） | 见 §4，全 PASS |
@@ -214,7 +214,7 @@ pass 的名字是**拼写错误**，不是外来旗标。
 | `-fopt-bogus` / `-fno-opt-bogus` / 光秃秃的 `-fopt-` | `C3900U`，回显用户原样写的那个 token，退出码 1，**不产出任何输出文件** |
 | `-fopt-vreg -fopt-bogus`（好坏混着写） | 报的是 `-fopt-bogus`，不会把旁边那个合法旗标顶出来 |
 | `-fbogus` / `-fvreg` / `-fno-strict-aliasing`（gcc 风格裸 `-fxxx`） | 仍然静默容忍，汇编与镜像**逐字节不变** |
-| 26 个真 `-fopt-*` 逐个单用 | 全部 `rc=0`（反假阳性：表里打错一个字就会变成 `C3900U`） |
+| 27 个真 `-fopt-*` 逐个单用 | 全部 `rc=0`（反假阳性：表里打错一个字就会变成 `C3900U`） |
 
 两条必须一起成立：**拒绝只针对本家族的拼写错误，不是把 gcc 命令行打回来**。实现上把
 "记录未识别名"放在 `config_apply_args()`（配置层），"拒绝"放在 `main.c` 的 `-f` 兜底分支

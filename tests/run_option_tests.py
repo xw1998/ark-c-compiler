@@ -42,12 +42,13 @@ INC = os.path.join(ROOT, 'stdlib', 'include')
 ASM_ARM = ['-target', 'arm', '-mcpu', 'Cortex-M4', '-S']
 IMG_ARM = ['-target', 'arm', '--vector-table']
 
-# The shipped 26 names (the list docs/BUILD.md section 5.2 freezes for the crop table).  Listed here rather than imported so the gate does not
+# The shipped 27 names (the list docs/BUILD.md section 5.2 freezes for the crop table).  Listed here rather than imported so the gate does not
 # depend on a scratch script staying around.
 PASSES = ['-fopt-coalesce', '-fopt-addr', '-fopt-branch', '-fopt-cbranch',
           '-fopt-cbz', '-fopt-constcache', '-fopt-copyprop', '-fopt-deadpush',
           '-fopt-imm', '-fopt-live', '-fopt-peep', '-fopt-prop',
-          '-fopt-slotreg', '-fopt-strength', '-fopt-vstack', '-fopt-vreg',
+          '-fopt-slotreg', '-fopt-spill', '-fopt-strength', '-fopt-vstack',
+          '-fopt-vreg',
           '-fopt-cmat', '-fopt-pair', '-fopt-litpool', '-fopt-frame',
           '-fopt-voldmb', '-fopt-volbar', '-fopt-constcond', '-fopt-boolmat',
           '-fopt-exit', '-fopt-bitmask']

@@ -200,7 +200,7 @@ host `-O2` build over **95 HAL/Core TUs**; after dropping the
 arena peak of 4,292,040 B. The board therefore emits the same assembly as the
 workstation, which is what makes a board bug reproducible locally.
 
-### 5.2 What was cropped must be **refused**, not silently degraded (26/26 measured)
+### 5.2 What was cropped must be **refused**, not silently degraded (27/27 measured)
 
 The danger of trimming is not "it will not build" -- it is "it builds but behaves
 differently". So every optimisation the profile crops has to be **refused by name**
@@ -214,7 +214,7 @@ Method: build a real binary from the same sources with the **host gcc** plus
 | --- | --- |
 | full host build, default profile (`make`) | 0 error |
 | STM32_MIN profile host build | 0 error, runnable binary |
-| the 26 `-fopt-*` (addr/bitmask/boolmat/branch/cbranch/cbz/cmat/coalesce/constcache/constcond/copyprop/deadpush/exit/frame/imm/litpool/live/pair/peep/prop/slotreg/strength/volbar/voldmb/vreg/vstack) | **26/26 refused with `C3900U` and the flag named** |
+| the 27 `-fopt-*` (addr/bitmask/boolmat/branch/cbranch/cbz/cmat/coalesce/constcache/constcond/copyprop/deadpush/exit/frame/imm/litpool/live/pair/peep/prop/slotreg/**spill**/strength/volbar/voldmb/vreg/vstack) | **27/27 refused with `C3900U` and the flag named** |
 | conversely: `constfold` / `dce` / `inline` / `regalloc` / `vectorize` are **kept** in the profile (not in the crop table) | `rc=0` with the flag |
 | the same source with no `-fopt-*` at all | exit 0, valid Thumb-2 assembly |
 | `make stm32-check` (armclang + real scatter, both layouts) | see section 4, all PASS |
@@ -243,7 +243,7 @@ What the driver does now:
 | `-fopt-bogus` / `-fno-opt-bogus` / a bare `-fopt-` | `C3900U`, the token echoed exactly as typed, exit 1, **no output file written** |
 | `-fopt-vreg -fopt-bogus` (valid and invalid together) | the diagnostic names `-fopt-bogus`, not the valid flag next to it |
 | `-fbogus` / `-fvreg` / `-fno-strict-aliasing` (gcc-style bare `-fxxx`) | still silently tolerated, assembly and image **byte-identical** |
-| each of the 26 real `-fopt-*` names on its own | all `rc=0` (anti-false-positive: one typo in the table would become `C3900U`) |
+| each of the 27 real `-fopt-*` names on its own | all `rc=0` (anti-false-positive: one typo in the table would become `C3900U`) |
 
 Both halves have to hold together: **the refusal targets a misspelling in our own
 family, it does not push gcc command lines back**. The unrecognised name is recorded in

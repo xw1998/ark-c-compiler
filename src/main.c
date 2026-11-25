@@ -560,6 +560,14 @@ int main(int argc, char **argv) {
             return 1;
         }
 #endif
+#if !ARKCC_FEATURE_OPT_SPILL
+        else if (strcmp(a, "-fopt-spill") == 0) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: -fopt-spill is not compiled into "
+                    "this build (rebuild with -DARKCC_FEATURE_OPT_SPILL=1)\n");
+            return 1;
+        }
+#endif
 #if !ARKCC_FEATURE_OPT_PAIR
         else if (strcmp(a, "-fopt-pair") == 0) {
             fprintf(stderr,

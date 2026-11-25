@@ -475,6 +475,20 @@
 #   define ARKCC_FEATURE_OPT_COALESCE   1
 # endif
 #endif
+/* ARKCC_FEATURE_OPT_SPILL: -fopt-spill, cross-block stack round trips.  A
+ * `PUSH {rX}` whose only reader on every path is a later `POP {rX}` is a
+ * copy routed through memory; deleting both halves changes no value and no
+ * stack balance.  It rides on the control-flow graph and the liveness
+ * helpers -fopt-live builds, so it is trimmed together with them, and it is
+ * off by default: measured 2.9% of instructions, below the 4% S10 asked for
+ * (docs/EXPR_MODEL.md S10). */
+#ifndef ARKCC_FEATURE_OPT_SPILL
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN || !ARKCC_FEATURE_OPT_LIVE
+#   define ARKCC_FEATURE_OPT_SPILL     0   /* 板上裁掉；且骑在 live 的 CFG/活跃性辅助上 */
+# else
+#   define ARKCC_FEATURE_OPT_SPILL     1
+# endif
+#endif
 #ifndef ARKCC_FEATURE_OPT_INLINE
 # if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
 #   define ARKCC_FEATURE_OPT_INLINE    0   /* Trim auto-inline on STM32 (costs Flash) */

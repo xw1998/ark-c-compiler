@@ -311,3 +311,52 @@ the seven existing gate scripts + `tools/stm32_build_check.py --layout both` / O
 - Do not call S10 "cross-block liveness done" — it covers only the stack round trip;
 - Do not try it on VLA/`alloca`/`setjmp` functions (the stack is not LIFO there, the replay is invalid);
 - Do not replace `PUSH {r0}` with `STR r0, [sp, #-4]!` to make numbers (more bytes — cheating).
+
+### 10.5 Measurement and verdict: the ceiling was refuted (2026-11-25)
+
+What got implemented is not §10.1's linear LIFO replay but a CFG-decided merge: **for every
+`PUSH {rX}`, if every path leaving it reaches a `POP {rX}` and no instruction in between writes
+rX, delete the pair (and the pop at the join)**. The account therefore differs from §10's table:
+
+- **§10's 355 dead stores were an artefact of the linear replay.** A diamond's two arms each
+  `PUSH {r0}`, and the merge `POP {r0}` is *after* the branch in the text, so a linear scan that
+  assumes "only this path" counts every "value already in r0" as a dead store. **Once the CFG is
+  seen, only 3 lines in the whole corpus are real dead stores**, so S10a produces almost nothing.
+- What actually pays is S10b's **same-register** case: the `POP {rX}` target is the register the
+  arm already holds, so both the `PUSH` and the `POP` disappear with no replacement.
+  `HAL_DMAEx_MultiBufferStart_IT` in `stm32f4xx_hal_dma_ex.c` alone loses 286 pushes + 28 pops =
+  **314 lines**; over 95 TUs the corpus total is **331 lines**.
+
+Readings (26 flags, 95 TUs, same machine, same command line):
+
+| Arm | Instructions | Bytes |
+| --- | ---: | ---: |
+| 26-flag baseline | 11,404 | 392,907 |
+| + `-fopt-spill` | 11,073 | 388,303 |
+| delta | **-331 (-2.90%)** | **-4,604 (-1.17%)** |
+
+**Verdict: per §10.2 this is the 2%-4% bucket => register it, keep the `-fopt-spill` switch, leave it
+off by default.** It is not a landing (short of 4%) and not a withdrawal (well above 2%). §10's 5.1%
+ceiling is **void**; the real cashable amount is 2.90% -- the most valuable correction of this round,
+and the ceiling was wrong precisely by counting live values on both sides of a branch as dead stores.
+
+**What was not done** (left as debt, explicitly): the 44 `POP {r0}` -> `POP {r1}` cases need the arm
+tail rewritten to a single `MOV rY, r0` (net 1 instruction) -- that *changes* instructions instead of
+*deleting* them, so it is out of scope here.
+
+**Implementation boundaries** (each one is a code comment and each is held by
+`tests/run_spill_tests.py`):
+
+- It rides on the CFG/liveness machine `-fopt-live` builds, so `ARKCC_FEATURE_OPT_SPILL` is forced
+  to 0 under `!ARKCC_FEATURE_OPT_LIVE` or `ARKCC_PROFILE_STM32_MIN`, and the driver refuses the flag
+  by name (`C3900U`);
+- **per-function bail**: any `[sp` access, any non-constant `sp` adjustment, any IT block that writes
+  `sp`/`PUSH`/`POP`, an unreachable branch target, or two paths reaching a join at different depths;
+- `MOV sp, rB` is treated as an **absolute restore**: the frame base is pinned by the straight-line
+  prologue (`MOV rB, sp`, written exactly once in the function), which is what makes "depth above the
+  frame is unknown" recoverable -- without it the pass never fires;
+- **self-check**: the number of deleted lines must equal (paired pushes + paired pops), and a zero on
+  either side means nothing is written back;
+- gate: `tests/run_spill_tests.py` / `make test-spill` (OFF IS OFF, delete-only, every removed line is
+  a PUSH/POP, the image never grows, the two anti-false-green shapes stay byte-identical, unicorn
+  agrees on four arms, and a cropped build refuses the flag by name).

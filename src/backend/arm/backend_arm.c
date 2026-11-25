@@ -2473,6 +2473,587 @@ static void ark_live_function(AsmBuffer *b, int from, unsigned retmask) {
 #endif /* ARKCC_FEATURE_OPT_COPYPROP */
 #endif /* ARKCC_FEATURE_OPT_PEEP || ARKCC_FEATURE_OPT_COPYPROP || ARKCC_FEATURE_OPT_LIVE */
 
+#if ARKCC_FEATURE_OPT_SPILL && ARKCC_FEATURE_OPT_LIVE
+/* ------------- cross-block stack round trips (-fopt-spill) ---------------
+ * A `PUSH {rX}` whose only reader is a later `POP {rX}` on every path is a
+ * copy routed through memory: nothing between the two names rX, and the pop
+ * puts back exactly the value the push saved.  Deleting both halves leaves
+ * rX holding that same value and keeps sp balance, so it is invisible to the
+ * rest of the function.
+ *
+ * The shape this exists for is the diamond the reference model emits for a
+ * conditional expression: each arm pushes its result, the merge point pops
+ * it.  A linear scan cannot see that (two pushes, one pop looks like one
+ * lost value), which is why docs/EXPR_MODEL.md S10's original 355-instruction
+ * ceiling was wrong: with the CFG the corpus loses 331 lines (2.90% of the
+ * 26-flag instruction count, -1.17% bytes) and only 3 real dead stores exist
+ * (S10.5).  That is the 2-4% bucket, so the pass is registered and off by
+ * default.
+ *
+ * What must hold, on every path between the push and the pop:
+ *   - rX is not written (a write would be undone by the pop, so removing the
+ *     pair would change the result -- and vice versa, keeping it is safe);
+ *   - sp is not moved by anything but a constant `ADD/SUB sp, sp, #imm`
+ *     (a `MOV sp, ...` makes the depth unknown, and the pass stops there);
+ *   - no instruction addresses `[sp, ...]`; deleting a push moves sp for the
+ *     instructions after it on that path, so an sp-relative access anywhere
+ *     in the function disqualifies the whole function (0 occurrences in every
+ *     artefact this compiler emits today -- the emitter always works through
+ *     a frame base register);
+ *   - no conditional-instruction block (IT) and no branch in or out of the
+ *     region that the analysis cannot model;
+ *   - a push whose value is popped by more than one pop is left alone, since
+ *     deleting it would break the other reader.
+ * Anything not provable leaves the pair in place: the pass never guesses.
+ */
+#define SP_MAX_LINES  PP_MAX_LINES   /* same ceiling as the live pass */
+#define SP_MAX_LABELS 4096          /* LV_MAX_LABELS (256) is too small: one big
+                                     * HAL function can carry >256 labels */
+#define SP_LAB_LEN    64
+#define SP_MAX_DEPTH  48
+#define SP_MAX_PUSH  512   /* id, not a bit: 32-bit sets capped one big function */
+
+typedef struct {
+    int line;          /* instruction index of the PUSH */
+    int reg;           /* the single register it saves */
+    int depth;         /* words on the stack before the push */
+    int ok;            /* every path pops it back into the same register */
+    int claim;         /* how many POPs read this push's slot */
+    int del;           /* 1 = the pair is removed this round */
+} SpillPush;
+
+static int      sp_n;
+static int      sp_ls[SP_MAX_LINES], sp_ll[SP_MAX_LINES];
+static cp_ins   sp_iv[SP_MAX_LINES];
+static unsigned char sp_kd[SP_MAX_LINES];   /* 0 other, 1 instruction, 2 label */
+static unsigned char sp_it[SP_MAX_LINES];
+static int      sp_s0[SP_MAX_LINES], sp_s1[SP_MAX_LINES];
+static int      sp_depth[SP_MAX_LINES];     /* words before the item, -1 unknown */
+/* One word above the frame, described by the registers that may have pushed
+ * it (0..15), whether any definition was seen at all, and whether some
+ * definition is not a provable push of that word.  Joining paths is an OR. */
+#define SP_SLOT_REGS(c)  ((c) & 0xFFFFu)
+#define SP_SLOT_UNT      0x10000u
+#define SP_SLOT_HAS      0x20000u
+static unsigned *sp_st;                    /* sp_st_row(i)[s] = slot s of line i */
+static int      sp_st_cap;
+#define sp_st_row(i) (sp_st + (size_t)(i) * SP_MAX_DEPTH)
+
+static int sp_st_reserve(int lines) {
+    unsigned *p;
+    if (lines <= sp_st_cap) return 1;
+    p = (unsigned *)realloc(sp_st, (size_t)lines * SP_MAX_DEPTH * sizeof(unsigned));
+    if (!p) return 0;
+    sp_st = p;
+    sp_st_cap = lines;
+    return 1;
+}
+static unsigned char sp_has[SP_MAX_LINES];
+static unsigned char sp_pdel[SP_MAX_LINES];  /* POP proved deletable this round */
+static int      sp_strict;                   /* 1 = a POP counts only if deletable */
+static unsigned char sp_vis[SP_MAX_LINES];
+static char     sp_lab[SP_MAX_LABELS][SP_LAB_LEN];
+static int      sp_labline[SP_MAX_LABELS];
+static SpillPush sp_push[SP_MAX_PUSH];
+static int      sp_npush;
+
+static int sp_popcount(unsigned v) {
+    int c = 0;
+    while (v) { c += (int)(v & 1u); v >>= 1; }
+    return c;
+}
+
+/* `{r0, r3, lr}` -> count, mask.  -1 if the list cannot be modelled exactly
+ * (odd token, duplicate name, empty list). */
+static int sp_reglist(const char *s, unsigned *mask) {
+    int n = 0, i = 1, cnt;
+    unsigned m = 0;
+    if (s[0] != '{') return -1;
+    for (;;) {
+        int r = -1;
+        while (s[i] == ' ' || s[i] == '\t') i++;
+        if (s[i] == '}') { i++; break; }
+        if (!s[i]) return -1;
+        if (!strncmp(s + i, "lr", 2) && !(s[i + 2] >= 'a' && s[i + 2] <= 'z')) {
+            r = 14; i += 2;
+        } else if (!strncmp(s + i, "pc", 2) && !(s[i + 2] >= 'a' && s[i + 2] <= 'z')) {
+            r = 15; i += 2;
+        } else if (s[i] == 'r' && s[i + 1] >= '0' && s[i + 1] <= '9') {
+            int v = s[i + 1] - '0';
+            i += 2;
+            if (s[i] >= '0' && s[i] <= '9') { v = v * 10 + (s[i] - '0'); i++; }
+            r = v;
+        } else {
+            return -1;
+        }
+        if (r < 0 || r > 15) return -1;
+        m |= lv_bit(r);
+        n++;
+        while (s[i] == ' ' || s[i] == '\t') i++;
+        if (s[i] == ',') { i++; continue; }
+        if (s[i] == '}') { i++; break; }
+        return -1;
+    }
+    if (s[i]) return -1;
+    cnt = sp_popcount(m);
+    if (n == 0 || cnt != n) return -1;
+    *mask = m;
+    return n;
+}
+
+static int sp_is_sp(const char *s) { return !strcmp(s, "sp"); }
+
+/* `#imm` -> bytes, -1 if not a plain decimal/hex immediate. */
+static int sp_imm_bytes(const char *s) {
+    int v = 0;
+    if (s[0] != '#') return -1;
+    s++;
+    if (!*s) return -1;
+    while (*s >= '0' && *s <= '9') { v = v * 10 + (*s - '0'); s++; }
+    if (*s) return -1;
+    return v;
+}
+
+/* 1 = this instruction addresses [sp, ...]. */
+static int sp_reads_sp_mem(const cp_ins *o) {
+    int i;
+    for (i = 0; i < o->nops; i++)
+        if (strstr(o->op[i], "[sp") || strstr(o->op[i], "[SP")) return 1;
+    return 0;
+}
+
+/* Classify one push: 1 ok, 0 bad, 2 dead (every path leaves the function).
+ * `d` is the depth before the push. */
+static int sp_classify(int start, int reg, int d) {
+    static int stack[SP_MAX_LINES];
+    int top = 0, ok = 0, bad = 0, exit_ = 0;
+    memset(sp_vis, 0, (size_t)sp_n);
+    if (sp_s0[start] >= 0) stack[top++] = sp_s0[start];
+    if (sp_s1[start] >= 0) stack[top++] = sp_s1[start];
+    while (top > 0) {
+        int j = stack[--top], cnt;
+        unsigned mask, rd, wr;
+        const cp_ins *o;
+        if (sp_vis[j]) continue;
+        sp_vis[j] = 1;
+        if (sp_kd[j] != 1) {
+            if (sp_s0[j] < 0) exit_ = 1;
+            else stack[top++] = sp_s0[j];
+            continue;
+        }
+        if (sp_it[j]) { bad = 1; break; }
+        o = &sp_iv[j];
+        if (!strcmp(o->mn, "POP") && o->nops == 1) {
+            cnt = sp_reglist(o->op[0], &mask);
+            if (cnt < 0) { bad = 1; break; }
+            if (mask & lv_bit(15)) { exit_ = 1; continue; }
+            if (sp_depth[j] < 0) { bad = 1; break; }
+            if (sp_depth[j] - 1 == d && cnt == 1 && (mask & lv_bit(reg))) {
+                /* Deleting the push without deleting this pop would leave the
+                 * pop reading a slot nothing pushed, so a pop that is not in
+                 * the delete set makes the whole path bad. */
+                if (!sp_strict || sp_pdel[j]) ok = 1;
+                else bad = 1;
+                break;
+            }
+            if (sp_depth[j] - 1 >= d) { bad = 1; break; }
+            if (sp_s0[j] >= 0) stack[top++] = sp_s0[j];
+            continue;
+        }
+        if (!strcmp(o->mn, "PUSH")) {
+            /* pushing more values does not touch rX: keep walking */
+            if (sp_s0[j] >= 0) stack[top++] = sp_s0[j];
+            continue;
+        }
+        if (!strcmp(o->mn, "POP") || sp_is_sp(o->op[0]) ||
+            (o->nops >= 3 && sp_is_sp(o->op[1]))) {
+            bad = 1;
+            break;
+        }
+        lv_rw(o, &rd, &wr);
+        if (wr & lv_bit(reg)) { bad = 1; break; }
+        /* An unconditional `B` is a block end but has a real successor;
+         * only a line with no successor (BX lr, POP {..pc}, RET) leaves the
+         * function.  Reading `B` as an exit was why a diamond's first arm
+         * never reached its pop. */
+        if (sp_s0[j] < 0) { exit_ = 1; continue; }
+        stack[top++] = sp_s0[j];
+    }
+    if (bad) return 0;
+    if (!ok && exit_) return 2;
+    if (!ok) return 0;
+    return 1;
+}
+
+/* Is item i a single-register POP whose slot is defined, on every path, by
+ * provable pushes of exactly the register it reads? */
+static int sp_pop_valid(int i) {
+    unsigned mask, cam;
+    int cnt, top;
+    if (sp_kd[i] != 1 || sp_it[i]) return 0;
+    if (strcmp(sp_iv[i].mn, "POP") || sp_iv[i].nops != 1) return 0;
+    cnt = sp_reglist(sp_iv[i].op[0], &mask);
+    if (cnt != 1 || (mask & lv_bit(15))) return 0;
+    if (!sp_has[i] || sp_depth[i] <= 0 || sp_depth[i] > SP_MAX_DEPTH) return 0;
+    top = sp_depth[i] - 1;
+    cam = sp_st_row(i)[top];
+    if (!(cam & SP_SLOT_HAS) || (cam & SP_SLOT_UNT)) return 0;
+    if (SP_SLOT_REGS(cam) != mask) return 0;
+    return 1;
+}
+
+static int ark_spill_function(AsmBuffer *b, int from) {
+    int i, j, n, nlab = 0, iter, round, deleted = 0, npair = 0, npair_pops = 0;
+    int base_depth[16], base_writes[16];
+    AsmBuffer out;
+    n = pp_split_lines(b, from, sp_ls, sp_ll, SP_MAX_LINES);
+    if (n <= 0) return 0;
+    if (!sp_st_reserve(n)) return 0;
+    sp_n = n;
+    sp_npush = 0;
+    for (i = 0; i < n; i++) {
+        char t[256];
+        int L;
+        sp_kd[i] = 0; sp_it[i] = 0; sp_s0[i] = sp_s1[i] = -1;
+        sp_depth[i] = -1; sp_has[i] = 0;
+        if (sp_ll[i] >= (int)sizeof t) continue;
+        if (pp_trim(b->buf + sp_ls[i], sp_ll[i], t, sizeof t) < 0) continue;
+        if (!t[0] || t[0] == ';' || t[0] == '@') continue;
+        L = ark_strlen(t);
+        if (L > 0 && t[L - 1] == ':') {
+            if (nlab < SP_MAX_LABELS) {
+                int k = 0;
+                while (k < L - 1 && k < SP_LAB_LEN - 1) { sp_lab[nlab][k] = t[k]; k++; }
+                sp_lab[nlab][k] = 0;
+                sp_labline[nlab] = i;
+                nlab++;
+            }
+            sp_kd[i] = 2;
+            continue;
+        }
+        if (t[0] == '.') continue;
+        if (cp_parse(t, &sp_iv[i])) sp_kd[i] = 1;
+    }
+    /* Bail out of functions this analysis does not model: an sp-relative
+     * access anywhere (deleting a push would move sp under it), VLA/alloca
+     * (dynamic sp), or any instruction that itself moves sp by a register. */
+    for (i = 0; i < n; i++) {
+        if (sp_kd[i] != 1) continue;
+        if (sp_reads_sp_mem(&sp_iv[i])) return 0;   /* deleting a push would move sp */
+        if (!strcmp(sp_iv[i].mn, "ADD") || !strcmp(sp_iv[i].mn, "SUB")) {
+            if (sp_iv[i].nops == 3 && sp_is_sp(sp_iv[i].op[0]) &&
+                sp_is_sp(sp_iv[i].op[1]) && sp_imm_bytes(sp_iv[i].op[2]) < 0)
+            return 0;   /* dynamic sp (VLA / alloca) */
+        }
+        if (!strcmp(sp_iv[i].mn, "ADD") && sp_is_sp(sp_iv[i].op[0]) &&
+            sp_iv[i].nops >= 2 && sp_is_sp(sp_iv[i].op[2]))
+            return 0;   /* sp moved by a register: depth not modellable */
+    }
+    /* IT membership: an instruction under an IT is conditional and cannot be
+     * reasoned about one path at a time. */
+    for (i = 0; i < n; i++) {
+        if (sp_kd[i] != 1) continue;
+        if (sp_iv[i].mn[0] == 'I' && sp_iv[i].mn[1] == 'T' &&
+            (sp_iv[i].mn[2] == 0 || sp_iv[i].mn[2] == 'T' || sp_iv[i].mn[2] == 'E')) {
+            int cnt = ark_strlen(sp_iv[i].mn) - 1, c = 0;
+            for (j = i + 1; j < n && c < cnt; j++) {
+                if (sp_kd[j] == 2) break;
+                if (sp_kd[j] == 1) { sp_it[j] = 1; c++; }
+            }
+        }
+    }
+    /* Frame base register: a `MOV rB, sp` in the straight-line prologue whose
+     * rB is written nowhere else makes every later `MOV sp, rB` restore the
+     * stack to the depth rB was recorded at.  That is the only way the depth
+     * survives past the first return for a compiler that leaves through a
+     * base register; without it every push after that point is unknown. */
+    {
+        int lin = 0, seen_ins = 0, k;
+        for (k = 0; k < 16; k++) { base_depth[k] = -1; base_writes[k] = 0; }
+        for (i = 0; i < n; i++) {
+            unsigned rd, wr;
+            if (sp_kd[i] != 1) continue;
+            lv_rw(&sp_iv[i], &rd, &wr);
+            for (k = 0; k < 16; k++) if (wr & lv_bit(k)) base_writes[k]++;
+            if (lin < 0) { seen_ins = 1; continue; }
+            if (!strcmp(sp_iv[i].mn, "PUSH") && sp_iv[i].nops == 1) {
+                unsigned mask;
+                int cnt = sp_reglist(sp_iv[i].op[0], &mask);
+                if (cnt < 0 || lin + cnt > SP_MAX_DEPTH) lin = -1;
+                else lin += cnt;
+            } else if (!strcmp(sp_iv[i].mn, "SUB") && sp_iv[i].nops == 3 &&
+                       sp_is_sp(sp_iv[i].op[0]) && sp_is_sp(sp_iv[i].op[1])) {
+                int nb = sp_imm_bytes(sp_iv[i].op[2]);
+                if (nb < 0 || (nb & 3) || lin + nb / 4 > SP_MAX_DEPTH) lin = -1;
+                else lin += nb / 4;
+            } else if (!strcmp(sp_iv[i].mn, "MOV") && sp_iv[i].nops == 2 &&
+                       sp_is_sp(sp_iv[i].op[1])) {
+                int rb;
+                if (cp_reg(sp_iv[i].op[0], &rb) && rb >= 0 && rb <= 12)
+                    base_depth[rb] = lin;
+            } else if (lv_branch_kind(sp_iv[i].mn) || lv_ends_block(&sp_iv[i])) {
+                lin = -1;
+            } else if (seen_ins && sp_is_sp(sp_iv[i].op[0])) {
+                lin = -1;
+            }
+            seen_ins = 1;
+        }
+    }
+    /* Item-level control flow. */
+    for (i = 0; i < n; i++) {
+        int k, tgt = -1, q, m2;
+        if (sp_kd[i] != 1) {
+            sp_s0[i] = (i + 1 < n) ? i + 1 : -1;
+            continue;
+        }
+        k = lv_branch_kind(sp_iv[i].mn);
+        if (k == 1 || k == 2) {
+            for (q = 0; q < sp_iv[i].nops; q++) {
+                const char *p = sp_iv[i].op[q];
+                if (!p[0] || p[0] == '#' || p[0] == '[' || p[0] == '{') continue;
+                if (lv_regs(p)) continue;
+                for (m2 = 0; m2 < nlab; m2++)
+                    if (!strcmp(sp_lab[m2], p)) { tgt = sp_labline[m2]; break; }
+                if (tgt >= 0) break;
+            }
+            if (tgt < 0) return 0;   /* branch target not found: do not guess */
+            while (tgt < n && sp_kd[tgt] == 2) tgt++;
+            if (tgt >= n) return 0;
+            sp_s0[i] = tgt;
+            if (k == 2) sp_s1[i] = (i + 1 < n) ? i + 1 : -1;
+            continue;
+        }
+        if (k == 4) { sp_s0[i] = -1; continue; }
+        if (lv_ends_block(&sp_iv[i])) { sp_s0[i] = -1; continue; }
+        sp_s0[i] = (i + 1 < n) ? i + 1 : -1;
+    }
+    /* Candidate pushes: one register, not lr/pc/sp. */
+    for (i = 0; i < n && sp_npush < SP_MAX_PUSH; i++) {
+        int cnt;
+        unsigned mask;
+        if (sp_kd[i] != 1 || sp_it[i]) continue;
+        if (strcmp(sp_iv[i].mn, "PUSH") || sp_iv[i].nops != 1) continue;
+        cnt = sp_reglist(sp_iv[i].op[0], &mask);
+        if (cnt != 1) continue;
+        if (mask & (lv_bit(13) | lv_bit(14) | lv_bit(15))) continue;
+        sp_push[sp_npush].line = i;
+        sp_push[sp_npush].reg = (mask & lv_bit(0)) ? 0 :
+            (mask & lv_bit(1)) ? 1 : (mask & lv_bit(2)) ? 2 :
+            (mask & lv_bit(3)) ? 3 : (mask & lv_bit(4)) ? 4 :
+            (mask & lv_bit(5)) ? 5 : (mask & lv_bit(6)) ? 6 :
+            (mask & lv_bit(7)) ? 7 : (mask & lv_bit(8)) ? 8 :
+            (mask & lv_bit(9)) ? 9 : (mask & lv_bit(10)) ? 10 :
+            (mask & lv_bit(11)) ? 11 : 12;
+        sp_push[sp_npush].depth = -1;
+        sp_push[sp_npush].ok = 0;
+        sp_push[sp_npush].claim = 0;
+        sp_push[sp_npush].del = 0;
+        sp_npush++;
+    }
+/* Depth + slot-definition dataflow.
+     *
+     * sp_st_row(i)[s] describes word s above the frame at entry to item i:
+     *   SP_SLOT_REGS(c)  one bit per register that may have pushed it,
+     *   SP_SLOT_HAS      at least one definition was seen,
+     *   SP_SLOT_UNT      some definition is not a provable push of that word.
+     * Joining two paths is a plain OR: registers union, and one untracked
+     * definition poisons the word for good.  A register bit mask (rather than
+     * a set of push ids) is enough because the only question asked later is
+     * "is every definition a push of the register this POP reads?".
+     *
+     * The flow runs more than once, because what a push contributes depends on
+     * facts learned from the previous run:
+     *   round 0  depths only (everything untracked); learns each push's depth
+     *            and whether every path pops it back (sp_classify),
+     *   round 1  a definition is clean only if that push is `ok`,
+     *   round n  ... only if that push is `del` (delete set shrinks to a fixpoint).
+     */
+    for (round = 0; round < 8; round++) {
+        int nd = 0, ndel = 0;
+        for (i = 0; i < n; i++) { sp_has[i] = 0; sp_depth[i] = -1; }
+        sp_has[0] = 1;
+        sp_depth[0] = 0;
+        for (iter = 0; iter < 64; iter++) {
+            int ch = 0;
+            for (i = 0; i < n; i++) {
+                unsigned out[SP_MAX_DEPTH];
+                int olen, s;
+                if (!sp_has[i]) continue;
+                olen = sp_depth[i];
+                if (olen > 0) memcpy(out, sp_st_row(i), (size_t)olen * sizeof out[0]);
+                if (sp_kd[i] == 1) {
+                    const cp_ins *o = &sp_iv[i];
+                    int rb0 = -1;
+                    if (!sp_it[i] && !strcmp(o->mn, "MOV") && o->nops == 2 &&
+                        sp_is_sp(o->op[0])) {
+                        /* `MOV sp, rB` is an absolute restore: it re-establishes
+                         * the depth rB was recorded at in the prologue, even when
+                         * an earlier instruction left the depth unknown.  The slot
+                         * contents are not followed across such a restore. */
+                        if (cp_reg(o->op[1], &rb0) && rb0 >= 0 && rb0 <= 12 &&
+                            base_depth[rb0] >= 0 && base_writes[rb0] == 1) {
+                            olen = base_depth[rb0];
+                            for (s = 0; s < olen; s++)
+                                out[s] = SP_SLOT_HAS | SP_SLOT_UNT;
+                        } else {
+                            olen = -1;
+                        }
+                    } else if (sp_it[i]) {
+                        /* An IT-guarded instruction that cannot touch sp leaves
+                         * the depth alone; only a guarded sp write poisons it. */
+                        unsigned rd2, wr2;
+                        lv_rw(o, &rd2, &wr2);
+                        if ((wr2 & lv_bit(13)) || !strcmp(o->mn, "PUSH") ||
+                            !strcmp(o->mn, "POP"))
+                            olen = -1;
+                    } else if (olen < 0) {
+                        /* already unknown: it stays unknown */
+                    } else if (!strcmp(o->mn, "PUSH") && o->nops == 1) {
+                        unsigned mask;
+                        int cnt = sp_reglist(o->op[0], &mask), id = -1;
+                        if (cnt < 0) { olen = -1; }
+                        else if (olen + cnt > SP_MAX_DEPTH) { olen = -1; }
+                        else {
+                            if (cnt == 1) {
+                                for (s = 0; s < sp_npush; s++)
+                                    if (sp_push[s].line == i) { id = s; break; }
+                            }
+                            for (s = 0; s < cnt; s++) {
+                                unsigned w = SP_SLOT_HAS | SP_SLOT_UNT;
+                                if (id >= 0 && round > 0) {
+                                    int clean = (round == 1) ? sp_push[id].ok
+                                                             : sp_push[id].del;
+                                    if (clean)
+                                        w = SP_SLOT_HAS |
+                                            (1u << sp_push[id].reg);
+                                }
+                                out[olen++] = w;
+                            }
+                        }
+                    } else if (!strcmp(o->mn, "POP") && o->nops == 1) {
+                        unsigned mask;
+                        int cnt = sp_reglist(o->op[0], &mask);
+                        if (cnt < 0) { olen = -1; }
+                        else if (mask & lv_bit(15)) { olen = -2; }
+                        else if (olen < cnt) { olen = -1; }
+                        else olen -= cnt;
+                    } else if (!strcmp(o->mn, "SUB") && o->nops == 3 &&
+                               sp_is_sp(o->op[0]) && sp_is_sp(o->op[1])) {
+                        int nbytes = sp_imm_bytes(o->op[2]);
+                        if (nbytes < 0 || (nbytes & 3) || olen + nbytes / 4 > SP_MAX_DEPTH) {
+                            olen = -1;
+                        } else {
+                            for (s = 0; s < nbytes / 4; s++)
+                                out[olen++] = SP_SLOT_HAS | SP_SLOT_UNT;
+                        }
+                    } else if (!strcmp(o->mn, "ADD") && o->nops == 3 &&
+                               sp_is_sp(o->op[0]) && sp_is_sp(o->op[1])) {
+                        int nbytes = sp_imm_bytes(o->op[2]);
+                        if (nbytes < 0 || (nbytes & 3) || nbytes / 4 > olen) {
+                            olen = -1;
+                        } else {
+                            olen -= nbytes / 4;
+                        }
+                    }
+                }
+                if (olen == -2) continue;   /* POP {... pc}: leaves the function */
+                if (sp_s0[i] >= 0) {
+                    j = sp_s0[i];
+                    if (!sp_has[j]) {
+                        sp_has[j] = 1;
+                        sp_depth[j] = olen;
+                        if (olen > 0) memcpy(sp_st_row(j), out, (size_t)olen * sizeof out[0]);
+                        ch = 1;
+                    } else if (olen < 0 || sp_depth[j] < 0) {
+                        if (sp_depth[j] >= 0) { sp_depth[j] = -1; ch = 1; }
+                    } else if (sp_depth[j] != olen) {
+                        return 0;   /* two paths disagree on the depth */
+                    } else {
+                        for (s = 0; s < olen; s++) {
+                            unsigned u = sp_st_row(j)[s] | out[s];
+                            if (u != sp_st_row(j)[s]) { sp_st_row(j)[s] = u; ch = 1; }
+                        }
+                    }
+                }
+                if (sp_s1[i] >= 0) {
+                    j = sp_s1[i];
+                    if (!sp_has[j]) {
+                        sp_has[j] = 1;
+                        sp_depth[j] = olen;
+                        if (olen > 0) memcpy(sp_st_row(j), out, (size_t)olen * sizeof out[0]);
+                        ch = 1;
+                    } else if (olen < 0 || sp_depth[j] < 0) {
+                        if (sp_depth[j] >= 0) { sp_depth[j] = -1; ch = 1; }
+                    } else if (sp_depth[j] != olen) {
+                        return 0;   /* two paths disagree on the depth */
+                    } else {
+                        for (s = 0; s < olen; s++) {
+                            unsigned u = sp_st_row(j)[s] | out[s];
+                            if (u != sp_st_row(j)[s]) { sp_st_row(j)[s] = u; ch = 1; }
+                        }
+                    }
+                }
+            }
+            if (!ch) break;
+        }
+        if (round == 0) {
+            /* Record the depth of every push, then ask whether every path from
+             * it reads the slot back into the same register. */
+            for (i = 0; i < sp_npush; i++) {
+                int ln = sp_push[i].line;
+                sp_push[i].ok = 0;
+                sp_push[i].depth = -1;
+                if (sp_depth[ln] < 0) continue;
+                sp_push[i].depth = sp_depth[ln];
+                sp_strict = 0;
+                sp_push[i].ok = sp_classify(ln, sp_push[i].reg, sp_push[i].depth) == 1;
+            }
+            for (i = 0; i < n; i++) sp_pdel[i] = 0;
+            for (i = 0; i < sp_npush; i++) sp_push[i].del = 0;
+            continue;
+        }
+        /* A POP may go only when every definition of its slot is a clean push
+         * of the very register it reads. */
+        for (i = 0; i < n; i++) {
+            int v = sp_pop_valid(i);
+            if (v != (int)sp_pdel[i]) nd = 1;
+            sp_pdel[i] = (unsigned char)v;
+        }
+        /* A push may go only when it is ok and every path from it ends in a
+         * POP this pass is also deleting (sp_classify consults sp_pdel now). */
+        sp_strict = 1;
+        for (i = 0; i < sp_npush; i++) {
+            int d = sp_push[i].ok &&
+                    sp_classify(sp_push[i].line, sp_push[i].reg, sp_push[i].depth) == 1;
+            if (d != sp_push[i].del) ndel = 1;
+            sp_push[i].del = d;
+        }
+        if (round > 1 && !nd && !ndel) break;
+    }
+    npair = npair_pops = deleted = 0;
+    asmbuf_init(&out);
+    for (i = 0; i < n; i++) {
+        int skip = 0;
+        if (sp_kd[i] == 1) {
+            int k;
+            for (k = 0; k < sp_npush; k++)
+                if (sp_push[k].del && sp_push[k].line == i) { skip = 1; npair++; break; }
+            if (!skip && sp_pdel[i]) { skip = 1; npair_pops++; }
+        }
+        if (skip) { deleted++; continue; }
+        pp_copy_line(&out, b->buf + sp_ls[i], sp_ll[i]);
+    }
+    /* Self-check, so a broken walk can never reach the output: every line
+     * that disappeared must be a push this pass proved or a pop whose every
+     * reaching definition was one of those pushes.  A pop implies at least
+     * one push, so `deleted` must exceed `npair` by exactly the pops. */
+    if (npair <= 0 || npair_pops <= 0 || deleted != npair + npair_pops) {
+        return 0;
+    }    pp_splice(b, from, &out);
+    return deleted;
+}
+#endif /* ARKCC_FEATURE_OPT_SPILL && ARKCC_FEATURE_OPT_LIVE */
+
 #if ARKCC_FEATURE_OPT_REGALLOC
 /* --------------------------- register allocation -------------------------
  * What this is, exactly: after a function has been emitted, its text is walked
@@ -15008,6 +15589,16 @@ static char *codegen_arm(IrProgram *prog) {
          * the flags cannot be proven, so a second run can only fuse more of
          * what became provable. */
         if (g_config.enable_opt_cbz) ark_cbz_function(&buf, fstart);
+#endif
+#if ARKCC_FEATURE_OPT_SPILL && ARKCC_FEATURE_OPT_LIVE
+        /* Cross-block stack round trips, last of the value-flow passes: the
+         * diamond the reference model emits for `c ? a : b` is one PUSH per
+         * arm plus one POP at the merge, i.e. a copy through memory.  Runs
+         * after every renaming pass so the two halves already name the same
+         * register, and before the frame trimmers so they see the final
+         * body.  Registered, off by default: the honest count is 2.9% of
+         * instructions, below the 4% S10 asked for (docs/EXPR_MODEL.md). */
+        if (g_config.enable_opt_spill) ark_spill_function(&buf, fstart);
 #endif
 #if ARKCC_FEATURE_OPT_FRAME
         /* Frame trimming is last: every pass above has already renamed

@@ -95,6 +95,7 @@ void config_init(void) {
     g_config.enable_opt_constcache = 0;
     g_config.enable_opt_litpool   = 0;
     g_config.enable_opt_coalesce = 0;
+    g_config.enable_opt_spill    = 0;
     g_config.enable_opt_copyprop  = 0;
     g_config.enable_opt_live      = 0;
     g_config.enable_opt_inline    = ARKCC_FEATURE_OPT_INLINE;
@@ -542,6 +543,8 @@ void config_apply_args(int argc, char **argv) {
                 g_config.enable_opt_live                = enable;
             else if (ark_streq(name, "opt-coalesce") || ark_streq(name, "coalesce"))
                 g_config.enable_opt_coalesce            = enable;
+            else if (ark_streq(name, "opt-spill") || ark_streq(name, "spill"))
+                g_config.enable_opt_spill               = enable;
             else if (ark_streq(name, "opt-inline") || ark_streq(name, "autoinline"))
                 g_config.enable_opt_inline              = enable;
             else if (ark_streq(name, "opt-vectorize") || ark_streq(name, "vectorize"))
@@ -593,6 +596,7 @@ void config_print(void) {
             g_config.enable_opt_prop, g_config.enable_opt_deadpush,
             g_config.enable_opt_cmat, g_config.enable_opt_slotreg);
     ark_log("  opt_vreg=%d\n", g_config.enable_opt_vreg);
+    ark_log("  opt_spill=%d\n", g_config.enable_opt_spill);
     ark_log("  opt_constcond=%d\n", g_config.enable_opt_constcond);
     ark_log("  opt_exit=%d\n", g_config.enable_opt_exit);
     ark_log("  opt_boolmat=%d\n", g_config.enable_opt_boolmat);

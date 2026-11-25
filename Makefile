@@ -30,6 +30,7 @@ endif
         test-tailcall test-divconst test-xblock test-sizeweight \
         test-inline test-vstack test-addr test-strength test-cbz test-branch \
         test-imm test-peep test-cbranch test-copyprop test-live test-movimm test-pair \
+        test-spill \
         test-prop test-deadpush test-cmat test-slotreg test-opalloc test-boolmat \
         test-exit test-bitmask \
         test-voldmb test-volmem test-constcond \
@@ -49,7 +50,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-floatlit test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch test-imm test-peep test-cbranch test-copyprop test-cmat test-slotreg test-opalloc test-live test-movimm test-litpool test-coalesce test-voldmb test-volmem test-constcond test-boolmat test-exit test-bitmask test-option
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-floatlit test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch test-imm test-peep test-cbranch test-copyprop test-cmat test-slotreg test-opalloc test-live test-spill test-movimm test-litpool test-coalesce test-voldmb test-volmem test-constcond test-boolmat test-exit test-bitmask test-option
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -260,6 +261,19 @@ test-copyprop: $(ARKCC)
 # form reads its own destination -- must come out byte-identical, which is the
 # anti-over-deletion half.  A cropped build (-DARKCC_FEATURE_OPT_LIVE=0) refuses
 # the flag by name (C3900U) and still compiles without it.
+# Gate for -fopt-spill: cross-block `PUSH {rX}` / `POP {rX}` round trips are
+# deleted once every path out of the push reaches a pop of the same register
+# without writing it in between.  OFF IS OFF (byte-identical without the flag),
+# the diamond really loses lines and gains none (and every removed line is a
+# PUSH/POP), the image never grows, and the two shapes a naive "delete any
+# PUSH before a POP" pass gets wrong are byte-identical: a pushed register that
+# is written before the pop, and a pop into a different register (a function
+# pointer call's `POP {ip}`).  Every fixture returns the Python answer on the
+# emulator in the off and on arms, and a cropped build
+# (-DARKCC_FEATURE_OPT_SPILL=0) refuses the flag by name (C3900U).
+test-spill: $(ARKCC)
+	$(PYTHON) tests/run_spill_tests.py ./$(ARKCC)
+
 test-live: $(ARKCC)
 	$(PYTHON) tests/run_live_tests.py ./$(ARKCC)
 
