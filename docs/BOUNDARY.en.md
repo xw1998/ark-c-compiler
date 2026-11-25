@@ -270,8 +270,11 @@ paid back. Full write-up in `docs/VSTACK_CFG.md` section 4.1.1.
 ### 5.7 The text layer closes under 26 flags (measured 2026-11-25)
 
 With `-fopt-bitmask` landed the corpus convention becomes 26 switches (`sw24` plus `-fopt-exit`
-and `-fopt-bitmask`): **11,766 instructions / 398,673 bytes** (the 19-flag table in section 1
-reads 12,304; the two versions cannot be subtracted from each other). Compared per category
+and `-fopt-bitmask`): **11,666 instructions / 396,986 bytes** (the 19-flag table in section 1
+reads 12,304; the two versions cannot be subtracted from each other, and this convention read
+11,766 when bitmask landed -- this round `-fopt-addr` gained a look-ahead fold (R1b) and a
+`MOV` merge (R0) for another 100 instructions = 0.85%, see
+[ADDR_FOLD.en.md](ADDR_FOLD.en.md) section 13). Compared per category
 against armcc `-O2`, the four leading items `MOVREG +1,101`, `PUSHPOP +1,013`, `FRAME +926`,
 `MOVIMM +804` add up to **+4,844 instructions = 78.8% of the gap**, and all four are faces of
 the same model fact: every intermediate value is born in `r0` and goes to memory once.
@@ -282,7 +285,9 @@ the same literal in one block **55**, duplicate materialisation of the same imme
 `PUSH`/`POP` idle pairs **30**, `STR->LDR` round trips on one slot **15+9**, `MOV` round trips
 **5**, `MOV` chains **1** — **167 instructions = 1.42%** in total, every family on its own below
 the 5% F1 line. Under the standing discipline they are all **closed**: adding one more text rule
-is no longer a direction.
+is no longer a direction. The 189 address-chain candidates are closed too, 100 of them paid and
+the residue at zero (`docs/RA_MODEL.md` section 4.1b); the rest needs in-block liveness, which
+the text layer cannot prove.
 
 The conclusion is pinned: the 0.9.1 optimization line adds no further passes. Touching the
 remaining 2.09x means changing the unit of allocation — see `docs/RA_MODEL.md` (the S8

@@ -1,11 +1,15 @@
 # Code-generation model change (0.9.2 preregistration): from "value stack + r0" to "IR virtual registers + linear scan"
 
-> Status: **preregistration complete, the read-only S8a pressure measurement has not been run.**
-> This document emits no code. It pins down three things first: what shape the gap has under
-> the 26-flag corpus (§1), why the text layer has been measured out (§2), and the first
-> verifiable slice plus its frozen criteria (§3–§7).
-> **The criteria are frozen before the run** — changing them after the implementation
-> starts would make them meaningless.
+> Status: **preregistration complete; S8a was redefined as a text-layer proxy and is DONE
+> (2026-11-25). Verdict: the ceiling is insufficient, S8b does not start.**
+> This document emits no code. It does four things: measure the shape of the gap under
+> 26 flags (§1), show the text layer is measured out (§2), **correct the feasibility basis of
+> the model change** (§3/§4.1: this repository's IR is a pure stack machine with no virtual
+> register field, so "measure liveness on the existing IR" is not implementable and S8a can
+> only fall back to a text-layer proxy), and pin down the hard ceiling of this line plus the
+> full arithmetic of "reaching 5,619" (§4.1a / §10).
+> **The criteria were frozen before the run**; §5 was re-derived once from the measured
+> results, and both the new and the superseded wording are kept in place.
 > Every number comes from this repository's own 95-TU corpus; the command and the
 > measurement convention are written in each section.
 
@@ -106,6 +110,15 @@ Three conclusions:
   each worth only 0.5%–1.2%: they are not badly built, the **magnitude itself has run out**.
 - therefore the 0.9.1 optimization line **ends here**: of the remaining 6,147 instructions
   (2.09x) there is no family from which another text rule could take 5%.
+- **Addendum (2026-11-25)**: while measuring the S8a ceiling a batch of "base address formed
+  and never folded" shapes was scanned up. The first draft recorded them as a family this
+  table missed; **that was wrong**. Reading `ark_addr_function()` shows `-fopt-addr`'s
+  R1/R2/R3 were already folding exactly this, and only two coverage gaps were left: the
+  access need not be adjacent, and `MOV` may be followed by arithmetic instead of an access
+  (see §4.1b). With both closed the 26-flag corpus goes from 11,766 to **11,666 instructions
+  / 396,986 B** (-100 = -0.85%, -1,687 B), and a rescan of the folded output finds both
+  shapes at zero. It does not overlap this table's 167 (those are duplicate moves and round
+  trips; this one is base-address formation).
 
 Reproduce (read-only, not committed):
 
@@ -153,30 +166,135 @@ Why this is a model change and not one more pass:
 
 Parts already in place (do not rebuild): the constant pool (`-fopt-litpool`), base reuse and
 addressing folding (`-fopt-addr`), strength reduction (`-fopt-strength`), compare-to-branch
+### 3.1 The IR of today: a pure stack machine, no virtual-register field (correction)
+
+The first draft of this preregistration claimed "S6 already numbers every value". The code
+does not work that way; re-checked on 2026-11-25:
+
+- `IrOp` in `include/common.h` has **pure stack semantics** — `IR_PUSH_INT` / `IR_PUSH_VAR` /
+  `IR_BINARY` (comment verbatim: "pop right operand r1, left operand r0") / `IR_STORE` …;
+  every instruction takes its inputs from and leaves its output on an **implicit stack top**;
+- `IrInst` in `include/ir.h` has only `op / val / name / aux / line / aux2` — **no virtual
+  register number** and no live interval;
+- `-fopt-vreg` is implemented by `ark_vreg_function()` at
+  `src/backend/arm/backend_arm.c:3794` (call site 14713); what it receives is an already
+  emitted `AsmBuffer` and it renames registers **on the text**. `-fopt-slotreg` is the same.
+- the IR has no dump option either (no `--dump-IR`), so there is no "read the IR offline"
+  route.
+
+So **S6 is not IR-level numbering; it is post-emission text renaming**, the target model of
+§3 is still **unimplemented**, and the first thing S8b must do is "add a vreg field to
+`IrInst`, make irgen number values, add an IR dump" — which is itself part of the model change
+(and costs work beyond the allocator).
+
+Parts already in place (do not rebuild): the constant pool (`-fopt-litpool`), base reuse and
+addressing folding (`-fopt-addr`), strength reduction (`-fopt-strength`), compare-to-branch
 and `CBZ`, tail calls and block merging, `--size-weight`.
 
-One part is missing: **the allocator itself**.
+One part is missing: **the allocator itself** (and the IR change it requires).
 
 ## 4 Slices
 
-### 4.1 S8a: read-only pressure measurement (no emission change)
+### 4.1 S8a: ceiling measurement (text-layer proxy, DONE 2026-11-25)
 
-On the existing IR (S6 already numbers every value), measure each function in parallel:
+**Why not "measure `nvreg`/`pmax`/`spill_est` on the IR"**: see §3.1 — the IR is a stack
+machine, `IrInst` has no vreg field and there is no IR dump. The four report items as
+originally specified are **not implementable** on today's tree: not "not run", but "cannot be
+run". Running them requires S8b's first step (vreg field plus dump), which is no longer
+read-only.
 
-| Report item | Meaning |
-| --- | --- |
-| `nvreg` | number of virtual values in the function |
-| `pmax` | maximum overlap width of live intervals (values alive at once) |
-| `spill_est` | estimated spills of a linear scan over "8 available registers plus short-lived r0–r3" |
-| `cov` | share of instructions that live in functions with `pmax <= 8` and `spill_est == 0` |
+S8a therefore became a **ceiling measurement on the emitted text**, with a harder question:
+**"if the allocator were perfect and produced not one redundant move or spill, how many
+instructions could go away at most?"** That ceiling does not depend on the IR change and can
+be pinned down today; if it cannot reach the target by itself, there is no point building the
+allocator first.
 
-`cov` is the number the criterion looks at. `pmax` alone means nothing: one 30-wide block is
-enough to blow up the average, while the real payoff depends on **most instructions** living
-in functions that need no spills.
+Read-only scan of `D:/tmp/bm/gate_exit/bmk_on/*.s` (the 95 products under 26 flags). **Note:
+these products already ran `-fopt-vreg` / `-fopt-slotreg` (they are two of the 26 switches),
+so the numbers below are the residual *after* S6 — there is no double counting with S6.**
 
-Discipline: the probe is read-only (stderr, behind `ARKCC_RA_STATS`), removed after the
-measurement and never committed; after removal the 26-flag figures must return to
-`11,766 / 398,673` byte for byte.
+| Ceiling item | Count | Share of 11,766 | Source |
+| --- | ---: | ---: | --- |
+| frame slot to register · in-block (L1) | 133 | 1.13% | `slotscan3.py` |
+| frame slot to register · cross-block, not across a call (L2) | 32 | 0.27% | same |
+| frame slot to register · across a call (L3, needs callee-saved) | 718 | 6.10% | same |
+| result redirection (`MOV rD,r0` with r0 dead afterwards) | 266 | 2.26% | `movredir.py` (266 of 313 candidates have r0 dead) |
+| value-stack pool `PUSH {r0}`/`POP {r0|r1}` churn | <= 636 | <= 5.41% | PUSH `{r0}` 498 + POP `{r0}` 96 + POP `{r1}` 42 |
+| **Total (hard ceiling, mutually exclusive shapes added)** | **<= 1,785** | **<= 15.2%** | |
+
+Where the L3 718 live: `hal_dma_ex` 300, `hal_dma` 90, `hal_rcc` 85, `hal_flash_ex` 68 —
+long functions that keep hitting the same local with `STR`/`LDR`, exactly what callee-saved
+allocation should eat.
+
+`ADD sp, sp, #imm` 222 / `SUB sp, sp, #imm` 146 (368 together) are **frame setup and
+teardown**, not waste: armcc shows single digits only because it keeps parameters and locals
+in registers and has a zero frame (see the side-by-side in §10).
+
+### 4.1a What this ceiling says: allocation alone does not beat armcc
+
+- eat all 15.2% (impossible) and 11,766 becomes about **9,980**, still **1.78x** armcc `-O2`;
+- and 6.10% of that 15.2% is L3 across calls — S7a already measured retention across calls at
+  only **220 instructions net** (save 1,182, pay 962, see `docs/VSTACK_CFG.md`). Applying the
+  same survival rate, what is actually realisable is **the in-block L1+L2 165 (1.40%) plus the
+  266 redirections plus part of the pool churn**, on the order of **3%–6%**;
+- in other words **S8b (in-block) lands in the "3%–6%, register only" band, S8c (across
+  calls) reaches double digits only at a known cost, and neither ceiling reaches 5,619.
+  Allocation is not the answer; it moves 2.09x to 1.8x.**
+
+### 4.1b Address-chain folding: not a new family, a coverage gap in `-fopt-addr` (closed, 100 paid)
+
+While measuring the S8a ceiling a batch of "base address formed, never folded" shapes turned
+up, and the first draft took it for something new. Reading `ark_addr_function()`
+(`src/backend/arm/backend_arm.c`) corrects that: `-fopt-addr`'s R1/R2/R3 **already folded**
+an access adjacent to `ADD RD, RB, #imm` / `ADD RD, RB, RI` / `MOV RD, RS`. The 189 measured
+instructions were the residue of two **coverage gaps**:
+
+| Gap | Shape | Count |
+| --- | --- | ---: |
+| the access need not be adjacent | `ADD rD, rX, #k` (or `MOV rD, rX`), then `[rD, #j]` a few lines later | 189 |
+| the `MOV` is followed by arithmetic, not an access | `MOV rD, rS` + `ADD/SUB rD, rD, #k` (visible only after R1b) | 38 |
+
+The fix **extends `-fopt-addr`**: no new switch, no new trimming row (the whole block already
+sits under `ARKCC_FEATURE_OPT_ADDR`).
+
+- **R1b (look-ahead base fold)**: after `ADD RB, RS, #imm`, find the first access inside four
+  instructions whose base is RB and which has no index register. The window closes on a label,
+  a conditional, `B/BX/BL/BLX/CBZ/CBNZ`, a write to RB or RS, or a read of RB that is not that
+  access. The fold still obeys R1's death rule (the access writes RB back, or RB is dead
+  afterwards).
+- **R0 (move merged into arithmetic)**: `MOV RD, RS` followed by `ADD|SUB RD, RD, #imm`
+  (imm 0..4095) becomes one `ADD|SUB RD, RS, #imm`. The MOV dies the moment the ADD overwrites
+  it, so **no liveness check is needed**; result and flags are the ones the ADD/SUB already
+  produced.
+
+Measured on the 26-flag 95-TU corpus (`D:/tmp/bm/remeasure.py`):
+
+| Stage | Instructions | Bytes | vs. before |
+| --- | ---: | ---: | --- |
+| before (`e295220`, 26-flag products) | 11,766 | 398,673 | — |
+| + R1b (look-ahead base fold) | 11,713 | 397,686 | -53 / -987 |
+| + R0 (MOV merged into arithmetic) | **11,666** | **396,986** | **-100 / -1,687** |
+
+**189 predicted, 100 paid, and the whole difference is "death at the end of a block"**:
+`ad_dead_after()` returns "live" on a label, a branch or a call, because the text layer does
+not know which successor block a block end flows into. Loosening that would mean betting on a
+liveness fact the pass cannot prove, which "rather an error than a wrong answer" forbids. The
+gap is itself the conclusion: **the address folds the text layer can safely pay are used up**;
+what is left needs real in-block liveness, i.e. the S8b allocator, and §4.1a has already
+shown that allocator alone does not beat armcc.
+
+Rescan of the folded output (`addrchain_ac.py`): `MOV + ADD-self` **0** left, `ADD` base +
+`[rD]` **0** left. Gate `tests/run_addr_tests.py` is green, including OFF IS OFF and the four
+emulator arms.
+
+### 4.1c Reproduce (read-only, not committed)
+
+```bash
+python -X utf8 D:/tmp/bm/slotscan3.py    # frame-slot ceiling 133 / 32 / 718
+python -X utf8 D:/tmp/bm/movredir.py     # result redirection 313 -> 266
+python -X utf8 D:/tmp/bm/addrchain.py    # address-chain ceiling 128 + 61 (before the change)
+python -X utf8 D:/tmp/bm/addrchain_ac.py # residue in the folded output: 0 + 0
+```
 
 ### 4.2 S8b: implementation (new switch, off by default)
 
@@ -197,7 +315,7 @@ callee-saved, so crossing a call is safe). Criteria as in S8b.
 
 ## 5 Criteria (frozen, not to be changed before implementation)
 
-**S8a criterion** (decides whether S8b happens):
+**S8a's original criterion (superseded, wording kept)**:
 
 - `cov >= 60%` (share of all instructions living in functions with `pmax <= 8` and no spill)
   ⇒ continue to S8b;
@@ -206,7 +324,23 @@ callee-saved, so crossing a call is safe). Criteria as in S8b.
 - `40% <= cov < 60%` ⇒ register only, do not implement, and shrink the slice (only functions
   with `pmax <= 4`).
 
-**S8b criterion** (decides whether the switch stays):
+**Why superseded**: `cov` needs `pmax`/`spill_est` computed on the IR, and §3.1 established
+that the IR has no vreg field (not implementable). It is replaced by the **hard ceiling** of
+§4.1, with the criterion moving from "coverage" to "realisable instruction count":
+
+**S8a's current criterion (re-derived 2026-11-25, replaces the above)**:
+
+- the in-block slice (L1+L2 + result redirection + the in-block part of pool churn) has a
+  measured ceiling of **3%–6%**, i.e. it sits between the "5%–10% register only" and the
+  "< 5% revert" lines below ⇒ **S8b does not start**;
+- the full slice (including L3 across calls) ceilings at <= 15.2%, but S7a already measured
+  L3's real net benefit at **220 instructions (1.87%)** ⇒ the realisable figure stays **< 5%**;
+- neither reading reaches >= 10%, and **the 1.78x ceiling still loses to armcc `-O2` (1.0x)**
+  ⇒ **the model change is recorded as `ceiling_insufficient`; S8b and S8c are not
+  implemented and `-fopt-ra-model` is not added**.
+
+**S8b criterion (wording kept; not activated because S8a went negative)** (decides whether
+the switch stays):
 
 - a net **>= 10% (>= 1,177 instructions) decrease with no byte increase** under 26 flags ⇒
   land it (this is the magnitude a model change should have; §1's four leading items are
@@ -285,3 +419,39 @@ Three, written in stone:
 | `docs/MIR_CFG.md` | the repository's existing IR-level CFG and fixed point; S8b's block splitting and liveness reuse it |
 | `docs/OPERAND_ALLOC.md` | the house style for a preregistration |
 | `docs/OPTIMIZER_PLAN.md` §3 | the two trimming layers (`STM32_MIN` and `ARKCC_FEATURE_*`); a new switch follows the same path |
+
+## 10 The final accounting of 0.9.1: what reaching 5,619 would take
+
+Put the gap table of §1 next to the ceiling of §4.1 and the answer is plain: **this is not a
+gap an allocator can close.**
+
+| Source of the gap | Count | Who would eat it | Measured realisable |
+| --- | ---: | --- | --- |
+| MOVREG +1,101 | 1,101 | allocator (values no longer born in r0) | 266 (2.26%) |
+| PUSHPOP +1,013 | 1,013 | allocator (no value-stack pool) | part of the <= 636 |
+| FRAME +926 | 926 | allocator (locals stay in registers) | 165 in-block + 718 across calls (the latter nets 220) |
+| MOVIMM +804 | 804 | partly allocator reuse of zero/one | not measured; 240–400 at a 30%–50% reuse rate |
+| MOVW/MOVT +338 | 338 | constant pool (`-fopt-litpool` already there; the rest is pooling's edge) | not measured |
+| POOL +314 | 314 | same | not measured |
+| ARITH +520 | 520 | address-chain folding (100 paid in §4.1b) plus the expression model | 100 (0.85%, landed) |
+| LOGIC +338 / MEM +539 / BR +250 / CMP +199 | 1,326 | the expression and branch models | not measured |
+
+**Total provable on today's tree: about 1,100–1,400 instructions = 9%–12%** (of which the
+100 address folds have already been paid this round), landing at
+**10,000–10,600 = 1.8x–1.9x**. Reaching 5,619 for real means cutting **more than half of every
+one of the six families**, which is not "change the unit of allocation" but **rewrite how
+expressions and constants are evaluated** (every C expression from "push — pop — round trip
+through r0" to "compute straight into the destination register"). That is an order of
+magnitude more work than S8b, and `docs/BOUNDARY.md` §3 already forbids working backwards from
+armcc's instruction mix.
+
+Three sentences, final:
+
+1. **the 0.9.1 optimization line closes here**: 26 flags give **11,666 instructions /
+   396,986 B**, **2.08x** armcc `-O2` in instruction count; the nine residual families (167 =
+   1.42% on the pre-change corpus) are all closed, the address-fold gap is closed this round
+   for 100 instructions (0.85%), and the residue is zero;
+2. **the model change (S8b/S8c) is recorded as `ceiling_insufficient`**: all 15.2% of the
+   ceiling would still only give 1.78x, and the in-block realisable part is < 5%;
+3. to go further the entry point is the **expression-evaluation model** (not the allocator),
+   and it needs a new preregistration with newly frozen criteria.

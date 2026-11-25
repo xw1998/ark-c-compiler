@@ -349,3 +349,50 @@ wrong answers back to correct ones.
 
 **Gates.** `p8.c` with the four flags = 17; the three cases under 23 switches read
 84 / 61 / 50; the whole `tests/arm_exec` corpus under 23 switches is **40/40**.
+
+## 13. A third pass over the same rules: "one line apart" and a `MOV` merged into arithmetic (0.9.1-wip, 2026-11-25)
+
+The S8a ceiling measurement ([RA_MODEL.en.md](RA_MODEL.en.md) section 4.1b) scanned up 189
+sites where a base address was formed and never folded. Reading the source corrects the first
+reading: **this is not a new family**. R1/R2/R3 were already folding this shape; what was
+missing were two coverage gaps -- R1/R3 only look at the **adjacent** line, and a `MOV` had to
+be followed immediately by an access.
+
+Two more rules, **both under the same `-fopt-addr`** (no new switch, no new trimming row: the
+whole block already sits under `ARKCC_FEATURE_OPT_ADDR`):
+
+| Rule | Original | Rewritten | Note |
+| --- | --- | --- | --- |
+| **R1b** | `ADD RB, RS, #imm`<br>... up to 4 unrelated instructions ...<br>`mem Rt, [RB(, #off)]` | `mem Rt, [RS, #imm+off]` | look-ahead window, the `ADD` goes away |
+| **R0** | `MOV RD, RS`<br>`ADD\|SUB RD, RD, #imm` | `ADD\|SUB RD, RS, #imm` | the `MOV` goes away |
+
+**The R1b window** (`ad_first_access()`): only the first access whose base is RB and which
+has no index register counts. The window closes on a label, a conditional, `B`/`BX`/`BL`/`BLX`/
+`CBZ`/`CBNZ`, a write to RB or RS, or a read of RB that is not that access; `DMB`/`DSB`/`ISB`
+are skipped. Before folding, R1's death rule still applies (the access writes RB back, or RB is
+dead afterwards). A closed window only loses a fold, it never makes a wrong one.
+
+**R0 needs no liveness check**: the `MOV`'s destination is overwritten by the very next line,
+and result and flags are the ones the `ADD`/`SUB` already produced. Only immediates 0..4095 are
+accepted (the 12-bit unsigned field of `ADD`); a negative bias or a register operand is left
+alone.
+
+Measured on 26 flags and 95 TUs:
+
+| Stage | Instructions | Bytes | vs. before |
+| --- | ---: | ---: | --- |
+| before (`e295220`) | 11,766 | 398,673 | — |
+| + R1b | 11,713 | 397,686 | -53 / -987 |
+| + R0 | **11,666** | **396,986** | **-100 / -1,687** |
+
+**189 candidates, 100 paid, and the whole difference is block-tail death**: `ad_dead_after()`
+answers "live" on a label, a branch or a call, because the text layer does not know which
+successor block a block end flows into. Loosening that would mean betting on a liveness fact
+the pass cannot prove, which the house rule ("rather an error than a wrong answer") forbids.
+Of R0's 47, 38 hit directly and 9 more come from R1/R1b once the chain is opened.
+
+Rescan of the folded output: `MOV + ADD-self` and `ADD` base + `[rD]` are both **0**.
+
+Gates: `tests/run_addr_tests.py` green (OFF IS OFF plus the four emulator arms base/off/on/
+both), `make test` green (the only FAIL is the pre-existing float selftest), and
+`tools/stm32_build_check.py --layout both` passes for both layouts.
