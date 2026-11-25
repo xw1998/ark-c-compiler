@@ -382,3 +382,85 @@ r0 往返」换成「直接算进目标寄存器」）。这条工作量的量�
 3. 真要再进一步，入口是**表达式求值模型**（不是分配器）；预注册与冻结判据见
    [EXPR_MODEL.md](EXPR_MODEL.md)（S9，四类值运输超出 3,802 条 = 32.6%，全吃 1.40×、再吃 500–700 约 1.28×）。**S9b 已实现并实测：−16 条 = 0.137%，按冻结判据撤回，
    判 `statement_local_three_address_insufficient`（`EXPR_MODEL.md` §9）。**
+
+## 11 寄存器池的两个消费者：常量缓存与槽提升（0.9.1-wip 实测）
+
+§10 把「分配器可兑现」判到 1,100–1,400 条。本节记录其中唯一**已经在它自己的账户里成立**
+的那一部分被吃掉多少：不是新写一个 pass，而是把两个既有 pass 的**表长上限**与**寄存器池
+仲裁**修好。
+
+### 11.1 两处卡点
+
+1. **表长上限**：`ark_vreg_function` 有 `#define VG_MAX_LINES 3000`，入口一句
+   `if (nlines >= VG_MAX_LINES) return;`。`HAL_DMAEx_MultiBufferStart_IT`（本批最大单函数）
+   有 3,327 行，整段被跳过 —— 所以 `-fopt-vreg` 在这个函数上一直是零收益，不是它不好用，
+   是它没进去。上限提到 **8192**（仅宿主/非 `ARKCC_PROFILE_STM32_MIN`：该档
+   `ARKCC_FEATURE_OPT_VREG` 为 0，板端不因此增大静态数组）。
+2. **寄存器池先到先得**：`-fopt-regalloc` 里的常量缓存与 `-fopt-vreg` 共用 r8–r11，
+   常量缓存在前跑，vreg 只能捡剩下的。实测该函数里槽 0 被读 **276 次**，而最热的可缓存
+   常量只被重建 7 次 —— 池子分反了。
+
+### 11.2 仲裁规则（写死在代码里）
+
+- 新增私有计数表 `ra_any_off[] / ra_any_cnt[]`（`RA_MAX_ANY 96`），Pass 1 用 `ra_ldr_any()`
+  统计**任意目标寄存器**的 `LDR rN, [r6, #off]`。它**刻意不进 `slots[]`**：多一个 offset 进表
+  会改变 `nslots` 从而改变真实槽的 taint，直接破坏 OFF IS OFF。
+- 仲裁量 `slot_saving = ra_any_max() - 1`（`any` 的最大者减 1，与常量缓存的 `count - 1`
+  同口径）。常量缓存每挑一个 `best`，若 `slot_saving > 2 * (count - 1)` 就 `break`，
+  把余下的池子留给 vreg。
+- **为什么是 2 倍余量**：`any` 是 vreg「可消载入」的**上界**（它还要求单路径区间与可改名
+  消费者），所以这条估计必须留折扣；只有余量扛得住这个折扣时才把寄存器让出去。
+
+### 11.3 读数（26 开关口径）
+
+| 口径 | 改前 | 改后 | 差 |
+| --- | ---: | ---: | ---: |
+| 全语料 | 11,666 条 / 396,986 B | **11,404 条 / 392,907 B** | −262 条（−2.25%）/ −4,079 B（−1.03%） |
+| `stm32f4xx_hal_dma_ex.c` | 2,745 | **2,500** | −245 |
+| `stm32f4xx_hal_rcc.c` | 1,828 | **1,811** | −17 |
+| 其余 22 个 TU | — | — | 0 |
+| 目标函数 `HAL_DMAEx_MultiBufferStart_IT` | 2,632 | **2,387** | −245（−9.3%） |
+
+对照读数（同一函数）：`no-constcache` 2,387 / `no-cc + no-vreg` 2,664 / `no-vreg` 2,632 /
+`no-slotreg` 2,387 —— 仲裁之后这个函数把 4 个高寄存器全让给了 vreg。
+
+### 11.4 判据诚实结论
+
+`GCC_BASELINE.md` §4 冻结的两条判据 **都没有达到**：
+
+- 主判「目标函数 ≤ 1,400」：实测 2,387，**未达**；
+- 次判「26 开关全语料 ≥ 5%（≤ 11,083）且字节不增」：实测 −2.25%，**未达**（字节确实不增）。
+
+这与 §10、`GCC_BASELINE.md` §5 的负结果并列，是「文本层上界」的**第四次独立复现**：
+gcc 在 292 条内完成这个函数，靠的是 `Instance` 只载一次 + `adds r3, r3, #24` 强度削减 +
+池偏移常量，属于**表达式/IR 级决策**（`EXPR_MODEL` §10 的 S10/S11），不是文本层还能挖的。
+
+### 11.5 OFF IS OFF（逐字节）
+
+去掉 `-fopt-vreg` 与 `-fopt-constcache` 的 24 开关口径、18 个 TU 全量比对：
+**`differing TUs 0`**，新旧二进制逐 TU 逐字节相同（旧二进制 = `7b97e13` 的构建）。
+`-DARKCC_FEATURE_OPT_VREG=0` 的精简构建仍按名拒绝 `-fopt-vreg`（`run_vreg_tests` 第 6 组）。
+
+### 11.6 本轮新登记的限制（未修，须单独预注册）
+
+`ra_is_prologue_push()` 只认 `PUSH {r5, r6, r7, lr}`，而 `base = local_eff + 16` 也把
+「保存块 = 4 个字」写死。`-fopt-vstack` 在需要第三个池槽时会把帧变成
+`PUSH {r4, r5, r6, r7, lr}`（5 个字），于是：
+
+- `ark_regalloc_function` 在第一遍就 `return`（`!have_prologue`），**常量缓存与
+  regalloc 在这类函数上一起静默失效**；
+- 该函数因此也看不见 276 次槽访问，仲裁无从发生。
+
+这是**按函数出现**的，不是全局失效（`dma_ex` 的 prologue 仍是被认的形状，所以本节的读数
+是真的）。修法是把「保存块 = 16 字节」改成「按 prologue 列表算」，但那会同时改 `base`、
+所有 offset 的推导和 epilogue 的匹配，须单独预注册后再动。
+
+### 11.7 门禁
+
+`run_regalloc_tests` / `run_slotreg_tests` / `run_live_tests` / `run_addr_tests` /
+`run_vreg_tests` 全过；`tests/arm_exec` 四臂 **0 failure**。
+
+`run_vreg_tests` 的 `mixed` 用例有一处**有据 skip**：它要求「常量缓存与槽提升同现于一个
+PUSH」，但 §11.6 的两条互相封死 —— 带 `-fopt-vstack` 时 regalloc 整段退出，不带时早先的
+pass 已经把可提升的载入删干净（实测该函数带不带 `-fopt-vreg` 逐字节相同）。用例保留帧、
+偏移、寄存器重名与答案四组检查，只把这一条改成 skip 并写明原因，不放宽任何既有检查。

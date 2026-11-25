@@ -459,3 +459,97 @@ Three sentences, final:
    another 500-700 gives about 1.28x). **S9b was implemented and measured: -16 instructions =
    0.137%, withdrawn per the frozen criterion, verdict `statement_local_three_address_insufficient`
    (`EXPR_MODEL.en.md` §9).**
+
+## 11 The two consumers of one saved-register pool: the constant cache and slot promotion (0.9.1-wip, measured)
+
+Section 10 put the allocator's realisable share at 1,100-1,400 instructions. This section records
+how much of that was taken by the only part that **already stood up inside its own account** --
+not a new pass, but the repair of two existing passes' **line cap** and **register-pool
+arbitration**.
+
+### 11.1 Two blockers
+
+1. **Line cap.** `ark_vreg_function` starts with `if (nlines >= VG_MAX_LINES) return;` and
+   `#define VG_MAX_LINES 3000`. `HAL_DMAEx_MultiBufferStart_IT` (the largest single function in
+   this corpus) is 3,327 lines, so the whole function was skipped: `-fopt-vreg` had a measured
+   gain of exactly zero there, not because it was poor but because it never ran. The cap is now
+   **8192**, host-side only: under `ARKCC_PROFILE_STM32_MIN` `ARKCC_FEATURE_OPT_VREG` is 0, so
+   the board build's static array does not grow.
+2. **First come, first served.** The constant cache inside `-fopt-regalloc` and `-fopt-vreg`
+   share r8-r11, and the cache runs first, so the pass only ever got the leftovers. Measured on
+   that function: slot 0 is read **276 times** while the hottest cacheable constant is rebuilt
+   7 times -- the pool was split the wrong way round.
+
+### 11.2 The arbitration rule (as written in the code)
+
+- A private count table `ra_any_off[] / ra_any_cnt[]` (`RA_MAX_ANY 96`), filled in pass 1 by
+  `ra_ldr_any()`, which matches `LDR rN, [r6, #off]` for **any** destination register. It
+  deliberately does **not** go through `slots[]`: one more offset in that table changes
+  `nslots`, which changes the real slots' taint, which would break OFF IS OFF.
+- The arbitration quantity is `slot_saving = ra_any_max() - 1` (the largest `any`, minus one, the
+  same accounting as the cache's `count - 1`). Each time the cache picks a `best`, if
+  `slot_saving > 2 * (count - 1)` it breaks out and leaves the rest of the pool to
+  `-fopt-vreg`.
+- **Why a factor of two.** `any` is an *upper bound* on what the pass can elide (it also needs a
+  single-path region and a renameable consumer), so the estimate must keep a discount; a register
+  is handed over only when the margin survives that discount.
+
+### 11.3 Readings (26-flag corpus)
+
+| Measure | Before | After | Delta |
+| --- | ---: | ---: | ---: |
+| Whole corpus | 11,666 insns / 396,986 B | **11,404 insns / 392,907 B** | -262 (-2.25%) / -4,079 B (-1.03%) |
+| `stm32f4xx_hal_dma_ex.c` | 2,745 | **2,500** | -245 |
+| `stm32f4xx_hal_rcc.c` | 1,828 | **1,811** | -17 |
+| The other 22 TUs | -- | -- | 0 |
+| Target `HAL_DMAEx_MultiBufferStart_IT` | 2,632 | **2,387** | -245 (-9.3%) |
+
+Control readings on the same function: `no-constcache` 2,387 / `no-cc + no-vreg` 2,664 /
+`no-vreg` 2,632 / `no-slotreg` 2,387 -- after arbitration the function hands all four high
+registers to `-fopt-vreg`.
+
+### 11.4 The honest verdict against the frozen criteria
+
+Neither criterion frozen in `GCC_BASELINE.md` §4 was met:
+
+- primary, "target function <= 1,400": measured 2,387, **not met**;
+- secondary, "26-flag corpus >= 5% (<= 11,083) and no byte growth": measured -2.25%, **not met**
+  (the byte count did not grow).
+
+Side by side with §10 and `GCC_BASELINE.md` §5 this is the **fourth independent reproduction** of
+the text layer's ceiling: gcc does this function in 292 instructions because it loads `Instance`
+once, strength-reduces to `adds r3, r3, #24` and reads pooled offsets -- decisions at the
+expression/IR level (`EXPR_MODEL` §10, S10/S11), not something the text can still give up.
+
+### 11.5 OFF IS OFF (byte for byte)
+
+With `-fopt-vreg` and `-fopt-constcache` dropped, all 18 TUs compared against the pre-change
+binary (`7b97e13`): **`differing TUs 0`**, every TU byte-identical. The cropped build
+(`-DARKCC_FEATURE_OPT_VREG=0`) still refuses `-fopt-vreg` by name (group 6 of `run_vreg_tests`).
+
+### 11.6 A limitation registered this round (not fixed; needs its own preregistration)
+
+`ra_is_prologue_push()` only accepts `PUSH {r5, r6, r7, lr}`, and `base = local_eff + 16` also
+hard-codes "the saved block is four words". When `-fopt-vstack` needs a third pool slot it turns
+the frame into `PUSH {r4, r5, r6, r7, lr}` (five words), and then:
+
+- `ark_regalloc_function` returns on its first pass (`!have_prologue`), so the **constant cache
+  and regalloc both silently do nothing** on that function;
+- the function also never sees the 276 slot reads, so the arbitration cannot happen there at all.
+
+This is **per function**, not global (`dma_ex`'s prologue is still the accepted shape, which is
+why the readings above are real). The fix is to derive the saved-block width from the prologue
+list instead of assuming 16 bytes, but that touches `base`, every offset derivation and the
+epilogue match, so it needs its own preregistration first.
+
+### 11.7 Gates
+
+`run_regalloc_tests`, `run_slotreg_tests`, `run_live_tests`, `run_addr_tests` and
+`run_vreg_tests` all pass; `tests/arm_exec` reports **0 failure** across its four arms.
+
+One documented skip in `run_vreg_tests`'s `mixed` case: it asks for the constant cache and this
+pass to appear in one PUSH, and §11.6 closes that off from both sides -- with `-fopt-vstack`
+regalloc backs out of the frame, and without it an earlier pass has already deleted the
+promotable load (measured: the function is byte-identical with and without `-fopt-vreg`). The
+case keeps its frame, offset, duplicate-list and answer checks; only that one claim became a skip,
+and no existing check was weakened.

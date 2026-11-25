@@ -2675,6 +2675,55 @@ static int ra_num_out(char *dst, int o, int v) {
     return o;
 }
 
+/* The shape -fopt-vreg elides: a plain load of a frame slot into any register.
+ * ra_classify() below only accepts r0 -- it is asked "is this slot entirely
+ * one of the two shapes I can rewrite", which is the -fopt-regalloc proof, and
+ * a value the stack model staged in r5 is not it.  The register-pool split
+ * needs the opposite question ("how much traffic does this slot carry, whoever
+ * holds it"), so it counts these separately, per slot and regardless of taint.
+ * The count is an upper bound on what -fopt-vreg can elide. */
+#define RA_MAX_ANY 96
+static int ra_any_off[RA_MAX_ANY];
+static int ra_any_cnt[RA_MAX_ANY];
+static int ra_any_n;
+
+static void ra_any_note(int off) {
+    int i;
+    for (i = 0; i < ra_any_n; i++)
+        if (ra_any_off[i] == off) { ra_any_cnt[i]++; return; }
+    if (ra_any_n >= RA_MAX_ANY) return;   /* table full: under-count, never taint */
+    ra_any_off[ra_any_n] = off;
+    ra_any_cnt[ra_any_n] = 1;
+    ra_any_n++;
+}
+
+static int ra_any_max(void) {
+    int i, m = 0;
+    for (i = 0; i < ra_any_n; i++)
+        if (ra_any_cnt[i] > m) m = ra_any_cnt[i];
+    return m;
+}
+
+static int ra_ldr_any(const char *ln, int *off) {
+    const char *p = ln;
+    int n = 0;
+    while (*p == ' ' || *p == '\t') p++;
+    if (strncmp(p, "LDR r", 5) != 0) return 0;
+    p += 5;
+    if (*p < '0' || *p > '9') return 0;
+    while (*p >= '0' && *p <= '9') p++;
+    if (strncmp(p, ", [r6, #", 8) != 0) return 0;
+    p += 8;
+    if (*p < '0' || *p > '9') return 0;
+    while (*p >= '0' && *p <= '9') { n = n * 10 + (*p - '0'); p++; }
+    if (strncmp(p, "]", 1) != 0) return 0;
+    p++;
+    while (*p == ' ' || *p == '\t' || *p == '\r') p++;
+    if (*p) return 0;
+    *off = n;
+    return 1;
+}
+
 /* Is this line "    ADD rX, r6, rX"?  emit_va_ptr() is the only emitter of
  * that shape: it materialises frame + offset in a register. */
 static int ra_adds_r6(const char *ln, int reg) {
@@ -2932,6 +2981,7 @@ static void ark_regalloc_function(AsmBuffer *b, int from, IrFunc *f, int local_e
     char pushline[64];               /* the frame save this pass will widen */
 
     pushline[0] = 0;
+    ra_any_n = 0;
     if (!ra_enabled() && !cc_on()) return;
 
 #if ARKCC_FEATURE_OPT_CONSTCACHE
@@ -2996,6 +3046,10 @@ static void ark_regalloc_function(AsmBuffer *b, int from, IrFunc *f, int local_e
             for (q = 0; q < len && q < (int)sizeof(pushline) - 1; q++)
                 pushline[q] = line[q];
             pushline[q] = 0;
+        }
+        {
+            int aoff = 0;
+            if (ra_ldr_any(line, &aoff)) ra_any_note(aoff);
         }
         kind = ra_classify(line, &off, &is_ldr, &wide);
         if (kind >= 0) {
@@ -3093,6 +3147,24 @@ static void ark_regalloc_function(AsmBuffer *b, int from, IrFunc *f, int local_e
     if (cc_on() && cc_n > 0) {
         int total = 0, selsum = 0, guard, j;
         int pushpop = (nregs == 0) ? 2 : 0;
+        int slot_saving = 0;
+        /* One pool, two consumers.  -fopt-vreg runs after this pass and puts
+         * frame slots into whatever high registers are left, eliding about one
+         * instruction per usable load; a cached constant is worth (count - 1).
+         * The pool is four registers, so the split is decided here, once, from
+         * the two accounts: constants are taken in count order and slots will
+         * be taken in use order, so the handover is at the first slot that
+         * beats the next constant, and every register past that point is left
+         * free on purpose.  `uses` is every mention of the slot, which is an
+         * upper bound on the loads -fopt-vreg can actually elide -- erring
+         * towards the slot, because a slot with fewer uses than a constant is
+         * never chosen below.  With -fopt-vreg off (or built out) the pool
+         * stays with the constant cache exactly as before. */
+#if ARKCC_FEATURE_OPT_VREG
+        if (g_config.enable_opt_vreg) {
+            slot_saving = ra_any_max() - 1;
+        }
+#endif
         for (guard = 0; guard < CC_MAX_CONSTS && nregs < RA_MAX_REGS; guard++) {
             int best = -1, r;
             for (i = 0; i < cc_n; i++) {
@@ -3104,6 +3176,18 @@ static void ark_regalloc_function(AsmBuffer *b, int from, IrFunc *f, int local_e
                     best = i;
             }
             if (best < 0) break;
+#if ARKCC_FEATURE_OPT_VREG
+            /* Hand the rest of the pool to -fopt-vreg: measured on
+             * HAL_DMAEx_MultiBufferStart_IT, slot 0 is read 276 times while
+             * the hottest cachable constant is built 7 times.  Twice the
+             * constant's saving, because `any` also counts loads the pass will
+             * decline to elide (a region that ends before the use, an
+             * IT-guarded access): the estimate has to stay an upper bound on
+             * *that* pass's account, and a register is only handed over when
+             * the margin survives the discount. */
+            if (g_config.enable_opt_vreg && slot_saving > 2 * (cc_tab[best].count - 1))
+                break;
+#endif
             for (r = 8; r <= 11; r++) {
                 int used = 0;
                 for (j = 0; j < nregs; j++)
@@ -3362,7 +3446,7 @@ static void ark_regalloc_function(AsmBuffer *b, int from, IrFunc *f, int local_e
  * epilogue widened to match, and every offset at or above the new base is
  * shifted, exactly as -fopt-regalloc does. */
 #define VG_MAX_SLOTS 128
-#define VG_MAX_LINES 3000
+#define VG_MAX_LINES 8192
 #define VG_MAX_REGS  4
 
 typedef struct {
