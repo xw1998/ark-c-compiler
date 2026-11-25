@@ -933,3 +933,112 @@ off the table.
 Two readings worth keeping for scheduling: vstack is the largest single switch of the
 nineteen (3,364 = 21.5%) and vreg the second (882 = 7.2%) -- which is also why "the value
 stack rework" is the only structural lever left.
+
+---
+
+## 19 S6d: the measured verdict on running `-fopt-vreg` and `-fopt-vstack` together (2026-11-25)
+
+The P19 pre-registration fixed one thing in advance: "**choose one of the two with
+`-fopt-vstack`** (the original P12 S5 ruling); once they are on the same line, which one the
+default keeps is decided by a corpus measurement." This section carries that measurement out.
+Verdict: **keep both -- they are neither mutually exclusive nor worth merging/deduplicating.**
+
+### 19.1 Frozen setup
+
+- Corpus: 95 TUs (`examples/ark_test/Core/Src` + `Drivers/STM32F4xx_HAL_Driver/Src`), compiled with
+  `-target arm -O2 -mcpu Cortex-M4 -D STM32F401xE -D USE_HAL_DRIVER --reloc-data -S` plus the
+  23 `-fopt-*` switches (the nineteen + `frame` + `voldmb` + `constcond`).
+- Four configurations: all on / drop `-fopt-vstack` / drop `-fopt-vreg` / drop both. One binary,
+  one sweep, **0 errors** across 95 TUs.
+- Metrics: instructions = lines starting with four spaces that are not assembler directives;
+  bytes = total size of the `.s` file. (Stdout capture and `-o file` were verified byte-identical
+  on a sample TU, so the sweep's `-o` path does not change the reading.)
+
+### 19.2 The four readings
+
+| Configuration | Instructions | Bytes |
+| --- | ---: | ---: |
+| all on (vreg + vstack) | **12,239** | **405,426** |
+| without vreg | 12,937 | 420,189 |
+| without vstack | 15,920 | 459,497 |
+| both off | 16,237 | 465,610 |
+
+Marginal contributions:
+
+| Reading | Instructions | Bytes |
+| --- | ---: | ---: |
+| vreg alone (both off -> without vstack) | -317 | -6,113 |
+| vstack alone (both off -> without vreg) | -3,300 | -45,421 |
+| sum of the two marginals | -3,617 | -51,534 |
+| both on (both off -> all on) | **-3,998** | **-60,184** |
+
+That is, running them together saves **381 instructions (10.5%) more than the sum of their
+separate gains**, and 8,650 B more on the byte axis. This directly refutes the premise behind
+the original P12 S5 ruling, namely that the two "fight over the same stack round-trips and
+therefore add up negative".
+
+### 19.3 Per TU: zero regressions in all four directions
+
+| Comparison (what gets switched back on) | Better | Same | Worse |
+| --- | ---: | ---: | ---: |
+| vreg back (without vreg -> all on) | 14 | 81 | **0** |
+| vstack back (without vstack -> all on) | 17 | 78 | **0** |
+| vreg only (both off -> without vstack) | 17 | 78 | **0** |
+| vstack only (both off -> without vreg) | 10 | 85 | **0** |
+
+Not one of the frozen "any TU getting bigger is red" criteria fires. vreg moves only 14-17 of
+the 95 TUs and leaves the rest byte-identical, which matches section 11's note that vreg has
+narrow coverage but large per-site gains.
+
+### 19.4 Why the effect is super-additive
+
+Both passes attack the same broad class (stack round-trips) but on different objects:
+
+- `-fopt-vstack` rewrites the **mid-expression** value-stack shadow slots (`r5`/`r7`/`r4`),
+  turning `PUSH {r0}` / `LDR`/`STR [sp]` into registers;
+- `-fopt-vreg` promotes **local variable slots**, out of the `r8`-`r11` pool, and is deliberately
+  scheduled after `-fopt-regalloc` (the comment at the call site in `backend_arm.c` records that
+  the two share one PUSH/POP save block and one base offset, and that neither is a barrier for
+  the other).
+
+Order matters: vreg sees the text **after** vstack has shortened it. vstack first keeps values
+in pool registers, so fewer and narrower slot accesses reach vreg and its rename window is more
+often open -- the same mechanism section 18.5 recorded as "renaming makes unfoldable folds
+possible". **(This attribution of the super-additive part is inferred from the traversal order;
+it was not proven per function. The verdict itself -- keep both -- does not depend on it.)**
+
+### 19.5 Why the "merge and deduplicate" half is not done
+
+The name S6d contains "merge and deduplicate"; that half is **closed without touching code**,
+under the same F1-style criterion:
+
+- **Zero cost on the cut-down profile**: under `ARKCC_PROFILE_STM32_MIN` both
+  `ARKCC_FEATURE_OPT_VSTACK` and `ARKCC_FEATURE_OPT_VREG` are 0, so both passes are compiled out
+  entirely. There is not a byte to save on the smallest board profile.
+- **Upper bound elsewhere**: compiling `backend_arm.c` alone with x86-64 `gcc -O2` gives
+  `ark_vreg_function` at 7,792 B plus about 2.6 KB of `vg_*` helpers, and about 4.2 KB of `vs_*`
+  helpers. The two line parsers (`vg_flatten`/`vg_mnem`/`vg_slot`/`vg_is_frame_*` versus
+  `vs_parse`/`vs_form`/`vs_masks`/`vs_read_before_write`) really do overlap structurally, but
+  **what could be shared is bounded by the smaller of the two sets, about 2.0 KB**, and the real
+  figure is well below that: `vs_*` needs operand forms and read/write masks, `vg_*` needs frame
+  offsets, labels and flattening -- the semantics do not coincide.
+- Against the board figure from `stm32_build_check.py --layout sdram` (`code 349,466 B`), 2.0 KB
+  is about **0.6%**, and the price is refactoring two passes that have each already been taught a
+  lesson by a real defect (section 18.6 just fixed vreg's read-modify-write write-back). Closed
+  on "risk cost > gain"; registered as "revisit if the **compiler's own** size ever needs
+  shrinking".
+
+### 19.6 What landed
+
+- Code: **no change**. The two switches stay independent and freely combinable, and both stay off
+  by default (each `-fopt-*` must be asked for).
+- Docs: this section plus the P19 status line in `docs/OPTIMIZER_PLAN.md` (both languages).
+- Reproducing: run the four option sets of section 19.1 over the 95 TUs and the table above
+  comes back. All four sets use **the same binary**, so every delta in this section reflects
+  switches only, never the build.
+- Do not subtract this section's numbers from section 18.5's tables: here "all on" is
+  **12,239 / 405,426 B** while section 18.5 records 12,266 / 405,514 B (and 404,970 B with the
+  second `cbz` pass). The 27 instructions / 88 B gap comes from **a different build** -- this
+  section uses the `arkcc.exe` from after `36ac163` (exact floating-literals merged in), where
+  literals round exactly and the occasional constant and constant fold changes with them.
+  Cross-section comparisons must be re-run on one build; never subtract across builds.

@@ -808,6 +808,9 @@ drops.
 > `docs/VREG.md` §11-§14 / §18. **It did not reach this section's -8% (>= 1,450) target**, and the
 > reading beyond F1 is archived in §18; the `--reg-top` base re-measured on 2026-11-24 is not
 > reusable (+54.4%, see `docs/VREG.md` §10.3).
+>
+> **S6d judged (2026-11-25)**: running together with `-fopt-vstack` is **super-additive, both
+> stay**, see `docs/VREG.md` §19.
 
 - **Why the model has to change**: after `-fopt-coalesce` (L5) the baseline is **18,151
   instructions over 548 functions** (95 TUs, Cortex-M4, `-O2`, fifteen switches + coalesce),
@@ -827,8 +830,13 @@ drops.
   the same save block as `ark_regalloc_function()` -- **exactly one owner**). `r6` stays the frame
   base (dropping the frame pointer measured at 0.2%). Live ranges come from the CFG that
   `src/mir.c` already builds, with `RETURN` / `BL` / indirect calls as split points; spill enters
-  only at S6c. **Mutually exclusive with `-fopt-vstack`** (the original P12 S5 ruling); which one
-  survives by default is decided by measuring the corpus.
+  only at S6c. ~~**Mutually exclusive with `-fopt-vstack`** (the original P12 S5 ruling); which one
+  survives by default is decided by measuring the corpus.~~ **S6d judged it on 2026-11-25 and
+  refuted the premise**: over 95 TUs the four configurations show the pair is **super-additive**
+  (separate marginals sum to -3,617 instructions, both on gives -3,998), with **zero TUs growing**
+  in any of the four comparisons -- so **both stay**, neither exclusive nor merged. The
+  "deduplicate" half is closed on "zero cost in the cropped profile + a 0.6% upper bound
+  elsewhere". All readings are in `docs/VREG.md` §19.
 - **Slices**: **S6a** stays inside one block and never crosses a `BL` (ALU reads both operands
   straight from pool registers and leaves the result there), target **-8% (>= 1,450)** -- the first
   slice that can be judged; **S6b** goes across blocks with linear scan and range merging (including
