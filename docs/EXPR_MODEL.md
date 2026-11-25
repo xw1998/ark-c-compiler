@@ -900,3 +900,99 @@ P 型 94 个函数里还有 13 个因「`[r6,#n]` 出现在体内 `PUSH` 之后�
    （那只省字节，且会改变 `sp` 偏移与对齐）。
 4. 不许因为「只剩 1 条」就在 `MOV r6, sp` 上放宽「体内 sp 不动」这个证明；
    `PUSH {r0}` 之后的 `[r6,#n]` 一律按深度拒绝。
+
+## 15 S13 实测与判词（2026-11-26，跑后落档）
+
+两个开关都实现完毕并接线（`--fopt-stackframe` / `--fopt-deadins`，默认关，
+`-fno-opt-*` 可关，`-DARKCC_FEATURE_OPT_STACKFRAME=0` / `=0` 可整段裁掉）。本节按
+§14.4 冻结的判据一次判合计量，不再逐 pass 分段判。
+
+### 15.1 三组读数（同语料 95 TU，同口径）
+
+| tag | 旗标 | 条数 | `.s` 文本字节 |
+| --- | --- | ---: | ---: |
+| `s13_off3` | 26 旗标 + `spill` + `ldhoist` | **10,917** | **385,260** |
+| `s13_sf3` | 上 + `-fopt-stackframe` | **10,785**（−132） | 382,620 |
+| `s13_both3` | 上 + `-fopt-stackframe -fopt-deadins` | **10,691**（−226） | 381,202 |
+
+`-226` 相对 10,917 为 **−2.07%**，≥ 219 ⇒ **落地档**（§14.4 第一档）。两个开关保留、
+默认关、进 README 旗标表。逐 pass 拆开：`stackframe` −132、`deadins` −94（单独跑
+`deadins` 也是 −94，两族无重叠——deadins 删的是纯寄存器写，stackframe 删的是
+`MOV rX, sp` 与 `SUB/ADD sp` 及改写，互不相交）。
+
+- OFF IS OFF 逐字节复验：两个开关都关时 95 TU 的 `.s` 与 385,260 B **与 `s13_off3`
+  完全相同**（`D:/tmp/bm/redo13.py` 的 `cmp` 分支）。
+- 复现脚本：`D:/tmp/bm/redo13.py`（三组重测）、`D:/tmp/bm/cls13.py`（改动分类）。
+
+### 15.2 改动分类（off3 → sf3）
+
+总删 585 行、总增 453 行（净 −132）：
+
+| 形态 | 条数 | 说明 |
+| --- | ---: | --- |
+| `DEL: MOV` | 100 | `MOV r6, sp` 与少量 `MOV sp, r6` |
+| `DEL: ADD` | 16 | 出口 `ADD sp, sp, #N` |
+| `DEL: SUB` | 16 | 入口 `SUB sp, sp, #N`（Q 型） |
+| `ADD/DEL` 成对 | 453 | `[r6(, #imm)]` → `[sp(, #imm)]` 的原地改写（`LDR 183 / LDRB 13 / LDRH 8 / STR 243 / STRB 6`），**不是**新指令 |
+
+抽查：`HAL_PWR_DeInit`（Q 型）`PUSH {r5,r7,lr}` + `SUB 4` + `ADD 4` 全消、`POP {r5,r7,pc}`
+完整；`HAL_PWR_EnableBkUpAccess`（P 型）`MOV r6, sp` 删、`[r6,#0]→[sp]`、`SUB/ADD 12`
+保留（该帧体内确实用到了局部，属正常保留）。
+
+### 15.3 `-fopt-deadins` 的实际删除分布（sf3 → both3，净 94，零新增行）
+
+`hal_flash.c` 2、`hal_pwr_ex.c` 8、`hal_rcc.c` 64、`hal_rcc_ex.c` 20。形态以
+`MOV r0,#1` + `CMP r0,#1/2/3` 的死对为主（`CMP` 的另一个操作数与标志随后都无人读）。
+`hal_flash.c` 的两条是 `ADD r0, r0, #1` / `SUB r0, r0, #1`，其 `r0` 立刻被 `MOVW`
+重定义，已逐条审计为真死。
+
+### 15.4 落地读法与 §14.2 字面的一处订正
+
+§14.2 字面写「否则 `needf = 0`」，实现按**可靠（sound）读法**执行：只有当一条指令
+**写标志**时才清 `needf`，否则 `CMP` / `MOVS` / `ADDS` 之后紧跟 `BEQ` 这种序列会把
+`CMP` 误判成死指令。两种读法在「写标志」的指令上等价，差别只在「不写标志但也不读
+标志」的纯写指令上——按字面读法会**错误地允许**在 `CMP` 之后删掉一条纯写指令而
+`CMP` 的标志仍然需要，所以按 sound 读法实现，判据与判词都不变。
+
+### 15.5 门禁（两个新目标，`make test-stackframe` / `make test-deadins`）
+
+- `tests/run_stackframe_tests.py`：20 项检查全绿。核心是**从原文本重推每次删除**
+  （`P` 型五项、`Q` 型四项）、三个必须拒绝的夹具逐字节不变（奇数 `PUSH` + `BL`、
+  体内 `ADD r0, sp, #0`、体内 `MOV r6, r0`）、**全局对齐不变量**（奇数 `PUSH` 且无
+  补偿 `SUB4` 即失败）、`dangling label`、`unicorn` 双臂返回 27、裁切构建按名拒绝
+  `C3900U` 且无旗标文本一致。
+- `tests/run_deadins_tests.py`：14 项检查全绿。核心是**独立复核器**：用自己的一套
+  活跃性模型（块尾全活、`PUSH/POP/LDR/STR/LDM/STM/B/CBZ` 精确建模、调用与未知
+  助记符当屏障）反向扫描未优化文本，逐条证明被删行「纯寄存器写 + 不写活标志 +
+  目的寄存器在此点不活」，并与「只删行不加行」「双臂 image 等值（`off=4 on=4`）」
+  「四个必须拒绝的夹具逐字节不变」「裁切构建按名拒绝」并联。
+- 回归：`test-arm-exec` / `test-ldhoist` / `test-exit` / `test-spill` / `test-live` /
+  `test-vstack` / `test-cmat` / `test-bitmask` / `test-stdlib` / `test-x86-64` 全绿
+  （230 个 `[ok]`、0 `[FAIL]`；x86-64 侧 70 passed / 0 failed），
+  `run_vreg_tests.py`、`run_regalloc_tests.py` 全绿。
+
+### 15.6 登记一条**既有**缺陷（不是本轮引入，本轮不修）
+
+`-fopt-live` 与 `-fopt-cmat` 会**删掉用户写的内联汇编行**：`__asm volatile("MOV r4, #11")`
+在这两个 pass 打开时静默消失（其余 24 个旗标逐个 bisect 都不吞）。根因是
+`IR_ASM` 发射时只写 `"    " + template`（`src/backend/arm/backend_arm.c` 约 15456 行），
+文本 pass 无法区分「用户 asm」与「自己发射的指令」，于是把它当成普通指令参与重排 /
+删除。这是**在预注册之前就存在的错误答案缺陷**（用户 asm 是不可删屏障），修复面
+涉及所有重建函数的文本 pass，按纪律单独立切片并新预注册；本节只登记，不阻塞 S13。
+复现：
+
+```
+printf 'unsigned f(unsigned x){__asm volatile("    MOV r4, #11"); return x;}\n' > /tmp/a.c
+arkcc -target arm -S -O2 -fopt-live /tmp/a.c -o /tmp/a.s && grep -c 'MOV r4, #11' /tmp/a.s   # 0
+```
+
+规避（本轮门禁用）：涉及用户 `asm` 的夹具只开 `-fopt-vstack -fopt-addr -fopt-frame`。
+
+### 15.7 不许的读法（写死）
+
+1. 不许把 −2.07% 读成「文本层还有余量」：这是删掉发射器留下的**可证无用**指令，
+   §13 的收口结论不变，对 armcc 仍是 **1.94×**。
+2. 不许把 `deadins` 说成「做了寄存器分配」：块尾活跃集全活，跨块一条都不回收。
+3. 不许把 453 条 `[r6→[sp` 改写读成「新增指令」——它们一一配对，净额已扣干净。
+4. 不许因为门禁里堆叠了 27 个旗标就声称「全部组合都验过」：门禁验的是这两个 pass
+   在给定组合下的行为，不是旗标两两组合的笛卡尔积。

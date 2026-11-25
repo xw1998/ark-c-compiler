@@ -1043,3 +1043,111 @@ Relative to **10,917** (26 flags + `spill` + `ldhoist`):
    to "buy instructions" (that only saves bytes and moves the `sp` offset and alignment).
 4. Do not relax "the body never moves `sp`" to save the occasional `MOV r6, sp`; a `[r6,#n]`
    after an in-body `PUSH` is refused by the depth rule.
+
+## 15 S13 measurement and verdict (2026-11-26, after the run)
+
+Both switches are implemented and wired (`-fopt-stackframe` / `-fopt-deadins`, off by
+default, `-fno-opt-*` turns them off, `-DARKCC_FEATURE_OPT_STACKFRAME=0` /
+`-DARKCC_FEATURE_OPT_DEADINS=0` crops them out). This section applies the criterion frozen
+in §14.4 once, to the combined number, and does not judge the two passes separately.
+
+### 15.1 Three readings (same 95-TU corpus, same gauge)
+
+| tag | flags | insns | `.s` text bytes |
+| --- | --- | ---: | ---: |
+| `s13_off3` | 26 flags + `spill` + `ldhoist` | **10,917** | **385,260** |
+| `s13_sf3` | above + `-fopt-stackframe` | **10,785** (−132) | 382,620 |
+| `s13_both3` | above + `-fopt-stackframe -fopt-deadins` | **10,691** (−226) | 381,202 |
+
+−226 against 10,917 is **−2.07%**, i.e. ≥ 219 ⇒ **landing tier** (first tier of §14.4). Both
+switches stay, default off, and go into the README flag table. Split by pass: `stackframe`
+−132 and `deadins` −94 (running `deadins` alone is also −94; the two families do not overlap —
+`deadins` removes pure register writes, `stackframe` removes `MOV rX, sp` and `SUB/ADD sp`
+and rewrites, and they are disjoint).
+
+- OFF IS OFF re-verified byte for byte: with both switches off, the 95-TU `.s` set is
+  **identical** to `s13_off3`, 385,260 B (`cmp` branch of `D:/tmp/bm/redo13.py`).
+- Reproduction: `D:/tmp/bm/redo13.py` (the three re-measurements), `D:/tmp/bm/cls13.py`
+  (change classification).
+
+### 15.2 Change classification (off3 → sf3)
+
+585 lines deleted, 453 added (net −132):
+
+| shape | count | note |
+| --- | ---: | --- |
+| `DEL: MOV` | 100 | mostly `MOV r6, sp`, a few `MOV sp, r6` |
+| `DEL: ADD` | 16 | exit `ADD sp, sp, #N` |
+| `DEL: SUB` | 16 | entry `SUB sp, sp, #N` (Q form) |
+| paired `ADD/DEL` | 453 | in-place rewrites of `[r6(, #imm)]` → `[sp(, #imm)]` (`LDR 183 / LDRB 13 / LDRH 8 / STR 243 / STRB 6`), **not** new instructions |
+
+Spot checks: `HAL_PWR_DeInit` (Q form) loses `PUSH {r5,r7,lr}`-frame's `SUB 4`/`ADD 4` and keeps
+`POP {r5,r7,pc}` intact; `HAL_PWR_EnableBkUpAccess` (P form) loses `MOV r6, sp`, gets
+`[r6,#0]→[sp]`, and keeps `SUB/ADD 12` because that body really uses its local.
+
+### 15.3 Where `-fopt-deadins` actually fires (sf3 → both3, net 94, zero added lines)
+
+`hal_flash.c` 2, `hal_pwr_ex.c` 8, `hal_rcc.c` 64, `hal_rcc_ex.c` 20. Dominant shape is a
+`MOV r0,#1` + `CMP r0,#1/2/3` pair whose other operand and flags are never read again. The two
+`hal_flash.c` lines are `ADD r0, r0, #1` / `SUB r0, r0, #1` whose `r0` is immediately
+redefined by `MOVW`; both were audited as genuinely dead.
+
+### 15.4 One correction to the letter of §14.2
+
+§14.2 says "otherwise `needf = 0`". The implementation follows the **sound** reading: only an
+instruction that *writes* flags clears `needf`, otherwise a `CMP` / `MOVS` / `ADDS` followed by
+`BEQ` would let the `CMP` be deleted. The two readings agree on flag-writing instructions and
+differ only on pure writes; the literal reading would wrongly allow deleting a pure write after
+a `CMP` whose flags are still needed. The criterion and the verdict are unchanged.
+
+### 15.5 Gates (two new targets, `make test-stackframe` / `make test-deadins`)
+
+- `tests/run_stackframe_tests.py`: 20 checks, all green. Core: **re-derive every deletion from
+  the unoptimised text** (five P-form checks, four Q-form checks), three must-refuse fixtures
+  byte-identical (odd `PUSH` + `BL`, in-body `ADD r0, sp, #0`, in-body `MOV r6, r0`), a
+  **global alignment invariant** (odd `PUSH` without a compensating `SUB4` fails), a dangling
+  label check, both unicorn arms returning 27, and the cropped build refusing `C3900U` by name
+  while the no-flag text stays identical.
+- `tests/run_deadins_tests.py`: 14 checks, all green. Core: an **independent re-checker** with
+  its own liveness model (all-live at block exit, exact modelling of
+  `PUSH/POP/LDR/STR/LDM/STM/B/CBZ`, calls and unknown mnemonics as barriers) scans the
+  unoptimised text backwards and proves each removed line to be "pure register write + no live
+  flag written + destination not live here", in parallel with "removes lines, adds none",
+  "both image arms equal (`off=4 on=4`)", "four must-refuse fixtures byte-identical" and "the
+  cropped build refuses the flag by name".
+- Regression: `test-arm-exec` / `test-ldhoist` / `test-exit` / `test-spill` / `test-live` /
+  `test-vstack` / `test-cmat` / `test-bitmask` / `test-stdlib` / `test-x86-64` all green
+  (230 `[ok]`, 0 `[FAIL]`; x86-64 side 70 passed / 0 failed), plus `run_vreg_tests.py` and
+  `run_regalloc_tests.py`.
+
+### 15.6 A **pre-existing** defect, registered, not fixed here
+
+`-fopt-live` and `-fopt-cmat` **delete user inline assembly lines**: `__asm volatile("MOV r4, #11")`
+silently disappears when those two passes are on (bisecting the other 24 flags individually
+never swallows it). The cause is that `IR_ASM` is emitted as just `"    " + template`
+(`src/backend/arm/backend_arm.c`, around line 15456), so the text passes cannot tell user asm
+from their own instructions and treat it as an ordinary instruction to reorder or delete. This
+is a **wrong-answer defect that predates the pre-registration** (user asm must be an
+undeletable barrier); the fix touches every text pass that rebuilds a function, so by discipline
+it gets its own slice and its own pre-registration. Registered here only; it does not block S13.
+Reproduce:
+
+```
+printf 'unsigned f(unsigned x){__asm volatile("    MOV r4, #11"); return x;}\n' > /tmp/a.c
+arkcc -target arm -S -O2 -fopt-live /tmp/a.c -o /tmp/a.s && grep -c 'MOV r4, #11' /tmp/a.s   # 0
+```
+
+Workaround used by this round's gates: fixtures that carry user `asm` only enable
+`-fopt-vstack -fopt-addr -fopt-frame`.
+
+### 15.7 Forbidden readings (frozen)
+
+1. Do not read −2.07% as "the text layer still has margin": these are provably useless
+   instructions that the emitter left behind; §13's closing stays, and the ratio to armcc is
+   still **1.94×**.
+2. Do not call `deadins` register allocation: its block-exit live set is all-live and it
+   recovers nothing across blocks.
+3. Do not read the 453 `[r6→[sp` rewrites as "new instructions" — they pair one-to-one and the
+   net is already accounted for.
+4. Do not claim "all combinations verified" because the gates stack 27 flags: they verify these
+   two passes under the given combinations, not the Cartesian product of flags.

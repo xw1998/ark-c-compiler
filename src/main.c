@@ -616,6 +616,22 @@ int main(int argc, char **argv) {
             return 1;
         }
 #endif
+#if !ARKCC_FEATURE_OPT_STACKFRAME
+        else if (strcmp(a, "-fopt-stackframe") == 0) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: -fopt-stackframe is not compiled into "
+                    "this build (rebuild with -DARKCC_FEATURE_OPT_STACKFRAME=1)\n");
+            return 1;
+        }
+#endif
+#if !ARKCC_FEATURE_OPT_DEADINS
+        else if (strcmp(a, "-fopt-deadins") == 0) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: -fopt-deadins is not compiled into "
+                    "this build (rebuild with -DARKCC_FEATURE_OPT_DEADINS=1)\n");
+            return 1;
+        }
+#endif
 #if !ARKCC_FEATURE_OPT_FRAME
         else if (strcmp(a, "-fopt-frame") == 0) {
             fprintf(stderr,

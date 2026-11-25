@@ -323,6 +323,31 @@
 #   define ARKCC_FEATURE_OPT_LDHOIST   1
 # endif
 #endif
+/* ARKCC_FEATURE_OPT_STACKFRAME: -fopt-stackframe, S13 frame bookkeeping --
+ * delete `MOV r6, sp` / `MOV sp, r6` and address the frame through sp
+ * instead, and delete a `SUB sp, sp, #N` / `ADD sp, sp, #N` pair that builds
+ * a frame nothing reads (docs/EXPR_MODEL.md section 14.3).  Pure deletion of
+ * a proof, plus a base-register rewrite; large tables (8192 parsed lines
+ * ~1.4 MB BSS), so it stays off the STM32 profile like the other text
+ * passes. */
+#ifndef ARKCC_FEATURE_OPT_STACKFRAME
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_OPT_STACKFRAME 0   /* 板上裁掉：只在宿主/交叉编译用 */
+# else
+#   define ARKCC_FEATURE_OPT_STACKFRAME 1
+# endif
+#endif
+/* ARKCC_FEATURE_OPT_DEADINS: -fopt-deadins, S13 block-local dead code --
+ * delete a dead register write and a CMP/CMN/TST/TEQ whose flags nothing in
+ * the same block reads (docs/EXPR_MODEL.md section 14.2).  Same tables as
+ * -fopt-stackframe, off the STM32 profile for the same reason. */
+#ifndef ARKCC_FEATURE_OPT_DEADINS
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_OPT_DEADINS   0   /* 板上裁掉：只在宿主/交叉编译用 */
+# else
+#   define ARKCC_FEATURE_OPT_DEADINS   1
+# endif
+#endif
 
 /* ARKCC_FEATURE_OPT_FRAME: -fopt-frame, callee-saved list trimming.
  * A slot the body never mentions is deleted from PUSH/POP; when that

@@ -8266,6 +8266,471 @@ static void ark_ldhoist_function(AsmBuffer *b, int from) {
 }
 #endif /* ARKCC_FEATURE_OPT_LDHOIST */
 
+/* ---------------------------------------------------------------------------
+ * S13: post-emission redundancy removal (docs/EXPR_MODEL.md section 14)
+ *
+ * Two switches, one meaning each, both pure deletion of instructions the
+ * emitter left behind and that are provably unused:
+ *
+ *   -fopt-stackframe   drop the frame base: `MOV r6, sp` and the `MOV sp, r6`
+ *                      that restores it, rewriting every `[r6, #n]` access to
+ *                      `[sp, #n]`; and drop a `SUB sp, sp, #N` / `ADD sp, sp,
+ *                      #N` pair that builds a frame nothing in the body reads.
+ *   -fopt-deadins      drop a block-local dead register write, and a
+ *                      `CMP/CMN/TST/TEQ` whose flags nothing in the block
+ *                      reads.
+ *
+ * Neither pass reasons across a block boundary: the block's live-in set is
+ * "every register", so a value that is used anywhere the pass cannot see is
+ * kept.  Nothing is invented; both passes only delete lines or change the
+ * base register of an addressing mode.
+ * ------------------------------------------------------------------------- */
+#if ARKCC_FEATURE_OPT_STACKFRAME || ARKCC_FEATURE_OPT_DEADINS
+#define SF_MAX_LINES 8192
+static int sf_ls[SF_MAX_LINES], sf_ll[SF_MAX_LINES], sf_kd[SF_MAX_LINES];
+static cp_ins sf_iv[SF_MAX_LINES];
+static unsigned char sf_del[SF_MAX_LINES];
+static signed char sf_rep[SF_MAX_LINES];
+/* Exit sequences found while scanning: 1 = `MOV sp, r6`, 2 = `ADD sp, sp, #N`.
+ * Which of them may go depends on whether the body reads the frame at all, so
+ * the decision is deferred to the end of the pass. */
+static unsigned char sf_x[SF_MAX_LINES];
+
+/* Line table plus parsed form.  0 = padding / directive, 1 = instruction,
+ * 2 = label.  Returns the line count, or -1 to leave the function alone. */
+static int sf_scan(AsmBuffer *b, int from) {
+    int n, i;
+    n = pp_split_lines(b, from, sf_ls, sf_ll, SF_MAX_LINES);
+    if (n <= 0) return -1;
+    for (i = 0; i < n; i++) {
+        char t[256];
+        int L;
+        sf_kd[i] = 0;
+        if (sf_ll[i] >= (int)sizeof t) return -1;
+        if (pp_trim(b->buf + sf_ls[i], sf_ll[i], t, sizeof t) < 0) return -1;
+        if (!t[0] || t[0] == ';' || t[0] == '@') continue;
+        L = ark_strlen(t);
+        if (L > 0 && t[L - 1] == ':') { sf_kd[i] = 2; continue; }
+        if (t[0] == '.') continue;
+        if (cp_parse(t, &sf_iv[i])) sf_kd[i] = 1;
+    }
+    return n;
+}
+
+/* `{r4, r5, lr}` -> ordered register array; -1 if the list is not modelled. */
+static int sf_list(const char *s, int *regs) {
+    int i = 1, n = 0;
+    if (s[0] != '{') return -1;
+    for (;;) {
+        while (s[i] == ' ' || s[i] == '\t') i++;
+        if (s[i] == '}') { i++; break; }
+        if (!s[i]) return -1;
+        if (!strncmp(s + i, "lr", 2) && !(s[i + 2] >= 'a' && s[i + 2] <= 'z') &&
+            !(s[i + 2] >= '0' && s[i + 2] <= '9') && s[i + 2] != '_') {
+            regs[n++] = 14; i += 2;
+        } else if (!strncmp(s + i, "pc", 2) && !(s[i + 2] >= 'a' && s[i + 2] <= 'z') &&
+                   !(s[i + 2] >= '0' && s[i + 2] <= '9') && s[i + 2] != '_') {
+            regs[n++] = 15; i += 2;
+        } else if (s[i] == 'r' && s[i + 1] >= '0' && s[i + 1] <= '9') {
+            int v = s[i + 1] - '0';
+            i += 2;
+            if (s[i] >= '0' && s[i] <= '9') { v = v * 10 + (s[i] - '0'); i++; }
+            if (v > 15) return -1;
+            regs[n++] = v;
+        } else {
+            return -1;
+        }
+        if (n > 15) return -1;
+        while (s[i] == ' ' || s[i] == '\t') i++;
+        if (s[i] == ',') { i++; continue; }
+        if (s[i] == '}') { i++; break; }
+        return -1;
+    }
+    if (s[i]) return -1;
+    return n;
+}
+
+/* `[rN]` or `[rN, #imm]` and nothing else. */
+static int sf_mem(const char *s, int *rb, int *imm) {
+    int i = 1, r = 0, v = 0;
+    if (s[0] != '[' || s[i] != 'r') return 0;
+    i++;
+    if (s[i] < '0' || s[i] > '9') return 0;
+    while (s[i] >= '0' && s[i] <= '9') { r = r * 10 + (s[i] - '0'); i++; }
+    if (r > 15) return 0;
+    if (s[i] == ']') {
+        if (s[i + 1]) return 0;
+        *rb = r; *imm = 0;
+        return 1;
+    }
+    if (s[i] != ',' || s[i + 1] != ' ' || s[i + 2] != '#') return 0;
+    i += 3;
+    if (s[i] < '0' || s[i] > '9') return 0;
+    while (s[i] >= '0' && s[i] <= '9') { v = v * 10 + (s[i] - '0'); i++; }
+    if (s[i] != ']' || s[i + 1]) return 0;
+    *rb = r; *imm = v;
+    return 1;
+}
+
+/* `#imm` and nothing else. */
+static int sf_imm(const char *s, int *v) {
+    int n = 0;
+    if (s[0] != '#' || !s[1]) return 0;
+    s++;
+    if (*s < '0' || *s > '9') return 0;
+    while (*s >= '0' && *s <= '9') { n = n * 10 + (*s - '0'); s++; }
+    if (*s) return 0;
+    *v = n;
+    return 1;
+}
+
+static int sf_is_sub_sp(const cp_ins *o, int *amt) {
+    if (strcmp(o->mn, "SUB") || o->nops != 3) return 0;
+    if (strcmp(o->op[0], "sp") || strcmp(o->op[1], "sp")) return 0;
+    return sf_imm(o->op[2], amt);
+}
+
+static int sf_is_add_sp(const cp_ins *o, int amt) {
+    int v;
+    if (strcmp(o->mn, "ADD") || o->nops != 3) return 0;
+    if (strcmp(o->op[0], "sp") || strcmp(o->op[1], "sp")) return 0;
+    return sf_imm(o->op[2], &v) && v == amt;
+}
+
+/* `POP {.., pc}` restoring exactly the saved set (minus lr, plus pc). */
+static int sf_pop_pc(const cp_ins *o, unsigned pmask) {
+    int regs[16], cnt, j;
+    unsigned m = 0;
+    if (strcmp(o->mn, "POP") || o->nops != 1) return 0;
+    cnt = sf_list(o->op[0], regs);
+    if (cnt < 1) return 0;
+    for (j = 0; j < cnt; j++) m |= lv_bit(regs[j]);
+    if (regs[cnt - 1] != 15) return 0;
+    return (m & ~lv_bit(15)) == (pmask & ~lv_bit(14));
+}
+
+/* Rewrite one `[r6(, #imm)]` operand as `[sp(, #imm)]`. */
+static void sf_emit_sp_op(AsmBuffer *out, const char *op) {
+    int rb, im;
+    asmbuf_puts(out, "[sp");
+    if (sf_mem(op, &rb, &im) && im != 0) {
+        asmbuf_puts(out, ", #");
+        asmbuf_int(out, im);
+    }
+    asmbuf_puts(out, "]");
+}
+
+static void ark_stackframe_function(AsmBuffer *b, int from) {
+    int n, i, j, p0 = -1, pmask = 0, pcount = 0, movline = -1, subline = -1;
+    int fbytes = 0, depth = 0, nexits = 0, has_r6use = 0, has_bl = 0, ok = 1;
+    int regs[16], cnt, amt;
+    AsmBuffer out;
+
+    n = sf_scan(b, from);
+    if (n <= 0) return;
+    memset(sf_del, 0, (size_t)n);
+    memset(sf_rep, 0xFF, (size_t)n);
+    memset(sf_x, 0, (size_t)n);
+
+    /* Prologue: the first instruction must be the frame save `PUSH {.., lr}`. */
+    for (i = 0; i < n; i++) if (sf_kd[i] == 1) { p0 = i; break; }
+    if (p0 < 0) return;
+    if (strcmp(sf_iv[p0].mn, "PUSH") || sf_iv[p0].nops != 1) return;
+    cnt = sf_list(sf_iv[p0].op[0], regs);
+    if (cnt < 2) return;
+    for (j = 0; j < cnt; j++) {
+        if (j && regs[j] <= regs[j - 1]) return;      /* not ascending: refuse */
+        pmask |= lv_bit(regs[j]);
+    }
+    if (regs[cnt - 1] != 14) return;                  /* must end in lr */
+    pcount = cnt;
+
+    /* Then an optional `SUB sp, sp, #N`, then an optional `MOV r6, sp`. */
+    i = p0 + 1;
+    while (i < n && sf_kd[i] == 0) i++;
+    if (i < n && sf_kd[i] == 1 && sf_is_sub_sp(&sf_iv[i], &amt)) {
+        if (amt <= 0) return;
+        fbytes = amt;
+        subline = i;
+        i++;
+        while (i < n && sf_kd[i] == 0) i++;
+        /* A frame built out of more than one piece (a > 4095-byte frame) is
+         * left alone: the pairing with the epilogue would have to be proven
+         * piece by piece, and no measured case needs it. */
+        if (i < n && sf_kd[i] == 1 && sf_is_sub_sp(&sf_iv[i], &amt)) return;
+    }
+    if (i < n && sf_kd[i] == 1 && !strcmp(sf_iv[i].mn, "MOV") &&
+        sf_iv[i].nops == 2 && !strcmp(sf_iv[i].op[0], "r6") &&
+        !strcmp(sf_iv[i].op[1], "sp")) {
+        movline = i;
+        i++;
+    }
+    if (subline < 0 && movline < 0) return;
+    if (fbytes & 3) return;
+
+    /* The body.  Every `sp` must be part of an exit sequence, every `r6` must
+     * be the base of a `[r6(, #imm)]` addressing mode at machine-stack depth 0,
+     * and every exit must be `[MOV sp, r6] [ADD sp, sp, #N] POP {.., pc}`. */
+    for (j = i; j < n && ok; j++) {
+        cp_ins *o = &sf_iv[j];
+        int q;
+        if (sf_kd[j] != 1) continue;
+        if (depth != 0 && !strcmp(o->mn, "PUSH") ) { /* allowed at any depth */ }
+        if (!strcmp(o->mn, "MOV") && o->nops == 2 &&
+            !strcmp(o->op[0], "sp") && !strcmp(o->op[1], "r6")) {
+            int k = j + 1;
+            if (depth != 0) { ok = 0; break; }
+            while (k < n && sf_kd[k] == 0) k++;
+            if (fbytes > 0) {
+                if (k >= n || sf_kd[k] != 1 || !sf_is_add_sp(&sf_iv[k], fbytes)) {
+                    ok = 0; break;
+                }
+                k++;
+                while (k < n && sf_kd[k] == 0) k++;
+            }
+            if (k >= n || sf_kd[k] != 1 || !sf_pop_pc(&sf_iv[k], pmask)) {
+                ok = 0; break;
+            }
+            sf_x[j] = 1;
+            nexits++;
+            j = k;
+            continue;
+        }
+        if (fbytes > 0 && sf_is_add_sp(o, fbytes)) {
+            int k = j + 1;
+            if (depth != 0) { ok = 0; break; }
+            while (k < n && sf_kd[k] == 0) k++;
+            if (k >= n || sf_kd[k] != 1 || !sf_pop_pc(&sf_iv[k], pmask)) {
+                ok = 0; break;
+            }
+            sf_x[j] = 2;
+            nexits++;
+            j = k;
+            continue;
+        }
+        if (!strncmp(o->mn, "STM", 3) || !strncmp(o->mn, "LDM", 3)) { ok = 0; break; }
+        if (!strcmp(o->mn, "PUSH") || !strcmp(o->mn, "POP")) {
+            int c2;
+            if (o->nops != 1) { ok = 0; break; }
+            c2 = sf_list(o->op[0], regs);
+            if (c2 < 0) { ok = 0; break; }
+            if (!strcmp(o->mn, "PUSH")) {
+                depth += c2;
+                if (o->op[0] && strstr(o->op[0], "sp")) { ok = 0; break; }
+            } else {
+                depth -= c2;
+                if (depth < 0) { ok = 0; break; }
+            }
+            continue;
+        }
+        if (!strncmp(o->mn, "BL", 2)) has_bl = 1;
+        for (q = 0; q < o->nops && ok; q++) {
+            const char *p = o->op[q];
+            unsigned m = lv_regs(p);
+            if (m & lv_bit(13)) { ok = 0; break; }          /* any other sp use */
+            if (m & lv_bit(6)) {
+                int rb, im;
+                if (!sf_mem(p, &rb, &im) || rb != 6) { ok = 0; break; }
+                if (depth != 0) { ok = 0; break; }
+                if (sf_rep[j] >= 0) { ok = 0; break; }
+                sf_rep[j] = (signed char)q;
+                has_r6use = 1;
+            }
+        }
+    }
+    if (!ok || nexits == 0 || depth != 0) return;
+
+    if (has_r6use) {
+        /* P type: the frame base exists and the body addresses through it. */
+        if (movline < 0) return;
+    } else {
+        /* Q type: the frame is built and torn down, nothing reads it. */
+        if (subline < 0 || fbytes <= 0) return;
+        /* Removing the frame unaligns sp by 4 unless the save set is even;
+         * an odd save set with a call in the body would break AAPCS. */
+        if (has_bl && (pcount & 1)) return;
+        sf_del[subline] = 1;
+    }
+    if (movline >= 0) sf_del[movline] = 1;
+    /* `MOV sp, r6` only repeats what sp already holds once the body never
+     * moves sp, so it always goes.  `ADD sp, sp, #N` is what puts sp back
+     * above the frame: a P-type body still needs it, a Q-type body does not. */
+    for (j = 0; j < n; j++) {
+        if (sf_x[j] == 1) sf_del[j] = 1;
+        else if (sf_x[j] == 2 && !has_r6use) sf_del[j] = 1;
+    }
+
+    asmbuf_init(&out);
+    for (j = 0; j < n; j++) {
+        cp_ins *o = &sf_iv[j];
+        int q;
+        if (sf_del[j]) continue;
+        if (sf_rep[j] >= 0) {
+            asmbuf_puts(&out, "    ");
+            asmbuf_puts(&out, o->mn);
+            asmbuf_puts(&out, " ");
+            for (q = 0; q < o->nops; q++) {
+                if (q) asmbuf_puts(&out, ", ");
+                if (q == (int)sf_rep[j]) sf_emit_sp_op(&out, o->op[q]);
+                else asmbuf_puts(&out, o->op[q]);
+            }
+            asmbuf_putc(&out, '\n');
+            continue;
+        }
+        pp_copy_line(&out, b->buf + sf_ls[j], sf_ll[j]);
+    }
+    pp_splice(b, from, &out);
+}
+#endif /* ARKCC_FEATURE_OPT_STACKFRAME */
+
+#if ARKCC_FEATURE_OPT_DEADINS
+static int di_listed(const char *m, const char *const *t) {
+    int i;
+    for (i = 0; t[i]; i++) if (!strcmp(m, t[i])) return 1;
+    return 0;
+}
+
+/* Pure register writes: no memory, no side effect other than registers and
+ * (with an S suffix) flags. */
+static int di_is_pure(const char *m) {
+    static const char *const t[] = {
+        "MOV", "MOVS", "MOVW", "MOVT", "ADD", "ADDS", "SUB", "SUBS",
+        "AND", "ANDS", "ORR", "ORRS", "EOR", "EORS", "BIC", "BICS",
+        "MVN", "MVNS", "LSL", "LSLS", "LSR", "LSRS", "ASR", "ASRS",
+        "UXTB", "UXTH", "SXTB", "SXTH", "MUL", "MULS", "RSB", "RSBS",
+        "NEG", "NEGS", "REV", "REV16", "REVSH", 0 };
+    return di_listed(m, t);
+}
+
+static int di_writes_flags(const char *m) {
+    static const char *const t[] = {
+        "CMP", "CMN", "TST", "TEQ", "ADDS", "SUBS", "ANDS", "ORRS", "EORS",
+        "BICS", "MOVS", "MVNS", "LSLS", "LSRS", "ASRS", "MULS", "RSBS",
+        "NEGS", "ADCS", "SBCS", 0 };
+    return di_listed(m, t);
+}
+
+static int di_reads_flags(const char *m) {
+    static const char *const t[] = {
+        "BEQ", "BNE", "BCS", "BHS", "BCC", "BLO", "BMI", "BPL", "BVS",
+        "BVC", "BHI", "BLS", "BGE", "BLT", "BGT", "BLE",
+        "ADC", "ADCS", "SBC", "SBCS", "RSC", "RSCS", 0 };
+    return di_listed(m, t);
+}
+
+static int di_is_cmp(const char *m) {
+    static const char *const t[] = { "CMP", "CMN", "TST", "TEQ", 0 };
+    return di_listed(m, t);
+}
+
+/* Instructions whose lv_rw() read/write set is exact.  Everything else is a
+ * barrier: every register live, flags live.  Over-approximating can only cost
+ * a missed deletion. */
+static int di_known(const char *m) {
+    static const char *const t[] = {
+        "LDR", "LDRB", "LDRH", "LDRSB", "LDRSH", "STR", "STRB", "STRH",
+        "LDM", "LDMIA", "LDMIB", "LDMDA", "LDMDB",
+        "STM", "STMIA", "STMIB", "STMDA", "STMDB",
+        "PUSH", "POP", "B", "BX", "BL", "BLX", "CBZ", "CBNZ",
+        "VLDR", "VSTR", 0 };
+    return di_listed(m, t);
+}
+
+static int di_ends(const cp_ins *o) {
+    int k = lv_branch_kind(o->mn);
+    int i;
+    if (k == 1 || k == 2 || k == 3 || k == 4) return 1;
+    if (!strcmp(o->mn, "POP"))
+        for (i = 0; i < o->nops; i++)
+            if (lv_regs(o->op[i]) & lv_bit(15)) return 1;
+    return 0;
+}
+
+static int di_is_it(const char *m) { return m[0] == 'I' && m[1] == 'T'; }
+
+static void ark_deadins_function(AsmBuffer *b, int from) {
+    static int idx[1024];
+    int n, i, k, cnt, d, needf, ndel = 0;
+    unsigned live, rd, wr;
+    AsmBuffer out;
+
+    n = sf_scan(b, from);
+    if (n <= 0) return;
+    memset(sf_del, 0, (size_t)n);
+
+    i = 0;
+    while (i < n) {
+        int start, end;
+        if (sf_kd[i] != 1) { i++; continue; }
+        start = i;
+        end = i;
+        cnt = 0;
+        while (end < n) {
+            if (sf_kd[end] == 2) break;                 /* a label starts a new block */
+            if (sf_kd[end] == 1) {
+                if (cnt >= 1024) { cnt = -1; break; }
+                idx[cnt++] = end;
+                if (di_ends(&sf_iv[end])) { end++; break; }
+            }
+            end++;
+        }
+        i = end;
+        if (cnt <= 0) continue;
+        {
+            int skip = 0;
+            for (k = 0; k < cnt; k++)
+                if (di_is_it(sf_iv[idx[k]].mn)) { skip = 1; break; }
+            if (skip) continue;                          /* IT block: not modelled */
+        }
+        live = 0x1FFFu;                                  /* r0-r12 live at block end */
+        needf = 0;
+        for (k = cnt - 1; k >= 0; k--) {
+            cp_ins *o = &sf_iv[idx[k]];
+            const char *m = o->mn;
+            if (di_reads_flags(m)) needf = 1;
+            if (di_is_cmp(m)) {
+                if (!needf) { sf_del[idx[k]] = 1; ndel++; continue; }
+                needf = 0;
+                lv_rw(o, &rd, &wr);
+                live |= rd;
+                continue;
+            }
+            if (di_is_pure(m) && o->nops >= 1 && cp_reg(o->op[0], &d) &&
+                d >= 0 && d <= 12) {
+                int wf = di_writes_flags(m);
+                lv_rw(o, &rd, &wr);
+                if (!strcmp(m, "MOVT")) rd |= lv_bit(d);   /* MOVT reads Rd */
+                if (!(live & lv_bit(d)) && !(wf && needf)) {
+                    sf_del[idx[k]] = 1;
+                    ndel++;
+                    continue;
+                }
+                if (wf) needf = 0;
+                live = (live & ~wr) | rd;
+                continue;
+            }
+            if (di_known(m)) {
+                int wf = di_writes_flags(m);
+                lv_rw(o, &rd, &wr);
+                live = (live & ~wr) | rd;
+                if (wf) needf = 0;
+            } else {
+                live = 0x1FFFu;
+                needf = 1;
+            }
+        }
+    }
+    if (ndel == 0) return;
+
+    asmbuf_init(&out);
+    for (i = 0; i < n; i++) {
+        if (sf_del[i]) continue;
+        pp_copy_line(&out, b->buf + sf_ls[i], sf_ll[i]);
+    }
+    pp_splice(b, from, &out);
+}
+#endif /* ARKCC_FEATURE_OPT_DEADINS */
+
 
 #if ARKCC_FEATURE_OPT_VSTACK
 /* ------------------- value stack -> register allocation -------------------
@@ -16157,6 +16622,21 @@ static char *codegen_arm(IrProgram *prog) {
         /* Correctness, not an option: a frame slot beyond 4095 bytes cannot be
          * reached by "[r6, #off]" at all. */
         ark_fix_far_offset(&buf, fstart);
+
+#if ARKCC_FEATURE_OPT_STACKFRAME
+        /* S13, frame bookkeeping last of all: it may only rewrite "[r6, #n]"
+         * of an offset the far-offset fixer has already proven reachable, and
+         * it deletes the frame base itself, so every pass above must have
+         * finished.  Nothing below re-derives a frame. */
+        if (g_config.enable_opt_stackframe) ark_stackframe_function(&buf, fstart);
+#endif
+#if ARKCC_FEATURE_OPT_DEADINS
+        /* S13, dead instructions after the frame rewrite: the rewrite changes
+         * which register an access names, and a dead write can only be proven
+         * on the final text.  Block-local liveness only -- see
+         * docs/EXPR_MODEL.md section 14.6.2. */
+        if (g_config.enable_opt_deadins) ark_deadins_function(&buf, fstart);
+#endif
 
         /* __attribute__((constructor/destructor)): register the function address in .init_array/.fini_array;
          * the C runtime startup code iterates and calls them before/after main.

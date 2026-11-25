@@ -30,7 +30,7 @@ endif
         test-tailcall test-divconst test-xblock test-sizeweight \
         test-inline test-vstack test-addr test-strength test-cbz test-branch \
         test-imm test-peep test-cbranch test-copyprop test-live test-movimm test-pair \
-        test-spill test-ldhoist \
+        test-spill test-ldhoist test-stackframe test-deadins \
         test-prop test-deadpush test-cmat test-slotreg test-opalloc test-boolmat \
         test-exit test-bitmask \
         test-voldmb test-volmem test-constcond \
@@ -50,7 +50,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-floatlit test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch test-imm test-peep test-cbranch test-copyprop test-cmat test-slotreg test-opalloc test-live test-spill test-movimm test-litpool test-coalesce test-voldmb test-volmem test-constcond test-boolmat test-exit test-bitmask test-option
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-floatlit test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch test-imm test-peep test-cbranch test-copyprop test-cmat test-slotreg test-opalloc test-live test-spill test-ldhoist test-pair test-stackframe test-deadins test-movimm test-litpool test-coalesce test-voldmb test-volmem test-constcond test-boolmat test-exit test-bitmask test-option
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -286,6 +286,24 @@ test-spill: $(ARKCC)
 # (-DARKCC_FEATURE_OPT_LDHOIST=0) refuses the flag by name (C3900U).
 test-ldhoist: $(ARKCC)
 	$(PYTHON) tests/run_ldhoist_tests.py ./$(ARKCC)
+
+# Gate for -fopt-stackframe (S13): the two halves of a frame that the address
+# of a local forced into existence -- `MOV rX, sp / SUB sp, sp, #N` and the
+# matching `ADD sp, sp, #N`/`MOV sp, rX` -- are deleted when nothing inside the
+# window touches sp or keeps rX as a live base, and the surviving memory
+# operands are rewritten from [rX,#k] to [sp,#k].  The gate re-derives every
+# deletion from the unoptimised text, checks the alignment invariant (an odd
+# PUSH count without a compensating SUB4), and runs both arms on unicorn.
+test-stackframe: $(ARKCC)
+	$(PYTHON) tests/run_stackframe_tests.py ./$(ARKCC)
+
+# Gate for -fopt-deadins (S13): a register write that no later instruction in
+# its basic block reads, that writes no flags, and whose flags are not live is
+# removed.  The gate does not trust the pass: it re-scans the unoptimised text
+# with its own liveness model and proves every removed line dead, and it
+# requires that the pass never adds a line and never runs with the flag off.
+test-deadins: $(ARKCC)
+	$(PYTHON) tests/run_deadins_tests.py ./$(ARKCC)
 
 test-live: $(ARKCC)
 	$(PYTHON) tests/run_live_tests.py ./$(ARKCC)
