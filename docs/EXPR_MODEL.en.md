@@ -933,3 +933,113 @@ requires a dedicated register, so it is reference only.
    `-fopt-ldhoist` **10,917** (-127) -> S12-1b **0**; with S9b (other accounting,
    11,666 -> 11,650, -16) the whole round is **11,375 -> 10,917 (-458, -4.0%)**, still
    **1.94x** armcc. The -49% has to come from the structural layer.
+
+## 14 S13 pre-registration: post-emission redundancy removal (frozen 2026-11-25, before implementation)
+
+S13 closed the text layer, but its table still holds two families that **no switch covers**
+and whose upper bound can be **frozen exactly**: dead instructions (a pure register write in a
+block that a later write overwrites before any read, and `CMP/CMN/TST/TEQ` whose flags die in
+the block) and frame bookkeeping (`MOV r6, sp` and a `SUB/ADD sp` that only serves alignment).
+These are not "same instructions, better chosen" -- they are instructions the emitter left behind
+that are **provably useless**, so they do not contradict S2/S4: S4 says rewriting *live*
+instructions cannot recover the missing 49%; deleting provably dead ones is a different question.
+
+This section freezes **one slice with two switches**: `-fopt-deadins` (dead instructions) and
+`-fopt-stackframe` (frame bookkeeping). Each switch keeps exactly one meaning; the criterion is
+judged **once, on the combined number**.
+
+### 14.1 Upper bounds (read-only measurement, 2026-11-25)
+
+Baseline: 26 flags + `-fopt-spill` + `-fopt-ldhoist` = **10,917 instructions / 385,260 B**.
+
+| family | bound | share of 10,917 | script |
+| --- | ---: | ---: | --- |
+| `-fopt-deadins`: intra-block dead write + dead flags | 94 (25 dead writes + 69 dead flags) | 0.86% | `D:/tmp/bm/deadub4.py` |
+| `-fopt-stackframe` P: drop `MOV r6, sp` / `MOV sp, r6`, rewrite `[r6,#n]`->`[sp,#n]` | 102 (94 functions) | 0.93% | `sf_ub2.py` + depth model |
+| `-fopt-stackframe` Q: `SUB/ADD sp` of a frame nothing uses | 42 (21 functions x 2) | 0.38% | `framealign.py` |
+| **total** | **238** | **2.18%** | |
+
+Among the 94 P functions, 13 are refused because a `[r6,#n]` appears after an in-body `PUSH`,
+3 because `MOV rX, r6` / `ADD rX, r6, #imm` takes the base address, and 9 Q candidates are
+refused because an unused frame with an odd `PUSH` and a `BL` still needs the `SUB` for
+8-byte alignment. These are **hard refusals**; the implementation may not relax them.
+
+### 14.2 `-fopt-deadins` rules (frozen)
+
+Unit = **basic block** (instructions between labels, terminated by `B/Bcc/BX/BL/BLX/CBZ/CBNZ`
+or a `POP` naming `pc`). Scan the block **backwards** with the live set initialised to
+**all of r0-r12 live** (conservative block exit) and `needf = 0`:
+
+1. A **flag reader** (`B<cond>`, `ADC/SBC/RSC`, `IT*`) sets `needf = 1`.
+2. A pure flag writer `CMP/CMN/TST/TEQ`: if `needf == 0` **delete the whole instruction**;
+   otherwise `needf = 0`, `live |= reads`.
+3. A **pure register write** (`MOV/MOVS/MOVW/MOVT/ADD/ADDS/SUB/SUBS/AND/ANDS/ORR/ORRS/EOR/
+   EORS/BIC/BICS/MVN/MVNS/LSL/LSLS/LSR/LSRS/ASR/ASRS/UXTB/UXTH/SXTB/SXTH/MUL/MULS/
+   RSB/RSBS/NEG/NEGS/REV/REV16/REVSH`) whose destination is r0-r12, is **not** in `live`
+   and is not "writes flags while `needf==1`" ⇒ **delete**; otherwise `needf=0` and
+   `live = (live - writes) | reads`.
+4. Any other instruction (`LDR/STR/PUSH/POP/BL/VLDR/UDIV/...` and every unrecognised
+   mnemonic) ⇒ `live = all of r0-r12`, and `needf` updated from the `S` suffix.
+5. A block containing any `IT*` instruction is **skipped entirely**.
+
+Read/write conventions: `MOVT Rd` reads `Rd`; a two-operand ALU form (`AND r5, r7`) reads `Rd`;
+`CBZ/CBNZ/B/BX/BL/BLX` write nothing; `LDR Rd, [Rb, #i]` reads `Rb` (including `Rd == Rb`).
+
+### 14.3 `-fopt-stackframe` rules (frozen)
+
+For one function region, take the **prologue shape**: first instruction is `PUSH {..}`, then an
+**optional** `SUB sp, sp, #N`, then an **optional** `MOV r6, sp`; neither present ⇒ not applicable.
+
+**P form** (requires `MOV r6, sp`): in the body
+
+- no `sp` may appear except the prologue `SUB` and the exit `MOV sp, r6` + `ADD sp, sp, #N`;
+- every exit must be `[MOV sp, r6] [ADD sp, sp, #N] POP {.., pc}` (or the same with `BX lr`),
+  and the `ADD` immediate must **equal** the prologue `SUB` immediate;
+- every occurrence of `r6` in the body must be `[r6]` or `[r6, #imm]` (no `[r6, rX]`, no `!`
+  writeback) and must occur at **machine-stack depth 0** (depth accumulated over in-body
+  `PUSH {}`/`POP {}` register counts; `STM`/`LDM` are refused);
+- if all of that holds ⇒ delete `MOV r6, sp` and every `MOV sp, r6`, and rewrite each
+  `[r6(, #imm)]` into `[sp(, #imm)]`. The `PUSH`/`POP` register lists are **left alone**
+  (`r6` stays saved/restored so that the `sp` offset and 8-byte alignment do not move).
+
+**Q form** (frame entirely unused): the body has neither `[r6` nor `[sp`, exactly one
+`SUB sp, sp, #N` with `N > 0`, and every exit `ADD sp, sp, #N` uses the same `N` ⇒ delete that
+`SUB`, every exit `ADD`, and (if present) `MOV r6, sp`. **Refused when the body contains
+`BL/BLX` and the `PUSH` register count is odd** (the `SUB` is then still carrying 8-byte
+alignment).
+
+### 14.4 Criterion (frozen, decided before the run)
+
+Relative to **10,917** (26 flags + `spill` + `ldhoist`):
+
+| hits | verdict |
+| --- | --- |
+| >= 219 (>= 2.0%) | **lands**: both switches kept, default off, added to the README flag table |
+| 110 - 218 | **register tier**: kept, default off, not recommended |
+| < 110 | **withdrawn**: only the measurement above is kept, the code is reverted |
+
+### 14.5 Anti-false-green (frozen, four, all must pass)
+
+1. **OFF IS OFF**: with both switches off, the 95-TU `.s` set is **byte-identical** to
+   10,917 / 385,260 B.
+2. **Must fire**: fixtures (inline assembly **must be upper case**) for a dead write, a dead
+   flag, a P frame and a Q frame; with the switches on, the deleted lines and the rewrite are
+   checked line by line.
+3. **Must not fire** (one fixture each, byte-identical with the switches on): a write that is
+   read afterwards; a `CMP` followed by a **conditional** branch; a frame whose address is taken
+   with `MOV rX, r6`; a frame with `PUSH {r0}` in the body and a later `[r6,#n]`; an unused
+   frame with a `BL` and an odd `PUSH`.
+4. **Regression**: `test-arm-exec` 0 failure, and `test-ldhoist` / `test-exit` / `test-spill` /
+   `test-frame` / `run_vreg_tests.py` / `run_regalloc_tests.py` all green.
+
+### 14.6 Forbidden readings (frozen)
+
+1. Do not read these 238 as "the text layer still has margin": they are provably useless
+   instructions, S13's table stays closed, and neither may be used to rewrite S13's conclusion.
+2. Do not describe `-fopt-deadins` as register allocation: its block-exit live set is
+   **all-live** and it recovers nothing across blocks; cross-block dead writes are a separate,
+   registered, unopened candidate.
+3. Do not skip the 8-byte alignment check on the Q form, and do not drop `r6` from the `PUSH`
+   to "buy instructions" (that only saves bytes and moves the `sp` offset and alignment).
+4. Do not relax "the body never moves `sp`" to save the occasional `MOV r6, sp`; a `[r6,#n]`
+   after an in-body `PUSH` is refused by the depth rule.
