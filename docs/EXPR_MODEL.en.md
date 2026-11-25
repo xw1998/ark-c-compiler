@@ -591,3 +591,58 @@ one level up: **the chain should not be expanded this way at all**.  That needs 
 the compared value that the result constants do not clobber, and (b) "which arm was taken" turned
 into a constant sequence rather than one instruction per level.  Both live in emission/IR, not in
 text.
+### 10.9 The last of the emission-level margin: 1.01%, and where S11 ends and S12 begins (2026-11-25)
+
+Section 10.8 pointed "the real money" at the emission/IR layer, so the first thing to do is to
+measure **how much is left in the emission layer itself** — otherwise there is no boundary for a
+project.  This section uses a read-only script with **five rules frozen before the run**
+(`D:/tmp/bm/s11_ldreuse_ub2.py`) to measure "redundant loads into the same destination register",
+and re-checks the three candidates of 10.8 under the same definition.
+
+The rules (written down before measuring, so nothing can be tuned afterwards):
+
+1. The candidate is `LDR Rd,[Rb,#imm]` (`LDRB/H/SB/SH/D` treated alike; widths are never mixed).
+2. The **nearest earlier** `LDR Rd,[Rb,#imm]` in the same function has the same destination `Rd`
+   (same register, same base, same offset), and nothing between the two writes `Rd` or `Rb`.
+3. Nothing between them is a `STR/STRB/STRH/STRD/STM/PUSH` (anything that might alias is treated
+   as aliasing), and no `BL/BLX`.
+4. No second `LDR R?,[Rb,#imm]` in between (a second holder would make "which one to delete"
+   ambiguous).
+5. Every label crossed must have exactly one predecessor (with several predecessors the earlier
+   holding relation does not hold).
+
+| Item | Count | Share of 11,044 |
+| --- | ---: | ---: |
+| Removable duplicate loads | **112** | **1.01%** |
+| ... in `stm32f4xx_hal_dma_ex.c` | 109 | — |
+| ... in `stm32f4xx_hal_pwr.c` / `stm32f4xx_hal_dma.c` | 2 / 1 | — |
+
+**Why 262 reloads leave only 112 reusable ones**: in `HAL_DMAEx_MultiBufferStart_IT`,
+`hdma->Instance` is reloaded 262 times (`LDR r0,[r8,#0]` 135 + `LDR r5,[r8,#0]` 127), but the
+`MOV r0,#k` that selects a constant at every level happens to clobber exactly the `r0` holding
+that value, so only the 109 places in the `BLS/BHI` binary-search skeleton satisfy rule 2.  This
+reading **sharpens** difference 1 of 10.8 ("the compared value is loaded only once"): it is not a
+peephole at all, it is "pick, for a value that lives across 19 levels, a register that the result
+constants do not clobber" — a local register allocation.  Corollary: done purely in the emission
+layer, the upper bound is 112.
+
+Two more re-checks under the same definition (neither justifies a switch):
+
+| Candidate | Bound | Reading |
+| --- | ---: | --- |
+| Constants as an arithmetic series (`chainub.py`: next pool word = previous word + an encodable immediate) | 109 places | **Not a single instruction is saved**: `ADD Rd,Rx,#imm` and `LDR Rd,.Llit` are both one instruction; what is saved is pool bytes (~4 B each, ~436 B). Under "one switch, one meaning" this does not get a switch of its own |
+| Addresses staged through the machine stack (`s11c.py`) | `PUSH` 418 / `POP` 421, but only **11** places (0.10%) where the `POP` is immediately followed by an access through that register | The two ends of the staging are typically 30+ instructions apart; the text layer cannot see the other end |
+
+**Verdict of this section**: the emission-level margin in **instruction count** is 112 instructions
+= 1.01%, below the 5% threshold of F1 in `docs/BOUNDARY.md`, and is therefore closed under F1.
+**S11 (the emission-level slice) is not opened and gets no switch** — it sits alongside the four
+items of 10.7, S10 of 10.5 and the saturation verdict of 10.6, and this section revises none of
+them.
+
+**Where S11 ends and S12 begins**: all three big items dissected in 10.8 — 286 result-constant
+materialisations, 262 `B .Ljoin`, 77 stack-staging instructions — are **not local replacements**.
+Collecting them requires "sinking the store into each arm" or "changing the block layout", i.e.
+changing how a statement is turned into code in the first place.  That is beyond the granularity
+of "one switch, one meaning", so by repository discipline it is a project-level change, registered
+as **S12 (IR structure layer)**; its scope and upper bounds are the dissection table of 10.8, and
+its criteria are not frozen here.
