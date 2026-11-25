@@ -120,12 +120,39 @@ static int callit(int (*fp)(int), int a, int b)
 int main(void) { return callit(inc, 4, 1) & 0xFF; }
 """
 
+# A diamond inside a function that also makes the back end emit a `BIC`:
+# `x &= ~0x10000u` on a volatile word, under -fopt-cmat, materialises the mask
+# as `BIC rD, rS, #imm` instead of `MVN` + `AND`.  The mnemonic starts with a
+# 'B', so a branch classifier that only looks at the first letter reads BIC as
+# a conditional branch, cannot resolve its operand `#0x10000` as a label, and
+# the whole function loses its analysis -- a silent precision loss, never a
+# wrong answer.  Measured (bail-reason census, 95 corpus units, 2026-11-25):
+# 29 units bailed with `tgt-missing mn=BIC op2=[#0x10000]`, 93 candidate PUSH
+# lines thrown away, and the live pass also lost 29 instructions corpus-wide.
+# The check below is the anti-regression half: the fixture must really contain
+# a BIC *and* its diamond must still be deleted.
+BICMIX = """\
+volatile unsigned sp_bic_reg;
+int sp_pad_b;
+static int bicmix(int a, int b)
+{
+    int z = ((a & 1) ? 11 : 22) * 3 + ((b & 2) ? 33 : 44);
+    sp_bic_reg = sp_bic_reg & ~0x10000u;
+    return z + a;
+}
+int main(void) { return bicmix(5, 6) & 0xFF; }
+"""
+
 def py_diamond(a=5, b=6):
     z = (11 if (a & 1) else 22) * 3 + (33 if (b & 2) else 44)
     return (z + (a ^ b)) & 0xFF
 
 def py_clobber(a=5):
     return (((11 if (a & 1) else 22) + (6 * 7 + 1)) + (a & 3)) & 0xFF
+
+def py_bicmix(a=5, b=6):
+    z = (11 if (a & 1) else 22) * 3 + (33 if (b & 2) else 44)
+    return (z + a) & 0xFF
 
 def py_callptr(a=4, b=1):
     s = (1 if (a & 1) else 2)
@@ -136,6 +163,7 @@ CASES = [
     ('diamond', DIAMOND, py_diamond()),
     ('clobber', CLOBBER, py_clobber()),
     ('callptr', CALLPTR, py_callptr()),
+    ('bicmix', BICMIX, py_bicmix()),
 ]
 
 PAYS = 'diamond'
@@ -323,6 +351,19 @@ def main():
             check(len(b_on) <= len(b_off),
                   'diamond: the image never grows',
                   '%d -> %d bytes' % (len(b_off), len(b_on)))
+
+        # --- 2b. a BIC in the function must not stop the analysis -----------
+        if not off['bicmix'][2] and not on['bicmix'][2]:
+            t_off, t_on = off['bicmix'][0], on['bicmix'][0]
+            removed, added = removed_and_added(t_off, t_on)
+            check('BIC ' in t_off,
+                  'bicmix: the fixture really makes the back end emit a BIC',
+                  '%d BIC line(s)' % t_off.count('BIC '))
+            check(bool(removed) and not added and
+                  all(STKP_RE.match(l) for l in removed),
+                  'bicmix: a function containing a BIC is still analysed',
+                  '%d removed (%s)' % (len(removed),
+                                       removed[:1] if removed else 'none'))
 
         # --- 1b. the same pass on a naive pipeline --------------------------
         # An `-O2 -fopt-live` build has not been through vstack/vreg, so the

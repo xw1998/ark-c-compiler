@@ -1664,6 +1664,23 @@ static unsigned lv_regs(const char *s) {
     return m;
 }
 
+/* The two-letter condition suffixes a Thumb branch may carry.  Only these
+ * turn a three-letter `B...` mnemonic into a branch: BIC, BFI and BFC are
+ * data-processing instructions whose names merely start with B.  Reading
+ * them as conditional branches made the live pass treat their block as an
+ * exit with an unknown target (every register live, block end) and made the
+ * spill pass abandon the whole function when it could not resolve the
+ * "target" `#0x10000` -- a silent precision loss, not a wrong answer, so it
+ * survived until a bail-reason census showed 29 of 95 corpus units dropping
+ * their entire spill analysis on a BIC. */
+static int lv_cond_suffix(const char *s) {
+    static const char *const t[] = { "EQ", "NE", "CS", "HS", "CC", "LO",
+        "MI", "PL", "VS", "VC", "HI", "LS", "GE", "LT", "GT", "LE", "AL", 0 };
+    int i;
+    for (i = 0; t[i]; i++) if (!strcmp(s, t[i])) return 1;
+    return 0;
+}
+
 /* 0 none, 1 unconditional branch, 2 conditional branch, 3 call, 4 BX/BLX r. */
 static int lv_branch_kind(const char *m) {
     size_t L = strlen(m);
@@ -1681,7 +1698,7 @@ static int lv_branch_kind(const char *m) {
     if (L == 2 && m[1] == 'L') return 3;
     if (L == 2 && m[1] == 'X') return 4;
     if (L == 3 && m[1] == 'L' && m[2] == 'X') return 3;
-    if (L == 3) return 2;
+    if (L == 3) return lv_cond_suffix(m + 1) ? 2 : 0;
     return 0;
 }
 

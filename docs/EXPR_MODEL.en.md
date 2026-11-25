@@ -360,3 +360,74 @@ tail rewritten to a single `MOV rY, r0` (net 1 instruction) -- that *changes* in
 - gate: `tests/run_spill_tests.py` / `make test-spill` (OFF IS OFF, delete-only, every removed line is
   a PUSH/POP, the image never grows, the two anti-false-green shapes stay byte-identical, unicorn
   agrees on four arms, and a cropped build refuses the flag by name).
+
+### 10.6 Follow-up measurement and verdict: a BIC is not a branch (2026-11-25)
+
+After §10.5 landed, the corpus still had 418 PUSH / 421 POP left. This round started by
+**censusing the bail reasons** instead of going straight at the 44 `POP {r0}` -> `POP {r1}`
+cases guessed at the end of §10.5.
+
+**Method** (throw-away instrumentation, removed before commit, never shipped): every
+`return 0` in `ark_spill_function` printed `SPILLBAIL <reason> np=<candidate single-register
+PUSH lines in this function>`, and the end of the function printed `SPILLOK`; 95 TUs, 26
+flags. **Before the fix** the census read:
+
+| Reason | Functions | Candidate PUSH lines |
+| --- | ---: | ---: |
+| `selfcheck` (`npair == 0`, nothing to delete) | 174 | 59 |
+| **`tgt-missing` (branch target not found)** | **29** | **101** |
+| `depth-disagree` (join reached at two depths) | 5 | 6 |
+| passed (deletions landed) | 4 | 335 (330 deleted) |
+
+**Root cause**: 93 of the 101 `tgt-missing` lines sat in two TUs
+(`stm32f4xx_hal_rcc.c` 52, `stm32f4xx_hal_dma.c` 41), and the "branch" it printed was
+
+```
+BIC r7, r7, #0x10000
+```
+
+The line `if (L == 3) return 2;` in `lv_branch_kind()` exists for `BNE/BEQ/BLT/...`, but it
+catches *every* three-letter mnemonic starting with `B`; `BIC`/`BFI`/`BFC` are data-processing
+instructions whose names merely start with `B`. Two costs followed:
+
+- **spill side**: `#0x10000` was looked up as a label, not found, and the whole function
+  bailed -- the conservative "rather miss than miscompile" rule was amplified by a spelling
+  test, and the entire function's round-trip analysis was thrown away;
+- **live side**: the block was read as a conditional branch with an unknown target, `bsx = 2`
+  (every register treated as read) and the block ended there -- every `BIC` silently cost a
+  slice of liveness precision.
+
+**Fix**: accept only the real two-letter condition suffixes
+(`EQ NE CS HS CC LO MI PL VS VC HI LS GE LT GT LE AL`). `BLT/BLE/BLS` stay branches (their
+suffixes are in the table); `BIC/BFI/BFC` no longer are.
+
+**Measured** (95 TUs, same machine, same command line):
+
+| Arm | Before | After |
+| --- | ---: | ---: |
+| 25 flags | 11,404 / 392,907 | **11,375 / 392,476** (-29 insns / -431 B) |
+| 26 flags (+`-fopt-spill`) | 11,073 / 388,303 | **11,044 / 387,872** (-29 / -431) |
+| spill's own delta | -331 / -4,604 | -331 / -4,604 (unchanged, still 2.90%) |
+
+**Verdict**: a **precision fix** in `lv_branch_kind`, shared by `-fopt-live` and
+`-fopt-spill`; not a new optimisation and not a criterion reversal. `make test-spill` is green,
+and so are `test-live`/`test-option`/`test-slotreg`/`test-addr`/`test-coalesce`/`test-deadpush`/
+`test-vreg`/`regalloc`/`test-arm-exec` (0 failures).
+
+**S10 is saturated here**: after the fix only 166 candidate lines remain, 152 of them on
+"cannot be proven" (`npair == 0`, which should not be deleted anyway) and 14 on disagreeing
+depths; **there is no second `tgt-missing` shape**. Most of the remaining 418 pushes are the
+prologue `PUSH {r5,r6,r7,lr}`, which is outside this pass. Going further needs a different
+mechanism (S10b's `MOV` form, or S8c's cross-block residency), not this section.
+
+**Sibling debt (registered, not touched this round)**: `pp_r6_stops()` also uses
+`mn[0] == 'B'` to end its r6 window early on `BIC`/`BFI`. That direction is conservative
+(it only loses a rewrite opportunity, never the answer), and moving it needs its own
+preregistration ("a longer window still only performs an equivalent register rename"), so
+this round leaves it registered only.
+
+**Anti-false-green**: `tests/run_spill_tests.py` gains a `bicmix` fixture that first asserts
+"this source really makes the back end emit a `BIC`" and only then "the diamond in the same
+function is still deleted"; the second check alone would silently pass as the back end drifts.
+The pre-fix instrumentation reading (`SPILLBAIL tgt-missing ... mn=BIC op2=[#0x10000]`,
+29 functions) is the measurement behind this entry.
