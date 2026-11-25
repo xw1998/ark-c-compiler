@@ -175,7 +175,43 @@ without waiting for the whole corpus.
 - below 5%: register it or withdraw it per repo discipline, do not leave it in the tree as
   "sort of useful".
 
-## 5 Relation to existing documents
+## 5 A negative: a text-level "redundant load elimination" cannot save this function
+
+The natural next idea is "add a pass: reuse a load of the same address". Measure the ceiling
+first, then decide.
+
+| Reading | Number | of 11,666 |
+| --- | ---: | ---: |
+| that function with `-fopt-live` off -> on | 4,013 -> 2,745 (**-1,268 = -31.6%**) | -- |
+| corpus-wide same-block redundant loads (same address, no store/call in between) | **47** | 0.40% |
+| corpus-wide redundant loads under a real "available loads" dataflow (intersection at joins; a write to the base or to the holder kills the entry) | **5** | 0.04% |
+
+**Why cross-block availability catches nothing**: the criterion is not "the same address" but
+"which register still holds that value". Look at the loop body in section 3 -- `LDR r0, [r6, #0]`
+brings `hdma` from its frame slot into **r0**, and the very next thing, the operand-staging
+`MOV r0, r5`, **writes r0 again**, so the available copy of `[r6,#0]` is erased by the code's
+own operand staging at every single comparison; by the time control reaches a label (every
+ternary arm is a label) the available set is empty and the next arm must reload. Tracking by
+register identity gives the same answer: the reusable value would have to live in a register
+that survives across blocks, and r0/r1 are exactly the two registers that must not.
+
+Two sentences, frozen:
+
+1. **Text-level redundant load elimination ends here** -- not unimplemented, but a 0.04%
+   ceiling. This is the third independent reproduction of the same conclusion as
+   `docs/EXPR_MODEL.md` section 9 (statement-local three-address values: 0.137%) and
+   `docs/RA_MODEL.md` section 2 (nine residual shapes: 1.42%): what looks like "too many
+   instructions emitted" is really "values have nowhere permanent to live".
+2. The only way to bring this function down is to **keep values resident in a register
+   (r4-r11) across blocks and branches** -- the target model of `docs/RA_MODEL.md` section 3 /
+   the cross-block value passing (S10) of `docs/EXPR_MODEL.md` section 10. Section 4's
+   acceptance is therefore attached to that model, not to any new peephole.
+
+Reproduce (read-only, not committed): `python -X utf8 D:/tmp/bm/loadcse_ub.py` (blocks split at
+labels; the transfer wipes availability at store / PUSH / BL and drops an entry when the base
+register or the holder is written; joins intersect).
+
+## 6 Relation to existing documents
 
 | Document | Relation |
 | --- | --- |
