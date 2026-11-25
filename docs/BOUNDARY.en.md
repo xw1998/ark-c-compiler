@@ -267,6 +267,28 @@ line is **closed and the value stack keeps its linear scan plus boundary flush**
 exactly what this section predicted, "the net win is necessarily below 1,178": 1,182 saved, 962
 paid back. Full write-up in `docs/VSTACK_CFG.md` section 4.1.1.
 
+### 5.7 The text layer closes under 26 flags (measured 2026-11-25)
+
+With `-fopt-bitmask` landed the corpus convention becomes 26 switches (`sw24` plus `-fopt-exit`
+and `-fopt-bitmask`): **11,766 instructions / 398,673 bytes** (the 19-flag table in section 1
+reads 12,304; the two versions cannot be subtracted from each other). Compared per category
+against armcc `-O2`, the four leading items `MOVREG +1,101`, `PUSHPOP +1,013`, `FRAME +926`,
+`MOVIMM +804` add up to **+4,844 instructions = 78.8% of the gap**, and all four are faces of
+the same model fact: every intermediate value is born in `r0` and goes to memory once.
+
+The remaining text-layer headroom was measured shape by shape (read-only scan of the 95 `.s`
+products under 26 flags; the convention is in `docs/RA_MODEL.md` section 2): duplicate reload of
+the same literal in one block **55**, duplicate materialisation of the same immediate **52**,
+`PUSH`/`POP` idle pairs **30**, `STR->LDR` round trips on one slot **15+9**, `MOV` round trips
+**5**, `MOV` chains **1** — **167 instructions = 1.42%** in total, every family on its own below
+the 5% F1 line. Under the standing discipline they are all **closed**: adding one more text rule
+is no longer a direction.
+
+The conclusion is pinned: the 0.9.1 optimization line adds no further passes. Touching the
+remaining 2.09x means changing the unit of allocation — see `docs/RA_MODEL.md` (the S8
+preregistration: IR virtual registers plus linear scan, with S8a's read-only pressure criterion
+frozen).
+
 ## 6 What is already done (do not re-invest)
 
 | Stage | Content | Reading |
