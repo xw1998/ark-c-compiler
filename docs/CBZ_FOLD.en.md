@@ -121,7 +121,7 @@ Hence C4 scans instead of assuming:
 | flag writer: `CMP/CMN/TST/TEQ`, any `S`-suffixed ALU (`ADDS/SUBS/ANDS/…`) | **safe**, stop scanning |
 | flag reader: `ADC/SBC/RSC`, `IT`, any conditionally executed instruction | **unsafe**, drop the candidate |
 | return: `BX lr`, `BLX`, `POP {…, pc}` | **safe** (this function never looks at the flags again) |
-| `BL` | **unsafe** (conservative: flag state after the call is unknown) |
+| `BL` | **safe** (AAPCS does not preserve NZCV across a call, so the old `CMP` result cannot be read past it; see section 14) |
 | unconditional `B .L_x` | **follow** the target and keep scanning (at most 4 hops, 64 steps) |
 | anything else | keep scanning; reaching the end of the function still undecided ⇒ safe |
 
@@ -396,3 +396,100 @@ stores that are no longer deleted by mistake.
 `make test-cbz` gains sections 6 and 7: a six-switch fixture (long function name plus a
 promoted parameter) returns 17, the output contains no `CBZ/CBNZ r8-r12`, every branch target
 is defined, and the assembler refuses `CBZ r8`. Against the pre-fix binary all three go red.
+
+## 14. Revision (2026-11-25): `BL` means "flags are dead", not "flags unknown"
+
+Section 5 used to treat `BL` as **unsafe**, on the grounds that "the flag state
+after the call is unknown".  That sentence is true; the conclusion was backwards.
+It is *because* the flags after a call are not the ones `CMP` set that **nobody
+reads** them, which is exactly what makes the fusion legal.  AAPCS lists NZCV as
+**not preserved across a call** (caller-saved), so past a `BL` the flags belong
+to the callee and this function cannot depend on the old `CMP`.
+
+The change is one line in `cbz_flags_dead()`:
+
+```c
+- if (cbz_ieq(mn, "BL")) return 0;   /* conservative: state unknown after the call */
++ /* A plain call kills the flags: AAPCS does not preserve NZCV across a
++  * call, so whatever CMP set cannot be relied on past a BL.  Treating
++  * the call as "flags are dead from here" is what lets a CMP #0 + Bcc
++  * pair fuse into CBZ when the fall-through path leads into a call. */
++ if (cbz_ieq(mn, "BL")) return 1;
+```
+
+Conditional calls (`BLEQ` and friends) never reach this line: a condition suffix
+makes `cbz_reads_flags()` classify them as flag readers first, so only an
+*unconditional* call was relaxed.
+
+### 14.1 The old rule was not the safer one
+
+Treating `BL` as unsafe assumes the function might rely on flags surviving a
+call.  Under AAPCS such code is not portable in the first place (the callee may
+`CMP` freely), and arkc's emitter never produces it: every conditional branch is
+preceded by a fresh `CMP`.  So the old rule protected no real code -- it only
+made the most common shape, `if (cond) { ...call... }`, impossible to fuse.
+
+### 14.2 Readings
+
+95 TUs, 24 switches (without `-fopt-exit`), `-O2 -mcpu Cortex-M4`, same build
+differentially:
+
+| | before | after | change |
+| --- | --- | --- | --- |
+| instructions | 12,146 | **12,110** | **-36** |
+| object bytes | 403,994 B | **403,620 B** | **-374 B** |
+| TUs touched | -- | 8 | all shrank, none grew, 0 errors, 0 dangling |
+| `CMP rX,#0` + branch left over | 100 | **62** | -38 |
+
+Per TU (instructions): `stm32f4xx_hal_rcc` -12, `stm32f4xx_hal_rcc_ex` -12,
+`hal_pwr_ex` -4, `main` -2, `hal_flash` -2, `ll_utils` -2, `hal_dma` -1,
+`hal_flash_ex` -1.
+
+On top of the 25-switch chain (adding `-fopt-exit`): 11,913 -> **11,877**
+instructions, 400,499 -> **400,125** B, same direction, and the -233 instructions
+from `-fopt-exit` are unchanged (the two passes do not interfere).
+
+### 14.3 Two more pairs than instructions, and why that is not a miscount
+
+The leftover pairs drop by 38 while instructions drop by 36.  The two extra come
+from **high-register sites**:
+
+```asm
+CMP r10, #0        ; T2, 4 bytes
+BEQ.W .L_x         ; 4 bytes
+        ->
+MOV r0, r10        ; 2 bytes
+CBZ r0, .L_x       ; 2 bytes
+```
+
+Two instructions replace two -- no instruction saved, four bytes saved.  This
+shape is produced when the first `cbz` sweep fuses the site and `-fopt-live`
+then forwards the value into the `CBZ` (see `docs/LIVE.md` section 14), so the
+number of fused sites need not equal the instruction drop.  The verdict is read
+off instructions and bytes; site counts are commentary.
+
+### 14.4 Gates: 29 checks, and they go red if you revert
+
+`make test-cbz` grows from 19 to **29** checks; the original 19 readings are
+unchanged (`base=0 / on=6`, `short 310 -> 304`, `long` fuses nothing).  Two new
+sections:
+
+- **8. A call kills the flags.**  Fixture `CALL`: `if (a) g_cbzbl = cbzbl_callee(3);`
+  -- the body is "fetch argument + `BL` + store back", comfortably inside the T1
+  range, so the only open question is the flags.  Asserts: the `off` arm has 3 of
+  its 4 pairs whose fall-through reaches a `BL` first, the `on` arm turns all 3
+  into `CBZ/CBNZ`, `cbz-before-call off=0 / on=3`, instructions 229 -> 226, the
+  image never grows, and **both arms return 20** (the call really happens; it was
+  not deleted as if it were a branch).
+- **9. A fall-through that reads the flags keeps the pair.**  Fixture `FLAGREAD`:
+  the body opens with inline asm `ITE EQ / MOVEQ / MOVNE`, i.e. it consumes the
+  very flags `CMP` set.  Asserts: pairs `base=1 / on=1`, `on` and `off` are
+  **byte-identical** (2,223 bytes of text, 1,224 bytes of image), and it returns 1.
+
+Both are "revert it and they go red" shapes, verified: switching `return 1` back
+to `return 0` and rebuilding turns the four section-8 assertions red
+(`cbz-before-call on=0`, `pairs 4 -> 4`, `cbz 0 -> 0`, `229 -> 229`) while section
+9 stays green (it guards the other direction).
+
+Whole-corpus execution equivalence (`tests/arm_exec`, single flag and a nine-flag
+combination) reports 0 failures; `make test` exits 0.

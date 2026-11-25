@@ -9375,7 +9375,11 @@ static int cbz_flags_dead(CbzLine *L, int nlines, int from)
         if (cbz_writes_flags(mn)) return 1;
         if (cbz_reads_flags(mn)) return 0;
         if (cbz_ieq(mn, "BX") || cbz_ieq(mn, "BLX")) return 1;  /* return / tail call */
-        if (cbz_ieq(mn, "BL")) return 0;
+        /* A plain call kills the flags: AAPCS does not preserve NZCV across a
+         * call, so whatever CMP set cannot be relied on past a BL.  Treating
+         * the call as "flags are dead from here" is what lets a CMP #0 + Bcc
+         * pair fuse into CBZ when the fall-through path leads into a call. */
+        if (cbz_ieq(mn, "BL")) return 1;
         if (cbz_ieq(mn, "B")) {
             int k = (rest[0] == '.') ? cbz_find_label(L, nlines, 0, rest) : -1;
             if (k < 0 || ++jumps > 4) return 0;

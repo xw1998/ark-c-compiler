@@ -42,6 +42,13 @@ What is checked:
   7. THE ASSEMBLER REFUSES IT TOO.  `CBZ r8` is an error (naming r0-r7),
      not a silent `CBZ r0`: an assembler that masks its operand is the other
      half of the same wrong answer.
+  8. A CALL KILLS THE FLAGS.  AAPCS does not preserve NZCV across a call, so
+     the flags a CMP set cannot be relied on after a BL.  A pair whose
+     fall-through runs into a call is therefore still fusable, and the pass
+     must take it.  Two arms must return the same number afterwards.
+  9. A REGION THAT READS THE FLAGS KEEPS THE PAIR.  If the fall-through
+     consumes the flags before anything overwrites them (an `ITE` block in
+     this fixture), the CMP must stay: on/off are byte-identical.
 
 Usage: run_cbz_tests.py [path-to-arkcc]
 Exit 0 = every check passed, 1 = a check failed, 2 = setup problem.
@@ -156,6 +163,45 @@ int main(void)
 """
 RETARGET_WANT = 17
 
+# CALL: the fall-through of the guarded branch runs straight into a call.
+# `cbzbl_callee` has a loop so the inliner leaves it alone; the body of the
+# `if` is one BL plus two stores, so the skip target is inside the T1 range
+# and the pair is fusable on distance -- the only question is the flags.
+CALL = """\
+int cbzbl_pad;
+int g_cbzbl;
+int cbzbl_callee(int v)
+{
+    int s = 0, i;
+    for (i = 0; i < v; i++) s += i;
+    return s + 7;
+}
+static int cbzbl_body(int a)
+{
+    if (a) g_cbzbl = cbzbl_callee(3);
+    return g_cbzbl;
+}
+int main(void) { return (cbzbl_body(1) + cbzbl_body(0)) & 0xFF; }
+"""
+CALL_WANT = 20          # callee(3) = 0+1+2+7 = 10, kept by the a==0 arm
+
+# FLAGREAD: the fall-through opens with an IT block, i.e. it consumes the
+# very flags the CMP set.  Fusing here would delete them.
+FLAGREAD = """\
+int cbzfr_pad;
+static int cbzfr_body(int a)
+{
+    int s = 0;
+    if (a) {
+        __asm__("ITE EQ\n Moveq r0, #1\n MOVne r0, #2");
+        s = 1;
+    }
+    return s;
+}
+int main(void) { return cbzfr_body(1) & 0xFF; }
+"""
+FLAGREAD_WANT = 1
+
 CASES = [
     ('short', SHORT, py_short(), True),
     ('long', LONG, py_long(), False),
@@ -233,6 +279,67 @@ def count_cmp_branch(text):
         if CMP0_RE.match(lines[i]) and BEQ_RE.match(lines[i + 1]):
             n += 1
     return n
+
+FLAG_WRITERS = ('CMP', 'CMN', 'TST', 'TEQ', 'ADDS', 'SUBS', 'ANDS', 'ORRS',
+                'EORS', 'BICS', 'MVNS', 'LSLS', 'LSRS', 'ASRS', 'RORS',
+                'MULS', 'MOVS', 'NEGS')
+
+
+def pairs_reaching_call(text):
+    """`CMP rX, #0` + Bcc pairs whose fall-through reaches a BL first.
+
+    AAPCS does not preserve the flags across a call, so these pairs are the
+    ones the pass may fuse even though the flags look live.  A flags writer or
+    an IT block reached earlier means the region does consume the flags, and
+    the pair must stay.
+    """
+    lines = [ln.strip() for ln in text.splitlines()]
+    n = 0
+    for i in range(len(lines) - 1):
+        if not (CMP0_RE.match(' ' + lines[i] + ' ') or
+                re.match(r'^CMP\s+r\d+\s*,\s*#0$', lines[i])):
+            continue
+        if not re.match(r'^(?:BEQ|BNE)\s+\.L_', lines[i + 1]):
+            continue
+        for ln in lines[i + 2:i + 66]:
+            if not ln or ln.startswith('.'):
+                continue
+            mn = ln.split()[0]
+            if mn == 'BL':
+                n += 1
+                break
+            if mn in FLAG_WRITERS or mn.startswith('IT'):
+                break
+            if mn.startswith('BX') or mn.startswith('BLX'):
+                break
+    return n
+
+
+def cbz_before_call(text):
+    """CBZ/CBNZ instructions whose fall-through runs into a BL.
+
+    These are the sites this gate exists for: the CMP that used to set the
+    flags is gone, so the conditional is now a single instruction and the
+    call that follows cannot have been relying on those flags.
+    """
+    lines = [ln.strip() for ln in text.splitlines()]
+    n = 0
+    for i, ln in enumerate(lines):
+        if not re.match(r'^(?:CBZ|CBNZ)\s+r\d+\s*,\s*\.L_', ln):
+            continue
+        for nxt in lines[i + 1:i + 66]:
+            if not nxt or nxt.startswith('.'):
+                continue
+            mn = nxt.split()[0]
+            if mn == 'BL':
+                n += 1
+                break
+            if mn in FLAG_WRITERS or mn.startswith('IT'):
+                break
+            if mn.startswith('BX') or mn.startswith('BLX'):
+                break
+    return n
+
 
 def build_arkcc(where, defines, name):
     cc = os.environ.get('CC', 'gcc')
@@ -380,6 +487,73 @@ def main():
                       '%s=%s' % (st, val))
             else:
                 skip('the six-pass fixture value', 'unicorn missing')
+
+        # --- 8. a call kills the flags --------------------------------------
+        write(os.path.join(work, 'call.c'), CALL)
+        c_off, c_offb, c_e1 = build(arkcc, work, 'call', [], 'base')
+        c_on, c_onb, c_e2 = build(arkcc, work, 'call', [FLAG], 'on')
+        if c_e1 or c_e2:
+            check(False, 'the call fixture builds', (c_e1 or c_e2)[0][:120])
+        else:
+            p_off, p_on = count_cmp_branch(c_off), count_cmp_branch(c_on)
+            r_off = pairs_reaching_call(c_off)
+            check(r_off > 0,
+                  'the call fixture has pairs whose fall-through reaches a BL',
+                  'sites=%d of %d pairs' % (r_off, p_off))
+            check(cbz_before_call(c_off) == 0 and cbz_before_call(c_on) >= 2,
+                  'those pairs become CBZ/CBNZ that branch into the call',
+                  'cbz-before-call off=%d on=%d'
+                  % (cbz_before_call(c_off), cbz_before_call(c_on)))
+            check(p_on < p_off,
+                  'the CMP #0 + branch pairs are consumed', 'pairs %d -> %d'
+                  % (p_off, p_on))
+            check(count_cbz(c_on) > count_cbz(c_off),
+                  'the call fixture gains a CBZ', 'cbz %d -> %d'
+                  % (count_cbz(c_off), count_cbz(c_on)))
+            check(insn_count(c_on) < insn_count(c_off),
+                  'the call fixture loses instructions',
+                  '%d -> %d' % (insn_count(c_off), insn_count(c_on)))
+            check(len(c_onb) <= len(c_offb), 'its image does not grow',
+                  '%d -> %d bytes' % (len(c_offb), len(c_onb)))
+            if not HAVE_UNICORN:
+                skip('call: emulator value', 'unicorn missing')
+            else:
+                got, ok = {}, True
+                for tag, blob in (('base', c_offb), ('on', c_onb)):
+                    st, val, _ = run_image(blob)
+                    if st != 'returned':
+                        check(False, 'call: %s arm returns' % tag, st)
+                        ok = False
+                        break
+                    got[tag] = val
+                if ok:
+                    check(all(v == CALL_WANT for v in got.values()),
+                          'call: both arms return %d (the call still happens)'
+                          % CALL_WANT,
+                          ' '.join('%s=%s' % (k, got[k]) for k in
+                                   ('base', 'on')))
+
+        # --- 9. a fall-through that reads the flags keeps the pair ----------
+        write(os.path.join(work, 'flagread.c'), FLAGREAD)
+        f_off, f_offb, f_e1 = build(arkcc, work, 'flagread', [], 'base')
+        f_on, f_onb, f_e2 = build(arkcc, work, 'flagread', [FLAG], 'on')
+        if f_e1 or f_e2:
+            check(False, 'the flag-reading fixture builds', (f_e1 or f_e2)[0][:120])
+        else:
+            check(count_cmp_branch(f_on) == count_cmp_branch(f_off) > 0,
+                  'a fall-through that consumes the flags keeps its CMP/branch',
+                  'pairs base=%d on=%d'
+                  % (count_cmp_branch(f_off), count_cmp_branch(f_on)))
+            check(f_on == f_off and f_onb == f_offb,
+                  'the flag-reading fixture is byte-identical on/off',
+                  '%d bytes as text, %d as image' % (len(f_on), len(f_onb)))
+            if not HAVE_UNICORN:
+                skip('flagread: emulator value', 'unicorn missing')
+            else:
+                st, val, _ = run_image(f_onb)
+                check(st == 'returned' and val == FLAGREAD_WANT,
+                      'flagread: the guarded branch still works (%d)'
+                      % FLAGREAD_WANT, '%s=%s' % (st, val))
 
         # --- 7. the assembler refuses a high CBZ register -------------------
         asm_src = os.path.join(work, 'cbz_high.s')
