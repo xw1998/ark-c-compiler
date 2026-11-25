@@ -9538,6 +9538,401 @@ static void ark_cbz_function(AsmBuffer *b, int from)
 }
 #endif /* ARKCC_FEATURE_OPT_CBZ */
 
+/* ------------------ bitmask complement cleanup (-fopt-bitmask) -----------
+ * `x &= ~mask` reaches this layer as three instructions, because the
+ * frontend materialises the *complement* of the mask:
+ *
+ *      MOV r0, #mask          ; r0 = mask
+ *      MVN r0, r0             ; r0 = ~mask
+ *      AND r7, r0             ; r7 &= ~mask
+ *
+ * The mask is nearly always a field mask (1, 2, 4, 0x10000), and `BIC` takes
+ * a modified immediate, so the whole thing is one 32-bit instruction:
+ *
+ *      BIC r7, r7, #mask
+ *
+ * Same story one instruction shorter for `x = ~mask`, which arrives as
+ * `MOV rX, #mask` / `MVN rX, rX` / `MOV rY, rX` and becomes `MVN rY, #mask`.
+ *
+ * This is a text pass like -fopt-cmat, for the same reason: the shape is
+ * produced by the emitter (constant materialisation) and survives regalloc
+ * with its three lines adjacent, so no IR knowledge is needed.
+ *
+ * What has to hold before a triple may be replaced:
+ *
+ *  1. the three live lines are adjacent (`MOV rX,#imm`, `MVN rX,rX`, consumer),
+ *     imm != 0 and representable as a modified immediate -- otherwise the
+ *     replacement would need a literal pool or two instructions and there is
+ *     nothing to win;
+ *  2. the consumer is exactly `AND rY, rX` or `MOV rY, rX`: the two-operand
+ *     forms, with rY written.  Anything else in rX's place is left alone;
+ *  3. rX is dead after the consumer, unless rX == rY on the AND path (then
+ *     the replacement writes the same value back to rX).  "Dead" is proved by
+ *     walking forward to the first line that mentions rX: a plain write of rX
+ *     as the first operand ends the walk successfully, a `POP` whose list
+ *     contains rX is such a write too, and a label is simply stepped over --
+ *     the walk only ever covers a branch-free stretch, so whatever enters it
+ *     reaches the same write without reading rX in between.  An unconditional
+ *     `B .Lx` is followed to its target (at most four hops); any other branch,
+ *     a call, an unknown mnemonic that mentions rX, or 40 lines without a
+ *     proof all decline.  Bounded, so a long body simply fails to prove
+ *     anything.
+ *
+ * Everything else is left untouched, and the pass only rebuilds the slice when
+ * at least one triple was folded -- a build without the flag is byte-identical
+ * by construction.
+ */
+#if ARKCC_FEATURE_OPT_BITMASK
+typedef struct {
+    char *r;    /* the line as it was, indentation included */
+    char *t;    /* r with padding stripped: what the analysis reads */
+    int   del;  /* a line the fold swallowed */
+} BmkLine;
+
+static int bmk_ieq(const char *a, const char *b)
+{
+    while (*a && *b) {
+        int x = (*a >= 'a' && *a <= 'z') ? *a - 32 : *a;
+        int y = (*b >= 'a' && *b <= 'z') ? *b - 32 : *b;
+        if (x != y) return 0;
+        a++; b++;
+    }
+    return *a == *b;
+}
+
+static void bmk_trim(char *s)
+{
+    char *p = s;
+    int n;
+    while (*p == ' ' || *p == '\t') p++;
+    if (p != s) { char *d = s; while (*p) *d++ = *p++; *d = 0; }
+    n = (int)strlen(s);
+    while (n > 0 && (s[n-1] == ' ' || s[n-1] == '\t' || s[n-1] == '\r')) s[--n] = 0;
+}
+
+static int bmk_head(const char *t, char *mn, int mn_sz, char *rest, int rest_sz)
+{
+    int i = 0, j = 0;
+    while (t[i] && t[i] != ' ' && t[i] != '\t') {
+        int c = (t[i] >= 'a' && t[i] <= 'z') ? t[i] - 32 : t[i];
+        if (j < mn_sz - 1) mn[j++] = (char)c;
+        i++;
+    }
+    mn[j] = 0;
+    while (t[i] == ' ' || t[i] == '\t') i++;
+    j = 0;
+    while (t[i] && j < rest_sz - 1) rest[j++] = t[i++];
+    rest[j] = 0;
+    bmk_trim(rest);
+    return mn[0] != 0;
+}
+
+static int bmk_label(const char *t, char *name, int name_sz)
+{
+    int n = (int)strlen(t), i;
+    if (n < 2 || t[n-1] != ':') return 0;
+    for (i = 0; i < n - 1 && i < name_sz - 1; i++) name[i] = t[i];
+    name[i] = 0;
+    return 1;
+}
+
+static void bmk_skipsp(const char **pp)
+{
+    while (**pp == ' ' || **pp == '\t') (*pp)++;
+}
+
+/* "rN", N in 0..15, not followed by a sign (that would be an addressing mode). */
+static int bmk_reg(const char **pp, int *reg)
+{
+    const char *p = *pp;
+    int v;
+    if ((p[0] != 'r' && p[0] != 'R') || p[1] < '0' || p[1] > '9') return 0;
+    v = p[1] - '0';
+    p += 2;
+    if (v == 1 && *p >= '0' && *p <= '9') { v = 10 + (*p - '0'); p++; }
+    if (v > 15) return 0;
+    if (*p == '+' || *p == '-') return 0;
+    *reg = v;
+    *pp = p;
+    return 1;
+}
+
+/* "rN, #<number>" and nothing else. */
+static int bmk_reg_imm(const char *s, int *reg, unsigned *imm)
+{
+    const char *p = s;
+    char *end;
+    unsigned long v;
+    bmk_skipsp(&p);
+    if (!bmk_reg(&p, reg)) return 0;
+    bmk_skipsp(&p);
+    if (*p != ',') return 0;
+    p++;
+    bmk_skipsp(&p);
+    if (*p != '#') return 0;
+    p++;
+    bmk_skipsp(&p);
+    if (*p < '0' || *p > '9') return 0;          /* no sign, no symbol */
+    v = strtoul(p, &end, 0);
+    if (end == p) return 0;
+    p = end;
+    bmk_skipsp(&p);
+    if (*p != 0) return 0;
+    if (v > 0xFFFFFFFFUL) return 0;
+    *imm = (unsigned)v;
+    return 1;
+}
+
+/* "rA, rB" and nothing else. */
+static int bmk_reg_reg(const char *s, int *ra, int *rb)
+{
+    const char *p = s;
+    bmk_skipsp(&p);
+    if (!bmk_reg(&p, ra)) return 0;
+    bmk_skipsp(&p);
+    if (*p != ',') return 0;
+    p++;
+    bmk_skipsp(&p);
+    if (!bmk_reg(&p, rb)) return 0;
+    bmk_skipsp(&p);
+    return *p == 0;
+}
+
+/* Does `reg` appear as a register token anywhere in `s`? */
+static int bmk_mentions(const char *s, int reg)
+{
+    while (*s) {
+        if (*s == 'r' || *s == 'R') {
+            const char *p = s;
+            int r;
+            if (bmk_reg(&p, &r)) {
+                if (r == reg) return 1;
+                s = p;
+                continue;
+            }
+        }
+        s++;
+    }
+    return 0;
+}
+
+/* Mnemonics whose first operand is written.  A whitelist on purpose: an
+ * unknown mnemonic that mentions rX declines instead of being assumed to
+ * write it. */
+static int bmk_writes_first(const char *mn)
+{
+    static const char *const w[] = {
+        "MOV", "MOVW", "MOVT", "MVN", "ADD", "ADDW", "SUB", "SUBW", "RSB",
+        "ADC", "SBC", "AND", "ORR", "EOR", "BIC", "ORN",
+        "LSL", "LSR", "ASR", "ROR", "RRX", "MUL", "MLA", "MLS",
+        "UDIV", "SDIV", "UXTB", "UXTH", "SXTB", "SXTH",
+        "LDR", "LDRB", "LDRH", "LDRSB", "LDRSH", "ADR", "CLZ",
+        "REV", "REV16", "REVSH", "NEG", 0
+    };
+    int i;
+    for (i = 0; w[i]; i++) if (bmk_ieq(mn, w[i])) return 1;
+    return 0;
+}
+
+static int bmk_is_branch(const char *mn)
+{
+    static const char *const b[] = {
+        "B", "BL", "BX", "BLX", "CBZ", "CBNZ", "TBB", "TBH", 0
+    };
+    static const char *const cc[] = {
+        "EQ", "NE", "CS", "HS", "CC", "LO", "MI", "PL",
+        "VS", "VC", "HI", "LS", "GE", "LT", "GT", "LE", "AL", 0
+    };
+    int i;
+    for (i = 0; b[i]; i++) if (bmk_ieq(mn, b[i])) return 1;
+    if ((mn[0] == 'B' || mn[0] == 'b') && strlen(mn) == 3) {
+        for (i = 0; cc[i]; i++) {
+            int a = (mn[1] >= 'a' && mn[1] <= 'z') ? mn[1] - 32 : mn[1];
+            int c = (mn[2] >= 'a' && mn[2] <= 'z') ? mn[2] - 32 : mn[2];
+            if (a == cc[i][0] && c == cc[i][1]) return 1;
+        }
+    }
+    return 0;
+}
+
+/* The value left in `reg` by the fold is gone: prove nothing reads it before
+ * the next plain write.  The scan is linear and gives up at the first branch,
+ * so the region it proves is branch-free; that is why crossing a label is
+ * sound even when something jumps to it -- whatever path enters the region
+ * reaches the same write without reading `reg` in between.  A branch, a call,
+ * an unknown mnemonic that mentions `reg`, or 40 lines without a proof all
+ * decline. */
+static int bmk_dead_from(BmkLine *L, int n, int from, int reg, int jumps);
+
+static int bmk_dead(BmkLine *L, int n, int from, int reg)
+{
+    return bmk_dead_from(L, n, from, reg, 0);
+}
+
+static int bmk_dead_from(BmkLine *L, int n, int from, int reg, int jumps)
+{
+    int i, steps = 0;
+    for (i = from; i < n && steps < 40; i++, steps++) {
+        char mn[24], rest[128], name[128];
+        if (L[i].del) continue;
+        if (!bmk_head(L[i].t, mn, sizeof mn, rest, sizeof rest)) continue;
+        if (bmk_label(L[i].t, name, sizeof name)) continue;
+        if (mn[0] == '.') continue;
+        if (bmk_ieq(mn, "B") && rest[0] == '.' && jumps < 4) {
+            /* An unconditional branch has one successor: proving the value
+             * dead after its target proves it dead here too.  Anything more
+             * involved (a condition, a computed target) declines below. */
+            int k, lb = -1;
+            char nm[128];
+            for (k = 0; rest[k] && rest[k] != ' ' && rest[k] != ',' && k < (int)sizeof nm - 1; k++)
+                nm[k] = rest[k];
+            nm[k] = 0;
+            for (k = 0; k < n; k++) {
+                char n2[128];
+                if (L[k].del) continue;
+                if (bmk_label(L[k].t, n2, sizeof n2) && strcmp(n2, nm) == 0) { lb = k; break; }
+            }
+            if (lb < 0) return 0;
+            return bmk_dead_from(L, n, lb + 1, reg, jumps + 1);
+        }
+        if (bmk_is_branch(mn)) return 0;
+        if (bmk_ieq(mn, "POP")) {
+            /* POP {…} writes every register in its list (it reads memory, not
+             * registers; sp is never `reg`).  A list without `reg` says
+             * nothing about it. */
+            if (bmk_mentions(rest, reg)) return 1;
+            continue;
+        }
+        if (!bmk_mentions(mn, reg) && !bmk_mentions(rest, reg)) continue;
+        if (!bmk_mentions(mn, reg) && bmk_writes_first(mn)) {
+            const char *q = rest;
+            int r0;
+            if (bmk_reg(&q, &r0) && r0 == reg) return 1;
+        }
+        return 0;
+    }
+    return steps >= 40 ? 0 : 1;
+}
+
+static char *bmk_dup(const char *s)
+{
+    int n = (int)strlen(s);
+    char *p = (char *)mem_pool_alloc(n + 1);
+    if (p) memcpy(p, s, n + 1);
+    return p;
+}
+
+static char *bmk_new_line(const char *op, int rd, int rn, unsigned imm)
+{
+    char t[80];
+    AsmBuffer b;
+    if (rn < 0) snprintf(t, sizeof t, "    %s r%d, #0x%X", op, rd, imm);
+    else        snprintf(t, sizeof t, "    %s r%d, r%d, #0x%X", op, rd, rn, imm);
+    asmbuf_init(&b);
+    asmbuf_puts(&b, t);
+    return bmk_dup(b.buf);
+}
+
+static void ark_bitmask_function(AsmBuffer *b, int from)
+{
+    BmkLine *L = 0;
+    int cap = 0, nlines = 0, i, pos, folded = 0;
+    int last_nl = (b->len > from && b->buf[b->len - 1] == '\n');
+    AsmBuffer out;
+
+    pos = from;
+    while (pos < b->len) {
+        int len = 0;
+        while (pos + len < b->len && b->buf[pos + len] != '\n') len++;
+        if (nlines >= cap) {
+            int ncap = cap ? cap * 2 : 128;
+            BmkLine *grown = (BmkLine *)mem_pool_alloc(ncap * (int)sizeof(BmkLine));
+            if (!grown) return;
+            for (i = 0; i < nlines; i++) grown[i] = L[i];
+            L = grown;
+            cap = ncap;
+        }
+        L[nlines].r = (char *)mem_pool_alloc(len + 1);
+        L[nlines].t = (char *)mem_pool_alloc(len + 1);
+        if (!L[nlines].r || !L[nlines].t) return;
+        for (i = 0; i < len; i++) {
+            L[nlines].r[i] = b->buf[pos + i];
+            L[nlines].t[i] = b->buf[pos + i];
+        }
+        L[nlines].r[len] = 0;
+        L[nlines].t[len] = 0;
+        bmk_trim(L[nlines].t);
+        L[nlines].del = 0;
+        nlines++;
+        pos += len + 1;
+    }
+
+    for (i = 0; i < nlines; i++) {
+        char mn[24], rest[128], mn2[24], rest2[128], mn3[24], rest3[128];
+        int x = -1, y = -1, rm = -1, k, j1 = -1, j2 = -1;
+        unsigned imm = 0;
+        char *nl;
+        if (L[i].del) continue;
+        if (!bmk_head(L[i].t, mn, sizeof mn, rest, sizeof rest)) continue;
+        if (!bmk_ieq(mn, "MOV")) continue;
+        if (!bmk_reg_imm(rest, &x, &imm)) continue;
+        if (imm == 0) continue;                 /* BIC #0 would be bigger */
+        {
+            unsigned a, c, d;
+            if (!thumb_imm12_a(imm, &a, &c, &d)) continue;
+        }
+        /* the next live line has to be `MVN rX, rX` */
+        for (k = i + 1; k < nlines; k++) if (!L[k].del) { j1 = k; break; }
+        if (j1 < 0) continue;
+        if (!bmk_head(L[j1].t, mn2, sizeof mn2, rest2, sizeof rest2)) continue;
+        if (!bmk_ieq(mn2, "MVN")) continue;
+        {
+            int a1 = -1, a2 = -1;
+            if (!bmk_reg_reg(rest2, &a1, &a2)) continue;
+            if (a1 != x || a2 != x) continue;
+        }
+        /* and then the consumer, which has to name rX as its second operand */
+        for (k = j1 + 1; k < nlines; k++) if (!L[k].del) { j2 = k; break; }
+        if (j2 < 0) continue;
+        if (!bmk_head(L[j2].t, mn3, sizeof mn3, rest3, sizeof rest3)) continue;
+        if (!bmk_reg_reg(rest3, &y, &rm)) continue;
+        if (rm != x) continue;
+        if (bmk_ieq(mn3, "AND")) {
+            /* rY &= ~imm  ->  BIC rY, rY, #imm */
+            if (y != x && !bmk_dead(L, nlines, j2 + 1, x)) continue;
+            nl = bmk_new_line("BIC", y, y, imm);
+        } else if (bmk_ieq(mn3, "MOV")) {
+            /* rY = ~imm  ->  MVN rY, #imm */
+            if (y != x && !bmk_dead(L, nlines, j2 + 1, x)) continue;
+            nl = bmk_new_line("MVN", y, -1, imm);
+        } else {
+            continue;
+        }
+        if (!nl) continue;
+        L[j2].t = nl;
+        L[j2].r = nl;
+        L[i].del = 1;
+        L[j1].del = 1;
+        folded++;
+    }
+    if (!folded) return;
+
+    asmbuf_init(&out);
+    for (i = 0; i < nlines; i++) {
+        if (L[i].del) continue;
+        asmbuf_puts(&out, L[i].r);
+        if (i + 1 < nlines || last_nl) asmbuf_putc(&out, '\n');
+    }
+    if (out.len == b->len - from &&
+        memcmp(out.buf, b->buf + from, out.len) == 0) return;
+    asmbuf_reserve(b, from + out.len + 1);
+    if (from + out.len + 1 > b->cap) return;
+    for (i = 0; i < out.len; i++) b->buf[from + i] = out.buf[i];
+    b->buf[from + out.len] = 0;
+    b->len = from + out.len;
+}
+#endif /* ARKCC_FEATURE_OPT_BITMASK */
+
 static int g_va_epilogue_pad;
 
 /* Frame adjustment that does not fit one encoding.  SUBW/ADDW take 0..4095 and
@@ -14331,6 +14726,14 @@ static char *codegen_arm(IrProgram *prog) {
          * left behind, and its folded offsets are always within 4095 so
          * the far-offset fixer below has nothing to undo. */
         if (g_config.enable_opt_cmat) ark_cmat_function(&buf, fstart);
+#endif
+#if ARKCC_FEATURE_OPT_BITMASK
+        /* Bitmask cleanup, right after cmat: it eats the `MOV rX,#imm` /
+         * `MVN rX,rX` pair the emitter produced for `x &= ~mask`, and cmat is
+         * the pass that decides whether the mask is still materialised at
+         * all.  Before litpool, so a 32-bit mask that litpool would move to a
+         * pool word is still visible here as an immediate. */
+        if (g_config.enable_opt_bitmask) ark_bitmask_function(&buf, fstart);
 #endif
 #if ARKCC_FEATURE_OPT_LITPOOL
         /* 32-bit constants leave the instruction stream: a MOVW/MOVT pair

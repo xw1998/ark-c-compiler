@@ -204,6 +204,18 @@
 #   define ARKCC_FEATURE_OPT_BRANCH     1   /* 宿主/交叉编译：-fopt-branch 才有得开 */
 # endif
 #endif
+/* ARKCC_FEATURE_OPT_BITMASK: -fopt-bitmask, folding `MOV rX,#imm` +
+ * `MVN rX,rX` + `AND rY,rX` into `BIC rY,rY,#imm` (and the `MOV rY,rX` variant
+ * into `MVN rY,#imm`) (src/backend/arm/backend_arm.c).  Same trimming rule as
+ * the other text-level passes: a board build ships the default configuration,
+ * in which the pass is off, so the code would only ever sit in Flash. */
+#ifndef ARKCC_FEATURE_OPT_BITMASK
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_OPT_BITMASK  0   /* 板上裁掉：位掩码折叠只在宿主/交叉编译用 */
+# else
+#   define ARKCC_FEATURE_OPT_BITMASK  1   /* 宿主/交叉编译：-fopt-bitmask 才有得开 */
+# endif
+#endif
 /* ARKCC_FEATURE_OPT_IMM: -fopt-imm, folding a constant operand into the
  * instruction's immediate field instead of materialising it through the value
  * stack.  Same trimming rule as the other code-size passes. */

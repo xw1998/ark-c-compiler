@@ -24,6 +24,7 @@ typedef struct {
     int enable_opt_strength;        /* -fopt-strength: 乘 2^k 换成左移 */
     int enable_opt_cbz;             /* -fopt-cbz: CMP #0 + 条件跳转 合成 CBZ/CBNZ */
     int enable_opt_branch;          /* -fopt-branch: 能放进 16 位范围的分支缩成短跳 */
+    int enable_opt_bitmask;         /* -fopt-bitmask: MOV#imm+MVN+AND 折成 BIC，MOV 折成 MVN 立即数 */
     int enable_opt_imm;             /* -fopt-imm: 常量操作数折进指令立即数 */
     int enable_opt_peep;            /* -fopt-peep: 消除经栈的寄存器拷贝与回读 */
     int enable_opt_cbranch;         /* -fopt-cbranch: 比较结果直接喂给条件跳转 */

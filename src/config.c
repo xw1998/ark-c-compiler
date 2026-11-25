@@ -66,6 +66,7 @@ void config_init(void) {
     g_config.enable_opt_strength  = 0;
     g_config.enable_opt_cbz       = 0;
     g_config.enable_opt_branch    = 0;
+    g_config.enable_opt_bitmask   = 0;
     g_config.enable_opt_imm       = 0;
     g_config.enable_opt_peep      = 0;
     g_config.enable_opt_cbranch   = 0;
@@ -488,6 +489,8 @@ void config_apply_args(int argc, char **argv) {
                 g_config.enable_opt_cbz                 = enable;
             else if (ark_streq(name, "opt-branch") || ark_streq(name, "branch"))
                 g_config.enable_opt_branch              = enable;
+            else if (ark_streq(name, "opt-bitmask") || ark_streq(name, "bitmask"))
+                g_config.enable_opt_bitmask             = enable;
             else if (ark_streq(name, "opt-imm") || ark_streq(name, "imm"))
                 g_config.enable_opt_imm                 = enable;
             else if (ark_streq(name, "opt-peep") || ark_streq(name, "peep"))
@@ -557,6 +560,7 @@ void config_print(void) {
             g_config.enable_opt_strength);
     ark_log("  opt_cbz=%d opt_branch=%d\n",
             g_config.enable_opt_cbz, g_config.enable_opt_branch);
+    ark_log("  opt_bitmask=%d\n", g_config.enable_opt_bitmask);
     ark_log("  opt_imm=%d opt_peep=%d opt_cbranch=%d opt_copyprop=%d opt_live=%d opt_pair=%d\n",
             g_config.enable_opt_imm, g_config.enable_opt_peep,
             g_config.enable_opt_cbranch, g_config.enable_opt_copyprop,
