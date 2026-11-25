@@ -8885,6 +8885,27 @@ static char *ad_dup(const char *s)
 
 /* Rebuild one access line.  `index` >= 0 selects the register-offset form,
  * otherwise the immediate form with `off`. */
+/* `ADD d, s, #imm` / `SUB d, s, #imm` with the same operand layout as the
+ * emitter writes it, used by R0 to merge a MOV into the arithmetic that
+ * follows it. */
+static char *ad_arith_line(const char *mn, int dst, int src, int imm)
+{
+    AsmBuffer t;
+    char nm[4];
+    asmbuf_init(&t);
+    asmbuf_puts(&t, "    ");
+    asmbuf_puts(&t, mn);
+    asmbuf_putc(&t, ' ');
+    ad_rname(dst, nm);
+    asmbuf_puts(&t, nm);
+    asmbuf_puts(&t, ", ");
+    ad_rname(src, nm);
+    asmbuf_puts(&t, nm);
+    asmbuf_puts(&t, ", #");
+    asmbuf_int(&t, imm);
+    return ad_dup(t.buf);
+}
+
 static char *ad_mem_line(const char *mn, int dst, int base,
                          int index, int shift, int off)
 {
@@ -8937,6 +8958,63 @@ static int ad_imm_of(const char *op, int *imm)
 static int ad_off_ok(int off)
 {
     return (off >= 0 && off <= 4095) || (off >= -255 && off <= -1);
+}
+
+/* ---- look ahead for the first access through an address register ----
+ * The adjacent rules inside ark_addr_function only see the very next line.
+ * The emitter routinely puts one or two unrelated instructions between the
+ * address arithmetic and the access that consumes it, and those folds used to
+ * be left on the floor (189 candidate sites in the 26-flag corpus, 2026-11-25;
+ * 53 of them are actually paid here -- the rest end a block, and the death of
+ * the address register at a block end is not provable from the text alone).
+ * The window is deliberately tiny, and it closes on anything that
+ * touches either register: a missed fold is free, a wrong fold is a
+ * miscompile.
+ *
+ * Returns the line index of the first access whose memory base is `reg` (and
+ * which has no index register), or -1 when the window ends first.  -1 is also
+ * returned on a label, a conditional, a branch, a call, a write to `reg` or
+ * `guard`, or a read of `reg` that is not that access: in every one of those
+ * cases the definition of `reg` cannot simply disappear.  The caller still
+ * checks that the access leaves `reg` dead (or writes it), exactly as the
+ * adjacent rules do. */
+#define AD_ACC_WINDOW 4
+static int ad_first_access(AdLine *L, int nlines, int from, int reg, int guard,
+                           int *pdst, char *nmn, int nsz,
+                           int *poff, int *pidx, int *psh)
+{
+    int k, seen = 0;
+    for (k = from; k < nlines && seen < AD_ACC_WINDOW; k++) {
+        char mn[24], base[16];
+        char ops[AD_MAX_OP][AD_OPLEN];
+        int nops, isdot, islab, cond, rd, wr, dst, b, off, idx, sh;
+        if (L[k].del) continue;
+        if (!ad_parse(L[k].t, mn, sizeof mn, ops, &nops, &isdot, &islab)) continue;
+        if (islab) return -1;
+        if (isdot) continue;
+        seen++;
+        if (ad_streq(mn, "DMB") || ad_streq(mn, "DSB") || ad_streq(mn, "ISB")) continue;
+        ad_split_base(mn, base, &cond);
+        if (cond) return -1;                       /* conditional: not ours */
+        if (ad_streq(base, "B") || ad_streq(base, "BX") || ad_streq(base, "BL") ||
+            ad_streq(base, "BLX") || ad_streq(base, "CBZ") || ad_streq(base, "CBNZ"))
+            return -1;
+        if (ad_access(L[k].t, nmn, nsz, &dst, &b, &off, &idx, &sh) && b == reg) {
+            if (guard >= 0 && guard != reg) {
+                ad_rw(mn, nops, ops, guard, &rd, &wr);
+                if (wr) return -1;                 /* the base moved: stop here */
+            }
+            *pdst = dst; *poff = off; *pidx = idx; *psh = sh;
+            return k;
+        }
+        ad_rw(mn, nops, ops, reg, &rd, &wr);
+        if (wr || rd) return -1;                   /* our value is gone or wanted */
+        if (guard >= 0 && guard != reg) {
+            ad_rw(mn, nops, ops, guard, &rd, &wr);
+            if (wr) return -1;
+        }
+    }
+    return -1;
 }
 
 static void ark_addr_function(AsmBuffer *b, int from)
@@ -9016,6 +9094,35 @@ static void ark_addr_function(AsmBuffer *b, int from)
                 if (!L[k].del) { nex = k; break; }
             }
 
+            /* ---- R0: MOV RD, RS then ADD/SUB RD, RD, #imm ----
+             * The emitter forms an address (or any biased value) by copying
+             * the source out of the value-stack pool and then adding to the
+             * copy.  Thumb-2 encodes both in one instruction, and the MOV is
+             * dead the moment the ADD overwrites RD, so the merge needs no
+             * liveness check at all: the flags and the result are the ones
+             * the ADD already produced.  Only the unsigned 12-bit immediate
+             * of the ADD/SUB encoding is accepted; anything else (a negative
+             * bias, a register operand) is left alone. */
+            if (nex > 0 && ad_streq(mn, "MOV") && nops == 2 &&
+                ad_whole_reg(ops[0], &ab0) && ad_whole_reg(ops[1], &ab1) &&
+                ab0 <= 12 && ab1 <= 12 && ab0 != ab1) {
+                char mn2[24], bc[16];
+                char o2[AD_MAX_OP][AD_OPLEN];
+                int n2, dot2, lab2, c2, d2 = -1, s2r = -1, i2 = 0;
+                if (ad_parse(L[nex].t, mn2, sizeof mn2, o2, &n2, &dot2, &lab2) &&
+                    !dot2 && !lab2 && n2 == 3 &&
+                    (ad_streq(mn2, "ADD") || ad_streq(mn2, "SUB"))) {
+                    ad_split_base(mn2, bc, &c2);
+                    if (!c2 &&
+                        ad_whole_reg(o2[0], &d2) && ad_whole_reg(o2[1], &s2r) &&
+                        d2 == ab0 && s2r == ab0 &&
+                        ad_imm_of(o2[2], &i2) && i2 >= 0 && i2 <= 4095) {
+                        L[nex].t = ad_arith_line(bc, ab0, ab1, i2);
+                        L[i].del = 1; changed = 1; continue;
+                    }
+                }
+            }
+
             /* ---- R1/R2: ADD RD, RB, <#imm | RI> then an access through RD ----
              * RB is the value being indexed; RD may be RB itself (the usual
              * shape) or a third register. */
@@ -9047,6 +9154,37 @@ static void ark_addr_function(AsmBuffer *b, int from)
                                 ad_dead_after(L, nlines, nex + 1, ab0))) {
                         L[nex].t = ad_mem_line(nmn, mdst, ab1, aidx, ash, 0);
                         L[i].del = 1; changed = 1; continue;
+                    }
+                }
+            }
+
+            /* ---- R1b: ADD RB, RS, #imm, then an access through RB up to a
+             * few lines later ----
+             * The same fold as R1, except the access no longer has to be the
+             * very next line.  ad_first_access() closes the window on a label,
+             * a branch, a call, or any other mention of RB/RS, so the only
+             * shapes that fold are the ones where RB holds the address and
+             * nothing else happens to it in between.  Measured 2026-11-25 on
+             * the 26-flag corpus: 189 candidate sites, 53 paid; the rest end a
+             * block, where the death of the address register is not provable
+             * from the text alone and ad_dead_after() refuses. */
+            if (g_config.enable_opt_addr && ad_streq(mn, "ADD") && nops == 3 &&
+                ad_whole_reg(ops[0], &ab0) && ad_whole_reg(ops[1], &ab1) &&
+                ab0 <= 12 && ab1 <= 12) {
+                int aimm2 = 0;
+                if (ad_imm_of(ops[2], &aimm2)) {
+                    int acc, adst = -1, aoff = 0, aidx = -1, ash = 0;
+                    char amn[24];
+                    acc = ad_first_access(L, nlines, i + 1, ab0, ab1, &adst, amn,
+                                          (int)sizeof amn, &aoff, &aidx, &ash);
+                    if (acc > 0 && aidx < 0) {
+                        int s2 = aimm2 + aoff;
+                        if (ad_off_ok(s2) &&
+                            ((adst == ab0 && ad_is_load(amn)) ||
+                             ad_dead_after(L, nlines, acc + 1, ab0))) {
+                            L[acc].t = ad_mem_line(amn, adst, ab1, -1, 0, s2);
+                            L[i].del = 1; changed = 1; continue;
+                        }
                     }
                 }
             }
