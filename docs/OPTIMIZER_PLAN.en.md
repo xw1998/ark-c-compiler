@@ -869,8 +869,9 @@ two different claims.
 
 ## 4 Known debts (unrelated to optimisation, recorded)
 
-See `docs/BOARD_VALIDATION.md` section 8: about 1.3 KB of arena per statement, a long
-`double` literal off by 1 ulp, `aeabi_float.c` not uploaded to the board, occasional serial
-RX byte loss, `pyocd -m` needing a fixed cwd. The optimisation line does not touch these, but
+See `docs/BOARD_VALIDATION.md` section 8: about 1.3 KB of arena per statement,
+`aeabi_float.c` not uploaded to the board, occasional serial RX byte loss, `pyocd -m`
+needing a fixed cwd. **(The long `double` literal that was 1 ulp off is fixed in
+0.9.1-wip; see `docs/FLOATLIT.en.md`.)** The optimisation line does not touch these, but
 they constrain how it can be verified (e.g. the board cannot run a fully unrolled large
 function).

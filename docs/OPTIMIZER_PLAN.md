@@ -686,6 +686,7 @@
 
 ## 4 已知欠账（与优化无关，登记在案）
 
-见 `docs/BOARD_VALIDATION.md` §8：每语句约 1.3 KB arena、长 `double` 字面量差 1 ulp、
-板端未上传 `aeabi_float.c`、串口 RX 偶发丢字节、`pyocd -m` 需固定 cwd。
+见 `docs/BOARD_VALIDATION.md` §8：每语句约 1.3 KB arena、板端未上传 `aeabi_float.c`、
+串口 RX 偶发丢字节、`pyocd -m` 需固定 cwd。**（长 `double` 字面量差 1 ulp 已于 0.9.1-wip
+修掉，见 `docs/FLOATLIT.md`。）**
 优化线不碰这些，但**它们会限制优化的验证方式**（例如板端跑不动大函数的全展开）。
