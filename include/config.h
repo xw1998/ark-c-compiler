@@ -108,6 +108,10 @@ void config_load_file(const char *path);
 void config_apply_args(int argc, char **argv);
 /* Debug print of current g_config contents (to stderr) */
 void config_print(void);
+/* The last -fopt-* / -fno-opt-* spelling that matched no pass, or 0 if every
+ * one did.  The driver refuses such a name by itself: -fopt-* is our own
+ * family, so an unknown name in it is a misspelling. */
+const char *config_unknown_fopt(void);
 
 #if ARKCC_FEATURE_SIZEWEIGHT
 /* 0.9.1 --size-weight: 四个门槛作为 g_config.size_weight 的函数。

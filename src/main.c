@@ -691,7 +691,19 @@ int main(int argc, char **argv) {
         }
 #endif
         else if (a[0] == '-' && a[1] == 'f') {
-            /* -fxxx / -fno-xxx: already handled by config_apply_args, silently accepted here */
+            /* -fxxx / -fno-xxx is applied by config_apply_args().  gcc-style
+             * names it does not know are ignored there on purpose, so gcc
+             * command lines keep working.  -fopt-* is a different matter: that
+             * family is ours, so a name in it that matches no pass is a
+             * misspelling, and compiling with it silently dropped would be the
+             * one answer this compiler never gives. */
+            const char *bad = config_unknown_fopt();
+            if (bad) {
+                diag_driver("C3900U", bad, "");
+                diag_note("run arkcc --help for the passes this build understands");
+                diag_shutdown();
+                return 1;
+            }
         }
         else if (strncmp(a, "--diag_style=", 13) == 0) {
             /* Already applied by the pre-scan above. */

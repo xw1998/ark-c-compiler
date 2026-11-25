@@ -227,6 +227,34 @@ through exactly the same encoder as the host, so the assembler's two-pass size s
 (section 16.3 of `docs/VREG.md`) guards one and the same thing on all three platforms. Check 6 of `tests/run_vreg_tests.py` freezes the `-fopt-vreg` case as a regular
 gate (a `-DARKCC_FEATURE_OPT_VREG=0` build must refuse the flag and still compile without it).
 
+#### 5.2.1 A misspelling must be refused too (0.9.1-wip)
+
+The section above is about passes that exist but were cropped. The inverse case was
+simply wrong: **a name that does not exist at all** was accepted, dropped, and the file
+compiled anyway (`./arkcc -fopt-bogus hello.c` returned 0 and produced output
+byte-identical to the build without the flag). `-fopt-*` is this compiler's own family --
+gcc has no such spelling -- so a name inside that family which matches no pass is a
+**misspelling**, not a foreign flag.
+
+What the driver does now:
+
+| Input | Result |
+| --- | --- |
+| `-fopt-bogus` / `-fno-opt-bogus` / a bare `-fopt-` | `C3900U`, the token echoed exactly as typed, exit 1, **no output file written** |
+| `-fopt-vreg -fopt-bogus` (valid and invalid together) | the diagnostic names `-fopt-bogus`, not the valid flag next to it |
+| `-fbogus` / `-fvreg` / `-fno-strict-aliasing` (gcc-style bare `-fxxx`) | still silently tolerated, assembly and image **byte-identical** |
+| each of the 26 real `-fopt-*` names on its own | all `rc=0` (anti-false-positive: one typo in the table would become `C3900U`) |
+
+Both halves have to hold together: **the refusal targets a misspelling in our own
+family, it does not push gcc command lines back**. The unrecognised name is recorded in
+`config_apply_args()` and refused in the `-f` fallback branch of `main.c`, so the name
+table is not duplicated. The gate `tests/run_option_tests.py` (`make test-option`) pins
+all four rows and carries its own anti-false-green: the same test run against the old
+binary must go red (9 checks FAILED when measured this round; all green on the new one).
+One documentation misspelling is corrected along the way: the constant-division pass is
+spelled `--divconst`, and `IMM_FOLD` / `STRENGTH` used to call it `-fopt-divconst` --
+which under this rule is now refused.
+
 ### 5.3 Verification status of the three platforms (honest)
 
 | Platform | How it was checked | Status |

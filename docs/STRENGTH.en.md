@@ -363,7 +363,7 @@ without the flag are byte-identical to 0.9.0 (`cmp`-verified: `BASE-IDENTICAL`, 
   arithmetic; addr folds an already-computed address into an addressing mode. Adjacent but
   not overlapping; strength lives in the IR layer and addr in the assembly text, so the
   pipeline order follows from the architecture.
-- **Relation to `-fopt-divconst`**: that one handles division by constants (long divide →
+- **Relation to `--divconst`**: that one handles division by constants (long divide →
   multiply + shift), a different quadrant. Both replace an expensive instruction with a
   cheaper one, but divconst's predicate is a deterministic magic-number formula while this
   pass's predicate is exactly "is a power of two".

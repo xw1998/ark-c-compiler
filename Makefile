@@ -33,7 +33,7 @@ endif
         test-prop test-deadpush test-cmat test-slotreg test-opalloc test-boolmat \
         test-exit test-bitmask \
         test-voldmb test-volmem test-constcond \
-        test-litpool test-coalesce install \
+        test-litpool test-coalesce test-option install \
         stm32 stm32-check
 
 all: $(ARKCC)
@@ -49,7 +49,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-floatlit test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch test-imm test-peep test-cbranch test-copyprop test-cmat test-slotreg test-opalloc test-live test-movimm test-litpool test-coalesce test-voldmb test-volmem test-constcond test-boolmat test-exit test-bitmask
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-floatlit test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch test-imm test-peep test-cbranch test-copyprop test-cmat test-slotreg test-opalloc test-live test-movimm test-litpool test-coalesce test-voldmb test-volmem test-constcond test-boolmat test-exit test-bitmask test-option
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -379,6 +379,12 @@ test-slotreg: $(ARKCC)
 # that a function with no volatile access is untouched, that every arm returns
 # the Python answer under unicorn, and that a cropped build
 # (-DARKCC_FEATURE_OPT_VOLDBM=0) refuses the flag by name.  See docs/VOLDBM.md.
+# Gate for -fopt-* name handling: a name in this compiler's own family that
+# matches no pass is a misspelling and is refused by name (C3900U); gcc-style
+# -fxxx names stay silently tolerated, as they always were.
+test-option: $(ARKCC)
+	$(PYTHON) tests/run_option_tests.py ./$(ARKCC)
+
 test-voldmb: $(ARKCC)
 	$(PYTHON) tests/run_voldmb_tests.py ./$(ARKCC)
 

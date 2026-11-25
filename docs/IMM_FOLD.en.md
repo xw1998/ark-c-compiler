@@ -53,7 +53,7 @@ The layer differs from the first three passes: `-fopt-vstack` / `-fopt-addr` /
 > value on the stack it is" is gone.
 
 The IR has no such problem: the adjacency of `IR_PUSH_INT` and `IR_BINARY` is
-exact, and `-fopt-divconst` already used the same technique (`divconst_live` /
+exact, and `--divconst` already used the same technique (`divconst_live` /
 `skip`), so the convention can be copied.
 
 ## 2. The two shapes
@@ -126,7 +126,7 @@ All of the following stay exactly as they were (neither the push nor the
 register form changes):
 
 - `*` `/` `%`: there is no immediate form (the `MUL` immediate has to be in a
-  register already; division goes through `-fopt-divconst`, a different
+  register already; division goes through `--divconst`, a different
   magic-number scheme, see `docs/DIVCONST.md`);
 - floating point: `VADD` and friends do not take an integer immediate;
 - `k` does not fit the field (`ADD #4096`, `AND #0x12345678`, `SHL #32`);

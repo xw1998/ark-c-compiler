@@ -322,6 +322,6 @@ tests/arm_exec/run_arm_exec.py --arkcc ./arkcc.exe "--extra=-fopt-vstack -fopt-a
 - **与 `-fopt-addr` 的分工**：strength 缩短的是"算出地址算术里的乘法"，addr 折的
   "把已算出的地址塞进寻址方式"。两者相邻但不重叠；先做哪个都一样，但 stage 表里
   strength 在 IR 层、addr 在汇编文本层，顺序由架构决定。
-- **与 `-fopt-divconst` 的关系**：那条处理的是除法常数（长除法 → 乘法 + 移位），
+- **与 `--divconst` 的关系**：那条处理的是除法常数（长除法 → 乘法 + 移位），
   象限完全不同；两者都是"把一条贵指令换成便宜指令"，但 divconst 的判据是确定性
   魔数公式，本条的判据只有 2 的幂。

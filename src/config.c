@@ -7,6 +7,8 @@
  *   - config_apply_args      : scan argv for -O/-g/-fxxx/-fno-xxx,
  *                              override file settings (highest priority).
  */
+#include <string.h>
+
 #include "config.h"
 #include "platform.h"
 #include "flash_fs.h"
@@ -46,6 +48,15 @@ static int parse_int(const char *s, int *out) {
     if (!seen) return 0;
     *out = sign * v;
     return 1;
+}
+
+/* The last unrecognized -fopt-* spelling seen by config_apply_args(), so the
+ * driver can refuse it instead of compiling with the flag silently dropped.
+ * Empty means "none seen". */
+static char g_fopt_unknown[96];
+
+const char *config_unknown_fopt(void) {
+    return g_fopt_unknown[0] ? g_fopt_unknown : 0;
 }
 
 void config_init(void) {
@@ -539,7 +550,20 @@ void config_apply_args(int argc, char **argv) {
                 g_config.split_sections                 = enable;
             else if (ark_streq(name, "enum-is-int"))   g_config.enum_is_int          = enable;
             else if (ark_streq(name, "dollar"))        g_config.dollar_in_identifiers= enable;
-            /* Unrecognized -fxxx: ignore silently (avoid conflict with gcc-style -fxxx) */
+            /* -fopt-* is this compiler's own family (gcc has no such spelling),
+             * so a name in it that matches nothing is a misspelling, not a
+             * foreign flag.  Remember it and let the driver refuse it by name --
+             * "flag silently dropped" is the one answer this compiler does not
+             * give.  A bare -fxxx stays ignored below, so gcc-style flags keep
+             * passing through as they always have. */
+            else if (strncmp(name, "opt-", 4) == 0) {
+                int q = 0;
+                while (a[q] && q < (int)sizeof(g_fopt_unknown) - 1) {
+                    g_fopt_unknown[q] = a[q];
+                    q++;
+                }
+                g_fopt_unknown[q] = 0;
+            }
         }
     }
 }
