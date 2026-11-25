@@ -236,16 +236,78 @@ statement were already taken by `-fopt-pair` / `-fopt-vstack`, leaving S9b only 
 2. **Inter-block value passing** (now quantified, below) — the prerequisite of S9c in §5, i.e.
    in-block liveness in `RA_MODEL.en.md` §4.1b;
 
-   > Measured on the same 26-flag output: **single-register `PUSH`/`POP` round trips total 641
-   > instructions = 5.5%** (`PUSH {r0}` 498, `POP {r0}` 96, `POP {r1}` 42, five others), 78% of
-   > them r0. The shape is a **join of nested conditional expressions**: every arm ends with
-   > `MOV*/PUSH {r0}` + `B .Ljoin` and one `POP {rY}` sits at the outermost join — e.g.
-   > `stm32f4xx_hal_dma_ex.c` alone has 317 `PUSH {r0}` against only 38 `POP {r0}`, the rest
-   > matching `POP {r1}` many blocks further out. Because the pop can be dozens of blocks away,
-   > **this is not peephole-solvable**; it needs cross-block value liveness. Removing all 641
-   > gives about 11,025 instructions = 1.96x.
+   > Measured on the same 26-flag output: **501** single-register `PUSH` and **140**
+   > single-register `POP` (`PUSH {r0}` 498, `POP {r0}` 96, `POP {r1}` 42, `{r2}`/`{r3}` one
+   > each). A per-function LIFO stack replay splits them in two: **355 `PUSH {r0}` are never
+   > popped before the frame restore** (= 3.0%, dead stores that need no replacement), and only
+   > the remaining **~140 pairs** are real round trips. The shape is a **join of nested
+   > conditional expressions**: every arm ends `MOV*/PUSH {r0}` + `B .Ljoin` with one `POP {rY}`
+   > at the outermost join — `stm32f4xx_hal_dma_ex.c` alone has 317 `PUSH {r0}` against only 62
+   > single-register POPs, the rest landing on a further-out `POP {r1}` or simply thrown away by
+   > `MOV sp, r6`. **Full accounting and the preregistration are in §10.**
 3. the 931-instruction frame-access gap (976 vs 45), already judged un-cashable by an ordinary
    allocator in `RA_MODEL.en.md` — a structural difference.
 
 **Evidence kept**: the pre-withdrawal implementation patch is at `D:/tmp/bm/s9b_expr_retract.patch`
 (391 lines, not in the repo).
+
+## 10 Cross-block value passing (S10 preregistration, 2026-11-25)
+
+The §9 verdict points here, but §9's 641 is a **mixed** number. After a per-function LIFO stack
+replay (`D:/tmp/bm/stacksim.py`, read-only) the account is:
+
+| Shape | Count | Share | Cashable |
+| --- | ---: | ---: | --- |
+| `PUSH {r0}` never popped before the frame restore (dead store) | **355** | 3.0% | delete, **no replacement needed** |
+| live pair, `POP {r0}` (the arm already holds it in r0) | 96 | — | both instructions go, net 2 |
+| live pair, `POP {r1}`/`{r2}`/`{r3}` | 44 | — | pop becomes one arm-end `MOV`, net 1 |
+
+Ceiling: **355 + 96x2 + 44 = 591 instructions = 5.1%** ⇒ 11,666 -> 11,075 = **1.97x**.
+
+**Why dead stores exist**: the emitter pushes "the value this arm produced" onto the machine stack
+for the join to read, and some joins never read it (the enclosing expression got the value another
+way), so the `PUSH` survives until `MOV sp, r6` throws the whole frame away. There is **no `[sp, #n]`
+access anywhere** in the 0.9.1 output (armcc has 46), so "never popped" equals "never read" — an
+equivalence that is decidable on today's output.
+
+**Why a peephole is not enough**: the live half's `POP` sits dozens of blocks away (`hal_dma_ex`
+has 317 pushes against 62 single-register pops), so which register an arm must end in depends on
+the outer pop's target — that is **cross-block value liveness**, the S9c prerequisite of §5.
+
+### 10.1 Slicing
+
+- **S10a delete dead stores** (first: biggest and safest): per-function LIFO replay, delete every
+  single-register `PUSH {rR}` that is never popped before `MOV sp, r6` and where the function has no
+  `[sp` access. Whole-function skip conditions: a `sub sp` (VLA/`alloca`), a `setjmp`/`longjmp`
+  call, inline assembly, an exception/`__svc` frame on the stack.
+- **S10b join-point register merge**: for live pairs, rewrite `PUSH {r0}` + `B .Ljoin` as an
+  arm-end `MOV rY, r0` (when `rY == r0` just delete both) and drop the `POP {rY}` at the join.
+
+### 10.2 Criteria (frozen; the ceiling is only 5.1%, so the bar is rescaled and must not be mixed with §6's 10%)
+
+26 flags, 95 TUs, baseline 11,666 / 396,986:
+
+- net cut **>= 4% (>= 467) with bytes not increasing** ⇒ land it;
+- 2%-4% ⇒ register only, switch kept, off by default;
+- **< 2% ⇒ withdraw the switch (revert the code too)**.
+
+The five correctness conditions are the same as §6 (95 TUs compile / `tests/arm_exec` 0 failures /
+the seven existing gate scripts + `tools/stm32_build_check.py --layout both` / OFF IS OFF /
+`-fopt-*` rejected by name under `ARKCC_PROFILE=STM32_MIN`).
+
+### 10.3 Anti-false-green (frozen)
+
+1. **Balance self-check**: per function, `pushes - popped slots` must equal the baseline difference
+   minus the number deleted (proves the stack discipline still holds);
+2. **Slot trace self-check**: every deleted `PUSH` records function name, index and depth; the replay
+   asserts that no POP lands on that depth and no `[sp` access exists in that function. The check must
+   be able to **fire** (plant one `PUSH` that should be kept and confirm it is reported);
+3. **Never count "fewer PUSHes" as gain**: only the two-sided instruction/byte reading counts, and the
+   image must not grow;
+4. **Never touch multi-register frame `PUSH`/`POP`** (that is ABI, not this pass).
+
+### 10.4 Forbidden moves
+
+- Do not call S10 "cross-block liveness done" — it covers only the stack round trip;
+- Do not try it on VLA/`alloca`/`setjmp` functions (the stack is not LIFO there, the replay is invalid);
+- Do not replace `PUSH {r0}` with `STR r0, [sp, #-4]!` to make numbers (more bytes — cheating).
