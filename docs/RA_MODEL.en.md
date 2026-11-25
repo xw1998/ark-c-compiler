@@ -453,5 +453,7 @@ Three sentences, final:
    for 100 instructions (0.85%), and the residue is zero;
 2. **the model change (S8b/S8c) is recorded as `ceiling_insufficient`**: all 15.2% of the
    ceiling would still only give 1.78x, and the in-block realisable part is < 5%;
-3. to go further the entry point is the **expression-evaluation model** (not the allocator),
-   and it needs a new preregistration with newly frozen criteria.
+3. to go further the entry point is the **expression-evaluation model** (not the allocator);
+   its preregistration and frozen criteria are in [EXPR_MODEL.en.md](EXPR_MODEL.en.md)
+   (S9: the four value-transport classes overrun by 3,802 = 32.6%; eating all of it gives 1.40x,
+   another 500-700 gives about 1.28x).
