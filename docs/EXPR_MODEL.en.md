@@ -1151,3 +1151,109 @@ Workaround used by this round's gates: fixtures that carry user `asm` only enabl
    net is already accounted for.
 4. Do not claim "all combinations verified" because the gates stack 27 flags: they verify these
    two passes under the given combinations, not the Cartesian product of flags.
+
+
+## 16 S14: a per-function exemption for user inline assembly (2026-11-26, after the run)
+
+### 16.1 Why (following on from the §15.6 defect)
+
+The text passes work on the post-emission assembly text, and `__asm` is written into that
+text verbatim (`"    " + template`), so a pass cannot tell a user line from one it emitted
+itself. The measured consequence is a wrong answer: `-fopt-live` / `-fopt-cmat` silently
+deleted `__asm volatile("MOV r4, #11")`, and other passes could just as easily rename
+registers inside user code.
+
+**Two candidate fixes**:
+
+1. **A per-pass asm barrier**: add a "stop when you see asm" scan to each of the 12 passes
+   that rebuild a function. Large surface, and missing one is a silent wrong answer.
+2. **A per-function exemption**: if the body contains any `__asm`, the whole text pipeline
+   skips that function. Soundness for every pass at once, at the price of no text-layer
+   optimisation for such functions.
+
+Option 2 was taken. The criterion is **sound first** ("better to fail than to answer
+wrongly"): user asm is an **undeletable barrier**, and the compiler has no right to reorder,
+rename or delete around it.
+
+"Add a test-only switch that lifts the exemption" was **explicitly rejected**: it reopens a
+path to a silent wrong answer.
+
+### 16.2 Implementation (`src/backend/arm/backend_arm.c`)
+
+- `int fn_user_asm = 0;` next to `int fstart = 0;`, cleared at each function entry;
+- the first line of `case IR_ASM:` sets `fn_user_asm = 1;` (recorded at emission time, not
+  inferred from text, so formatting cannot defeat it);
+- at the text-pass block entry: `if (fn_user_asm) goto arm_skip_text_opts;`;
+- `ark_fix_far_offset(&buf, fstart);` **still runs** (it is a correctness fix: the far-branch
+  trampoline must exist), then the `arm_skip_text_opts:` label and
+  `if (fn_user_asm) goto arm_skip_frame_opts;`;
+- `arm_skip_frame_opts:` sits after the frame-bookkeeping pass's `#endif`, i.e.
+  `stackframe` / `deadins` are exempt too.
+
+### 16.3 Criteria and readings (`tests/run_userasm_tests.py`, 5 checks, all green)
+
+| check | result |
+| --- | --- |
+| all four user asm lines are present with no flags | ok |
+| **each of the 29 flags applied on its own** leaves the asm-bearing function byte-identical to the no-flag build | ok |
+| all 29 flags **at once** likewise byte-identical (307 B) | ok |
+| a second function in the same file with no asm **is still optimised** (46 → 14 insns) | ok |
+| both unicorn arms return 9 (the value the user asm wrote really lands) | ok |
+
+Checks 2 and 3 are the positive evidence: the passes really are on in this build (check 4
+proves it) and they do not touch the user's function at all. Check 4 also rules out the
+reading "the exemption means every pass is dead".
+
+### 16.4 Zero cost on the corpus
+
+None of the 95 TUs carries a user `asm` function, so the exemption changes no number:
+
+| tag | flags | insns | `.s` text bytes |
+| --- | --- | ---: | ---: |
+| `s14_off` | 25 flags (`sw24`) | 11,375 | 392,476 |
+| `s14_on` | 26 flags + `spill` + `ldhoist` + `stackframe` + `deadins` | **10,691** | **381,202** |
+
+`10,691 / 381,202` is **byte-identical** to `s13_both3` in §15.1, so §15's verdict needs no
+revision at all. Reproduction: `D:/tmp/bm/redo14.py`.
+
+### 16.5 Gate interaction: `run_ldhoist_tests.py` had to be rewritten (done)
+
+S12-1's must-trigger / must-not-trigger fixtures were written in **inline assembly** (§11
+records why: arkcc's own emitter cannot spell that shape). After S14 those fixtures are
+exempt wholesale, and `make test-ldhoist` failed 6 checks on the spot — **not a regression,
+a dead fixture**. What replaced them:
+
+- **The trigger arm is now a real TU**: `examples/ark_test/.../stm32f4xx_hal_dma_ex.c`, built
+  with all 26 flags (`vstack/addr/frame` alone give this pass a delta of 0, so the full set is
+  required), six HAL/CMSIS include paths, `-D STM32F401xE -D USE_HAL_DRIVER --reloc-data`.
+  Measured: `2186` → `2060` insns, **exactly one function** changes
+  (`HAL_DMAEx_MultiBufferStart_IT`, `2073 → 1947`, −126); inside it the hottest `[r8, #0]`
+  appears **256** times in the off arm, **126** are removed and **130** kept; the dedicated
+  register is `r4` (never present in the off text, in r4..r11), the prologue goes
+  `PUSH {r5,r6,r7,r8,lr} → {r4,r5,r6,r7,r8,r9,lr}` with all four return `POP`s widened,
+  `4×7 + 52 = 80` stays 8-byte aligned, no dangling labels, text 79,266 → 76,660 B.
+- **The intent of the three "must not trigger" checks is carried by evidence that survives**:
+  (a) the other three functions of the same TU are byte-identical; (b) 130 of the same-address
+  reloads in that function are **left alone** ("not hoist-everything"); (c) the pure-C fixture
+  is byte-identical and both unicorn arms still return 26. The three asm fixtures
+  (possibly-aliasing `STR` / `BL` / two-predecessor label) are deleted, with the module
+  docstring stating why they can no longer exercise this pass (the S14 exemption) and pointing
+  here.
+- The other two checks (`OFF IS OFF`, the cropped build refusing `C3900U` by name) now also run
+  on the real TU, which is strictly stronger.
+
+The gate currently has 18 checks, all green.
+
+### 16.6 Forbidden readings (frozen)
+
+1. Do not read the exemption as "the §15.6 defect was not serious": what was fixed is a
+   **wrong answer** (user asm deleted); the price is that **such a function gets no text-layer
+   optimisation at all**. Both halves must be stated.
+2. Do not read it as "every pass is dead": check 4 of `run_userasm_tests.py` and §16.4 both
+   show that functions without asm are optimised as before and the corpus numbers are unmoved.
+3. Do not re-interpret S12-1's verdict because `run_ldhoist_tests.py` was rewritten: §11's 127
+   deletions and the "registered tier" verdict stand; only the **fixture that measures it**
+   changed, because the fixture's carrier (inline assembly) is exempt under S14.
+4. Do not generalise "per-function exemption" into "per-module / per-file": the decision point
+   is `IR_ASM` appearing in **this** function, and other functions in the same file are
+   optimised as usual (check 4 pins this).

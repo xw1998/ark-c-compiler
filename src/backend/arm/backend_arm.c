@@ -13494,6 +13494,10 @@ static char *codegen_arm(IrProgram *prog) {
          * (g_ir_va_slot_region), so a variadic frame is just its locals. */
         int is_sret = 0;
         int fstart = 0;              /* where this function's text begins */
+        int fn_user_asm = 0;         /* body holds user `__asm`: the text passes
+                                      * cannot tell its lines from their own, so
+                                      * such a function is exempt from all of
+                                      * them (docs/EXPR_MODEL.md S15.6) */
         int sret_off = 0;
         int va_start_slot = 0;       /* first variadic word, in region words */
         int va_lo = 0;               /* first saved argument register (even)   */
@@ -15454,6 +15458,7 @@ static char *codegen_arm(IrProgram *prog) {
                     }
                 }
                 case IR_ASM:
+                    fn_user_asm = 1;
                     /* Inline assembly written out as-is.
                      * Extended form with '@' prefix (assembled by irgen): skip past the quote and write the template,
                      * ignoring outputs/inputs/clobbers; also replace %0/%1/... with
@@ -16462,6 +16467,7 @@ static char *codegen_arm(IrProgram *prog) {
 #endif
         }
         asmbuf_putc(&buf, '\n');
+        if (fn_user_asm) goto arm_skip_text_opts;
 #if ARKCC_FEATURE_OPT_VSTACK
         /* Keep the value stack in r5/r7 instead of memory.  Runs first, so the
          * slot rewriter below sees the already shortened function. */
@@ -16619,9 +16625,12 @@ static char *codegen_arm(IrProgram *prog) {
          * nothing to rewrite in what it produces. */
         if (g_config.enable_opt_ldhoist) ark_ldhoist_function(&buf, fstart);
 #endif
+arm_skip_text_opts:
         /* Correctness, not an option: a frame slot beyond 4095 bytes cannot be
-         * reached by "[r6, #off]" at all. */
+         * reached by "[r6, #off]" at all.  It stays correct on a function that
+         * holds user assembly, so it runs for every function. */
         ark_fix_far_offset(&buf, fstart);
+        if (fn_user_asm) goto arm_skip_frame_opts;
 
 #if ARKCC_FEATURE_OPT_STACKFRAME
         /* S13, frame bookkeeping last of all: it may only rewrite "[r6, #n]"
@@ -16637,6 +16646,7 @@ static char *codegen_arm(IrProgram *prog) {
          * docs/EXPR_MODEL.md section 14.6.2. */
         if (g_config.enable_opt_deadins) ark_deadins_function(&buf, fstart);
 #endif
+arm_skip_frame_opts:
 
         /* __attribute__((constructor/destructor)): register the function address in .init_array/.fini_array;
          * the C runtime startup code iterates and calls them before/after main.

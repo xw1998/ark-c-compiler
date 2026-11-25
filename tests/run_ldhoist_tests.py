@@ -2,40 +2,46 @@
 """Gate for the load-hoisting pass (0.9.1, -fopt-ldhoist / S12-1).
 
 The pass deletes a reload of the same `[Rb, #imm]` that the function already
-did a few lines earlier, by loading the value once into a register the
-function never names at all.  The rules are frozen in docs/EXPR_MODEL.md
-S12-1; this gate pins the four things that make the pass trustworthy:
+did, by loading the value once into a register the function never names at all.
+The rules are frozen in docs/EXPR_MODEL.md S12-1; this gate pins the four things
+that make the pass trustworthy:
 
   1. OFF IS OFF.  `-O2 <passes>` and `-O2 <passes> -fno-opt-ldhoist` are
-     byte-identical as assembly text and as image, and a build cropped to
+     byte-identical as assembly text, and a build cropped to
      -DARKCC_FEATURE_OPT_LDHOIST=0 produces the same text as the full build
      when the flag is absent.
-  2. IT FIRES, AND ONLY IN THE SHAPE THE RULES ALLOW.  The trigger fixture has
-     two loads of `[r8, #0]` on one single-predecessor chain, each followed by
-     `CMP` and killed by a `MOV` before the next level.  Exactly one load may
-     survive, its destination must be a register the function never named, that
-     register must be the one both `CMP`s read, the frame save/restore must be
-     widened by exactly the same set, sp must still be 8-byte aligned, and the
-     instruction count must drop.
-  3. IT DECLINES WHEN IT MUST.  A possibly-aliasing store, a call, and a label
-     with two predecessors each sit between the two loads; every one of those
-     three fixtures must come out byte-identical.  So must a pure-C fixture
-     that the pass has no provable candidate in.
+  2. IT FIRES, AND ONLY IN THE SHAPE THE RULES ALLOW.  On a real translation
+     unit exactly one function may change, the reloads it drops must all be
+     reloads of one and the same `[Rb, #imm]`, the kept value must land on a
+     callee-saved register the function never named before, that register must
+     be added to the prologue PUSH and to every return POP, sp must still be
+     8-byte aligned, no branch target may be left dangling, and the instruction
+     count must drop by exactly the number of dropped reloads.
+  3. IT DECLINES WHEN IT MUST.  The other functions of that unit must come out
+     byte-identical, the pass must leave far more same-address reloads alone
+     than it removes, and a pure-C fixture it has no provable candidate in must
+     be byte-identical and still compute the same value.
   4. CROPPED OUT, REFUSED.  A build with -DARKCC_FEATURE_OPT_LDHOIST=0 refuses
      `-fopt-ldhoist` by name (C3900U) instead of accepting it and doing nothing,
      and still compiles the same file without the flag.
 
-Why the fixtures are inline assembly: the seven frozen rules are narrow enough
-that arkcc's own code generation cannot produce a qualifying function from C
-(two loads of one address on a straight chain, with the destination killed
-between them and the result temporary landed on the same register).  The
-assembler copies `__asm volatile` text through verbatim, so the fixtures below
-spell the exact instruction sequence.  Mnemonics must be upper case: the text
-pass compares mnemonics literally, exactly as the emitter spells them.
+Why the trigger arm is a real translation unit: the pass runs last among the
+text passes, on the frame the earlier ones left, and the shape it eats -- a
+struct field reloaded before every test on a straight chain -- is produced by
+the other passes on HAL code, not by arkcc's emitter on a small C fixture.  The
+26-flag configuration below is the one the pass ships in; with only
+vstack/addr/frame the delta on this file is zero.  S12-1's must-not-trigger
+fixtures used inline assembly, which was the only way to spell the exact
+instruction sequence -- but since S14 (docs/EXPR_MODEL.md §16) a function that
+contains user `__asm` is exempt from every text pass, so those fixtures can no
+longer exercise this pass at all.  Section 3 keeps the same intent on evidence
+that survives: the untouched functions of the real unit, the decline ratio
+inside the one function that is rewritten, and the pure-C fixture.
 
 Usage: run_ldhoist_tests.py [path-to-arkcc]
 Exit 0 = every check passed, 1 = a check failed, 2 = setup problem.
 """
+import collections
 import glob
 import os
 import re
@@ -56,97 +62,34 @@ FLAG = '-fopt-ldhoist'
 INC = os.path.join(ROOT, 'stdlib', 'include')
 ASM_ARM = ['-target', 'arm', '-mcpu', 'Cortex-M4', '-S']
 IMG_ARM = ['-target', 'arm', '--vector-table']
-# The pass runs last among the text passes, on the frame the earlier ones left,
-# so the gate measures it in the configuration it ships in.
-PASSES = ['-fopt-vstack', '-fopt-addr', '-fopt-frame']
 
-# --- fixtures -------------------------------------------------------------
-# Every fixture is one instruction per __asm statement, so a difference
-# between two arms is exactly the pass's edit and nothing else.
+# The 26 text passes, in the order the corpus sweep uses them.  ldhoist runs
+# inside this pipeline, so the gate measures it where it ships.
+PASSES = ['-fopt-coalesce', '-fopt-addr', '-fopt-branch', '-fopt-cbranch',
+          '-fopt-cbz', '-fopt-constcache', '-fopt-copyprop', '-fopt-deadpush',
+          '-fopt-imm', '-fopt-live', '-fopt-peep', '-fopt-prop',
+          '-fopt-slotreg', '-fopt-strength', '-fopt-vstack', '-fopt-vreg',
+          '-fopt-cmat', '-fopt-pair', '-fopt-litpool', '-fopt-frame',
+          '-fopt-voldmb', '-fopt-constcond', '-fopt-boolmat', '-fopt-exit',
+          '-fopt-bitmask', '-fopt-spill']
 
-def _body(name, call_and_tail, between):
-    """A probe function with the two loads and a pluggable middle section."""
-    return (
-        'struct S { unsigned a; unsigned b; };\n'
-        'extern void lh_callee(void);\n'
-        'int lh_guard = 1;\n'
-        'unsigned %s(struct S *p)\n'
-        '{\n'
-        '    unsigned t = 0;\n'
-        '    __asm volatile("    MOV r8, r0");\n'
-        '    __asm volatile("    MOV r10, #11");\n'
-        '    __asm volatile("    MOV r11, #22");\n'
-        '    __asm volatile("    LDR r5, [r8, #0]");\n'
-        '    __asm volatile("    CMP r5, r10");\n'
-        '    __asm volatile("    BNE .Lt1");\n'
-        '    __asm volatile("    MOV r5, #10");\n'
-        '%s'
-        '    __asm volatile(".Lt1:");\n'
-        '    __asm volatile("    LDR r5, [r8, #0]");\n'
-        '    __asm volatile("    CMP r5, r11");\n'
-        '    __asm volatile("    BNE .Lt2");\n'
-        '    __asm volatile("    MOV r5, #20");\n'
-        '%s'
-        '    __asm volatile(".Lt2:");\n'
-        '    __asm volatile("    MOV r5, #0");\n'
-        '    __asm volatile(".Lend:");\n'
-        '    t = 1;\n'
-        '    return t + (unsigned)p;\n'
-        '}\n'
-        'int main(void) { return 0; }\n'
-        % (name, between, call_and_tail))
+# --- the real translation unit the trigger arm is measured on ---------------
+HAL_REL = 'examples/ark_test/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_dma_ex.c'
+HAL_INC = ['examples/ark_test/Core/Inc',
+           'examples/ark_test/Core/Inc/HAL_Driver/Inc',
+           'examples/ark_test/Drivers/STM32F4xx_HAL_Driver/Inc',
+           'examples/ark_test/Drivers/CMSIS/Device/ST/STM32F4xx/Include',
+           'examples/ark_test/Drivers/CMSIS/Include',
+           'stdlib/include']
+HAL_DEFS = ['-D', 'STM32F401xE', '-D', 'USE_HAL_DRIVER', '--reloc-data']
+TARGET_FN = 'HAL_DMAEx_MultiBufferStart_IT'
+# How many reloads of the hottest `[Rb, #imm]` the pass must actually remove
+# before the gate treats it as "it fires" rather than "it silently no-oped".
+FIRE_FLOOR = 100
 
-
-# MUST TRIGGER: nothing between the two loads but a compare, a branch and the
-# write that kills the destination.
-TRIGGER = '    __asm volatile("    B .Lend");\n'
-TRIGGER_C = _body('lh_probe', TRIGGER, TRIGGER)
-
-# MUST NOT TRIGGER #1: a store that may alias any address ends the region.
-NOSTORE_C = _body('lh_nostore',
-                  '    __asm volatile("    B .Lend");\n',
-                  '    __asm volatile("    STR r0, [r8, #4]");\n'
-                  '    __asm volatile("    B .Lend");\n')
-
-# MUST NOT TRIGGER #2: a call can clobber the hoisted register's memory.
-NOCALL_C = _body('lh_nocall',
-                 '    __asm volatile("    B .Lend");\n',
-                 '    __asm volatile("    BL lh_callee");\n'
-                 '    __asm volatile("    B .Lend");\n')
-
-# MUST NOT TRIGGER #3: a label with two predecessors (one of them a branch
-# out of the arm above it) ends the region before the second load.
-NOLABEL_C = (
-    'struct S { unsigned a; unsigned b; };\n'
-    'int lh_guard = 1;\n'
-    'unsigned lh_nolabel(struct S *p)\n'
-    '{\n'
-    '    unsigned t = 0;\n'
-    '    __asm volatile("    MOV r8, r0");\n'
-    '    __asm volatile("    MOV r10, #11");\n'
-    '    __asm volatile("    MOV r11, #22");\n'
-    '    __asm volatile("    LDR r5, [r8, #0]");\n'
-    '    __asm volatile("    CMP r5, r10");\n'
-    '    __asm volatile("    BNE .Lm");\n'
-    '    __asm volatile("    MOV r5, #10");\n'
-    '    __asm volatile("    BEQ .Lm");\n'
-    '    __asm volatile("    MOV r5, #12");\n'
-    '    __asm volatile(".Lm:");\n'
-    '    __asm volatile("    LDR r5, [r8, #0]");\n'
-    '    __asm volatile("    CMP r5, r11");\n'
-    '    __asm volatile("    BNE .Lz");\n'
-    '    __asm volatile("    MOV r5, #20");\n'
-    '    __asm volatile(".Lz:");\n'
-    '    __asm volatile("    MOV r5, #0");\n'
-    '    __asm volatile(".Lend:");\n'
-    '    t = 1;\n'
-    '    return t + (unsigned)p;\n'
-    '}\n'
-    'int main(void) { return 0; }\n')
-
-# MUST NOT TRIGGER #4: ordinary C.  Whatever the emitter produces here, the
-# pass must not find a provable region in it, so the text is byte-identical --
-# and the emulator must still return the Python answer.
+# MUST NOTHING: ordinary C.  Whatever the emitter produces here, the pass must
+# not find a provable region in it, so the text is byte-identical -- and the
+# emulator must still return the Python answer.
 PURE_C = """\
 volatile int lh_sink;
 static int lh_knock(int n)
@@ -198,22 +141,32 @@ def build(arkcc, work, name, flags, tag):
                   + list(flags), work)
     if rc != 0:
         return None, None, log.strip().splitlines()[:1] or ['image failed']
-    with open(asm, encoding='utf-8') as fh:
-        text = fh.read()
-    with open(img, 'rb') as fh:
-        blob = fh.read()
-    return text, blob, None
+    return read_text(asm), read_bytes(img), None
 
-def build_asm(arkcc, work, name, flags, tag):
-    """Assembly only, for fixtures whose image would not run on its own."""
-    src = os.path.join(work, name + '.c')
-    asm = os.path.join(work, '%s_%s.s' % (name, tag))
-    rc, log = run([arkcc] + ASM_ARM + ['-O2', '-I', INC, src, '-o', asm]
-                  + list(flags), work)
+def read_text(path):
+    # `.file 1` carries the source path in the host code page, so the listing is
+    # not guaranteed to be UTF-8.  Nothing this gate looks at lives in it.
+    with open(path, encoding='utf-8', errors='replace') as fh:
+        return fh.read()
+
+def read_bytes(path):
+    with open(path, 'rb') as fh:
+        return fh.read()
+
+def build_hal(arkcc, work, flags, tag):
+    """Assembly text for the real translation unit (no image: it is a library)."""
+    src = os.path.join(ROOT, HAL_REL)
+    if not os.path.exists(src):
+        return None, ['missing %s' % HAL_REL]
+    out = os.path.join(work, 'hal_%s.s' % tag)
+    argv = [arkcc] + ASM_ARM + ['-O2'] + HAL_DEFS + list(flags)
+    for d in HAL_INC:
+        argv += ['-I', os.path.join(ROOT, d)]
+    argv += ['-o', out, src]
+    rc, log = run(argv, work)
     if rc != 0:
         return None, log.strip().splitlines()[:1] or ['asm failed']
-    with open(asm, encoding='utf-8') as fh:
-        return fh.read(), None
+    return read_text(out), None
 
 INSN_RE = re.compile(r'^\s+[A-Za-z][A-Za-z0-9.]*\s')
 LABEL_DEF_RE = re.compile(r'^\s*(\.[A-Za-z0-9_.]+):', re.M)
@@ -221,13 +174,17 @@ BRANCH_REF_RE = re.compile(r'^\s+(?:B[A-Z]*|CBZ|CBNZ)\s+(\.[A-Za-z0-9_.]+)\s*$')
 PUSH_RE = re.compile(r'^\s+PUSH\s+\{([^}]*)\}\s*$', re.M)
 POP_PC_RE = re.compile(r'^\s+POP\s+\{([^}]*\bpc\b[^}]*)\}\s*$', re.M)
 FRAME_RE = re.compile(r'^\s+SUB\s+sp,\s*sp,\s*#(\d+)\s*$', re.M)
-LOAD_RE = re.compile(r'^\s+LDR\s+(r\d+),\s*\[r8, #0\]\s*$', re.M)
-CMP_RE = re.compile(r'^\s+CMP\s+(r\d+),\s*(r\d+)\s*$', re.M)
+LOAD_RE = re.compile(r'^\s+(LDR|LDRB|LDRH|LDRSB|LDRSH)\s+(r\d+),\s*'
+                     r'\[(r\d+)(?:,\s*#(\d+))?\]\s*$', re.M)
+SAVED_REGS = set(range(4, 12))
 
-def func_text(text, name):
-    m = re.search(r'^%s:\n(.*?)^\.size %s,' % (re.escape(name), re.escape(name)),
-                  text, re.M | re.S)
-    return m.group(1) if m else ''
+def functions(text):
+    """name -> body, for every function that carries a .size directive."""
+    out = {}
+    for m in re.finditer(r'^([A-Za-z_][A-Za-z0-9_]*):\n(.*?)^\.size \1,',
+                         text, re.M | re.S):
+        out[m.group(1)] = m.group(2)
+    return out
 
 def insn_count(text):
     return sum(1 for ln in text.splitlines() if INSN_RE.match(ln))
@@ -243,6 +200,19 @@ def dangling_labels(text):
 
 def reg_set(listing):
     return set(int(x) for x in re.findall(r'r(\d+)', listing))
+
+def load_keys(text):
+    """Counter of (mnemonic, base, offset) for every `LDR{,B,H,SB,SH} Rd,[Rb,#i]`."""
+    keys = collections.Counter()
+    for op, _rd, rb, imm in LOAD_RE.findall(text):
+        keys[(op, rb, int(imm or 0))] += 1
+    return keys
+
+def load_dests(text, key):
+    op, rb, imm = key
+    pat = re.compile(r'^\s+%s\s+(r\d+),\s*\[%s(?:,\s*#%d)?\]\s*$'
+                     % (op, rb, imm), re.M)
+    return pat.findall(text)
 
 def build_arkcc(where, defines, name):
     cc = os.environ.get('CC', 'gcc')
@@ -291,72 +261,73 @@ def main():
 
     work = tempfile.mkdtemp(prefix='arkcc_ldh_')
     try:
-        for name, body in (('trigger', TRIGGER_C), ('nostore', NOSTORE_C),
-                           ('nocall', NOCALL_C), ('nolabel', NOLABEL_C),
-                           ('pure', PURE_C)):
-            write(os.path.join(work, name + '.c'), body)
+        write(os.path.join(work, 'pure.c'), PURE_C)
 
         # --- 1. off is off --------------------------------------------------
-        ta, ba, e1 = build(arkcc, work, 'trigger', PASSES, 'plain')
-        tb, bb, e2 = build(arkcc, work, 'trigger',
-                           PASSES + ['-fno-opt-ldhoist'], 'nofl')
+        h_off, e1 = build_hal(arkcc, work, PASSES, 'plain')
+        h_nofl, e2 = build_hal(arkcc, work,
+                               PASSES + ['-fno-opt-ldhoist'], 'nofl')
         if e1 or e2:
-            check(False, 'the default build compiles the trigger fixture',
+            check(False, 'the default build compiles the trigger unit',
                   (e1 or e2)[0][:120])
+            h_off = None
         else:
-            check(ta == tb and ba == bb,
+            check(h_off == h_nofl,
                   'the default build ignores the pass '
                   '(-O2 == -O2 -fno-opt-ldhoist)',
-                  '%d/%d bytes' % (len(ba), len(bb)))
+                  '%d/%d bytes' % (len(h_nofl), len(h_off)))
 
         # --- 2. it fires, and only in the shape the rules allow -------------
-        arms = {}
-        for tag, flags in (('off', PASSES), ('on', PASSES + [FLAG])):
-            t, blob, err = build(arkcc, work, 'trigger', flags, tag)
-            if err:
-                check(False, 'trigger: %s arm builds' % tag, err[0][:120])
-                arms = None
-                break
-            arms[tag] = (t, blob)
-        if arms is not None:
-            off_t = func_text(arms['off'][0], 'lh_probe')
-            on_t = func_text(arms['on'][0], 'lh_probe')
-            if not off_t or not on_t:
-                check(False, 'trigger: lh_probe is in the assembly')
-            else:
-                ld_off = LOAD_RE.findall(off_t)
-                ld_on = LOAD_RE.findall(on_t)
-                check(len(ld_off) == 2 and len(ld_on) == 1,
-                      'trigger: two loads of [r8,#0] collapse to one',
-                      '%d -> %d' % (len(ld_off), len(ld_on)))
-                dest = ld_on[0] if ld_on else ''
+        h_on, e3 = build_hal(arkcc, work, PASSES + [FLAG], 'on')
+        if h_off is None or h_on is None:
+            check(False, 'trigger: the on arm builds',
+                  (e3 or ['off arm already failed'])[0][:120])
+        else:
+            fo = functions(h_off)
+            fn = functions(h_on)
+            changed = [k for k in fo if fo.get(k) != fn.get(k)]
+            check(changed == [TARGET_FN],
+                  'trigger: exactly one function in the unit changes',
+                  ', '.join(changed) or 'none')
+            if changed == [TARGET_FN]:
+                off_f, on_f = fo[TARGET_FN], fn[TARGET_FN]
+                ko, kn = load_keys(off_f), load_keys(on_f)
+                key = ko.most_common(1)[0][0] if ko else None
+                removed = 0
+                if key is not None:
+                    removed = ko[key] - kn[key]
+                check(key is not None and ko[key] >= 5,
+                      'trigger: the unit has one hot [Rb,#imm] worth hoisting',
+                      '%s x%d' % ((key[0], key[1], '#%d' % key[2]), ko[key])
+                      if key else 'no loads')
+                check(removed >= FIRE_FLOOR,
+                      'trigger: the pass removes the hot reload, not one of them',
+                      '%d of %d' % (removed, ko[key] if key else 0))
+                check(insn_count(on_f) == insn_count(off_f) - removed,
+                      'trigger: exactly the dropped reloads go, nothing else',
+                      '%d -> %d (-%d, removed %d)'
+                      % (insn_count(off_f), insn_count(on_f),
+                         insn_count(off_f) - insn_count(on_f), removed))
+                # The dedicated register: a callee-saved one the function never
+                # mentioned before, and the one the hot loads now read from.
+                aside = [d for d in (load_dests(on_f, key) if key else [])
+                         if not re.search(r'\b%s\b' % d, off_f)]
+                check(len(set(aside)) == 1,
+                      'trigger: the hoisted value lands on one brand-new register',
+                      ','.join(sorted(set(aside))) or 'none')
+                dest = sorted(set(aside))[0] if len(set(aside)) == 1 else ''
                 if dest:
-                    n = int(dest[1:])
-                    check(4 <= n <= 11,
-                          'trigger: the kept value lands on a callee-saved '
-                          'register r4..r11', dest)
-                    check(not re.search(r'\b%s\b' % dest, off_t),
-                          'trigger: that register is one the function never '
-                          'named', dest)
-                    cmps_off = CMP_RE.findall(off_t)
-                    cmps_on = CMP_RE.findall(on_t)
-                    check(len(cmps_on) == 2 and
-                          all(dest in pair for pair in cmps_on),
-                          'trigger: both compares read the hoisted register',
-                          ' '.join('CMP %s, %s' % p for p in cmps_on))
-                    check(cmps_off and
-                          not any(dest in pair for pair in cmps_off),
-                          'trigger: and neither did before',
-                          ' '.join('CMP %s, %s' % p for p in cmps_off))
-                push_off = reg_set(PUSH_RE.search(off_t).group(1)) \
-                    if PUSH_RE.search(off_t) else set()
-                push_on = reg_set(PUSH_RE.search(on_t).group(1)) \
-                    if PUSH_RE.search(on_t) else set()
-                pops_off = [reg_set(m.group(1)) for m in POP_PC_RE.finditer(off_t)]
-                pops_on = [reg_set(m.group(1)) for m in POP_PC_RE.finditer(on_t)]
+                    check(int(dest[1:]) in SAVED_REGS,
+                          'trigger: that register is callee-saved r4..r11', dest)
+                push_off = reg_set(PUSH_RE.search(off_f).group(1)) \
+                    if PUSH_RE.search(off_f) else set()
+                push_on = reg_set(PUSH_RE.search(on_f).group(1)) \
+                    if PUSH_RE.search(on_f) else set()
+                pops_off = [reg_set(m.group(1)) for m in POP_PC_RE.finditer(off_f)]
+                pops_on = [reg_set(m.group(1)) for m in POP_PC_RE.finditer(on_f)]
                 added = push_on - push_off
                 if dest:
-                    check(dest[0] == 'r' and int(dest[1:]) in added,
+                    check(int(dest[1:]) in added,
                           'trigger: the frame save is widened by the new '
                           'register',
                           'PUSH %d -> %d regs, added %s'
@@ -364,48 +335,44 @@ def main():
                              ','.join('r%d' % r for r in sorted(added)) or '-'))
                 check(bool(pops_on) and len(pops_on) == len(pops_off) and
                       all(p - {15} == push_on - {14} for p in pops_on),
-                      'trigger: every return POP restores exactly the saved '
-                      'set',
+                      'trigger: every return POP restores exactly the saved set',
                       '%d exit(s)' % len(pops_on))
-                check(len(added) in (1, 2),
-                      'trigger: one or two registers are added, never more',
-                      '%d' % len(added))
-                fr_on = FRAME_RE.search(on_t)
+                fr_on = FRAME_RE.search(on_f)
                 fbytes = int(fr_on.group(1)) if fr_on else -1
-                listing = PUSH_RE.search(on_t)
+                listing = PUSH_RE.search(on_f)
                 nsave = len(push_on) + (1 if listing and 'lr' in
                                         listing.group(1) else 0)
                 check(fbytes >= 0 and (4 * nsave + fbytes) % 8 == 0,
                       'trigger: sp stays 8-byte aligned (AAPCS)',
                       '%d saved (incl. lr) + %d frame = %d'
                       % (nsave, fbytes, 4 * nsave + fbytes))
-                check(insn_count(on_t) == insn_count(off_t) - 1,
-                      'trigger: exactly one instruction goes (the reload)',
-                      '%d -> %d' % (insn_count(off_t), insn_count(on_t)))
-                check(not dangling_labels(on_t),
+                check(not dangling_labels(h_on),
                       'trigger: every branch target is still defined')
-                check(len(arms['on'][1]) <= len(arms['off'][1]),
-                      'trigger: the image never grows',
-                      'off/on=%d/%d bytes'
-                      % (len(arms['off'][1]), len(arms['on'][1])))
+                check(len(h_on) < len(h_off),
+                      'trigger: the text shrinks',
+                      '%d -> %d bytes' % (len(h_off), len(h_on)))
 
         # --- 3. it declines when it must ------------------------------------
-        for name, func in (('nostore', 'lh_nostore'),
-                           ('nocall', 'lh_nocall'),
-                           ('nolabel', 'lh_nolabel')):
-            on_t, eo = build_asm(arkcc, work, name, PASSES + [FLAG], 'on')
-            off_t, ef = build_asm(arkcc, work, name, PASSES, 'off')
-            if eo or ef:
-                check(False, '%s: the fixture builds' % name,
-                      (eo or ef)[0][:120])
-                continue
-            check(on_t == off_t,
-                  '%s: a %s between the two loads leaves the text '
-                  'byte-identical' % (name, {
-                      'nostore': 'possibly-aliasing store',
-                      'nocall': 'call',
-                      'nolabel': 'two-predecessor label'}[name]),
-                  '%d/%d bytes' % (len(on_t), len(off_t)))
+        if h_off is None or h_on is None:
+            check(False, 'decline: the unit has an off and an on arm')
+        else:
+            fo, fn = functions(h_off), functions(h_on)
+            others = [k for k in fo if k != TARGET_FN]
+            untouched = [k for k in others if fo[k] == fn.get(k)]
+            check(bool(others) and len(untouched) == len(others),
+                  'decline: the other functions of the unit are byte-identical',
+                  '%d/%d' % (len(untouched), len(others)))
+            ko, kn = load_keys(fo.get(TARGET_FN, '')), \
+                load_keys(fn.get(TARGET_FN, ''))
+            key = ko.most_common(1)[0][0] if ko else None
+            if key is None:
+                check(False, 'decline: the hot address is there to be declined')
+            else:
+                kept = kn[key]
+                check(kept > ko[key] - kept,
+                      'decline: the pass leaves more reloads alone than it '
+                      'removes (it is not "hoist everything")',
+                      '%d rewritten, %d kept' % (ko[key] - kept, kept))
 
         # --- 4. plain C is untouched, and still computes --------------------
         arms = {}
@@ -419,8 +386,7 @@ def main():
         if arms is not None:
             check(arms['on'][0] == arms['off'][0] and
                   arms['on'][1] == arms['off'][1],
-                  'pure C: the pass finds nothing to prove and changes '
-                  'nothing',
+                  'pure C: the pass finds nothing to prove and changes nothing',
                   '%d/%d bytes' % (len(arms['on'][1]), len(arms['off'][1])))
             if not HAVE_UNICORN:
                 skip('pure C: emulator value', 'python package unicorn missing')
@@ -445,23 +411,22 @@ def main():
         if trimmed is None:
             skip('a cropped build refuses -fopt-ldhoist', why)
         else:
-            src = os.path.join(work, 'trigger.c')
-            rc, log = run([trimmed, '-S'] + ASM_ARM + ['-O2', '-I', INC, src,
-                          '-o', 't.s', FLAG], work)
+            src = os.path.join(ROOT, HAL_REL)
+            rc, log = run([trimmed] + ASM_ARM + ['-O2'] + HAL_DEFS +
+                          [FLAG, '-o', 't.s', src], work)
             check(rc != 0 and 'C3900U' in log and FLAG in log,
                   'the cropped build refuses -fopt-ldhoist by name',
                   'rc=%d' % rc)
-            t_small, e_small = build_asm(trimmed, work, 'trigger', PASSES,
-                                         'cropped')
-            t_full, e_full = build_asm(arkcc, work, 'trigger', PASSES, 'full')
+            h_small, e_small = build_hal(trimmed, work, PASSES, 'cropped')
+            h_full, e_full = build_hal(arkcc, work, PASSES, 'full')
             if e_small or e_full:
-                check(False, 'the cropped build still compiles the fixture',
+                check(False, 'the cropped build still compiles the unit',
                       (e_small or e_full)[0][:120])
             else:
-                check(t_small == t_full,
+                check(h_small == h_full,
                       'the cropped build writes the same text as the full '
                       'build when the flag is absent',
-                      '%d/%d bytes' % (len(t_small), len(t_full)))
+                      '%d/%d bytes' % (len(h_small), len(h_full)))
         return 1 if failures else 0
     finally:
         if '--keep' not in sys.argv:
