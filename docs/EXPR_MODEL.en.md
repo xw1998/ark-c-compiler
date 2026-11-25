@@ -504,3 +504,90 @@ That is a project-level change and cannot be reached by local rewriting.
 **No existing verdict changes**: §10.5's "bound falsified" and §10.6's "S10 saturated" both
 still hold; this section only measures the "how much is left in the text layer" question down
 to 2.3% and gives a reproducible decomposition.
+### 10.8 Where the gap actually sits: five functions hold more than half of it (2026-11-25)
+
+§10.7 measured the text layer down to 2.3%.  The question a census has to answer next is
+**whether the remaining 6,068 instructions are spread evenly over the 95 TUs or concentrated in
+a few functions** -- that decides whether the next step is "one more general pass" or "fix one
+shape".
+
+Per-function reconciliation (`D:/tmp/bm/fndiff.py`; only functions that occur in both the arkc
+and the gcc listing, counting indented lines that do not start with `.`):
+
+| Function | arkc | gcc -O2 | Diff |
+| --- | ---: | ---: | ---: |
+| `stm32f4xx_hal_dma_ex.c:HAL_DMAEx_MultiBufferStart_IT` | 2,073 | 292 | **+1,781** |
+| `stm32f4xx_hal_rcc.c:HAL_RCC_OscConfig` | 1,034 | 366 | +668 |
+| `stm32f4xx_hal_dma.c:HAL_DMA_IRQHandler` | 460 | 182 | +278 |
+| `stm32f4xx_hal_rcc.c:HAL_RCC_ClockConfig` | 331 | 124 | +207 |
+| `stm32f4xx_hal_rcc_ex.c:HAL_RCCEx_PeriphCLKConfig` | 309 | 130 | +179 |
+| `stm32f4xx_hal_gpio.c:HAL_GPIO_Init` | 304 | 158 | +146 |
+| `stm32f4xx_hal_pwr_ex.c:HAL_PWREx_ControlVoltageScaling` | 177 | 72 | +105 |
+| `stm32f4xx_hal_flash.c:HAL_FLASH_IRQHandler` | 179 | 77 | +102 |
+| `stm32f4xx_hal_gpio.c:HAL_GPIO_DeInit` | 183 | 93 | +90 |
+| `stm32f4xx_hal_rcc_ex.c:HAL_RCCEx_EnablePLLI2S` | 126 | 38 | +88 |
+| sum over all common functions | -- | -- | **+5,260** |
+
+The top five account for +3,113, i.e. **59%** of the comparable gap, and the first one alone is
+**34%**.  So the "2.2x" headline is not uniform across the corpus: **half of it sits in three or
+five HAL functions**, and the other ninety are already close to gcc.  That is the most valuable
+reading of this round -- it narrows "change the model" down to "look at what happens inside
+`HAL_DMAEx_MultiBufferStart_IT`".
+
+**Dissecting that function** (arkc: 2,120 instruction lines, 536 labels, a literal pool in groups
+of 18 words; gcc: 292):
+
+| Mnemonic | arkc | Meaning |
+| --- | ---: | --- |
+| LDR | 565 | the compared field and a literal are reloaded once per level |
+| MOV | 532 | the selected constant is copied into r0 once per level |
+| CMP | 263 | one equality test per level |
+| B | 262 | "value selected -> join" once per level |
+| BNE | 244 | "not equal -> next level" once per level |
+| MOVW | 65 | used when the selected constant is above 255 |
+| STR | 47 | the actual side effects (only 47) |
+
+The C side is about 40 lines: five `__HAL_DMA_CLEAR_FLAG(hdma, __HAL_DMA_GET_xx_FLAG_INDEX(hdma))`
+macros, each expanding into a **19-level conditional-expression chain**
+(`inst == DMA1_Stream0 ? A : inst == DMA1_Stream1 ? B : ...`), and the chain is expanded **once per
+macro**.  **Six instructions per level**: `LDR r0,[r8,#0]` (reload `hdma->Instance`),
+`LDR r7,.Llit_i` (reload an address constant), `CMP r0,r7`, `BNE .Lnext`, `MOV/MOVW r0,#k`
+(the selected value), `B .Ljoin`.
+
+gcc's shape at the same place (`D:/tmp/bm/gccmulti.s`):
+
+```asm
+	movs	r3, #1
+	b	.L24
+.L32:
+	ldr	r3, .L64+28        ; an 8-word pool of peripheral base addresses
+	cmp	r4, r3             ; hdma->Instance is loaded once and stays in r4
+	beq	.L37
+	adds	r3, r3, #24        ; next stream = base + 0x18, no extra pool word
+	cmp	r4, r3
+	beq	.L38
+	...
+	str	r1, [r3, #-56]     ; the selected arm stores through the addressing mode
+```
+
+Three differences, all structural:
+
+1. **The compared value is loaded once** (gcc in `r4`, we reload it into `r0` per level);
+2. **Later constants are derived arithmetically** (`adds r3, r3, #24`; we open a new pool word
+   per level);
+3. **The address selection is folded into each arm's store** (`str r1, [r3, #-56]`; we push the
+   address onto the machine stack and pop it at the join to do `STR r0,[r1,#0]`).
+
+**Why the text layer cannot fix it** (all three measured this round on `cp/new_s25`):
+
+| Candidate | Upper bound | Why it is not enough |
+| --- | ---: | --- |
+| Load reuse across single-predecessor edges (`ldrcse_ub6.py`) | 127 (1.15%) | each level's `MOV r0,#k` clears the holding register; only 109 sites in the chain are genuinely reusable |
+| Destination-register forwarding (`dstfwd_ub.py`) | 112 (1.0%) | only holds where the producer's Rd is unconstrained in the 16-bit encoding (LDR/MOV/MOVW/MUL/UXT...); forwarding a two-operand ALU form forces a 32-bit encoding, so bytes do not shrink |
+| Branch to the immediately following label (`brnext3.py`, strict) | 48 (0.43%) | requires only metadata between branch and label; another 46 have `.align`/pool words in between and **must not be deleted** (control would fall into data) |
+
+Together these are 287 instructions (2.6%), still short of a preregistration, and the real money is
+one level up: **the chain should not be expanded this way at all**.  That needs (a) a register for
+the compared value that the result constants do not clobber, and (b) "which arm was taken" turned
+into a constant sequence rather than one instruction per level.  Both live in emission/IR, not in
+text.
