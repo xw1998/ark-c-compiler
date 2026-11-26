@@ -417,6 +417,20 @@
 # endif
 #endif
 
+/* ARKCC_FEATURE_OPT_ADDRFOLD: -fopt-addrfold, S20 address-chain folding --
+ * an `ADD rA, rB, #k1` whose result the very next instruction consumes and
+ * then leaves dead is deleted, its offset folded into either the next `ADD`
+ * or the `[rA, #k2]` of the access that follows (docs/EXPR_MODEL.md
+ * section 30).  Needs the live pass' basic blocks and liveness, so it is off
+ * the STM32 profile together with it. */
+#ifndef ARKCC_FEATURE_OPT_ADDRFOLD
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_OPT_ADDRFOLD 0  /* 板上裁掉：只在宿主/交叉编译用 */
+# else
+#   define ARKCC_FEATURE_OPT_ADDRFOLD 1
+# endif
+#endif
+
 /* ARKCC_FEATURE_OPT_VOLDBM: -fopt-voldmb, elide the DMB SY pair around a
  * volatile access to a frame slot whose address this function never takes.
  * A barrier orders memory transactions as seen by *another* observer; with

@@ -1849,6 +1849,179 @@ static int lv_rebuild(char *dst, int cap, const cp_ins *o) {
     return k < cap;
 }
 
+#if ARKCC_FEATURE_OPT_ADDRFOLD
+/* ------------------------ address-chain folding (S20) --------------------
+ * An address is often built in two steps -- the frame base plus a field
+ * offset, then that field offset plus an array index -- and the first ADD is
+ * pure bookkeeping once the intermediate register dies immediately:
+ *
+ *   A  ADD|SUB rA, rB, #k1
+ *      ADD|SUB rC, rA, #k2          (rA dead)  ->  ADD|SUB rC, rB, #k1+k2
+ *
+ *   B  ADD     rA, rB, #k1
+ *      LDR|STR* rD, [rA, #k2]       (rA dead)  ->  LDR|STR* rD, [rB, #k1+k2]
+ *
+ * (docs/EXPR_MODEL.md section 30).  Both are text rewrites over the same
+ * basic blocks and per-instruction liveness the live pass already computes;
+ * only the two lines take part, nothing else in the function moves.
+ *
+ * What must hold, and why:
+ *   - the two instructions are adjacent in one basic block (`bof[]`), neither
+ *     under an IT and neither with a `!` write-back;
+ *   - `rA` is not live after the second instruction (`la[]`): that is what
+ *     makes deleting the first one invisible;
+ *   - every register is r0-r12, so no sp/lr/pc ever takes part;
+ *   - the rewritten instruction is no wider than the original
+ *     (`af_alu_size` / `af_mem_size` against the internal assembler), so the
+ *     fold can never trade a deleted 2-byte ADD for a 4-byte access;
+ *   - rule A keeps |k1+k2| <= 255 and skips k1+k2 == 0; rule B keeps
+ *     0 <= k1+k2 <= 4095 with both offsets non-negative;
+ *   - no conditional-flag consumer can see the second instruction's flags
+ *     (`af_flags_free`): rule A changes C/V and rule B deletes the flag
+ *     writer outright.  Measured on the 31-flag corpus: 606 flag consumers,
+ *     every one of them reading a `CMP` (tests/run_addrfold_tests.py item 6),
+ *     so the guard costs nothing and never guesses.
+ */
+/* "#<decimal>" -> value, signed by nothing: the emitter writes every
+ * immediate as a plain non-negative decimal, so anything else -- a symbol, a
+ * hex constant, a shifted operand -- is simply not a candidate. */
+static int af_imm(const char *s, int *v) {
+    int n = 0, d = 0;
+    if (s[0] != '#') return 0;
+    s++;
+    while (*s >= '0' && *s <= '9') {
+        if (++d > 5) return 0;       /* no foldable immediate is above 4095 */
+        n = n * 10 + (*s - '0');
+        s++;
+    }
+    if (!d || *s) return 0;
+    *v = n;
+    return 1;
+}
+
+/* `ADD|SUB rD, rN, #imm` with every register in r0-r12.  `*k` comes back
+ * signed, so rule A can add two offsets without re-reading the mnemonic.
+ * The flag-setting spellings (ADDS/SUBS) do not match: those are the
+ * explicit carry chains of 64-bit arithmetic. */
+static int af_alu_imm(const cp_ins *o, int *rd, int *rn, int *k) {
+    int a, b, v;
+    if (strcmp(o->mn, "ADD") && strcmp(o->mn, "SUB")) return 0;
+    if (o->nops != 3) return 0;
+    if (!cp_reg(o->op[0], &a) || !cp_reg(o->op[1], &b)) return 0;
+    if (a < 0 || a > 12 || b < 0 || b > 12) return 0;
+    if (!af_imm(o->op[2], &v)) return 0;
+    *rd = a;
+    *rn = b;
+    *k = o->mn[1] == 'U' ? -v : v;
+    return 1;
+}
+
+/* `LDR|LDRB|LDRH|LDRSH|STR|STRB|STRH rD, [rN]` or `[rN, #imm]` and nothing
+ * else: no index register, no write-back, no shifted offset, no literal-pool
+ * symbol.  `*k` is the offset (0 for the bare form). */
+static int af_mem_imm(const cp_ins *o, int *rt, int *rn, int *k) {
+    static const char *M[] = { "LDR", "LDRB", "LDRH", "LDRSH",
+                               "STR", "STRB", "STRH", NULL };
+    const char *s;
+    int m = 0, rt0, r = 0, v = 0, i;
+    while (M[m] && strcmp(o->mn, M[m])) m++;
+    if (!M[m] || o->nops != 2) return 0;
+    if (!cp_reg(o->op[0], &rt0) || rt0 < 0 || rt0 > 12) return 0;
+    s = o->op[1];
+    if (s[0] != '[' || s[1] != 'r' || s[2] < '0' || s[2] > '9') return 0;
+    i = 2;
+    while (s[i] >= '0' && s[i] <= '9') { r = r * 10 + (s[i] - '0'); i++; }
+    if (r > 12) return 0;
+    if (s[i] == ']' && !s[i + 1]) { *rt = rt0; *rn = r; *k = 0; return 1; }
+    if (s[i] != ',' || s[i + 1] != ' ' || s[i + 2] != '#') return 0;
+    i += 3;
+    if (s[i] < '0' || s[i] > '9') return 0;
+    while (s[i] >= '0' && s[i] <= '9') { v = v * 10 + (s[i] - '0'); i++; }
+    if (s[i] != ']' || s[i + 1]) return 0;
+    *rt = rt0;
+    *rn = r;
+    *k = v;
+    return 1;
+}
+
+/* Encoded width in bytes of `ADD|SUB rD, rN, #imm`, mirroring the immediate
+ * shapes in emit_add_sub_imm_a (backend_arm.c): the 16-bit forms are
+ * `ADDS rdn, #imm8` (rd == rn, r0-r7) and `ADD|SUB rdn, rn, #imm3`; every
+ * other shape is the 32-bit S=1 form. */
+static int af_alu_size(int rd, int rn, int imm) {
+    if (imm >= 0 && imm <= 255 && rd == rn && rd <= 7) return 2;
+    if (imm >= 0 && imm <= 7 && rd <= 7 && rn <= 7) return 2;
+    return 4;
+}
+
+/* Encoded width of `LDR|STR* rD, [rN, #imm]`, mirroring ldr_str_size2_a. */
+static int af_mem_size(const char *mn, int rt, int rn, int imm) {
+    int low = (rt <= 7 && rn <= 7);
+    if (!strcmp(mn, "LDR") || !strcmp(mn, "STR"))
+        return (low && imm >= 0 && imm <= 124 && (imm & 3) == 0) ? 2 : 4;
+    if (!strcmp(mn, "LDRB") || !strcmp(mn, "STRB"))
+        return (low && imm >= 0 && imm <= 31) ? 2 : 4;
+    if (!strcmp(mn, "LDRH") || !strcmp(mn, "STRH"))
+        return (low && imm >= 0 && imm <= 62 && (imm & 1) == 0) ? 2 : 4;
+    return 4;                        /* LDRSH: no 16-bit immediate form */
+}
+
+/* Does this mnemonic read the condition flags? */
+static int af_flag_reader(const char *m) {
+    if (!strcmp(m, "ADC") || !strcmp(m, "ADCS") ||
+        !strcmp(m, "SBC") || !strcmp(m, "SBCS")) return 1;
+    if (m[0] == 'I' && m[1] == 'T') return 1;
+    if (m[0] == 'B' && m[2] && !m[3] && strchr("NEGTLOSH", m[1])) return 1;
+    return 0;
+}
+
+/* 1 = leaves the flags alone, 2 = writes them (a later reader cannot see the
+ * folded instruction's flags), 0 = reads them or ends the straight-line run
+ * (so the order stops being obvious and the fold is refused). */
+static int af_flag_effect(const char *m) {
+    static const char *N[] = {
+        "MOV", "MOVW", "MOVT", "LDR", "LDRB", "LDRH", "LDRSB", "LDRSH",
+        "STR", "STRB", "STRH", "PUSH", "POP", "NOP", "VLDR", "VSTR", NULL
+    };
+    int i = 0;
+    if (af_flag_reader(m)) return 0;
+    if (!strncmp(m, "LDM", 3) || !strncmp(m, "STM", 3)) return 1;
+    while (N[i] && strcmp(m, N[i])) i++;
+    if (N[i]) return 1;
+    /* CBZ/CBNZ read a register, not the flags, so the flags they were given
+     * survive them -- important, because -fopt-cbz puts one right after most
+     * of the loads this fold wants to reach.  An unconditional branch, a call
+     * or a return ends the straight line the flag argument was built on, so
+     * the scan stops there instead of guessing across it. */
+    if (!strcmp(m, "CBZ") || !strcmp(m, "CBNZ")) return 1;
+    if (!strcmp(m, "B") || !strcmp(m, "BL") || !strcmp(m, "BX") ||
+        !strcmp(m, "BLX"))
+        return 0;
+    return 2;
+}
+
+/* May the flags written at instruction `j` be replaced?  Flags are
+ * block-local in this code base -- `ark_deadins` already deletes a `CMP`
+ * whose flags nothing in its own block reads -- so the scan covers the rest
+ * of `j`'s basic block and nothing else.  A reader reached before any writer
+ * refuses the fold; a conditional branch is a reader and is therefore
+ * refused, while a `CBZ` (which reads a register, not the flags) only ends
+ * the block and lets the fold through. */
+static int af_flags_free(const cp_ins *iv, const unsigned char *kd,
+                         const int *bof, int n, int j) {
+    int k;
+    for (k = j + 1; k < n; k++) {
+        int e;
+        if (kd[k] == 0) continue;
+        if (kd[k] != 1 || bof[k] != bof[j]) return 1;   /* end of the block */
+        e = af_flag_effect(iv[k].mn);
+        if (e == 2) return 1;
+        if (e == 0) return 0;
+    }
+    return 1;
+}
+#endif /* ARKCC_FEATURE_OPT_ADDRFOLD */
+
 /* Replace whole-token `rS` with `rD` inside one operand text. */
 static int lv_repl_reg(char *dst, int cap, const char *src, int from, int to) {
     int k = 0, i = 0;
@@ -1942,7 +2115,7 @@ static int lv_same(AsmBuffer *b, const int *ls, const int *ll,
     return !strcmp(r, t);
 }
 
-static int lv_pass(AsmBuffer *b, int from, unsigned retmask) {
+static int lv_pass(AsmBuffer *b, int from, unsigned retmask, int af_only) {
     static int ls[PP_MAX_LINES], ll[PP_MAX_LINES];
     static cp_ins iv[PP_MAX_LINES];
     static unsigned char kd[PP_MAX_LINES];      /* 0 other, 1 instruction, 2 label */
@@ -1956,8 +2129,14 @@ static int lv_pass(AsmBuffer *b, int from, unsigned retmask) {
     static char t[256], nw[256], o2[256], o3[256];
     AsmBuffer out;
     int n, i, j, nb, nlab, changed = 0, prev_end, seen_label, iter;
+    int live_on, coal_on;
     n = pp_split_lines(b, from, ls, ll, PP_MAX_LINES);
     if (n < 0) return 0;
+    /* af_only is the S20 entry point: the address fold runs on the final
+     * text, so it must not re-run the live/coalesce rules as well -- that
+     * would move the very baseline the fold is measured against. */
+    live_on = g_config.enable_opt_live && !af_only;
+    coal_on = g_config.enable_opt_coalesce && !af_only;
     nlab = 0;
     for (i = 0; i < n; i++) {
         int L;
@@ -2135,7 +2314,7 @@ static int lv_pass(AsmBuffer *b, int from, unsigned retmask) {
             continue;
         }
         /* L1: the copy is dead. */
-        if (g_config.enable_opt_live && !strcmp(iv[i].mn, "MOV") && iv[i].nops == 2 &&
+        if (live_on && !strcmp(iv[i].mn, "MOV") && iv[i].nops == 2 &&
             cp_reg(iv[i].op[0], &d) && d >= 0 && d <= 12 && d != 6 &&
             (cp_reg(iv[i].op[1], &s) || iv[i].op[1][0] == '#') &&
             !(la[i] & lv_bit(d))) {
@@ -2151,7 +2330,7 @@ static int lv_pass(AsmBuffer *b, int from, unsigned retmask) {
          *   MVN  rD,#imm / MOV rX,rD               -> one MVN into rX
          * Retargeting a MOVW or an MVN keeps the width (4 bytes) and writes no
          * flags, so the single-instruction shapes are a pure win. */
-        if (g_config.enable_opt_live &&
+        if (live_on &&
             (!strcmp(iv[i].mn, "MOVW") || !strcmp(iv[i].mn, "MVN")) &&
             iv[i].nops == 2 && iv[i].op[1][0] == '#' &&
             cp_reg(iv[i].op[0], &d) && d >= 0 && d <= 12 && d != 6) {
@@ -2225,7 +2404,7 @@ static int lv_pass(AsmBuffer *b, int from, unsigned retmask) {
             if (done) continue;
         }
         /* L2 / L3: the very next instruction consumes the copy. */
-        if (g_config.enable_opt_live && !strcmp(iv[i].mn, "MOV") && iv[i].nops == 2 &&
+        if (live_on && !strcmp(iv[i].mn, "MOV") && iv[i].nops == 2 &&
             cp_reg(iv[i].op[0], &d) && d >= 0 && d <= 12 && d != 6) {
             int j = -1, v, hasbrace = 0, gap_ok = 1, src2 = -1;
             unsigned src_bit = 0;
@@ -2360,7 +2539,7 @@ static int lv_pass(AsmBuffer *b, int from, unsigned retmask) {
          *   - every rewritten line is checked against the original text before
          *     anything is mutated (`lv_same`), so a parse that truncated an
          *     operand can never reach the output. */
-        if (g_config.enable_opt_coalesce && !strcmp(iv[i].mn, "MOV") &&
+        if (coal_on && !strcmp(iv[i].mn, "MOV") &&
             iv[i].nops == 2 && !it[i] && !lv_has_writeback(&iv[i]) &&
             cp_reg(iv[i].op[0], &d) && cp_reg(iv[i].op[1], &s) &&
             d >= 0 && d <= 7 && s >= 0 && s <= 7 && d != s && d != 6 && s != 6) {
@@ -2459,6 +2638,64 @@ static int lv_pass(AsmBuffer *b, int from, unsigned retmask) {
             }
         }
 
+        /* L6 / L7 (-fopt-addrfold): an address built in two steps.  The
+         * block comment above af_imm carries the argument; the two rules are
+         * the A and B shapes written there. */
+#if ARKCC_FEATURE_OPT_ADDRFOLD
+        if (af_only) {
+            int ra, rb, k1;
+            if (af_alu_imm(&iv[i], &ra, &rb, &k1)) {
+                int j = i + 1, k, ok = 0;
+                cp_ins tmp;
+                while (j < n && kd[j] != 1 && kd[j] != 2) j++;
+                if (j < n && kd[j] == 1 && bof[j] == bof[i] && !it[j] &&
+                    !lv_has_writeback(&iv[j]) && !(la[j] & lv_bit(ra)) &&
+                    af_flags_free(iv, kd, bof, n, j)) {
+                    int rd2 = -1, rn2 = -1, k2 = 0;
+                    tmp = iv[j];
+                    if (af_alu_imm(&iv[j], &rd2, &rn2, &k2) && rn2 == ra) {
+                        int tot = k1 + k2;
+                        int m2 = k2 < 0 ? -k2 : k2;
+                        int mt = tot < 0 ? -tot : tot;
+                        if (tot != 0 && mt <= 255 &&
+                            af_alu_size(rd2, rb, mt) <= af_alu_size(rd2, ra, m2) &&
+                            lv_same(b, ls, ll, &iv[i], i) &&
+                            lv_same(b, ls, ll, &iv[j], j)) {
+                            snprintf(tmp.mn, sizeof tmp.mn, "%s",
+                                     tot < 0 ? "SUB" : "ADD");
+                            snprintf(tmp.op[0], sizeof tmp.op[0], "r%d", rd2);
+                            snprintf(tmp.op[1], sizeof tmp.op[1], "r%d", rb);
+                            snprintf(tmp.op[2], sizeof tmp.op[2], "#%d", mt);
+                            ok = 1;
+                        }
+                    } else if (af_mem_imm(&iv[j], &rd2, &rn2, &k2) && rn2 == ra &&
+                               k1 >= 0 && k2 >= 0) {
+                        int tot = k1 + k2;
+                        if (tot <= 4095 &&
+                            af_mem_size(iv[j].mn, rd2, rb, tot) <=
+                            af_mem_size(iv[j].mn, rd2, ra, k2) &&
+                            lv_same(b, ls, ll, &iv[i], i) &&
+                            lv_same(b, ls, ll, &iv[j], j)) {
+                            snprintf(tmp.op[1], sizeof tmp.op[1],
+                                     "[r%d, #%d]", rb, tot);
+                            ok = 1;
+                        }
+                    }
+                    if (ok && lv_rebuild(nw, sizeof nw, &tmp)) {
+                        for (k = i + 1; k < j; k++)
+                            pp_copy_line(&out, b->buf + ls[k], ll[k]);
+                        asmbuf_puts(&out, "    ");
+                        asmbuf_puts(&out, nw);
+                        asmbuf_putc(&out, '\n');
+                        changed++;
+                        i = j + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+#endif /* ARKCC_FEATURE_OPT_ADDRFOLD */
+
         pp_copy_line(&out, b->buf + ls[i], ll[i]);
         i++;
     }
@@ -2488,9 +2725,25 @@ static void ark_live_function(AsmBuffer *b, int from, unsigned retmask) {
     int round;
     if (!g_config.enable_opt_live && !g_config.enable_opt_coalesce) return;
     for (round = 0; round < 4; round++) {
-        if (lv_pass(b, from, retmask) == 0) break;
+        if (lv_pass(b, from, retmask, 0) == 0) break;
     }
 }
+
+#if ARKCC_FEATURE_OPT_ADDRFOLD
+/* S20, address-chain folding (docs/EXPR_MODEL.md section 30).  A dedicated
+ * entry point on purpose: the fold must run on the *final* text, so it is
+ * called last in the pipeline and the live/coalesce rules are switched off
+ * for its rounds (`af_only`), which keeps the two readings additive --
+ * whatever -fopt-live / -fopt-coalesce already removed is not counted here
+ * a second time.  Iterates to a fixed point for the same reason every other
+ * text pass does: one fold can expose another. */
+static void ark_addrfold_function(AsmBuffer *b, int from, unsigned retmask) {
+    int round;
+    for (round = 0; round < 4; round++) {
+        if (lv_pass(b, from, retmask, 1) == 0) break;
+    }
+}
+#endif /* ARKCC_FEATURE_OPT_ADDRFOLD */
 #endif /* ARKCC_FEATURE_OPT_LIVE */
 #endif /* ARKCC_FEATURE_OPT_COPYPROP */
 #endif /* ARKCC_FEATURE_OPT_PEEP || ARKCC_FEATURE_OPT_COPYPROP || ARKCC_FEATURE_OPT_LIVE */
@@ -17945,6 +18198,16 @@ arm_skip_text_opts:
          * it read, so its output is exactly the rule applied to the
          * switch-off text; see docs/EXPR_MODEL.md section 27. */
         if (g_config.enable_opt_pushpop) ark_pushpop_function(&buf, fstart);
+#endif
+#if ARKCC_FEATURE_OPT_ADDRFOLD && ARKCC_FEATURE_OPT_LIVE
+        /* S20, address-chain folding, last of all: an `ADD` that exists only
+         * to build the address of the next instruction is deleted and its
+         * offset folded into the access (or into the next `ADD`).  It reads
+         * the final text and nothing below re-derives what it read, so its
+         * output is exactly the rules applied to the switch-off text; see
+         * docs/EXPR_MODEL.md section 30. */
+        if (g_config.enable_opt_addrfold)
+            ark_addrfold_function(&buf, fstart, ark_ret_mask(f->ret_type));
 #endif
 arm_skip_frame_opts:
 

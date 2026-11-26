@@ -2673,3 +2673,147 @@ Hard constraints shared by all three (not negotiable):
 2. Do not treat the 63 in 29.1 as "another 0.6% still to grab" -- the probes exhausted
    what local proofs can see; what remains is *not locally provable*, not "unwritten".
 3. Do not claim V-1/V-2 complete without a full regression run.
+
+## 30 Address-chain folding: landing and verdict (2026-11-26, recorded after the run; `-fopt-addrfold`)
+
+### 30.1 What this slice cuts
+
+`-fopt-addr` folds address chains that live inside **one expression**; `-fopt-basefold`
+(section 20) folds a base register that exists for exactly one access and carries offset 0.
+After both, one shape is left: a base register **built by two additions in a row**.
+
+```
+    ADD rA, rB, #k1          ; first leg: form the base
+    ADD rC, rA, #k2          ; second leg: add more to it (rA dies right here)
+```
+
+and its access variant:
+
+```
+    ADD rA, rB, #k1          ; first leg
+    LDR rD, [rA, #k2]        ; the access already carries an offset (k2 >= 0)
+```
+
+Two rules, both text level, behind `-fopt-addrfold` / `ARKCC_FEATURE_OPT_ADDRFOLD`:
+
+| Rule | the two instructions | rewrite | numeric range |
+| --- | --- | --- | --- |
+| **A** | `ADD\|SUB rA,rB,#k1` followed by `ADD\|SUB rC,rA,#k2`, `rA` not live after the second | delete the first, second becomes `ADD\|SUB rC,rB,#(k1+-k2)` | `k1+k2 != 0`, `\|k1+k2\| <= 255` |
+| **B** | `ADD rA,rB,#k1` (`k1 >= 0`) followed by `LDR\|LDRB\|LDRH\|LDRSH\|STR\|STRB\|STRH rD,[rA]` or `[rA, #k2]` (`k2 >= 0`), `rA` not live after the second | delete the first, base becomes `rB`, offset becomes `#(k1+k2)` (`k1+k2 == 0` is written `[rB, #0]`) | `0 <= k1+k2 <= 4095` |
+
+`ADDS`/`SUBS` never match (those are the explicit carry chains of 64-bit arithmetic; rewriting
+them changes the value). `LDRSB` is not in rule B's mnemonic set: it has no 16-bit immediate
+form, so the width guard would already refuse the `-2/+4` trade, and rather than introduce an
+unverified shape it is simply not accepted.
+
+### 30.2 The guards and why each one exists
+
+| Guard | Implementation | Why it is mandatory |
+| --- | --- | --- |
+| Same basic block | `bof[j] == bof[i]` | across blocks "the second always runs" is false, so deleting the first would drop a computation on another path |
+| Not inside an IT | `!it[i] && !it[j]` | under conditionality the two do not necessarily run together |
+| No write-back | any operand text containing `!` is refused | write-back modifies the base register, so the folded form means something else |
+| Registers all in `r0`-`r12` | `0 <= r <= 12` in `af_alu_imm`/`af_mem_imm` | `sp`/`pc` (and `lr`) taking part in base arithmetic is not this slice's business |
+| `rA` not live afterwards | `la[j] & (1<<rA)` refuses (the live pass's **cross-block** `la[]`) | this is the **only** reason deleting the first instruction is invisible |
+| The new instruction may not be wider | `af_alu_size(rd,rB,|tot|) <= af_alu_size(rd,rA,|k2|)`, same for `af_mem_size` | otherwise the fold trades a deleted 2-byte `ADD` for a 4-byte access: zero or negative win. Assembler facts: `ADD/SUB imm` is 16-bit only for `rd==rn && rd<=7 && imm<=255` (`ADDS`) and `imm<=7` with all-low registers; `LDR/STR` is 16-bit only for `r0`-`r7` with `imm<=124 && imm%4==0`; `LDRB/STRB <= 31`; `LDRH/STRH <= 62` even; `LDRSH` is always 4 bytes |
+| Flags, block-local | `af_flags_free(j)`: scan from `j+1` to the end of the block and refuse on any flag reader; `CBZ`/`CBNZ` count as **neutral** (they read a register, not the flags, and `-fopt-cbz` puts one right after most loads), `B`/`BL`/`BX`/`BLX` stop the straight line, `LDM*`/`STM*` and `MOV`/`LDR`/`PUSH`/`POP` etc. are neutral | rule A changes C/V, rule B deletes a flag writer outright. In this code base flags are **block-local** (`ark_deadins` already treats them that way), so the scan stops at the block end |
+
+The flags guard is not a guess: item 6 of `tests/run_addrfold_tests.py` censuses the 31
+flag-setting TUs and finds **606 flag consumers, every one of them fed by a `CMP`**
+(`{'CMP': 606}`). That census is a self-check inside the gate, so a corpus change turns it red.
+
+### 30.3 Five-arm readings (95 TUs)
+
+| Arm | Instructions | Bytes |
+| --- | --- | --- |
+| `BASE` | 10,172 | 372,761 |
+| `BASE + addrfold` | **10,134** | **372,030** |
+| delta | **-38 (-0.37%)** | **-731 B (-0.20%)** |
+| `BASE + chainfold + pushpop` | 9,775 | 358,547 |
+| `BASE + chainfold + pushpop + addrfold` | **9,737** | **357,816** |
+| delta | **-38** | **-731 B** |
+
+- Both baselines give the same -38 / -731 B, so the slice is **additive and does not overlap**
+  `chainfold`/`pushpop` (those two rewrite comparison ladders and value-stack round trips;
+  this one rewrites address arithmetic).
+- **OFF IS OFF**: each baseline was also built with `-fno-opt-addrfold` and came out
+  **byte-for-byte identical** to the build with the switch never mentioned (0 files differ).
+- 38 sites = **A 24 / B 14**, touching **5 TUs**: `main.c` 3, `stm32f4xx_hal_dma.c` 21,
+  `stm32f4xx_hal_dma_ex.c` 3, `stm32f4xx_hal_flash.c` 1, `stm32f4xx_hal_rcc.c` 10.
+- Against armcc5's 5,619 on the same corpus: 1.740x **unchanged** (38 instructions is under
+  0.4%, which does not move the ratio at two decimals).
+
+### 30.4 The gap against "how many there should be"
+
+Two independent estimates came first:
+
+- **Probe** (`D:/tmp/bm/cf/v1_proto.py` line, real CFG + backward liveness): 83.
+- **Independent census** (`tests/af_census.py`: its own parser, its own basic blocks, its own
+  block-local liveness, sharing no line of code with the pass): **48** (A 23 / B 25).
+
+Measurement gives **38** (A 24 / B 14), and those 38 sites fall on **23 distinct text pairs**
+(identical repeated text pairs count once). `af_diff.py` accounts for the gap want by want:
+**16 items**, distributed as
+
+| Reason | Count | Explanation |
+| --- | --- | --- |
+| `la_live` | 9 | the census judges `rA` "dead" with **block-local** liveness, the pass judges it "live" with the live pass's **cross-block** `la[]` => a correct refusal. Examples: `HAL_DMA_Init`'s `ADD r5,r0,#32` / `LDR r0,[r5,#0]` (x3), `HAL_DMA_RegisterCallback`'s `ADD r5,r8,#68/76/80/84` / `STR r9,[r5,#0]`, `HAL_DMA_Abort_IT`, `HAL_FLASHEx_OBProgram` |
+| `flags` | 2 | a flag reader later in the same block. Examples: `HAL_DMA_Init`'s `ADD r5,r0,#20` / `STR r9,[r5,#0]`, and the matching pair in `HAL_FLASH_IRQHandler` |
+| composition (A then B) | 5 | the census treats `DMA_CheckFifoParam`'s `ADD r5,r0,#40` / `LDR r0,[r5,#0]` as a pure B candidate; in fact **A** first merges `#40` with `#4` into `ADD r5,r0,#44` in one round, and **B** folds that into the addressing in the next (end state `LDR r0,[r0,#44]`). All 5 disappear from the final text, so they were not refused |
+
+**Reading: not one of the 16 is "shape-correct but refused for no reason".** 9 are cross-block
+liveness (conservative but necessary), 2 are flags (necessary), and 5 are the same code being
+eaten by A first, so B can no longer fire on the original shape (composition, not a miss).
+
+### 30.5 The gate `make test-addrfold` (six checks, 33 items, EXIT=0)
+
+1. **OFF IS OFF**: both baselines built with `-fno-opt-addrfold` are byte-identical.
+2. **An independent second implementation reproduces everything**: `tests/af_oracle.py` has its
+   own parser, its own basic-block split, its own liveness to a fixed point, its own width and
+   flags shapes, and reproduces the compiler's output **byte for byte on both arms across all
+   95 TUs (drift=0)**; it also checks the site count 38, the A24/B14 split and the per-TU
+   account `on_i == base_i - 38`.
+3. **Per-round cursor re-proof**: `af_oracle.steps()` returns each round's
+   `(before, after, sites)` (line numbers only mean something inside the round that produced
+   them; a flattened site list produces false alarms), and every round goes through
+   `reprove()`: prefix unchanged -> first line gone -> the `q-p-1` lines in between unchanged ->
+   the second line equals the text that round produced -> the rest unchanged.
+4. **Guards restated**: `guard_ok()` uses **only the off-arm text** and walks every guard of
+   30.2 again, including "is `rA` written (killed) before it is read again in the block".
+5. **Must-refuse / must-accept fixtures**: 9 must-refuse (`live`/`it`/`writeback`/`flags`/
+   `range_a`/`zero_a`/`range_b`/`grow_a`/`grow_b`) plus 2 must-accept (`POS_A` ->
+   `ADD r5, r6, #56`; `POS_B` -> `LDR r1, [r0, #8]`).
+6. **Semantics + cropping**: the `unicorn` fixture returns the same value (80) on both arms
+   with the same 256-byte RAM snapshot, 4 sites `['A','A','A','B']` on the off arm and 0 on the
+   on arm; the cropped build `-DARKCC_FEATURE_OPT_ADDRFOLD=0` refuses the switch by name
+   (`C3900U`) and, without the switch, produces text identical to the full build; plus the
+   606-consumer census self-check of 30.2.
+
+### 30.6 How not to read this
+
+1. **Do not read 38 as "45 more are still there"**: all 16 items in 30.4 have correctness
+   reasons (cross-block liveness 9, flags 2, composition 5); the distance from the probe's 83
+   and the census's 48 is a **difference of criteria**, not debt.
+2. **Do not read A's 24 as "beyond pre-registration"**: the freeze covered the **correctness
+   guards** and the "two families A/B", not the A/B ratio; 24/14 is a measured split, not a
+   moved goalpost.
+3. **Do not call this slice done without a full regression**: `make test-addrfold` covers this
+   slice only; a full `make test` is a separate gate before release.
+4. **Do not present the B fixture shape as "just write any C"**: the compiler almost always
+   folds the offset into the access, so `ADD rA,rB,#k1` + `[rA,#k2]` only shows up when the
+   value load is **delayed past the address computation**. The stable form is
+
+   ```c
+   unsigned v = gh.inst->par;
+   if (gh.inst->par & 4u) { out = v; return 1; }
+   ```
+
+   yielding `ADD r5, r0, #8` / `LDR r0, [r5, #0]` -> `LDR r0, [r0, #8]`. The store shape
+   (`h->inst->par = in;`) cannot be produced: the global/stack load is inserted after the
+   address computation and destroys adjacency.
+5. **Do not conflate this slice with `-fopt-basefold`**: `basefold` folds a base register with
+   offset exactly 0 serving exactly one access; this slice folds **two-leg additions** and
+   **accesses that already carry an offset**. Their acceptance conditions do not overlap:
+   `basefold` needs `imm > 0` and a multiple of 4, `rB` serving that one access, and no
+   label/branch/call in between; rule B allows `k1` not a multiple of 4 and `k2 > 0`, and its
+   only liveness requirement is "`rA` dead afterwards".
