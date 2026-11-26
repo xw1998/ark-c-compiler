@@ -668,6 +668,14 @@ int main(int argc, char **argv) {
             return 1;
         }
 #endif
+#if !ARKCC_FEATURE_OPT_PUSHPOP
+        else if (strcmp(a, "-fopt-pushpop") == 0) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: -fopt-pushpop is not compiled into "
+                    "this build (rebuild with -DARKCC_FEATURE_OPT_PUSHPOP=1)\n");
+            return 1;
+        }
+#endif
 #if !ARKCC_FEATURE_OPT_FRAME
         else if (strcmp(a, "-fopt-frame") == 0) {
             fprintf(stderr,

@@ -9722,6 +9722,280 @@ static void ark_chainfold_function(AsmBuffer *b, int from) {
 #endif /* ARKCC_FEATURE_OPT_CHAINFOLD */
 #endif /* ARKCC_FEATURE_OPT_LADDER || ARKCC_FEATURE_OPT_REGBIRTH */
 
+#if ARKCC_FEATURE_OPT_PUSHPOP
+/* ------------------- value-stack round trip elimination -------------------
+ * What this is: the IR is a stack machine, so a value that has to survive
+ * across another computation is written as a real machine-stack round trip:
+ *
+ *      LDR r0, .Llit_2_0_1     ; <def> the value
+ *      PUSH {r0}               ; save it
+ *      ...                     ; the ladder / call that needs r0 back
+ *      POP {r1}                ; r1 = the value again
+ *
+ * The saved value is a *constant* (a literal-pool load, a `MOVW`/`MOV`
+ * immediate, or another register), so the round trip is pure overhead: the
+ * value can be materialised again where it is read.
+ *
+ * Rule (frozen in docs/EXPR_MODEL.md section 27.3), all of it required:
+ *
+ *   - `<def>` is the instruction straight before the `PUSH`, writes exactly
+ *     the pushed register rX, and is one of `MOV|MOVW rX, #imm`,
+ *     `LDR rX, .Llit` or `MOV rX, rY`; between it and the `PUSH` there is no
+ *     label line, so nothing can enter at the `PUSH` with another value;
+ *   - the matching `POP {rY}` is the first PUSH/POP after the `PUSH` (so the
+ *     pair is the innermost one -- LIFO by construction), single register,
+ *     r0-r12;
+ *   - between them no `BL`/`BLX` (a callee reads r0-r3 without naming them),
+ *     and no instruction that names sp (the frame's low word belongs to that
+ *     region while the value is on the stack);
+ *   - every branch inside the span lands on a label inside the span, and no
+ *     label inside the span is reachable from outside it;
+ *   - rY = rX and rX is never named inside the span  -> both the PUSH and the
+ *     POP are deleted;
+ *   - otherwise the PUSH is deleted and the POP is rewritten to
+ *     `MOV rY, rX` (rX untouched inside the span) or to `<def> rY, <same
+ *     operand>` (rX is clobbered; the value is materialised again -- for the
+ *     register-copy form only when the source register is untouched too).
+ *
+ * rX itself is left alone: a definition that is still live keeps working.
+ * A definition that has just become dead is left behind as well -- this pass
+ * runs last of all, so removing it would be a second analysis.
+ *
+ * Cost model, measured on the corpus (95 translation units, S19-a gate):
+ * 35 sites, 47 instructions and 417 bytes -- 12 of them delete both
+ * halves (9 in stm32f4xx_hal_dma.c, 3 in stm32f4xx_hal_dma_ex.c), and 23
+ * re-materialise the value at the POP (19 of those from a literal-pool
+ * load, all in stm32f4xx_hal_dma_ex.c, where the DMAEx ladder keeps a
+ * base address on the stack across the whole ladder; 4 from an immediate,
+ * in stm32f4xx_hal_exti.c).  The definition of a re-materialised site is
+ * left behind -- this pass runs last of all, so removing it would be a
+ * second analysis, and 4 dead `MOV r0, #imm` lines are 8 bytes.
+ */
+#define PP_MAX_SITES 512
+#define PP_MAX_ROUNDS 8
+#define PP_REP_LEN   48
+
+static int  pp_pushline[PP_MAX_SITES];
+static int  pp_popline[PP_MAX_SITES];
+static char pp_reptxt[PP_MAX_SITES][PP_REP_LEN];
+
+/* The single register of a `{rN}` list, or -1. */
+static int pp_one_reg(unsigned mask) {
+    int i;
+    for (i = 0; i < 16; i++)
+        if (mask == lv_bit(i)) return i;
+    return -1;
+}
+
+/* `PUSH {rN}` with exactly one register, r0-r12. */
+static int pp_push1(const cp_ins *o, int *r) {
+    unsigned mask;
+    int k;
+    if (strcmp(o->mn, "PUSH") || o->nops != 1) return 0;
+    if (sp_reglist(o->op[0], &mask) != 1) return 0;
+    k = pp_one_reg(mask);
+    if (k < 0 || k > 12) return 0;
+    *r = k;
+    return 1;
+}
+
+/* `POP {rN}` with exactly one register, r0-r12 (`pc` and `sp` are not a
+ * round trip -- one leaves the function, the other moves the frame). */
+static int pp_pop1(const cp_ins *o, int *r) {
+    unsigned mask;
+    int k;
+    if (strcmp(o->mn, "POP") || o->nops != 1) return 0;
+    if (sp_reglist(o->op[0], &mask) != 1) return 0;
+    k = pp_one_reg(mask);
+    if (k < 0 || k > 12) return 0;
+    *r = k;
+    return 1;
+}
+
+/* Does the instruction name register r anywhere? */
+static int pp_named(const cp_ins *o, int r) {
+    int i;
+    if (r < 0 || r > 15) return 0;
+    for (i = 0; i < o->nops; i++)
+        if (lv_regs(o->op[i]) & lv_bit(r)) return 1;
+    return 0;
+}
+
+/* Is register r named by any instruction line strictly between a and b? */
+static int pp_span_mentions(int n, int a, int b, int r) {
+    int k;
+    for (k = a + 1; k < b; k++)
+        if (ld_kd[k] == 1 && pp_named(&ld_iv[k], r)) return 1;
+    (void)n;
+    return 0;
+}
+
+/* Branch target of `B .Lx` / `Bcc .Lx`, 0 for anything else. */
+static int pp_target(const cp_ins *o, char *t, int cap) {
+    if (ld_plain_b(o, t, cap)) return 1;
+    return ld_cond_br(o, t, cap);
+}
+
+/* The instruction line straight before i. */
+static int pp_prev(int n, int i) {
+    int j;
+    for (j = i - 1; j >= 0; j--)
+        if (ld_kd[j] == 1) return j;
+    return -1;
+}
+
+/* Is the span [p, q] one region of the function?  Branch targets must stay
+ * inside it, and no label inside it may be reached from outside. */
+static int pp_span_ok(int n, int p, int q) {
+    int i, lp;
+    char tgt[64];
+    for (i = p; i <= q; i++) {
+        if (ld_kd[i] != 1) continue;
+        if (!pp_target(&ld_iv[i], tgt, (int)sizeof tgt)) continue;
+        lp = ld_find_label(tgt);
+        if (lp <= p || lp >= q) return 0;
+    }
+    for (i = 0; i < n; i++) {
+        if (i > p && i < q) continue;
+        if (ld_kd[i] != 1) continue;
+        if (!pp_target(&ld_iv[i], tgt, (int)sizeof tgt)) continue;
+        lp = ld_find_label(tgt);
+        if (lp > p && lp < q) return 0;
+    }
+    return 1;
+}
+
+/* Does instruction d define exactly rX as a value this pass may rebuild?
+ * Returns 0 when it does not, 1 when it does, and fills `src` with the
+ * operand text that is to be re-emitted.  `copy` is set when the definition
+ * is a register copy, whose source must then survive the span too. */
+static int pp_def(const cp_ins *d, int rx, char *src, int cap, int *copy) {
+    *copy = 0;
+    if (d->nops != 2) return 0;
+    if (strcmp(d->mn, "MOV") && strcmp(d->mn, "MOVW") && strcmp(d->mn, "LDR"))
+        return 0;
+    {
+        int rd;
+        if (!cp_reg(d->op[0], &rd) || rd != rx) return 0;
+    }
+    if (!strcmp(d->mn, "LDR")) {
+        if (d->op[1][0] != '.') return 0;
+    } else if (d->op[1][0] == '#') {
+        /* `MOV|MOVW rX, #imm`: re-materialisable as is. */
+    } else {
+        int r2;
+        if (strcmp(d->mn, "MOV") || !cp_reg(d->op[1], &r2)) return 0;
+        *copy = r2 + 1;
+    }
+    if ((size_t)(ark_strlen(d->op[1]) + 1) > (size_t)cap) return 0;
+    memcpy(src, d->op[1], ark_strlen(d->op[1]) + 1);
+    return 1;
+}
+
+/* One sweep over [from, end of buffer): 1 when it rewrote something. */
+static int ark_pushpop_round(AsmBuffer *b, int from) {
+    int n, i, k, d, q, rx, ry, ns = 0;
+    AsmBuffer out;
+
+    n = ld_scan(b, from);
+    if (n <= 0) return 0;
+
+    for (i = 0; i < n && ns < PP_MAX_SITES; i++) {
+        char rep[PP_REP_LEN], src[40];
+        int copy = 0;
+        if (ld_kd[i] != 1) continue;
+        if (!pp_push1(&ld_iv[i], &rx)) continue;
+        d = pp_prev(n, i);
+        if (d < 0) continue;
+        for (k = d + 1; k < i; k++)
+            if (ld_kd[k] != 0) break;
+        if (k != i) continue;                  /* a label could enter at the PUSH */
+        if (!pp_def(&ld_iv[d], rx, src, (int)sizeof src, &copy)) continue;
+
+        q = -1;
+        for (k = i + 1; k < n; k++) {
+            if (ld_kd[k] != 1) continue;
+            if (!strcmp(ld_iv[k].mn, "PUSH")) break;
+            if (!strcmp(ld_iv[k].mn, "POP")) {
+                int rr;
+                if (pp_pop1(&ld_iv[k], &rr)) q = k;
+                break;
+            }
+            if (!strcmp(ld_iv[k].mn, "BL") || !strcmp(ld_iv[k].mn, "BLX")) break;
+            if (pp_named(&ld_iv[k], 13)) break;
+        }
+        if (q < 0) continue;
+        if (!pp_span_ok(n, i, q)) continue;
+        pp_pop1(&ld_iv[q], &ry);
+
+        if (!pp_span_mentions(n, i, q, rx)) {
+            if (ry == rx) rep[0] = 0;          /* both halves go */
+            else snprintf(rep, sizeof rep, "    MOV r%d, r%d", ry, rx);
+        } else if (copy) {
+            if (pp_span_mentions(n, i, q, copy - 1)) continue;
+            snprintf(rep, sizeof rep, "    MOV r%d, r%d", ry, copy - 1);
+        } else {
+            snprintf(rep, sizeof rep, "    %s r%d, %s", ld_iv[d].mn, ry, src);
+        }
+
+        pp_pushline[ns] = i;
+        pp_popline[ns] = q;
+        memcpy(pp_reptxt[ns], rep, ark_strlen(rep) + 1);
+        ns++;
+    }
+    if (ns == 0) return 0;
+
+    /* Self-check: every site must still read exactly as it was proved.  A
+     * broken walk can therefore never reach the output -- it aborts instead. */
+    for (i = 0; i < ns; i++) {
+        int rr;
+        if (ld_kd[pp_pushline[i]] != 1 || ld_kd[pp_popline[i]] != 1) return 0;
+        if (!pp_push1(&ld_iv[pp_pushline[i]], &rr)) return 0;
+        if (!pp_pop1(&ld_iv[pp_popline[i]], &rr)) return 0;
+        if (!pp_span_ok(n, pp_pushline[i], pp_popline[i])) return 0;
+    }
+
+    asmbuf_init(&out);
+    for (i = 0; i < n; i++) {
+        int s, done = 0;
+        for (s = 0; s < ns; s++) {
+            /* The PUSH always goes.  The rewritten line -- `MOV rY, rX`
+             * or the re-materialised definition -- is emitted in the
+             * POP's place only: that is where the value is read, and a
+             * second copy at the PUSH would define rY before the span,
+             * where rY may still be live (rX is checked, rY is not). */
+            if (pp_popline[s] == i) {
+                if (pp_reptxt[s][0]) {
+                    pp_copy_line(&out, pp_reptxt[s], ark_strlen(pp_reptxt[s]));
+                }
+                done = 1;
+                break;
+            }
+            if (pp_pushline[s] == i) {
+                done = 1;
+                break;
+            }
+        }
+        if (done) continue;
+        pp_copy_line(&out, b->buf + ld_ls[i], ld_ll[i]);
+    }
+    pp_splice(b, from, &out);
+    return 1;
+}
+
+static void ark_pushpop_function(AsmBuffer *b, int from) {
+    int round;
+
+    if (!g_config.enable_opt_pushpop) return;
+    /* The rule can expose itself: re-materialising a `POP` writes a
+     * definition where a later `PUSH` finds one again.  Iterate to a fixpoint
+     * so the result never depends on how many times the per-function pipeline
+     * calls this pass -- it scans to the end of the buffer, like every other
+     * text pass here.  Every round removes at least one instruction. */
+    for (round = 0; round < PP_MAX_ROUNDS; round++)
+        if (!ark_pushpop_round(b, from)) return;
+}
+#endif /* ARKCC_FEATURE_OPT_PUSHPOP */
 
 #if ARKCC_FEATURE_OPT_VSTACK
 /* ------------------- value stack -> register allocation -------------------
@@ -17662,6 +17936,15 @@ arm_skip_text_opts:
          * below re-derives what it read -- see docs/EXPR_MODEL.md
          * section 22. */
         if (g_config.enable_opt_chainfold) ark_chainfold_function(&buf, fstart);
+#endif
+#if ARKCC_FEATURE_OPT_PUSHPOP
+        /* S19-a, value-stack round trips, last of all: a `PUSH {rX}` whose
+         * value the text still holds (an immediate, a literal-pool load or
+         * a register copy) is not saved at all -- the `POP` re-materialises
+         * it.  It runs on the final text and nothing below re-derives what
+         * it read, so its output is exactly the rule applied to the
+         * switch-off text; see docs/EXPR_MODEL.md section 27. */
+        if (g_config.enable_opt_pushpop) ark_pushpop_function(&buf, fstart);
 #endif
 arm_skip_frame_opts:
 

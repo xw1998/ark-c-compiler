@@ -54,6 +54,7 @@ typedef struct {
     int enable_opt_birthdest;       /* -fopt-birthdest: 结果直接生在目的寄存器（OP r0…/MOV rD,r0 合并，S16） */
     int enable_opt_basefold;        /* -fopt-basefold: 基址折进寻址方式（ADD rB,rX,#i + 唯一访存，S16） */
     int enable_opt_chainfold;       /* -fopt-chainfold: 相邻同值比较段折叠（S17） */
+    int enable_opt_pushpop;        /* -fopt-pushpop: 值栈往返消除（S19-a） */
     int enable_opt_inline;   /* --autoinline / -O2 */
     int enable_opt_vectorize;/* --vectorize / -O2 */
     int opt_level;          /* 0=none, 1=basic, 2=aggressive */

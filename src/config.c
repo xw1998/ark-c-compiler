@@ -104,6 +104,7 @@ void config_init(void) {
     g_config.enable_opt_birthdest   = 0;
     g_config.enable_opt_basefold    = 0;
     g_config.enable_opt_chainfold   = 0;
+    g_config.enable_opt_pushpop     = 0;
     g_config.enable_opt_copyprop  = 0;
     g_config.enable_opt_live      = 0;
     g_config.enable_opt_inline    = ARKCC_FEATURE_OPT_INLINE;
@@ -569,6 +570,8 @@ void config_apply_args(int argc, char **argv) {
                 g_config.enable_opt_basefold            = enable;
             else if (ark_streq(name, "opt-chainfold") || ark_streq(name, "chainfold"))
                 g_config.enable_opt_chainfold           = enable;
+            else if (ark_streq(name, "opt-pushpop") || ark_streq(name, "pushpop"))
+                g_config.enable_opt_pushpop             = enable;
             else if (ark_streq(name, "opt-inline") || ark_streq(name, "autoinline"))
                 g_config.enable_opt_inline              = enable;
             else if (ark_streq(name, "opt-vectorize") || ark_streq(name, "vectorize"))
@@ -629,6 +632,7 @@ void config_print(void) {
     ark_log("  opt_birthdest=%d opt_basefold=%d\n",
             g_config.enable_opt_birthdest, g_config.enable_opt_basefold);
     ark_log("  opt_chainfold=%d\n", g_config.enable_opt_chainfold);
+    ark_log("  opt_pushpop=%d\n", g_config.enable_opt_pushpop);
     ark_log("  opt_constcond=%d\n", g_config.enable_opt_constcond);
     ark_log("  opt_exit=%d\n", g_config.enable_opt_exit);
     ark_log("  opt_boolmat=%d\n", g_config.enable_opt_boolmat);

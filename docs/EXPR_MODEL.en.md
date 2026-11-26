@@ -2360,3 +2360,176 @@ This section (26) pre-registers only the **order and the criteria**; it pre-regi
    analysis **on this corpus**, so the conclusion is "not worth it", not "the rule is wrong".
 3. Do not skip the slice order: S19-c depends on the registers S19-a/b free up; doing c first drives
    the register pressure into spills.
+
+## 27 S19-a landing readings and verdict (2026-11-26, recorded after the run)
+
+### 27.1 Measured readings
+
+Implementation: `ark_pushpop_round()` + `ark_pushpop_function()` in
+`src/backend/arm/backend_arm.c`, switch `-fopt-pushpop` / `-fno-opt-pushpop`, crop
+macro `ARKCC_FEATURE_OPT_PUSHPOP` (0 in the `STM32_MIN` tier). Once this round's
+measurements were in, it was moved to the **very end of the text pipeline** (after
+`-fopt-chainfold`, before the `arm_skip_frame_opts:` label) and made a **fixed point**
+(`PP_MAX_ROUNDS = 8`; every round rewrites at least one line, so it terminates). The
+reason is in 27.2.
+
+Four cross sections (`BASE` = the 32 `-fopt-*` of §26.4 plus `-fopt-birthdest` and
+`-fopt-basefold`, **without** `chainfold` and `pushpop`):
+
+| Cross section | Insns | Bytes |
+| --- | ---: | ---: |
+| `BASE` (off arm) | 10,172 | 372,761 |
+| `BASE` + `-fopt-pushpop` | **10,125** | **372,344** |
+| `BASE` + `-fopt-chainfold` | 9,822 | 358,964 |
+| `BASE` + both | **9,775** | **358,547** |
+
+The two switches **compose additively**: `-47 insns / -417 bytes` is identical on both
+bases, with no interaction term. armcc5 on the same corpus is still 5,619 insns, so the
+ratio goes from **1.748x** to **1.740x** (9,775 / 5,619 = 1.7396). Script
+`D:/tmp/bm/cf/pp_compose.py`.
+
+Site composition (35 sites, `47 = 2x12 + 23`):
+
+| Disposition | Sites | Rule |
+| --- | ---: | --- |
+| `pair` (both halves deleted) | 12 | `rY == rX` and the span never names `rX` |
+| `remat` (value rebuilt at the POP) | 23 | the span clobbers `rX`, so the definition is replayed |
+| `copy` (`MOV rY, rX`) | 0 | absent from this corpus |
+
+Per translation unit: `stm32f4xx_hal_dma.c` 9 (all `pair`, DEF is `MOV r0, #imm`),
+`stm32f4xx_hal_dma_ex.c` 22 (19 `remat` with `LDR rX, .Llit` + 3 `pair`),
+`stm32f4xx_hal_exti.c` 4 (all `remat`, DEF is `MOV r0, #4`).
+
+Single-register `PUSH` census (202 corpus-wide): `site 35` / `no_definition 141` /
+`nested_push 13` / `sp_in_span 8` / `call_in_span 5`; the on arm keeps **167**.
+
+**Pre-registration vs measurement** (per §26.4 only the measurement is reported; the
+table is not edited): §26.3 wrote "gain: 0 instructions (two for two)"; the measurement
+is **-47**. The morphological guess was wrong -- it assumed the only shape was `pair`
+(delete two, add none), while 23 of the sites are `remat` (delete two, add one, net -1).
+This is an underestimate, not an overstatement; both numbers stay on the record.
+
+### 27.2 The rule and why it is safe
+
+The rule is frozen in the module docstring of `tests/pp_oracle.py`, which shares no code
+and no constants with the implementation:
+
+```
+<def>            ; MOV|MOVW rX,#imm / LDR rX,.Llit / MOV rX,rY, straight before the PUSH
+                 ; (only .loc / blanks / comments in between, never a label)
+PUSH {rX}        ; one register, r0-r12
+...
+POP {rY}         ; one register, r0-r12; the first PUSH/POP after the PUSH (inner pair)
+```
+
+Six guards: no `BL`/`BLX` in between; no instruction naming `sp` in between; every branch
+target inside the span lands inside the span; no label inside the span is entered from
+outside it; the `MOV rX, rY` form additionally requires that `rY` is not named in the span.
+
+Three dispositions:
+
+1. `rY == rX` and the span does not name `rX` -- **both lines go**;
+2. `rY != rX` and `rX` is untouched -- the PUSH goes, the POP becomes `MOV rY, rX`;
+3. `rX` is clobbered in the span -- the PUSH goes, the POP becomes `<def> rY, <operand>`.
+
+**Why a fixed point is required**: `ark_pushpop_round`'s scanner `ld_scan(b, from)` runs
+from the function start to the **end of the buffer** (the same convention as `chainfold`
+and every other text pass). So "call it once per function" actually walks the tail after
+that function too and exposes new sites there; only iterating until a round rewrites
+nothing makes the result independent of how many times it is called. The cap is 8 rounds,
+and every round deletes at least one instruction, so it terminates.
+
+**Why it must run last**: two cascades polluted the criteria. First, `-fopt-deadins`
+deletes the DEF of a re-materialising site (the four `MOV r0, #4` in
+`stm32f4xx_hal_exti.c`). Second, it fuses `LDR r0, [r8, #96]` + `MOV r1, r0` into
+`LDR r1, [r8, #96]`, so the span the oracle sees in the **final** text differs from the
+span the pass saw -- the two multisets matched but their order did not. With `pushpop`
+moved last, it reads final text and the gate can take a **byte-for-byte second opinion**
+(`ON text == oracle(OFF text)`): all 95 TUs come out with `drift == 0`.
+
+**Costs** (known, frozen): (a) four instructions less than the slot before `deadins`
+(-51 -> -47); (b) four dead `MOV r0, #4` stay in the text (8 bytes), because `deadins` no
+longer gets a chance at them -- that is a second layer of analysis this slice does not do.
+
+**Why the PUSH line always goes and `rep` is written only at the POP**: an earlier version
+emitted `rep` twice, at the PUSH and at the POP, which defined `rY` **before** the span
+while the guard only checked `rX`; a span that still used `rY` would have been silently
+miscompiled. Fix: delete the PUSH line, write `rep` at the POP line only.
+
+### 27.3 Criteria (`tests/run_pushpop_tests.py`, six items, 32 checks, all green)
+
+| Criterion | Frozen value |
+| --- | --- |
+| OFF IS OFF | 95 TUs byte-identical to `-fno-opt-pushpop`; 10,172 / 372,761 |
+| Fires only by the rule | `pp_oracle.transform(OFF) == ON` byte for byte; 10,125 / 372,344; 35 sites = 12 pair + 23 remat + 0 copy; `touched == {dma 9, dma_ex 22, exti 4}` |
+| Every site re-proved from the on text | cursor walk: the DEF line survives, the span is untouched, the PUSH is gone, the POP carries exactly `rep`; `rep_ok` checks mnemonic, operand text and destination register; sites are disjoint; single-register PUSH 202 -> 167 |
+| Declines when it must | census `{site 35, no_definition 141, nested_push 13, sp_in_span 8, call_in_span 5}` pinned; `PAIR_TEXT` / `COPY_TEXT` / `REMAT_TEXT` each yield one site of the expected kind with a pinned `rep`; `NO_DEF_TEXT` / `OUTSIDE_TEXT` / `CALL_TEXT` / `PC_TEXT` yield none, with a re-derivable reason (`no_definition` / `span_split` / `call_in_span` / `pop_not_single`) |
+| The answer does not change | `unicorn` runs the fixture in both arms: 2 sites off, 0 on; 12 inputs return **196** in both arms (computed in Python from the C source); the 0x40020000 + 0x8000 and 0x20000000 + 0x100 snapshots are identical (33,024 bytes); the last two words are `(0x00100000, 0x00005555)` |
+| Cropped out, refused | `-DARKCC_FEATURE_OPT_PUSHPOP=0` refuses the flag by name (`C3900U`) and, without it, writes the same text as the full build |
+
+Anti-false-green: `pp_oracle` and the compiler share no code or constants (two
+implementations); the three "must fire" controls pin both the kind and the `rep` text; the
+four "must decline" controls pin the reason string; the executed fixture uses **two
+different absolute peripheral addresses and two different constant tables** (`FLAG` /
+`NOTFLAG`), so a swapped or lost constant changes the 0x4002xxxx snapshot. Same gate via
+`make test-pushpop`.
+
+### 27.4 Correction to §26.2 (measured armcc, not estimated)
+
+§26.2 took **gcc**'s 292 for armcc's reading and concluded "-800 to -1,000 insns, 1.60x".
+Real armcc was re-measured this round
+(`D:/Keil_v5/ARM/ARMCC/bin/armcc.exe --thumb -O2 --cpu Cortex-M4`, same TU, same `-D`/`-I`):
+**armcc is at 985 instructions on that function, not 292**.
+
+| Item | armcc5 | Ours (`BASE`+chainfold+pushpop) | Delta |
+| --- | ---: | ---: | ---: |
+| Total | **985** | **1,210** | +225 (1.229x) |
+| `CMP` | 258 | 262 | +4 |
+| `BEQ` | 183 | 176 | -7 |
+| `BNE` | 60 | 68 | +8 |
+| `LDR` | 147 | 350 | **+203** |
+| `MOV` | 71 | 131 | **+60** |
+| `PUSH` | 1 | 13 | +12 |
+| `POP` | 2 | 16 | +14 |
+| `STR` | 25 | 38 | +13 |
+| `B` | 78 | 85 | +7 |
+
+Three frozen conclusions:
+
+1. **armcc does not lower to a binary search.** `CMP 258` / `BEQ 183` / `BNE 60` against
+   our `262 / 176 / 68` -- it compares layer by layer too. §26.2's "binary search / jump
+   table" is gcc's technique, not armcc's.
+2. **There is no "-800 lever".** Against armcc this function is only 225 instructions
+   apart: 203 are `LDR`, 60 are `MOV`, 26 are `PUSH`/`POP` -- all **value transport**
+   (per-layer literal reloads and register shuffling), not "how ladders are lowered".
+   §26.2's 1,235 -> about 400 and 1.60x are withdrawn.
+3. The corpus-wide claim is corrected accordingly: the text-layer ceiling is **about
+   1.70x** (27.5); `1.0x` can only come from rewriting the emitter / register allocator.
+
+### 27.5 Text-layer ceiling table (after S19-a, base 9,775)
+
+| Residual family | Bound (insns) | Source |
+| --- | ---: | --- |
+| `MOVW`+`MOVT` literal pairs -> `LDR` from a pool | 102 | §19.4 |
+| Literal-load sharing (single-predecessor available values) | 88 | §26.1 |
+| Constant into a compare | 25 | §26.1 |
+| Normalisation + immediate chains | 8 | §19.4 |
+| **Total** | **223 (2.3%)** | 9,552 / 5,619 = **1.700x** |
+
+The "stack round trip" row is gone: this slice cashed it in (pre-registered 32 ->
+**measured 47**). Even eating all 223 reaches only 1.700x.
+
+### 27.6 Forbidden readings (frozen)
+
+1. Do not claim "S19 beats armcc". Corpus-wide 1.740x, same function 1.229x; §26.2's
+   1.60x is withdrawn.
+2. Do not keep quoting §26.2's "-800 to -1,000" or "binary-search lowering" -- see 27.4,
+   that was gcc's reading.
+3. Do not call 1.740x "close to armcc": the gap sits in `LDR` (+203/function), `MOV`
+   (+60) and stack traffic (+26), which is allocator quality.
+4. **The `pair` shape has text-level verification only.** The executed fixture reliably
+   produces a `remat` site (`*(volatile unsigned*)0x40026458u = FLAG(in)`); `pair` is
+   covered by three text-level proofs (byte-for-byte == oracle, cursor walk, control
+   texts) and **has no runtime coverage**. That is this slice's honest boundary.
+5. Do not read the fixed point as "a patch for a bug": it follows from the existing
+   "scan to the end of the buffer" convention that binds every text pass.

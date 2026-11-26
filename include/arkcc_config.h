@@ -404,6 +404,19 @@
 #   define ARKCC_FEATURE_OPT_FRAME   1
 # endif
 #endif
+/* ARKCC_FEATURE_OPT_PUSHPOP: -fopt-pushpop, S19-a value-stack round trips --
+ * a `PUSH {rX}` whose value is a literal-pool load, an immediate or a
+ * register copy is deleted and its matching `POP {rY}` re-materialises
+ * the value (docs/EXPR_MODEL.md section 27).  Same line tables as the
+ * other text passes, so it is off the STM32 profile for the same reason. */
+#ifndef ARKCC_FEATURE_OPT_PUSHPOP
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_OPT_PUSHPOP 0   /* 板上裁掉：只在宿主/交叉编译用 */
+# else
+#   define ARKCC_FEATURE_OPT_PUSHPOP 1
+# endif
+#endif
+
 /* ARKCC_FEATURE_OPT_VOLDBM: -fopt-voldmb, elide the DMB SY pair around a
  * volatile access to a frame slot whose address this function never takes.
  * A barrier orders memory transactions as seen by *another* observer; with
