@@ -2283,3 +2283,80 @@ new pre-registration (§24.3 item 3 already says this slice does not do it).
 2. Do not book this slice as a failed optimisation: it was never an optimisation; the verdict is a fix.
 3. Do not wave it away with "gcc does it too": `MOVT` writing half the register is an architectural
    fact and depends on no reference implementation's yardstick.
+
+---
+
+## 26 S19 pre-registration: the first emit/IR-level slice (2026-11-26, frozen before implementation)
+
+### 26.1 Why it has to be the emit layer: four freshly measured bounds
+
+With S18 closed (off arm 10,172 / 372,761 B, on arm 9,822 / 358,964 B, 1.748x against armcc5),
+S19 was opened by project-level decision. Four candidate families were **measured**, not estimated
+(`D:/tmp/bm/cf/meas_cmpimm.py`, `meas_lit.py`, `meas_litcse.py`):
+
+| Candidate | Optimistic bound | Measured reachable | Share of 9,822 |
+| --- | ---: | ---: | ---: |
+| Literal-load sharing (one load per literal per function) | **438** | -- | 4.5% |
+| 　└ of which the loosest sound rule (a single-predecessor label keeps what it knows) | -- | **88** | 0.9% |
+| Constant into a compare (`MOV rX,#imm` + ... + `CMP rX,rY`) | 50 | **25 sites** | 0.5% |
+| Ladder layer (`LDR` literal / `CMP` / branch) | 741 | -- | 7.5% |
+
+Literal loads: **809 loads over 371 distinct literals** corpus-wide (optimistic 438), but every ladder
+layer loads a **different** constant and the same constant reappears in far-apart ladders separated by
+join points (the same `r7` holds different literals on different incoming paths, so it must be TOP).
+An available-value analysis therefore reaches **88** instructions at best.
+
+Frozen conclusion: **neither the text layer nor available-value sharing is the road.** Of the 1,235
+instructions in `HAL_DMAEx_MultiBufferStart_IT`, 275 literal loads + 262 `CMP` + 244 conditional
+branches are two-per-layer hard cost that the text layer cannot compress further.
+
+### 26.2 The only big lever: how equality chains are lowered
+
+Measured composition of that function: `LDR 331` (275 literal + 43 memory), `CMP 262`, `BEQ 176`,
+`B 85`, `MOV 131`, `PUSH 35` / `POP 38`, `STR 38` (25 of them `[r1, #0]`).
+
+`PUSH {rX}` ... `POP {rY}` pairs sit around whole ladders: that is the **value-stack model** pushing
+the address of an assignment target, evaluating the expression, then popping it to store. armcc/gcc
+keep the address in a register and lower the 250 equality comparisons as a **binary search / jump
+table**, which is why they land on 292.
+
+Bound frozen this round: lowering that function's ladders as a binary search gives 1,235 -> about
+**400**, i.e. roughly **-800 to -1,000 instructions corpus-wide (-8% to -10%)**, `1.748x` -> about
+**1.60x**.
+
+**One negative conclusion, frozen**: even with this slice done ideally, **armcc is still out of
+reach** -- the remaining gap is spread over value transport (`MOV` immediate +758, `MOV` register
++669, `PUSH`/`POP` +683, `[sp,#n]` +407), which is register-allocator quality, not any single
+family's food.
+
+### 26.3 Slice order (frozen; in this order, each pre-registered separately)
+
+1. **S19-a value-stack round-trip removal**: `PUSH {rX}` ... `POP {rY}` (same function, no `BL`
+   between, no other `PUSH`/`POP`, no write to `sp`, `rX` not written in between) becomes
+   `MOV rY, rX` and the `PUSH` is deleted. **Gain: 0 instructions** (two for two), but it takes stack
+   traffic from 73 to 0 and is the prerequisite for S19-b.
+2. **S19-b pick registers for the compared value and the target address**: with the round trip gone,
+   move the address into a register the expression never uses (`r9`-`r11`) so each ladder layer
+   loses one push.
+3. **S19-c binary-search lowering of equality chains**: the real -800.
+
+This section (26) pre-registers only the **order and the criteria**; it pre-registers no payout.
+
+### 26.4 Criteria (frozen before the run, not to be edited after)
+
+| Item | Criterion |
+| --- | --- |
+| Correctness | Each slice: all 95 TUs plus `make test` green; fixture arms return the Python model value |
+| OFF IS OFF | The new switch defaults off; the off arm is byte-identical to `-fno-opt-<name>` and still **9,822 / 358,964** |
+| Readings | Write the expected bound down *before* the run, report only the measurement after; a shortfall is re-judged against §22.4, the table is **never edited** |
+| Crop | A build with `ARKCC_FEATURE_OPT_<NAME>=0` refuses the new switch by name (`C3900U`) and, without it, is byte-identical to the full build |
+| Anti-false-green | Every slice ships: a shape census (independent Python verdict, printing its hit count), a checker self-check (a hand-broken text must be caught), a `unicorn` differential (both arms same value and same RAM snapshot) and a sabotaged copy that must change the value |
+
+### 26.5 Forbidden readings (frozen)
+
+1. Do not claim "S19 will beat armcc": §26.2 freezes the bound at 1.60x; `1.0x` needs a rewritten
+   allocator.
+2. Do not read §26.1's 88 as "literal sharing is useless": it is the ceiling of available-value
+   analysis **on this corpus**, so the conclusion is "not worth it", not "the rule is wrong".
+3. Do not skip the slice order: S19-c depends on the registers S19-a/b free up; doing c first drives
+   the register pressure into spills.
