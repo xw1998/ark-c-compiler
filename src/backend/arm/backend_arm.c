@@ -8731,7 +8731,7 @@ static void ark_deadins_function(AsmBuffer *b, int from) {
 }
 #endif /* ARKCC_FEATURE_OPT_DEADINS */
 
-#if ARKCC_FEATURE_OPT_LADDER || ARKCC_FEATURE_OPT_REGBIRTH
+#if ARKCC_FEATURE_OPT_LADDER || ARKCC_FEATURE_OPT_REGBIRTH || ARKCC_FEATURE_OPT_CHAINFOLD
 /* ---------------------------------------------------------------------------
  * S15: ladder-local redundancy (docs/EXPR_MODEL.md section 17)
  *
@@ -9530,6 +9530,185 @@ static void ark_regbirth_function(AsmBuffer *b, int from) {
     pp_splice(b, from, &out);
 }
 #endif /* ARKCC_FEATURE_OPT_REGBIRTH */
+#if ARKCC_FEATURE_OPT_CHAINFOLD
+/* ---------------------------------------------------------------------------
+ * S17: same-value comparison runs (docs/EXPR_MODEL.md section 22)
+ *
+ * A public HAL macro such as `__HAL_DMA_GET_TC_FLAG_INDEX` lowers to a chain
+ * of ternaries over the peripheral instance address, and one flag bit is
+ * shared by Stream k on DMA1 and on DMA2 *and* by Stream k+4 on both.  The
+ * emitter spells every layer of that chain as five instructions:
+ *
+ *     LDR rL, .Llit_k        ; the 32-bit stream address
+ *     CMP rX, rL
+ *     BNE .Lnext             ; not this one -> next layer
+ *     MOV rD, #v             ; the value this layer selects
+ *     B   .Ljoin             ; the join shared by the whole chain
+ *
+ * Four adjacent layers therefore end with the *same* `MOV rD, #v` and the
+ * *same* `B .Ljoin`, and three of the four carries are walled off by their
+ * own `BNE` and never execute.  When m >= 2 adjacent layers agree on the
+ * compared register, the load register, the destination, the value text and
+ * the join target, the run collapses to one hit block:
+ *
+ *     LDR rL, .Llit_1        ; layers 1..m-1: LDR/CMP kept, BNE -> BEQ .Lhit
+ *     CMP rX, rL
+ *     BEQ .Lhit
+ *     ...
+ * .Lk:                       ; every layer's own entry label stays in place
+ *     LDR rL, .Llit_m
+ *     CMP rX, rL
+ *     BNE .Lnext             ; the last layer keeps its BNE
+ * .Lhit:                     ; new: one hit point for the whole run
+ *     MOV rD, #v             ; the last layer's MOV/B, unchanged
+ *     B   .Ljoin
+ *
+ * Why it is safe.  Nothing is compared differently: every layer keeps its own
+ * `LDR`/`CMP`, and a layer that used to fall through to the next one still
+ * falls through (its `BNE` became `BEQ .Lhit`, which is not taken when the
+ * loaded constant differs).  The only label that moves is a brand new one.
+ * Each original entry label is untouched and still sits in front of that
+ * layer's `LDR`, so a branch that entered at layer k from anywhere else still
+ * executes exactly the five instructions it executed before.  The deleted
+ * `MOV`/`B` pairs were only reachable from a layer whose `BNE` fell through,
+ * and that path now ends in the shared hit block.  Only `BNE` is inverted;
+ * any other condition refuses the run, and anything this cannot read exactly
+ * refuses it as well ("rather an error than a wrong answer").
+ * ------------------------------------------------------------------------- */
+#define CF_MAX_RUNS 255
+#define CF_MAX_LAYERS 64
+#define CF_MAX_LAB  32
+static unsigned char cf_bra[LD_MAX_LINES];   /* branch line -> hit label id + 1 */
+static unsigned char cf_pre[LD_MAX_LINES];   /* line -> emit hit label first     */
+static char cf_lab[CF_MAX_RUNS][CF_MAX_LAB];
+
+typedef struct {
+    int ldr, cmpb, br, mov, b;   /* line indices of the five instructions */
+    int rd, rx, rl;              /* destination, compared, loaded register */
+} CfLayer;
+
+/* Next instruction line at or after i+1, skipping blanks, directives and
+ * labels; -1 when the function ends first. */
+static int cf_next(int n, int i) {
+    int j = i + 1;
+    while (j < n && ld_kd[j] != 1) j++;
+    return j < n ? j : -1;
+}
+
+/* First instruction line at or after label `nm`; -1 when there is none. */
+static int cf_target(int n, const char *nm) {
+    int lp = ld_find_label(nm), q;
+    if (lp < 0) return -1;
+    for (q = lp; q < n; q++)
+        if (ld_kd[q] == 1) return q;
+    return -1;
+}
+
+/* One layer starting at line i.  The whole shape is checked here: a
+ * literal-pool load into a register, a two-operand `CMP` of another register
+ * against it, `BNE` to a label, and `MOV|MOVW rD, #imm` immediately followed
+ * by `B label` with no label in between. */
+static int cf_layer(int n, int i, CfLayer *L) {
+    int j, k, m, r2;
+    if (i < 0 || i >= n || ld_kd[i] != 1) return 0;
+    if (!ld_lit_load(&ld_iv[i], &L->rl)) return 0;
+    j = cf_next(n, i);
+    if (j < 0) return 0;
+    if (strcmp(ld_iv[j].mn, "CMP") || ld_iv[j].nops != 2) return 0;
+    if (!cp_reg(ld_iv[j].op[1], &r2) || r2 != L->rl) return 0;
+    if (!cp_reg(ld_iv[j].op[0], &L->rx)) return 0;
+    k = cf_next(n, j);
+    if (k < 0) return 0;
+    if (strcmp(ld_iv[k].mn, "BNE") || ld_iv[k].nops != 1) return 0;
+    if (ld_iv[k].op[0][0] != '.') return 0;
+    m = cf_next(n, k);
+    if (m < 0) return 0;
+    if (strcmp(ld_iv[m].mn, "MOV") && strcmp(ld_iv[m].mn, "MOVW")) return 0;
+    if (ld_iv[m].nops != 2 || ld_iv[m].op[1][0] != '#') return 0;
+    if (!cp_reg(ld_iv[m].op[0], &L->rd)) return 0;
+    if (m + 1 >= n || ld_kd[m + 1] != 1) return 0;      /* no label before the B */
+    if (strcmp(ld_iv[m + 1].mn, "B") || ld_iv[m + 1].nops != 1) return 0;
+    if (ld_iv[m + 1].op[0][0] != '.') return 0;
+    if (L->rd == L->rx || L->rd == L->rl) return 0;     /* keep the proof trivial */
+    L->ldr = i; L->cmpb = j; L->br = k; L->mov = m; L->b = m + 1;
+    return 1;
+}
+
+static void ark_chainfold_function(AsmBuffer *b, int from) {
+    static CfLayer run[CF_MAX_LAYERS];
+    int n, i, nrun = 0, nfold = 0;
+    AsmBuffer out;
+
+    if (!g_config.enable_opt_chainfold) return;
+    n = ld_scan(b, from);
+    if (n <= 0) return;
+    memset(ld_del, 0, (size_t)n);
+    memset(cf_bra, 0, (size_t)n);
+    memset(cf_pre, 0, (size_t)n);
+
+    for (i = 0; i < n; i++) {
+        CfLayer a;
+        int m, k, na;
+        char tgt[64];
+
+        if (ld_kd[i] != 1) continue;
+        if (!cf_layer(n, i, &a)) continue;
+        run[0] = a;
+        m = 1;
+        for (;;) {
+            CfLayer nx;
+            int lp, q, jt, jt2;
+
+            if (m >= CF_MAX_LAYERS) break;
+            na = cf_next(n, run[m - 1].b);
+            if (na < 0 || !cf_layer(n, na, &nx)) break;
+            if (nx.rx != run[0].rx || nx.rl != run[0].rl || nx.rd != run[0].rd) break;
+            if (strcmp(ld_iv[nx.mov].mn, ld_iv[run[0].mov].mn)) break;
+            if (strcmp(ld_iv[nx.mov].op[1], ld_iv[run[0].mov].op[1])) break;
+            if (!ld_cond_br(&ld_iv[run[m - 1].br], tgt, (int)sizeof tgt)) break;
+            lp = ld_find_label(tgt);
+            if (lp < 0) break;
+            for (q = lp; q < n && ld_kd[q] != 1; q++) ;
+            if (q != na) break;
+            jt = cf_target(n, ld_iv[run[m - 1].b].op[0]);
+            jt2 = cf_target(n, ld_iv[nx.b].op[0]);
+            if (jt < 0 || jt != jt2) break;
+            run[m++] = nx;
+        }
+        if (m < 2) continue;
+        if (nrun >= CF_MAX_RUNS) break;
+
+        snprintf(cf_lab[nrun], CF_MAX_LAB, ".Lcf_%d_%d", from, run[0].ldr);
+        for (k = 0; k < m - 1; k++) {
+            cf_bra[run[k].br] = (unsigned char)(nrun + 1);
+            ld_del[run[k].mov] = 1;
+            ld_del[run[k].b] = 1;
+        }
+        cf_pre[run[m - 1].mov] = (unsigned char)(nrun + 1);
+        nrun++;
+        nfold += 2 * (m - 1);
+        i = run[m - 1].b;
+    }
+    if (nfold == 0) return;
+
+    asmbuf_init(&out);
+    for (i = 0; i < n; i++) {
+        char t[CF_MAX_LAB + 16];
+        if (cf_pre[i]) {
+            snprintf(t, sizeof t, "%s:", cf_lab[cf_pre[i] - 1]);
+            pp_copy_line(&out, t, ark_strlen(t));
+        }
+        if (ld_del[i]) continue;
+        if (cf_bra[i]) {
+            snprintf(t, sizeof t, "    BEQ %s", cf_lab[cf_bra[i] - 1]);
+            pp_copy_line(&out, t, ark_strlen(t));
+        } else {
+            pp_copy_line(&out, b->buf + ld_ls[i], ld_ll[i]);
+        }
+    }
+    pp_splice(b, from, &out);
+}
+#endif /* ARKCC_FEATURE_OPT_CHAINFOLD */
 #endif /* ARKCC_FEATURE_OPT_LADDER || ARKCC_FEATURE_OPT_REGBIRTH */
 
 
@@ -17464,6 +17643,14 @@ arm_skip_text_opts:
          * shape analysis -- see docs/EXPR_MODEL.md section 20. */
         if (g_config.enable_opt_birthdest || g_config.enable_opt_basefold)
             ark_regbirth_function(&buf, fstart);
+#endif
+#if ARKCC_FEATURE_OPT_CHAINFOLD
+        /* S17, same-value comparison runs, last of all: it deletes the
+         * repeated MOV/B of a run and inverts the BNE in front of every
+         * layer but the last, so it must see the final text and nothing
+         * below re-derives what it read -- see docs/EXPR_MODEL.md
+         * section 22. */
+        if (g_config.enable_opt_chainfold) ark_chainfold_function(&buf, fstart);
 #endif
 arm_skip_frame_opts:
 

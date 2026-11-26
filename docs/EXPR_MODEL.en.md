@@ -2000,3 +2000,123 @@ drops accordingly and **the table is not rewritten to fit the implementation**.
    across runs; only the repeated carry of a same-value run is deleted.
 4. Do not reconcile 350 against §19.3's 350-450: that figure is the redemption estimate for
    three other families (birth/base/pair), a different yardstick and different families.
+
+## 23 S17 landing readings and verdict (2026-11-26)
+
+The rule of §22 is implemented (`ark_chainfold_function`, `src/backend/arm/backend_arm.c`),
+the switch is `-fopt-chainfold` (default off) and the crop macro is
+`ARKCC_FEATURE_OPT_CHAINFOLD`. This section only records the readings, the verdict and the
+**root cause of the byte deviation**; the criteria themselves are §22.4, unchanged after the run.
+
+### 23.1 Measurement (95 TUs, one build, 2026-11-26)
+
+| Arm | Instructions | `.s` bytes | Versus off |
+| --- | ---: | ---: | --- |
+| switch off (the post-S16 baseline) | **10,172** | 372,761 | -- |
+| `-fopt-chainfold` | **9,822** | 358,964 | **-350 (-3.44%)** / **-13,797 B (-3.70%)** |
+
+Against armcc5's 5,619 instructions (§17 yardstick) the ratio moves from **1.810x** to **1.748x**.
+
+**Verdict: landing tier.** 350 >= the 214 threshold of §22.4 (2.0%) -- the switch stays,
+default off, and is added to the README flag table. The criteria table is not touched.
+
+### 23.2 Per-TU distribution (exactly one TU is hit)
+
+| TU | off insns | off bytes | on insns | on bytes |
+| --- | ---: | ---: | ---: | ---: |
+| `stm32f4xx_hal_dma_ex.c` | 1,689 | 70,503 | 1,339 | 56,706 |
+| the other 94 TUs | -- | -- | unchanged | unchanged |
+
+All 60 runs live in `HAL_DMAEx_MultiBufferStart_IT`. The low coverage is not a rule problem:
+in this corpus the ladder shape ("one compared register, several same-value arms") only occurs
+in that one function.
+
+### 23.3 Byte deviation and its root cause (§22.4 predicted -442 B, the run measured -13,797 B)
+
+**The 442 B of §22.4 is not changed**: it is the correct upper bound under the
+"encoded length of the removed `MOV`/`MOVW`" yardstick. The -13,797 B reported here uses a
+different yardstick -- `.s` text bytes. The whole difference comes from three things, each
+accounted for line by line:
+
+1. **Yardstick**: every reading since §14 (S14/S15/S16/S17) counts `.s` text bytes
+   (including the 2 B `\r\n`), not encoded lengths. Deleting an instruction saves the **whole
+   text line**, not its 2-4 B of machine code.
+2. **Every rewrite is "3 lines -> 1 line"**. Measured sample (first block of `dma_ex`,
+   lengths include `\r\n`):
+   `    BNE .L_HAL_DMAEx_MultiBufferStart_IT_17` (44 B) +
+   `    MOV r0, #32` (16 B) +
+   `    B .L_HAL_DMAEx_MultiBufferStart_IT_18` (42 B) = 102 B,
+   replaced by `    BEQ .Lcf_2261_126` (22 B) => **-80 B** per block (-82 B when the deleted
+   instruction is a `MOVW`). 175 x 80/82 ~= **-14,730 B**.
+3. **On top of that, 60 generated label lines are added**
+   (`.Lcf_<buffer offset>_<LSR line of the run head>:`, about 16 B each with `\r\n`):
+   **+933 B**.
+
+Total -14,730 + 933 = **-13,797 B**, matching the measurement byte for byte; the instruction
+count drops by exactly 350 because a label is not an instruction (so §22.4's 350 needs no
+correction).
+
+### 23.4 Gate (`tests/run_chainfold_tests.py`, `make test-chainfold`, six checks, all green)
+
+1. **OFF IS OFF**: all 95 TUs, switch off vs `-fno-opt-chainfold` are byte-identical, and the
+   totals are still `10,172 / 372,761 B` (the post-S16 baseline was not silently changed).
+2. **Only the rule's edits appear**: the diff holds exactly two shapes -- `replace 3->1`
+   (`BNE` / `MOV|MOVW rD,#v` / `B` -> `    BEQ .Lcf_...`), **175** of them, and `insert 0->1`
+   (`.Lcf_...:` label lines), **60** of them; 175 rewrites, 175 `MOV` deleted, 175 `B`
+   deleted, 60 labels added, and no third shape.
+3. **Independent re-derivation**: `tests/cf_oracle.py` re-implements the rule on its own
+   (sharing no code or constants with the compiler); over all 95 TUs it reproduces the on-arm
+   **byte for byte** after normalising label names, 60 runs in total. It also re-proves every
+   run structurally **from the folded text**: each replaced triplet really is `LDR/CMP/BEQ` on
+   one register, the kept layer still reads `LDR/CMP/BNE` and still ends in `MOV|MOVW rD,#v`
+   plus `B`, the generated label sits exactly in front of that kept `MOV`, and the kept layer
+   is not folded again. **Why the "turn the `BEQ` back into a `BNE` and reassemble" sabotage is
+   not used**: arkcc does not accept `.s` as an input that produces an executable image
+   (a hand-run `--vector-table -o x.bin` emits only 446 B with `entry 0x08000401` out of range,
+   and unicorn faults), so the breakage of item 5 is done at the **C level** and the wording
+   says so ("the harness sees a lost assignment") instead of pretending to be an
+   assembly-level sabotage.
+4. **Must not fire**: a hand-written `MUSTNOT` fixture with the same shape but four different
+   values yields **0 runs** and both arms are byte-identical; the corpus census finds **247**
+   layers with reasons `{'extend': 175, 'move_form': 31, 'no_following_layer': 25,
+   'value': 16}`, every refusal is re-derivable from the off-arm text (`unknown` = 0), and
+   every refused layer is verified line by line to still be untouched in the text.
+5. **Semantics**: an `emit-and-run` fixture that really carries a four-layer run (run sizes
+   `[4, 4]`) returns the same value and the same 256 B RAM snapshot in both arms
+   (**190 / 190**, equal to the expectation computed independently from the C source in
+   Python); the **sabotaged** build (first layer keeps the else-value -- exactly what a wrong
+   fold does, a lost assignment) returns **238 != 190**, which proves the differential sees a
+   wrong fold.
+6. **Crop**: a build with `-DARKCC_FEATURE_OPT_CHAINFOLD=0` refuses `-fopt-chainfold` by name
+   (`C3900D` / `C3900U`, rc=1) and, without the switch, writes text byte-identical to the full
+   build; `make test` is green.
+
+### 23.5 Readings (the forbidden readings of §22.6 still hold)
+
+1. 350 is a static instruction count; **the dynamic instruction count is unchanged** (every
+   deleted `MOV`/`B` sits behind a `BNE` and was never executed). The win is static size, fetch
+   and branch-predictor pressure; the worst case is zero and no benchmark can get slower.
+2. The verdict "landing tier" only means "the switch stays, default off, listed in the README
+   flag table"; it does not mean recommended. To raise the tier, measure again in a new slice
+   and freeze new criteria.
+3. Do not call this CSE; do not reconcile 350 against §19.3's 350-450 (different yardstick,
+   different families); do not claim "§19.4 was wrong" (it judged three other shapes).
+
+### 23.6 New debt found in this round (does not affect this verdict; queued as the next slice)
+
+The first version of the gate fixture indexed with `src[i % 6u]` and read the global back in
+the same function; it returned 109 in both arms instead of 190. Chasing that exposed a
+**different** defect: under `--reloc-data`, `-fopt-copyprop` splits a `MOVW`/`MOVT` pair.
+
+- Minimal repro (`D:/tmp/bm/cf/m7.c`): `seen[0] = src[i % 6u]; acc = acc*31u + seen[0];`
+- It emits `MOVW r0, #24` / `MOVT r7, #8192` / `LDR r7, [r7, #0]` (the `MOVT` destination does
+  not follow), so every iteration reads `src[0]`; arkcc returns **192**, gcc returns **134**.
+- Required conditions: `-fopt-copyprop` must be in the chain (removing it makes the bug
+  disappear) and `--reloc-data` must be on (without it the value comes from the literal pool
+  and is correct) -- so it is a multi-pass chain trigger that the current 95 TU corpus does
+  not cover.
+- Nature: **wrong code**, which violates "rather an error than a wrong answer". The fixture now
+  uses an explicit wrap index (`if (++k == 6u) k = 0u;`) to avoid it, so this slice's readings
+  and verdict are unaffected. That slice needs its own pre-registration: freeze the criteria
+  first (`MOVW`/`MOVT` must share the destination register, `m7.c` compared against gcc, 95 TU
+  OFF IS OFF), then fix, then add a standing gate.

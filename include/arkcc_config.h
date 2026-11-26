@@ -376,6 +376,19 @@
 #   define ARKCC_FEATURE_OPT_REGBIRTH 1
 # endif
 #endif
+/* ARKCC_FEATURE_OPT_CHAINFOLD: -fopt-chainfold, S17 same-value comparison
+ * runs -- adjacent ladder layers that pick the same result value and share
+ * one join keep only the last `MOV`/`B`; every earlier layer's `BNE` becomes a
+ * `BEQ` into one fresh hit label (docs/EXPR_MODEL.md section 22).  Same line
+ * tables and the same guard as the S15/S16 text passes, so it is off the
+ * STM32 profile for the same reason. */
+#ifndef ARKCC_FEATURE_OPT_CHAINFOLD
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_OPT_CHAINFOLD 0   /* 板上裁掉：只在宿主/交叉编译用 */
+# else
+#   define ARKCC_FEATURE_OPT_CHAINFOLD 1
+# endif
+#endif
 
 /* ARKCC_FEATURE_OPT_FRAME: -fopt-frame, callee-saved list trimming.
  * A slot the body never mentions is deleted from PUSH/POP; when that
