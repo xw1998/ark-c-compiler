@@ -2986,3 +2986,62 @@ freeze time predicted 124; that does not change the reading, since **115 >= 100*
    design boundary (the pass runs per function), and covering it needs a whole-TU flow, which is
    not this rule's job.
 3. Do not call S21 landed without a full `make test`.
+
+## 33 The V-2 premise measured and withdrawn; the next slice can only be V-3 (2026-11-26, frozen before implementation, withdrawn after measurement)
+
+### 33.1 Why V-2 (value transport) is withdrawn
+
+The criterion 29.3 froze for V-2 was: whole-corpus **`MOV` count down by >= 200**, with total
+instructions not rising. The reason for withdrawing is the same as for V-1 -- **the ceiling itself
+is too low**, not that the rule cannot be written. This round measured out, in one go, how many
+copies the text layer can still take. Three rules of the same family, each with its whole-corpus
+ceiling (corpus `BASE`+`chainfold`+`pushpop` = 9,775 insns, 1,667 `MOV` in total):
+
+| rule | shape | whole-corpus ceiling |
+| --- | --- | --- |
+| R1 | `STR rX, [sp,#k]` followed on the same straight line by `LDR rX, [sp,#k]` (`rX` unmodified, `sp` untouched) | **9** |
+| R2 | `MOV rX, rY` whose next instruction reads `rX`, does not write `rY`, and `rX` is dead afterwards (probe 2 of 29.1) | **23** |
+| R3 | `MOV rP, r0` ... `MOV r0, rP` (neither `r0` nor `rP` written in between, `rP` not read in between) | **21** |
+
+The three total **53**, and they overlap; even taking all of them is far from 200. Under hard
+constraint 4 of 29.3, **V-2 is withdrawn and not implemented**.
+
+### 33.2 Where the 1,667 `MOV`s actually come from (classified one by one, not estimated)
+
+| shape | count | origin |
+| --- | --- | --- |
+| `MOV rX, #imm` | 942 | the immediate lands in `r0` (the value-stack top) and the consumer moves it |
+| `MOV rP, r0` (`rP` = `r4`-`r12`) | 277 | a result computed in `r0` **spilled into a preserved register** |
+| `MOV r0, rP` | 191 | `r0` **fetched back** before the next computation |
+| call arguments staged into `r0`-`r3` (`r4`-`r11` -> argument register) | 101 | the argument is computed into a preserved register and moved at the call |
+| other (including shifted `MOV`) | 156 | conversions, bit fields, shift synthesis |
+
+`277 + 191 = 468` is the price of "**compute in `r0`, then move in and out of preserved registers**";
+**101** is "the argument is not computed straight into an argument register"; **942** is "the
+immediate does not land in the register that needs it". None of the three is **locally provable in
+the text** -- what has to change is *which register a value is born in*, which only the
+emitter/allocator can do. That is V-3.
+
+### 33.3 The next slice: V-3 first stage (pre-registered, frozen before implementation)
+
+**Slice V-3-a: emitter-level "destination retargeting"**. Rule: the result of an `IR_*` no longer
+lands in `r0` unconditionally but lands directly in the register the next consumer wants (or in the
+argument register). Criterion (frozen):
+
+- whole-corpus instruction count **<= 9,775 - 400** (i.e. most of the 468), with `PUSH`+`POP` not
+  growing;
+- `MOV` count **<= 1,667 - 250**;
+- at most 50 new `STR`s (no "trade a `MOV` for a `STR`");
+- miss it and the slice is withdrawn, with no re-cutting of the criterion.
+
+**Hard constraints** (the same set as 29.3, no relaxation): OFF IS OFF byte for byte; the answer
+does not change (`tests/arm_exec/` plus a `unicorn` differential on value and RAM snapshot);
+`STM32_MIN` crops it out and refuses the switch by name (`C3900U`); IR semantics untouched.
+
+### 33.4 How not to read this
+
+1. Do not read 53 as "V-2 failed because nobody wrote the rules": the probes have measured out the
+   locally provable part; the rest is *not* locally provable, not unwritten.
+2. Do not treat V-3-a's 400 as reaching armcc: 9,775 - 400 = 9,375, still 1.67x against 5,619;
+   closing the rest needs the allocator proper.
+3. Do not merge any V-3-a commit without OFF IS OFF and the two-arm execution differential.
