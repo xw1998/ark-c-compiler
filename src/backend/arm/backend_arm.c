@@ -1805,6 +1805,11 @@ static void lv_rw(const cp_ins *o, unsigned *rd, unsigned *wr) {
          * Only the ops whose destination is a pure output are exempt;
          * over-approximating a read can only cost a missed rewrite. */
         if (!lv_dest_only(m)) r |= w;
+        /* MOVT writes only the top half, so the low half is still read:
+         * model it as a read-modify-write.  Conservative on purpose (the
+         * worst case is one missed rewrite); it is what keeps a renamed
+         * MOVT from being treated as a full kill (S18, section 24). */
+        if (!strcmp(m, "MOVT")) r |= w;
     }
     *rd = r;
     *wr = w;
@@ -9387,8 +9392,14 @@ static int rb_writes_reg(const cp_ins *o, int r) {
  * rule A refuses every two-operand form whose op[0] is not a plain write.
  * Three operands are always pure (Rd, Rn, Rm / Rd, Rn, #imm). */
 static int rb_pure_dest(const cp_ins *o) {
+    /* MOVT is NOT in this list on purpose: it writes only the top half, so
+     * renaming it and deleting the following `MOV rX, rD` splits a 32-bit
+     * constant in half (S18, docs/EXPR_MODEL.md section 24: r7 got
+     * `MOVT r7, #8192` while the low half stayed in r0 -> wrong address,
+     * arkcc 192 vs gcc 134).  MOVW is a complete definition: it writes a
+     * zero-extended 32-bit value. */
     static const char *D[] = {
-        "MOV", "MOVW", "MOVT", "MVN", "LDR", "LDRB", "LDRH", "LDRSB",
+        "MOV", "MOVW", "MVN", "LDR", "LDRB", "LDRH", "LDRSB",
         "LDRSH", "UXTB", "UXTH", "SXTB", "SXTH", "REV", "REV16", "REVSH",
         "RRX", "CLZ", NULL
     };

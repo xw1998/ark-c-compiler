@@ -33,6 +33,7 @@ endif
         test-spill test-ldhoist test-stackframe test-deadins test-userasm \
         test-prop test-deadpush test-cmat test-slotreg test-opalloc test-boolmat \
         test-exit test-bitmask test-ladder test-regbirth test-chainfold \
+        test-movtpair \
         test-voldmb test-volmem test-constcond \
         test-litpool test-coalesce test-option install \
         stm32 stm32-check
@@ -50,7 +51,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-floatlit test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch test-imm test-peep test-cbranch test-copyprop test-cmat test-slotreg test-opalloc test-live test-spill test-ldhoist test-pair test-stackframe test-deadins test-userasm test-movimm test-litpool test-coalesce test-voldmb test-volmem test-constcond test-boolmat test-exit test-bitmask test-ladder test-regbirth test-chainfold test-option
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-floatlit test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch test-imm test-peep test-cbranch test-copyprop test-cmat test-slotreg test-opalloc test-live test-spill test-ldhoist test-pair test-stackframe test-deadins test-userasm test-movimm test-litpool test-coalesce test-voldmb test-volmem test-constcond test-boolmat test-exit test-bitmask test-ladder test-regbirth test-chainfold test-movtpair test-option
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -357,6 +358,20 @@ test-regbirth: $(ARKCC)
 # (-DARKCC_FEATURE_OPT_CHAINFOLD=0) refuses the flag by name (C3900U).
 test-chainfold: $(ARKCC)
 	$(PYTHON) tests/run_chainfold_tests.py ./$(ARKCC)
+
+# Gate for the MOVW/MOVT pairing fix (S18): `-fopt-birthdest` may only
+# rename a result whose single instruction writes the whole destination,
+# and `MOVT` writes the high half only -- renaming it and deleting the
+# copy left the destination holding half a constant (m7.c: 192 instead of
+# 134).  The gate pins that the fix costs no rename on the corpus (10,172
+# insns with the switch, 10,330 without, a difference of the 158 sites S16
+# attributed to it), that all 102 adjacent MOVW/MOVT pairs of the corpus
+# agree on their register, that a scanner self-test sees a rewritten MOVT,
+# that the fixture's pair is byte-identical to the arm without the switch
+# and returns the value the C source says in both arms, and that a cropped
+# build (-DARKCC_FEATURE_OPT_REGBIRTH=0) refuses both switches by name.
+test-movtpair: $(ARKCC)
+	$(PYTHON) tests/run_movtpair_tests.py ./$(ARKCC)
 
 test-live: $(ARKCC)
 	$(PYTHON) tests/run_live_tests.py ./$(ARKCC)

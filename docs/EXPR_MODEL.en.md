@@ -2120,3 +2120,166 @@ the same function; it returned 109 in both arms instead of 190. Chasing that exp
   and verdict are unaffected. That slice needs its own pre-registration: freeze the criteria
   first (`MOVW`/`MOVT` must share the destination register, `m7.c` compared against gcc, 95 TU
   OFF IS OFF), then fix, then add a standing gate.
+
+## 24 S18 pre-registration: `MOVT` is not a complete definition (2026-11-26, frozen before implementation)
+
+### 24.1 The defect (reproduced first, criteria frozen after)
+
+The first version of the S17 gate fixture (`src[i % 6u]` indexing plus a same-function read-back of
+the global) returned 109 in both arms instead of 190. The cause is unrelated to S17: it is a **wrong
+rename** in `-fopt-birthdest` (S16).
+
+- Minimal repro `D:/tmp/bm/cf/m7.c` (`seen[0] = src[i % 6u]; acc = acc*31u + seen[0];`):
+  `arkcc -O2 --reloc-data` returns **192**, MinGW gcc `-O2` on the same source returns **134**.
+- Located pass by pass (temporary dumps of the function text after every pipeline stage; reverted
+  with `git checkout` once the diagnosis was complete):
+
+  | Point | Text |
+  | --- | --- |
+  | `after_spill` | `MOVW r0, #24` / `MOVT r0, #8192` / `MOV r7, r0` / `MOV r4, #0` / `LDR r7, [r7, r4, LSL #2]` |
+  | `after_regbirth` | `MOVW r0, #24` / **`MOVT r7, #8192`** / `MOV r4, #0` / `LDR r7, [r7, r4, LSL #2]` |
+
+  The rename happens only in `ark_regbirth_function` (`-fopt-birthdest`) and the `MOV r7, r0` copy is
+  deleted, so `r7` only receives the top half (`0x2000_0000 | old low half`) and the low half `24`
+  stays in `r0` with nobody reading it. The address is wrong, so the program does not read `seen[0]`;
+  that is where 192 comes from.
+
+### 24.2 Root cause (frozen)
+
+`rb_pure_dest()` (`src/backend/arm/backend_arm.c`) lists `MOVT` among "the first operand is a pure
+output". But `MOVT rD, #hi` **writes only the top 16 bits**, so it is not a complete definition of
+`rD`; renaming it and deleting the following `MOV rX, rD` splits a 32-bit constant in half. In the
+same family `lv_rw()` treats `MOVT` as "the whole register is killed" (`wr = {rD}` in liveness).
+That happens to be safe on today's emitter output (`MOVT` always follows a `MOVW` of the same
+register), but as soon as another pass renames one half the liveness model breaks the same way.
+
+### 24.3 Rules (frozen)
+
+1. **Primary fix**: drop `MOVT` from `rb_pure_dest()`. Rule A of `-fopt-birthdest` may no longer
+   rename on a `MOVT`; `MOVW` stays (a `MOVW rD, #imm` writes a zero-extended 32-bit value into `rD`,
+   which is a complete definition).
+2. **Same-family hardening**: `lv_rw()` counts the destination of `MOVT` as **read** as well
+   (read-modify-write), so the liveness model can never kill a register whose low half is still live
+   just because a `MOVT` covers its top half. This is a conservative change: the worst case is one
+   missed rewrite.
+3. **Not done (explicit)**: renaming a `MOVW`+`MOVT` pair together and then deleting the copy is a
+   new rule and needs its own pre-registration. So this slice's readings may **only shrink or stay**;
+   a hit count that goes down is acceptable, and zero gain is acceptable too -- this is a
+   **correctness fix**.
+
+### 24.4 Criteria (frozen before the run, unchanged after)
+
+| Item | Criterion |
+| --- | --- |
+| Correctness | `m7.c` returns **134** (matching gcc) in both the on and the off arm |
+| Structural invariant | Over 95 TUs with all of BASE on, every `MOVW rD, #lo` followed (across directives) by a `MOVT rE, #hi` must have **D == E**; **zero violations** |
+| Readings unchanged | 95 TUs: the off arm is still **10,172 / 372,761 B** and the on arm (with `-fopt-chainfold`) is still **9,822 / 358,964 B**; if that fails, re-judge against §22.4's table -- **never edit the table** |
+| OFF IS OFF | `-fno-opt-birthdest` is byte-identical to the off arm |
+| Regression | `make test`, `make test-regbirth` and `make test-chainfold` all green |
+
+### 24.5 Anti-false-green (frozen, all must pass)
+
+1. **The fixture must really carry the triggering shape**: the gate itself (independently, in Python
+   under `tests/`) proves the fixture text holds the adjacent pair "a producer whose destination is
+   `r0` and fully defined by it" + "`MOV rX, r0` right after" + "`r0` never read afterwards";
+   otherwise the check proves nothing.
+2. **The off arm must not pass either**: `-fno-opt-birthdest` and the on arm both return 134 with the
+   same RAM snapshot.
+3. **The invariant checker has its own self-check**: a correct text with one `MOVT rX` hand-edited to
+   `MOVT rY` must be reported as a violation by the very same checker (no permanently green checker).
+4. **Corpus re-count**: print both the number of adjacent `MOVW/MOVT` pairs over 95 TUs (102 before
+   the fix) and the violation count (must be 0 after).
+5. **Crop**: a build with `-DARKCC_FEATURE_OPT_REGBIRTH=0` still refuses both switches by name and,
+   without them, is byte-identical to the full build.
+
+### 24.6 Forbidden readings (frozen)
+
+1. Do not claim "§21 was wrong": §21 judged the **tier of the readings** (175 -> register tier); this
+   slice is one wrong rename inside the same switch, the readings do not move and the verdict stands.
+2. Do not book this slice as an optimisation: the expected gain is zero or negative (fewer rewrites);
+   it is a **correctness fix** and must not appear in any gain table.
+3. Do not use it to explain S17's 350: different thing, different family, different yardstick.
+
+---
+
+## 25 S18 landing readings and verdict (2026-11-26)
+
+### 25.1 What was fixed (two places, no new rule)
+
+As frozen in §24.3, the only change is in `src/backend/arm/backend_arm.c`:
+
+1. `rb_pure_dest()` drops `"MOVT"` (`MOVW` stays) and says why on the spot;
+2. the generic branch of `lv_rw()` now counts a `MOVT`'s own destination as read (read-modify-write),
+   which shuts the door on the rest of the family.
+
+`git diff --stat` = 12 insertions, 1 deletion. **No rewrite rule was added**, so this slice cannot
+produce a new hit: it only withdraws a rewrite that should never have happened.
+
+### 25.2 Readings: not one digit moved
+
+| Arm | Instructions | Bytes |
+| --- | --- | --- |
+| Off (all 32 BASE passes, `-fopt-birthdest` on) | **10,172** | **372,761** |
+| `-fno-opt-birthdest` arm | **10,330** | **375,131** |
+| Difference (= the rewrites S16 booked to `-fopt-birthdest`) | **158** | 2,370 |
+| On (BASE + `-fopt-chainfold`) | **9,822** | **358,964** |
+
+The difference is still the **158** that S16 pinned, which says the fix did **not** make the corpus
+do one rewrite less: all 102 adjacent `MOVW/MOVT` pairs in the corpus agree on their register, so not
+one of them ever walked the withdrawn path. Unchanged readings are the expected outcome, not "the fix
+did nothing" -- §25.4 shows this gate does go red on the pre-fix binary. The 1.748x against armcc5
+therefore stands.
+
+### 25.3 `make test-movtpair` (14 checks, all green)
+
+`tests/run_movtpair_tests.py` reuses the `run_chainfold_tests.py` harness (same 95-TU corpus, same
+build and unicorn execution) and pins six groups:
+
+1. **The price is zero**: the off arm is 10,172 / 372,761, the `-fno-opt-birthdest` arm is
+   10,330 / 375,131, and the difference is exactly 158 (the A-arm site count from S16).
+2. **The fixture carries the shape, untouched**: the `MOVW/MOVT` pair of the `.bss` end is present in
+   the `-fopt-birthdest` arm, and all 11 pairs of the fixture are **line-for-line identical** to the
+   `-fno-opt-birthdest` arm (not "looks right": the whole list has to be equal).
+3. **The answer comes from the C source**: both arms return **134**, computed independently in
+   Python, with the same 256-byte RAM snapshot.
+4. **Corpus census**: over 95 TUs, adjacent `MOVW rD` / `MOVT` pairs = **102, violations 0**.
+5. **The checker self-checks**: rewriting one pair's `MOVT` to another register makes the very same
+   scanner report **exactly one** violation.
+6. **Crop**: a build with `-DARKCC_FEATURE_OPT_REGBIRTH=0` refuses `-fopt-birthdest` and
+   `-fopt-basefold` by name (`C3900U`, rc=1) and, without them, writes byte-identical text.
+
+`make test-chainfold` (54 ok lines) and `make test-regbirth` are green as well, and the full
+`make test` exits 0.
+
+### 25.4 Non-vacuity, measured
+
+Before trusting the gate, the pre-fix source was rebuilt (`git checkout --
+src/backend/arm/backend_arm.c`, then `make`) and the very same gate reported **3 failures**:
+
+```
+[FAIL] the -fopt-birthdest arm of the fixture carries the MOVW/MOVT pair of the .bss end
+[FAIL] the pair is byte-identical in the arm without the switch
+       (with: MOVW r0, #24 / MOVT r7, #8192  without: MOVW r0, #24 / MOVT r0, #8192)
+[FAIL] both arms return the value the C source says (134)  (on=192 nobd=134)
+```
+
+The second line is the defect itself: `MOVT r7` standing in for `MOVT r0`. With the fixed source
+restored, all 14 checks pass. **The gate goes red on the bug**; it is not permanently green.
+
+### 25.5 Verdict
+
+**A correctness fix, gain 0.** It belongs in no gain table, it moves neither the §21 nor the §23
+tier, and it does not touch the 1.748x.
+
+`-fopt-birthdest` now only renames a single instruction that fully defines its destination; the
+refused shape is `MOVT` (and any future half-writing instruction). Recovering the hits beyond those
+158 would need **pair renaming `MOVW`+`MOVT` and then deleting the copy** -- a new rule, requiring a
+new pre-registration (§24.3 item 3 already says this slice does not do it).
+
+### 25.6 Forbidden readings (frozen)
+
+1. Do not say "the readings did not move, so the change was pointless": they did not move because the
+   corpus never covered the shape, and §25.4 has shown the defect is real (`m7.c`: 192 vs 134).
+2. Do not book this slice as a failed optimisation: it was never an optimisation; the verdict is a fix.
+3. Do not wave it away with "gcc does it too": `MOVT` writing half the register is an architectural
+   fact and depends on no reference implementation's yardstick.
