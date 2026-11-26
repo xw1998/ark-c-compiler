@@ -99,6 +99,8 @@ void config_init(void) {
     g_config.enable_opt_ldhoist  = 0;
     g_config.enable_opt_stackframe = 0;
     g_config.enable_opt_deadins  = 0;
+    g_config.enable_opt_ladderload  = 0;
+    g_config.enable_opt_ladderstage = 0;
     g_config.enable_opt_copyprop  = 0;
     g_config.enable_opt_live      = 0;
     g_config.enable_opt_inline    = ARKCC_FEATURE_OPT_INLINE;
@@ -554,6 +556,10 @@ void config_apply_args(int argc, char **argv) {
                 g_config.enable_opt_stackframe          = enable;
             else if (ark_streq(name, "opt-deadins") || ark_streq(name, "deadins"))
                 g_config.enable_opt_deadins             = enable;
+            else if (ark_streq(name, "opt-ladderload") || ark_streq(name, "ladderload"))
+                g_config.enable_opt_ladderload          = enable;
+            else if (ark_streq(name, "opt-ladderstage") || ark_streq(name, "ladderstage"))
+                g_config.enable_opt_ladderstage         = enable;
             else if (ark_streq(name, "opt-inline") || ark_streq(name, "autoinline"))
                 g_config.enable_opt_inline              = enable;
             else if (ark_streq(name, "opt-vectorize") || ark_streq(name, "vectorize"))
@@ -609,6 +615,8 @@ void config_print(void) {
     ark_log("  opt_ldhoist=%d\n", g_config.enable_opt_ldhoist);
     ark_log("  opt_stackframe=%d opt_deadins=%d\n",
             g_config.enable_opt_stackframe, g_config.enable_opt_deadins);
+    ark_log("  opt_ladderload=%d opt_ladderstage=%d\n",
+            g_config.enable_opt_ladderload, g_config.enable_opt_ladderstage);
     ark_log("  opt_constcond=%d\n", g_config.enable_opt_constcond);
     ark_log("  opt_exit=%d\n", g_config.enable_opt_exit);
     ark_log("  opt_boolmat=%d\n", g_config.enable_opt_boolmat);

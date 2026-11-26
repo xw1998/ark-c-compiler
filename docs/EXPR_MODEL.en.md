@@ -1390,3 +1390,101 @@ refused in 17.2, which would have to register one.
    that are provably redundant **inside one ladder**; nothing is shared across ladders.
 4. Do not relax "written before read in both successors" in `-fopt-ladderstage`: dropping one half
    deletes a live value, and that rule is the whole correct-by-construction argument of this slice.
+
+## 18 S15 measurements and verdict (2026-11-26)
+
+Section 17 is the pre-registration frozen before the run; this section records what the run
+produced, where it departs from the pre-registration, and the verdict. "Do not re-read the
+criteria after the run" is honoured literally here: **the criteria in 17.4 (static instruction
+counts, >= 214 landing / 107-213 registered / < 107 withdrawn) and the two rules themselves are
+untouched.** Only the measurements are recorded, with the root cause of the difference spelled
+out.
+
+### 18.1 Readings (`D:/tmp/bm/redo15.py`, `redo15b.py`, 95 TUs, 26-flag line)
+
+| arm | instructions | .s bytes |
+| --- | ---: | ---: |
+| off (26 flags, = S14 final) | 10,691 | 381,202 |
+| `-fopt-ladderload` only | 10,593 | 379,144 |
+| `-fopt-ladderstage` only | 10,445 | 377,512 |
+| both | **10,347** | **375,454** |
+
+The off arm is byte-identical to the S14 final (`cp/s15_off` vs `cp/s14_on`: no difference).
+Against armcc5 `-O2` on the same corpus, 5,619 instructions: **1.90x -> 1.84x**
+(10,691 / 5,619 = 1.9026; 10,347 / 5,619 = 1.8414).
+
+### 18.2 What changed, line by line
+
+- `-fopt-ladderload` removes **98** lines, all of them reloads of the shape `LDR rX, [rY, #0]`.
+  The same function holds 146 loads of that shape; **48** stay.
+- `-fopt-ladderstage` removes **246** lines, all of them `MOV rX, rY` staging copies in front of a
+  `BNE`: 107 `MOV r0, r5`, 128 `MOV r1, r7`, 11 `MOV r0, r4`.
+- Both switches remove **344** lines; the two line sets are **disjoint** and their union is the
+  combined arm; **no line is added or rewritten** (delete only).
+- Across the 95-TU corpus **only** `stm32f4xx_hal_dma_ex.c` changes; `stm32f4xx_hal_gpio.c` and
+  `stm32f4xx_ll_utils.c` (which holds a four-deep shape-A ladder, below the three-layer threshold)
+  are byte-identical.
+- Of the 48 surviving reloads, 43 have a barrier an independent scan can see (a memory write, a
+  call, a rebase) and the other 5 are refused by the shape analysis (ladder shorter than three
+  layers, or the earlier load belongs to a different register pair).
+
+### 18.3 Departure from 17.5 item 2 (written down, not silently reworded)
+
+The pre-registration said "stage = 239, both = 337"; the run gives **246 / 344**. There are two
+root causes for the +7, and neither loosens a rule:
+
+1. **A `POP`/`LDM` register list used to count as a read and now counts as a write -- but only when
+   the list parses exactly.** In the sketch behind 17.3 the "written" test only accepted
+   instructions whose first operand is the destination (`MOV`, `LDR`, ...). In the real TU the taken
+   arm of a layer begins with `POP {r1}`: that really does write `r1`, yet the earlier
+   implementation counted it as a read, so no `MOV r1, r7` could ever be proven. The landing
+   implementation adds `ld_list_def()`: it answers "write" only for `POP`/`LDM*` whose operand parses
+   from `{` to `}` as `rN`, `rN-rM` or `sp/lr/pc` with nothing left over, and anything unparsed stays
+   a read. **That makes the "written" test exact instead of over-conservative; the threshold of rule
+   2 (written before read on both successors) is unchanged.**
+2. **The bound script under-counted one shape**: `MOV r0, r4` (the value register is `r4`, not
+   `r5`), 11 lines, fell outside the `(constant, value-register)` grouping of 17.1.
+
+The tier is therefore unchanged: 344 >= 214 is a **landing**. The measurement basis is still the
+static instruction count, and this slice changes no dynamic path, so no dynamic cost is registered.
+
+### 18.4 Verdict
+
+**Landing tier.** 10,691 -> 10,347 instructions = **-344 = -3.22%**, `381,202 -> 375,454 B`
+(-5,748 B). Both switches default to off and are listed in the README flag table. Against armcc5 on
+the same corpus: 1.90x -> **1.84x**.
+
+### 18.5 Gate (`tests/run_ladder_tests.py`, `make test-ladder`, 23 checks, all green)
+
+1. **OFF IS OFF**: the real TU with both switches and with
+   `-fno-opt-ladderload -fno-opt-ladderstage` is byte-identical (76,540 B).
+2. **Only the two shapes**: all 98 lines the load arm removes are `LDR Rd, [Rb, #0]`; all 246 the
+   staging arm removes are `MOV Rx, Ry` followed by a run of the same and then a conditional branch;
+   no line is added; the two sets are disjoint and their union is exactly the combined 344.
+3. **Nothing else moves**: `stm32f4xx_hal_gpio.c` and `stm32f4xx_ll_utils.c` are byte-identical
+   with both switches on.
+4. **Independent re-derivation**: every removed reload has an earlier identical-shape load with no
+   barrier in between; every removed staging copy has its destination written before it is read on
+   both successors (the scanner follows a `B` to the join itself; an undecidable case is counted
+   separately and this run has none). 43 of the 48 surviving reloads are explained by a barrier the
+   scanner finds on its own.
+5. **Semantics (unicorn differential)**: the fixture issues one `__HAL_DMA_CLEAR_FLAG` per flag kind
+   and snapshots the four `IFCR` registers after each (a later write would otherwise mask an earlier
+   one and a wrong deletion could not be seen). With `hdma->Instance` set to the 16 stream addresses,
+   three out-of-range values and one SRAM pointer -- 20 inputs -- all four arms return the same
+   value, and a **sabotaged** copy of the fixture (one `CLEAR_FLAG` deleted) returns a different
+   value (124 vs 156), so the differential really is sensitive to a wrong deletion.
+6. **Cropped out**: a `-DARKCC_FEATURE_OPT_LADDER=0` build refuses both switches by name (C3900U)
+   and, without them, writes the same text as the full build.
+
+### 18.6 Forbidden readings (frozen)
+
+1. Do not read 344 as "above the pre-registered bound, so the rule got bolder": 337 was a
+   static-census *estimate*, the +7 has the two root causes of 18.3, and the proof strength is
+   unchanged.
+2. Do not call 18.3 item 1 a relaxation of rule 2: what changed is how precisely a write is
+   recognised (`POP`/`LDM` list parsing), not the "written before read on both successors" test.
+3. Do not call the 48 surviving reloads (146 - 98) "still to do": 43 have a barrier and 5 belong to
+   ladders below the layer threshold; both are the rule declining on purpose.
+4. Do not edit section 17 with these numbers: 17 is the pre-registration record, and post-run
+   deviations belong here.

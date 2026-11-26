@@ -8731,6 +8731,413 @@ static void ark_deadins_function(AsmBuffer *b, int from) {
 }
 #endif /* ARKCC_FEATURE_OPT_DEADINS */
 
+#if ARKCC_FEATURE_OPT_LADDER
+/* ---------------------------------------------------------------------------
+ * S15: ladder-local redundancy (docs/EXPR_MODEL.md section 17)
+ *
+ * A "compare ladder" is the shape a 19-arm ternary over
+ * `(uint32_t)hdma->Instance` lowers to:
+ *
+ *     [LDR Rb, [Rn, #0]]        (shape B only, re-loads the compared value)
+ *     LDR Rc, .Llit_k
+ *     CMP Rd, Rc
+ *     MOV Rx, Ry                (0..2 dead staging copies, shape B)
+ *     BNE .Lnext
+ *     MOV|MOVW Rv, #imm         (or LDR Rv, .Llit)
+ *     B   .Ljoin
+ *
+ * Two switches, one shared shape analysis, one meaning each:
+ *
+ *   -fopt-ladderload   delete the duplicate `LDR Rb, [Rn, #0]` that opens
+ *                      layer 2 and later, when the same pair was loaded at
+ *                      the ladder entry and nothing between them writes
+ *                      memory, calls, or touches Rb/Rn.
+ *   -fopt-ladderstage  delete the `MOV Rx, Ry` staging copies in front of a
+ *                      layer's `BNE`, when Rx is provably written before it is
+ *                      read on both successors.
+ *
+ * Nothing is shared between two ladders.  Section 17.2 of
+ * docs/EXPR_MODEL.md records why that bigger rewrite is refused: it needs an
+ * alias proof the text layer does not have.  Both rules here only delete
+ * instructions that are redundant *inside* one ladder, between two adjacent
+ * layers of which there is no memory access and no call.
+ * ------------------------------------------------------------------------- */
+#define LD_MAX_LINES  8192
+#define LD_MAX_LABELS 1024
+#define LD_MAX_LAYERS 64
+static int ld_ls[LD_MAX_LINES], ld_ll[LD_MAX_LINES], ld_kd[LD_MAX_LINES];
+static int ld_lidx[LD_MAX_LINES];
+static cp_ins ld_iv[LD_MAX_LINES];
+static unsigned char ld_del[LD_MAX_LINES];
+static char ld_lname[LD_MAX_LABELS][64];
+static int ld_lpos[LD_MAX_LABELS];
+static int ld_nlab;
+
+typedef struct {
+    int p;         /* first instruction line of the layer */
+    int pre;       /* 1 = opens with `LDR Rb, [Rn, #0]` */
+    int rb, rn;
+    int stage;     /* line of the first staging MOV, or -1 */
+    int nstag;
+    int bne;       /* line of the conditional branch */
+    int join;      /* line of the closing `B` */
+    char next[64]; /* the BNE target label */
+} LdLayer;
+
+/* Line table plus parsed form.  0 = padding / directive, 1 = instruction,
+ * 2 = label.  Returns the line count, or -1 to leave the function alone. */
+static int ld_scan(AsmBuffer *b, int from) {
+    int n, i;
+    n = pp_split_lines(b, from, ld_ls, ld_ll, LD_MAX_LINES);
+    if (n <= 0) return -1;
+    ld_nlab = 0;
+    for (i = 0; i < n; i++) {
+        char t[256];
+        int L;
+        ld_kd[i] = 0;
+        ld_lidx[i] = -1;
+        if (ld_ll[i] >= (int)sizeof t) return -1;
+        if (pp_trim(b->buf + ld_ls[i], ld_ll[i], t, sizeof t) < 0) return -1;
+        if (!t[0] || t[0] == ';' || t[0] == '@') continue;
+        L = ark_strlen(t);
+        if (L > 0 && t[L - 1] == ':') {
+            if (ld_nlab >= LD_MAX_LABELS || L - 1 >= 64) return -1;
+            {
+                int q;
+                for (q = 0; q < L - 1; q++) ld_lname[ld_nlab][q] = t[q];
+                ld_lname[ld_nlab][L - 1] = 0;
+            }
+            ld_lpos[ld_nlab] = i;
+            ld_lidx[i] = ld_nlab++;
+            ld_kd[i] = 2;
+            continue;
+        }
+        if (t[0] == '.') continue;
+        if (cp_parse(t, &ld_iv[i])) ld_kd[i] = 1;
+    }
+    return n;
+}
+
+static int ld_find_label(const char *nm) {
+    int i;
+    for (i = 0; i < ld_nlab; i++)
+        if (!strcmp(ld_lname[i], nm)) return ld_lpos[i];
+    return -1;
+}
+
+/* Is the first operand of this op write-only?  Mirrors cp_dest_only, which is
+ * compiled only when -fopt-copyprop is in the build. */
+static int ld_dest_only(const cp_ins *o) {
+    static const char *D[] = {
+        "MOV", "MOVW", "MOVT", "MVN", "LDR", "LDRB", "LDRH", "LDRSB", "LDRSH",
+        "REV", "REV16", "REVSH", "RRX", "CLZ",
+        "UXTB", "UXTH", "SXTB", "SXTH", NULL
+    };
+    int i = 0;
+    if (o->nops >= 3) return 1;
+    while (D[i] && strcmp(o->mn, D[i])) i++;
+    return D[i] != NULL;
+}
+
+static int ld_writes(const cp_ins *o, int *r) {
+    static const char *W[] = {
+        "MOV", "MOVW", "MOVT", "MVN", "ADD", "SUB", "AND", "ORR", "EOR", "BIC",
+        "ORN", "LSL", "LSR", "ASR", "RSB", "SBC", "ADC", "RSC", "MUL", "UDIV",
+        "SDIV", "UXTB", "UXTH", "SXTB", "SXTH", "REV", "REV16", "REVSH", "RRX",
+        "CLZ", "LDR", "LDRB", "LDRH", "LDRSB", "LDRSH", "LDRD", NULL
+    };
+    int i = 0;
+    if (o->nops < 1) return 0;
+    while (W[i] && strcmp(o->mn, W[i])) i++;
+    if (!W[i]) return 0;
+    return cp_reg(o->op[0], r);
+}
+
+static int ld_reads(const cp_ins *o, int r) {
+    int i, w;
+    for (i = 1; i < o->nops; i++)
+        if (cp_mentions(o->op[i], r)) return 1;
+    if (o->nops > 0 && cp_mentions(o->op[0], r))
+        if (!(ld_writes(o, &w) && w == r && ld_dest_only(o))) return 1;
+    return 0;
+}
+
+/* 1 = this instruction loads a whole register list, so it *writes* every
+ * register in it (POP / LDM).  Answers 1 only for a list that parses
+ * exactly, end to end; anything unparsed answers 0 so the caller stays
+ * conservative and deletes nothing.  PUSH / STM read their list, not write
+ * it, so they are not accepted here. */
+static int ld_list_def(const cp_ins *o, int r) {
+    const char *s, *p;
+    int found = 0;
+    if (strcmp(o->mn, "POP") && strcmp(o->mn, "LDM") &&
+        strcmp(o->mn, "LDMIA") && strcmp(o->mn, "LDMIB") &&
+        strcmp(o->mn, "LDMDA") && strcmp(o->mn, "LDMDB")) return 0;
+    if (o->nops != 1) return 0;
+    s = o->op[0];
+    if (s[0] != '{') return 0;
+    p = s + 1;
+    for (;;) {
+        int a, hi;
+        if (*p == '}') { p++; break; }
+        if (*p == 'r' && p[1] >= '0' && p[1] <= '9') {
+            a = 0; p++;
+            while (*p >= '0' && *p <= '9') { a = a * 10 + (*p - '0'); p++; }
+        } else if (!strncmp(p, "sp", 2)) { a = 13; p += 2; }
+        else if (!strncmp(p, "lr", 2)) { a = 14; p += 2; }
+        else if (!strncmp(p, "pc", 2)) { a = 15; p += 2; }
+        else return 0;
+        if (a > 15) return 0;
+        hi = a;
+        if (*p == '-') {
+            p++;
+            if (*p == 'r' && p[1] >= '0' && p[1] <= '9') {
+                hi = 0; p++;
+                while (*p >= '0' && *p <= '9') { hi = hi * 10 + (*p - '0'); p++; }
+            } else if (!strncmp(p, "sp", 2)) { hi = 13; p += 2; }
+            else if (!strncmp(p, "lr", 2)) { hi = 14; p += 2; }
+            else if (!strncmp(p, "pc", 2)) { hi = 15; p += 2; }
+            else return 0;
+            if (hi < a || hi > 15) return 0;
+        }
+        if (a <= r && r <= hi) found = 1;
+        if (*p == ',') { p++; continue; }
+        if (*p == '}') { p++; break; }
+        return 0;
+    }
+    if (*p) return 0;
+    return found;
+}
+
+/* `LDR Rc, .Llit_x` */
+static int ld_lit_load(const cp_ins *o, int *rd) {
+    if (strcmp(o->mn, "LDR") || o->nops != 2) return 0;
+    if (o->op[1][0] != '.') return 0;
+    return cp_reg(o->op[0], rd);
+}
+
+/* `LDR Rd, [Rb]` or `LDR Rd, [Rb, #0]`, nothing else. */
+static int ld_zero_load(const cp_ins *o, int *rd, int *rb) {
+    const char *s;
+    int i, r = 0;
+    if (strcmp(o->mn, "LDR") || o->nops != 2) return 0;
+    if (!cp_reg(o->op[0], rd)) return 0;
+    s = o->op[1];
+    if (s[0] != '[' || s[1] != 'r') return 0;
+    i = 2;
+    if (s[i] < '0' || s[i] > '9') return 0;
+    while (s[i] >= '0' && s[i] <= '9') { r = r * 10 + (s[i] - '0'); i++; }
+    if (r > 15) return 0;
+    if (s[i] == ']' && !s[i + 1]) { *rb = r; return 1; }
+    if (!strcmp(s + i, ", #0]")) { *rb = r; return 1; }
+    return 0;
+}
+
+/* A conditional branch whose target is a local label. */
+static int ld_cond_br(const cp_ins *o, char *tgt, int cap) {
+    int q;
+    if (o->nops != 1 || o->op[0][0] != '.') return 0;
+    if (o->mn[0] != 'B' || !o->mn[1] || !o->mn[2] || o->mn[3]) return 0;
+    /* accept the whole Bcc family the emitter produces */
+    {
+        static const char *C[] = {
+            "BNE", "BEQ", "BLS", "BHI", "BCC", "BCS", "BLO", "BHS",
+            "BMI", "BPL", "BGT", "BGE", "BLT", "BLE", "BVS", "BVC", NULL
+        };
+        int k = 0;
+        while (C[k] && strcmp(o->mn, C[k])) k++;
+        if (!C[k]) return 0;
+    }
+    for (q = 0; o->op[0][q] && q < cap - 1; q++) tgt[q] = o->op[0][q];
+    if (o->op[0][q]) return 0;
+    tgt[q] = 0;
+    return 1;
+}
+
+/* Unconditional `B .Lx`. */
+static int ld_plain_b(const cp_ins *o, char *tgt, int cap) {
+    int q;
+    if (strcmp(o->mn, "B") || o->nops != 1 || o->op[0][0] != '.') return 0;
+    if (tgt) {
+        for (q = 0; o->op[0][q] && q < cap - 1; q++) tgt[q] = o->op[0][q];
+        if (o->op[0][q]) return 0;
+        tgt[q] = 0;
+    }
+    return 1;
+}
+
+/* Value materialisation: `MOV|MOVW Rv, #imm` or `LDR Rv, .Llit`. */
+static int ld_value(const cp_ins *o, int *rv) {
+    if (o->nops != 2) return 0;
+    if (!strcmp(o->mn, "MOV") || !strcmp(o->mn, "MOVW"))
+        return o->op[1][0] == '#' ? cp_reg(o->op[0], rv) : 0;
+    if (!strcmp(o->mn, "LDR") && o->op[1][0] == '.')
+        return cp_reg(o->op[0], rv);
+    return 0;
+}
+
+/* Parse one layer starting at instruction line p.  `*rd` / `*rv` are the
+ * ladder's compared and value registers; -1 means "not fixed yet".  Returns
+ * the line after the layer's closing `B`, or -1 to stop the ladder. */
+static int ld_layer(int n, int p, int *rd, int *rv, LdLayer *L) {
+    int q = p, rc, r2, a, b2, vr;
+    L->p = p; L->pre = 0; L->rb = L->rn = -1;
+    L->stage = -1; L->nstag = 0;
+    if (q >= n || ld_kd[q] != 1) return -1;
+    if (ld_zero_load(&ld_iv[q], &a, &b2)) { L->pre = 1; L->rb = a; L->rn = b2; q++; }
+    if (q >= n || ld_kd[q] != 1) return -1;
+    if (!ld_lit_load(&ld_iv[q], &rc)) return -1;
+    q++;
+    if (q >= n || ld_kd[q] != 1) return -1;
+    if (strcmp(ld_iv[q].mn, "CMP") || ld_iv[q].nops != 2) return -1;
+    if (!cp_reg(ld_iv[q].op[1], &r2) || r2 != rc) return -1;
+    if (!cp_reg(ld_iv[q].op[0], &r2)) return -1;
+    if (*rd >= 0 && r2 != *rd) return -1;
+    *rd = r2;
+    q++;
+    while (L->nstag < 2 && q < n && ld_kd[q] == 1 &&
+           !strcmp(ld_iv[q].mn, "MOV") && ld_iv[q].nops == 2) {
+        if (!cp_reg(ld_iv[q].op[0], &a) || !cp_reg(ld_iv[q].op[1], &b2)) break;
+        if (L->nstag == 0) L->stage = q;
+        L->nstag++;
+        q++;
+    }
+    if (q >= n || ld_kd[q] != 1) return -1;
+    if (!ld_cond_br(&ld_iv[q], L->next, (int)sizeof L->next)) return -1;
+    L->bne = q;
+    q++;
+    if (q >= n || ld_kd[q] != 1) return -1;
+    if (!ld_value(&ld_iv[q], &vr)) return -1;
+    if (*rv >= 0 && vr != *rv) return -1;
+    *rv = vr;
+    q++;
+    if (q >= n || ld_kd[q] != 1) return -1;
+    if (!ld_plain_b(&ld_iv[q], NULL, 0)) return -1;
+    L->join = q;
+    return q + 1;
+}
+
+/* 1 = `reg` is written before it is read along the path from line q.  Any
+ * instruction that could take it live first (a call, an unresolved branch)
+ * answers 0, so an unproven case never deletes anything. */
+static int ld_wbr(int n, int q, int reg) {
+    int steps = 0, w, L;
+    char tgt[64];
+    while (q < n && steps < 16) {
+        if (ld_kd[q] != 1) { q++; continue; }
+        if (ld_writes(&ld_iv[q], &w) && w == reg) return 1;
+        /* `POP {r}` / `LDM ... {r}` overwrite the register: the value it
+         * held is dead before any read.  A list we cannot parse stays a
+         * read (see ld_list_def). */
+        if (ld_list_def(&ld_iv[q], reg)) return 1;
+        if (ld_reads(&ld_iv[q], reg)) return 0;
+        if (ld_plain_b(&ld_iv[q], tgt, (int)sizeof tgt)) {
+            L = ld_find_label(tgt);
+            if (L < 0) return 0;
+            q = L + 1;
+            steps++;
+            continue;
+        }
+        if (ld_cond_br(&ld_iv[q], tgt, (int)sizeof tgt)) return 0;
+        if (!strcmp(ld_iv[q].mn, "BL") || !strcmp(ld_iv[q].mn, "BLX")) return 0;
+        q++;
+        steps++;
+    }
+    return 0;
+}
+
+static void ark_ladder_function(AsmBuffer *b, int from) {
+    int n, i, k, j, ndel = 0;
+    int use_load = g_config.enable_opt_ladderload;
+    int use_stage = g_config.enable_opt_ladderstage;
+    LdLayer lay[LD_MAX_LAYERS];
+    AsmBuffer out;
+
+    if (!use_load && !use_stage) return;
+    n = ld_scan(b, from);
+    if (n <= 0) return;
+    memset(ld_del, 0, (size_t)n);
+
+    i = 0;
+    while (i < n) {
+        int p = i, nl = 0, rd = -1, rv = -1, e;
+        while (nl < LD_MAX_LAYERS) {
+            e = ld_layer(n, p, &rd, &rv, &lay[nl]);
+            if (e < 0) break;
+            nl++;
+            /* The next layer must begin exactly at the label the BNE names. */
+            if (e >= n || ld_kd[e] != 2 || ld_lidx[e] < 0) break;
+            if (strcmp(ld_lname[ld_lidx[e]], lay[nl - 1].next)) break;
+            p = e + 1;
+            while (p < n && ld_kd[p] == 0) p++;
+            if (p >= n) break;
+        }
+
+        if (nl >= 3) {
+            if (use_load && lay[0].pre) {
+                for (k = 1; k < nl; k++) {
+                    int barrier = 0, w;
+                    if (!lay[k].pre) continue;
+                    if (lay[k].rb != lay[0].rb || lay[k].rn != lay[0].rn) continue;
+                    for (j = lay[0].p; j < lay[k].p && !barrier; j++) {
+                        const char *mn;
+                        int is_pre = 0, t;
+                        if (ld_kd[j] != 1) continue;
+                        for (t = 0; t < nl; t++)
+                            if (lay[t].pre && lay[t].p == j) { is_pre = 1; break; }
+                        if (is_pre) continue;
+                        mn = ld_iv[j].mn;
+                        if (!strcmp(mn, "STR") || !strcmp(mn, "STRB") ||
+                            !strcmp(mn, "STRH") || !strcmp(mn, "STM") ||
+                            !strcmp(mn, "STMIA") || !strcmp(mn, "LDM") ||
+                            !strcmp(mn, "LDMIA") || !strcmp(mn, "PUSH") ||
+                            !strcmp(mn, "POP") || !strcmp(mn, "BL") ||
+                            !strcmp(mn, "BLX")) barrier = 1;
+                        else if (ld_writes(&ld_iv[j], &w) &&
+                                 (w == lay[0].rb || w == lay[0].rn)) barrier = 1;
+                    }
+                    if (!barrier) ld_del[lay[k].p] = 1;
+                }
+            }
+            if (use_stage) {
+                for (k = 0; k < nl; k++) {
+                    int s, tk, fwd;
+                    if (lay[k].nstag <= 0) continue;
+                    tk = lay[k].join + 1;
+                    while (tk < n && ld_kd[tk] == 0) tk++;
+                    if (tk >= n || ld_kd[tk] != 2 || ld_lidx[tk] < 0 ||
+                        strcmp(ld_lname[ld_lidx[tk]], lay[k].next)) continue;
+                    fwd = lay[k].bne + 1;
+                    /* Each staging copy stands or falls on its own: a copy
+                     * whose destination is written before it is read on
+                     * both successors is dead even if its neighbour is not. */
+                    for (s = 0; s < lay[k].nstag; s++) {
+                        int reg;
+                        if (!cp_reg(ld_iv[lay[k].stage + s].op[0], &reg)) continue;
+                        if (ld_wbr(n, tk + 1, reg) && ld_wbr(n, fwd, reg))
+                            ld_del[lay[k].stage + s] = 1;
+                    }
+                }
+            }
+        }
+        /* Advance past what was consumed.  `p` only moves when a layer
+         * completed, so a ladder cut short by the end of the function
+         * leaves p == i; step one line then, or the loop never ends. */
+        i = (p > i) ? p : i + 1;
+    }
+
+    for (k = 0; k < n; k++) if (ld_del[k]) ndel++;
+    if (ndel == 0) return;
+
+    asmbuf_init(&out);
+    for (i = 0; i < n; i++) {
+        if (ld_del[i]) continue;
+        pp_copy_line(&out, b->buf + ld_ls[i], ld_ll[i]);
+    }
+    pp_splice(b, from, &out);
+}
+#endif /* ARKCC_FEATURE_OPT_LADDER */
+
 
 #if ARKCC_FEATURE_OPT_VSTACK
 /* ------------------- value stack -> register allocation -------------------
@@ -16645,6 +17052,15 @@ arm_skip_text_opts:
          * on the final text.  Block-local liveness only -- see
          * docs/EXPR_MODEL.md section 14.6.2. */
         if (g_config.enable_opt_deadins) ark_deadins_function(&buf, fstart);
+#endif
+#if ARKCC_FEATURE_OPT_LADDER
+        /* S15, comparison-ladder redundancy last of all: it only deletes
+         * lines (a reload the ladder never invalidates, and a staging copy
+         * the taken arm overwrites), so it must run on the final text and
+         * nothing below re-derives what it read.  Both switches share one
+         * shape analysis -- see docs/EXPR_MODEL.md section 17. */
+        if (g_config.enable_opt_ladderload || g_config.enable_opt_ladderstage)
+            ark_ladder_function(&buf, fstart);
 #endif
 arm_skip_frame_opts:
 

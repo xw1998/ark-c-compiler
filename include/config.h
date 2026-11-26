@@ -49,6 +49,8 @@ typedef struct {
     int enable_opt_ldhoist;         /* -fopt-ldhoist: 同一地址的重复装载提升到专用寄存器（S12-1） */
     int enable_opt_stackframe;      /* -fopt-stackframe: 删帧基址 MOV r6,sp/MOV sp,r6，改走 sp（S13） */
     int enable_opt_deadins;         /* -fopt-deadins: 删块内死写与死标志 CMP（S13） */
+    int enable_opt_ladderload;      /* -fopt-ladderload: 删比较阶梯内重复的 LDR Rb,[Rn,#0]（S15） */
+    int enable_opt_ladderstage;     /* -fopt-ladderstage: 删 BNE 前被覆盖的死装配 MOV（S15） */
     int enable_opt_inline;   /* --autoinline / -O2 */
     int enable_opt_vectorize;/* --vectorize / -O2 */
     int opt_level;          /* 0=none, 1=basic, 2=aggressive */

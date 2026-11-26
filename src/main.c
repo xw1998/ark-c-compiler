@@ -632,6 +632,20 @@ int main(int argc, char **argv) {
             return 1;
         }
 #endif
+#if !ARKCC_FEATURE_OPT_LADDER
+        else if (strcmp(a, "-fopt-ladderload") == 0) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: -fopt-ladderload is not compiled into "
+                    "this build (rebuild with -DARKCC_FEATURE_OPT_LADDER=1)\n");
+            return 1;
+        }
+        else if (strcmp(a, "-fopt-ladderstage") == 0) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: -fopt-ladderstage is not compiled into "
+                    "this build (rebuild with -DARKCC_FEATURE_OPT_LADDER=1)\n");
+            return 1;
+        }
+#endif
 #if !ARKCC_FEATURE_OPT_FRAME
         else if (strcmp(a, "-fopt-frame") == 0) {
             fprintf(stderr,

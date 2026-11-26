@@ -32,7 +32,7 @@ endif
         test-imm test-peep test-cbranch test-copyprop test-live test-movimm test-pair \
         test-spill test-ldhoist test-stackframe test-deadins test-userasm \
         test-prop test-deadpush test-cmat test-slotreg test-opalloc test-boolmat \
-        test-exit test-bitmask \
+        test-exit test-bitmask test-ladder \
         test-voldmb test-volmem test-constcond \
         test-litpool test-coalesce test-option install \
         stm32 stm32-check
@@ -50,7 +50,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-floatlit test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch test-imm test-peep test-cbranch test-copyprop test-cmat test-slotreg test-opalloc test-live test-spill test-ldhoist test-pair test-stackframe test-deadins test-userasm test-movimm test-litpool test-coalesce test-voldmb test-volmem test-constcond test-boolmat test-exit test-bitmask test-option
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-floatlit test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch test-imm test-peep test-cbranch test-copyprop test-cmat test-slotreg test-opalloc test-live test-spill test-ldhoist test-pair test-stackframe test-deadins test-userasm test-movimm test-litpool test-coalesce test-voldmb test-volmem test-constcond test-boolmat test-exit test-bitmask test-ladder test-option
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -316,6 +316,17 @@ test-deadins: $(ARKCC)
 # global switch-off.
 test-userasm: $(ARKCC)
 	$(PYTHON) tests/run_userasm_tests.py ./$(ARKCC)
+
+# Gate for -fopt-ladderload / -fopt-ladderstage (S15): a compare ladder
+# (the shape a ternary chain over `(uint32_t)x->Instance` lowers to) is
+# rewritten locally -- a reload the ladder never invalidates and a staging
+# copy the taken arm overwrites are deleted.  The gate re-derives every
+# removed line with its own scan, requires the two untouched translation
+# units to stay byte-identical, and executes the ladder (unicorn) in all
+# four arms over 20 Instance inputs, plus a sabotaged copy to prove the
+# harness can see a wrong deletion.
+test-ladder: $(ARKCC)
+	$(PYTHON) tests/run_ladder_tests.py ./$(ARKCC)
 
 test-live: $(ARKCC)
 	$(PYTHON) tests/run_live_tests.py ./$(ARKCC)

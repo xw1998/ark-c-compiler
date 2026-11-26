@@ -348,6 +348,20 @@
 #   define ARKCC_FEATURE_OPT_DEADINS   1
 # endif
 #endif
+/* ARKCC_FEATURE_OPT_LADDER: -fopt-ladderload / -fopt-ladderstage, S15
+ * comparison-ladder redundancy -- delete a `LDR Rb, [Rn, #0]` reloaded from
+ * an address the enclosing ladder never writes, and delete a `MOV Rd, Rv`
+ * staging copy that the taken arm of a `BNE` overwrites before any read
+ * (docs/EXPR_MODEL.md section 17).  Two switches, one shape analysis, one
+ * feature macro: the tables are the same as the other text passes (8192
+ * parsed lines), so it is off the STM32 profile for the same reason. */
+#ifndef ARKCC_FEATURE_OPT_LADDER
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_OPT_LADDER    0   /* 板上裁掉：只在宿主/交叉编译用 */
+# else
+#   define ARKCC_FEATURE_OPT_LADDER    1
+# endif
+#endif
 
 /* ARKCC_FEATURE_OPT_FRAME: -fopt-frame, callee-saved list trimming.
  * A slot the body never mentions is deleted from PUSH/POP; when that
