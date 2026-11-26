@@ -3198,3 +3198,71 @@ falsely green):
    allocation layer's gap.
 4. Do not reuse any number here on a different corpus or flag combination: every number carries its
    arm name and the 95 TU scope.
+
+## 35 V-4 slice 1 pre-registration: `-fopt-deadins` upgraded from block-local to true CFG liveness (2026-11-26, frozen before implementation)
+
+§34 verdicts that "the text layer is exhausted; only a slice with bound >= 120 and conservative flag
+semantics is permitted". This is that one slice, and its **bound is 88 < 120**, so it is re-judged
+here against the letter of §34.4: the bound is **measured**, not estimated, and the slice is not
+"picking a small family" — it **fixes a modelling defect of an existing pass**. `-fopt-deadins`
+currently treats liveness at the end of every basic block as "r0-r12 all live" (source fact:
+`live = 0x1FFFu;` inside `ark_deadins_function`), so only writes overwritten within the same block are
+removed. That one line is the direct cause of "the dead copies made by spill/frame/exit/ldhoist are
+nobody's business".
+
+### 35.1 The rule (frozen, item by item)
+
+1. **True liveness**: for every basic block, `live_out` = union of the successors' `live_in`;
+   **no successor** (return, `BX`, `POP {..,pc}`, unknown last instruction) = **`0x1FFF` (all live,
+   exactly as conservative as today)**.
+2. **Flag liveness also propagates across blocks**: a block's exit `needf` = the union of "the
+   successor reads flags before writing them"; with no successor, `needf = 1`. A dead `CMP` across
+   blocks is therefore removable, and flags a later branch needs are **never** removed.
+3. **The in-block walk is unchanged**: only blocks containing no `IT` are touched (`IT` blocks are
+   skipped whole, as today); anything outside `di_known` is still a barrier (everything live,
+   `needf = 1`).
+4. **Conservative flag semantics (per the encoding fact of §34.3)**: a deleted pure write that
+   "writes flags" (`di_writes_flags`) is kept when `needf` is true. **New**: because this assembler
+   emits `MOV rX, #0` as `movs`, the rule **must** pass `MOV` through the `needf` test and must not
+   assume `MOV` leaves flags alone.
+5. **Still only these**: a pure write (no memory, no other side effect) to `r0`-`r12` whose
+   destination is **not live**; or a `CMP`-family instruction whose flags are dead. Nothing else.
+   `LDR` is **not** deleted (it can fault or read volatile memory; deleting it changes behaviour).
+
+### 35.2 The bound (measured, not estimated)
+
+On the preprocessed assembly text of the 95 TUs of the **current best arm**
+(`BASE + -fopt-chainfold -fopt-pushpop -fopt-remat`, 9,660 instructions / 356,240 bytes), judged item
+by item with an independent script (`D:/tmp/bm/cf/analyze2.py`, fixed-point liveness plus the
+conservative exit above): **88 deletable instructions, all `MOV`** (cross-block dead writes; the
+in-block ones the current pass already removes). 40 `IT` blocks are skipped whole and are not among
+the 88.
+
+### 35.3 The criterion (frozen; not renegotiated after the run)
+
+- Best arm, whole corpus: **<= 9,660 - 80** (91% of 88, leaving 8 for implementation slack); the
+  actual number is reported item by item;
+- `PUSH` + `POP` **must not grow**; new `STR` **= 0**;
+- Every deleted line must be re-proved by an **independent oracle** (`tests/di_oracle.py`, its own
+  CFG and fixed-point liveness, sharing no code and no constants with the compiler) against the
+  text of the pass-off arm: "the destination is not live from this point on, and no flag concern
+  applies". One deletion the oracle cannot justify fails the gate;
+- The answer does not change: `tests/arm_exec/` + `unicorn`, value and 256-byte RAM snapshot equal in
+  both arms;
+- Refusals: a write whose successor **reads** that register stays (both arms byte-identical); a
+  write under `IT` stays; a write after a barrier stays; a write after an unknown mnemonic stays;
+- Cropping: `-DARKCC_FEATURE_OPT_DEADINS=0` still refuses `-fopt-deadins` by name (`C3900U`) and
+  still compiles without the flag;
+- **The default output does not change**: `-fopt-deadins` is off by default (`enable_opt_deadins = 0`
+  in `config.c`), so a build without the flag must be byte-identical to the pre-change build (this is
+  the strongest OFF IS OFF this slice has).
+
+Not met means withdrawal; the criterion is not renegotiated.
+
+### 35.4 How not to read this
+
+1. Do not read 88 as "V-3-a's 400 was skipped in favour of something small": 88 is a **different**
+   family's measured bound, and its value is not the count but **fixing deadins' liveness model** —
+   V-4's allocator will need exactly that model.
+2. Do not start deleting `LDR`/`STR` to make 88 bigger: that changes behaviour (faults / volatile).
+3. Do not reuse the compiler's `lv_pass`/`di_*` code or constants in the adjudicating oracle.
