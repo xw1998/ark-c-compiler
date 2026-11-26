@@ -1582,3 +1582,115 @@ can be cashed, i.e. **10,347 -> about 9,900-10,000, 1.76x-1.78x**.
    base folded into addressing (about 3.4%-4.4%)", or "S17 change the emitter model (§4 bound
    1.28x-1.40x, costed as a new project)", or "close the performance line". This section only
    records measurements; it pre-registers nothing.
+
+## 20 S16 pre-registration: result born in its destination + base folded into the address (2026-11-26, frozen before implementation)
+
+Once §19 had measured what is left in the text layer, the project-level decision was to open this
+slice: **two rewrites that only need to hold inside a single basic block.** This section freezes the
+bound and the rules, then the criteria and the anti-false-green checks; the implementation and the
+measurements go into §21.
+
+### 20.1 Bound (read-only measurement, 2026-11-26)
+
+Baseline: 95 TUs, all 29 flags **10,347 insns / 375,454 B**. Scanner
+`D:/tmp/bm/s16_ub2.py`, whose rules correspond one-to-one to 20.2 and which carries its own forward
+liveness test `dead_after()` (walk forward, follow one unconditional `B` to its label, treat a
+conditional branch, a call or an unknown target as "not provable" and count it separately).
+
+| Family | hits | of 10,347 | where |
+| --- | ---: | ---: | --- |
+| A result born in its destination | **278** | 2.69% | `hal_rcc` 61 / `hal_dma` 57 / `hal_gpio` 44 / `hal_flash_ex` 20 / `hal_exti` 17 / `hal_dma_ex` 16 ... (12 TUs) |
+| B base folded into the addressing mode | **45** | 0.44% | `hal_dma` 28 / `hal_rcc` 8 / `hal_dma_ex` 4 / `hal_rcc_ex` 2 ... (6 TUs) |
+| **total** | **323** | **3.12%** | 14 TUs; the other 81 are unchanged |
+
+Sites the rules decline, counted by the same scanner and frozen here so that they cannot later be
+read as "not done": of the 428 `MOV rD, r0` sites, 122 have a predecessor that does not write `r0`,
+4 still read `r0` on some successor, 5 meet a conditional branch, 2 an unknown jump target, 1 a
+call, and 16 would push a 16-bit encoding to 32 bits; family B additionally declines 46 sites where
+`rB` is still read after the access, 40 whose target is not provable and 12 with a call in between.
+
+### 20.2 The two rules (frozen)
+
+**A `-fopt-birthdest` (result born in its destination)**: two adjacent instructions
+`OP r0, ...` / `MOV rD, r0` with `rD != r0`, where
+
+1. `OP` is **single-destination** (`MOV`/`MOVW`/`MOVT`/`LDR*`/`ADD`/`SUB`/`AND`/`ORR`/`EOR`/
+   `BIC`/`LSL`/`LSR`/`ASR`/`ROR`/`MUL`/`MVN`/`RSB`/`ADC`/`SBC`/`UXT*`/`SXT*`/`REV*`) and
+   **unconditional** (a conditional write such as `MOVEQ`/`LDRNE` is never accepted: when the
+   condition fails the original keeps the old value of `r0`, while a rename would keep a different
+   one);
+2. the other operands of `OP` may read `r0` (`AND r0, r0, #6` -> `AND rD, r0, #6` is equivalent
+   because `r0` is left untouched and the read still sees the old value);
+3. `r0` is **not needed** after the `MOV`: walking forward, the next touch of `r0` must be a write;
+   one unconditional `B` to a label may be followed (at most 8 hops); `POP`/`LDM` that write `r0`
+   count as a write, while a list containing `pc` that does not write `r0` is **not provable**
+   (`r0` is the return value there); `BL`/`BLX`/`BX`, a conditional branch or an unknown target is
+   **not provable**;
+4. when `rD` is outside `r0`-`r7`, an `OP` that is currently 16-bit encodable may not be pushed to
+   32 bits (`narrow_ok()`, conservative: every register <= `r7` and a small enough immediate);
+5. an `OP` with a writeback suffix (`... !`) is left alone.
+
+On a hit: rewrite the first operand of `OP` to `rD` and delete the `MOV`. That is **one rewritten
+line plus one deleted line**, unlike the previous five slices, so the gate checks that the rewrite is
+exactly "destination register becomes `rD`, every other byte unchanged".
+
+**B `-fopt-basefold` (base folded into the addressing mode)**: `ADD rB, rX, #imm` (`imm > 0`,
+a multiple of 4, <= 1020) followed within 1-5 instructions by **the only** use of `rB`, which is
+`LDR|STR|LDRB|STRB|LDRH|STRH rD, [rB]` or `[rB, #off]`, provided
+
+1. between the `ADD` and that access there is no label, branch, call, `PUSH`, `POP`, `LDM`, `STM`
+   or `IT`, no other reference to `rB`, and no write to `rX`;
+2. the folded offset `imm + off <= 4095` (the `LDR`/`STR` immediate field) and the access does not
+   mention `rX`;
+3. the value register of a `STR*` is not `rB` (after deleting the `ADD`, `rB` no longer holds that
+   address);
+4. `rB` is not needed after the access (item 3 of A, starting at the access).
+
+On a hit: rewrite the access to `[rX, #imm+off]` (`[rX]` when the sum is 0) and delete the `ADD`.
+
+### 20.3 Criteria (frozen, fixed before the run)
+
+Relative to **10,347 insns** (static instruction count, the same basis as §14/§15/§17):
+
+| hits | verdict |
+| --- | --- |
+| >= 214 (>= 2.0%) | **landing**: both switches kept, default off, listed in the README flag table |
+| 107 - 213 | **registration tier**: switches kept, default off, not in the recommended set |
+| < 107 | **withdrawn**: keep the measurements only, revert the code |
+
+### 20.4 Anti-false-green (frozen, six checks, all must pass)
+
+1. **OFF IS OFF**: with both switches off the 95 TUs are **byte-identical** to 10,347 / 375,454 B.
+2. **Must fire, and only per the rules**: four arms on the real corpus (A only / B only / both /
+   neither), diffed line by line: the A arm has exactly **278** "one rewrite + one delete" sites and
+   the rewritten line differs from the deleted one only in the destination register (`r0` -> `rD`);
+   the B arm has exactly **45** such sites and the rewrite must relate the two lines as
+   `[rB(, #off)]` -> `[rX, #imm+off]` with the same `imm + off` the static scanner reports; the two
+   arms touch disjoint line sets and together give **323**.
+3. **Independent re-check**: from the finished `.s` the scanner recounts all four arms -- every A
+   site must be preceded by a single-destination instruction that now writes `rD`, and every B site
+   must have its `ADD` gone with the right offset -- and re-proves "`r0`/`rB` is dead" for each site
+   (anything unprovable counts as a failure).
+4. **Must not fire**: two hand-written pure-C fixtures -- (a) `MOV rD, r0` where `r0` is still read
+   afterwards; (b) `ADD rB, rX, #imm` where `rB` is referenced again. Both arms byte-identical.
+5. **Semantics**: `unicorn` differential -- the same fixture run on all four arms with 12 input sets
+   (including two out-of-range and two aliasing cases), with identical return values and memory
+   snapshots; plus a **sabotaged** build (one rewrite deliberately names the wrong register) to show
+   the differential is sensitive.
+6. **Cropped**: a `-DARKCC_FEATURE_OPT_REGBIRTH=0` build refuses both switches by name (C3900U) and,
+   without them, writes the same text as the full build; `make test` all green.
+
+### 20.5 Forbidden readings (frozen)
+
+1. Do not read 323 as "S16 saves 323 instructions" without also saying the **dynamic execution count
+   does not change**: every removed instruction is a copy or a recompute inside one basic block that
+   would have run anyway, and no branch structure changes.
+2. Do not call family A a relaxation of `-fopt-live`/`-fopt-copyprop`: those delete a copy that is
+   overwritten inside a block, whereas this family **changes the destination register of the
+   producer** and therefore needs forward liveness.
+3. Do not call family B "`-fopt-addr` left undone": `-fopt-addr` folds an address chain **inside one
+   expression**, this family folds "a base register that exists for exactly one access" across
+   statements, which `-fopt-addr` cannot reach by construction.
+4. Do not reconcile 20.1's 428/122/... against §19's 311: §19's 311 is a **loose upper bound**
+   (only "the previous instruction writes `r0`", no provable-death, no encoding and no conditional
+   write), while 20.1's 323 is the **provable, reachable amount**.
