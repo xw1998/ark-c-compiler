@@ -3229,18 +3229,32 @@ nobody's business".
    destination is **not live**; or a `CMP`-family instruction whose flags are dead. Nothing else.
    `LDR` is **not** deleted (it can fault or read volatile memory; deleting it changes behaviour).
 
-### 35.2 The bound (measured, not estimated)
+### 35.2 The bound (measured, not estimated; this section was rewritten once, before implementation)
 
-On the preprocessed assembly text of the 95 TUs of the **current best arm**
+On the assembly text of the 95 TUs of the **current best arm**
 (`BASE + -fopt-chainfold -fopt-pushpop -fopt-remat`, 9,660 instructions / 356,240 bytes), judged item
-by item with an independent script (`D:/tmp/bm/cf/analyze2.py`, fixed-point liveness plus the
-conservative exit above): **88 deletable instructions, all `MOV`** (cross-block dead writes; the
-in-block ones the current pass already removes). 40 `IT` blocks are skipped whole and are not among
-the 88.
+by item with an independent script. **Scope correction (made before implementation, reason below)**:
+
+- The first script (`analyze2.py`) split basic blocks **at labels only**, not at branches, so the
+  instructions after a `BNE` stayed in the same block and a block's successors were read from its
+  last instruction alone. The CFG lost edges, liveness was understated, and the 88 it reported was
+  **inflated**. One file exposes it: it called `MOV r11, r0` (the argument save at the top of
+  `HAL_FLASH_Program`, read again at lines 47/58/69) a dead write.
+- The corrected script (`D:/tmp/bm/cf/v4_ok.py`) splits **at labels and at branches/returns** (the
+  `lv_pass` split), runs liveness to a fixed point, keeps the conservative all-live exit, treats an
+  unknown mnemonic as a barrier, and decides flags **by encoding form**: `MOV Rd, Rm` is `0x4600`
+  (ARMv7-M MOV(register) T1, **no flags**; checked with capstone: `0846 -> mov r0, r1`),
+  `MOV Rd, #imm` with `Rd<=7 && imm<=255` is `MOVS` (`0800 -> movs r0, r1`), and every other pure
+  operation is treated conservatively as possibly having a 16-bit flag-setting form
+  (`0830 -> adds`, `0818 -> adds`, both checked).
+
+Corrected measurement: **187 dead destinations; 112 of them are blocked by the flag rule** (deleting
+them would make a later `Bcc`/`ITE` read older flags), **75 are genuinely deletable** (all `MOV`).
+40 `IT` blocks are skipped whole and are not among them.
 
 ### 35.3 The criterion (frozen; not renegotiated after the run)
 
-- Best arm, whole corpus: **<= 9,660 - 80** (91% of 88, leaving 8 for implementation slack); the
+- Best arm, whole corpus: **<= 9,660 - 68** (91% of 75, leaving 7 for implementation slack); the
   actual number is reported item by item;
 - `PUSH` + `POP` **must not grow**; new `STR` **= 0**;
 - Every deleted line must be re-proved by an **independent oracle** (`tests/di_oracle.py`, its own
