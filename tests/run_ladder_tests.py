@@ -25,6 +25,14 @@ What this gate pins:
      one of them is a `MOV rX, rY` whose next instruction is a conditional
      branch; together 344; no line is ever added or rewritten.  Those numbers
      are the pass's output, re-derived here line by line.
+     Since V-4 slice 1 the flag stack of this gate also carries a widened
+     `-fopt-deadins`, which runs *before* both switches and now removes those
+     246 staging copies itself (they are dead writes).  The arms below are
+     therefore built with `-fno-opt-deadins` so that the pass under test stays
+     visible, and the composition is pinned separately: on the deadins-on
+     stack the same fixture is 1,786 -> 1,688 and the only deletion left for
+     the ladder switches is the 98 reloads.  Neither number is allowed to move
+     without this gate saying so.
   3. NOTHING ELSE MOVES.  Two other translation units of the same corpus
      (gpio and the LL utilities, which contains a four-deep chain the shape
      test must reject) come out byte-identical with both switches on.
@@ -94,6 +102,15 @@ HAL_SRC = os.path.join(ROOT, 'examples', 'ark_test', 'Drivers',
 REAL_TU = os.path.join(HAL_SRC, 'stm32f4xx_hal_dma_ex.c')
 QUIET_TUS = [os.path.join(HAL_SRC, 'stm32f4xx_hal_gpio.c'),
              os.path.join(HAL_SRC, 'stm32f4xx_ll_utils.c')]
+
+# The arms below run with -fno-opt-deadins: the widened deadins of V-4 slice 1
+# removes the staging copies on its own, which would make the staging switch
+# look idle.  Section 2 also pins what the stack does with deadins on.
+NODI = ['-fno-opt-deadins']
+DI_ON = ['-fopt-deadins']
+WANT_DI_INSNS_OFF = 1786
+WANT_DI_INSNS_BOTH = 1688
+WANT_DI_INSNS_LOAD_ONLY = 98
 
 WANT_LOAD = 98
 WANT_STAGE = 246
@@ -319,7 +336,7 @@ def build_asm(arkcc, work, src, flags, tag, extra=()):
     cmd = [arkcc] + ASM_ARM + COMMON + ['-S', '-o', out, src]
     for d in INC_DIRS:
         cmd += ['-I', d]
-    cmd += list(PASSES) + list(flags) + list(extra)
+    cmd += list(PASSES) + NODI + list(flags) + list(extra)
     rc, log = run(cmd, work)
     if rc != 0:
         return None, log.strip().splitlines()[:1] or ['asm failed']
@@ -331,7 +348,7 @@ def build_image(arkcc, work, src, flags, tag):
     cmd = [arkcc] + ASM_ARM + COMMON + ['--vector-table', '-o', out, src]
     for d in INC_DIRS:
         cmd += ['-I', d]
-    cmd += list(PASSES) + list(flags)
+    cmd += list(PASSES) + NODI + list(flags)
     rc, log = run(cmd, work)
     if rc != 0:
         return None, log.strip().splitlines()[:1] or ['image failed']
@@ -473,6 +490,31 @@ def main():
         check(len(d_load) == WANT_LOAD,
               '-fopt-ladderload removes exactly %d lines' % WANT_LOAD,
               '%d' % len(d_load))
+
+        # The composition, with the widened deadins of V-4 slice 1 left on.
+        # It removes the staging copies before this pass can see them, so the
+        # staging switch is idle and only the reloads are left to the ladder.
+        di_off, de0 = build_asm(arkcc, work, REAL_TU, DI_ON, 'di_on_off')
+        di_bo, de1 = build_asm(arkcc, work, REAL_TU, DI_ON + FLAGS_B,
+                               'di_on_both')
+        if de0 or de1:
+            check(False, 'the deadins-on arms compile the real fixture',
+                  (de0 or de1)[0][:120])
+        else:
+            check(insn_count(di_off) == WANT_DI_INSNS_OFF and
+                  insn_count(di_bo) == WANT_DI_INSNS_BOTH,
+                  'with -fopt-deadins upstream the fixture is %d -> %d lines'
+                  % (WANT_DI_INSNS_OFF, WANT_DI_INSNS_BOTH),
+                  '%d -> %d' % (insn_count(di_off), insn_count(di_bo)))
+            di_lines = di_off.splitlines()
+            d_di, _a_di = deletions(di_off, di_bo)
+            bad_di = [di_lines[i].strip() for i in d_di
+                      if zero_load_pair(di_lines[i]) is None]
+            check(len(d_di) == WANT_DI_INSNS_LOAD_ONLY and not bad_di,
+                  'on that stack the staging switch has nothing left and only '
+                  'the %d reloads go' % WANT_DI_INSNS_LOAD_ONLY,
+                  '%d line(s)%s' % (len(d_di),
+                                    ('; ' + ' '.join(bad_di[:3])) if bad_di else ''))
         check(len(d_stage) == WANT_STAGE,
               '-fopt-ladderstage removes exactly %d lines' % WANT_STAGE,
               '%d' % len(d_stage))

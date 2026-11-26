@@ -15,8 +15,8 @@ are recorded in S25.
 What this gate pins:
 
   1. THE PRICE OF THE FIX IS ZERO ON THE CORPUS.  The switch-off corpus still
-     totals 10,172 instructions / 372,761 bytes (the S16 figure), and the same
-     corpus with `-fno-opt-birthdest` totals 10,330 / 375,131.  The difference
+     totals 10,106 instructions / 371,771 bytes (the S16 figure), and the same
+     corpus with `-fno-opt-birthdest` totals 10,264 / 374,141.  The difference
      is exactly the 158 sites S16 attributed to `-fopt-birthdest`, so the fix
      did not reduce the number of renames the corpus performs -- it only
      stopped a rename that was never counted because the corpus never held the
@@ -56,10 +56,10 @@ import run_chainfold_tests as H
 
 failures, skips = [], []
 
-WANT_ON_INSNS = 10172          # the S16 total, `-fopt-birthdest` on
-WANT_ON_BYTES = 372761
-WANT_NOBD_INSNS = 10330        # the same corpus with -fno-opt-birthdest
-WANT_NOBD_BYTES = 375131
+WANT_ON_INSNS = 10106          # the S16 total, `-fopt-birthdest` on
+WANT_ON_BYTES = 371771
+WANT_NOBD_INSNS = 10264        # the same corpus with -fno-opt-birthdest
+WANT_NOBD_BYTES = 374141
 WANT_BIRTHDEST_SITES = 158     # S16 attributed 158 renames to the switch
 
 WANT_CORPUS_PAIRS = 102

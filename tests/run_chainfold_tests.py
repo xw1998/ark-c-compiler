@@ -31,14 +31,14 @@ What this gate pins:
 
   1. OFF IS OFF.  All 95 translation units of the corpus, with the switch
      off, come out byte-identical to the same build with
-     `-fno-opt-chainfold`, and still total 10,172 instructions / 372,761
+     `-fno-opt-chainfold`, and still total 10,106 instructions / 371,771
      bytes (the S16 figure).
   2. IT FIRES, AND ONLY BY THE RULE.  The whole corpus is compared line by
      line against the switch-off arm: every difference is either three lines
      `BNE` / `MOV|MOVW rD, #v` / `B` replaced by one `BEQ .Lcf_*`, or one
      inserted `.Lcf_*:` label line.  Nothing else is added, removed or
-     rewritten.  175 rewrites, 60 labels, 9,822 / 358,964 in total, and one
-     translation unit affected (stm32f4xx_hal_dma_ex.c, 1,689 -> 1,339).
+     rewritten.  178 rewrites, 60 labels, 9,750 / 357,713 in total, and one
+     translation unit affected (stm32f4xx_hal_dma_ex.c, 1,669 -> 1,313).
   3. INDEPENDENT RECONSTRUCTION.  `tests/cf_oracle.py` re-implements the rule
      from the text alone (no shared code, no shared constants with the
      compiler); after normalising the generated label the two texts are
@@ -121,25 +121,25 @@ INC_DIRS = [os.path.join(ROOT, p) for p in [
 CORPUS_DIRS = ['examples/ark_test/Core/Src',
                'examples/ark_test/Drivers/STM32F4xx_HAL_Driver/Src']
 
-WANT_OFF_INSNS = 10172
-WANT_OFF_BYTES = 372761
-WANT_ON_INSNS = 9822
-WANT_ON_BYTES = 358964
+WANT_OFF_INSNS = 10106
+WANT_OFF_BYTES = 371771
+WANT_ON_INSNS = 9750
+WANT_ON_BYTES = 357713
 
 WANT_RUNS = 60
-WANT_REWRITE = 175
-WANT_DEL_MOV = 175
-WANT_DEL_B = 175
+WANT_REWRITE = 178
+WANT_DEL_MOV = 178
+WANT_DEL_B = 178
 WANT_LABELS = 60
-WANT_RUN_SIZES = {4: 56, 3: 3, 2: 1}
+WANT_RUN_SIZES = {4: 58, 3: 2}
 # Every layer of the corpus, and why its successor does not extend it.
-WANT_CENSUS = {'extend': 175, 'move_form': 31, 'no_following_layer': 25,
+WANT_CENSUS = {'extend': 178, 'move_form': 31, 'no_following_layer': 24,
                'value': 16}
-WANT_LAYERS = 247
+WANT_LAYERS = 249
 
 # The one translation unit the fold touches: insns / bytes, off -> on.
 TU_DMA = 'stm32f4xx_hal_dma_ex.c'
-WANT_TU = {TU_DMA: (1689, 70503, 1339, 56706)}
+WANT_TU = {TU_DMA: (1669, 70203, 1313, 56145)}
 
 WORKERS = 4
 

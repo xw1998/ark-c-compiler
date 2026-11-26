@@ -16,15 +16,15 @@ measurements and the verdict are in sections 32.1 and 32.2.
 What this gate pins:
 
   1. OFF IS OFF.  All 95 translation units, with the switch off, come out
-     byte-identical to the same build with `-fno-opt-remat` -- both on the
-     31-flag baseline (10,172 instructions / 372,761 bytes) and on the
-     S17+S19-a stack (9,775 / 358,547).
+     byte-identical to the same build with `-fno-opt-remat` -- both on
+     the base flag set (10,106 instructions / 371,771 bytes) and on the
+     S17+S19-a stack (9,703 / 357,296).
   2. IT FIRES, AND ONLY BY THE RULE.  The switch-on text is compared against
      `tests/rm_oracle.py` -- a second implementation that shares no code with
      the compiler, re-parses the text and re-derives the rule -- and comes
      out byte-identical for all 95 units on both arms: 115 sites, 53 of them
      `MOV` and 62 `LDR` from the pool, and exactly 115 instructions fewer
-     (10,057 / 370,454 and 9,660 / 356,240).
+     (9,991 / 369,464 and 9,588 / 354,989).
   3. EVERY SITE IS RE-PROVED FROM THE SWITCH-OFF TEXT.  Both texts are walked
      with a cursor: the second line of each pair is gone, every other line is
      untouched, and the surviving first line still carries the value.  The
@@ -75,14 +75,14 @@ FLAG = ['-fopt-remat']
 NOFLAG = ['-fno-opt-remat']
 STACK = ['-fopt-chainfold', '-fopt-pushpop']
 
-WANT_OFF_INSNS = 10172
-WANT_OFF_BYTES = 372761
-WANT_ON_INSNS = 10057
-WANT_ON_BYTES = 370454
-WANT_STACK_INSNS = 9775
-WANT_STACK_BYTES = 358547
-WANT_STACK_ON_INSNS = 9660
-WANT_STACK_ON_BYTES = 356240
+WANT_OFF_INSNS = 10106
+WANT_OFF_BYTES = 371771
+WANT_ON_INSNS = 9991
+WANT_ON_BYTES = 369464
+WANT_STACK_INSNS = 9703
+WANT_STACK_BYTES = 357296
+WANT_STACK_ON_INSNS = 9588
+WANT_STACK_ON_BYTES = 354989
 
 WANT_SITES = 115
 WANT_MOV = 53

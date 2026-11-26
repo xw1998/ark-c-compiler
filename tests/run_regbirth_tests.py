@@ -21,8 +21,9 @@ What this gate pins:
 
   1. OFF IS OFF.  All 95 translation units of the corpus, with both switches
      off, come out byte-identical to the same build with
-     `-fno-opt-birthdest -fno-opt-basefold`, and still total 10,347
-     instructions / 375,454 bytes (the S15 figure).
+     `-fno-opt-birthdest -fno-opt-basefold`, and still total 10,281
+     instructions / 374,464 bytes (the S15 figure, re-measured after V-4
+     slice 1 widened `-fopt-deadins`).
   2. IT FIRES, AND ONLY ON THE TWO SHAPES.  Four arms over the whole corpus
      (both off / only A / only B / both).  The A arm changes exactly 158
      instruction lines and every change is one `OP r0, ...` + `MOV rD, r0`
@@ -114,8 +115,8 @@ WANT_TU = {TU_DMA: (1481, 43, 1, 44),
            TU_GPIO: (595, 25, 3, 28),
            TU_CORTEX: (571, 1, 0, 1)}
 
-WANT_OFF_INSNS = 10347
-WANT_OFF_BYTES = 375454
+WANT_OFF_INSNS = 10281
+WANT_OFF_BYTES = 374464
 WANT_A = 158
 WANT_B = 17
 WANT_BOTH = 175

@@ -21,11 +21,11 @@ What this gate pins:
 
   1. OFF IS OFF.  All 95 translation units of the corpus, with the switch
      off, come out byte-identical to the same build with
-     `-fno-opt-pushpop`, and still total 10,172 instructions / 372,761 bytes.
+     `-fno-opt-pushpop`, and still total 10,106 instructions / 371,771 bytes.
   2. IT FIRES, AND ONLY BY THE RULE.  The switch-on text is compared against
      `tests/pp_oracle.py` -- a second implementation of the rule that shares
      no code and no constants with the compiler -- and comes out
-     byte-identical for all 95 units: 10,125 / 372,344, 35 sites, 12 of them
+     byte-identical for all 95 units: 10,059 / 371,354, 35 sites, 12 of them
      deleting both halves and 23 re-materialising the value at the `POP`.
   3. EVERY SITE IS RE-PROVED FROM THE SWITCH-ON TEXT.  Walking the two texts
      with a cursor: the definition line survives, the span between the
@@ -79,10 +79,10 @@ except ImportError:                                    # pragma: no cover
 FLAG = ['-fopt-pushpop']
 NOFLAG = ['-fno-opt-pushpop']
 
-WANT_OFF_INSNS = 10172
-WANT_OFF_BYTES = 372761
-WANT_ON_INSNS = 10125
-WANT_ON_BYTES = 372344
+WANT_OFF_INSNS = 10106
+WANT_OFF_BYTES = 371771
+WANT_ON_INSNS = 10059
+WANT_ON_BYTES = 371354
 
 WANT_SITES = 35
 WANT_PAIR = 12

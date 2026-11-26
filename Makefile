@@ -299,11 +299,14 @@ test-ldhoist: $(ARKCC)
 test-stackframe: $(ARKCC)
 	$(PYTHON) tests/run_stackframe_tests.py ./$(ARKCC)
 
-# Gate for -fopt-deadins (S13): a register write that no later instruction in
-# its basic block reads, that writes no flags, and whose flags are not live is
-# removed.  The gate does not trust the pass: it re-scans the unoptimised text
-# with its own liveness model and proves every removed line dead, and it
-# requires that the pass never adds a line and never runs with the flag off.
+# Gate for -fopt-deadins (S13, V-4 slice 1): a register write or a compare
+# that no *reachable path* reads before the next write of it is removed.  The
+# gate does not trust the pass: tests/di_oracle.py re-derives the instruction
+# tables and the liveness equations from the Thumb encodings and proves every
+# removed line dead -- first on hand-written assembly with known answers, then
+# on one real file, then on every corpus translation unit (160 deletions).  It
+# also requires that the pass never adds a line, that a function holding user
+# assembly is left byte-identical, and that the flag is off by default.
 test-deadins: $(ARKCC)
 	$(PYTHON) tests/run_deadins_tests.py ./$(ARKCC)
 

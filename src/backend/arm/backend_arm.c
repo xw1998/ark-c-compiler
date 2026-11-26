@@ -9043,7 +9043,7 @@ static int di_known(const char *m) {
         "LDM", "LDMIA", "LDMIB", "LDMDA", "LDMDB",
         "STM", "STMIA", "STMIB", "STMDA", "STMDB",
         "PUSH", "POP", "B", "BX", "BL", "BLX", "CBZ", "CBNZ",
-        "VLDR", "VSTR", 0 };
+        "VLDR", "VSTR", "UDIV", "SDIV", 0 };
     return di_listed(m, t);
 }
 
@@ -9059,48 +9059,308 @@ static int di_ends(const cp_ins *o) {
 
 static int di_is_it(const char *m) { return m[0] == 'I' && m[1] == 'T'; }
 
+/* Parse a `#123` / `#0x1F` operand.  Returns 0 when it is not one. */
+static int di_imm_u(const char *s, unsigned *out) {
+    unsigned v = 0;
+    int base = 10, seen = 0;
+    if (!s || s[0] != '#') return 0;
+    s++;
+    if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) { base = 16; s += 2; }
+    while (*s) {
+        int c = *s, d;
+        if (c >= '0' && c <= '9') d = c - '0';
+        else if (base == 16 && c >= 'a' && c <= 'f') d = c - 'a' + 10;
+        else if (base == 16 && c >= 'A' && c <= 'F') d = c - 'A' + 10;
+        else return 0;
+        v = v * (unsigned)base + (unsigned)d;
+        seen = 1;
+        s++;
+    }
+    if (!seen) return 0;
+    *out = v;
+    return 1;
+}
+
+/* --- V-4 slice 1, docs/EXPR_MODEL.md section 35 ---------------------------
+ * Liveness used to be block-local with `r0-r12` all live at the end of the
+ * block, so a write whose only reader sat in a successor block was never
+ * deleted.  Blocks are now split at labels and at branches/returns, and the
+ * function is walked to a fixed point.  The old "everything live" answer is
+ * kept exactly where nothing is known: a block with no successor (return,
+ * `BX`, `POP {.., pc}`), a branch whose target is not in this function, and
+ * any mnemonic this pass does not model.
+ *
+ * Flags are part of the dataflow too, so a `CMP` whose flags nothing in any
+ * successor reads is deleted, and a write this pass would otherwise remove is
+ * kept whenever a later `Bcc`/`ITE` reads the flags it sets.
+ * ---------------------------------------------------------------------- */
+#define DI_MAX_BLOCKS 1024
+#define DI_MAX_LABELS 1024
+
+typedef struct {
+    int first, last;
+    int succ[2];
+    unsigned use, def, in, out;
+    int fread, fwrite, fin, fout;
+    unsigned char bsx;                  /* 1 = exits here, 2 = target lost */
+} DiBlock;
+
+static DiBlock di_blk[DI_MAX_BLOCKS];
+static char di_lab[DI_MAX_LABELS][48];
+static int di_labline[DI_MAX_LABELS];
+static unsigned char di_it[SF_MAX_LINES];
+static int di_bof[SF_MAX_LINES];
+
+/* A data-processing instruction with a condition suffix (`MOVEQ`, `MOVNE`,
+ * `ADDHI`..), which is what the emitter writes inside an `IT` block.  It is
+ * the same operation as its stem: register effects identical, and under `IT`
+ * it does *not* set the flags (the condition is applied by the IT, and the
+ * 16-bit forms carry no S).  Left unmodelled, one `MOVNE` turned its whole
+ * block into a barrier that read all of r0-r13, which then made every
+ * predecessor keep every write -- 83 of them in the STM32 corpus. */
+static int di_is_cond_dp(const char *m) {
+    static const char *const c[] = { "EQ", "NE", "CS", "HS", "CC", "LO",
+        "MI", "PL", "VS", "VC", "HI", "LS", "GE", "LT", "GT", "LE", "AL", 0 };
+    char t[16];
+    size_t L = strlen(m);
+    int i;
+    for (i = 0; c[i]; i++) {
+        size_t cl = strlen(c[i]);
+        if (L <= cl + 2 || L - cl >= sizeof t) continue;
+        if (strcmp(m + L - cl, c[i])) continue;
+        memcpy(t, m, L - cl);
+        t[L - cl] = 0;
+        if (di_is_pure(t)) return 1;
+    }
+    return 0;
+}
+
+/* Does this instruction write the flags?  Decided by encoding form, because
+ * the assembler picks a 16-bit flag-setting form whenever it can:
+ *   MOV Rd, Rm                       -> 0x4600, MOV (register) T1, no flags
+ *   MOV Rd, #imm (Rd <= 7, imm<=255) -> 0x2000, MOVS, writes flags
+ *   MOVW / MOVT ...                  -> 32-bit form, no flags
+ *   any other pure operation         -> assumed to possibly take a 16-bit S
+ *                                       form (0x3000/0x1800 encode `adds`),
+ *                                       so it counts as flag-writing.
+ * Checking this is not academic: `MOV r0, #1` really is `movs r0, #1`, so
+ * deleting it in front of a `Bcc` would change the branch condition. */
+static int di_may_wf(const cp_ins *o) {
+    int d;
+    unsigned v;
+    if (di_is_cmp(o->mn) || di_writes_flags(o->mn)) return 1;
+    if (!strcmp(o->mn, "MOVW") || !strcmp(o->mn, "MOVT")) return 0;
+    if (!strcmp(o->mn, "MOV")) {
+        if (o->nops == 2 && o->op[1][0] == '#' &&
+            cp_reg(o->op[0], &d) && d >= 0 && d <= 7 && di_imm_u(o->op[1], &v))
+            return v <= 255u;
+        return 0;
+    }
+    return di_is_pure(o->mn);
+}
+
 static void ark_deadins_function(AsmBuffer *b, int from) {
-    static int idx[1024];
-    int n, i, k, cnt, d, needf, ndel = 0;
+    int n, i, j, nb, nlab, iter, prev_end, seen_label, ndel = 0;
+    int needf, d;
     unsigned live, rd, wr;
+    char t[256];
     AsmBuffer out;
 
     n = sf_scan(b, from);
     if (n <= 0) return;
     memset(sf_del, 0, (size_t)n);
+    memset(di_it, 0, (size_t)n);
+    for (i = 0; i < n; i++) di_bof[i] = -1;
 
-    i = 0;
-    while (i < n) {
-        int start, end;
-        if (sf_kd[i] != 1) { i++; continue; }
-        start = i;
-        end = i;
-        cnt = 0;
-        while (end < n) {
-            if (sf_kd[end] == 2) break;                 /* a label starts a new block */
-            if (sf_kd[end] == 1) {
-                if (cnt >= 1024) { cnt = -1; break; }
-                idx[cnt++] = end;
-                if (di_ends(&sf_iv[end])) { end++; break; }
+    /* Label table, for the branch targets. */
+    nlab = 0;
+    for (i = 0; i < n; i++) {
+        int L, k = 0;
+        if (sf_kd[i] != 2) continue;
+        if (pp_trim(b->buf + sf_ls[i], sf_ll[i], t, sizeof t) < 0) continue;
+        L = ark_strlen(t);
+        if (L <= 1 || L - 1 >= (int)sizeof di_lab[0] || nlab >= DI_MAX_LABELS)
+            continue;
+        while (k < L - 1) { di_lab[nlab][k] = t[k]; k++; }
+        di_lab[nlab][k] = 0;
+        di_labline[nlab] = i;
+        nlab++;
+    }
+
+    /* An instruction under `IT` is conditional, so it is never a deletion
+     * candidate; the `IT` itself also reads the flags. */
+    for (i = 0; i < n; i++) {
+        int cnt, c = 0;
+        if (sf_kd[i] != 1 || !di_is_it(sf_iv[i].mn)) continue;
+        cnt = ark_strlen(sf_iv[i].mn) - 1;
+        for (j = i + 1; j < n && c < cnt; j++) {
+            if (sf_kd[j] == 2) break;
+            if (sf_kd[j] == 1) { di_it[j] = 1; c++; }
+        }
+    }
+
+    /* Basic blocks: a label starts one, and so does the instruction after a
+     * branch or a return. */
+    nb = 0; prev_end = 1; seen_label = 0;
+    for (i = 0; i < n; i++) {
+        if (sf_kd[i] == 2) { seen_label = 1; continue; }
+        if (sf_kd[i] != 1) continue;
+        if (nb == 0 || prev_end || seen_label) {
+            if (nb >= DI_MAX_BLOCKS) return;
+            di_blk[nb].first = di_blk[nb].last = i;
+            di_blk[nb].succ[0] = di_blk[nb].succ[1] = -1;
+            di_blk[nb].use = di_blk[nb].def = 0;
+            di_blk[nb].in = di_blk[nb].out = 0;
+            di_blk[nb].fread = di_blk[nb].fwrite = 0;
+            di_blk[nb].fin = di_blk[nb].fout = 0;
+            di_blk[nb].bsx = 0;
+            nb++;
+        } else {
+            di_blk[nb - 1].last = i;
+        }
+        di_bof[i] = nb - 1;
+        seen_label = 0;
+        prev_end = di_ends(&sf_iv[i]);
+    }
+    if (nb <= 0) return;
+
+    /* Successors, read off each block's last instruction. */
+    for (i = 0; i < nb; i++) {
+        const cp_ins *o = &sf_iv[di_blk[i].last];
+        int k = lv_branch_kind(o->mn), tgt = -1, q;
+        if (k == 1 || k == 2) {
+            for (q = 0; q < o->nops; q++) {
+                const char *p = o->op[q];
+                int m2;
+                if (!p[0] || p[0] == '#' || p[0] == '[') continue;
+                if (lv_regs(p)) continue;
+                for (m2 = 0; m2 < nlab; m2++)
+                    if (!strcmp(di_lab[m2], p)) { tgt = di_labline[m2]; break; }
+                if (tgt >= 0) break;
             }
-            end++;
+            if (tgt >= 0) {
+                int L2;
+                for (L2 = tgt; L2 < n; L2++)
+                    if (di_bof[L2] >= 0) { tgt = di_bof[L2]; break; }
+                if (L2 >= n) tgt = -1;
+            }
         }
-        i = end;
-        if (cnt <= 0) continue;
-        {
-            int skip = 0;
-            for (k = 0; k < cnt; k++)
-                if (di_is_it(sf_iv[idx[k]].mn)) { skip = 1; break; }
-            if (skip) continue;                          /* IT block: not modelled */
+        if (k == 1) {
+            di_blk[i].succ[0] = tgt;
+            di_blk[i].bsx = (tgt < 0) ? 2 : 0;
+        } else if (k == 2) {
+            di_blk[i].succ[0] = tgt;
+            di_blk[i].succ[1] = (i + 1 < nb) ? i + 1 : -1;
+            di_blk[i].bsx = (tgt < 0) ? 2 : 0;
+        } else if (k == 4) {
+            di_blk[i].bsx = 1;              /* BX lr / BX rM leaves */
+        } else if (lv_ends_block(o)) {
+            di_blk[i].bsx = 1;              /* POP {..., pc} returns */
+        } else {
+            di_blk[i].succ[0] = (i + 1 < nb) ? i + 1 : -1;
+            di_blk[i].bsx = (i + 1 < nb) ? 0 : 1;
         }
-        live = 0x1FFFu;                                  /* r0-r12 live at block end */
-        needf = 0;
-        for (k = cnt - 1; k >= 0; k--) {
-            cp_ins *o = &sf_iv[idx[k]];
-            const char *m = o->mn;
-            if (di_reads_flags(m)) needf = 1;
+    }
+
+    /* Upward-exposed reads, definitions, and the same pair for the flags. */
+    for (i = 0; i < nb; i++) {
+        unsigned u = 0, df = 0;
+        int fr = 0, fw = 0;
+        for (j = di_blk[i].first; j <= di_blk[i].last; j++) {
+            const char *m;
+            if (sf_kd[j] != 1) continue;
+            m = sf_iv[j].mn;
+            /* `IT` / `ITE` / `ITT`.. reads the flags and writes nothing.  It is
+             * an *instruction* for the dataflow, not a barrier: treating it as
+             * an unknown mnemonic made every block that guards a conditional
+             * body read all of r0-r13, which in turn made its predecessors
+             * keep every write.  The census in section 35.2 models it the same
+             * way.  The block is still skipped by the delete walk below. */
+            if (di_is_it(m)) {
+                if (!fw) fr = 1;
+                continue;
+            }
+            /* A compare writes the flags and reads none of them; a
+             * conditional data-processing instruction (only reachable under
+             * an IT) reads them.  Counting a compare as a flag *read* made
+             * every block that opens with a compare claim a live-in flag,
+             * which then propagated around every loop and stopped the pass
+             * from deleting anything at all. */
+            if ((di_reads_flags(m) || di_is_cond_dp(m)) && !fw) fr = 1;
+            if (di_may_wf(&sf_iv[j])) fw = 1;
+            if (di_is_pure(m) || di_is_cond_dp(m) || di_known(m) ||
+                di_is_cmp(m) || lv_branch_kind(m) != 0) {
+                lv_rw(&sf_iv[j], &rd, &wr);
+                u |= rd & ~df;
+                df |= wr;
+            } else {
+                /* Unknown mnemonic: every register may be read here and the
+                 * flags are unknown afterwards. */
+                u = 0x1FFFu;
+                fr = 1;
+                fw = 1;
+                df = 0;
+            }
+        }
+        di_blk[i].use = u;
+        di_blk[i].def = df;
+        di_blk[i].fread = fr;
+        di_blk[i].fwrite = fw;
+    }
+
+    /* Liveness (registers and flags) to a fixed point. */
+    for (iter = 0; iter < 64; iter++) {
+        int ch = 0;
+        for (i = nb - 1; i >= 0; i--) {
+            unsigned o = 0, u;
+            int fo = 0, fi;
+            if (di_blk[i].succ[0] >= 0 || di_blk[i].succ[1] >= 0) {
+                if (di_blk[i].succ[0] >= 0) {
+                    o |= di_blk[di_blk[i].succ[0]].in;
+                    fo |= di_blk[di_blk[i].succ[0]].fin;
+                }
+                if (di_blk[i].succ[1] >= 0) {
+                    o |= di_blk[di_blk[i].succ[1]].in;
+                    fo |= di_blk[di_blk[i].succ[1]].fin;
+                }
+            } else {
+                o = 0x1FFFu;                /* leaves the analysis: all live */
+                fo = 1;
+            }
+            u = di_blk[i].use | (o & ~di_blk[i].def);
+            fi = di_blk[i].fread | (fo & ~di_blk[i].fwrite);
+            if (u != di_blk[i].in || o != di_blk[i].out ||
+                fi != di_blk[i].fin || fo != di_blk[i].fout) {
+                di_blk[i].in = u; di_blk[i].out = o;
+                di_blk[i].fin = fi; di_blk[i].fout = fo;
+                ch = 1;
+            }
+        }
+        if (!ch) break;
+    }
+
+    /* Delete walk: backwards inside each block, seeded with the block's real
+     * live-out instead of "r0-r12 all live". */
+    for (i = 0; i < nb; i++) {
+        int skip = 0;
+        for (j = di_blk[i].first; j <= di_blk[i].last; j++)
+            if (sf_kd[j] == 1 && (di_it[j] || di_is_it(sf_iv[j].mn))) {
+                skip = 1;
+                break;
+            }
+        if (skip) continue;
+        live = di_blk[i].out;
+        needf = di_blk[i].fout;
+        for (j = di_blk[i].last; j >= di_blk[i].first; j--) {
+            cp_ins *o;
+            const char *m;
+            int wf;
+            if (sf_kd[j] != 1) continue;
+            o = &sf_iv[j];
+            m = o->mn;
+            if (di_reads_flags(m) || di_is_cond_dp(m)) needf = 1;
             if (di_is_cmp(m)) {
-                if (!needf) { sf_del[idx[k]] = 1; ndel++; continue; }
+                if (!needf) { sf_del[j] = 1; ndel++; continue; }
                 needf = 0;
                 lv_rw(o, &rd, &wr);
                 live |= rd;
@@ -9108,11 +9368,11 @@ static void ark_deadins_function(AsmBuffer *b, int from) {
             }
             if (di_is_pure(m) && o->nops >= 1 && cp_reg(o->op[0], &d) &&
                 d >= 0 && d <= 12) {
-                int wf = di_writes_flags(m);
+                wf = di_may_wf(o);
                 lv_rw(o, &rd, &wr);
                 if (!strcmp(m, "MOVT")) rd |= lv_bit(d);   /* MOVT reads Rd */
                 if (!(live & lv_bit(d)) && !(wf && needf)) {
-                    sf_del[idx[k]] = 1;
+                    sf_del[j] = 1;
                     ndel++;
                     continue;
                 }
@@ -9120,8 +9380,8 @@ static void ark_deadins_function(AsmBuffer *b, int from) {
                 live = (live & ~wr) | rd;
                 continue;
             }
-            if (di_known(m)) {
-                int wf = di_writes_flags(m);
+            if (di_known(m) || di_is_cond_dp(m) || lv_branch_kind(m) != 0) {
+                wf = di_may_wf(o);
                 lv_rw(o, &rd, &wr);
                 live = (live & ~wr) | rd;
                 if (wf) needf = 0;

@@ -1,25 +1,35 @@
 #!/usr/bin/env python3
-"""Gate for the block-local dead-instruction pass (0.9.1, -fopt-deadins / S13).
+"""Gate for the dead-instruction pass (0.9.1, -fopt-deadins / S13, V-4 slice 1).
 
-The pass walks each basic block backwards and deletes a register write whose
-destination is overwritten before it is read, and a `CMP`/`CMN`/`TST`/`TEQ`
-whose flags are dead.  The rules are frozen in docs/EXPR_MODEL.md S14.2.
+The pass builds the function's control-flow graph and deletes a register
+write whose destination no reachable path reads before the next write of it,
+and a `CMP`/`CMN`/`TST`/`TEQ` whose flags no reachable path reads before the
+next flag write.  The rules are frozen in docs/EXPR_MODEL.md S35.1.
 
 What this gate pins:
 
+  0. THE CHECKER KNOWS THE ANSWERS.  `di_oracle.py` is run on hand-written
+     assembly whose deletable set is known by hand -- both directions, and
+     including flags carried across a branch and a write dead only across a
+     branch.  A checker that never finds a fault proves nothing.
   1. OFF IS OFF.  `-O2 <passes>` and `-O2 <passes> -fno-opt-deadins` are
      byte-identical as text and as an image.
   2. IT FIRES, AND ONLY ON DEAD WRITES.  On a real source file the pass
      removes instruction lines and adds none.  Every removed line is
-     re-justified here by an independent backwards scan of the *unoptimised*
-     text: it must be a pure register write (no memory, no flags) whose
-     destination is not read anywhere later in the same block before it is
-     written again, and the block must really end where the pass says.
+     re-justified by the same independent oracle: a line may go only when no
+     reachable path reads its destination (or the flags it writes) before the
+     next write of it.  The gate is one-sided on purpose -- the oracle may be
+     laxer than the pass, never stricter.
   3. THE REMOVED VALUE CHANGED NOTHING.  The image returns the same answer as
      the unoptimised image, and that answer is the one the source promises.
-  4. IT DECLINES WHEN IT MUST.  A write whose flags feed a branch, a write the
-     next instruction reads, an instruction under `IT`, and an unknown mnemonic
-     (a barrier) all leave the text byte-identical.
+  4. USER ASSEMBLY IS LEFT ALONE.  A function that holds inline assembly is
+     skipped by the whole text-pass chain (`fn_user_asm`), so every fixture
+     here -- a write whose flags a branch reads, a write a later instruction
+     reads, an instruction under `IT`, an unknown mnemonic, flags carried
+     across a branch -- must leave the text byte-identical.
+  4b. THE ENCODING FACT IT LEANS ON IS EXECUTED.  This assembler emits the
+     flag-writing 16-bit form for a register `AND`; the fixture runs that and
+     requires the `AND` to clobber the compare's zero flag.
   5. CROPPED OUT, REFUSED.  A build with -DARKCC_FEATURE_OPT_DEADINS=0 refuses
      `-fopt-deadins` by name (C3900U) and still compiles without the flag.
 
@@ -29,6 +39,10 @@ dead to them (they cannot tell user text from emitted text).  That is a
 pre-existing defect of those two passes, not of this one; running the fixtures
 with the three flags where inline text survives keeps the check meaningful
 while the defect is open (registered in docs/EXPR_MODEL.md S15.6).
+
+Where the pass' own liveness rules are checked: on compiler-generated code,
+by the oracle in 0 and 2.  The pass never rewrites a user-assembly function,
+so no fixture of that shape can test the rules themselves.
 
 Usage: run_deadins_tests.py [path-to-arkcc]
 Exit 0 = every check passed, 1 = a check failed, 2 = setup problem.
@@ -68,155 +82,27 @@ SMALL = ['-fopt-vstack', '-fopt-addr', '-fopt-frame']
 REAL_SRC = os.path.join(ROOT, 'examples', 'feat_bitfield.c')
 REAL_WANT = 4                      # examples/feat_bitfield.c documents 4
 
-# --- the independent justification scan -----------------------------------
+# --- the independent oracle ------------------------------------------------
+#
+# `di_oracle.py` is a separate file on purpose: it rebuilds the instruction
+# tables and the liveness equations from the Thumb encodings instead of
+# importing this pass' own sets, so a wrong table in the pass cannot be a
+# wrong table in the checker.  See its header for what it models.
+
+import di_oracle
 
 INSN_RE = re.compile(r'^(\s+)([A-Z][A-Z0-9.]*)(.*)$')
-LABEL_RE = re.compile(r'^\s*(\.[A-Za-z0-9_.]+):')
-
-PURE = {'MOV', 'MOVW', 'ADD', 'SUB', 'AND', 'ORR', 'EOR', 'BIC', 'MVN',
-        'LSL', 'LSR', 'ASR', 'UXTB', 'UXTH', 'SXTB', 'SXTH', 'MUL', 'RSB',
-        'NEG', 'REV', 'REV16', 'REVSH', 'MOVT'}
-WFLAGS = {'MOVS', 'ADDS', 'SUBS', 'ANDS', 'ORRS', 'EORS', 'BICS', 'MVNS',
-          'LSLS', 'LSRS', 'ASRS', 'MULS', 'RSBS', 'NEGS', 'ADCS', 'SBCS'}
-RFLAGS = {'ADC', 'ADCS', 'SBC', 'SBCS', 'RSC', 'RSCS'}
-ENDS = {'B', 'BX', 'BL', 'BLX', 'CBZ', 'CBNZ'}
-# Mnemonics whose live-set effect is modelled exactly enough to keep scanning
-# instead of restarting from "everything is live".  BL/BLX and anything not
-# listed here stay barriers.
-KNOWN = {'LDR', 'LDRB', 'LDRH', 'LDRSB', 'LDRSH', 'VLDR',
-         'STR', 'STRB', 'STRH', 'VSTR',
-         'LDM', 'LDMIA', 'LDMIB', 'LDMDA', 'LDMDB',
-         'STM', 'STMIA', 'STMIB', 'STMDA', 'STMDB',
-         'PUSH', 'POP', 'B', 'BX', 'CBZ', 'CBNZ'}
-CMPISH = {'CMP', 'CMN', 'TST', 'TEQ'}
-
-def regs_in(txt):
-    s = set()
-    for m in re.finditer(r'\b(r\d{1,2}|sp|lr|pc)\b', txt):
-        s.add(m.group(1))
-    return s
-
-def operands(txt):
-    out, cur, depth = [], '', 0
-    for ch in txt:
-        if ch in '[{':
-            depth += 1
-        elif ch in ']}':
-            depth -= 1
-        if ch == ',' and depth == 0:
-            out.append(cur.strip())
-            cur = ''
-        else:
-            cur += ch
-    if cur.strip():
-        out.append(cur.strip())
-    return out
-
-def reads_writes(mn, ops):
-    """(reads, writes, writes_flags) for one instruction, conservatively.
-
-    Only writes are approximated, and always from *below* (a write we fail to
-    notice keeps its register live, which can only make this checker laxer
-    about a deletion, never stricter).  Reads are approximated from above:
-    every register named in a non-destination operand is read.  That is the
-    same envelope the compiler's own pass uses (`di_known` + `lv_rw`).
-    """
-    ops = ops[:]
-    w = set()
-    wf = mn in WFLAGS or mn in CMPISH
-    if mn in PURE or mn in WFLAGS:
-        if ops and re.fullmatch(r'(r\d{1,2}|lr|pc)', ops[0]):
-            w = {ops[0]}
-    elif mn in ('LDR', 'LDRB', 'LDRH', 'LDRSB', 'LDRSH', 'VLDR'):
-        if ops and re.fullmatch(r'r\d{1,2}', ops[0]):
-            w = {ops[0]}
-    r = set()
-    for i, op in enumerate(ops):
-        if i == 0 and w:
-            continue
-        r |= regs_in(op)
-    if mn == 'MOVT' and w:
-        r |= w
-    return r, w, wf
-
-def justified(text):
-    """Return (deleted_indices, bad) where bad lists unjustified deletions.
-
-    `text` is the UNOPTIMISED assembly; the caller passes the set of line
-    numbers the optimised text no longer has.  Blocks are split exactly the
-    way the compiler splits them: a label starts one, a branch or a
-    `POP {..., pc}` ends one.
-    """
-    lines = text.splitlines()
-    blocks, cur = [], []
-    for i, ln in enumerate(lines):
-        cur.append(i)
-        m = INSN_RE.match(ln)
-        if LABEL_RE.match(ln):
-            blocks.append(cur)
-            cur = []
-            continue
-        if m and (m.group(2) in ENDS or m.group(2).startswith('B') and
-                  m.group(2) not in ('BIC', 'BFI', 'BFC') and
-                  len(m.group(2)) <= 3 or
-                  (m.group(2) == 'POP' and 'pc' in m.group(3))):
-            blocks.append(cur)
-            cur = []
-    if cur:
-        blocks.append(cur)
-    return blocks
-
-def check_block(lines, idx, dead, bad):
-    """Re-derive every deletion in one block.  `dead` is the set of line
-    numbers the pass removed; they are absent from the program."""
-    live = set('r%d' % k for k in range(13))
-    needf = False
-    for i in reversed(idx):
-        ln = lines[i]
-        m = INSN_RE.match(ln)
-        if not m:
-            continue
-        mn, rest = m.group(2), m.group(3)
-        if i in dead:
-            if mn in CMPISH:
-                if needf:
-                    bad.append((i, ln.strip(), 'flags are live'))
-                continue
-            if mn not in PURE and mn not in WFLAGS:
-                bad.append((i, ln.strip(), 'not a pure register write'))
-                continue
-            ops = operands(rest)
-            if not ops or not re.fullmatch(r'r\d{1,2}', ops[0]):
-                bad.append((i, ln.strip(), 'no register destination'))
-                continue
-            if ops[0] in live:
-                bad.append((i, ln.strip(), '%s is live' % ops[0]))
-                continue
-            if mn in WFLAGS and needf:
-                bad.append((i, ln.strip(), 'flags are live'))
-                continue
-            continue
-        if mn in RFLAGS:
-            needf = True
-        r, w, wf = reads_writes(mn, operands(rest))
-        if mn in CMPISH:
-            needf = False
-            live |= r
-            continue
-        if mn in PURE or mn in WFLAGS:
-            live = (live - w) | r
-            if wf:
-                needf = False
-            continue
-        if mn in KNOWN:
-            live = (live - w) | r
-            continue
-        # call, barrier, or unknown: keep everything alive
-        live = set('r%d' % k for k in range(13))
-        needf = True
 
 CLASH = r'''
-/* MUST NOT TRIGGER: the write sets the flags a branch consumes. */
+/* Every function in this file contains user assembly, and a function that
+ * holds user assembly is never rewritten by any text pass (`fn_user_asm`
+ * bails out before the frame passes run, see the comment at
+ * `arm_skip_frame_opts` in src/backend/arm/backend_arm.c).  So what the
+ * checks below really pin is that bait-out: whatever the inline text does,
+ * the two arms must be byte-identical.  The pass' *liveness* rules are
+ * checked on compiler-generated code in sections 2, 2b and 0 instead. */
+
+/* The write sets the flags a branch consumes. */
 unsigned di_flags(unsigned x)
 {
     __asm volatile("    MOVS r4, #1");
@@ -250,6 +136,19 @@ unsigned di_barrier(unsigned x)
     return x + 4u;
 }
 
+/* The compare's flags travel across an unconditional branch into the block
+ * that reads them; a block-local scan cannot see the reader. */
+unsigned di_flagcross(unsigned x)
+{
+    __asm volatile("    MOV r0, #1");
+    __asm volatile("    CMP r0, #1");
+    __asm volatile("    B .Ldi_c1");
+    __asm volatile(".Ldi_c1:");
+    __asm volatile("    BEQ .Ldi_c2");
+    __asm volatile(".Ldi_c2:");
+    return x + 5u;
+}
+
 unsigned di_plain(unsigned x)
 {
     unsigned v = x + 1u;
@@ -258,6 +157,51 @@ unsigned di_plain(unsigned x)
 
 int main(void) { return (int)(di_plain(2u) & 0xFFu); }
 '''
+
+# The encoding fact `di_oracle.py` leans on: this assembler emits the
+# flag-writing 16-bit form (`ANDS`) for a register `AND`, so the `AND` below
+# clobbers the zero flag the compare set and the `IT EQ` / `MOVEQ` pair must
+# not fire.  Returns 1.  If a future encoder switches to the non-flag-writing
+# T2 form the value becomes 7 (MOVEQ fires on the compare's Z=1) and this
+# gate fails instead of the oracle silently disagreeing with the encoder.
+ENC = r'''
+int main(void)
+{
+    __asm volatile("    MOV r0, #3");
+    __asm volatile("    MOVW r1, #1");
+    __asm volatile("    CMP r1, #1");
+    __asm volatile("    AND r0, r1");
+    __asm volatile("    IT EQ");
+    __asm volatile("    MOVEQ r0, #7");
+    __asm volatile(".Lenc_spin:");
+    __asm volatile("    B .Lenc_spin");
+    return 0;
+}
+'''
+
+# Hand-written assembly with answers derived by hand, used to keep the oracle
+# honest: a checker that never finds a fault proves nothing.  Line numbers are
+# 0-based, matching `di_oracle.deletable`.
+ORACLE_CASES = [
+    ('a compare whose flags a branch reads keeps it',
+     'f:\n    PUSH {r4, lr}\n    CMP r0, #1\n    BEQ .La\n.La:\n'
+     '    POP {r4, pc}\n', set()),
+    ('a write overwritten in the same block goes',
+     'f:\n    PUSH {r4, lr}\n    MOV r4, #7\n    MOV r4, #9\n'
+     '    POP {r4, pc}\n', {2}),
+    ('a write dead only across a branch goes',
+     'f:\n    PUSH {r4, lr}\n    MOV r4, #7\n    B .Lb\n.Lb:\n'
+     '    MOV r4, #9\n    MOV r0, r4\n    POP {r4, pc}\n', {2}),
+    ('flags carried across a branch keep the compare',
+     'f:\n    PUSH {r4, lr}\n    CMP r0, #1\n    B .Lb\n.Lb:\n'
+     '    BEQ .Lc\n.Lc:\n    POP {r4, pc}\n', set()),
+    ('a write the successor block reads survives',
+     'f:\n    PUSH {r4, lr}\n    MOV r4, #7\n    B .Lb\n.Lb:\n'
+     '    ADD r0, r4, #0\n    POP {r4, pc}\n', set()),
+    ('a compare before another compare goes',
+     'f:\n    PUSH {r4, lr}\n    CMP r0, #1\n    CMP r0, #2\n'
+     '    POP {r4, pc}\n', {2}),
+]
 
 failures, skips = [], []
 
@@ -354,6 +298,15 @@ def main():
 
     work = tempfile.mkdtemp(prefix='arkcc_di_')
     try:
+        # --- 0. the oracle itself answers known-truth cases -------------------
+        # A checker that says "everything is fine" is worthless, so the
+        # checker is first run on hand-written assembly whose answer is known
+        # by hand.  The two cross-block cases are the reason this pass exists.
+        for name, asm, want in ORACLE_CASES:
+            got = di_oracle.deletable(asm)
+            check(got == want, 'oracle: %s' % name,
+                  'deletable=%s want=%s' % (sorted(got), sorted(want)))
+
         # --- 1. off is off --------------------------------------------------
         t0, b0, e0 = build(arkcc, work, REAL_SRC, PASSES, ('real', 'plain'),
                            startup=True)
@@ -404,12 +357,62 @@ def main():
               ' '.join(a.strip() for a in added[:4]) or 'none')
         check(all(INSN_RE.match(off_lines[i]) for i in dels),
               'every removed line is an instruction line')
-        bad = []
         dead = set(dels)
-        for idx in justified(off_t):
-            check_block(off_lines, idx, dead, bad)
-        check(not bad, 'every removed write is dead by an independent scan',
-              '; '.join('%s: %s' % (t, w) for _, t, w in bad[:4]) or 'all')
+        oracle = di_oracle.deletable(off_t)
+        unjustified = sorted(dead - oracle)
+        check(not unjustified,
+              'every removed write is dead by the independent CFG oracle',
+              '; '.join(off_lines[i].strip()
+                        for i in unjustified[:4]) or 'all')
+
+        # --- 2b. the same containment over every translation unit ------------
+        # One file cannot show that the pass keeps its promise on the shapes
+        # it was widened for (a write or a compare that only a *successor*
+        # block kills).  The corpus has them, so the oracle is run over every
+        # deletion the pass makes in tests/chainfold corpus.
+        if '--no-corpus' in sys.argv:
+            skip('every corpus deletion is oracle-justified', '--no-corpus')
+        else:
+            import run_chainfold_tests as H
+            units = H.corpus_units()
+            total, bad2, failed2 = 0, [], []
+            for n, unit in enumerate(units):
+                # The corpus needs the STM32 include maze and the frozen
+                # 34-flag baseline, so it borrows the chainfold helpers
+                # instead of the local single-file `build()`.
+                # BASE already carries -fopt-deadins, so the off arm turns
+                # it back off explicitly; both flag lists end at the same
+                # place, which keeps every other pass identical.
+                o_t, e = H.build_asm(arkcc, work, unit, ['-fno-opt-deadins'],
+                                     'cp_off_%03d' % n)
+                n_t, e2 = H.build_asm(arkcc, work, unit, ['-fopt-deadins'],
+                                      'cp_on_%03d' % n)
+                if e or e2:
+                    failed2.append(os.path.basename(unit))
+                    continue
+                sm2 = difflib.SequenceMatcher(None, o_t.splitlines(),
+                                              n_t.splitlines(), autojunk=False)
+                dl = []
+                for tag, i1, i2, j1, j2 in sm2.get_opcodes():
+                    if tag in ('delete', 'replace'):
+                        dl += list(range(i1, i2))
+                ol = o_t.splitlines()
+                dl = [i for i in dl if INSN_RE.match(ol[i])]
+                total += len(dl)
+                ok2 = di_oracle.deletable(o_t)
+                for i in dl:
+                    if i not in ok2:
+                        bad2.append('%s:%s' % (os.path.basename(unit),
+                                               ol[i].strip()))
+            check(not failed2, 'every corpus unit builds in both arms',
+                  ' '.join(failed2[:3]) or '%d units' % len(units))
+            check(not bad2,
+                  'every corpus deletion is oracle-justified',
+                  '%d deletion(s) over %d units%s'
+                  % (total, len(units),
+                     ('; %s' % '; '.join(bad2[:3])) if bad2 else ''))
+            check(total > 0, 'the corpus check saw deletions at all',
+                  '%d' % total)
 
         # --- 3. the answer does not change -----------------------------------
         if not HAVE_UNICORN:
@@ -433,31 +436,56 @@ def main():
                       'the image never grows',
                       'off/on=%d/%d bytes' % (len(off_bin), len(on_bin)))
 
-        # --- 4. it declines when it must -------------------------------------
+        # --- 4. user assembly is left alone ----------------------------------
+        # Every fixture here holds inline assembly, and a function with user
+        # assembly is skipped by the whole text-pass chain.  The check is that
+        # the skip really happens: any of these writes would be deleted if the
+        # pass had run over the function.
         write(os.path.join(work, 'clash.c'), CLASH)
         src = os.path.join(work, 'clash.c')
         to, _, eo = build(arkcc, work, src, SMALL, ('clash', 'off'), img=False)
         tn, _, en = build(arkcc, work, src, SMALL + [FLAG], ('clash', 'on'),
                           img=False)
         if eo or en:
-            check(False, 'the decline fixtures build', (eo or en)[0][:120])
+            check(False, 'the user-assembly fixtures build', (eo or en)[0][:120])
         else:
             for fn, why in (('di_flags', 'a write whose flags a branch reads'),
                             ('di_read', 'a write a later instruction reads'),
                             ('di_it', 'an instruction under IT'),
-                            ('di_barrier', 'an unknown mnemonic (barrier)')):
+                            ('di_barrier', 'an unknown mnemonic (barrier)'),
+                            ('di_flagcross', 'flags carried across a branch')):
                 fo = re.search(r'^%s:\n(.*?)^\.size %s,' % (fn, fn), to,
                                re.M | re.S)
                 fn2 = re.search(r'^%s:\n(.*?)^\.size %s,' % (fn, fn), tn,
                                 re.M | re.S)
                 check(bool(fo) and bool(fn2) and fo.group(1) == fn2.group(1),
-                      '%s: %s leaves the text byte-identical' % (fn, why),
+                      '%s: a function holding user assembly (%s) is untouched'
+                      % (fn, why),
                       '%d/%d bytes' % (len(fo.group(1)) if fo else 0,
                                        len(fn2.group(1)) if fn2 else 0))
             check(to.count('MOV r4, #11') == tn.count('MOV r4, #11') and
                   tn.count('MOV r4, #11') >= 1,
                   'the inline-assembly writes are still in the text',
                   '%d occurrence(s)' % tn.count('MOV r4, #11'))
+
+        # --- 4b. the encoding fact the oracle relies on ----------------------
+        write(os.path.join(work, 'enc.c'), ENC, startup=False)
+        _, enc_bin, ee = build(arkcc, work, os.path.join(work, 'enc.c'), SMALL,
+                               ('enc', 'off'), startup=True)
+        if ee:
+            check(False, 'the encoding fixture builds', ee[0][:120])
+        elif not HAVE_UNICORN:
+            skip('a register AND writes the flags (the 16-bit ANDS form)',
+                 'python package unicorn missing')
+        else:
+            # The fixture spins at the end (`B .Lenc_spin`), so the value is
+            # read out of r0 after a small instruction budget instead of from
+            # a return: r0 = 1 means the AND clobbered the compare's Z, r0 = 7
+            # means it left it alone.
+            st, val, _ = run_image(enc_bin, 2000)
+            check(st == 'limit' and val == 1,
+                  'a register AND writes the flags (the 16-bit ANDS form)',
+                  '%s=%s' % (st, val))
 
         # --- 5. cropped out, refused -----------------------------------------
         trimmed, why = build_arkcc(work, ['-DARKCC_FEATURE_OPT_DEADINS=0'],

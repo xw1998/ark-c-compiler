@@ -3280,3 +3280,157 @@ Not met means withdrawal; the criterion is not renegotiated.
    V-4's allocator will need exactly that model.
 2. Do not start deleting `LDR`/`STR` to make 88 bigger: that changes behaviour (faults / volatile).
 3. Do not reuse the compiler's `lv_pass`/`di_*` code or constants in the adjudicating oracle.
+
+## 36 V-4 slice 1: measurements and verdict (2026-11-26, recorded after the run; `-fopt-deadins` true CFG liveness)
+
+The rule frozen in §35 was implemented without changing a word. This section records the **numbers
+the run produced**, the **five modelling root causes**, two earlier judgements that had to be
+corrected, one bound that had to be withdrawn, and why **the baseline numbers of five gates had to be
+replaced**.
+
+### 36.1 Measurements (criterion of §35.3, unchanged)
+
+| Arm | off | on | delta |
+|---|---|---|---|
+| BASE (33 flags, incl. `-fopt-deadins`) | 10,266 | **10,106** / 371,771 B | -160 |
+| best arm (BASE + chainfold + pushpop + remat) | 9,754 | **9,588** / 354,989 B | -166 |
+
+- **Criterion §35.3**: best arm <= 9,660 - 68 = **9,592**. Actual **9,588**, **met, margin 4**.
+- **The old implementation** removed only 94 lines on the same arm (10,172 -> 9,660 in the best arm);
+  the new one removes **160**, a net **166** in the best arm.
+- **Per file (BASE arm, 160 lines)**: `stm32f4xx_hal_rcc.c` 96, `stm32f4xx_hal_rcc_ex.c` 30,
+  `stm32f4xx_hal_dma_ex.c` 20, `stm32f4xx_hal_pwr_ex.c` 12, `stm32f4xx_hal_flash.c` 2.
+- **The other two clauses of §35.3**: in the best arm both arms agree on `PUSH` 383/383,
+  `POP` 386/386, `STR` 935/935, i.e. **delta = +0/+0/+0**; `tests/arm_exec/` returns 4 in both arms
+  and the image does not grow (1,164 / 1,148 B).
+- **Independent oracle containment**: all 95 TUs, **160 deletions, unjustified = 0** (gate item 2b;
+  `tests/di_oracle.py` splits blocks itself, runs its own fixed point and decides flags from the
+  encoding, sharing no code and no constants with the compiler).
+
+### 36.2 The five modelling root causes (without these the number cannot move; all are implementation errors, not scope changes)
+
+1. **`IT` blocks were treated as barriers.** The old code made the whole block a barrier because "flag
+   semantics under `IT` are messy", so even obviously dead writes inside the block survived. `IT`/`ITE`
+   are no longer barriers; the block is still **skipped whole for deletion** (§35.1 rule 3 unchanged),
+   but liveness of the blocks after it is computed normally.
+2. **Conditional branches were not in the CFG.** `lv_branch_kind` knew only `B`/`BX`, so
+   `BEQ`/`BNE`/`CBZ` did not end a block, successors were missing, `live_out` fell back to "all live",
+   and no cross-block work happened at all. Conditional branches now end a block, with successors =
+   the branch target plus the following instruction.
+3. **Conditional data-processing instructions counted as neither "write" nor "may write flags".**
+   `MOVEQ`/`ADDEQ`/... (83 mnemonics) were added to `di_is_cond_dp`, and `UDIV`/`SDIV` were added to
+   `di_known` (they are pure writes; before, they fell into the unknown-mnemonic barrier).
+4. **`di_may_wf` treated `CMP` as a flag *reader*.** This is the one that moved the count from 22 to
+   160: the old code used `di_may_wf` when propagating a block's exit `needf` to decide whether a
+   successor consumes flags, but `CMP` *writes* flags and does not read them, so every `CMP` forced
+   `needf` true and every earlier flag-writing dead write was preserved. Now `fr` is set only when
+   `di_reads_flags(m) || di_is_cond_dp(m)`.
+5. **The `vm.py` mirror was kept in step.** The Python mirror of `ark_deadins_function` was changed
+   together with the five points above, so the model and the implementation are not two independent
+   versions of the truth.
+
+### 36.3 Two earlier judgements corrected
+
+1. **The "75" bound of §35.2 is withdrawn.** That number came from `D:/tmp/bm/cf/v4_ok.py`, which is
+   unsound: the counterexample is `MOV r11, r0` at the top of `HAL_FLASH_Program`, judged dead there
+   although lines 47/58/69 read `r11`. The first version (88) of §35.2 had the same defect (blocks
+   split at labels only). **Neither bound is the basis of the criterion**; the basis is the
+   **measurement**: 160 lines in BASE, 166 in the best arm. It is written down here so that nobody
+   later treats 75 as "the expected number".
+2. **The old implementation's 94 deletions are not unsound.** An earlier warning of "92 unsound
+   deletions in the old implementation" does not survive measurement: the old implementation's 94
+   deletions, handed to `tests/di_oracle.py`, give **old-unsound = 0**. The old implementation's
+   problem was being **conservative** (its model defect made it delete too little), not wrong.
+3. Related: the earlier `best_*.s` dumps were **not stale** (they are the real text of the current
+   BASE arm); the "stale" verdict came from comparing against the wrong arm.
+
+### 36.4 Gate rework: item 4 used to be a false green
+
+`src/backend/arm/backend_arm.c` has `if (fn_user_asm) goto arm_skip_frame_opts;` right after
+`arm_skip_text_opts:` -- **a function containing inline assembly skips the entire text-pass chain**.
+So the four inline-assembly fixtures of gate item 4 (`di_flags`/`di_read`/`di_it`/`di_barrier`) were
+**green for the wrong reason**: the pass never ran, so of course the bytes did not change.
+
+Two honest consequences:
+
+- Item 4 is reworded to "**a function holding user assembly is byte-identical**", with the reason
+  written in the `CLASH` header comment; a fifth fixture `di_flagcross` (flags across a branch) was
+  added.
+- Coverage of "the pass's liveness rule" moved to the two places that actually reach it: item 0
+  (**oracle self-test**, six hand-written assembly cases covering both directions: cross-block flag
+  `CMP` kept, cross-block dead write removed, write kept when a successor reads it, same-block
+  overwrite removed, the first of two `CMP`s removed) and item 2b (**containment of all 160 corpus
+  deletions**). No inline-assembly fixture can carry cross-block coverage, because none of them
+  enters the pass.
+
+A new item 4b pins one **encoding fact** that decides how rule 4 must be written: this assembler
+emits the register forms of `AND/ORR/EOR/BIC/MVN` as the **16-bit S form** (`ANDS` 0x4000 etc.,
+**which writes flags**); `ADD/SUB` use the S forms 0x1800/0x1A00 for low registers and 0xEB10/0xEBB0
+for high registers (no flags); only `MOV Rd, Rm` (0x4600), `MOVW` and `MOVT` leave flags alone, and
+`MOV Rd, #imm` with Rd<=7, imm<=255 is `MOVS`. The fixture is
+`MOV r0,#3; MOVW r1,#1; CMP r1,#1; AND r0,r1; IT EQ; MOVEQ r0,#7; B .Lenc_spin`, spins at the end and
+reads r0 under a small instruction budget, expecting `('limit', 1)` (the `AND` sets flags, `IT EQ`
+holds, `MOVEQ` fires). It spins instead of using `BX lr` because a mid-function `BX lr` does not pop
+the stack and misaligns the caller's SP (measured: `limit` / `UcError`).
+
+### 36.5 Gate baselines affected (recorded as "numbers replaced", not "criterion relaxed")
+
+BASE now carries `-fopt-deadins` and deletes more, so **every gate that pins the whole-corpus total**
+has to be renumbered. This is the **necessary consequence of an intended change**; the criterion of
+§35.3 was not touched and is met (9,588 <= 9,592, margin 4).
+
+| Combination | new (insn / bytes) | old |
+|---|---|---|
+| BASE | 10,106 / 371,771 | 10,172 / 372,761 |
+| BASE + `-fopt-pushpop` | 10,059 / 371,354 | 10,125 / 372,344 |
+| BASE + `-fopt-chainfold` | 9,750 / 357,713 | 9,822 / 358,964 |
+| BASE + `-fno-opt-birthdest` | 10,264 / 374,141 | 10,330 / 375,131 |
+| BASE + `-fopt-addrfold` | 10,068 / 371,040 | 10,134 / 372,030 |
+| BASE + `-fopt-remat` | 9,991 / 369,464 | 10,057 / 370,454 |
+| BASE + cf + pp (stack) | 9,703 / 357,296 | 9,775 / 358,547 |
+| BASE + cf + pp + remat (best arm) | 9,588 / 354,989 | 9,660 / 356,240 |
+| BASE + addrfold + cf + pp | 9,665 / 356,565 | 9,737 / 357,816 |
+
+The change lands in the constants and docstrings of `tests/run_addrfold_tests.py`,
+`run_chainfold_tests.py`, `run_pushpop_tests.py`, `run_movtpair_tests.py` and `run_remat_tests.py`.
+**The chain-fold per-file and structural numbers move too** (the input text of
+`stm32f4xx_hal_dma_ex.c` changed once deadins removed 20 more lines): folds **178** (was 175),
+`stm32f4xx_hal_dma_ex.c` **1,669 / 70,203 -> 1,313 / 56,145**, run-size distribution
+**`{4: 58, 3: 2}`** (was `{4: 56, 3: 3, 2: 1}`), corpus layers **249** (was 247), refusal reasons
+`extend` **178** / `no_following_layer` **24**. The total is still 9,750 / 357,713 -- **the number of
+folds changed while the folded total did not**, because the three extra rewrites are extra dead layers
+that deadins had been covering at the same place.
+
+**Two more places changed for a real reason, not for a number:**
+
+- **ladder**: `-fopt-deadins` runs *before* `-fopt-ladderload`/`-fopt-ladderstage` and removes those
+  **246 staging copies** itself (they are dead writes), so "the staging switch removes 246 lines"
+  becomes **0** on the real stack, and deadins first cuts the fixture from 2,052 to 1,786. Two things
+  were done together: (1) the ladder gate's arms are built with `-fno-opt-deadins` so the pass under
+  test stays visible -- `98 / 246 / 344` and the off arm 2,052 / on arm 1,708 are **unchanged** (they
+  are the pass's own numbers, independent of upstream); (2) a **new check** pins the composition on
+  the real stack: with deadins on the same fixture is **1,786 -> 1,688**, the staging switch has
+  nothing left to do and only the 98 reloads go. Both statements are honest: the pass is still
+  verified on its own, and the interaction is pinned. In total it still improves: old stack
+  2,052 -> 1,708, new stack 2,052 -> **1,688** (deadins takes 20 more).
+- **regbirth**: the corpus S15 total **10,347 / 375,454 -> 10,281 / 374,464** (the same BASE re-pictured);
+  its `A=158 / B=17 / both 175` and the three per-TU numbers **did not change**.
+
+### 36.6 Residuals, and how not to read this
+
+1. **In-block `needf = 0` start**: the backward walk inside `ark_deadins_function` starts `needf` at 0
+   for each block, so in theory a flag-writing instruction could be removed while an earlier `CMP` in
+   the *same* block is read by a later `Bcc`. It does not occur on the 95 TUs (two of the item-0
+   oracle cases test exactly this), but it is a known theoretical unsoundness; the next slice either
+   adds an "already-seen flag read in this block" constraint or proves it unreachable.
+2. **No `LDR`/`STR` deletion**: they can fault and can read volatile memory. The boundary of §35.1
+   rule 5 is unchanged.
+3. **Do not read 160 / 166 together with the 75 of §35.2**: 75 is a withdrawn estimate (see 36.3),
+   160 is a measurement. They are not the same thing, and neither "beat the expectation" nor
+   "missed the target" follows from either.
+4. **Do not read 36.5 as relaxing the criterion**: the threshold (9,592) and "PUSH+POP must not grow,
+   no new STR" were frozen before implementation and were not renegotiated after the run. Only the
+   **reference picture** was replaced.
+5. **Not yet on the STM32H743 board**: the evidence here is a host build, whole-corpus text and
+   tiny-image execution under unicorn. Board acceptance stays deferred per "finish the compiler
+   first, then bring it up on the board".

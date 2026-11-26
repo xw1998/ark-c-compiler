@@ -17,15 +17,15 @@ What this gate pins:
 
   1. OFF IS OFF.  All 95 translation units of the corpus, with the switch
      off, come out byte-identical to the same build with
-     `-fno-opt-addrfold` -- both on the 31-flag baseline (10,172
-     instructions / 372,761 bytes) and on the S17+S19-a stack (9,775 /
-     358,547).
+     `-fno-opt-addrfold` -- both on the 31-flag baseline (10,106
+     instructions / 371,771 bytes) and on the S17+S19-a stack (9,703 /
+     357,296).
   2. IT FIRES, AND ONLY BY THE RULE.  The switch-on text is compared against
      `tests/af_oracle.py` -- a second implementation of both rules that
      shares no code and no constants with the compiler, and re-derives the
      basic blocks and the liveness itself -- and comes out byte-identical for
      all 95 units on both arms: 38 sites, 24 of rule A and 14 of rule B, and
-     exactly 38 instructions fewer (10,134 / 372,030 and 9,737 / 357,816).
+     exactly 38 instructions fewer (10,068 / 371,040 and 9,665 / 356,565).
   3. EVERY SITE IS RE-PROVED FROM THE SWITCH-ON TEXT.  Walking the two texts
      with a cursor: the first line of each pair is gone, the second carries
      exactly the sum of the two offsets on the first line's base register,
@@ -80,14 +80,14 @@ FLAG = ['-fopt-addrfold']
 NOFLAG = ['-fno-opt-addrfold']
 STACK = ['-fopt-chainfold', '-fopt-pushpop']
 
-WANT_OFF_INSNS = 10172
-WANT_OFF_BYTES = 372761
-WANT_ON_INSNS = 10134
-WANT_ON_BYTES = 372030
-WANT_STACK_INSNS = 9775
-WANT_STACK_BYTES = 358547
-WANT_STACK_ON_INSNS = 9737
-WANT_STACK_ON_BYTES = 357816
+WANT_OFF_INSNS = 10106
+WANT_OFF_BYTES = 371771
+WANT_ON_INSNS = 10068
+WANT_ON_BYTES = 371040
+WANT_STACK_INSNS = 9703
+WANT_STACK_BYTES = 357296
+WANT_STACK_ON_INSNS = 9665
+WANT_STACK_ON_BYTES = 356565
 
 WANT_SITES = 38
 WANT_A = 24
