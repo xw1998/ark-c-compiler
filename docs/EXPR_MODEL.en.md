@@ -1257,3 +1257,136 @@ The gate currently has 18 checks, all green.
 4. Do not generalise "per-function exemption" into "per-module / per-file": the decision point
    is `IR_ASM` appearing in **this** function, and other functions in the same file are
    optimised as usual (check 4 pins this).
+
+## 17 S15 pre-registration: local redundancy inside a compare ladder (frozen 2026-11-26, before implementation)
+
+After section 13 closed the text layer and sections 14/15 landed, the only large region of the
+corpus still untouched by any switch is the compare ladder inside
+`HAL_DMAEx_MultiBufferStart_IT` -- nineteen `(uint32_t)hdma->Instance == DMA1_StreamN ? FLAG : ...`
+ternary chains expanded from `__HAL_DMA_GET_xx_FLAG_INDEX`. This section freezes the **measured
+bound**, then why the big-looking number is **not reachable**, then a slice that only deletes.
+
+### 17.1 Bound (measured read-only on this host, 2026-11-26)
+
+Baseline: the S13/S14 figure **10,691 insns / 381,202 B** (26 switches + `spill` + `ldhoist` +
+`stackframe` + `deadins`). Scripts `D:/tmp/bm/chainsel_ub2.py` (generalised ladder census) and
+`D:/tmp/bm/laddertrim_ub.py` (reachable bound).
+
+**Ladder census** (a layer = `LDR Rc, .Llit_k` + `CMP Rd, Rc` + `BNE Lnext` + value
+materialisation + `B Ljoin`, where `Lnext` is the next layer):
+
+| Quantity | Measured |
+| --- | ---: |
+| Ladders | 24 |
+| Layers | 249 |
+| Instructions inside ladders | **1,607** (15.03% of 10,691) |
+| of which `stm32f4xx_hal_dma_ex.c` | 21 ladders / 1,555 |
+| of which `stm32f4xx_hal_gpio.c` | 2 ladders / 50 |
+| Ladders sharing the same 12-key sequence (in dma_ex) | **17** |
+
+Layers come in two shapes, **mixed inside one ladder**:
+
+- **Shape A (5 insns)**: `LDR Rc, .Llit_k` / `CMP Rd, Rc` / `BNE Lnext` / `MOV|MOVW Rv, #imm` / `B Ljoin`.
+- **Shape B (8 insns)**: `LDR Rb, [Rn, #0]` / `LDR Rc, .Llit_k` / `CMP Rd, Rc` / `MOV Rv, Rd` /
+  `MOV R?, Rc` / `BNE Lnext` / value materialisation / `B Ljoin`.
+
+### 17.2 Why the bound is 337 and not 1,607 (frozen; the earlier estimate is refuted by measurement)
+
+The estimate given to the user earlier was "bound -1,781 insns / 16.7%". That was a **static
+count**, not a reachable quantity. The real money in the 1,607 is **sharing across statements**:
+the 17 ladders compare the same `hdma->Instance` (`LDR Rb, [r8, #0]`) against the identical key
+sequence, differing only in the value. Collapsing them into "compute the index once, then five
+table lookups" is exactly gcc's 292-instruction route (`D:/tmp/bm/gccmulti.s`).
+
+**That rewrite is not admissible in this compiler.** Sharing requires `*(r8 + #0)` (the compared
+instance pointer) to be unchanged between two ladders, and between two ladders there is precisely
+`STR Rv, [r1, #0]` -- a write to `DMA1/2->IFCR`. The text layer has **no alias information** and
+cannot prove that write does not land on `*(r8 + #0)`. gcc can, because it has types and path
+information (the store target is a named peripheral object, the load is a member read through a
+pointer). Under "report an error rather than give a wrong answer", cross-statement sharing is
+refused outright and **not implemented**.
+
+What remains reachable is redundancy **inside a single ladder**. Between two adjacent layers of a
+ladder there is **no memory access and no call** (only `LDR` of a literal, `CMP`, `MOV`, `Bcc`,
+`B`), so the following two deletions are provable:
+
+| Rule | Measured | Share of 10,691 |
+| --- | ---: | ---: |
+| `-fopt-ladderload`: duplicate load `LDR Rb, [Rn, #0]` from layer 2 on | 98 | 0.92% |
+| `-fopt-ladderstage`: dead staging `MOV Rx, Ry` in front of `BNE` | 239 | 2.24% |
+| **Total** | **337** | **3.15%** |
+
+Both live in `stm32f4xx_hal_dma_ex.c` (98 / 239); every other TU contributes 0.
+
+### 17.3 The two rules (frozen)
+
+First recognise a **ladder**: three or more layers of the shape
+`[LDR Rb, [Rn, #0]]?` / `LDR Rc, .Llit_k` / `CMP Rd, Rc` / `MOV Rx, Ry`{0,1,2} / `BNE Lnext` /
+`MOV|MOVW Rv, #imm` (or `LDR Rv, .Llit`) / `B Ljoin`, where the label `Lnext` is immediately
+followed by the next layer of the same shape. `Rd` and `Rv` are constant across one ladder; fewer
+than 3 consecutive layers is left alone.
+
+**`-fopt-ladderload`**: layer k >= 1 starts with `LDR Rb, [Rn, #0]` with the **same register pair**
+as layer 0's load, and between layer 0 and layer k there is **no** `STR/STRB/STRH/STM/LDM/PUSH/
+POP/BL/BLX` and no other write to `Rb` or `Rn` => delete that load. (`B` does not count as a
+barrier: it jumps to `Ljoin` and cannot re-enter the ladder.)
+
+**`-fopt-ladderstage`**: a layer has one or two `MOV Rx, Ry` immediately before its `BNE Lnext`,
+and `Rx` is **written before it is read in both successors** (the taken block = the first
+instruction after `Lnext`; the fall-through block = this layer's value materialisation or the next
+layer's first write), and nothing sits between those `MOV`s and the `BNE` => delete them. (`MOV`
+without `S` does not touch the flags.)
+
+**Refusals (frozen)**: fewer than 3 layers; `Rd`/`Rv` changing between layers; whatever follows
+`Lnext` is not the next same-shaped layer (i.e. the ladder is interrupted); the `BNE` target is not
+the immediately following label; any `IT` at either end; a missing `Ljoin` or a `Ljoin` that is not
+`B`; any unparsed line in the function (`ld_scan` failure).
+
+### 17.4 Criteria (frozen, fixed before the run, not to be re-read afterwards)
+
+Against **10,691 insns**:
+
+| Hits | Verdict |
+| --- | --- |
+| >= 214 (>= 2.0%) | **landing**: both switches stay, default off, added to the README flag table |
+| 107 - 213 | **registered tier**: switches stay, default off, not in the recommended set |
+| < 107 | **withdrawn**: keep only the measurements in this section, revert the code |
+
+The metric is the **static instruction count**, as in sections 14/15. This slice does not change
+the dynamic execution count (it deletes a duplicate load and dead staging, neither of which alters
+the path taken), so no dynamic cost has to be registered -- unlike the "table + loop" rewrite
+refused in 17.2, which would have to register one.
+
+### 17.5 Anti-false-green (frozen, four checks, all must pass)
+
+1. **OFF IS OFF**: with both switches off, the 95 TUs' `.s` files are **byte-identical** to
+   `10,691 / 381,202 B`.
+2. **Must fire**: on the real TU (`stm32f4xx_hal_dma_ex.c`, 26 switches + the four above), three
+   arms (load only / stage only / both) are compared line by line against the off arm:
+   - load only: every deleted line is a `LDR Rb, [Rn, #0]` of layer 2 or later, count **= 98**,
+     and each ladder still has exactly one load at its entry;
+   - stage only: every deleted line is a `MOV Rx, Ry` immediately in front of a `BNE`,
+     count **= 239**, and the relative positions of every `CMP`/`BNE` are unchanged;
+   - both: **337** lines deleted, and **no line added or rewritten** (delete only).
+3. **Must not fire**: `stm32f4xx_hal_gpio.c` (same corpus, also shape A, but no duplicate load and
+   no staging) is byte-identical; the 4-layer shape-A ladder in `stm32f4xx_ll_utils.c` (ladders
+   shorter than 3 are untouched); and a hand-written **pure C** fixture whose three-layer ladder
+   has its value register **read before it is written** in both successors -- off and on arms
+   byte-identical (this pins "it does not delete every MOV it sees").
+4. **Semantics**: a `unicorn` differential on the real function -- set `hdma->Instance` to each of
+   the 19 key constants and to one non-matching value, map the `0x40000000` region as writable RAM,
+   call `HAL_DMAEx_MultiBufferStart_IT`, and compare the return value, `hdma`'s `State` /
+   `ErrorCode` fields and the contents of the written addresses between the off and on arms:
+   all 20 inputs equal. `make test` must also be green.
+
+### 17.6 Readings that are not allowed (frozen)
+
+1. Do not call the 1,607 "the S15 bound": that is a static count. The reachable bound is **337**,
+   and the difference is the alias proof in 17.2, not "still to do".
+2. Do not read 17.2's refusal of cross-statement sharing as "S15 is worthless": 337 insns = 3.15%,
+   a landing tier under 17.4, and it is **pure deletion** -- no path change, no new register, no
+   literal-pool churn.
+3. Do not describe these two rules as "register allocation" or "CSE": they only delete instructions
+   that are provably redundant **inside one ladder**; nothing is shared across ladders.
+4. Do not relax "written before read in both successors" in `-fopt-ladderstage`: dropping one half
+   deletes a live value, and that rule is the whole correct-by-construction argument of this slice.
