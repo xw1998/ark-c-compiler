@@ -2747,6 +2747,159 @@ static void ark_addrfold_function(AsmBuffer *b, int from, unsigned retmask) {
 #endif /* ARKCC_FEATURE_OPT_LIVE */
 #endif /* ARKCC_FEATURE_OPT_COPYPROP */
 #endif /* ARKCC_FEATURE_OPT_PEEP || ARKCC_FEATURE_OPT_COPYPROP || ARKCC_FEATURE_OPT_LIVE */
+#if ARKCC_FEATURE_OPT_REMAT
+/* ------------- same-value re-materialisation (-fopt-remat) ----------------
+ * A register that already holds a constant is not made to hold it again:
+ *
+ *     MOV|MOVW rX, #imm        (or)      LDR rX, .Llit_k
+ *     ...                    nothing writes rX, no branch can be entered ...
+ *     MOV|MOVW rX, #imm        (or)      LDR rX, .Llit_k      <- deleted
+ *
+ * What must hold, and why (docs/EXPR_MODEL.md section 31.2):
+ *   - the value is the same: mnemonic and every operand text identical, so
+ *     `MOV` and `MOVW` are not interchangeable and no immediate is ever
+ *     re-lexed as a number;
+ *   - nothing in between writes rX (`lv_rw`'s write set), so the register
+ *     still holds the value at the second line;
+ *   - the region is straight line: it ends at any branch, return or call
+ *     (`lv_branch_kind` != 0, `lv_ends_block`, which covers `POP {..., pc}`)
+ *     and at any label a branch can land on.  A label nothing branches to can
+ *     only be reached by falling through, so it is transparent -- that is
+ *     where most of these sites are (the chainfold labels this compiler
+ *     emits are unreferenced by construction);
+ *   - neither line sits under an IT: the conditional instruction count
+ *     cannot change;
+ *   - `MOV`/`MOVW`/`LDR` from the pool write no flags, so deleting one
+ *     changes nothing a flag consumer can see.
+ *
+ * Only literal-pool loads (`.Llit...`) count as materialising a constant;
+ * `LDR rX, [rY, #imm]` reads memory and is never a candidate.  One pass is
+ * enough: deleting a duplicate cannot create another one. */
+#define RM_MAX_LABELS 1024
+
+/* Is this instruction putting a constant value into a register?  `key`
+ * identifies the value (and the mnemonic, so MOV/MOVW never mix). */
+static int rm_ident(const cp_ins *o, int *rx, char *key, int keysz) {
+    int r;
+    if (o->nops != 2) return 0;
+    if (!cp_reg(o->op[0], &r)) return 0;
+    if (r < 0 || r > 12) return 0;
+    if (!strcmp(o->mn, "MOV") || !strcmp(o->mn, "MOVW")) {
+        if (o->op[1][0] != '#' || !o->op[1][1]) return 0;
+        snprintf(key, keysz, "%s %s", o->mn, o->op[1]);
+        *rx = r;
+        return 1;
+    }
+    if (!strcmp(o->mn, "LDR")) {
+        if (strncmp(o->op[1], ".Llit", 5)) return 0;
+        snprintf(key, keysz, "LDR %s", o->op[1]);
+        *rx = r;
+        return 1;
+    }
+    return 0;
+}
+
+static void ark_remat_function(AsmBuffer *b, int from) {
+    static int ls[PP_MAX_LINES], ll[PP_MAX_LINES];
+    static cp_ins iv[PP_MAX_LINES];
+    static unsigned char kd[PP_MAX_LINES], it[PP_MAX_LINES];
+    static unsigned char rref[PP_MAX_LINES], dl[PP_MAX_LINES];
+    static char lab[RM_MAX_LABELS][40];
+    static int labln[RM_MAX_LABELS];
+    static char t[256], key[128], key2[128];
+    AsmBuffer out;
+    int n, i, j, k, q, nlab = 0, changed = 0;
+
+    n = pp_split_lines(b, from, ls, ll, PP_MAX_LINES);
+    if (n < 0) return;
+    for (i = 0; i < n; i++) {
+        int L;
+        kd[i] = 0; it[i] = 0; rref[i] = 0; dl[i] = 0;
+        if (ll[i] >= (int)sizeof t) continue;
+        if (pp_trim(b->buf + ls[i], ll[i], t, sizeof t) < 0) continue;
+        if (!t[0] || t[0] == ';' || t[0] == '@') continue;
+        L = (int)strlen(t);
+        if (L > 0 && t[L - 1] == ':') {
+            if (nlab >= RM_MAX_LABELS) return;      /* refuse, do not guess */
+            for (k = 0; k < L - 1 && k < 39; k++) lab[nlab][k] = t[k];
+            lab[nlab][k] = 0;
+            labln[nlab] = i;
+            nlab++;
+            kd[i] = 2;
+            continue;
+        }
+        if (t[0] == '.') continue;                  /* directive */
+        if (cp_parse(t, &iv[i])) kd[i] = 1;
+    }
+    /* Which labels a branch can land on.  Everything that is not a register
+     * counts as a possible label, literal-pool labels included: marking one
+     * too many only makes the scan stop earlier. */
+    for (i = 0; i < n; i++) {
+        if (kd[i] != 1) continue;
+        for (q = 0; q < iv[i].nops; q++) {
+            const char *p = iv[i].op[q];
+            int m;
+            if (!p[0] || p[0] == '#' || p[0] == '[') continue;
+            if (lv_regs(p)) continue;
+            for (m = 0; m < nlab; m++)
+                if (!strcmp(lab[m], p)) { rref[labln[m]] = 1; break; }
+        }
+    }
+    /* Instructions under an IT are conditional: never a candidate. */
+    for (i = 0; i < n; i++) {
+        if (kd[i] != 1) continue;
+        if (iv[i].mn[0] == 'I' && iv[i].mn[1] == 'T' &&
+            (iv[i].mn[2] == 0 || iv[i].mn[2] == 'T' || iv[i].mn[2] == 'E')) {
+            int cnt = (int)strlen(iv[i].mn) - 1, c = 0;
+            for (j = i + 1; j < n && c < cnt; j++) {
+                if (kd[j] == 2) break;
+                if (kd[j] == 1) { it[j] = 1; c++; }
+            }
+        }
+    }
+    asmbuf_init(&out);
+    i = 0;
+    while (i < n) {
+        int rx, ndel = 0;
+        char key0[128];
+        if (kd[i] == 1 && !it[i] &&
+            rm_ident(&iv[i], &rx, key0, sizeof key0)) {
+            for (j = i + 1; j < n; j++) {
+                unsigned rd, wr;
+                int rx2;
+                if (kd[j] == 2) {
+                    if (rref[j]) break;             /* a branch can land here */
+                    continue;                       /* fallthrough only */
+                }
+                if (kd[j] != 1) continue;           /* directive */
+                if (it[j]) break;
+                if (lv_branch_kind(iv[j].mn) != 0 || lv_ends_block(&iv[j])) break;
+                if (rm_ident(&iv[j], &rx2, key2, sizeof key2) &&
+                    rx2 == rx && !strcmp(key2, key0)) {
+                    dl[j] = 1;
+                    ndel++;
+                    continue;
+                }
+                lv_rw(&iv[j], &rd, &wr);
+                if (wr & lv_bit(rx)) break;         /* rX no longer holds it */
+            }
+            if (ndel) {
+                for (k = i; k < j; k++) {
+                    if (dl[k]) { dl[k] = 0; continue; }
+                    pp_copy_line(&out, b->buf + ls[k], ll[k]);
+                }
+                changed++;
+                i = j;
+                continue;
+            }
+        }
+        pp_copy_line(&out, b->buf + ls[i], ll[i]);
+        i++;
+    }
+    if (changed) pp_splice(b, from, &out);
+}
+#endif /* ARKCC_FEATURE_OPT_REMAT */
+
 
 #if ARKCC_FEATURE_OPT_SPILL && ARKCC_FEATURE_OPT_LIVE
 /* ------------- cross-block stack round trips (-fopt-spill) ---------------
@@ -18208,6 +18361,14 @@ arm_skip_text_opts:
          * docs/EXPR_MODEL.md section 30. */
         if (g_config.enable_opt_addrfold)
             ark_addrfold_function(&buf, fstart, ark_ret_mask(f->ret_type));
+#endif
+#if ARKCC_FEATURE_OPT_REMAT
+        /* S21, same-value re-materialisation, last of all: a register that
+         * already holds a constant is not made to hold it again.  It reads
+         * the final text and nothing below re-derives what it read, so its
+         * output is exactly the rule applied to the switch-off text; see
+         * docs/EXPR_MODEL.md section 31. */
+        if (g_config.enable_opt_remat) ark_remat_function(&buf, fstart);
 #endif
 arm_skip_frame_opts:
 

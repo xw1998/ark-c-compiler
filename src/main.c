@@ -684,6 +684,14 @@ int main(int argc, char **argv) {
             return 1;
         }
 #endif
+#if !ARKCC_FEATURE_OPT_REMAT
+        else if (strcmp(a, "-fopt-remat") == 0) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: -fopt-remat is not compiled into "
+                    "this build (rebuild with -DARKCC_FEATURE_OPT_REMAT=1)\n");
+            return 1;
+        }
+#endif
 #if !ARKCC_FEATURE_OPT_FRAME
         else if (strcmp(a, "-fopt-frame") == 0) {
             fprintf(stderr,

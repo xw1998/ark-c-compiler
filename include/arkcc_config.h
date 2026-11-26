@@ -431,6 +431,18 @@
 # endif
 #endif
 
+/* ARKCC_FEATURE_OPT_REMAT: -fopt-remat, S21 same-value re-materialisation --
+ * a register that already holds a constant is not made to hold it again
+ * (docs/EXPR_MODEL.md section 31).  Text level, no liveness needed, but it
+ * only pays off on a real function body, so the board profile drops it. */
+#ifndef ARKCC_FEATURE_OPT_REMAT
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_OPT_REMAT 0  /* 板上裁掉：只在宿主/交叉编译用 */
+# else
+#   define ARKCC_FEATURE_OPT_REMAT 1
+# endif
+#endif
+
 /* ARKCC_FEATURE_OPT_VOLDBM: -fopt-voldmb, elide the DMB SY pair around a
  * volatile access to a frame slot whose address this function never takes.
  * A barrier orders memory transactions as seen by *another* observer; with

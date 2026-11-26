@@ -2817,3 +2817,172 @@ eaten by A first, so B can no longer fire on the original shape (composition, no
    `basefold` needs `imm > 0` and a multiple of 4, `rB` serving that one access, and no
    label/branch/call in between; rule B allows `k1` not a multiple of 4 and `k2 > 0`, and its
    only liveness requirement is "`rA` dead afterwards".
+
+## 31 V-1's premise, measured and withdrawn; S21 pre-registration: same-value re-materialisation removal (2026-11-26, frozen before implementation)
+
+### 31.1 Why V-1 (constant/address residency) is withdrawn
+
+The criterion section 29.3 froze for V-1: whole-corpus instruction count **<= 9,775 - 150**,
+with the `PUSH`+`POP` total not increasing. The withdrawal is about the **ceiling**, not about
+feasibility:
+
+- Probe 1 of 29.1 had already measured residency to exhaustion: to pin a constant or address
+  across blocks a function needs a register **not mentioned anywhere in the function body** that
+  the prologue has saved with `PUSH`. Only `r9`/`r10`/`r11` are such registers, and the whole
+  corpus yields **40** of them (39 functions, the largest a single function with 14).
+- To make sure the probe was not simply conservative, this round measured a weaker rule of the
+  same family (the same register re-materialising the same value): **124** sites
+  (60 x `MOV|MOVW rX, #imm`, 64 x `LDR rX, .Llit_k`), spread over 38 files, led by
+  `main.c` 19, `stm32f4xx_hal_flash.c` 18, `stm32f4xx_hal_dma.c` 16,
+  `stm32f4xx_hal_flash_ex.c` 14, `stm32f4xx_hal_rcc.c` 13.
+
+164 together would clear 150, but they are **two different rules**: residency means "hold it in
+another register", re-materialisation removal means "the register already holds this value".
+V-1's frozen criterion only counts residency, and residency tops out at 40. Under 29.3's hard
+constraint 4 (fail the criterion, withdraw, do not move the goalposts) **V-1 is withdrawn and
+not implemented**.
+
+Note: what can be saved among the 828 `.Llit` loads is not "the number of loads" but "whether a
+register can hold it across blocks", as 29.2 already argued; 40 is the end of that road. The real
+answer is V-3 (the allocator), not V-1.
+
+### 31.2 S21 pre-registration: `-fopt-remat` (same-value re-materialisation removal)
+
+**Rule (text level, frozen)**: after an instruction that puts a **constant value** into a register,
+
+```
+    MOV|MOVW rX, #imm       or       LDR rX, .Llit_k
+```
+
+if `rX` is not written, and **on the same straight line** the **identical instruction** appears
+again (same mnemonic, same operands), the later one is deleted -- the register already holds
+that value.
+
+**Guards (frozen, one per implementation check)**:
+
+1. **Straight line**: scanning forward from the first one stops at a **referenced** label (a
+   label no branch references can only be reached by falling through, so it is transparent) and
+   stops at any branch/return/call (`B*`/`CBZ`/`CBNZ`/`BL`/`BLX`/`BX`, `POP {..., pc}`).
+2. **IT blocks**: stop if the first instruction or the candidate sits under an IT (the
+   conditional instruction count cannot change).
+3. **Writers**: stop at any instruction that writes `rX` (it no longer holds that value); reads
+   of `rX` in between do not matter (the value is unchanged).
+4. **Same value**: mnemonic and every operand text identical (`MOV` and `MOVW` are not
+   interchangeable, nor are `#5` and `#0x5` -- the latter never appears from this emitter).
+5. **Flags untouched**: `MOV`/`MOVW`/`LDR` write no flags, so deleting them changes nothing any
+   consumer of the condition codes can observe.
+6. Both instructions must be inside the same function body (the pass runs per function).
+
+**Criterion (frozen)**: whole corpus (`BASE`+`chainfold`+`pushpop` = 9,775) must end at
+**<= 9,675 instructions (i.e. >= 100 deleted)**, with the `PUSH`+`POP` total not increasing.
+The census predicts **124**. Fail the criterion, withdraw.
+
+**Anti-false-green (frozen)**:
+
+1. OFF IS OFF: with the switch off, all 95 TUs are byte-identical.
+2. An independent second implementation reproduces both arms (`tests/rm_oracle.py`), drift=0.
+3. Every site re-proved item by item: nothing in between writes `rX`, no referenced label, no
+   branch, and after deleting the line the value is still in the register.
+4. Must-refuse fixtures: `rm_write` (a write to `rX` in between), `rm_branch` (a conditional
+   branch in between), `rm_ref_label` (a referenced label in between), `rm_it` (under an IT),
+   `rm_diff` (the second one is a different value).
+5. Must-accept fixtures: one `MOV rX, #imm` and one `LDR rX, .Llit`.
+6. A `unicorn` differential with the same value and the same RAM snapshot; the cropped build
+   refuses the switch by name (`C3900U`).
+
+**Cropping**: the new switch is off by default, `ARKCC_FEATURE_OPT_REMAT`, `STM32_MIN` profile 0.
+
+### 31.3 How not to read this
+
+1. Do not read 124 as "V-1 met its criterion": V-1 froze residency (ceiling 40); this is a
+   different rule and it is numbered S21.
+2. Do not quote "164 together" as the win of one rule.
+3. Do not treat this rule as a substitute for constant residency: it only holds when the same
+   register already carries the same value; reuse across registers is still the allocator's job.
+
+## 32 S21 landed: readings and verdict (2026-11-26, written after the run; `-fopt-remat`)
+
+### 32.1 Readings
+
+The rule and its guards are exactly the ones frozen in 31.2; the implementation is
+`ark_remat_function` (`backend_arm.c`), called at the **end of each C function's text pass**
+(after `-fopt-addrfold`). Both baselines were measured:
+
+| baseline | off | on | delta |
+| --- | --- | --- | --- |
+| `BASE` (31 flags) | 10,172 insns / 372,761 B | **10,057 insns / 370,454 B** | -115 insns / -2,307 B |
+| `BASE` + `-fopt-chainfold` + `-fopt-pushpop` | 9,775 insns / 358,547 B | **9,660 insns / 356,240 B** | -115 insns / -2,307 B |
+
+- Both baselines delete the **same 115 lines**: 53 `MOV`, 62 `LDR rX, .Llit_k`.
+- `PUSH` 383 / `POP` 386, identical in both arms (the "must not grow" half of the criterion).
+- Against armcc5's 5,619 insns on the same corpus: 9,775 / 5,619 = 1.740x -> 9,660 / 5,619 =
+  **1.719x**.
+- The 17 TUs holding sites: `main.c` 18, `stm32f4xx_hal_dma.c` 16, `stm32f4xx_hal_flash_ex.c` 14,
+  `stm32f4xx_hal_flash.c` 13, `stm32f4xx_hal_rcc.c` 13, `stm32f4xx_hal_rcc_ex.c` 9, `gpio.c` 8,
+  `stm32f4xx_hal.c` 7, `stm32f4xx_hal_dma_ex.c` 3, `stm32f4xx_hal_gpio.c` 3,
+  `stm32f4xx_ll_utils.c` 3, `stm32f4xx_hal_msp.c` 2, `stm32f4xx_hal_pwr_ex.c` 2,
+  `system_stm32f4xx.c` 1, `stm32f4xx_hal_cortex.c` 1, `stm32f4xx_hal_exti.c` 1,
+  `stm32f4xx_hal_pwr.c` 1.
+- The switch is **off by default** (`enable_opt_remat = 0`); `ARKCC_FEATURE_OPT_REMAT` is host 1,
+  `STM32_MIN` 0.
+
+### 32.2 The criterion
+
+31.2 froze: whole corpus (9,775 baseline) at **<= 9,675** insns (i.e. at least 100 deleted), with
+`PUSH`+`POP` not growing. Measured: **115** deleted, `PUSH`+`POP` 769 -> 769, so the criterion is
+**met** and the slice lands in the record tier (off by default, croppable). The probe used at
+freeze time predicted 124; that does not change the reading, since **115 >= 100** and no
+"withdraw if missed" clause is triggered.
+
+### 32.3 The six gate items (`make test-remat`, 31 checks, EXIT=0)
+
+1. OFF IS OFF: two baselines x 95 TUs, switch absent / `-fno-opt-remat` byte-identical; the two
+   baselines still total 10,172 / 372,761 and 9,775 / 358,547.
+2. The independent second implementation `tests/rm_oracle.py` (its own walk; it only borrows
+   `af_oracle`'s parser, read/write and branch primitives) reproduces all 95 TUs byte for byte on
+   both arms (drift=0): 115 sites = 53 `MOV` + 62 `LDR`, per-TU distribution equal to the table
+   above, and `on = off - 115`.
+3. Every site is re-proved from the **switch-off text alone**: two materialisations of the same
+   value into the same register, nothing writing that register in between (an earlier same-value
+   duplicate is itself a site and does not count as a write), no label a branch can land on, no
+   branch/return/call, neither line under an IT; and line by line, only the second line is gone
+   and nothing else moves.
+4. Six must-refuse fixtures (`write`, `branch`, `ref_label`, `it`, `diff`, `mix` -- `MOV` and
+   `MOVW` never mix) and two must-accept fixtures (one `MOV`, one `LDR .Llit`).
+5. A `unicorn` fixture: `zero_path` (four zero stores, four `MOV r0,#0` -> 3 sites) plus
+   `reg_path` (one peripheral address reloaded through `LDR r5,.Llit` -> 3 sites) plus 1 in the main
+   loop, **7 sites (4 `MOV` / 3 `LDR`)**; both arms return **248** over 8 rounds (recomputed in
+   Python from the C source) and leave the same first 256 bytes of RAM; the switch-on arm carries
+   zero sites.
+6. A cropped build (`-DARKCC_FEATURE_OPT_REMAT=0`) refuses `-fopt-remat` by name (`C3900U`) and
+   writes the same text as the full build when the switch is absent.
+
+### 32.4 Three scope facts (each one is in the gate, not a verbal convention)
+
+1. **The per-function pass cannot reach the generated TU tail**: `__arkcc_init_globals` and the
+   rest of the tail are emitted outside the function loop, so the pass never sees them; the corpus
+   holds **6** such sites (`stm32f4xx_hal_flash.c` 5, `system_stm32f4xx.c` 1). The oracle aligns
+   its scope through `generated_start()`, which cuts at the label **definition** line (not at the
+   `BL __arkcc_init_globals` the startup code emits earlier in the file -- cutting at the reference
+   would throw the whole file away); with that cut both arms drift=0 and the site count is exactly
+   115.
+2. **The strict whole-scope census is 121** (59 `MOV` + 62 `LDR`) = 115 + the 6 in the tail. The
+   124 the freeze-time probe (`v1_cse2.py`) reported differs by **3, and all three are "a first
+   line inside another site's window is skipped"**: once a group of duplicates is found the cursor
+   jumps to the end of the window, so another first line inside that window is never tried as the
+   next site (`gpio.c` 28->32 and `main.c` 98->101 for `LDR`, `stm32f4xx_hal.c` 95->98 for `MOV`).
+   Collecting those 3 would need the pass to iterate to a fixed point; the criterion is already
+   met, so this slice does not do it, and the boundary is written here instead of being left as an
+   unexplained difference in the counts.
+3. **`LDR` means the literal pool only** (`.Llit`): `LDR rX, [rY, #imm]` reads memory, not a
+   constant, and is never a candidate. Of the 828 `.Llit` loads in the corpus, 62 are removed this
+   way.
+
+### 32.5 How not to read this
+
+1. Do not read 115 as "the end of this rule": a fixed-point iteration of the same family would
+   take 3 more (32.4 item 2), and the real answer is still V-3 (the allocator).
+2. Do not turn the 6 tail sites into an S21 debt and restructure the per-function pass: that is a
+   design boundary (the pass runs per function), and covering it needs a whole-TU flow, which is
+   not this rule's job.
+3. Do not call S21 landed without a full `make test`.
