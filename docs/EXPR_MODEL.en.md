@@ -3434,3 +3434,135 @@ that deadins had been covering at the same place.
 5. **Not yet on the STM32H743 board**: the evidence here is a host build, whole-corpus text and
    tiny-image execution under unicorn. Board acceptance stays deferred per "finish the compiler
    first, then bring it up on the board".
+
+## 37 V-4 slice 2 pre-registration: a second emission path (vreg + linear scan) and its slice criteria (2026-11-27, frozen before implementation)
+
+§34.4.2 was explicit: "V-4 = IR-level register allocation ... requires a design document and a
+separately frozen criterion first, before any code". This section *is* that document. **No line of the
+emitter was touched before this section was committed**; after it, work proceeds in the slice order of
+§37.3, each slice frozen before its run and not renegotiated afterwards.
+
+### 37.1 Three more exhaustive measurements: no text slice of size >= 120 is left
+
+After §36 the best arm is **9,588 instructions** (`BASE`+`chainfold`+`pushpop`+`remat`). To confirm
+that the text layer really is finished, the three families §34.3 did not cover were measured to
+exhaustion this round (same corpus: 95 TUs, same arm, every site judged, not sampled):
+
+| Family (measured this round) | Measured bound | Why it stops there |
+|---|---|---|
+| Folding `ADD rD, rB, #k` straight into the memory operand `[rB, #k]` | **82** | of 512 `ADD rd, rs, #imm`: 238 are `ADD rX, rX, #k` (the base itself moves), 146 are not followed by a memory access, 27 have a memory base that is not that temporary, 18 have the temporary still live after the access; the remaining 82 are the only ones born for that single access |
+| Chained address folding (what `addrfold` leaves behind) | **0** | every chain of length >= 2 is already folded by `-fopt-addrfold`; re-measured with "every temporary on the chain is dead", nothing is left |
+| Single exit (shared epilogue) | **114** | 216 functions that return have **303 exits** (180 functions with one, 18 with two, 10 with three, 2 with four, 3 with five, 2 with eight, **1 with eighteen**); collapsing each exit's `MOV sp, r6` / `ADD sp, sp, #k` / `POP {..., pc}` into one copy and turning the rest into `B .Lepilogue` bounds the saving at 114 |
+
+Under the hard rule laid down in §34.4.3 (**only slices with a bound >= 120 and conservative flag
+semantics may be taken**), all three fail (82 / 0 / 114), so **no text slice is taken this round**.
+Together with the six families of §34.3 (66 / 61 / 161 done / 137 / 25 / 64 / 95) the text layer's
+account is now closed.
+
+### 37.2 The gap decomposed by mnemonic family (first time the 4,297 is itemised)
+
+Same 95 TUs, same arm (9,588) against armcc O2's 96 `.o` files (5,291):
+
+| Family | ours | armcc O2 | delta |
+|---|---|---|---|
+| `MOV` family (`MOV`/`MOVW`/`MOVT`) | 1,838 | 624 | **+1,214** |
+| `LDR` family | 1,893 | 1,145 | **+748** |
+| `ADD`/`SUB` | 717 | 304 | +413 |
+| `STR` family | 959 | 570 | +389 |
+| logic (`AND`/`ORR`/`BIC`/`MVN`) | 732 | 374 | +358 |
+| `POP` | 386 | 88 | +298 |
+| `PUSH` | 383 | 94 | +289 |
+| `CMP` | 606 | 444 | +162 |
+| `B`/`Bcc` | 1,387 | 1,298 | +89 |
+| `BL` | 173 | 150 | +23 |
+| `LSL`/`LSR` | 212 | 237 | -25 |
+| **total** | **9,588** | **5,291** | **+4,297** |
+
+`PUSH`/`POP` decomposed on the same arm: **216 prologue saves, 303 epilogue restores, 167 + 83
+run-time value-stack pushes and pops**. That is, of those 769 instructions, **250 really push an
+intermediate expression value onto the run-time stack** (`PUSH {r0}` ... `POP {r0}`, appearing in
+pairs on both sides of a control-flow merge), and **519 are function entry/exit saves**, where armcc
+spends 182 on both together.
+
+Conclusion: the `MOV` family, the `LDR` family, the run-time value stack and the save/restore pair --
+**all four are the same question, "where is a value born"**, i.e. the allocator. This matches the
+site-by-site classification of §33.2; what is new is the whole-corpus, per-family number.
+
+### 37.3 Design: the second emission path (V4A)
+
+**Layers** (the new path shares no emission logic with the old one):
+
+1. **Value numbering**: along the existing `MIR` basic blocks (`mir_build`, already present and
+   checked by a gate), expand each stack-machine `IR_PUSH_*`/`IR_DUP`/`IR_SWAP` into one definition
+   and each consuming op (`IR_BINARY`/`IR_STORE`/...) into one three-address instruction whose
+   operands name definitions.
+2. **Virtual registers**: one vreg per definition; a block's live-out is the set of definitions live
+   across the edge.
+3. **Linear scan**: `r0`-`r3` caller-saved, `r4`-`r11` callee-saved, `ip` (`r12`) as scratch only;
+   `sp` and `r6` (frame base) reserved for the frame. Spills go to frame slots allocated above
+   `local_eff`, i.e. the same frame layout as the old path, so no ABI change.
+4. **Instruction selection**: 32-bit Thumb-2 forms first; the 16-bit short forms
+   (`MOVS`/`ADDS`/`SUBS`/`LSLS` ...) are a **later slice** with its own criterion -- they change bytes,
+   not instruction count, and must not be used to pad a count-based criterion.
+5. **Emission**: the new path writes its own prologue/epilogue (single exit) and **uses no run-time
+   value stack**.
+
+**Relation to the old path**: routing is **per function**; a function that does not route goes through
+the old path and is byte-identical to today. The new path's output **does not enter** the old text
+pass chain (those passes assume the `r0` accumulator and the value-stack semantics).
+
+**Routing conditions (strict first, then relaxed per slice)** -- slice 2a accepts only functions that:
+
+- contain no `IR_ASM` and no `IR_SVC`;
+- contain **no `IR_CALL`** (relaxed in 2b);
+- contain no 64-bit (`IR_64*`), float (`IR_F*`), SIMD (`IR_SIMD_*`), `IR_DIV`/`IR_MOD` (soft division
+  is a call);
+- contain no `IR_ALLOCA` (VLA), are not variadic, do not use `setjmp`-style constructs;
+- have a `local_eff` and frame layout the existing `frame` logic can express.
+
+Measured routable size today: **154 functions / 3,459 instructions = 36.1% of all corpus
+instructions** (216-function universe).
+
+### 37.4 Slices and criteria (frozen; a missed criterion means the slice is withdrawn)
+
+| Slice | Content | Criterion (frozen) |
+|---|---|---|
+| **2a** | leaf integer functions go through V4A | (1) the routed set covers >= **30%** of corpus instructions; (2) on the routed set, instructions <= old path x 0.80 (-20%); (3) corpus total <= **9,588 - 500**; (4) `PUSH`+`POP` must not grow; (5) answers unchanged |
+| **2b** | allow `IR_CALL` (integer functions that call) | cumulative <= 9,588 - 1,200, rest as above |
+| **2c** | allow 64-bit / float / SIMD / `DIV` / `MOD` | cumulative <= 9,588 - 2,000, rest as above |
+
+"Cumulative" is relative to **today's** 9,588, not to the previous slice, so that each slice's
+contribution cannot be swallowed by the previous one. Any slice that misses its criterion is
+**withdrawn** (switch and routing together), the reading is written into that slice's verdict
+section, and the criterion is not renegotiated.
+
+### 37.5 Against false greens (frozen)
+
+1. **OFF IS OFF**: with `ARKCC_FEATURE_V4A` off, all 95 TUs are byte-identical to today's HEAD output.
+2. **Routing is enumerable**: a new `--v4a-report` prints, per function, "routed / old-path count /
+   new-path count"; the gate checks (a) the claimed routed set equals the actual one, (b) its share is
+   >= 30% -- so "route three functions and claim victory" cannot happen.
+3. **Same answers**: every routed function needs executable evidence -- `tests/arm_exec/` returns the
+   same value on both arms, plus an identical `unicorn` value/RAM snapshot; at least three fixtures
+   *specific to the new path* (a loop, nested branches, a bitfield).
+4. **Refusal fixtures** (one each, must fall back to the old path byte-identically): contains `__asm`,
+   contains a call, contains `long long`, contains `float`, contains a VLA.
+5. **Mixed boundary**: in a TU where both paths appear, per-function comparison allows line
+   differences **only inside routed function bodies**; every other function must be byte-identical.
+   This check exists to catch "the new path quietly changed somebody else's frame".
+6. **Cropping**: `ARKCC_FEATURE_V4A`, profile `STM32_MIN` sets it to 0, and a cropped build refuses
+   the flag by name with `C3900U`.
+7. **No percentage laundering**: if the routed set changes, all three of (1)-(3) are re-run; quoting
+   only the "-20%" is not acceptable.
+
+### 37.6 How not to read this
+
+1. Do not read 2a's "-20%" as "close to armcc": 3,459 x 0.8 = 2,767, so the corpus would still be
+   ~8,900, i.e. 1.68x of 5,291.
+2. Do not read this round's 82 / 0 / 114 as "there is still meat in the text layer": all three are
+   < 120 and §34.4.3 says plainly that such slices are not taken.
+3. Do not merge 2a without `--v4a-report`: a percentage without routing enumeration cannot be
+   re-checked.
+4. Do not count the byte wins of 16-bit short forms against this section's instruction-count
+   criterion: that is a byte-level slice with its own criterion.
+5. Do not retro-fit these slice criteria onto §36: §36 is closed (9,588, margin 4) and is not reopened.
