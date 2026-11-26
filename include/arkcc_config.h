@@ -362,6 +362,20 @@
 #   define ARKCC_FEATURE_OPT_LADDER    1
 # endif
 #endif
+/* ARKCC_FEATURE_OPT_REGBIRTH: -fopt-birthdest / -fopt-basefold, S16 result
+ * born in its destination and base folded into the addressing mode -- merge
+ * `OP r0, ...` + `MOV rD, r0` into one instruction, and fold a single-use
+ * `ADD rB, rX, #imm` into the one access that consumes rB
+ * (docs/EXPR_MODEL.md section 20).  Same line tables and the same forward
+ * liveness test as the S15 ladder pass, so it shares that guard and is off
+ * the STM32 profile for the same reason. */
+#ifndef ARKCC_FEATURE_OPT_REGBIRTH
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_OPT_REGBIRTH 0   /* 板上裁掉：只在宿主/交叉编译用 */
+# else
+#   define ARKCC_FEATURE_OPT_REGBIRTH 1
+# endif
+#endif
 
 /* ARKCC_FEATURE_OPT_FRAME: -fopt-frame, callee-saved list trimming.
  * A slot the body never mentions is deleted from PUSH/POP; when that

@@ -646,6 +646,20 @@ int main(int argc, char **argv) {
             return 1;
         }
 #endif
+#if !ARKCC_FEATURE_OPT_REGBIRTH
+        else if (strcmp(a, "-fopt-birthdest") == 0) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: -fopt-birthdest is not compiled into "
+                    "this build (rebuild with -DARKCC_FEATURE_OPT_REGBIRTH=1)\n");
+            return 1;
+        }
+        else if (strcmp(a, "-fopt-basefold") == 0) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: -fopt-basefold is not compiled into "
+                    "this build (rebuild with -DARKCC_FEATURE_OPT_REGBIRTH=1)\n");
+            return 1;
+        }
+#endif
 #if !ARKCC_FEATURE_OPT_FRAME
         else if (strcmp(a, "-fopt-frame") == 0) {
             fprintf(stderr,

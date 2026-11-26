@@ -8731,7 +8731,7 @@ static void ark_deadins_function(AsmBuffer *b, int from) {
 }
 #endif /* ARKCC_FEATURE_OPT_DEADINS */
 
-#if ARKCC_FEATURE_OPT_LADDER
+#if ARKCC_FEATURE_OPT_LADDER || ARKCC_FEATURE_OPT_REGBIRTH
 /* ---------------------------------------------------------------------------
  * S15: ladder-local redundancy (docs/EXPR_MODEL.md section 17)
  *
@@ -9136,7 +9136,401 @@ static void ark_ladder_function(AsmBuffer *b, int from) {
     }
     pp_splice(b, from, &out);
 }
-#endif /* ARKCC_FEATURE_OPT_LADDER */
+
+#if ARKCC_FEATURE_OPT_REGBIRTH
+/* ---------------------------------------------------------------------------
+ * S16: result born in its destination, and base folded into the address
+ * (docs/EXPR_MODEL.md section 20)
+ *
+ * Rule A `-fopt-birthdest`:  `OP r0, ...` followed by `MOV rD, r0` becomes
+ * `OP rD, ...`.  The instruction count drops by one and nothing else moves:
+ * the value is produced straight into the register the next statement wants
+ * it in.  The rename is only allowed when the op is single-destination and
+ * unconditional, when it does not need `r0` afterwards on every reachable
+ * path, and when it cannot push a 16-bit encoding up to 32 bits.
+ *
+ * Rule B `-fopt-basefold`:  `ADD rB, rX, #imm` used exactly once, by
+ * `LDR|STR* rD, [rB(, #off)]`, becomes `LDR|STR* rD, [rX, #imm+off]`.  The
+ * base register existed only for that one access, so folding it into the
+ * addressing mode removes the ADD outright.
+ *
+ * Both rules stay inside one straight run of instructions and use the same
+ * forward liveness test (`rb_dead_after`), which follows a single
+ * unconditional branch and refuses to reason across anything it cannot
+ * order.  Anything it cannot prove is left alone: "rather an error than a
+ * wrong answer".
+ * ------------------------------------------------------------------------- */
+#define RB_MAX_LEN 96
+
+static char rb_rep[LD_MAX_LINES][RB_MAX_LEN];
+static unsigned char rb_has[LD_MAX_LINES];
+
+/* Unsigned decimal, no leading zeros. */
+static void rb_udec(char *dst, unsigned v) {
+    char t[12];
+    int n = 0, i = 0;
+    if (!v) { dst[0] = '0'; dst[1] = 0; return; }
+    while (v) { t[n++] = (char)('0' + (v % 10u)); v /= 10u; }
+    while (n) dst[i++] = t[--n];
+    dst[i] = 0;
+}
+
+/* Rebuild one instruction line as "    MN op0, op1, ...".  The emitter only
+ * ever writes one space after the mnemonic, one after each comma and a
+ * four-space indent, so the rebuilt text is identical to what the emitter
+ * would have produced. */
+static int rb_line(char *dst, const char *mn, const char **ops, int nops) {
+    int k = 0, i, j;
+    const char *ind = "    ";
+    for (i = 0; ind[i]; i++) { if (k + 2 >= RB_MAX_LEN) return 0; dst[k++] = ind[i]; }
+    for (i = 0; mn[i]; i++) { if (k + 2 >= RB_MAX_LEN) return 0; dst[k++] = mn[i]; }
+    if (nops <= 0) { dst[k] = 0; return 1; }
+    if (k + 2 >= RB_MAX_LEN) return 0;
+    dst[k++] = ' ';
+    for (i = 0; i < nops; i++) {
+        if (i) { if (k + 3 >= RB_MAX_LEN) return 0; dst[k++] = ','; dst[k++] = ' '; }
+        for (j = 0; ops[i][j]; j++) { if (k + 2 >= RB_MAX_LEN) return 0; dst[k++] = ops[i][j]; }
+    }
+    dst[k] = 0;
+    return 1;
+}
+
+/* Single-destination, unconditional ALU/load forms the emitter produces.
+ * A conditional form such as MOVEQ is deliberately absent: when the
+ * condition fails the original leaves r0 at its old value, while a rename
+ * would leave the *new* destination at its old value instead. */
+static int rb_single_dest(const char *mn) {
+    static const char *D[] = {
+        "MOV", "MOVW", "MOVT", "MVN", "ADD", "SUB", "AND", "ORR", "EOR",
+        "BIC", "ORN", "LSL", "LSR", "ASR", "ROR", "RSB", "SBC", "ADC", "RSC",
+        "MUL", "UDIV", "SDIV", "UXTB", "UXTH", "SXTB", "SXTH", "REV",
+        "REV16", "REVSH", "RRX", "CLZ", "LDR", "LDRB", "LDRH", "LDRSB",
+        "LDRSH", NULL
+    };
+    int i = 0;
+    while (D[i] && strcmp(mn, D[i])) i++;
+    return D[i] != NULL;
+}
+
+/* Does any operand from index `k` on mention register `r`?  Rule A needs
+ * this on the *destination* it is about to write: a two-operand form such as
+ * `ADD r0, r9` reads its destination, so renaming it to `ADD r9, r9` would
+ * count r9 twice.  Rule B needs it on the base register, for the same reason
+ * in reverse: any mention between the ADD and its one access means the base
+ * is used twice after all. */
+static int rb_mentions_from(const cp_ins *o, int k, int r) {
+    int i;
+    for (i = k; i < o->nops && i < 4; i++)
+        if (cp_mentions(o->op[i], r)) return 1;
+    return 0;
+}
+
+/* Would this op change the address of something behind our back?  A '!' or a
+ * post-indexed form (`[r1], #4`) writes the base register as well, so the
+ * rename is not the only effect and the rule stays out. */
+static int rb_has_wb(const cp_ins *o) {
+    int i;
+    for (i = 1; i < o->nops; i++) {
+        const char *s = o->op[i];
+        int q;
+        if (strchr(s, '!')) return 1;
+        for (q = 0; s[q]; q++)
+            if (s[q] == ']' && s[q + 1]) return 1;   /* `[r1], #4` */
+    }
+    return 0;
+}
+
+/* Conservative "this op is 16-bit encodable": every register is r0-r7 and no
+ * immediate is larger than 7.  Only used to refuse a rename that would grow
+ * the encoding; a wrong "wide" answer merely declines a candidate. */
+static int rb_narrow(const cp_ins *o) {
+    int i, r;
+    for (i = 0; i < o->nops; i++) {
+        for (r = 8; r <= 15; r++)
+            if (cp_mentions(o->op[i], r)) return 0;
+        if (o->op[i][0] == '#') {
+            const char *p = o->op[i] + 1;
+            int v = 0;
+            if (*p == '-') return 0;
+            while (*p >= '0' && *p <= '9') { v = v * 10 + (*p - '0'); p++; }
+            if (*p) return 0;                        /* 0x... not proven small */
+            /* A scaled offset up to 124 is still 16-bit, so only refuse the
+             * immediates the emitter uses for plain ALU operands. */
+            if (v > 7 && !strchr(o->op[i - 0] ? o->op[0] : "", '[') &&
+                !cp_mentions(o->op[i], 0)) return 0;
+        }
+    }
+    return 1;
+}
+
+/* Is `r` in the register list of this POP/LDM?  The shared `ld_list_def`
+ * splits on a bare comma, but the emitter writes `{r5, r6, r7, r8, pc}` with
+ * a space after each comma, so it answers 0 for every list the emitter makes
+ * and every POP then reads as "unprovable".  This copy walks the list the way
+ * the text is actually written: it skips spaces, also accepts ranges, and
+ * still answers 0 for anything it does not fully understand. */
+static int rb_list_def(const cp_ins *o, int r) {
+    const char *p;
+    int found = 0;
+    if (o->nops != 1 || o->op[0][0] != '{') return 0;
+    p = o->op[0] + 1;
+    while (*p == ' ') p++;
+    for (;;) {
+        int a = -1, hi;
+        if (*p == '}') return found;
+        if (*p == 'r' && p[1] >= '0' && p[1] <= '9') {
+            a = 0; p++;
+            while (*p >= '0' && *p <= '9') { a = a * 10 + (*p - '0'); p++; }
+        } else if (!strncmp(p, "sp", 2)) { a = 13; p += 2; }
+        else if (!strncmp(p, "lr", 2)) { a = 14; p += 2; }
+        else if (!strncmp(p, "pc", 2)) { a = 15; p += 2; }
+        else return 0;
+        if (a < 0 || a > 15) return 0;
+        hi = a;
+        if (*p == '-') {
+            p++;
+            if (*p == 'r' && p[1] >= '0' && p[1] <= '9') {
+                hi = 0; p++;
+                while (*p >= '0' && *p <= '9') { hi = hi * 10 + (*p - '0'); p++; }
+            } else if (!strncmp(p, "sp", 2)) { hi = 13; p += 2; }
+            else if (!strncmp(p, "lr", 2)) { hi = 14; p += 2; }
+            else if (!strncmp(p, "pc", 2)) { hi = 15; p += 2; }
+            else return 0;
+            if (hi < a || hi > 15) return 0;
+        }
+        if (a <= r && r <= hi) found = 1;
+        while (*p == ' ') p++;
+        if (*p == ',') { p++; while (*p == ' ') p++; continue; }
+        if (*p == '}') return found;
+        return 0;
+    }
+}
+
+/* 1 = register `r` is provably not needed from line q onwards.  Walks
+ * forward, follows one unconditional branch at a time, and answers 0 the
+ * moment the order of execution is not obvious (a label, a conditional
+ * branch, a call, a return that leaves `r` live). */
+static int rb_dead_after(int n, int q, int r) {
+    int hops = 0;
+    char tgt[64];
+    while (q < n) {
+        const cp_ins *o;
+        int w;
+        if (ld_kd[q] == 0) { q++; continue; }
+        if (ld_kd[q] == 2) return 0;
+        o = &ld_iv[q];
+        if (!strcmp(o->mn, "BL") || !strcmp(o->mn, "BLX")) return 0;
+        if (!strcmp(o->mn, "BX")) return 0;          /* r0 is the return value */
+        if (!strcmp(o->mn, "POP") || !strcmp(o->mn, "LDM") ||
+            !strcmp(o->mn, "LDMIA") || !strcmp(o->mn, "LDMIB") ||
+            !strcmp(o->mn, "LDMDA") || !strcmp(o->mn, "LDMDB")) {
+            if (rb_list_def(o, r)) return 1;         /* restored, so dead */
+            if (cp_mentions(o->op[0], 15)) return 0; /* `..., pc`: this returns */
+            q++;
+            continue;
+        }
+        if (ld_plain_b(o, tgt, (int)sizeof tgt)) {
+            int t = ld_find_label(tgt);
+            if (t < 0 || ++hops > 8) return 0;
+            q = t + 1;
+            continue;
+        }
+        if (ld_cond_br(o, tgt, (int)sizeof tgt)) return 0;
+        if (!strcmp(o->mn, "CBZ") || !strcmp(o->mn, "CBNZ")) return 0;
+        if (!strcmp(o->mn, "IT") || !strcmp(o->mn, "ITE") ||
+            !strcmp(o->mn, "ITT") || !strcmp(o->mn, "ITTE") ||
+            !strcmp(o->mn, "ITET")) return 0;
+        if (ld_reads(o, r)) return 0;
+        if (ld_writes(o, &w) && w == r) return 1;
+        q++;
+    }
+    return 1;
+}
+
+/* `LDR|STR|LDRB|STRB|LDRH|STRH rD, [rB]` or `[rB, #off]`, nothing else. */
+static int rb_mem(const cp_ins *o, int *rd, int *rb, int *off) {
+    const char *s;
+    int i, r = 0, v = 0;
+    if (!strcmp(o->mn, "LDR") || !strcmp(o->mn, "STR") ||
+        !strcmp(o->mn, "LDRB") || !strcmp(o->mn, "STRB") ||
+        !strcmp(o->mn, "LDRH") || !strcmp(o->mn, "STRH")) {
+        if (o->nops != 2) return 0;
+    } else return 0;
+    if (!cp_reg(o->op[0], rd)) return 0;
+    s = o->op[1];
+    if (s[0] != '[' || s[1] != 'r') return 0;
+    i = 2;
+    if (s[i] < '0' || s[i] > '9') return 0;
+    while (s[i] >= '0' && s[i] <= '9') { r = r * 10 + (s[i] - '0'); i++; }
+    if (r > 15) return 0;
+    if (s[i] == ']' && !s[i + 1]) { *rb = r; *off = 0; return 1; }
+    if (s[i] != ',' || s[i + 1] != ' ' || s[i + 2] != '#') return 0;
+    i += 3;
+    if (s[i] < '0' || s[i] > '9') return 0;
+    while (s[i] >= '0' && s[i] <= '9') { v = v * 10 + (s[i] - '0'); i++; }
+    if (strcmp(s + i, "]")) return 0;
+    *rb = r; *off = v;
+    return 1;
+}
+
+/* Does this op write register r as its primary destination? */
+static int rb_writes_reg(const cp_ins *o, int r) {
+    int w;
+    return ld_writes(o, &w) && w == r;
+}
+
+/* Is op[0] a *pure* destination?  Two-operand logical/multiply shapes do not
+ * have one: the emitter spells `a & b` as `AND r0, r7`, and logic_dp_a encodes
+ * that as the 16-bit `ANDS Rdn, Rm`, i.e. `r0 = r0 & r7` -- op[0] is read as
+ * well as written.  Renaming it to `AND r5, r7` would compute `r5 & r7`, a
+ * different value.  101 of the corpus candidates are exactly this shape, so
+ * rule A refuses every two-operand form whose op[0] is not a plain write.
+ * Three operands are always pure (Rd, Rn, Rm / Rd, Rn, #imm). */
+static int rb_pure_dest(const cp_ins *o) {
+    static const char *D[] = {
+        "MOV", "MOVW", "MOVT", "MVN", "LDR", "LDRB", "LDRH", "LDRSB",
+        "LDRSH", "UXTB", "UXTH", "SXTB", "SXTH", "REV", "REV16", "REVSH",
+        "RRX", "CLZ", NULL
+    };
+    int i = 0;
+    if (o->nops >= 3) return 1;
+    if (o->nops < 2) return 0;
+    while (D[i] && strcmp(o->mn, D[i])) i++;
+    return D[i] != NULL;
+}
+
+static void ark_regbirth_function(AsmBuffer *b, int from) {
+    int n, i, ndel = 0;
+    int use_bd = g_config.enable_opt_birthdest;
+    int use_bf = g_config.enable_opt_basefold;
+    AsmBuffer out;
+
+    if (!use_bd && !use_bf) return;
+    n = ld_scan(b, from);
+    if (n <= 0) return;
+    memset(ld_del, 0, (size_t)n);
+    memset(rb_has, 0, (size_t)n);
+
+    for (i = 0; i < n; i++) {
+        const cp_ins *o;
+        int nxt;
+        if (ld_kd[i] != 1 || ld_del[i]) continue;
+        o = &ld_iv[i];
+
+        /* ---- A: the result is born in its destination ---- */
+        if (use_bd && !strcmp(o->op[0], "r0") && rb_single_dest(o->mn) &&
+            !rb_has_wb(o)) {
+            nxt = i + 1;
+            while (nxt < n && ld_kd[nxt] == 0) nxt++;
+            if (nxt < n && ld_kd[nxt] == 1 && !ld_del[nxt] &&
+                !strcmp(ld_iv[nxt].mn, "MOV") && ld_iv[nxt].nops == 2 &&
+                !strcmp(ld_iv[nxt].op[1], "r0")) {
+                int rd;
+                if (cp_reg(ld_iv[nxt].op[0], &rd) && rd != 0 &&
+                    rb_pure_dest(o) &&
+                    !rb_mentions_from(o, 1, rd) &&
+                    (!rb_narrow(o) || rd <= 7) &&
+                    rb_dead_after(n, nxt + 1, 0)) {
+                    const char *ops[4];
+                    char newrd[8];
+                    int k;
+                    newrd[0] = 'r';
+                    if (rd < 10) { newrd[1] = (char)('0' + rd); newrd[2] = 0; }
+                    else { newrd[1] = '1'; newrd[2] = (char)('0' + rd - 10); newrd[3] = 0; }
+                    ops[0] = newrd;
+                    for (k = 1; k < o->nops && k < 4; k++) ops[k] = o->op[k];
+                    if (rb_line(rb_rep[i], o->mn, ops, o->nops)) {
+                        rb_has[i] = 1;
+                        ld_del[nxt] = 1;
+                        i = nxt;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        /* ---- B: the base of a single access is folded into it ---- */
+        if (use_bf && !strcmp(o->mn, "ADD") && o->nops == 3 &&
+            o->op[2][0] == '#' && !rb_has_wb(o)) {
+            int rb2, rx, imm = 0, okv = 1;
+            const char *p = o->op[2] + 1;
+            while (*p >= '0' && *p <= '9') { imm = imm * 10 + (*p - '0'); p++; }
+            if (*p) okv = 0;
+            if (okv && cp_reg(o->op[0], &rb2) && cp_reg(o->op[1], &rx) &&
+                imm > 0 && imm % 4 == 0 && imm <= 1020) {
+                int j;
+                for (j = i + 1; j < n && j <= i + 5; j++) {
+                    int rd2, bx, off = 0;
+                    if (ld_kd[j] == 2) break;
+                    if (ld_kd[j] == 0) continue;
+                    if (ld_del[j]) break;
+                    if (!rb_mem(&ld_iv[j], &rd2, &bx, &off)) {
+                        if (rb_mentions_from(&ld_iv[j], 0, rb2)) break;
+                        if (rb_writes_reg(&ld_iv[j], rx)) break;
+                        if (ld_iv[j].mn[0] == 'B' ||
+                            !strcmp(ld_iv[j].mn, "PUSH") || !strcmp(ld_iv[j].mn, "POP") ||
+                            !strcmp(ld_iv[j].mn, "LDM") || !strcmp(ld_iv[j].mn, "STM") ||
+                            !strcmp(ld_iv[j].mn, "LDMIA") || !strcmp(ld_iv[j].mn, "STMIA") ||
+                            !strcmp(ld_iv[j].mn, "IT") || !strcmp(ld_iv[j].mn, "ITE") ||
+                            !strcmp(ld_iv[j].mn, "ITT") || !strcmp(ld_iv[j].mn, "ITTE") ||
+                            !strcmp(ld_iv[j].mn, "ITET"))
+                            break;
+                        continue;
+                    }
+                    if (bx != rb2) break;
+                    {
+                        int sum = imm + off;
+                        int is_store = !strcmp(ld_iv[j].mn, "STR") ||
+                                       !strcmp(ld_iv[j].mn, "STRB") ||
+                                       !strcmp(ld_iv[j].mn, "STRH");
+                        if (sum > 4095) break;
+                        if (is_store && rd2 == rb2) break;
+                        if (cp_mentions(ld_iv[j].op[1], rx)) break;
+                        if (!rb_dead_after(n, j + 1, rb2)) break;
+                        {
+                            const char *ops[4];
+                            char mem[24], num[12];
+                            rb_udec(num, (unsigned)sum);
+                            if (sum == 0) {
+                                mem[0] = '['; mem[1] = 'r';
+                                if (rx < 10) { mem[2] = (char)('0' + rx); mem[3] = ']'; mem[4] = 0; }
+                                else { mem[2] = '1'; mem[3] = (char)('0' + rx - 10); mem[4] = ']'; mem[5] = 0; }
+                            } else {
+                                int q = 0;
+                                mem[q++] = '['; mem[q++] = 'r';
+                                if (rx < 10) mem[q++] = (char)('0' + rx);
+                                else { mem[q++] = '1'; mem[q++] = (char)('0' + rx - 10); }
+                                mem[q++] = ','; mem[q++] = ' '; mem[q++] = '#';
+                                { int t; for (t = 0; num[t]; t++) mem[q++] = num[t]; }
+                                mem[q++] = ']'; mem[q] = 0;
+                            }
+                            ops[0] = ld_iv[j].op[0];
+                            ops[1] = mem;
+                            if (rb_line(rb_rep[j], ld_iv[j].mn, ops, 2)) {
+                                rb_has[j] = 1;
+                                ld_del[i] = 1;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for (i = 0; i < n; i++) if (ld_del[i] || rb_has[i]) ndel++;
+    if (ndel == 0) return;
+
+    asmbuf_init(&out);
+    for (i = 0; i < n; i++) {
+        if (ld_del[i]) continue;
+        if (rb_has[i]) pp_copy_line(&out, rb_rep[i], ark_strlen(rb_rep[i]));
+        else pp_copy_line(&out, b->buf + ld_ls[i], ld_ll[i]);
+    }
+    pp_splice(b, from, &out);
+}
+#endif /* ARKCC_FEATURE_OPT_REGBIRTH */
+#endif /* ARKCC_FEATURE_OPT_LADDER || ARKCC_FEATURE_OPT_REGBIRTH */
 
 
 #if ARKCC_FEATURE_OPT_VSTACK
@@ -17061,6 +17455,15 @@ arm_skip_text_opts:
          * shape analysis -- see docs/EXPR_MODEL.md section 17. */
         if (g_config.enable_opt_ladderload || g_config.enable_opt_ladderstage)
             ark_ladder_function(&buf, fstart);
+#endif
+#if ARKCC_FEATURE_OPT_REGBIRTH
+        /* S16, result born in its destination and base folded into the
+         * addressing mode, last of all: rule A is one rewrite plus one
+         * deletion, so it must see the final text and nothing below may
+         * re-derive the register it renames.  Both switches share one
+         * shape analysis -- see docs/EXPR_MODEL.md section 20. */
+        if (g_config.enable_opt_birthdest || g_config.enable_opt_basefold)
+            ark_regbirth_function(&buf, fstart);
 #endif
 arm_skip_frame_opts:
 

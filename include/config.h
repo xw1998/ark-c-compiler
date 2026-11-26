@@ -51,6 +51,8 @@ typedef struct {
     int enable_opt_deadins;         /* -fopt-deadins: 删块内死写与死标志 CMP（S13） */
     int enable_opt_ladderload;      /* -fopt-ladderload: 删比较阶梯内重复的 LDR Rb,[Rn,#0]（S15） */
     int enable_opt_ladderstage;     /* -fopt-ladderstage: 删 BNE 前被覆盖的死装配 MOV（S15） */
+    int enable_opt_birthdest;       /* -fopt-birthdest: 结果直接生在目的寄存器（OP r0…/MOV rD,r0 合并，S16） */
+    int enable_opt_basefold;        /* -fopt-basefold: 基址折进寻址方式（ADD rB,rX,#i + 唯一访存，S16） */
     int enable_opt_inline;   /* --autoinline / -O2 */
     int enable_opt_vectorize;/* --vectorize / -O2 */
     int opt_level;          /* 0=none, 1=basic, 2=aggressive */

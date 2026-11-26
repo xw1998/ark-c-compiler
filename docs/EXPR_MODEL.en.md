@@ -1694,3 +1694,135 @@ Relative to **10,347 insns** (static instruction count, the same basis as §14/�
 4. Do not reconcile 20.1's 428/122/... against §19's 311: §19's 311 is a **loose upper bound**
    (only "the previous instruction writes `r0`", no provable-death, no encoding and no conditional
    write), while 20.1's 323 is the **provable, reachable amount**.
+
+## 21 S16 landing readings and verdict (2026-11-26)
+
+Both rules of S20 are implemented (`ark_regbirth_function` in
+`src/backend/arm/backend_arm.c`), with the switches `-fopt-birthdest` /
+`-fopt-basefold` (off by default) and the crop macro `ARKCC_FEATURE_OPT_REGBIRTH`.
+This section records only the readings, the verdict and the **root causes of the
+implementation deviations**; the criteria are still the ones frozen in S20.3 and
+are not rewritten after the fact.
+
+### 21.1 Measurement (95 TUs, 29 flags, one build, 2026-11-26)
+
+| arm | instructions | `.s` bytes | vs 10,347 |
+| --- | ---: | ---: | --- |
+| both off (baseline) | **10,347** | 375,454 | -- |
+| `-fopt-birthdest` | **10,189** | 373,084 | **-158 (-1.53%)** |
+| `-fopt-basefold` | **10,330** | 375,131 | **-17 (-0.16%)** |
+| both on | **10,172** | 372,761 | **-175 (-1.69%)** |
+
+The two arms add up (158 + 17 = 175) and act on disjoint line sets (checked line by
+line by the gate). Against armcc5's 5,619 instructions (S17 basis) the ratio moves
+from **1.841x** to **1.810x**.
+
+**Verdict: registration tier.** 175 falls in S20.3's `107 <= hits < 214` band: both
+switches are kept, off by default, not part of the recommended set -- and S20.3's
+table is not edited to fit the implementation.
+
+### 21.2 Per-TU distribution (only 16 TUs hit)
+
+| TU | baseline | A | B |
+| --- | ---: | ---: | ---: |
+| `stm32f4xx_hal_dma.c` | 1,481 | 43 | 1 |
+| `stm32f4xx_hal_gpio.c` | 595 | 25 | 3 |
+| `stm32f4xx_hal_flash_ex.c` | 700 | 19 | 0 |
+| `stm32f4xx_hal_dma_ex.c` | 1,708 | 16 | 3 |
+| `stm32f4xx_hal_rcc.c` | 1,736 | 16 | 4 |
+| `stm32f4xx_hal_flash.c` | 680 | 14 | 2 |
+| `stm32f4xx_hal_exti.c` | 446 | 11 | 2 |
+| `stm32f4xx_hal_rcc_ex.c` | 710 | 4 | 2 |
+| `main.c` | 133 | 3 | 0 |
+| `stm32f4xx_ll_utils.c` | 564 | 2 | 0 |
+| `gpio.c` | 56 | 1 | 0 |
+| `stm32f4xx_hal.c` | 295 | 1 | 0 |
+| `stm32f4xx_hal_cortex.c` | 571 | 1 | 0 |
+| `stm32f4xx_hal_pwr_ex.c` | 259 | 1 | 0 |
+| `system_stm32f4xx.c` | 127 | 1 | 0 |
+| the other 79 TUs | -- | 0 | 0 |
+
+Only these 16 TUs of the corpus have real bodies (the other `.s` files are five
+lines), so **OFF IS OFF cannot be shown with a quiet TU the way S15 did it**; it is
+shown over all 95 TUs byte for byte (21.4 item 1).
+
+### 21.3 Implementation deviations and their causes (all four are "more conservative than pre-registered")
+
+1. **Family A fell from 278 to 158, and the main cause is that the two-operand form
+   would change the value (not a missed optimisation).** The corpus has **308**
+   adjacent `OP r0, ...` / `MOV rD, r0` pairs; in **116** of them the producer is a
+   **two-operand** form (`AND` 45, `LSL` 36, `ORR` 25, `MUL` 8, `LSR` 2). In the
+   emitter and in the 16-bit encodings, `AND r0, r7` means **`r0 = r0 & r7`**
+   (`Rd = Rd OP Rm`; encodings `0x4000`/`0x4300`/`0x4040`/`0x4380`), so renaming it to
+   `AND rD, r7` computes `rD = rD & r7` -- **the rename changes the value**.
+   S20.2 item 2 ("the other operands may read `r0`") only holds for the three-operand
+   form, where `r0` is a source and keeps its old value; a two-operand form uses `r0`
+   as both source and destination and must be refused as a family.
+   The implementation adds `rb_pure_dest()`: three-operand forms are always pure
+   destinations, two-operand forms are only allowed for
+   `MOV/MOVW/MOVT/MVN/LDR*/UXT*/SXT*/REV*/RRX/CLZ`.
+   **This is the most important result of the round**: not a smaller count, but 116
+   sites that would otherwise have been turned into wrong code.
+2. **The rest of the A refusals (each re-derived per site by the gate, no "unknown")**:
+   `encoding` 25 (the rename would push a 16-bit encoding to 32 bits), `live` 5 (`r0`
+   is still needed after the `MOV`), `dest_in_ops` 4 (`rD` appears among the producer's
+   source operands). 158 + 116 + 25 + 5 + 4 = 308, which matches the number of adjacent
+   pairs.
+3. **Family B fell from 45 to 17, and the main cause is a defect in the pre-measurement
+   scanner.** `D:/tmp/bm/s16_ub2.py`, used for S20.1, treated `.L...:` lines as assembler
+   directives rather than labels, so sites where the `ADD` and the access are separated
+   by a label were judged "provably dead" (about 28 of them); the implementation breaks
+   at `ld_kd[j] == 2`, which is the correct behaviour.
+   The other cause is `ld_list_def`'s gap on register lists written `{r5, r6, ...}`
+   (space after the comma); S16 carries its own `rb_list_def`, which wins back **+2**
+   sites. The remaining implementation conservatism (all-operand check, `IT*`
+   exclusion) is unchanged.
+   Refusal census for the 507 refused B candidates (gate classifier):
+   `index_written` 244, `live` 144, `other_base` 96, `barrier` 12, `imm_range` 9,
+   `label_between` 2.
+4. **What was not done (and does not count towards 175)**: rewriting a two-operand
+   producer into a three-operand one (`AND r0, r7` + `MOV r5, r0` -> `AND r5, r0, r7`).
+   It is semantically right and also removes an instruction, but it is **a new rule**
+   (it needs the death of `r0` and a deliberate 16-bit -> 32-bit re-encoding) and it
+   needs its own pre-registration and criteria; it is left for a separate slice and may
+   not be counted into this one.
+
+### 21.4 Gate (`tests/run_regbirth_tests.py`, `make test-regbirth`, six checks, all green)
+
+1. **OFF IS OFF**: all 95 TUs, both switches off vs
+   `-fno-opt-birthdest -fno-opt-basefold`, byte-identical, and the total is still
+   `10,347 / 375,454 B`.
+2. **Only the two shapes**: line-by-line classification of the four arms -- the A arm
+   changes exactly 158 sites, each one "one rewritten line + one deleted line" where the
+   only difference is the destination register (`r0` -> `rD`); the B arm changes exactly
+   17, each `[rB(, #off)]` -> `[rX, #imm+off]` with the `imm + off` the static scanner
+   reports; the two arms are disjoint and together give 175; no line is ever added or
+   rewritten into a third shape.
+3. **Independent reconstruction**: `tests/rb_oracle.py` re-implements both rules from the
+   text alone (no shared code or constants with the compiler) and reproduces all 285
+   non-off texts byte for byte; every deleted anchor is re-proved dead (`r0`/`rB` written
+   before it is read), every offset fits, every encoding guard holds.
+4. **It declines when it must**: all 657 refused candidates are still in the text (each in
+   the arm that would have used it: A in the A-only arm, B in the B-only arm), every
+   refusal is re-derivable from the unoptimised text (`unknown` = 0), and two hand-written
+   "must not fire" fixtures are byte-identical in all four arms.
+5. **The answer does not change**: one emit-and-run fixture with four A sites and one B
+   site returns the same value and the same 256-byte RAM snapshot in all four arms over 12
+   inputs; a **sabotaged** copy (one folded store removed) returns a different value
+   (247 vs 38), so the differential does see a wrong deletion.
+6. **Cropped out**: a `-DARKCC_FEATURE_OPT_REGBIRTH=0` build refuses both switches by name
+   (C3900U) and, without them, writes the same text as the full build.
+
+### 21.5 How to read this (S20.5 still stands)
+
+1. 175 is a **static instruction count**, one deleted instruction per hit; the **dynamic
+   execution count does not change**, since every removed instruction is a copy or a
+   recompute inside one basic block that would have run anyway, and no branch structure
+   changes.
+2. The verdict is "registration tier", not "landing": the criteria are untouched, nothing
+   was bent to fit the implementation, and the switches stay out of the recommended set.
+   Raising the tier later requires a new slice with a fresh measurement and freshly frozen
+   criteria.
+3. `116` must always be quoted with its meaning: it is the number of sites where the rule
+   **as written would have changed the value**, not "116 instructions left on the table" --
+   under the current rules those sites must not be touched at all.
