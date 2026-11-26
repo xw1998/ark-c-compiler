@@ -1826,3 +1826,177 @@ shown over all 95 TUs byte for byte (21.4 item 1).
 3. `116` must always be quoted with its meaning: it is the number of sites where the rule
    **as written would have changed the value**, not "116 instructions left on the table" --
    under the current rules those sites must not be touched at all.
+
+## 22 S17 pre-registration: same-value comparison-run folding (2026-11-26, frozen before implementation)
+
+§19.4 wrote off "the 1,300 instructions of `HAL_DMAEx_MultiBufferStart_IT`" as emit/IR-layer
+work, because it needs (a) a register chosen for the compared value, (b) a running
+constant stepped by a fixed stride, and (c) the selected result folded into the access.
+This round took that function apart layer by layer and found a **fourth shape** inside it:
+**adjacent comparison layers that pick the same result value repeat the same carry work**.
+That shape needs no alias information, no register allocation and moves no branch target, so
+the text layer can fold it -- **350 instructions = 3.38%**, twice the size of S16's two rules
+combined (175). This section freezes the rule and the criteria; the implementation and the
+measurement go in §23.
+
+### 22.1 Slice census (2026-11-26, five candidate families, all measured by local scripts)
+
+| Candidate family | Script | Measured upper bound | Verdict |
+| --- | --- | ---: | --- |
+| pool constant folded into an immediate (`LDR Rc, .Llit` feeding an ALU op) | `D:/tmp/bm/ub20.py` | **0** | of 809 pool loads only 277 feed an ALU op, and every constant is > 255 (peripheral addresses) |
+| census of `MOV reg,reg` sources | `ub21.py` | 858 sites, 540 with the source dead afterwards | needs cross-block liveness; not redeemable in text |
+| `MOV` chain folding (`MOV rA,rB` + `MOV rC,rA`) | `ub22.py` | **6** | too small |
+| small immediate materialised and used once | `ub23.py` | **14** | too small |
+| **same-value comparison runs** | `ub33.py` | **350** (60 runs) | **this slice** |
+
+So this is not "§19.4 said there was nothing left, so a slice was invented": §19.4 pushed the
+whole account of that function to the emitter, but the part of it where **one flag bit is
+shared by four instances** only ever lived in the text.
+
+### 22.2 Where the shape comes from (a public macro expansion, not corpus tuning)
+
+The five ladders come from five public STM32 HAL macros:
+`__HAL_DMA_GET_TC/HT/TE/DME/FE_FLAG_INDEX(hdma)`. The macro body is a chain of ternaries that
+maps **every concrete stream address** of `hdma->Instance` to one flag bit:
+
+```c
+#define __HAL_DMA_GET_TC_FLAG_INDEX(__HANDLE__) \
+  (((uint32_t)((__HANDLE__)->Instance) == ((uint32_t)DMA1_Stream0)) ? DMA_FLAG_TCIF0_4 : \
+   ((uint32_t)((__HANDLE__)->Instance) == ((uint32_t)DMA2_Stream0)) ? DMA_FLAG_TCIF0_4 : \
+   ((uint32_t)((__HANDLE__)->Instance) == ((uint32_t)DMA1_Stream4)) ? DMA_FLAG_TCIF0_4 : \
+   ((uint32_t)((__HANDLE__)->Instance) == ((uint32_t)DMA2_Stream4)) ? DMA_FLAG_TCIF0_4 : \
+   ... )
+```
+
+One flag bit serves Stream *k* **and** Stream *k+4*, and each stream exists on both DMA1 and
+DMA2, so four adjacent layers compare different constants
+(`0x40026010 / 0x40026410 / 0x40026070 / 0x40026470`) while **picking the same value**
+(`#32`). Each layer lands in the `.s` as five instructions:
+
+```asm
+    LDR r7, .Llit_2_0_2        ; 32-bit stream address
+    CMP r4, r7
+    BNE .L_..._17              ; not equal -> next layer
+    MOV r0, #32                ; the value this layer selects
+    B   .L_..._18              ; the join shared by all layers
+.L_..._17:
+```
+
+All four layers write `MOV r0, #32` / `B join` and are simply walled off by the preceding
+`BNE` -- **three of the four carries are pure waste**.
+
+### 22.3 The rule (frozen)
+
+**Layer**: five consecutive instructions (label lines may sit in between, assembler
+directives may not):
+
+```
+LDR rL, .Llit          ; op[1] starts with `.L` (a literal-pool load), rL is a register
+CMP rX, rL             ; exactly two operands
+BNE Lnext              ; this slice accepts BNE only; every other condition is refused
+MOV|MOVW rD, #v        ; exactly two operands
+B J                    ; immediately after the MOV, with no label in between
+```
+
+**Run**: two or more adjacent layers such that
+
+1. every layer's `CMP` operands are **byte-identical text** (same `rX`, same `rL`);
+2. every layer picks the same shape and value: same `MOV`/`MOVW` mnemonic, same `rD`,
+   identical `#v` text;
+3. layer k's `BNE` (k < m) resolves **exactly to the `LDR` of layer k+1**;
+4. every layer's `B J` resolves to **one and the same instruction**;
+5. `rD` differs from `rX` and from `rL` (the proof stays in the simplest case).
+
+**Rewrite**: a run of m layers becomes
+
+```
+    LDR rL, .Llit_1               ; layer 1, unchanged
+    CMP rX, rL
+    BEQ .Lcf_<f>_<i>              ; only the BNE is inverted, retargeted to a fresh label
+    LDR rL, .Llit_2               ; layers 2..m-1: LDR/CMP unchanged, BNE inverted
+    CMP rX, rL
+    BEQ .Lcf_<f>_<i>
+    ...
+.L_..._k:                         ; each layer's original entry label **stays in place**
+    LDR rL, .Llit_m               ; layer m: LDR/CMP unchanged, BNE kept
+    CMP rX, rL
+    BNE Lnext
+.Lcf_<f>_<i>:                     ; new: the hit point
+    MOV rD, #v                    ; layer m's MOV/B unchanged
+    B J
+```
+
+Net effect: delete `2(m-1)` instructions, rewrite `m-1` (`BNE` -> `BEQ`), add `m-1` label lines.
+
+**Why every original entry label can stay exactly where it is**: entering at layer k executes
+`LDR/CMP/BNE/MOV/B J`, instruction for instruction what it executed before, so even if some
+other branch still targets layer k the semantics do not move. That is why this rule needs no
+label reference counting at all.
+
+**Deliberate limits**:
+
+- Only `BNE` is inverted to `BEQ`; the inversion table for
+  `BEQ/BLS/BHI/BLT/BGE/BLE/BGT/BCS/BCC/BMI/BPL/BVS/BVC` is **not implemented here** -- a
+  non-`BNE` layer is refused outright (rather an error than a wrong answer).
+- A run lives inside one function and one contiguous instruction stream; a directive line
+  inside a layer refuses the run.
+
+### 22.4 Upper bound and criteria (frozen before the run)
+
+Against **10,347 instructions / 375,454 B** (95 TUs, 29 flags -- the same yardstick as
+§14/§15/§17/§20):
+
+| Item | Count |
+| --- | ---: |
+| foldable runs | **60** (lengths: 56 runs of 4, 3 runs of 3, 1 run of 2) |
+| layers inside runs | 235 (238 layers exist; 3 do not form a run) |
+| net static instructions | **350** (`2*3*56 + 2*2*3 + 2*1*1 = 336 + 12 + 2`) |
+| net `.s` bytes | **442** (`MOV` 2 B / `MOVW` 4 B, counted per run) |
+| TUs hit | 1 (`stm32f4xx_hal_dma_ex.c`, 1,708 instructions) |
+
+| Hits | Verdict |
+| --- | --- |
+| >= 214 (>= 2.0%) | **landing**: the switch stays, default off, added to the README flag table |
+| 107 - 213 | **register tier**: the switch stays, default off, not recommended |
+| < 107 | **withdrawn**: only the measurement stays, the code is reverted |
+
+350 >= 214, so the expected verdict is **landing**; if the run comes in under 214 the tier
+drops accordingly and **the table is not rewritten to fit the implementation**.
+
+### 22.5 Anti-false-green (frozen, six gates, all must pass)
+
+1. **OFF IS OFF**: with the switch off, all 95 TUs are **byte-identical** to
+   `10,347 / 375,454 B`.
+2. **It must fire, and only as the rule says**: the on-arm has exactly **60 runs / 175
+   `BNE`->`BEQ` rewrites / 350 deleted lines (175 `MOV` + 175 `B`) / 175 added label lines**;
+   every deleted `MOV` has the same shape and value as the one kept, every deleted `B` has the
+   same target as the one kept; a rewritten line differs from the original only in the mnemonic
+   and the target label; no fourth shape appears.
+3. **Independent check**: a separate re-implementation on the `tests/` side (sharing no code
+   or constant with the compiler) reproduces the on-arm byte for byte across 95 TUs, and
+   re-proves per run that each `BNE` targets the next layer's `LDR`, that all `B`s share one
+   target, and that the `CMP`/`LDR` operands are identical text.
+4. **It must not fire** (four hand-written fixtures, on-arm byte-identical):
+   (a) same shape but different result values; (b) same value but different `B` targets;
+   (c) same value but a label between the `MOV` and the `B`; (d) same value but the conditional
+   branch is `BEQ` (this slice inverts `BNE` only).
+5. **Semantics**: a `unicorn` differential over a fixture holding one 4-layer run plus one
+   non-matching input; both arms return the same value and the same 256 B RAM snapshot, and a
+   **sabotaged** build (the merged `BEQ` deliberately turned back into `BNE`) returns something
+   different.
+6. **Cropping**: a build with `-DARKCC_FEATURE_OPT_CHAINFOLD=0` rejects `-fopt-chainfold` by
+   name (C3900U), and without the switch it is byte-identical to the full build; `make test` is
+   green.
+
+### 22.6 Forbidden readings (frozen)
+
+1. 350 is not a dynamic win: every removed `MOV`/`B` was **never executed** (the preceding
+   `BNE` walls it off), so **dynamic instruction count is unchanged**. The win is static size,
+   fetch and branch-predictor pressure -- which also means it can never make a bench slower;
+   the worst case is zero.
+2. Do not claim "§19.4 was wrong": §19.4's item 2 judged (a)(b)(c) of that function, and this
+   slice folds a fourth shape it did not count. All three original judgements stand.
+3. Do not call this CSE: no ladder traversal is merged and no comparison result is shared
+   across runs; only the repeated carry of a same-value run is deleted.
+4. Do not reconcile 350 against §19.3's 350-450: that figure is the redemption estimate for
+   three other families (birth/base/pair), a different yardstick and different families.
