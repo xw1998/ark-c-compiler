@@ -3566,3 +3566,23 @@ section, and the criterion is not renegotiated.
 4. Do not count the byte wins of 16-bit short forms against this section's instruction-count
    criterion: that is a byte-level slice with its own criterion.
 5. Do not retro-fit these slice criteria onto §36: §36 is closed (9,588, margin 4) and is not reopened.
+### 37.7 Ablation: every layer of the text allocator pays for itself (new evidence)
+
+Before writing the new path one cheap hypothesis had to be eliminated: "are those `MOV rP, r0` /
+`MOV r0, rP` pairs produced by our own text allocation passes, so that turning one off would pay?".
+Ablating each switch on the same arm (9,588) shows **every one of them is a net win**:
+
+| switch turned off | corpus instructions | vs 9,588 |
+|---|---|---|
+| (none, best arm) | **9,588** | -- |
+| `-fno-opt-slotreg` | 9,628 | **+40** |
+| `-fno-opt-constcache` | 9,614 | **+26** |
+| `-fno-opt-vreg` | 11,209 | +1,621 |
+| `-fno-opt-live` | 11,828 | +2,240 |
+| `-fno-opt-vstack` | 13,597 | +4,009 |
+
+So those 452 moves are **not** a net loss manufactured by the text layer: without them the value stack
+falls back to memory at a cost of over a thousand instructions. It also confirms that **the text layer
+has already done what it can** -- the remaining moves are the direct consequence of "the value is born
+in `r0`", which can only be fixed at emission time, i.e. by the new path of §37.3. The ablation is
+frozen here as well: anyone proposing "turning a pass off is faster" has to answer this table first.
