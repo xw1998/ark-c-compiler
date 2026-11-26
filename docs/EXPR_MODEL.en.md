@@ -2606,3 +2606,70 @@ Corpus-wide (`BASE`+`chainfold`+`pushpop`, 9,775 insns), per class:
 2. Do not claim "the text layer can still squeeze out 200 more insns": the two large
    items are quantified and both sit on cross-block liveness.
 3. Do not attribute 294 vs 9 to "armcc lowers ladders better" (§27.4 already refuted it).
+
+## 29 Three probes that close the text layer, and the Task V pre-registration (2026-11-26)
+
+### 29.1 Two new probes (prototype measurements, not estimates)
+
+To make sure the sentence in 28.4 ("the text layer cannot do it") is not an excuse, the
+amount a *real CFG plus liveness* could reach was measured. The prototypes are
+`D:/tmp/bm/cf/v1_proto.py` (CFG construction, backward liveness, successors/predecessors)
+and `v2_proto.py`, run over the 95-TU corpus of `BASE`+`chainfold`+`pushpop` (9,775 insns).
+
+**Probe 1: constant residency.** Rule: if a `.Llit_k` is loaded at least twice in a
+function, and for some `LDR rX, .Llit_k` the next instruction reads `rX` without writing
+it and `rX` is not live after it (liveness decides), that load can go and the next
+instruction can name a resident register instead; the resident register must come from
+`{r9, r10, r11}`, be mentioned nowhere else in the whole function body, and be saved by
+the prologue `PUSH` (so the caller is not corrupted). Result:
+
+- corpus **40 insns / 39 functions** (largest single function
+  `HAL_DMAEx_MultiBufferStart_IT`, 14).
+
+**Probe 2: `MOV` copy propagation.** Rule: if `MOV rX, rY` is followed by an instruction
+that reads `rX`, does not write `rX`, does not write `rY`, and `rX` is dead afterwards,
+rename that use to `rY` and delete the `MOV`. Result:
+
+- corpus **23 insns / 11 functions** (largest TU `stm32f4xx_hal_dma.c`, 10).
+
+Together **63 insns = 0.64%**. With S19-a's 47 already banked, everything the text layer
+can still do with local proofs is **under 0.7%** of 9,775. `1.740x` is the text floor.
+
+### 29.2 Why the 828 literal loads stay
+
+`40` is the answer: what can be saved is not the number of loads but the **existence of a
+register that can hold the value across blocks**. There are three (`r9`-`r11`), and
+`HAL_DMAEx_MultiBufferStart_IT` alone has 74 distinct pool literals loaded 294 times
+(12 constants times 5 macro expansions times their per-region pool copies). Three
+registers eat 14 of them. Eating the rest requires **register allocation in the emitter** --
+which is exactly how armcc keeps constants in `r8`-`r12`/`lr` across ladders (28.3), and
+not something the text layer can add.
+
+### 29.3 Task V pre-registration (three slices, frozen one at a time)
+
+| Slice | Content | Criterion (frozen before implementing) | Cropping |
+| --- | --- | --- | --- |
+| **V-1** | a **constant/address residency cache in the emitter**: pin the most-used constants or addresses of a function on registers that the prologue `PUSH` already saves and that the emitter's allocator does not use; load at first use, refer to them afterwards | corpus instruction count must be **<= 9,775 - 150** and `PUSH`+`POP` must not grow; otherwise the slice is withdrawn, the criterion is not re-cut | new switch off by default, `ARKCC_FEATURE_OPT_CONSTCACHE`, 0 in the `STM32_MIN` tier |
+| **V-2** | **value transport**: fold the pure copies the emitter emits between `IR_PUSH`/`IR_POP` (the bulk of the 1,667 `MOV`) | corpus `MOV` count must drop by **>= 200** and the total must not rise | own switch, as above |
+| **V-3** | **allocator**: colour live intervals instead of the fixed scratch + stack scratchpad | target: corpus <= 5,619 x 1.10; no stage is promised until V-1/V-2 are measured | own switch, as above |
+
+Hard constraints shared by all three (not negotiable):
+
+1. **OFF IS OFF**: with the new switch off, all 95 TUs must be byte-identical to the
+   current `arkcc.exe`.
+2. **The answer does not change**: the full `tests/arm_exec/` suite plus the `unicorn`
+   differential (value and RAM snapshot) agree in both arms.
+3. **Croppable**: in the `STM32_MIN` tier the feature must fail the build and the switch
+   must be refused by name (`C3900U`).
+4. **Miss the bound and withdraw**: criteria go into this section before implementation
+   and are copied out afterwards, never recomputed.
+5. **IR semantics untouched**: V-1/V-2 change only how a value is moved, never what is
+   computed.
+
+### 29.4 Forbidden readings
+
+1. Do not call V-1/V-2 "the road to 1.0x": their targets are -150, -200 and "look first";
+   against 5,619, even an optimistic V-1+V-2 lands around 1.70x.
+2. Do not treat the 63 in 29.1 as "another 0.6% still to grab" -- the probes exhausted
+   what local proofs can see; what remains is *not locally provable*, not "unwritten".
+3. Do not claim V-1/V-2 complete without a full regression run.
