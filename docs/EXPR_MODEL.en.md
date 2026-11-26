@@ -1488,3 +1488,97 @@ the same corpus: 1.90x -> **1.84x**.
    ladders below the layer threshold; both are the rule declining on purpose.
 4. Do not edit section 17 with these numbers: 17 is the pre-registration record, and post-run
    deviations belong here.
+
+## 19 What is left in the text layer after S15 (2026-11-26, post-run census)
+
+With S15 landed the whole corpus was re-measured to answer one question: **what is the next
+slice on top of the current emitter, and what is its bound?**
+
+Baseline: 95 TUs, all 29 `-fopt-*` switches on (the 26 flags + `spill` + `ldhoist` +
+`stackframe` + `deadins` + `ladderload` + `ladderstage`) => **10,347 insns / 375,454 B**;
+armcc 5.06u7 `-O2` on the same corpus is **5,619 insns** => **1.841x**. Scripts:
+`D:/tmp/bm/s16all.py` (compile) and `D:/tmp/bm/cmp16.py` (classify, same classifier as §1).
+
+### 19.1 Category reconciliation (29 flags vs armcc)
+
+| Category | arkc | share | armcc | share | delta |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `MOV` immediate | 1,147 | 11.1% | 389 | 6.9% | **+758** |
+| `MOV` register | 883 | 8.5% | 214 | 3.8% | **+669** |
+| `PUSH`/`POP` | 839 | 8.1% | 156 | 2.8% | **+683** |
+| literal pool | 809 | 7.8% | 391 | 7.0% | +418 |
+| `[sp, #n]` | 453 | 4.4% | 46 | 0.8% | +407 |
+| arithmetic | 735 | 7.1% | 302 | 5.4% | +433 |
+| `MOVW`+`MOVT` | 339 | 3.3% | 0 | 0.0% | +339 |
+| logic | 732 | 7.1% | 394 | 7.0% | +338 |
+| other memory | 1,517 | 14.7% | 1,207 | 21.5% | +310 |
+| branches | 1,534 | 14.8% | 1,284 | 22.9% | +250 |
+| frame access `[r6, #n]` | 190 | 1.8% | 45 | 0.8% | +145 |
+| `CMP`/`CMN`/`TST`/`TEQ` | 606 | 5.9% | 479 | 8.5% | +127 |
+| `IT` | 40 | 0.4% | 0 | 0.0% | +40 |
+| `BL`/`BLX` | 182 | 1.8% | 153 | 2.7% | +29 |
+| other | 50 | 0.5% | 48 | 0.9% | +2 |
+| extend/reverse | 81 | 0.8% | 202 | 3.6% | -121 |
+| shifts | 212 | 2.0% | 309 | 5.5% | -97 |
+| barrier/system | 20 | 0.2% | 22 | 0.4% | -2 |
+| **total** | **10,347** | | **5,619** | | **+4,728 (1.84x)** |
+
+Against §1 (26 flags, 11,666) S10-S15 took **1,319 insns = 11.3%**; the four value-transport
+categories (`MOV` immediate, `MOV` register, `PUSH`/`POP`, frame access) went from 4,606 down to
+**3,059**, still **3.8x** armcc — **value transport remains the only overspent item**. Every other
+category is of the same order (shifts and extends are actually below armcc).
+
+### 19.2 Where it is concentrated (arkc side, 210 functions)
+
+| Function | arkc | note |
+| --- | ---: | --- |
+| `HAL_DMAEx_MultiBufferStart_IT` | 1,598 | 24 comparison ladders / 250 layers, 5 insns per layer |
+| `HAL_RCC_OscConfig` | 982 | six `if/else` trees plus bit-field read-modify-write |
+| `HAL_DMA_IRQHandler` | 460 | |
+| `HAL_RCC_ClockConfig` | 319 | |
+| `HAL_RCCEx_PeriphCLKConfig` | 297 | |
+| `HAL_GPIO_Init` | 302 | |
+| `HAL_DMA_PollForTransfer` | 195 | |
+| top ten functions | 4,308 | 41.6% of the corpus |
+
+`HAL_DMAEx_MultiBufferStart_IT` went from 2,120 in §17 to 1,598 (S15 took 522), but each layer is
+still **5 insns** (`LDR Rc, .Llit_k` / `CMP Rd, Rc` / `BNE Lnext` / `MOV|MOVW Rv, #imm` /
+`B Ljoin`). gcc emits 292 insns for the same function: the compared value is **loaded once**
+(in `r4`), the successor constants are **derived arithmetically** (`ADD r3, r3, #24`), and the
+selected value is **folded into the memory access of its arm**. All three need "pick a register for
+the compared value" and "fold the selection into the access" — both live in the emitter, and the
+text layer can only watch the five lines that were already fixed at emission time.
+
+### 19.3 Remaining candidate families and their bounds (29 flags, 10,347 basis)
+
+Script `D:/tmp/bm/ub19.py` (per function, per basic block; every number is an **upper bound**,
+not a reachable amount):
+
+| Candidate | bound (insns) | of 10,347 | why it is hard to realise |
+| --- | ---: | ---: | --- |
+| result born in its destination (`MOV rD, r0` right after a write to `r0`) | 311 | 3.01% | the emitter must choose the destination register up front; a text rewrite has to deal with 16/32-bit encoding growth (no byte win) |
+| base folded into the addressing mode (`ADD rB, rX, #imm` then one use of `[rB]`) | 209 | 2.02% | needs `rB` dead in the block; `-fopt-addr` already took the foldable part |
+| single-register `PUSH`/`POP` round trip | 202 / 109 | 1.95% | LIFO pairing across blocks; S10 already cut 501 -> 202 |
+| duplicate immediate materialisation inside a block | 47 | 0.45% | what `-fopt-constcache` covers |
+| literal base hoisting (§13) | 140 | 1.35% | needs a dedicated register |
+| dead frame stores (§13) | 91 | 0.88% | |
+
+The first three overlap (the same `r0` birth point and the same `ADD` base), so **adding them is not
+a reachable amount**: conservatively, in the spirit of §17.2, some **350-450 insns = 3.4%-4.4%**
+can be cashed, i.e. **10,347 -> about 9,900-10,000, 1.76x-1.78x**.
+
+### 19.4 Verdict (frozen)
+
+1. **The text layer ends here**: no single family has a bound above 3.0%, and no one slice can push
+   1.84x below 1.5x.
+2. **The 1,300 insns in `HAL_DMAEx_MultiBufferStart_IT` are not a text-layer bill**: they need
+   (a) a register for the compared value that the result constants do not clobber, (b) successor
+   constants derived arithmetically, (c) the selection folded into a memory access — all three live
+   in the emitter/IR, and only the register-machine model of §4 can take them.
+3. **Cross-ladder sharing stays rejected per §17.2**: between two ladders there is a
+   `STR Rv, [r1, #0]` writing `DMA1/2->IFCR`, and the text layer has no aliasing information to
+   prove it cannot hit `*(r8 + #0)`.
+4. **The next slice needs a project-level decision**: either "S16 result born in its destination +
+   base folded into addressing (about 3.4%-4.4%)", or "S17 change the emitter model (§4 bound
+   1.28x-1.40x, costed as a new project)", or "close the performance line". This section only
+   records measurements; it pre-registers nothing.
