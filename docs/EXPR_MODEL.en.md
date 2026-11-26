@@ -3045,3 +3045,156 @@ does not change (`tests/arm_exec/` plus a `unicorn` differential on value and RA
 2. Do not treat V-3-a's 400 as reaching armcc: 9,775 - 400 = 9,375, still 1.67x against 5,619;
    closing the rest needs the allocator proper.
 3. Do not merge any V-3-a commit without OFF IS OFF and the two-arm execution differential.
+
+## 34 The V-3-a premise refuted by measurement; the armcc O2 per-function / per-mnemonic gap; the text layer is exhausted (2026-11-26, recorded after measurement)
+
+This section does two things: **nail the reason V-3-a is withdrawn onto reproducible numbers**, and
+**give, for the first time, the armcc O2-side per-function and per-mnemonic gap table** (until now
+there was only the single total 5,619, which cannot locate where the gap is). The conclusion is that
+**even the sum of all remaining text-layer slices cannot reach armcc; the next slice must be IR-level
+register allocation (V-4), which is a rewrite, not a slice**.
+
+### 34.1 Why V-3-a (emitter destination retargeting) is withdrawn
+
+V-3-a as frozen in §33.3 says "an `IR_*` result no longer lands unconditionally in `r0` but lands
+directly in the register the next consumer wants", with the criterion "<= 9,775 - 400, and
+`PUSH`+`POP` must not grow". There are three reasons for withdrawal, all measured or source facts.
+
+**(1) The one existing mechanism that can express "the value lands in a chosen register" is
+catastrophic when measured.** The only such switch is `--reg-top` (`ark_top_try` / `ark_top_drain`,
+which keeps the value at the register top instead of on the stack). Four-arm readings, same 95 TU
+corpus, same `-O2`:
+
+| Arm | Instructions | `.text` bytes |
+|---|---|---|
+| `BASE` (everything off) | 10,172 | 372,761 |
+| `--reg-top` alone | **16,491** | 467,718 |
+| `BASE + chainfold + pushpop` | 9,775 | 358,547 |
+| `BASE + chainfold + pushpop + --reg-top` | **16,454** | 467,243 |
+
+`--reg-top` is **1.62x worse** than the baseline, and stacking the already-winning passes does not
+save it (16,454). The reason is in the source: `ark_top_drain` pushes `r0` back onto the value stack
+before every unmodelled IR op, so "keep the register top" costs a flood of spills and reloads; also
+`-fopt-imm` and `-fopt-pair` are both gated by `!ark_top_enabled()`, so enabling `--reg-top` turns off
+two already-winning optimisations. **This route is not mistuned; its payoff structure is negative.**
+
+**(2) The 468 `MOV`s in the target simply do not exist at emission time.** §33.2 classified all 1,667
+`MOV`s: 277 `MOV rP, r0` (result spilled into a callee-saved register) plus 191 `MOV r0, rP` (fetched
+back before the next computation) = 468, all produced by **text passes that run after emission** —
+the order is `ark_regalloc_function` (unconditional) -> `ark_vreg_function` -> `slotreg`. In other
+words, "emit the result straight into the final register" lacks a precondition at emission time:
+**that final register has not been allocated yet**. The mechanism frozen in §33.3 cannot express it.
+
+**(3) Even if fixed it cannot beat the current baseline.** `-fopt-imm`, `-fopt-pair` and
+`-fopt-pushpop` all require `!ark_top_enabled()`, so `BASE+chainfold+pushpop` (9,775) is already the
+best number obtainable **with reg-top off**. **V-3-a is judged "premise refuted by measurement",
+withdrawn, not implemented.**
+
+### 34.2 New evidence: the armcc O2 per-function and per-mnemonic gap (first reproducible baseline)
+
+Scope: 96 TUs x 5 optimisation levels (`O0/O1/O2/O3space/O3time`) = 480 `.o` files under `D:/tmp/cfB/`.
+The 96 `O2` files are decoded with a self-written capstone ELF32-LE parser (`D:/tmp/bm/cf/armo.py`),
+walking each `FUNC` symbol over .text. **A symbol's `value` must be masked with `& ~1` to clear the
+Thumb bit**, otherwise decoding starts at byte 2 and the totals halve (hit this round: 2,265; correct
+after the fix).
+
+- **armcc O2 side: 427 `FUNC` symbols, 5,291 instructions** (the difference from the old 5,619 comes
+  from a different symbol scope).
+- Intersecting by function name with our 9,660-instruction arm: **184 functions, 9,015 vs armcc
+  5,170 = 1.742x**.
+
+**Per-function gap (top six)**:
+
+| Function | Ours | armcc O2 | Gap | Ratio |
+|---|---|---|---|---|
+| `HAL_RCC_OscConfig` | 977 | 336 | **641** | 2.91x |
+| `HAL_DMAEx_MultiBufferStart_IT` | 1,207 | 987 | 220 | 1.22x |
+| `HAL_DMA_IRQHandler` | 421 | 171 | 250 | 2.46x |
+| `HAL_RCC_ClockConfig` | 312 | 121 | 191 | 2.58x |
+| `HAL_RCCEx_PeriphCLKConfig` | 293 | 125 | 168 | 2.34x |
+| `HAL_GPIO_Init` | 282 | 155 | 127 | 1.82x |
+
+The 641 from `HAL_RCC_OscConfig` alone is about **17% of the whole gap**. Worst ratios beyond that
+table: `HAL_RCCEx_EnablePLLI2S` **3.00x**, `HAL_RCC_OscConfig` 2.91x, `DMA_CheckFifoParam` 2.88x.
+
+**Per-mnemonic normalised excess** (same 184-function matched set: armcc 5,177 / ours 9,020):
+
+| Mnemonic | Ours | armcc | Excess |
+|---|---|---|---|
+| `mov` | 1,539 (17.1%) | 281 (5.4%) | **+1,049** |
+| `push` | 352 | 66 | +237 |
+| `pop` | 348 | 88 | +195 |
+| `add` | 490 | 86 (plus `adds` 108) | +340 |
+| `and` | 383 | 74 | +254 |
+| `movw` | 168 | 12 | +156 |
+| `movt` | 87 | 0 | +87 |
+| `mvn` | 80 | 0 | +80 |
+| `b` | 623 | 263 (plus `bx` 125) | +165 |
+
+`push`+`pop` totals **+432**; `movw`+`movt` totals **+234**. One structural fact on top:
+**we emit none of the 16-bit short forms `movs`/`adds`/`subs`/`lsls`**, while armcc uses
+318/108/75/185 of them — that is not "one instruction fewer", it is a missing **instruction-width
+selection** (armcc fits the same work into fewer bytes). It belongs to the encoding layer, not to
+peepholes.
+
+**Inside `HAL_RCC_OscConfig`** (our 977): `MOV` 250 (`MOV R,#N` 141, `MOV R,R` 109), `LDR` 164,
+`B` 121, `CMP` 59, `PUSH` 53, `AND` 50, `POP` 31, `ITE` 11, `MOVcc` 22. armcc in the same function:
+`ldr` 63, `cmp` 30, `b` 30, `bl` 24, `lsls` 22, `bpl` 12, `ubfx` (bit extraction). The bulk of the gap
+is "every field to be stored needs a fresh `MOV` of an immediate before the `STR`, and the address is
+re-materialised each time" — the amplified version of the 942 `MOV rX,#imm` from §33.2.
+**The attribution is consistent.**
+
+### 34.3 The remaining text-layer families, enumerated (each bound < 150, all measured item by item)
+
+Every family that could still be done inside the existing text-pass machinery is listed, judged with
+real CFG liveness (the fixed-point `la[]` of `D:/tmp/bm/cf/analyze.py`). **Each bound is measured, not
+estimated**:
+
+| Family | Measured bound | What blocks it |
+|---|---|---|
+| Deletable copies (true live ranges across blocks) | **66** | the rest die inside "r5 reused as general scratch" |
+| `MOV rD,#imm` / `MOV rS,rD` (forms L4 does not cover) | **61** | same |
+| Dead writes (liveness) | **161** | 36 belong to "ITE boolean pairs"; deleting a whole block means also removing `CMP/ITE` (16 blocks = 64 insns) |
+| `MOV #0` followed by `STR` (needs a zero register) | **137** (the #0 part of 241 pairs) | needs a permanent zero register; only obtainable in the prologue and it changes the ABI |
+| `AND rX,rX,#m ; CMP rX,#0` (TST folding) | **25** | bound too small |
+| Boolean idempotent blocks `CMP/ITE/MOVcc#1/MOVcc#0` | **16 blocks / 64 insns** | needs whole-block recognition plus symmetry proof |
+| `B` cleanup (to next label / chains / conditional+B / unreferenced labels) | **95** (`B `->next label 10, chains 68, conditional+B 17) | 216 unreferenced label lines **save no instructions** |
+
+**The summed bound is about 250–600** (families overlap, so they cannot simply be added), while
+9,660 -> 5,291 needs **-4,369**. An order of magnitude apart. **"The text layer is exhausted" is a
+quantitative conclusion, not an excuse.**
+
+Two encoding facts that **must be handled with conservative semantics** (so that no future gate can be
+falsely green):
+
+1. Our assembler encodes `MOV r0, #0` as **`movs r0, #0` (16-bit, writes flags)** and
+   `MOV r0, #0x20000000` as `mov.w`. Therefore any "delete `MOV rX,#imm`" rule **must assume it writes
+   flags**. The existing `di_writes_flags("MOV")` returns `false`; that is a **so-far-untriggered**
+   hazard and no new rule may inherit it.
+2. **The `ADD rD,rB,#k` + `mem[rD]` fold is not allowed**: measurements show that in 101 occurrences,
+   **98 keep `rD` live** (the address register is reused afterwards), so folding would delete live
+   code. The existing `-fopt-addr` refusal is correct.
+
+### 34.4 Verdict
+
+1. **V-3-a withdrawn** (premise refuted by the 1.62x of `--reg-top` and by the emission/allocation
+   ordering); not implemented, not patched up.
+2. **V-4 = IR-level register allocation**: turn "the value is born in `r0`, then moved by text
+   passes" into "the value is born in an allocated register". That means **rewriting the emitter and
+   introducing an IR-level allocator**, not adding another pass. A design document and a separately
+   frozen criterion must come first.
+3. Until V-4 is chartered, **the only permitted slices** are those from §34.3 with a bound >= 120 and
+   conservative flag semantics — currently only "delete dead writes by per-line liveness", bound 161.
+   Every other family is < 150 and is not done; the reason is the table above.
+
+### 34.5 How not to read this
+
+1. Do not read the V-3-a withdrawal as "nothing was done": the four-arm `--reg-top` readings and the
+   emission/allocation ordering are **measured evidence**, the -400 criterion was not met, and it has
+   been shown it cannot be met.
+2. Do not read 9,660 - 161 as reaching armcc: still more than 4,200 short; the text layer converges,
+   it is not merely slow.
+3. Do not credit text passes with armcc's `ubfx`/`lsls` short encodings: that is the encoding and
+   allocation layer's gap.
+4. Do not reuse any number here on a different corpus or flag combination: every number carries its
+   arm name and the 95 TU scope.
