@@ -2533,3 +2533,76 @@ The "stack round trip" row is gone: this slice cashed it in (pre-registered 32 -
    texts) and **has no runtime coverage**. That is this slice's honest boundary.
 5. Do not read the fixed point as "a patch for a bug": it follows from the existing
    "scan to the end of the buffer" convention that binds every text pass.
+
+## 28 S19-b's premise is refuted; where the next cut goes (2026-11-26)
+
+### 28.1 The pre-registered hypothesis
+
+§26.3 froze S19-b as "pick the compared value and the target address into registers
+like `r9`-`r11` that expressions do not use, so each ladder layer loses one push source",
+bounded by the "stack round trip, 32" row of §26.1.
+
+### 28.2 Measurement: the hypothesis does not hold
+
+After S19-a landed, the same function (`HAL_DMAEx_MultiBufferStart_IT`, `BASE`+`chainfold`+
+`pushpop`) was re-measured:
+
+- the function now has 13 `PUSH` / 16 `POP` (35 / 38 before S19-a), and the 12-layer
+  selector ladder has **not a single stack round trip left**. The "one push source per
+  layer" that S19-b meant to remove is not in the text any more -- S19-a's `pair`/`remat`
+  removed it outright. The pre-registration had read the ladder as "still pushing".
+
+### 28.3 Measurement: where the difference actually sits
+
+Same function, against real armcc (`--thumb -O2 --cpu Cortex-M4`), per class (table in
+§27.4):
+
+| Item | armcc5 | Ours | Delta |
+| --- | ---: | ---: | ---: |
+| Total | 985 | 1,210 | +225 |
+| Literal loads `LDR rX, .Llit` | **9** | **294** | +285 |
+| `LDR` total (including memory) | 147 | 350 | +203 |
+| `MOV` | 71 | 131 | +60 |
+
+The 294 is traced to the source: the second argument of `__HAL_DMA_CLEAR_FLAG` is
+`__HAL_DMA_GET_*_FLAG_INDEX(hdma)`, a 12-constant `CHSEL` ladder that the function expands
+five times, so those 12 constants are each loaded about 21 times in this one function
+(74 pool labels, 294 loads). armcc instead **loads two base literals, derives the other
+seven with small `ADD`/`SUB` immediates, and keeps them in `r8`-`r12`/`lr` across
+ladders**. That is not a difference in "how ladders are lowered" -- it is **constant
+materialisation plus cross-basic-block register caching**.
+
+Corpus-wide (`BASE`+`chainfold`+`pushpop`, 9,775 insns), per class:
+
+| Item | Insns |
+| --- | ---: |
+| `MOV` | 1,667 |
+| `LDR` | 1,955 (`LDR rX, .Llit` = 828) |
+| `PUSH`+`POP` | 769 |
+| `STR` | 935 |
+| `B` | 642 |
+| `CMP` | 606 |
+| `MOVW`+`MOVT` | 293 |
+
+### 28.4 Verdict
+
+1. **S19-b is withdrawn**: it was not "implemented with no effect", its **premise was
+   refuted and nothing was built**. The "stack round trip, 32" family was cashed in by
+   S19-a (47), so that account is settled.
+2. **The text layer closes at 1.740x.** The two remaining large items are `MOV` 1,667
+   (value transport) and `LDR rX, .Llit` 828 (constant materialisation); both need
+   **cross-basic-block liveness** to rewrite safely, and a text pass does not have it
+   (`pp_oracle` can only answer boolean questions about an interval). The 223-row of
+   §27.5 still holds (that is the part with local evidence); it does **not** include the
+   828.
+3. The next cut can only be **the emitter / register allocator** (Task V): keeping
+   constants in registers across a long straight-line region and minimising value
+   transport. That is not another `-fopt-*`; it is a different IR-to-asm emitter.
+
+### 28.5 Forbidden readings
+
+1. Do not write S19-b up as "implemented, zero gain" -- it was not implemented, and the
+   reason is refutation by measurement.
+2. Do not claim "the text layer can still squeeze out 200 more insns": the two large
+   items are quantified and both sit on cross-block liveness.
+3. Do not attribute 294 vs 9 to "armcc lowers ladders better" (§27.4 already refuted it).
