@@ -255,6 +255,59 @@ One documentation misspelling is corrected along the way: the constant-division 
 spelled `--divconst`, and `IMM_FOLD` / `STRENGTH` used to call it `-fopt-divconst` --
 which under this rule is now refused.
 
+#### 5.2.2 A single-feature crop must hold together (0.9.1-wip, S52)
+
+The STM32_MIN profile crops a whole set of passes; `-DARKCC_FEATURE_OPT_<X>=0` crops
+**exactly one**. The second kind was broken, and it broke quietly:
+
+| Crop | Link error before the fix |
+| --- | --- |
+| `-DARKCC_FEATURE_OPT_LIVE=0` | `undefined reference to lv_bit / lv_regs / lv_rw / lv_branch_kind / lv_ends_block` |
+| `-DARKCC_FEATURE_OPT_SPILL=0` | `undefined reference to sp_reglist` |
+
+Both have the same cause: **a helper was defined inside the `#if` of the pass it was
+written for, while its callers lived somewhere else.** The liveness engine (`lv_*`) is
+not only `-fopt-live`'s: `-fopt-remat`, `-fopt-ldhoist`, `-fopt-stackframe`,
+`-fopt-deadins` and `-fopt-pushpop` all draw on it. `sp_reglist` is the register-list
+reader shared by `-fopt-spill` **and** `-fopt-pushpop`, and pushpop is still there when
+spill is cropped away.
+
+**Why it went unnoticed**: the "cropped build" section of each per-pass gate called
+`build_arkcc(...)` and called `skip()` when it failed. A configuration that does not
+compile was recorded as "not applicable" instead of red. This round fixes the holes
+first, and turns that kind of check into a hard failure.
+
+The fix uses **derived macros**, not "forced dependencies" (the latter would break
+"the cropped build refuses that switch by name", which is one switch, one meaning):
+
+| Derived macro | Definition (`include/arkcc_config.h`) |
+| --- | --- |
+| `ARKCC_NEED_LV` | `PEEP \|\| COPYPROP \|\| LIVE \|\| ADDRFOLD \|\| REMAT \|\| LDHOIST \|\| STACKFRAME \|\| DEADINS \|\| PUSHPOP` |
+| `ARKCC_NEED_SP` | `(SPILL && LIVE) \|\| PUSHPOP` |
+
+In `backend_arm.c` every helper block **shared by more than one pass** (the liveness
+engine from line 1615, and `sp_popcount` / `sp_reglist`) now guards on the derived macro;
+`sp_reglist` is **moved out** of the spill block into its own `#if ARKCC_NEED_SP`
+(moved, not guarded by a wider spill block: a pushpop-only build should not carry the
+whole spill pass).
+
+Measured:
+
+| Check | Result |
+| --- | --- |
+| Host `make all` (default profile) | 0 error |
+| **66** `ARKCC_FEATURE_*` macros, each built and linked with `-DX=0` under gcc | **66/66 OK** (all of OPT_* plus IPO/MIR/OBJ_IR/PARTIAL_LINK/DWARF/MEMLINT/VLA/COMPLEX/FPU_HW/SIZEWEIGHT/TAILCALL/TAILMERGE/UNROLL/LICM/TRIGRAPH/UNUSEDRESULT/CONST_GLOBAL/SCATTER/WCHAR) |
+| `make test-crop` (`tests/run_crop_tests.py`) | all green |
+
+The gate pins four things: (1) the cropped build **links** (no more `skip`); (2) the
+cropped-away switch is **refused by name** (`C3900U`, echoing the flag) -- the live crop
+also cascades into `-fopt-spill` and `-fopt-coalesce` (both are defined on top of live
+in the config), and all three are asserted; (3) **OFF IS OFF**: with no switches the
+cropped build writes **byte for byte** the same assembly as the full build (a synthetic
+fixture and a real HAL TU), the shared switch set first being settled by dropping every
+flag the cropped build refuses by name, so the comparison lands on switches the cropped
+build really owns; (4) anti-false-green: the full build **accepts** all four switches.
+
 ### 5.3 Verification status of the three platforms (honest)
 
 | Platform | How it was checked | Status |

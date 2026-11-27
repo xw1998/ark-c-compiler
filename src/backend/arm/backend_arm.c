@@ -902,7 +902,7 @@ static void ark_fix_far_offset(AsmBuffer *b, int from) {
     }
 }
 
-#if ARKCC_FEATURE_OPT_PEEP || ARKCC_FEATURE_OPT_COPYPROP || ARKCC_FEATURE_OPT_LIVE
+#if ARKCC_NEED_LV
 /* --------------------------- peephole cleanup ----------------------------
  * Two copy-elimination rules over one function's emitted text.  Neither needs
  * liveness analysis, because each rule only turns a store/load round trip into
@@ -1338,7 +1338,7 @@ static void ark_peep_function(AsmBuffer *b, int from) {
     pp_r3(b, from);
 }
 
-#if ARKCC_FEATURE_OPT_COPYPROP || ARKCC_FEATURE_OPT_LIVE
+#if ARKCC_NEED_LV
 /* ------------------------ copy propagation (ECT family) ------------------
  * Two rules over one function's emitted text.  Both are the ones IAR ships
  * under "ECT CopyPropagation candidate" / "DefIntoMove" / "Dead MOV"
@@ -1612,7 +1612,7 @@ static void ark_copyprop_function(AsmBuffer *b, int from) {
     }
 }
 #endif /* ARKCC_FEATURE_OPT_COPYPROP (rules) */
-#if ARKCC_FEATURE_OPT_LIVE
+#if ARKCC_NEED_LV
 /* ------------------ liveness-driven register cleanup (-fopt-live) --------
  * The copy passes above are deliberately local: neither looks past a label or
  * a branch, because without liveness a register can look dead when it is not.
@@ -2784,9 +2784,9 @@ static void ark_addrfold_function(AsmBuffer *b, int from, unsigned retmask) {
     }
 }
 #endif /* ARKCC_FEATURE_OPT_ADDRFOLD */
-#endif /* ARKCC_FEATURE_OPT_LIVE */
-#endif /* ARKCC_FEATURE_OPT_COPYPROP */
-#endif /* ARKCC_FEATURE_OPT_PEEP || ARKCC_FEATURE_OPT_COPYPROP || ARKCC_FEATURE_OPT_LIVE */
+#endif /* ARKCC_NEED_LV (liveness engine: helpers + -fopt-live) */
+#endif /* ARKCC_NEED_LV (copy-propagation rules) */
+#endif /* ARKCC_NEED_LV (text-pass helpers) */
 #if ARKCC_FEATURE_OPT_REMAT
 /* ------------- same-value re-materialisation (-fopt-remat) ----------------
  * A register that already holds a constant is not made to hold it again:
@@ -3677,6 +3677,56 @@ static void ark_vregemit_report(void) {
 #endif /* ARKCC_FEATURE_VREGEMIT */
 
 
+#if ARKCC_NEED_SP
+/* The register-list reader is shared by -fopt-spill and -fopt-pushpop, so it
+ * lives outside either pass: cropping one of them must not leave the other
+ * calling a function that is no longer compiled (that build did not link).
+ * Compiling it here costs nothing when neither pass is in the build. */
+static int sp_popcount(unsigned v) {
+    int c = 0;
+    while (v) { c += (int)(v & 1u); v >>= 1; }
+    return c;
+}
+
+/* `{r0, r3, lr}` -> count, mask.  -1 if the list cannot be modelled exactly
+ * (odd token, duplicate name, empty list). */
+static int sp_reglist(const char *s, unsigned *mask) {
+    int n = 0, i = 1, cnt;
+    unsigned m = 0;
+    if (s[0] != '{') return -1;
+    for (;;) {
+        int r = -1;
+        while (s[i] == ' ' || s[i] == '\t') i++;
+        if (s[i] == '}') { i++; break; }
+        if (!s[i]) return -1;
+        if (!strncmp(s + i, "lr", 2) && !(s[i + 2] >= 'a' && s[i + 2] <= 'z')) {
+            r = 14; i += 2;
+        } else if (!strncmp(s + i, "pc", 2) && !(s[i + 2] >= 'a' && s[i + 2] <= 'z')) {
+            r = 15; i += 2;
+        } else if (s[i] == 'r' && s[i + 1] >= '0' && s[i + 1] <= '9') {
+            int v = s[i + 1] - '0';
+            i += 2;
+            if (s[i] >= '0' && s[i] <= '9') { v = v * 10 + (s[i] - '0'); i++; }
+            r = v;
+        } else {
+            return -1;
+        }
+        if (r < 0 || r > 15) return -1;
+        m |= lv_bit(r);
+        n++;
+        while (s[i] == ' ' || s[i] == '\t') i++;
+        if (s[i] == ',') { i++; continue; }
+        if (s[i] == '}') { i++; break; }
+        return -1;
+    }
+    if (s[i]) return -1;
+    cnt = sp_popcount(m);
+    if (n == 0 || cnt != n) return -1;
+    *mask = m;
+    return n;
+}
+#endif /* ARKCC_NEED_SP */
+
 #if ARKCC_FEATURE_OPT_SPILL && ARKCC_FEATURE_OPT_LIVE
 /* ------------- cross-block stack round trips (-fopt-spill) ---------------
  * A `PUSH {rX}` whose only reader is a later `POP {rX}` on every path is a
@@ -3760,50 +3810,6 @@ static char     sp_lab[SP_MAX_LABELS][SP_LAB_LEN];
 static int      sp_labline[SP_MAX_LABELS];
 static SpillPush sp_push[SP_MAX_PUSH];
 static int      sp_npush;
-
-static int sp_popcount(unsigned v) {
-    int c = 0;
-    while (v) { c += (int)(v & 1u); v >>= 1; }
-    return c;
-}
-
-/* `{r0, r3, lr}` -> count, mask.  -1 if the list cannot be modelled exactly
- * (odd token, duplicate name, empty list). */
-static int sp_reglist(const char *s, unsigned *mask) {
-    int n = 0, i = 1, cnt;
-    unsigned m = 0;
-    if (s[0] != '{') return -1;
-    for (;;) {
-        int r = -1;
-        while (s[i] == ' ' || s[i] == '\t') i++;
-        if (s[i] == '}') { i++; break; }
-        if (!s[i]) return -1;
-        if (!strncmp(s + i, "lr", 2) && !(s[i + 2] >= 'a' && s[i + 2] <= 'z')) {
-            r = 14; i += 2;
-        } else if (!strncmp(s + i, "pc", 2) && !(s[i + 2] >= 'a' && s[i + 2] <= 'z')) {
-            r = 15; i += 2;
-        } else if (s[i] == 'r' && s[i + 1] >= '0' && s[i + 1] <= '9') {
-            int v = s[i + 1] - '0';
-            i += 2;
-            if (s[i] >= '0' && s[i] <= '9') { v = v * 10 + (s[i] - '0'); i++; }
-            r = v;
-        } else {
-            return -1;
-        }
-        if (r < 0 || r > 15) return -1;
-        m |= lv_bit(r);
-        n++;
-        while (s[i] == ' ' || s[i] == '\t') i++;
-        if (s[i] == ',') { i++; continue; }
-        if (s[i] == '}') { i++; break; }
-        return -1;
-    }
-    if (s[i]) return -1;
-    cnt = sp_popcount(m);
-    if (n == 0 || cnt != n) return -1;
-    *mask = m;
-    return n;
-}
 
 static int sp_is_sp(const char *s) { return !strcmp(s, "sp"); }
 

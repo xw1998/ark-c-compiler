@@ -223,6 +223,53 @@ pass 的名字是**拼写错误**，不是外来旗标。
 全绿）。顺带订正一处文档错拼：除法常数那条旗标是 `--divconst`，过去在 `IMM_FOLD` 与
 `STRENGTH` 里被写成了 `-fopt-divconst`——按新规则那个拼写现在会被拒。
 
+#### 5.2.2 单特性裁切必须自洽（0.9.1-wip，S52）
+
+STM32_MIN 剖面是一整套裁切；`-DARKCC_FEATURE_OPT_<X>=0` 则是**只裁一个**。后者过去
+是坏的，而且坏得安静：
+
+| 裁切 | 修前的链接错误 |
+| --- | --- |
+| `-DARKCC_FEATURE_OPT_LIVE=0` | `undefined reference to lv_bit / lv_regs / lv_rw / lv_branch_kind / lv_ends_block` |
+| `-DARKCC_FEATURE_OPT_SPILL=0` | `undefined reference to sp_reglist` |
+
+根因是同一个错误：**辅助函数写在它"所属 pass"的 `#if` 里，调用者却写在别处**。
+活跃性引擎 `lv_*` 的调用者不止 `-fopt-live`——`-fopt-remat`、`-fopt-ldhoist`、
+`-fopt-stackframe`、`-fopt-deadins`、`-fopt-pushpop` 都在用；`sp_reglist` 是
+`-fopt-spill` **和** `-fopt-pushpop` 共用的寄存器表读取器，而 pushpop 在 spill 被裁掉时
+仍然在场。
+
+**为什么没被早发现**：各个 pass 门禁里，「裁切构建」那一段写的是
+`build_arkcc(...)` 失败就 `skip()`。于是一个编不过的配置被记成"不适用"，而不是红色。
+本轮先修洞、再把这类检查改成硬失败。
+
+修法用**派生宏**，不用"强制依赖"（后者会让"裁切后按名拒绝该旗标"失效，违背一键一义）：
+
+| 派生宏 | 定义（`include/arkcc_config.h`） |
+| --- | --- |
+| `ARKCC_NEED_LV` | `PEEP \|\| COPYPROP \|\| LIVE \|\| ADDRFOLD \|\| REMAT \|\| LDHOIST \|\| STACKFRAME \|\| DEADINS \|\| PUSHPOP` |
+| `ARKCC_NEED_SP` | `(SPILL && LIVE) \|\| PUSHPOP` |
+
+`backend_arm.c` 里凡是**定义**被多个 pass 共享的辅助块（活跃性引擎 1615 行起、
+`sp_popcount`/`sp_reglist`）的 `#if` 改成派生宏；`sp_reglist` 那一小块从 spill 块里
+**搬出来**，独立包在 `#if ARKCC_NEED_SP` 里（搬移而不是扩大 spill 守卫：pushpop-only
+构建不该把整段 spill pass 编进去）。
+
+实测：
+
+| 检查 | 结果 |
+| --- | --- |
+| 宿主 `make all`（默认档） | 0 error |
+| **66 个** `ARKCC_FEATURE_*` 逐个 `-DX=0` 用 gcc 编译链接 | **66/66 OK**（OPT_* 全量 + IPO/MIR/OBJ_IR/PARTIAL_LINK/DWARF/MEMLINT/VLA/COMPLEX/FPU_HW/SIZEWEIGHT/TAILCALL/TAILMERGE/UNROLL/LICM/TRIGRAPH/UNUSEDRESULT/CONST_GLOBAL/SCATTER/WCHAR） |
+| `make test-crop`（`tests/run_crop_tests.py`） | 全绿 |
+
+门禁钉住四件事：①裁切构建**链接成功**（不再 `skip`）；②被裁掉的旗标**按名拒绝**
+（`C3900U`，且回显旗标名）——注意 live 裁切会级联带走 `-fopt-spill` 与
+`-fopt-coalesce`（配置里这两个本来就定义在 live 之上），三条都断言；③**OFF IS OFF**：
+不带旗标时裁切构建与完整构建对同一份源码写出**逐字节相同**的汇编（合成夹具 + 一个真实
+HAL TU），共享旗标集先"按名剔除"——裁切构建拒绝的旗标在两侧都不给，比较才落在裁切
+构建真正拥有的开关上；④反假绿：完整构建**接受**这四个旗标。
+
 ### 5.3 三个平台的验证状态（如实）
 
 | 平台 | 怎么验的 | 状态 |

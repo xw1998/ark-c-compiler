@@ -1429,4 +1429,43 @@
 #   define ARKCC_FEATURE_PARTIAL_LINK   1
 # endif
 #endif
+
+/* ----------------------------------------------------------------------
+ * ARKCC_NEED_LV / ARKCC_NEED_SP: helper families that several text passes
+ * share.
+ *
+ * The live-register helpers (lv_bit / lv_regs / lv_rw / lv_branch_kind /
+ * lv_ends_block) and the register-list reader sp_reglist() were born inside
+ * one pass each -- -fopt-live and -fopt-spill.  Their definitions therefore
+ * sat inside that pass's #if, while the passes that reuse them (remat,
+ * ldhoist, stackframe, deadins, pushpop) call them from their own blocks.
+ * Cropping the owning feature out and keeping a caller produced a build that
+ * did not link at all:
+ *
+ *   -DARKCC_FEATURE_OPT_LIVE=0  -> lv_bit / lv_regs / lv_rw /
+ *                                  lv_branch_kind / lv_ends_block undefined
+ *   -DARKCC_FEATURE_OPT_SPILL=0 -> sp_reglist undefined (pushpop calls it)
+ *
+ * A derived switch fixes that without giving up the crop: a feature that
+ * calls the helpers turns them on here, and a build that crops every caller
+ * still gets rid of them.  Both are pure functions of the feature macros
+ * above, so -D on the command line moves them too.
+ * ---------------------------------------------------------------------- */
+#if ARKCC_FEATURE_OPT_PEEP || ARKCC_FEATURE_OPT_COPYPROP || \
+    ARKCC_FEATURE_OPT_LIVE || ARKCC_FEATURE_OPT_ADDRFOLD || \
+    ARKCC_FEATURE_OPT_REMAT || ARKCC_FEATURE_OPT_LDHOIST || \
+    ARKCC_FEATURE_OPT_STACKFRAME || ARKCC_FEATURE_OPT_DEADINS || \
+    ARKCC_FEATURE_OPT_PUSHPOP
+#  define ARKCC_NEED_LV     1
+#else
+#  define ARKCC_NEED_LV     0
+#endif
+
+#if (ARKCC_FEATURE_OPT_SPILL && ARKCC_FEATURE_OPT_LIVE) || \
+    ARKCC_FEATURE_OPT_PUSHPOP
+#  define ARKCC_NEED_SP     1
+#else
+#  define ARKCC_NEED_SP     0
+#endif
+
 #endif /* ARKCC_CONFIG_H */
