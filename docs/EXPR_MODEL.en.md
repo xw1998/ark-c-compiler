@@ -3586,3 +3586,114 @@ falls back to memory at a cost of over a thousand instructions. It also confirms
 has already done what it can** -- the remaining moves are the direct consequence of "the value is born
 in `r0`", which can only be fixed at emission time, i.e. by the new path of §37.3. The ablation is
 frozen here as well: anyone proposing "turning a pass off is faster" has to answer this table first.
+
+## 38 V-4 slice 2a: measurements and verdict -- withdrawn (2026-11-27, recorded after the run)
+
+None of the three criteria frozen in §37 was met, so the slice is withdrawn under the disposal
+clause of §37.4: `ARKCC_FEATURE_V4A`, `-fopt-v4a`, `--v4a-report`, the emitter and the routing are
+all removed, the five touched files are byte-identical to `e5913f6` again, and the best arm
+re-measures **9,588** (as at HEAD). The readings and root causes follow; no criterion was restated.
+
+### 38.1 What was implemented (a degenerate form of §37.3, stated as such)
+
+No vregs, no liveness, no linear scan were built. Instead IR value-stack slot `k` maps directly to
+physical register `r<k>`: the slot number *is* the register number, so cross-block data flow costs
+nothing and neither liveness nor an allocator is needed. `r12` is the scratch, there is no `r6`
+frame base (`[sp,#off]` addressing instead), the prologue/epilogue are emitted by the new path,
+every legacy text pass is skipped, and routing is per function (a function that does not route is
+byte-for-byte unchanged). What this measures is the floor of "plain slot-to-register mapping".
+
+One peephole layer was then added: **lazy constants plus immediate folding**. `PUSH_INT` no longer
+materialises a register immediately; a consumer with an immediate form (`ADD/SUB #imm`,
+`AND/ORR/EOR #imm12`, `LSL/LSR/ASR #imm`, `MUL` by a power of two, `CMP #imm`) folds the constant
+into a single instruction, and only the remaining consumers call `v4a_force()`.
+
+### 38.2 Criteria readings (§37.4, frozen wording)
+
+| Criterion | Required | Measured | Result |
+|---|---|---|---|
+| 1. routed set >= 30% of the corpus | >= 2,876 insns | **118 functions / 2,778 insns = 29.0%** | fail |
+| 2. routed set <= legacy x 0.80 | <= 2,222 insns | **2,778 -> 4,675 = 1.683x** | fail |
+| 3. whole corpus <= 9,588 - 500 | <= 9,088 | **11,408** | fail |
+| 4. `PUSH`+`POP` do not grow | 252 -> <=252 | **252 -> 19** | pass |
+| 5. same answers | both arms equal | `t1.c` smoke: both arms `returned 36` | pass |
+
+**Routing enumeration** (`--v4a-report`; the claimed counts equal the gate's per-function counts,
+`ERRSN 0`): 118 routed, 94 refused -- `call` 62, `irq` 17, `division` 6,
+`unreachable code with a body` 5, `wide argument` 3, `64-bit` 1. The §37.3 estimate of
+"154 functions / 3,459 insns" was 24% optimistic, which is why criterion 1 misses by one point at the
+implementation level. That estimate error is recorded here: next time, round down when estimating
+from the op allowlist.
+
+### 38.3 Family breakdown: where the loss is
+
+Inside the routed set, by mnemonic family (legacy 2,778 vs new 4,675):
+
+| Family | old | new | delta |
+|---|---|---|---|
+| `pushpop` (`PUSH`/`POP`) | 252 | 19 | **-233** |
+| `litpool` (`LDR .Llit`) | 211 | 0 | **-211** |
+| `mem-reg` (register-addressed memory) | 555 | 524 | **-31** |
+| other (ALU/compare/MOVW...) | 763 | 1,372 | **+609** |
+| `branch` | 255 | 393 | +138 |
+| `cmp` | 101 | 134 | +33 |
+| `mem-sp-store` (`[sp,#n]` store) | 121 | 223 | +102 |
+| `mov-reg` moves | 166 | 266 | +100 |
+| `mem-sp-load` (`[sp,#n]` load) | 103 | 467 | +364 |
+| `mov-imm` (`MOV/MOVW rN,#imm`) | 251 | 1,277 | **+1,026** |
+
+The three families the new path wins are exactly the ones it wins *structurally*: the runtime value
+stack is gone (-233) and the literal pool is no longer needed (-211). The four it loses are exactly
+what the legacy text layer already does: cross-block constant residency (`-fopt-constcache`, +1,026),
+locals resident in registers (`-fopt-slotreg`/`-fopt-vreg`, +466 of frame traffic), and copy
+propagation plus address/bitfield folding (+609 and +100). V4A runs no pass at all, so it starts
+from zero on that battleground.
+
+### 38.4 The decisive bound: criterion 2 is unreachable for this emission model
+
+Delete *all* `mov-imm` (1,277) and *all* `mem-sp` (690) instructions -- an unattainable hypothetical
+upper bound, i.e. constants never costing an instruction and locals never leaving a register:
+
+    4,675 - 1,277 - 690 = 2,708 = 2,778 x 0.975
+
+still far above 0.80. So criterion 2 is not "one more peephole away": **this emission model does not
+capture where the legacy path's savings come from**. The legacy -20% comes from value numbering,
+copy propagation and cross-block residency, not from value-stack overhead. The §37.7 ablation had
+already predicted this (turning any text pass off makes things worse); this round re-measured it on
+a second emission path.
+
+### 38.5 Disposal
+
+Per §37.4 ("any slice that misses is withdrawn, switch and routing together"):
+
+- `include/arkcc_config.h` (`ARKCC_FEATURE_V4A`), `include/config.h` (`enable_opt_v4a`/
+  `v4a_report`), `src/config.c` (flags and `config_print`), `src/main.c` (reject by name,
+  `--v4a-report`) and `src/backend/arm/backend_arm.c` (`v4a_plan`/`v4a_emit`/`v4a_count` and the
+  routing hook, -1,024 lines) are all reverted.
+- After the revert the best arm (BASE + chainfold + pushpop + remat + deadins) re-measures
+  **9,588 / 95 TU**, byte-identical to HEAD; `make test` is green (§38.7).
+- The measurement scripts stay outside the repo: `D:/tmp/bm/cf/v4a_meas.py` (whole-corpus counts) and
+  `v4a_cmp.py` (per-function counts for both arms, routing enumeration, claimed-vs-actual check).
+  Every number in this section is reproducible with those two scripts.
+
+### 38.6 How this must not be read
+
+1. Not as "a full allocator cannot work either". This measured the degenerate version (slot-to-
+   register mapping plus immediate folding); it only shows that without value numbering, liveness
+   and an allocator you cannot win. A full allocator has **not** been measured.
+2. But the design intent of §37.3 is not a warranty either: the bound above shows the bulk of the
+   savings sits in the three families the legacy text layer already handles. To beat the legacy path
+   a full allocator must first be no worse than it on those families (same class of cross-block
+   constant and local residency), and only then talk about overtaking; otherwise it just turns
+   1,277 `mov-imm` into 1,000.
+3. Do not rescue the slice with "expression-heavy functions do win" (`compute` in `t1.c`: 149 -> 62):
+   §37.4 judges the whole routed set, and a single point is not compliance.
+4. Do not read the 30% miss as "the estimate was fine, the allowlist is just strict": the allowlist
+   already admits ops one by one, and the 128 `volatile index` refusals were relaxed in this round
+   (`0x10000` only selects the DMB pair and never changes the ARM encoding, see the `Bug-I5` note),
+   yet routing still reaches only 118. The missing point is estimate bias, not an implementation hole.
+
+### 38.7 Regression
+
+After the revert `make test` (all 73 gate targets) passes; the best arm is 9,588 as at HEAD, so
+**OFF IS OFF holds both at corpus level and byte-for-byte** (this slice leaves no switch behind).
