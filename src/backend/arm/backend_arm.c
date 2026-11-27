@@ -5857,6 +5857,16 @@ static void ark_vreg_function(AsmBuffer *b, int from, IrFunc *f, int local_eff) 
             }
             if (vg_lk[j] == 3) break;                   /* any other barrier */
             if (vg_lk[j] == 2) {
+                /* A store of this very slot from another register ends the
+                 * region: the cache register now carries the *stored* value,
+                 * not the one this load read.  Letting the region cross it
+                 * renamed a later read of `dr` to the new value -- exactly
+                 * `int i=0; OUT[i++]=11; OUT[i++]=22;`, which indexed OUT[2]
+                 * instead of OUT[1].  A store whose source is `dr` itself is
+                 * this load's own write-back and keeps the region going.
+                 * Stopping here leaves the load as "MOV rD, rC", one
+                 * instruction -- what the load cost anyway. */
+                if (vg_lo[j] == s && vg_dr[j] != dr) { end = j; break; }
                 /* A store whose source is this register has to be renamed as
                  * well, or it would write the pre-load value back.  A store of
                  * any other value does not touch this register at all. */

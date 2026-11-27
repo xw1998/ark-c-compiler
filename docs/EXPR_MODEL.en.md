@@ -5123,3 +5123,94 @@ Fixing it needs its own slice: make vreg keep a version of the old value when "t
 block" (or decline to keep this slot resident at all), then add a gate (the seven rows above plus both the
 S16 and `--reg-top` arms plus a byte-for-byte RAM comparison via `arm_exec`) and run the full regression. The
 fixtures in this section therefore always use explicit indices and do not carry the fix along.
+## 51 The subscript post-increment miscompile: -fopt-vreg's region scan crossed a same-slot store (2026-11-27)
+
+Section 50.7 narrowed the `OUT[i++]` miscompile to "after the first subscript store in the function, any later
+subscript store that post-increments" and pointed at the slot rename in `-fopt-vreg`.  This slice fixes it and
+records the measurement and the gate.  The defect is **pre-existing**, not introduced by S50; 50.7's "below the
+IR" was confirmed this round, while its "the same variable" was wrong.
+
+### 51.1 The shapes, before and after
+
+`OUT` = `(volatile int *)0x20010000`, first four words of RAM read out of the `unicorn` image:
+
+| Source | S16 line, before | S16 line, after | `--reg-top` | raw emitter |
+| --- | --- | --- | --- | --- |
+| `int i=0;` `OUT[i++] = 11;` | `[11]` | `[11]` | `[11]` | `[11]` |
+| `int i=1;` `OUT[i++] = 22;` | `[0,22]` | `[0,22]` | `[0,22]` | `[0,22]` |
+| `int i=0;` `OUT[i++] = 11; OUT[i] = 22;` | `[11,22]` | `[11,22]` | `[11,22]` | `[11,22]` |
+| `int i=0;` `OUT[i++] = 11; i++; OUT[i] = 22;` | `[11,0,22]` | `[11,0,22]` | `[11,0,22]` | `[11,0,22]` |
+| `int i=0;` `OUT[i++] = 11; OUT[i++] = 22;` | **`[11,0,22]`** | `[11,22]` | `[11,22]` | `[11,22]` |
+| `int a=0,b=1;` `OUT[a++] = 11; OUT[b++] = 22;` | **`[11,0,22]`** | `[11,22]` | `[11,22]` | `[11,22]` |
+| `int i=0;` `OUT[0] = 11; OUT[i++] = 22;` | **`[11,22]`** | `[22]` | `[22]` | `[22]` |
+| three in a row, `OUT[i++]=11/22/33` | **`[11,0,22,33]`** | `[11,22,33]` | `[11,22,33]` | `[11,22,33]` |
+
+The S16 line is `H.BASE`'s 33 passes; the raw emitter carries no `-fopt-*` at all.  The trigger is not "the same
+variable" (the earlier wording was wrong - a different variable fails too): after the first subscript store in a
+function, any subscript store that post-increments takes its address from the value **after** the increment.
+
+### 51.2 Cause: the region scan did not treat "this slot is written" as an edge
+
+`-fopt-vreg` promotes frame slots into r8-r11 and renames reads of the load's destination inside the load's
+region onto the cache register.  That rename rests on "the cache register holds this load's value everywhere
+in the region".  The only difference vreg makes (a `-S` diff of prefix 15 against prefix 16):
+
+```
+-    LDR r7, [r6, #0]      ; the pre-increment i, parked in r7
+-    LDR r0, [r6, #0]
+-    ADD r0, r0, #1
+-    STR r0, [r6, #0]
+-    MOV r0, r7            ; the subscript uses the pre-increment value
+-    LSL r7, r0, #2
++    ADD r8, r8, #1        ; the slot is renamed to r8
++    LSL r7, r8, #2        ; the subscript now reads r8, i.e. the post-increment value
+```
+
+On a `vg_lk[j] == 2` line (a STR) the scan only asked "is the stored source this load's destination `dr`?": a
+different source simply `continue`s, and the region runs on.  But that STR writes **this very load's slot** -
+after it becomes `MOV r8, r0` the cache register holds the **new** value, while the region keeps going and renames
+`MOV r0, r7` (the pre-increment value) onto r8.  What was missing is "is the written slot my own?".
+
+### 51.3 The fix
+
+One edge in the region scan: a write to the same slot from a register other than `dr` ends the region in front
+of it.
+
+```c
+if (vg_lo[j] == s && vg_dr[j] != dr) { end = j; break; }
+```
+
+Cut there, the load has no renameable read left in the region (`hits == 0`), so the existing fallback keeps it as
+`MOV rD, rC` - **the same single instruction** the LDR cost, so no function grows (it is the same fallback S6c
+wrote for "the value is only read implicitly").  A write whose source *is* `dr` - the write-back of the counter
+idiom `LDR r8,#1; ADD r8,#1; STR r8` - is untouched and the region still crosses it.
+
+### 51.4 Measurement: zero cost on the corpus, every shape right
+
+95 TUs / 212 functions, one `arkcc.exe` built from the tree before and one after:
+
+| Arm | Before | After |
+| --- | --- | --- |
+| `BASE + -fno-opt-vreg` (off) | 11,348 instructions / 395,030 bytes | 11,348 / 395,030 |
+| `BASE` (the 33 passes, vreg on) | 10,106 instructions / 371,771 bytes | 10,106 / 371,771 |
+
+Per unit: **0 of 95 TUs differ by a byte**.  The defect is never triggered anywhere in the corpus - which is why
+it costs nothing to fix and why no existing gate had caught it: they compare text and totals, and this shape does
+not exist in the corpus.  Only an execution-level shape assertion (`arm_exec` / `unicorn`) can see it.
+
+### 51.5 The gate
+
+`tests/run_subpostinc_tests.py` (3 checks, exit 0):
+
+1. Eleven post-increment shapes x four arms (raw emitter, S16 line, `--reg-top`, and the four-switch set that
+   reproduced the defect, `-fopt-peep -fopt-prop -fopt-vstack -fopt-vreg`) all give the C answer and leave the
+   same RAM byte for byte; the three bold rows above are pinned by value, so a regression names the row it broke;
+2. `-fopt-vreg` still may not grow any unit over the 95 TUs (11,348 -> 10,106, empty growth set);
+3. the comparator is proven two-sided: an expectation that is off by one must be rejected, so "nothing compared to
+   nothing" cannot pass.
+
+### 51.6 Accounting correction: S50's gate was never wired into `make test`
+
+`tests/run_rstack_tests.py` landed in S50, but the `test:` list in the `Makefile` never named `test-rstack` - so
+the full regression had **never run it even once**.  This slice wires it in together with `test-subpostinc`;
+`make test` now has 76 sub-targets instead of 74.

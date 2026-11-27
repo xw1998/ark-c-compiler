@@ -1042,3 +1042,29 @@ under the same F1-style criterion:
   section uses the `arkcc.exe` from after `36ac163` (exact floating-literals merged in), where
   literals round exactly and the occasional constant and constant fold changes with them.
   Cross-section comparisons must be re-run on one build; never subtract across builds.
+
+
+## 20 The region scan's sixth real defect: a same-slot write from another register is not an edge (0.9.1-wip, 2026-11-27)
+
+Section 18.6 recorded "a read-modify-write rename has to be able to write back".  S51 found another gap of the
+same family right next to it: the region scan did not treat **"this load's own slot is written by another
+register"** as an edge, so the loaded value (the pre-increment one) was renamed onto the cache register *after*
+that write.
+
+The shape and the verdict: `int i=0; OUT[i++] = 11; OUT[i++] = 22;` on the S16 line (the 33 passes) stored
+`OUT[0]=11, OUT[2]=22`, while the `--reg-top` arm and the raw emitter were both right.  The cause in one
+sentence: on a `vg_lk[j] == 2` line the scan only asked "is the stored source this load's destination `dr`?" and
+`continue`d when it was not - but that STR writes **this very load's slot**, and once it becomes `MOV r8, r0`
+the cache register holds the new value while the region runs on and renames `MOV r0, r7` (the pre-increment
+value) onto r8.
+
+The fix is one edge: `if (vg_lo[j] == s && vg_dr[j] != dr) { end = j; break; }`.  Cut there, the region has no
+renameable read left (`hits == 0`), so the existing fallback keeps the load as `MOV rD, rC` - the same single
+instruction the LDR cost, so nothing grows; a write whose source *is* `dr` (the counter idiom's write-back) still
+passes through.
+
+Measurement (95 TUs / 212 functions, one `arkcc.exe` built from the tree before and after): `BASE +
+-fno-opt-vreg` is 11,348 instructions / 395,030 bytes and `BASE` is 10,106 / 371,771, with **zero per-unit
+difference before and after**.  The shape never occurs in the corpus - which is why the fix is free and why only
+an execution-level shape assertion (`tests/run_subpostinc_tests.py`, 11 shapes x 4 arms) can see it.  See
+`docs/EXPR_MODEL.md` section 51.
