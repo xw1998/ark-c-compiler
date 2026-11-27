@@ -3952,3 +3952,177 @@ numbering, 0 value-redundant copies), `proto_retarget.py` (retargetable 107/24/5
 30 instructions), `proto_const.py` (same-register re-materialisation, 28), `slot_prom.py` (242 direct frame
 accesses, 239 never address-taken), `mnem_cmp2.py` (the family account of 40.2, both sides in one run).
 The armcc side is still `armo.py` + capstone over `D:/tmp/cfB/*armcc_O2.o`.
+
+## 41 V-5 wiring: the routing rule, the candidate census, and zero routing (2026-11-27)
+
+S40.4 pre-registered V-5 in three steps: wire the path and measure without touching the criteria; freeze the
+next slice's criteria from that measurement; only then run against them. This section is the **complete
+account of step one** -- the path is compiled into the compiler but routes **no function at all**, so nothing
+here claims a gain. It pins what "wired in" means and the size of the candidate surface the router sees,
+which is the baseline the next slice's criteria will be frozen against.
+
+### 41.1 What was wired
+
+| Where | What |
+|---|---|
+| `include/arkcc_config.h` | `ARKCC_FEATURE_VREGEMIT`, 1 on host/cross by default, 0 for `ARKCC_PROFILE_STM32_MIN` |
+| `include/config.h` | `g_config.enable_opt_vregemit`, default 0 (new features default off) |
+| `src/config.c` | `-fopt-vregemit` / `-fvregemit` parsing, default, one `config_print` line |
+| `src/main.c` | cropped builds refuse it by name: `Fatal error: C3900U: -fopt-vregemit is not compiled into this build` |
+| `src/backend/arm/backend_arm.c` | `ark_vregemit_census()`: the routing decision and the candidate census, called after a function body is emitted and before the text passes |
+| `Makefile` | a `test-vregemit` target, part of the `make test` aggregate |
+
+**With the switch given, all 95 translation units are byte-identical to the same build without it (9,588
+instructions / 354,989 bytes).** That is not "nothing is implemented yet, so of course it looks the same";
+it is an invariant the gate pins. Until the emitter is connected, the switch must change not one byte, or it
+would be lying about what it does.
+
+### 41.2 The routing rule is decided on the emitted text, not guessed from the IR
+
+The router reuses the function text the existing path has just emitted, for two reasons:
+
+1. The coverage study (156/211, 3,908/9,588 in S40.4) counted on text. Deciding on text makes the routed set
+   the same population that study measured, instead of a second guess at what an IR shape means in text.
+2. The lesson of slice 2a is that swapping the model dropped the criteria. A text-side rule can make the
+   choice **after both paths have emitted**, which is what makes guard 5 of S40.4 ("no function may be routed
+   if it comes out longer than its old-path text") executable at all.
+
+The rule (anything not satisfied refuses the function):
+
+| Condition | What is checked | Why |
+|---|---|---|
+| leaf | no `BL` / `BLX` in the text | a call crosses an AAPCS boundary; that is V-5-b |
+| integer | no VFP instruction, no `__aeabi` helper | float / soft-float / 64-bit helpers are later slices |
+| no address taken | no register derived from the frame base `r6`/`r7` and then used as an offset access base | a slot whose address escapes must stay in memory (the 413 of S40.1) |
+| function shape | `is_variadic`, `is_irq`, `is_naked`, `alias_target`, `is_asm_func`, or `param_count > 4` on the IR function | their prologue/epilogue and return conventions are outside the first slice |
+
+**Why variadic has to look at the IR**: the text of `int f(int n, ...) { return n; }` is indistinguishable from
+an ordinary leaf function, so a text rule cannot see it; only `is_variadic` can. This is the one place in the
+section that must leave the text.
+
+### 41.3 The candidate census (this section's measurement, the "measure without touching the criteria" step)
+
+With `ARKCC_VREGEMIT_STATS=1` the compiler reports one line per translation unit (no emitted text changes):
+
+```
+vregemit: eligible_functions=<n> eligible_instructions=<m> functions=<t> instructions=<k>
+```
+
+Summed over the 95 units (**text as it stands before the text passes, i.e. what the router actually sees**):
+
+| Quantity | Value |
+|---|---|
+| candidate functions / all functions | **137 / 212** |
+| candidate instruction count / all instructions (pre-pass) | **11,782 / 35,438** |
+
+The difference from the 156/211 and 3,908/9,588 of S40.4 has three causes, all accounted for: S40.4 counted
+**after** the text passes (9,588 is the best arm's final count) while this counts **before** them (35,438 --
+the pass chain itself takes 256 instructions down to 55, see the fixture in 41.5); this rule also refuses
+`param_count > 4`; and it reads "base alias + `[base, #off]`" more strictly than `leaf_cov.py`, which only
+recognised `[r6/r7, #k]`. All three are stricter, so the candidate surface can only be smaller.
+
+**These two numbers are a baseline, not a criterion.** By step two of S40.4 the criteria for V-5-a are frozen
+only after the emitter exists and both paths have been counted exactly, and once frozen the yardstick is not
+changed.
+
+### 41.4 The gate (`tests/run_vregemit_tests.py`, part of `make test`)
+
+1. **OFF IS OFF**: all 95 units are byte-identical with the switch on and off, pinned at 9,588 instructions /
+   354,989 bytes.
+2. **The routing census**: the four numbers (137/212, 11,782/35,438), summed per unit, equal the pinned
+   values. This is a **self-check**: it proves the rule in the compiler is the rule in the document, instead
+   of a document that says one thing and code that does another.
+3. **One shape each**: five fixtures -- a leaf integer function must be accepted, and a function with a call,
+   one that takes the address of a local, one doing float arithmetic, and a variadic one must be refused.
+4. **Cropped, refused by name**: a `-DARKCC_FEATURE_VREGEMIT=0` build refuses `-fopt-vregemit` (`C3900U`)
+   and writes the same text as the full build when the switch is absent.
+
+The gate deliberately does **not** yet contain guard 2 of S40.4 (per-function same values in both arms) or the
+new-path fixtures: the new path emits nothing so far. Both arrive with the emitter, in step three of the
+procedure, and are not recorded as met before that.
+
+### 41.5 Reproduce
+
+```
+python tests/run_vregemit_tests.py ./arkcc.exe          # all 12 checks green
+ARKCC_VREGEMIT_STATS=1 ./arkcc.exe <tu>.c -S -fopt-vregemit ...   # single-unit census
+```
+
+## 42 V-5-a2 measured and withdrawn: the straight-line leaf emitter reaches only 10 functions (2026-11-27)
+
+**Verdict**: the straight-line leaf emitter was implemented on the S41 wiring and measured. It saves
+**13 instructions / 397 bytes (0.14%)**, far below the S40.4 candidate surface (3,908 instructions). Under the
+"withdraw when it does not meet the bar, code and all" rule it is **withdrawn**: the whole emitter block
+(`vrg_plan` / `vrg_leaf` / `vrg_alloc` / `vrg_count_insns` / `ark_vregemit_body`, 483 lines) is gone from the
+source, and only the S41 census and switch remain. The rebuilt compiler puts the 95 units back at
+**9,588 instructions / 354,989 bytes**, byte-identical with the switch on and off.
+
+### 42.1 The bar (frozen only after measuring, and not changed afterwards)
+
+For a slice to stay in the tree its saving has to be of the order of **the cheapest slice already kept**,
+`-fopt-ldhoist` at **-1.15%** (S12-1). That anchor has nothing to do with this result, and there are two
+reasons for it: an emitter slice brings back a **second emission path** -- it replaces the prologue, it goes
+through `pp_splice`, it has to re-prove ABI and CFI invariance, and every text pass has to be re-validated on
+the new shape. That costs as much to maintain and to trust as ldhoist did, and a saving of less than one
+eighth of ldhoist is not worth it. **0.14% < 1.15% => withdraw.**
+
+### 42.2 Measurement (33-flag best arm, 95 translation units)
+
+| Arm | Instructions | Bytes (UTF-8) |
+| --- | ---: | ---: |
+| switch off | 9,588 | 354,989 |
+| switch on | 9,575 | 354,592 |
+| **delta** | **-13 (0.14%)** | -397 |
+
+No unit got longer. Nine functions got shorter, and all of them are empty bodies or one-statement wrappers:
+`HAL_MspInit` 2->1, `HAL_MspDeInit` 2->1, `HAL_GetHalVersion` 3->2, `HAL_SYSTICK_Callback` 2->1,
+`HAL_PWR_PVDCallback` 2->1, `HAL_RCC_DeInit` 3->2, `HAL_RCC_CSSCallback` 2->1,
+`HAL_FLASH_EndOfOperationCallback` 4->1, `HAL_FLASH_OperationErrorCallback` 4->1.
+
+The emitter itself was **correct**: `tests/arm_exec/run_arm_exec.py --extra=-fopt-vregemit` gives **0 failure**
+on the same build, with both arms returning the same values and the same RAM snapshots. This was withdrawn
+for its payoff, not for a defect.
+
+### 42.3 Why it is so small (root cause, measured funnel)
+
+| Gate | Functions | Rule |
+| --- | ---: | --- |
+| all | 212 | -- |
+| text census (S41.2) | 137 | no `BL`/`BLX`, no VFP, no address-taken slot, no `__aeabi`, `param_count <= 4` |
+| `vrg_plan` (straight-line IR) | **10** | no label/jump/call, exactly one `IR_RETURN` and last, ops inside the slice |
+| `vrg_leaf` (frame can go) | 9 | no local ever written, all parameters in r0-r3 |
+| actually spliced | 10 | one of them only in frame mode |
+
+**The ceiling of the straight-line model is 10 of 212.** Of the 137 functions the text rule accepts, 127 have
+multi-block control flow or calls and the IR rule refuses them all. That is not a bug in the rule: "re-emit the
+body, but still demand a straight line" simply only covers wrappers.
+
+The second dent happens in the pass chain: the splice happens **before** the text passes, where it saves 53
+instructions; `-fopt-vstack` then takes 40 of those 53 back on the **old** text (the old path's frame and value
+stack had already been compacted once by vstack, while the newly emitted text is already in compacted shape, so
+vstack has nothing left to take). Net: 13.
+
+### 42.4 Verdict
+
+`straight_line_vreg_emission_insufficient`.
+
+- This refutes **only** the layer "re-emit straight-line functions from IR with the value stack in registers".
+  It does not refute S40's "the gap itself is the emission model".
+- The value-stack model has **no budget left** on this corpus: `-fopt-vstack` already ate it (after S33 the
+  body-level delta of adding `-fopt-vregemit` is 0).
+- What is left lives in the **allocator** (the 1,362 instructions of S39) and in **cross-block round trips**
+  (S10/S28). Both have to work on the **full CFG**; the straight-line rule cannot reach them -- 10 of 212 is
+  the ceiling of straight-line emission.
+
+### 42.5 Gate and evidence
+
+- `tests/run_vregemit_tests.py` is still the 12 checks of S41.4 and is green after the withdrawal; check 1
+  ("the switch changes no byte") holds again -- that is what a withdrawal looks like in the gate.
+- The withdrawn implementation (emitter block plus the call site as it was measured, 511 lines) is archived at
+  `D:/tmp/bm/v5a2_leaf_retract.patch` (not in the repository); the funnel and two-arm script is
+  `D:/tmp/bm/cf/meas_vreg.py`.
+- Reproduce: `ARKCC_VREGEMIT_STATS=1 ./arkcc.exe <tu>.c -S -fopt-vregemit ...` (census only, no text change).
+
+**Next (re-ordered by measurement, not a promise)**: the allocator body of V-4 slice 2 -- liveness and register
+allocation over the full CFG, aiming at the 1,362 instructions recorded in S39. The straight-line emitter stays
+withdrawn.

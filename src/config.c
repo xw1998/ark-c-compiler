@@ -107,6 +107,7 @@ void config_init(void) {
     g_config.enable_opt_pushpop     = 0;
     g_config.enable_opt_addrfold    = 0;
     g_config.enable_opt_remat       = 0;
+    g_config.enable_opt_vregemit    = 0;
     g_config.enable_opt_copyprop  = 0;
     g_config.enable_opt_live      = 0;
     g_config.enable_opt_inline    = ARKCC_FEATURE_OPT_INLINE;
@@ -578,6 +579,8 @@ void config_apply_args(int argc, char **argv) {
                 g_config.enable_opt_addrfold            = enable;
             else if (ark_streq(name, "opt-remat") || ark_streq(name, "remat"))
                 g_config.enable_opt_remat               = enable;
+            else if (ark_streq(name, "opt-vregemit") || ark_streq(name, "vregemit"))
+                g_config.enable_opt_vregemit            = enable;
             else if (ark_streq(name, "opt-inline") || ark_streq(name, "autoinline"))
                 g_config.enable_opt_inline              = enable;
             else if (ark_streq(name, "opt-vectorize") || ark_streq(name, "vectorize"))
@@ -641,6 +644,7 @@ void config_print(void) {
     ark_log("  opt_pushpop=%d\n", g_config.enable_opt_pushpop);
     ark_log("  opt_addrfold=%d\n", g_config.enable_opt_addrfold);
     ark_log("  opt_remat=%d\n", g_config.enable_opt_remat);
+    ark_log("  opt_vregemit=%d\n", g_config.enable_opt_vregemit);
     ark_log("  opt_constcond=%d\n", g_config.enable_opt_constcond);
     ark_log("  opt_exit=%d\n", g_config.enable_opt_exit);
     ark_log("  opt_boolmat=%d\n", g_config.enable_opt_boolmat);

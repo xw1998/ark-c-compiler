@@ -57,6 +57,7 @@ typedef struct {
     int enable_opt_pushpop;        /* -fopt-pushpop: 值栈往返消除（S19-a） */
     int enable_opt_addrfold;       /* -fopt-addrfold: 地址链折叠（S20） */
     int enable_opt_remat;          /* -fopt-remat: 同值重物化消除（S21） */
+    int enable_opt_vregemit;       /* -fopt-vregemit: 虚拟寄存器发射路径（V-5） */
     int enable_opt_inline;   /* --autoinline / -O2 */
     int enable_opt_vectorize;/* --vectorize / -O2 */
     int opt_level;          /* 0=none, 1=basic, 2=aggressive */

@@ -2900,6 +2900,155 @@ static void ark_remat_function(AsmBuffer *b, int from) {
 }
 #endif /* ARKCC_FEATURE_OPT_REMAT */
 
+#if ARKCC_FEATURE_VREGEMIT
+/* ------------- V-5-a routing: which functions the vreg emitter may take ----
+ * The first V-5 slice only takes a leaf integer function.  It is recognised
+ * on the text the existing path has just emitted, so the routing decision is
+ * measured on exactly the artifact the coverage study (docs/EXPR_MODEL.md
+ * 40.4) counted, not on a second guess at what the IR means:
+ *   - no `BL`/`BLX` (a leaf, so there is no ABI call boundary to cross),
+ *   - no VFP instruction and no `__aeabi` helper (integer only),
+ *   - the address of a frame slot is never taken: no register is derived
+ *     from the frame base r6/r7 and then used as an access base with an
+ *     immediate offset.  That is the shape whose local has to stay in
+ *     memory, and taking it out is what makes the remaining slots promotable.
+ * A function that fails any of these keeps the existing path and is
+ * byte-identical to a build without the switch.
+ *
+ * The census is the gate's self-check: with ARKCC_VREGEMIT_STATS set, one
+ * line per translation unit reports how many functions and instructions the
+ * predicate accepts.  It changes no emitted text. */
+static long g_vreg_fn_total, g_vreg_fn_elig;
+static long g_vreg_in_total, g_vreg_in_elig;
+
+/* Is this an instruction line (column > 0, not a label/directive)? */
+static int vrg_is_insn(const char *ln) {
+    const char *p = ln;
+    while (*p == ' ' || *p == '\t') p++;
+    if (p == ln) return 0;
+    if (*p == 0 || *p == '.' || *p == ';' || *p == '@') return 0;
+    return 1;
+}
+
+/* The mnemonic of an instruction line without the `.w`/`.n` width suffix and
+ * without a flag-setting `s`, so `MOV`, `MOVS` and `MOV.W` all answer `MOV`. */
+static void vrg_mnem(const char *ln, char *out, int cap) {
+    const char *p = ln;
+    int n = 0;
+    while (*p == ' ' || *p == '\t') p++;
+    while (*p && *p != ' ' && *p != '\t' && *p != '.' && n < cap - 1)
+        out[n++] = *p++;
+    if (n > 0 && out[n - 1] == 's') n--;
+    out[n] = 0;
+}
+
+/* Register in operand slot `k` (0 based).  `[r5, #4]` yields `r5` for k=1. */
+static int vrg_operand(const char *ln, int k, char *out, int cap) {
+    const char *p = ln;
+    int got = 0, n = 0;
+    while (*p == ' ' || *p == '\t') p++;
+    while (*p && *p != ' ' && *p != '\t') p++;          /* skip mnemonic */
+    while (got < k) {
+        while (*p == ' ' || *p == '\t' || *p == ',') p++;
+        if (!*p) return 0;
+        while (*p && *p != ',') p++;
+        got++;
+    }
+    while (*p == ' ' || *p == '\t' || *p == ',') p++;
+    if (*p == '[') p++;
+    while (*p && *p != ',' && *p != ']' && *p != ' ' && *p != '\t' && n < cap - 1)
+        out[n++] = *p++;
+    out[n] = 0;
+    return n > 0;
+}
+
+/* `[BASE, #off]` with BASE a single register -> copy BASE and return 1. */
+static int vrg_bracket_base(const char *ln, char *out, int cap) {
+    const char *br = strchr(ln, '[');
+    int n = 0;
+    if (!br) return 0;
+    br++;
+    while (*br && *br != ',' && *br != ']' && *br != ' ' && n < cap - 1)
+        out[n++] = *br++;
+    out[n] = 0;
+    while (*br == ' ' || *br == '\t') br++;
+    if (*br != ',') return 0;
+    br++;
+    while (*br == ' ' || *br == '\t') br++;
+    return n > 0 && *br == '#';
+}
+
+static void ark_vregemit_census(AsmBuffer *b, int from, IrFunc *f) {
+    int cap = b->len - from + 1, i = 0, nins = 0, nmade = 0;
+    /* Shapes the first slice refuses outright: the call/return boundary of a
+     * variadic, interrupt or naked function, an alias (whose text is not the
+     * body at all) and an `__asm` body (never emitted by the IR walker).  The
+     * text checks below cannot see these, the IR function flags can. */
+    int bad = (f->is_variadic || f->is_irq || f->is_naked ||
+               f->alias_target != NULL || f->is_asm_func ||
+               f->param_count > 4);
+    char made[8][8];
+    char *t;
+    if (cap <= 1) return;
+    t = (char *)malloc(cap);
+    if (!t) return;
+    memcpy(t, b->buf + from, b->len - from);
+    t[cap - 1] = 0;
+    while (t[i]) {
+        int j = i;
+        char save;
+        while (t[j] && t[j] != '\n') j++;
+        save = t[j];
+        t[j] = 0;
+        if (vrg_is_insn(t + i)) {
+            char mn[16], op[8], base[8];
+            nins++;
+            vrg_mnem(t + i, mn, sizeof mn);
+            if (!strcmp(mn, "BL") || !strcmp(mn, "BLX")) bad = 1;
+            if (mn[0] == 'V' &&
+                (!strncmp(mn, "VLDR", 4) || !strncmp(mn, "VSTR", 4) ||
+                 !strncmp(mn, "VMOV", 4) || !strncmp(mn, "VADD", 4) ||
+                 !strncmp(mn, "VSUB", 4) || !strncmp(mn, "VMUL", 4) ||
+                 !strncmp(mn, "VDIV", 4) || !strncmp(mn, "VCMP", 4) ||
+                 !strncmp(mn, "VCVT", 4) || !strncmp(mn, "VSQRT", 5)))
+                bad = 1;
+            if (strstr(t + i, "__aeabi")) bad = 1;
+            /* address taken: a register aliasing the frame base ... */
+            if ((!strcmp(mn, "MOV") || !strcmp(mn, "ADD") || !strcmp(mn, "SUB")) &&
+                vrg_operand(t + i, 1, op, sizeof op) &&
+                (!strcmp(op, "r6") || !strcmp(op, "r7")) &&
+                vrg_operand(t + i, 0, op, sizeof op) && nmade < 8) {
+                strcpy(made[nmade], op);
+                nmade++;
+            }
+            /* ... and then used as an offset access base */
+            if (vrg_bracket_base(t + i, base, sizeof base)) {
+                int m;
+                for (m = 0; m < nmade; m++)
+                    if (!strcmp(base, made[m])) { bad = 1; break; }
+            }
+        }
+        t[j] = save;
+        i = save ? j + 1 : j;
+    }
+    free(t);
+    g_vreg_fn_total++;
+    g_vreg_in_total += nins;
+    if (!bad) {
+        g_vreg_fn_elig++;
+        g_vreg_in_elig += nins;
+    }
+}
+
+static void ark_vregemit_report(void) {
+    const char *e = getenv("ARKCC_VREGEMIT_STATS");
+    if (!e || !*e || *e == '0') return;
+    fprintf(stderr, "vregemit: eligible_functions=%ld eligible_instructions=%ld "
+                    "functions=%ld instructions=%ld\n",
+            g_vreg_fn_elig, g_vreg_in_elig, g_vreg_fn_total, g_vreg_in_total);
+}
+#endif /* ARKCC_FEATURE_VREGEMIT */
+
 
 #if ARKCC_FEATURE_OPT_SPILL && ARKCC_FEATURE_OPT_LIVE
 /* ------------- cross-block stack round trips (-fopt-spill) ---------------
@@ -13756,6 +13905,8 @@ static void emit_epilogue_return(AsmBuffer *b, int local_size,
     }
 }
 
+
+
 /* Global variable SRAM address allocation for ARM backend.
  * Globals are placed in SRAM starting at 0x20000000; __at variables keep
  * their absolute address. Codegen emits MOVW/MOVT to load these addresses
@@ -18398,6 +18549,14 @@ static char *codegen_arm(IrProgram *prog) {
 #endif
         }
         asmbuf_putc(&buf, '\n');
+#if ARKCC_FEATURE_VREGEMIT
+        if (g_config.enable_opt_vregemit && !fn_user_asm) {
+            /* S42: the straight-line leaf emitter was measured here and
+             * withdrawn (-13 instructions, 0.14% -- see EXPR_MODEL 42).  The
+             * routing census is all that is left, and it changes no text. */
+            ark_vregemit_census(&buf, fstart, f);
+        }
+#endif
         if (fn_user_asm) goto arm_skip_text_opts;
 #if ARKCC_FEATURE_OPT_VSTACK
         /* Keep the value stack in r5/r7 instead of memory.  Runs first, so the
@@ -19312,6 +19471,9 @@ arm_skip_frame_opts:
     if (g_config.enable_rt_lazy && buf.len > 0) {
         buf.len = rt_prune_asm_text(buf.buf, buf.len);
     }
+#endif
+#if ARKCC_FEATURE_VREGEMIT
+    if (g_config.enable_opt_vregemit) ark_vregemit_report();
 #endif
     return buf.buf;
 }

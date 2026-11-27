@@ -692,6 +692,14 @@ int main(int argc, char **argv) {
             return 1;
         }
 #endif
+#if !ARKCC_FEATURE_VREGEMIT
+        else if (strcmp(a, "-fopt-vregemit") == 0) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: -fopt-vregemit is not compiled into "
+                    "this build (rebuild with -DARKCC_FEATURE_VREGEMIT=1)\n");
+            return 1;
+        }
+#endif
 #if !ARKCC_FEATURE_OPT_FRAME
         else if (strcmp(a, "-fopt-frame") == 0) {
             fprintf(stderr,

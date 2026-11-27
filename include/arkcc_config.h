@@ -443,6 +443,24 @@
 # endif
 #endif
 
+/* ARKCC_FEATURE_VREGEMIT: -fopt-vregemit, V-5 virtual-register emission
+ * path.  The idea was to re-emit a function's body from IR with the value
+ * stack held in registers instead of memory.  S42 implemented the straight-line
+ * leaf form of it and measured -13 instructions / 0.14% on the 95-TU corpus:
+ * `-fopt-vstack` already claims that budget, and a straight-line IR rule only
+ * reaches 10 of 212 functions (the other 127 text-eligible ones have
+ * multi-block control flow or calls).  The emitter block is therefore gone.
+ * What is left is the routing census: the switch changes no byte at all and
+ * only prints the candidate count (ARKCC_VREGEMIT_STATS=1).  Cropping it by
+ * name still works.  See docs/EXPR_MODEL.md sections 41-42. */
+#ifndef ARKCC_FEATURE_VREGEMIT
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_VREGEMIT 0  /* 板上裁掉：只在宿主/交叉编译用 */
+# else
+#   define ARKCC_FEATURE_VREGEMIT 1
+# endif
+#endif
+
 /* ARKCC_FEATURE_OPT_VOLDBM: -fopt-voldmb, elide the DMB SY pair around a
  * volatile access to a frame slot whose address this function never takes.
  * A barrier orders memory transactions as seen by *another* observer; with
