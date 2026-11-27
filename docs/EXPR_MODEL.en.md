@@ -3840,3 +3840,113 @@ families), `frame_census.py` (frame accesses / slot hotness), `ldr_census.py` (r
 `isel2.py`/`isel3.py`/`bic_census.py` (39.4), `lit_census.py`/`lit_enc.py`/`resid_census.py` (39.3),
 `fndiff.py`/`fnmov.py` (39.5), `br_census.py` (branch family). The armcc side is decoded from
 `D:/tmp/cfB/*armcc_O2.o` per `FUNC` symbol with `armo.py` + capstone.
+
+## 40 Realizability verdict: allocation on the text layer has about 150 instructions left, and the gap is the emission model itself (2026-11-27, measured before implementing)
+
+S39 gave an upper bound of 1,362 from a **class count** and froze stage A's criterion (<= 8,588, take
+1,000) from it. This section replaces "class count" with "realizable count" before a single line of the
+implementation exists: **an instruction can only be deleted if, besides "deleting it needs no new
+instruction", the value is still in some register at every one of its uses.** Measured against that test,
+the realizable total is an order of magnitude smaller.
+
+### 40.1 Three disqualifiers, measured one by one
+
+| Family | S39.1 class count | Realizable | Why not (measured) |
+|---|---|---|---|
+| Frame accesses | 656 | about 0 (only the ones whose consumer can be retargeted) | of the 656 only **242** are direct `[r6/r7,#off]`; the other 413 go through a register holding the frame base plus an offset -- the address of a struct local has been taken, so by semantics **they must stay in memory**; of the 242 remaining, 239 belong to slots never address-taken, but promoting a slot turns each `LDR/STR` into a 1-for-1 `MOV` (no saving) unless the consumer's operand position can take that register directly |
+| Moves through `r0` | 452 | **107** (loose) / **24** (every use retargetable) / **5** (walk until redefinition) | global value numbering over the CFG finds **0** value-redundant copies (the 31 block-local ones are already deleted by `-fopt-live`/`-fopt-coalesce`); what remains is "the consumer wants that specific register" -- two-operand encodings like `AND r0, r1` cannot take another register at all |
+| Single-register PUSH/POP of the runtime value stack | 286 | **30** (15 pairs) | the corpus actually holds 207 such instructions; only 15 pairs have **no write to the register** between the push and the pop; the rest is the accumulator `r0` being reused in between, so the value cannot go back into a register by design |
+| Re-materialising a constant into the same register | -- | **28** (19 immediate + 9 literal) | adjacent repeats inside a block are almost all already eaten by `-fopt-remat`/`-fopt-constcache` |
+| **Total** | **1,394** | **about 150 (1.6%)** | i.e. at best **9,43x** on the whole corpus, not 8,226 |
+
+The conclusion must be stated plainly: **the stage A criterion of S39.6 ("<= 8,588, take 1,000") is
+unreachable; the criterion itself is withdrawn.** This is not "we did not reach it", it is "it was measured
+to be impossible" -- the same root cause as S39 withdrawing 2b/2c of S37.4 and S38 withdrawing slice 2a:
+**a class count is not a realizable count.** Three withdrawals, one root cause; after the third, no
+criterion is frozen from a class count again.
+
+### 40.2 Where the gap actually is: mnemonic families on the same 95 TU
+
+Ours (best arm, 33 switches, 9,588) against armcc O2 (5,651, decoded per `FUNC`; the 5,291 of S37.2 was an
+earlier sampling basis, this section uses 5,651 throughout):
+
+| Family | Ours | armcc | Delta |
+|---|---|---|---|
+| `MOV`/`MVN` | 2,005 | 615 | **+1,390** |
+| `LDR*` | 1,961 | 1,117 | **+844** |
+| `STR*` | 965 | 576 | +389 |
+| `PUSH` | 383 | 66 | **+317** |
+| `POP` | 386 | 88 | **+298** |
+| `ADD` | 531 | 194 | +337 |
+| `AND` | 407 | 96 | +311 |
+| `CMP` | 606 | 458 | +148 |
+| `SUB` | 186 | 107 | +79 |
+| rest | -- | -- | about +130 |
+
+The first four sum to **+2,940 = 75% of the 3,937 total gap**. The decisive row is `PUSH`/`POP`: armcc has
+66/88 in the whole corpus, essentially "prologue and epilogue only", i.e. **its expression evaluation never
+builds a memory value stack**; we have 383/386, of which about 200 are the runtime value stack. This is not
+"there is redundancy left in the text", it is **a different emission model**: our emitter `PUSH`es every
+intermediate value to memory, `POP`s every operand back, and moves every result through `r0`; armcc keeps
+those values in registers.
+
+### 40.3 Verdict
+
+1. **The text layer is closed here.** Of the 9,588 instructions left after the 33 text passes, only about
+   150 can be removed by "allocating once more" (40.1). Stages B (instruction shapes) and C (structure) of
+   S39.6 still stand in principle, but their bounds are class counts too (everything in S39.4 is < 120), and
+   **their premise -- "allocator first" -- no longer exists**.
+2. **The remaining 3,937 must come from the emitter changing model**, not from another pass. The lesson of
+   S38.3 applies: slice 2a lost -1.683x not because it changed the model, but because it changed to a
+   **degenerate version with no value numbering, no liveness, no allocation, and with all 33 text passes
+   thrown away**. To win, the model must change **and** the text layer must stay.
+3. The disposal of this section: **withdraw stage A of V-4′** (do not implement it) and replace this line
+   with **V-5: a vreg emission path**, pre-registered in 40.4. The earlier statement that "an allocator can
+   bring 9,588 down to 8,2xx" is corrected here to **that upper bound is not realizable**.
+
+### 40.4 V-5 pre-registration: a vreg emission path (discipline frozen before implementation, criteria frozen in two steps)
+
+**Goal**: replace "memory value stack + fixed r0/r1 operands" in expression evaluation with "virtual
+registers + liveness + linear scan + spilling", while the emitted **text still runs through the existing 33
+text passes** (this is the essential difference from slice 2a).
+
+- Switch: `-fopt-vregemit`, `ARKCC_FEATURE_VREGEMIT`, off by default, tier 0 under `STM32_MIN`, rejected by
+  name when compiled out (`C3900U`).
+- Routing: the allowlist opens one function shape at a time; the first slice takes only **leaf integer
+  functions** (no `BL` in the body, no address-taken frame, no float/complex/varargs/VLA/`__asm`);
+  everything not routed stays on the old path.
+- Stages:
+
+  | Stage | Content | Criterion |
+  |---|---|---|
+  | **V-5-a** | leaf integer functions: virtual registers + intra-block liveness + linear scan onto r0-r3/r12/r8-r11 (spilled when needed) | **measure first, then freeze** (below) |
+  | **V-5-b** | integer functions with calls (argument/return/callee-saved boundaries) | measure first, then freeze |
+  | **V-5-c** | frame slots and constant residency wired into the same allocator | measure first, then freeze |
+
+- **Criteria are frozen in two steps (the direct answer of this section to the S39 lesson)**:
+  1. build the path and **measure only**, changing no wording, claiming no number;
+  2. freeze the next stage's criterion from that measured absolute count, write it down, and then run the
+     judged measurement (no re-wording afterwards);
+  3. until step 2 is done the "Criterion" column above stays empty -- **no relative criterion (<= old path
+     x 0.80) may ever be the pass basis**.
+- Common guards (carried over from S38.6/S39.6, each executable):
+  1. with `-fopt-vregemit` off, the 95 TU are byte-identical to today's HEAD output;
+  2. `tests/arm_exec/` gives equal per-function values on both arms with identical unicorn value/RAM
+     snapshots; at least three fixtures specific to this path are added;
+  3. must-reject fixtures (`__asm`, VLA, `long long`, `float`, varargs) fall back to the old path and stay
+     byte-identical;
+  4. when new and old coexist in one TU, line differences appear only inside routed function bodies;
+  5. **any single function that comes out longer than on the old path is not routed** -- that is an
+     admission rule of the allowlist, not a post-hoc choice.
+- The endpoint must be on paper: V-5 aims to remove the emission model as the bottleneck, it does **not**
+  promise "armcc will be beaten"; armcc's 5,651 is a reference line, not a commitment. The sentence from
+  S39.6 -- "all three stages passing is still not armcc" -- holds here as well.
+
+### 40.5 Reproduction
+
+Out-of-repo scripts (sources of every number here, all in `D:/tmp/bm/cf/`): `proto_vn.py` (global value
+numbering, 0 value-redundant copies), `proto_retarget.py` (retargetable 107/24/5 in the three strengths),
+`proto_all.py`, `proto_all2.py` (combined deletions 58/36), `proto_p1.py` (value-stack pairs, 15 pairs /
+30 instructions), `proto_const.py` (same-register re-materialisation, 28), `slot_prom.py` (242 direct frame
+accesses, 239 never address-taken), `mnem_cmp2.py` (the family account of 40.2, both sides in one run).
+The armcc side is still `armo.py` + capstone over `D:/tmp/cfB/*armcc_O2.o`.
