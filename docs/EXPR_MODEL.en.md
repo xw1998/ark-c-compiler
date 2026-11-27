@@ -5213,4 +5213,90 @@ not exist in the corpus.  Only an execution-level shape assertion (`arm_exec` / 
 
 `tests/run_rstack_tests.py` landed in S50, but the `test:` list in the `Makefile` never named `test-rstack` - so
 the full regression had **never run it even once**.  This slice wires it in together with `test-subpostinc`;
-`make test` now has 76 sub-targets instead of 74.
+`make test` now has 76 sub-targets instead of 74 (77 after test-crop, S52).
+
+## 52 Recasting the planner: count only what V-6 really deletes (2026-11-27, frozen before implementation)
+
+Section 46 said what comes next: **make the planner's cost conventions "the text after emission, then the
+existing passes"**, otherwise S45-a can neither be shown reachable nor shown unreachable. This section is
+that step, and it goes the opposite way from 46: instead of an **absolute** prediction per IR instruction,
+it counts, on the text of the current best arm, the classes V-6 would delete. Both sides then share one text
+and one counting rule, so the +154/+198 bias of 46 (plan vs. measurement) cannot occur.
+
+### 52.1 Classification inside the bucket (130 functions = routed, no back edge, no call; 2,766 instructions)
+
+Same `.s` (`-fopt-alloc` on only to get the routing census; it changes no byte), classified with a
+**frame-pointer-aware** rule (`D:/tmp/bm/cf/paper47b.py`):
+
+| Class | Instructions | Share | Does V-6 delete it? |
+| --- | ---: | ---: | --- |
+| `pushpop` | 282 | 10.2% | **no**: values in `r4`-`r11` must still be saved (form change: per slot -> one list) |
+| `sp_adjust` (`SUB sp`/`ADD sp`) | 153 | 5.5% | yes (frame only for spilled vregs and address-taken locals) |
+| `frame_mem` (`[r6,#n]`/`[sp,#n]` locals and temporaries) | 287 | 10.4% | yes (peak liveness <= 5; `r4`-`r11` suffice) |
+| `mov_sp` | 4 | 0.1% | yes |
+| `mov_reg` (plain register copy, no flags) | 147 | 5.3% | yes (no "slot -> temp -> target" once values have names) |
+| `mem` (real array/struct/global access) | 525 | 19.0% | no |
+| `literal_ld` (`LDR rX, .Llit`) | 222 | 8.0% | no (constants still materialise; only one load, many uses) |
+| `mov_imm` (`MOV/MOVW/MOVT #imm`) | 268 | 9.7% | no (47.2 reconciled: armcc emits 392 in the same corpus) |
+| `branch` | 218 | 7.9% | no (only `cbz/cbnz` merging, which is S45-d) |
+| `op` (arith/logic/compare/shift/narrow) | 660 | 23.9% | no (three-address forms are S45-d) |
+| **total** | **2,766** | | |
+
+The 20-instruction difference from 47's 2,746 is the cached text (`D:/tmp/bm/cf/p47/`) versus the recomputed
+one; both are the best arm with the same switch set, within 0.7%. The conventions are unchanged.
+
+### 52.2 The V-6 pool and the realisation rate
+
+| Item | Instructions |
+| --- | ---: |
+| `frame_mem` | 287 |
+| `sp_adjust` | 153 |
+| `mov_sp` | 4 |
+| `mov_reg` | 147 |
+| **V-6 pool** | **591 (21.4% of the bucket)** |
+| what S45-a must delete (9,588 -> 9,150) | **438** |
+| **realisation required** | **74%** |
+
+The 282 `pushpop` are **deliberately excluded**: value residence puts values in `r4`-`r11`, which are
+callee-saved, so `PUSH`/`POP` change form but need not shrink. Counting them would inflate the pool by 40%
+and make 9,150 look far too easy - the same kind of error 46 warns about, pointing the other way.
+
+### 52.3 Why this is not "the model sounds right, so start writing"
+
+- The mistake in 46's two paper tables was charging constants, conditional branches and `RETURN` at 2-2-1
+  after the passes had already folded them. Here the independent variable is not the **theoretical** cost
+  of an IR instruction but the instructions **still present in the shipped text**, so what the passes fold
+  is never in the table and cannot be double counted.
+- The converse also holds: after V-6 the text passes stay on the chain (they read text and do not care who
+  emitted it), so there is no "new emitter loses the old folding" deduction. That is a hard constraint for
+  the implementation: **V-6 output must still go through every `-fopt-*` text pass**; any variant that skips
+  the text chain is a different convention and must be re-registered first.
+- The pool is this round's measured 591, not the estimated 699 (45.3's basis was already corrected by 47).
+
+### 52.4 Verdict (frozen)
+
+**S45-a may enter implementation**: the pool (591) exceeds what must be deleted (438), and a 74%
+realisation threshold is reachable - every one of those 591 is the direct product of "values have no
+names" (slots, frame pointer, copies). The criterion stays 45.3's **<= 9,150**, unchanged; a measured
+realisation below 74% withdraws the stage per 45.3, and the ceiling may not be re-negotiated afterwards.
+Implementation order and discipline:
+
+1. switch `-fopt-vemit` (`ARKCC_FEATURE_OPT_VEMIT`, host 1 / board 0, **off by default**); when off the
+   95 TUs are byte-identical to today;
+2. take-over is S45-a's bucket (routed, no back edge, no call); **any function that fails mid-emission must
+   fall back whole** to the existing text path (byte for byte), never emit half;
+3. the emitter must report "took n / fell back m" with n + m = the 186 routed functions (in S45-a n may
+   only land inside the 130 bucket);
+4. V-6 output goes through **all** `-fopt-*` text passes as before;
+5. semantics gate: `arm_exec` gives the same value per function on both arms, plus new fixtures for leaf
+   arithmetic, nested binary expressions, five-parameter calls, `switch`, bit-fields, multiple exits;
+6. crop: `-DARKCC_FEATURE_OPT_VEMIT=0` refuses the switch by name (`C3900U`) and, without it, writes the
+   same text byte for byte.
+
+### 52.5 Reproduction
+
+- Bucket and IR histogram: `D:/tmp/bm/cf/paper47.py` (one compile gives `alloc-route2` routing plus the
+  `ARKCC_DUMP_IR` stream; bucket = routed and noloop and nocall; results in `paper47.json`);
+- frame-pointer-aware classification: `D:/tmp/bm/cf/paper47b.py` (scan `MOV rX, sp` for the frame base, then
+  attribute `[base,#n]`; results in `paper47b.json`);
+- the cached 95 `.s`/`.ir`: `D:/tmp/bm/cf/p47/`.
