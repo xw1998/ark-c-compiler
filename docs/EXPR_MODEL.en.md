@@ -4795,3 +4795,68 @@ slice takes over.
 - whole-frame deletability: `D:/tmp/bm/cf/s47c.py`, `s47e.py`, `s47h.py` (the last one separates the
   functions whose body uses `r4`-`r11`, because their frame cannot be removed entirely);
 - per-function armcc counts: `capstone` over `D:/tmp/cfB/*armcc_O2.o`, same convention as `gap45.py`.
+## 48 The slot census: what is left in the frame, and what a single block can take (2026-11-27)
+
+47.5 asked for the share of stack-machine temporaries before the allocator's first slice is chosen.
+This slice adds a **read-only** slot census inside the `-fopt-alloc` block (emits nothing, changes no
+byte, prints only under `ARKCC_ALLOC_STATS=1`) and corrects one counting convention from 47.3 on the way.
+
+### 48.1 Readings (95 TUs, 212 functions)
+
+| quantity | measured |
+| --- | ---: |
+| frame slots (distinct byte offsets touched by `IR_PUSH_VAR` / `IR_STORE`) | **354** |
+| slot operations (one `IR_STORE` definition or one `IR_PUSH_VAR` read each) | **1,711** |
+| single-block promotable slots (not address-taken, width <= 4, defined and read, every touch in one block) | **39** |
+| operations on those slots | **120** (**7.0%** of the slot operations) |
+
+The admission rules live in the `g_sl_*` comment in `backend_arm.c`: address-taken slots (`IR_PUSH_ADDR`),
+eight-byte-and-wider slots, write-only slots and cross-block slots are not promotable. **The census does
+not predict a win; it pins the size.**
+
+### 48.2 Correction to 47.3: frame accesses must count the `r6` alias
+
+47.3 counted "`str`/`ldr` on the stack" by `[sp`, which misses a shape this backend uses everywhere: after
+the prologue's `MOV r6, sp`, every frame access is written `[r6, #off]`. Recounted through the alias
+(`D:/tmp/bm/cf/s48b.py`, `s47j.py`):
+
+| scope | `[sp` convention (47.3) | with the `r6` alias (this section) |
+| --- | ---: | ---: |
+| this bucket (130 functions) | 252 | **283** (`str` 150 + `ldr` 133) |
+| whole corpus | 453 | **643** (`str` 366 + `ldr` 277) |
+
+The pool changes accordingly: **283 + frame 437 + copies 149 = 869**, and 438 is **50%** of it (47.3 said
+838 / 52%). The ceiling of 9,150 and the 438 deletions are unchanged; only the measured basis moves.
+
+### 48.3 Reading: the stack machine's temporaries are two thirds of the story, and the rest is folded
+
+The 1,711 slot operations reach the assembly as only 643 real frame accesses - **62% are already removed
+at emission time by "keep the value in `r0`" (`ark_top_try`) and by the text passes (`slotreg` / `vstack` /
+`copyprop`)**. That reading matters: the intuition "the IR is a stack machine, so every temporary crosses
+memory" is simply false; most of that cost is already banked.
+2. Of the remaining 643, only **120** are safely promotable inside one block (1.25% of the corpus). Against
+45.3's 438, a single-block slice **cannot stand alone**; it needs CFG liveness.
+
+### 48.4 Verdict
+
+**`slot_promotion_single_block_below_slice_threshold`** (single-block promotion is below the slice threshold).
+
+- single-block promotion is not a slice of its own: 120 instructions is under a third of 438, and it would
+  add a second emission path (paying 38.3's 1.683x);
+- S45-a's route is unchanged (47.4): a value-residency allocator over the CFG, taking frame 437, frame
+  accesses 283 and copies 149 together;
+- the pool of 869 against the target 438 (50%) still sits inside the tolerance of 45.3's frozen criterion,
+  so **the criterion does not move**.
+
+### 48.5 Gate
+
+`tests/run_alloc_tests.py` gains two checks (group 2c) that pin `212 / 354 / 39 / 1,711 / 120` and a
+self-check `0 < promotable_ops < stack_ops` (to catch both "everything is promotable" and "nothing is").
+The gate now has **37 checks**; this slice measures EXIT=0, 37 ok, 0 FAIL (`D:/tmp/bm/alloc_gate_s47.log`).
+
+### 48.6 Reproduction
+
+- slot census: `-fopt-alloc` plus `ARKCC_ALLOC_STATS=1`, summary line `alloc-slots: ...`; per function
+  with `ARKCC_ALLOC_NAMES=1` as `alloc-slots <name> slots=... promotable=... ops=... ops_promotable=...`;
+- summary script: `D:/tmp/bm/cf/s48.py` (same best arm, 212 functions);
+- frame accesses including the `r6` alias: `D:/tmp/bm/cf/s48b.py` (corpus), `s47j.py` (four buckets).

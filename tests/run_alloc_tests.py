@@ -80,6 +80,12 @@ WANT_LOOP = 10
 WANT_JOIN_FUNCS = 188
 WANT_JOIN_MOVES = 399
 WANT_PEAK = 5
+# S47 slot census: how much of the frame a register could hold for a whole live
+# range.  `promotable_*` is the single-block subset (no phi needed); the rest of
+# `stack_ops` is the part that needs CFG liveness, so the two pins move
+# together and neither may be zero.
+WANT_SLOTS = {'functions': 212, 'slots': 354, 'promotable_slots': 39,
+              'stack_ops': 1711, 'promotable_ops': 120}
 
 check = H.check
 skip = H.skip
@@ -112,11 +118,18 @@ def census(arkcc, work, src, extra=(), stats=True):
     rc, log = run_env(cmd, work, env)
     if rc != 0:
         return None, ' '.join(log.strip().splitlines()[:1])
+    got = None
     for ln in log.splitlines():
         if ln.startswith('alloc: '):
             d = dict(kv.split('=') for kv in ln[len('alloc: '):].split())
-            return dict((k, int(v)) for k, v in d.items()), log
-    return None, 'no alloc census line'
+            got = dict((k, int(v)) for k, v in d.items())
+        elif ln.startswith('alloc-slots: '):
+            d = dict(kv.split('=') for kv in ln[len('alloc-slots: '):].split())
+            got = (got or {})
+            got.update(dict((k, int(v)) for k, v in d.items()))
+    if got is None:
+        return None, 'no alloc census line'
+    return got, log
 
 
 def compile_text(arkcc, work, src, extra=()):
@@ -169,6 +182,8 @@ def main():
         agg = dict((k, 0) for k in ('functions', 'ir', 'eligible_functions',
                                     'eligible_ir', 'call', 'stackarg', 'loop',
                                     'routable_join', 'join_moves'))
+        for k in WANT_SLOTS:
+            agg.setdefault(k, 0)
         peak = [0]
         missing = []
         for src in corpus_units():
@@ -210,6 +225,16 @@ def main():
         check(peak[0] == WANT_PEAK,
               'the widest live-value count in the corpus is %d' % WANT_PEAK,
               '%d' % peak[0])
+
+        # --- 2c. the slot census: how much of the frame a register could take -
+        bad3 = ['%s=%d want %d' % (k, agg[k], WANT_SLOTS[k])
+                for k in WANT_SLOTS if agg[k] != WANT_SLOTS[k]]
+        check(not bad3,
+              'the frame carries %d slots, %d of them single-block'
+              % (WANT_SLOTS['slots'], WANT_SLOTS['promotable_slots']), bad3)
+        check(0 < agg['promotable_ops'] < agg['stack_ops'],
+              'the promotable subset is a proper part of the stack traffic',
+              '%d of %d' % (agg['promotable_ops'], agg['stack_ops']))
 
         # --- 3. refusals, five shapes, both arms byte-identical -----------
         refuse = [

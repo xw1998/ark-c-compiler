@@ -2948,6 +2948,20 @@ static long g_alc_elig_call, g_alc_elig_stackarg, g_alc_elig_loop;
 static long g_alc_fn_join, g_alc_join_moves;
 static int  g_alc_peak_max;      /* widest simultaneous live value count */
 
+/* S47: how much of the frame is stack-machine traffic a value-residency
+ * allocator could take away.  Read-only: the walk below never writes text, and
+ * the switch that turns it on (-fopt-alloc) already promises "off means the
+ * same bytes".  A slot counts as *promotable* when one register can hold it for
+ * its whole live range:
+ *   - never address-taken (IR_PUSH_ADDR names its byte offset),
+ *   - narrower than eight bytes (the emitter's one-word model),
+ *   - at least one definition and one read (a write-only slot is dead anyway),
+ *   - every definition and read inside one basic block, so no phi is needed.
+ * Slots that fail the last test are still counted: their size is the part of
+ * the problem that needs the CFG, not a text pass. */
+static long g_sl_slots, g_sl_prom_slots, g_sl_ops, g_sl_prom_ops;
+static int  g_sl_fn_total;
+
 /* Defined much further down (the emitter's own symbol table).  Declared here
  * so the routing predicate can ask how wide a global is. */
 static int gvar_find_size(const char *name);
@@ -3230,6 +3244,71 @@ done:
 }
 
 /* Route decision for one function; records the counters. */
+/* S47 slot census: counts, per function, how many frame slots exist, how many
+ * of them a register could hold for their whole live range, and how many IR
+ * operations (IR_STORE definitions plus IR_PUSH_VAR reads) touch the two sets.
+ * See the comment on g_sl_* above for the admission rules. */
+#define SL_MAX 1024
+typedef struct {
+    int defs, uses;
+    int blk_first, blk_last;
+    int addr, wide;
+} SlInfo;
+
+static void ark_slot_census(IrFunc *f) {
+    SlInfo *si;
+    int n, i, blk = 0;
+    long slots = 0, prom = 0, ops = 0, pops = 0;
+
+    if (f == 0) return;
+    n = (int)(f->local_size / 4) + 2;
+    if (n < 4) n = 4;
+    if (n > SL_MAX) n = SL_MAX;
+    si = (SlInfo *)calloc((size_t)n, sizeof(SlInfo));
+    if (si == 0) return;
+    for (i = 0; i < n; i++) { si[i].blk_first = -1; si[i].blk_last = -1; }
+    for (i = 0; i < f->code_count; i++) {
+        IrInst *I = &f->code[i];
+        int s;
+        if (I->op == IR_LABEL || I->op == IR_LABEL_NAMED) { blk++; continue; }
+        if (I->op == IR_PUSH_ADDR) {
+            s = (int)(I->val >> 2);
+            if (s >= 0 && s < n) si[s].addr = 1;
+            if (s + 1 >= 0 && s + 1 < n) si[s + 1].addr = 1;
+            continue;
+        }
+        if (I->op != IR_PUSH_VAR && I->op != IR_STORE) continue;
+        s = (int)(I->val >> 2);
+        if (s < 0 || s >= n) continue;
+        if ((I->aux & IR_AUX_SLOT64) || (I->aux & 0xFF) >= 8 ||
+            (I->aux & IR_AUX_VOLATILE)) { si[s].wide = 1; continue; }
+        if (I->op == IR_STORE) si[s].defs++;
+        else si[s].uses++;
+        ops++;
+        if (si[s].blk_first < 0) si[s].blk_first = blk;
+        si[s].blk_last = blk;
+    }
+    for (i = 0; i < n; i++) {
+        if (si[i].defs + si[i].uses == 0) continue;
+        slots++;
+        if (!si[i].addr && !si[i].wide && si[i].defs >= 1 && si[i].uses >= 1 &&
+            si[i].blk_first == si[i].blk_last) {
+            prom++;
+            pops += si[i].defs + si[i].uses;
+        }
+    }
+    g_sl_fn_total++;
+    g_sl_slots += slots;
+    g_sl_prom_slots += prom;
+    g_sl_ops += ops;
+    g_sl_prom_ops += pops;
+    if (getenv("ARKCC_ALLOC_NAMES"))
+        fprintf(stderr, "alloc-slots %s slots=%ld promotable=%ld ops=%ld "
+                        "ops_promotable=%ld\n",
+                f->name ? f->name : "?", slots, prom, ops, pops);
+    free(si);
+}
+
 static void ark_alloc_census(IrFunc *f) {
     int i, nins = 0, ncall = 0, nstack = 0, nloop = 0, peak = 0;
     long jmoves = 0;
@@ -3245,6 +3324,7 @@ static void ark_alloc_census(IrFunc *f) {
     }
     g_alc_fn_total++;
     g_alc_in_total += nins;
+    ark_slot_census(f);
 
     if (f->is_variadic || f->is_irq || f->is_naked || f->is_asm_func ||
         f->alias_target != 0 ||
@@ -3308,6 +3388,9 @@ static void ark_alloc_report(void) {
             g_alc_fn_elig, g_alc_in_elig, g_alc_fn_total, g_alc_in_total,
             g_alc_elig_call, g_alc_elig_stackarg, g_alc_elig_loop,
             g_alc_fn_join, g_alc_join_moves, g_alc_peak_max);
+    fprintf(stderr, "alloc-slots: functions=%d slots=%ld promotable_slots=%ld "
+                    "stack_ops=%ld promotable_ops=%ld\n",
+            g_sl_fn_total, g_sl_slots, g_sl_prom_slots, g_sl_ops, g_sl_prom_ops);
 }
 #endif /* ARKCC_FEATURE_OPT_ALLOC */
 
