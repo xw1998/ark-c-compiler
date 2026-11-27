@@ -74,6 +74,13 @@ WANT_CALL = 47
 WANT_STACKARG = 1
 WANT_LOOP = 10
 
+# 2b. the same walk with joins reconciled instead of refused (S44.2): the set a
+# real allocator would serve, the MOVs its joins would cost, and the widest
+# simultaneous live-value count anywhere in the corpus.
+WANT_JOIN_FUNCS = 188
+WANT_JOIN_MOVES = 399
+WANT_PEAK = 5
+
 check = H.check
 skip = H.skip
 read_text = H.read_text
@@ -160,7 +167,9 @@ def main():
 
         # --- 2. the routing census ----------------------------------------
         agg = dict((k, 0) for k in ('functions', 'ir', 'eligible_functions',
-                                    'eligible_ir', 'call', 'stackarg', 'loop'))
+                                    'eligible_ir', 'call', 'stackarg', 'loop',
+                                    'routable_join', 'join_moves'))
+        peak = [0]
         missing = []
         for src in corpus_units():
             got, why = census(ARKCC, work, src)
@@ -169,6 +178,8 @@ def main():
                 continue
             for k in agg:
                 agg[k] += got.get(k, 0)
+            if int(got.get('peak_max', 0)) > peak[0]:
+                peak[0] = int(got.get('peak_max', 0))
         check(not missing, 'every unit reports a census line', missing[:1])
         want = {'functions': WANT_FUNCS, 'ir': WANT_IR,
                 'eligible_functions': WANT_ELIG_FUNCS,
@@ -185,6 +196,20 @@ def main():
         check(0 < agg['eligible_functions'] < agg['functions'],
               'the census separates accepted from refused functions',
               '%d of %d' % (agg['eligible_functions'], agg['functions']))
+        # --- 2b. joins reconciled: S44.2 prices the allocator's real set ----
+        check(agg['routable_join'] >= agg['eligible_functions'],
+              'reconciling joins never loses a routed function',
+              '%d vs %d' % (agg['routable_join'], agg['eligible_functions']))
+        want2 = {'routable_join': WANT_JOIN_FUNCS,
+                 'join_moves': WANT_JOIN_MOVES}
+        bad2 = ['%s=%d want %d' % (k, agg[k], want2[k])
+                for k in want2 if agg[k] != want2[k]]
+        check(not bad2,
+              'join reconciliation serves %d functions at %d moves'
+              % (WANT_JOIN_FUNCS, WANT_JOIN_MOVES), bad2)
+        check(peak[0] == WANT_PEAK,
+              'the widest live-value count in the corpus is %d' % WANT_PEAK,
+              '%d' % peak[0])
 
         # --- 3. refusals, five shapes, both arms byte-identical -----------
         refuse = [

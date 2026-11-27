@@ -4400,3 +4400,100 @@ follow-on entry points are:
 
 The 43.1 criterion is not changed and not reopened; this withdrawal is simply the cheaper way of refuting
 it - before implementation instead of after.
+
+## 44 Pricing the joins: the final reading of the allocator path, and closing it (2026-11-27, measured before implementation)
+
+**Conclusion**: re-run the same walk over the 21 functions that section 43.8 had to refuse for
+"join shape mismatch", but now doing what a real allocator does - insert a `MOV` at the reconciling
+point. The routed surface goes from 167 to **188/212**, the removable sites from 565 to
+**1,148/1,394** (exactly 565 + 583 from 43.8.4), and what reconciliation costs is **399 `MOV`s**
+(measured, not estimated). Net ceiling **749** => corpus total **8,839**.
+
+Against the 43.1 tiers: landed <= 8,588 (needs 1,000), registered 8,589-8,888 (700-999),
+withdrawn > 8,888 (< 700). 749 only reaches the **registered tier** (55% of 1,362), and even that is
+the optimistic end - 100% realisation, not one reconciliation `MOV` removed. Stack that on the
+structural fact measured in section 38.3 (a second emission path starting from zero loses by 1.683x)
+and 43.5 decides it: **the stage A emitter is still not implemented** - this time it is closed
+*after* the joins have been priced, not for lack of measuring.
+
+### 44.1 Reading (95 TUs, the same best arm at 9,588 instructions)
+
+| quantity | strict model (43.8) | join reconciliation (this section) |
+| --- | ---: | ---: |
+| routed functions | 167 / 212 | **188 / 212** |
+| removable sites inside routed functions (39.1 counting) | 565 / 1,394 | **1,148 / 1,394** |
+| reconciliation actions | - | **399 `MOV`s** |
+| net ceiling | 565 | **749** |
+| best-arm instruction count | 9,588 | 9,588 - 749 = **8,839** |
+
+Where the reconciliation cost concentrates (top four): `HAL_DMAEx_MultiBufferStart_IT` 258,
+`HAL_RCC_OscConfig` 63, `HAL_RCCEx_PeriphCLKConfig` 15, `HAL_RCC_ClockConfig` 13 - 349 of 399.
+
+### 44.2 Register pressure is not the bottleneck (a side benefit)
+
+The same walk records the peak number of simultaneously live abstract values per function: the corpus
+maximum is **5**, and **179 of the 188** routed functions peak at **<= 4**. The eight usable registers
+`r4`-`r11` are therefore far from exhausted - **spill slots are not the limit**. The limits are the
+**join shape reconciliation** (399) and **calls** (47 routed functions contain a call site). This
+kills half of the guess in 39.2 that register pressure would eat part of the win.
+
+### 44.3 Tier and verdict
+
+Verdict: **`allocator_net_ceiling_inside_registered_tier`**.
+
+- The ceiling **8,839** sits in the registered tier (8,589-8,888), and on the optimistic end;
+- At the 50%-70% realisation rate of 39.2: 749 x 0.5...0.7 = **375...524** => **9,064...9,213**, which
+  is the **withdrawn** tier;
+- The landed tier (<= 8,588) needs 1,000, which is **above this section's measured ceiling of 749** -
+  unreachable even with every reconciliation `MOV` removed.
+
+=> the stage A emitter is **not implemented**. `-fopt-alloc` keeps doing the read-only census only;
+the three new census quantities (`routable_join` / `join_moves` / `peak_max`) are pinned by check 2b
+of `tests/run_alloc_tests.py` (**188 / 399 / 5**), and hold together with the strict values of check 2
+(167 / 6,064 / 212 / 17,116) - the two models must be two questions asked of one walk, not two pieces
+of code each telling its own story.
+
+### 44.4 The ledger after this road is walked
+
+At this point every **instruction-removal** margin has been measured to the end and closed:
+
+| margin | measured upper bound | where |
+| --- | ---: | --- |
+| text layer, per shape | about 150 (no single family >= 120) | 39.4 |
+| constant residency (4 dedicated registers) | 69-96 | 39.3 |
+| allocator (with join reconciliation) | **749** (optimistic 1,148) | this section |
+| stage B/C (7,888 / 7,388) | they start at stage A, which is closed | 43.1 / 43.8.7 |
+
+Section 38.3 also gave the structural evidence: a second emission path starting from zero loses by
+**1.683x**, because today's text layer (`constcache` / `slotreg` / `vreg` / `copyprop` / `addrfold`)
+already does the +1,026 / +466 / +609 / +100 instructions of work. **Any slice that treats "re-emit"
+as the answer must first move those equivalents across, or it loses by construction.**
+
+Conclusion (recorded, to be cited by every later slice): **on this corpus and this architecture,
+"beat armcc" is unreachable.** Every measurable margin sums to roughly 750-900 instructions, landing
+at **8,700-8,850**, i.e. **1.64-1.67x** armcc's 5,291. To genuinely approach armcc the emission model
+itself has to be replaced (expression / three-address IR + global register allocation + instruction
+selection); that is a separate engineering effort and cannot be passed off as one more text pass.
+
+### 44.5 Three candidates for what comes next (registered, not promised)
+
+1. **In-place isel (keeping the emission model)**: teach the existing emitter to emit the
+   "temp -> three-address" shapes directly - three-address 51, `BIC` 30, shifted operands 26,
+   redundant narrow-load extension 23, single-bit 27, about **157 instructions (1.6%)**; no text pass
+   is touched, so the 38.3 penalty does not apply. This is the **only** margin still inside the
+   architecture that also has a measured upper bound.
+2. **IR upgrade** (expression trees + vregs + global allocation + isel): the only road that can take
+   1.8x down to the 1.2x order; weeks of work, and it needs its own pre-registration and upper bound
+   first.
+3. **Stop optimising density**: make crt/startup/HAL run end to end on the H743 and make "really
+   usable" real.
+
+The three-tier criterion of 44.1 is not changed; this section only uses measurement to close stage A.
+
+### 44.6 Reproduce
+
+- Census: `ARKCC_ALLOC_STATS=1` (new fields `routable_join` / `join_moves` / `peak_max`);
+  per function via `ARKCC_ALLOC_NAMES=1` (`alloc-route` / `alloc-route2 <name> peak=<n> jmoves=<m>`);
+- Aggregation and site join: `D:/tmp/bm/cf/meas_join.py` (bucket by `peak <= K`, subtract `jmoves`
+  from the site count to get the net);
+- Gate: `python tests/run_alloc_tests.py ./arkcc.exe` (34 checks).

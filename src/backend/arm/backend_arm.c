@@ -2941,6 +2941,12 @@ static void ark_remat_function(AsmBuffer *b, int from) {
 static long g_alc_fn_total, g_alc_fn_elig;
 static long g_alc_in_total, g_alc_in_elig;
 static long g_alc_elig_call, g_alc_elig_stackarg, g_alc_elig_loop;
+/* S44: the same walk with joins *reconciled* instead of refused, so the census
+ * can price what a real allocator would have to serve (and what its phi moves
+ * cost) without pretending the strict routing count changed.  Read-only: no
+ * text depends on these. */
+static long g_alc_fn_join, g_alc_join_moves;
+static int  g_alc_peak_max;      /* widest simultaneous live value count */
 
 /* Defined much further down (the emitter's own symbol table).  Declared here
  * so the routing predicate can ask how wide a global is. */
@@ -3130,12 +3136,104 @@ static int alc_step(const IrInst *I, int idx, int *stk, int *depth) {
     return 0;
 }
 
-/* Route decision for one function; records the counters. */
-static void ark_alloc_census(IrFunc *f) {
-    int i, nins = 0, bad = 0, ncall = 0, nstack = 0, nloop = 0;
-    MirFunc m;
+/* One bounded walk of the abstract value stack over the CFG.  `join_ok` is
+ * what separates the two questions this census answers:
+ *
+ *   0 -- the strict model of 43.2: a join whose shapes disagree is refused.
+ *        This is the pinned routing count (167 of 212 functions).
+ *   1 -- the same walk, but a disagreeing join is reconciled the way a real
+ *        allocator reconciles it: one MOV per slot whose value differs, plus
+ *        one word per difference in depth.  The moves are counted, not
+ *        emitted, so 44.2 can price the routed set against the moves its
+ *        joins would add.
+ *
+ * Returns 0 when the function stays inside the model, -1 when it leaves it. */
+static int alc_walk(IrFunc *f, MirFunc *m, int join_ok, int *peak_out,
+                    long *jmoves, int *nloop_out, int alc_debug) {
     int *ent = 0, *dep = 0, *q = 0;
     unsigned char *queued = 0;
+    int blk, bad = 0, peak = 0;
+    long mv = 0;
+    ent = (int *)calloc((size_t)m->blk_count * ALC_MAX_STK, sizeof(int));
+    dep = (int *)calloc((size_t)m->blk_count, sizeof(int));
+    q   = (int *)calloc((size_t)m->blk_count, sizeof(int));
+    queued = (unsigned char *)calloc((size_t)m->blk_count, 1);
+    if (!ent || !dep || !q || !queued) { bad = 1; goto done; }
+    for (blk = 0; blk < m->blk_count; blk++) dep[blk] = -1;
+    {
+        int qh = 0, qt = 0;
+        int stk[ALC_MAX_STK];
+        dep[0] = 0;
+        queued[0] = 1;
+        q[qt++] = 0;
+        while (qh < qt) {
+            int b = q[qh++];
+            MirBlock *B = &m->blk[b];
+            int d, k;
+            memset(stk, 0, sizeof stk);   /* an empty stack has no contents
+                                           * to disagree about, so a stale
+                                           * slot must not be compared */
+            memcpy(stk, ent + (size_t)b * ALC_MAX_STK,
+                   sizeof(int) * ALC_MAX_STK);
+            d = dep[b];
+            for (k = B->start; k < B->end; k++) {
+                if (alc_step(&f->code[k], k, stk, &d) != 0) {
+                    if (alc_debug) fprintf(stderr, "alc-reject %s: step %s\n",
+                                           f->name ? f->name : "?",
+                                           ir_op_name(f->code[k].op));
+                    bad = 1;
+                    break;
+                }
+                if (d > peak) peak = d;
+            }
+            if (bad) break;
+            for (k = 0; k < B->succ_count; k++) {
+                int to = B->succ[k];
+                if (to >= 0 && to < m->blk_count && to <= b) *nloop_out = 1;
+                if (to < 0 || to >= m->blk_count) continue;
+                if (dep[to] < 0) {
+                    dep[to] = d;
+                    memcpy(ent + (size_t)to * ALC_MAX_STK, stk,
+                           sizeof(int) * ALC_MAX_STK);
+                    if (!queued[to]) { queued[to] = 1; q[qt++] = to; }
+                } else if (dep[to] != d ||
+                           (d > 0 &&
+                            memcmp(ent + (size_t)to * ALC_MAX_STK, stk,
+                                   sizeof(int) * d) != 0)) {
+                    if (!join_ok) {
+                        if (alc_debug) fprintf(stderr,
+                                               "alc-reject %s: join blk=%d to=%d d=%d/%d\n",
+                                               f->name ? f->name : "?", b, to,
+                                               dep[to], d);
+                        bad = 1;    /* a join needs a phi: fall back */
+                        break;
+                    }
+                    if (dep[to] != d) {
+                        mv += (d > dep[to] ? d - dep[to] : dep[to] - d);
+                    } else {
+                        int sl;
+                        for (sl = 0; sl < d; sl++)
+                            if (ent[(size_t)to * ALC_MAX_STK + sl] != stk[sl])
+                                mv++;
+                    }
+                }
+            }
+        }
+    }
+done:
+    free(ent);
+    free(dep);
+    free(q);
+    free(queued);
+    if (!bad) { *peak_out = peak; *jmoves += mv; }
+    return bad ? -1 : 0;
+}
+
+/* Route decision for one function; records the counters. */
+static void ark_alloc_census(IrFunc *f) {
+    int i, nins = 0, ncall = 0, nstack = 0, nloop = 0, peak = 0;
+    long jmoves = 0;
+    MirFunc m;
 
     int alc_debug;
     if (f == 0) return;
@@ -3172,69 +3270,26 @@ static void ark_alloc_census(IrFunc *f) {
     if (f->param_count > 4) nstack = 1;
 
     if (mir_build(f, &m) != 0 || m.blk_count <= 0) return;
-    ent = (int *)calloc((size_t)m.blk_count * ALC_MAX_STK, sizeof(int));
-    dep = (int *)calloc((size_t)m.blk_count, sizeof(int));
-    q   = (int *)calloc((size_t)m.blk_count, sizeof(int));
-    queued = (unsigned char *)calloc((size_t)m.blk_count, 1);
-    if (!ent || !dep || !q || !queued) bad = 1;
-    if (!bad) {
-        int blk;
-        for (blk = 0; blk < m.blk_count; blk++) dep[blk] = -1;
-        {
-            int qh = 0, qt = 0;
-            int stk[ALC_MAX_STK];
-            dep[0] = 0;
-            queued[0] = 1;
-            q[qt++] = 0;
-            while (qh < qt && !bad) {
-                int b = q[qh++];
-                MirBlock *B = &m.blk[b];
-                int d, k;
-                memset(stk, 0, sizeof stk);   /* an empty stack has no contents
-                                               * to disagree about, so a stale
-                                               * slot must not be compared */
-                memcpy(stk, ent + (size_t)b * ALC_MAX_STK,
-                       sizeof(int) * ALC_MAX_STK);
-                d = dep[b];
-                for (k = B->start; k < B->end; k++) {
-                    if (alc_step(&f->code[k], k, stk, &d) != 0) {
-                        if (alc_debug) fprintf(stderr, "alc-reject %s: step %s\n",
-                                               f->name ? f->name : "?",
-                                               ir_op_name(f->code[k].op));
-                        bad = 1; break;
-                    }
-                }
-                if (bad) break;
-                for (k = 0; k < B->succ_count; k++) {
-                    int to = B->succ[k];
-                    if (to >= 0 && to < m.blk_count && to <= b) nloop = 1;
-                    if (to < 0 || to >= m.blk_count) continue;
-                    if (dep[to] < 0) {
-                        dep[to] = d;
-                        memcpy(ent + (size_t)to * ALC_MAX_STK, stk,
-                               sizeof(int) * ALC_MAX_STK);
-                        if (!queued[to]) { queued[to] = 1; q[qt++] = to; }
-                    } else if (dep[to] != d ||
-                               (d > 0 &&
-                                memcmp(ent + (size_t)to * ALC_MAX_STK, stk,
-                                       sizeof(int) * d) != 0)) {
-                        if (alc_debug) fprintf(stderr,
-                                               "alc-reject %s: join blk=%d to=%d d=%d/%d\n",
-                                               f->name ? f->name : "?", b, to,
-                                               dep[to], d);
-                        bad = 1;    /* a join needs a phi: fall back */
-                        break;
-                    }
-                }
-            }
+
+    /* Reconciled walk first: the set a real allocator would serve, and the
+     * cost of the moves its joins would need.  S44 measures this and nothing
+     * emits it.  Silent diagnostics: every failure here is reported by the
+     * strict walk below, which is the one the gate pins. */
+    {
+        int p2 = 0, l2 = 0;
+        long m2 = 0;
+        if (alc_walk(f, &m, 1, &p2, &m2, &l2, 0) == 0) {
+            g_alc_fn_join++;
+            g_alc_join_moves += m2;
+            if (p2 > g_alc_peak_max) g_alc_peak_max = p2;
+            if (getenv("ARKCC_ALLOC_NAMES"))
+                fprintf(stderr, "alloc-route2 %s peak=%d jmoves=%ld\n",
+                        f->name ? f->name : "?", p2, m2);
         }
     }
-    free(ent);
-    free(dep);
-    free(q);
-    free(queued);
 
-    if (bad) return;
+    /* Strict: the pinned routing count of 43.8.1. */
+    if (alc_walk(f, &m, 0, &peak, &jmoves, &nloop, alc_debug) != 0) return;
     if (getenv("ARKCC_ALLOC_NAMES"))
         fprintf(stderr, "alloc-route %s\n", f->name ? f->name : "?");
     g_alc_fn_elig++;
@@ -3248,9 +3303,11 @@ static void ark_alloc_report(void) {
     const char *e = getenv("ARKCC_ALLOC_STATS");
     if (!e || !*e || *e == '0') return;
     fprintf(stderr, "alloc: eligible_functions=%ld eligible_ir=%ld functions=%ld "
-                    "ir=%ld call=%ld stackarg=%ld loop=%ld\n",
+                    "ir=%ld call=%ld stackarg=%ld loop=%ld "
+                    "routable_join=%ld join_moves=%ld peak_max=%d\n",
             g_alc_fn_elig, g_alc_in_elig, g_alc_fn_total, g_alc_in_total,
-            g_alc_elig_call, g_alc_elig_stackarg, g_alc_elig_loop);
+            g_alc_elig_call, g_alc_elig_stackarg, g_alc_elig_loop,
+            g_alc_fn_join, g_alc_join_moves, g_alc_peak_max);
 }
 #endif /* ARKCC_FEATURE_OPT_ALLOC */
 
