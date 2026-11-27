@@ -4126,3 +4126,148 @@ vstack has nothing left to take). Net: 13.
 **Next (re-ordered by measurement, not a promise)**: the allocator body of V-4 slice 2 -- liveness and register
 allocation over the full CFG, aiming at the 1,362 instructions recorded in S39. The straight-line emitter stays
 withdrawn.
+
+## 43 V-4' stage A pre-registration: value-residency allocator over the CFG (2026-11-27, frozen before implementation)
+
+S39.6 froze the three-stage criteria once. This section turns them into **implementable rules**: the routing
+predicate, the value model, liveness, linear scan, constant residency, calls and ABI, the output shape, and the
+five anti-false-green checks that must come with it. **The rules are frozen here and do not change afterwards**;
+the measurement is written up in S44 and judged by S43.5.
+
+### 43.1 Scope and criterion (from S39.6, not renegotiated)
+
+This slice implements **stage A only**: value numbering + liveness + linear scan + constant residency, routing
+every integer function. The criterion is an absolute instruction count:
+
+| Tier | Corpus instructions | Saving | Share of the 1,362 ceiling |
+| --- | ---: | ---: | ---: |
+| **land** | **<= 8,588** | >= 1,000 | >= 73% |
+| record | 8,589 - 8,888 | 700 - 999 | 51% - 73% |
+| withdraw | > 8,888 | < 700 | < 51% |
+
+The baseline is the same best arm as S39: **9,588 instructions** (`BASE`+`chainfold`+`pushpop`+`remat`, 95
+units). A relative rule (`<= old * 0.80`) is **not** a substitute for the table; it is a process indicator only.
+
+### 43.2 The rules (what gets implemented, one by one)
+
+#### 43.2.1 Routing predicate (a function that fails it falls back byte for byte)
+
+A function is routed if and only if its IR contains **none** of:
+
+1. float/vector: `IR_PUSH_FLOAT`, `IR_FADD/FSUB/FMUL/FDIV/FCMP/F2I/I2F/F2F`, `IR_SIMD_*`;
+2. 64-bit: `IR_64BINARY/64PUSH/64CMP/64F2I/64I2F/SEXT/ZEXT/CDECL64`;
+3. unmodellable control: `IR_ASM` (inline asm in the body), `IR_ALLOCA` (VLA), `IR_SMC`, `IR_SVC`,
+   `IR_MEMCPY` (block copies carry a loop and fixed register usage);
+4. address-taking: see 43.3 item 1;
+5. a variadic function (`fn->is_variadic`).
+
+The argument count is **not** limited (more than four go on the stack, see 43.2.6). `IR_TRUNC`,
+`IR_STORE_FLD`, `IR_LOAD_FLD`, `IR_DIV` and `IR_MOD` are integer shapes and are **allowed**.
+
+#### 43.2.2 Value model and value numbering
+
+The IR is a stack machine, so a "value" is **a slot on the abstract value stack**. Each basic block is
+simulated:
+
+- every value-producing IR operation gets a fresh **vreg** (monotonic);
+- `IR_PUSH_VAR` reads a local slot: if the slot is **neither address-taken nor spilled**, the value is the
+  slot's current vreg;
+- `IR_STORE` writes a local slot: the slot's current vreg becomes the popped vreg;
+- the abstract stack must **agree at every block entry** across all predecessors (same depth, same vreg per
+  level), otherwise the function falls back to the old path (conservative; stage A does not synthesise phis
+  and does not build SSA);
+- `IR_DUP/IR_SWAP/IR_POP` only reshape the abstract stack and emit nothing.
+
+A local slot that is **never spilled** costs no memory at all -- that is where the 656 frame accesses go.
+
+#### 43.2.3 Liveness
+
+Standard per-vreg block use/def plus iteration to a fixpoint on live-in/live-out, then RPO numbering turns each
+vreg's **live interval** into a point set `[def, last_use]` (holes kept). At `IR_CALL`, values live in
+`r0-r3/r12` count as live across the call.
+
+#### 43.2.4 Linear scan and spilling
+
+- Register pool: `r4-r11` (callee-saved, so naturally safe across calls) plus `r0-r3`, `r12` (short-lived
+  values only);
+- scan by interval start, free at interval end; when the pool is empty, spill the **furthest-ending** live
+  value to a frame slot (Belady-style heuristic);
+- spills and reloads happen **at the definition and use points only**, never as a cross-block move;
+- the frame holds only **actual spill slots + stack arguments + 8-byte alignment**; no space is reserved for
+  locals that live in registers.
+
+#### 43.2.5 Constant residency
+
+A vreg whose value is an integer constant (`IR_PUSH_INT` that one `MOV`/`MOVW` can encode) occupies **neither a
+register nor a frame slot**: it is **re-materialised** at each use. This is the S39.3 finding (the money in
+constants is in where the register comes from), not a new hole.
+
+#### 43.2.6 Calls and ABI
+
+- arguments go in `r0-r3` per AAPCS, the fifth and later on the stack; the result comes back in `r0` (when the
+  return type is an integer);
+- before `IR_CALL`, values that are **live across the call** and currently in `r0-r3/r12` are spilled, and
+  reloaded afterwards;
+- `r4-r11` are pushed once in the prologue and popped once at every exit (single-exit normalisation is stage C;
+  this stage allows multiple exits, each with the same pops);
+- the stack-argument area is reclaimed with `ADD sp, sp, #n` at the exit.
+
+#### 43.2.7 Output shape
+
+The routed function's new text replaces `[fstart, end of body)`: it emits `name:`, `.cfi_startproc`, the
+prologue, the body, the epilogue at every exit, and the old path still appends `.cfi_endproc`/`.size`. Encoding
+uses the wide forms the internal assembler already supports (three-operand `ADD/SUB/AND/ORR/EOR/BIC`, register
+shifts `LSL/LSR/ASR`, `MUL`, `SDIV/UDIV`, all `LDR/STR` address modes). **The new text still runs through the
+existing 33 text passes** (same ruler as S40.4), so the reading is comparable with every earlier section.
+
+### 43.3 Shapes that must be refused (fall back byte for byte)
+
+1. **Address-taken local**: an `IR_PUSH_ADDR` naming a local slot of this function (`&x`, an array decaying to
+   a pointer) sends the whole function back. With aliasing present a register copy is simply not valid, and
+   stage A does no alias analysis.
+2. `__asm` bodies, VLA, `long long`, `float`, variadics, `memcpy` shapes, `SVC`/`SMC`.
+3. The abstract stack disagreeing at a block entry (43.2.2 item 4).
+4. A spill offset beyond the 4KB immediate range (impossible, but asserted).
+5. `Reset_Handler` (same rule as S42: its prologue may carry `BL __arkcc_init_globals`).
+
+### 43.4 Anti-false-green (five checks, all in `make test`)
+
+1. **Independent oracle**: `tests/alloc_oracle.py` recomputes "removable sites in this function" from the
+   **switch-off text** and matches it against the sites actually removed, function by function; drift must be
+   0. Both arms (full corpus plus the `son` subset) run it.
+2. **Per-site proof**: every removed site has to restate its guard on the switch-off text (value not written
+   inside the interval, register not aliased, not live across a call, not inside an IT block). One unprovable
+   site fails the check.
+3. **Five must-refuse fixtures** (`__asm`, VLA, `long long`, `float`, variadic): byte-identical across arms.
+4. **At least eight must-accept fixtures** (loop, recursion, call, switch, multiple exits, stack arguments,
+   bitfield, do-while): same return values in both arms, and the same RAM snapshot after `unicorn` executes
+   them.
+5. **Routing census self-check**: the per-TU routed-function count must equal the frozen number (208 of 211
+   integer functions on the corpus), otherwise the gate fails. This is what guards against "the document says
+   208 functions are routed while the code routes 20".
+
+### 43.5 Three tiers and four things that are not allowed
+
+The tier is decided by the absolute counts of 43.1 alone: `<= 8,588` lands, `8,589-8,888` is recorded, `>
+8,888` is withdrawn.
+
+1. A relative criterion (`<= old * 0.80`) may **not** replace the absolute count;
+2. the corpus, the default switch value, or "count unrouted functions as optimised" may **not** be changed to
+   pass;
+3. "what is removed is redundant" may **not** be claimed without the per-site proof of 43.4 item 2;
+4. stage A meeting its bar may **not** be described as "close to armcc" (the end point is still 7,388 against
+   5,291, see S39.6).
+
+### 43.6 Reproduce and evidence
+
+- switch: `-fopt-alloc` (`ARKCC_FEATURE_OPT_ALLOC`, host 1 / board 0, off by default; cropped builds refuse it
+  by name with `C3900U`);
+- census: `ARKCC_ALLOC_STATS=1` prints the routed function count, removed sites and net saving per unit;
+- scripts: `D:/tmp/bm/cf/meas_alloc.py` (two arms, per unit), gate `tests/run_alloc_tests.py`.
+
+### 43.7 Known risk (the bad news, up front)
+
+S39.2 already recorded it: a real allocator's first landing usually realises 50%-70% (register pressure, calls,
+spill-slot revisits each take a bite), i.e. 680-950 instructions -- **most likely the record tier, possibly the
+withdraw tier**. If the reading comes out that way, S43.5 decides the tier as it stands: no polishing, no
+re-freezing the criteria afterwards.
