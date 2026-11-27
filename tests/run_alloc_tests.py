@@ -318,6 +318,27 @@ def main():
             check(not bad, 'the four VREGEMIT x OPT_ALLOC builds compile',
                   '; '.join(bad))
 
+        # --- 7. the IR dump is read-only -----------------------------------
+        # ARKCC_DUMP_IR exists so a paper-emission plan can be computed
+        # outside the compiler (EXPR_MODEL section 45).  It must print the IR
+        # and change not one byte of the emitted text.
+        leaf = os.path.join(work, 'acc_leaf.c')
+        o1 = os.path.join(work, 'dump_off.s')
+        o2 = os.path.join(work, 'dump_on.s')
+        rc1, log1 = run_env([ARKCC] + H.ASM_ARM + H.COMMON +
+                            ['-S', '-o', o1, leaf] + list(H.BASE), work)
+        rc2, log2 = run_env([ARKCC] + H.ASM_ARM + H.COMMON +
+                            ['-S', '-o', o2, leaf] + list(H.BASE), work,
+                            {'ARKCC_DUMP_IR': '1'})
+        if rc1 != 0 or rc2 != 0:
+            check(False, 'the IR dump fixture builds both ways', log1 or log2)
+        else:
+            check(read_text(o1) == read_text(o2),
+                  'ARKCC_DUMP_IR changes no byte of the emitted text')
+            check('irfunc f ' in log2 and 'PUSH_VAR' in log2,
+                  'ARKCC_DUMP_IR really prints the IR',
+                  log2.strip().splitlines()[:1])
+
         return 1 if H.failures else 0
     finally:
         if '--keep' not in sys.argv:

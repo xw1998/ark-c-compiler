@@ -4656,4 +4656,8 @@ If S45-a lands with `arm_exec` green but the count going *up*, that is a **model
   disassembling `D:/tmp/cfB/*armcc_O2.o`, same class definitions);
 - Bucket table: `D:/tmp/bm/cf/gap45c.py` (split on function labels; loop = a backward branch that hits a
   label inside the same function, call = a `bl` appears);
-- The older `mnem_cmp.py` still works but has coarser families; 45.1 is the authority.
+- The older `mnem_cmp.py` still works but has coarser families; 45.1 is the authority;
+- IR dump: `ARKCC_DUMP_IR=1` (host profiles; prints `irfunc <name> params=...` plus each IR
+  instruction's `op/val/aux/line` to stderr, **not one byte of the product**, gated by check 7 of
+  `tests/run_alloc_tests.py`); the paper-emission planner lives outside the repo at
+  `D:/tmp/bm/cf/paper45.py`.

@@ -14450,6 +14450,14 @@ static unsigned     g_bss_base   = 0x20000000u;  /* default SRAM base (.bss foll
  * command. Defined here (early) so arm_scatter_load() can read it. */
 int g_arm_dump_syms = 0;
 
+/* Debug flag: when set, codegen_arm prints every function's IR to stderr
+ * before emitting it (one line per instruction, in IR order, with the raw
+ * `val`/`aux` fields).  It exists so a paper-emission plan can be computed
+ * outside the compiler (docs/EXPR_MODEL.md section 45), where iterating on
+ * the planner costs seconds instead of a rebuild; it never changes a byte of
+ * the emitted text.  Latched from ARKCC_DUMP_IR on host profiles. */
+int g_arm_dump_ir = 0;
+
 /* --vector-table: reserve ARM_VT_SIZE bytes at the front of the image for the
  * Cortex-M vector table, so the table can be written *into* the reserved gap
  * instead of being prepended at link time.  Prepending shifts every byte by
@@ -15767,6 +15775,22 @@ static int arm_vol_needs_barrier(int op) {
 }
 #endif
 
+/* ARKCC_DUMP_IR: print one function's IR, exactly as the emitter will see it.
+ * Read-only; the format is deliberately mechanical (op name, val, aux, name)
+ * so an outside planner can parse it without guessing. */
+static void arm_dump_ir_function(IrFunc *f) {
+    int i;
+    fprintf(stderr, "irfunc %s params=%d locals=%d isvariadic=%d ops=%d\n",
+            f->name ? f->name : "?", f->param_count, f->local_size,
+            f->is_variadic, f->code_count);
+    for (i = 0; i < f->code_count; i++) {
+        const IrInst *I = &f->code[i];
+        fprintf(stderr, "  %4d %-16s val=%lld aux=0x%x line=%d%s%s\n", i,
+                ir_op_name(I->op), I->val, (unsigned)I->aux, I->line,
+                I->name ? " name=" : "", I->name ? I->name : "");
+    }
+}
+
 static char *codegen_arm(IrProgram *prog) {
     AsmBuffer buf;
     int fi;
@@ -15975,6 +15999,7 @@ static char *codegen_arm(IrProgram *prog) {
          * _ark_va_ptr outside a variadic function, for instance). */
         g_cur_fn_name = f->name;
         vdm_scan(f);
+        if (g_arm_dump_ir) arm_dump_ir_function(f);
 
         /* Variadic functions: the va region is spilled below, once per
          * function, right after the prologue (see "va region" further down).
@@ -24474,6 +24499,7 @@ static void arm_save_relocs(ArmAsm *a);  /* Bug-A2: forward decl */
 void arm_dump_syms_init(void) {
 #if ARKCC_PROFILE != ARKCC_PROFILE_STM32_MIN
     if (getenv("ARKCC_DUMP_SYMS")) g_arm_dump_syms = 1;
+    if (getenv("ARKCC_DUMP_IR")) g_arm_dump_ir = 1;
 #endif
 }
 

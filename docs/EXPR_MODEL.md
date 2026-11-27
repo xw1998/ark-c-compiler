@@ -3994,4 +3994,7 @@ ABI 特化：把 182 条 `bl` 的保存/恢复成本摊掉、把 >4 参数的栈
 - 归因表：`D:/tmp/bm/cf/gap45.py`（我方按 GNU 文本分类，armcc 按 `D:/tmp/cfB/*armcc_O2.o` 反汇编分类，
   同一套类别定义）；
 - 分桶表：`D:/tmp/bm/cf/gap45c.py`（按函数标签切分，回边=向后分支命中本函数内标签，调用=出现 `bl`）；
-- 族对比的旧脚本 `mnem_cmp.py` 仍可用，但类别粒度粗，归因以 `gap45.py` 为准。
+- 族对比的旧脚本 `mnem_cmp.py` 仍可用，但类别粒度粗，归因以 `gap45.py` 为准；
+- IR 转储：`ARKCC_DUMP_IR=1`（宿主档，逐函数打印 `irfunc <name> params=…` 与每条 IR 的
+  `op/val/aux/line`，**只写 stderr、不改一个字节的产物**，门禁检查见 `tests/run_alloc_tests.py` 第 7 项），
+  纸面发射计划器在仓库外 `D:/tmp/bm/cf/paper45.py`。
