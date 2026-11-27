@@ -4497,3 +4497,163 @@ The three-tier criterion of 44.1 is not changed; this section only uses measurem
 - Aggregation and site join: `D:/tmp/bm/cf/meas_join.py` (bucket by `peak <= K`, subtract `jmoves`
   from the site count to get the net);
 - Gate: `python tests/run_alloc_tests.py ./arkcc.exe` (34 checks).
+
+## 45 Emission model v2 pre-registration: value-centric emission (V-6), five stages with absolute criteria (2026-11-27, frozen before implementation)
+
+**Why a new model at all**: section 44 measured the ceiling of "keep the emission model" at 750-900
+instructions, while armcc reads 5,651 on the same corpus (decoded per `FUNC` over the same 96
+`*armcc_O2.o`, the basis fixed in 40.2; the 5,291 of 37.2 was an earlier sampling basis). The gap of
+**3,937 instructions** has to be explained structurally, not by one more text pass. Section 40.2 gave a
+coarse family-level attribution once; this section splits each family into its immediate and
+register forms (otherwise `add #imm` and `add r,r,r` collapse into one family and the cause disappears),
+adds a per-function breakdown (45.2), and freezes the criterion on that basis - **measure first, freeze
+after, never renegotiate**.
+
+### 45.1 Where the gap comes from (95 TUs, our best arm 9,588 / armcc `-O2` 5,651)
+
+| class | ours | armcc | excess |
+| --- | ---: | ---: | ---: |
+| `mov` register copy (`mov rd,rm`) | 2,005 | 219 | **+1,786** |
+| stack frame (`push`/`pop`) | 769 | 154 | **+615** |
+| literal-pool load (`ldr lit`) | 766 | 392 | +374 |
+| `add` immediate | 512 | 181 | +331 |
+| `ldr` memory | 991 | 719 | +272 |
+| `str` to stack | 249 | 40 | +209 |
+| `ldr` from stack | 204 | 6 | +198 |
+| `str` memory | 716 | 536 | +180 |
+| `and` register | 182 | 20 | +162 |
+| `and` immediate | 225 | 76 | +149 |
+| `cmp`/`tst` | 606 | 479 | +127 |
+| narrow extension (`uxtb`/`sxtb`...) | 81 | 6 | +75 |
+| `sub` immediate | 147 | 72 | +75 |
+| `bl` | 182 | 152 | +30 |
+| `orr` immediate / register | 199 | 178 | +21 |
+| `add`/`sub` register | 58 | 48 | +10 |
+| shifts | 212 | 238 | -26 |
+| branches | 1,205 | 1,234 | -29 |
+| other | 279 | 509 | -230 |
+| `mov` immediate | 0 | 392 | -392 |
+| **total** | **9,588** | **5,651** | **+3,937** |
+
+Positive excess sums to **4,614**, negative to -677, net 3,937. Reading it:
+
+- **Register copies alone are 45% of the net gap** (1,786 / 3,937). This is not "one pass short": the
+  values have no names. Every expression walks a temporary slot and the slot then moves into the
+  destination register. armcc's 219 are the genuinely necessary ones (calling convention, returns).
+- **Copies plus stack traffic are 2,808 = 71%** (1,786 + 615 + 209 + 198). Seven tenths of the gap is
+  "where a value lives", not instruction selection.
+- The two classes where we are *better* confirm the architectural difference: `mov` immediate 0 against
+  392 (we go through the literal pool), 29 fewer branches, 230 fewer "other". So the gap is not simply
+  "we pick worse instructions" - it is how addresses, constants and short-lived values are represented.
+
+### 45.2 Which functions the gap lives in (same `.s`, split on function labels)
+
+| routed | loop | call | functions | insns | `mov` copies | frame | literal loads |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| yes | yes | yes | 19 | 3,011 | 818 | 215 | 0 |
+| yes | yes | no | 5 | 522 | 139 | 14 | 0 |
+| yes | no | yes | 32 | 2,007 | 295 | 117 | 0 |
+| yes | no | no | **130** | 2,746 | 417 | 282 | 0 |
+| no | yes | yes | 1 | 421 | 58 | 69 | 0 |
+| no | yes | no | 6 | 19 | 0 | 12 | 0 |
+| no | no | yes | 10 | 690 | 213 | 30 | 0 |
+| no | no | no | 8 | 90 | 28 | 20 | 0 |
+
+Reading: **87% of instructions (8,311 / 9,588) and 83% of `mov` copies (1,672 / 2,005) live inside the
+186 routed functions**. The 25 unrouted functions hold only 1,277 instructions; keeping them all costs
+13%. So the first step of the new model is not "rewrite the corpus", it is **take the 186 routed
+functions and fall back byte for byte for the rest** - the same fall-back discipline as 43.3.
+
+### 45.3 Criterion: five stages, absolute counts, one independent gate each (frozen, not renegotiable)
+
+Every stage's criterion is **one sentence**: same 95 TUs, same flag set (`H.BASE` + `-fopt-chainfold
+-fopt-pushpop -fopt-remat`), same counting basis, corpus instruction total **<= that stage's ceiling**,
+and `arm_exec` agreeing per function across both arms. Stages **stack**: withdrawing one never disturbs
+the ones already landed.
+
+| stage | takes over | corpus ceiling | must remove | vs 9,588 | basis (measured pool) |
+| --- | --- | ---: | ---: | ---: | --- |
+| S45-a | routed and loop-free and call-free (130 functions) | **<= 9,150** | 438 | -4.6% | copies 417 + frame 282 = 699, take 63% |
+| S45-b | + routed, loop-free, with calls (32 functions) | **<= 8,950** | 638 | -6.7% | pool 1,111, take 57% |
+| S45-c | + routed with loops (24 functions) | **<= 8,550** | 1,038 | -10.8% | pool 2,300, take 45% (399 join moves are paid) |
+| S45-d | in-place isel: three-address / shifted operands / `BIC` / narrow load / single-bit | **<= 8,150** | 1,438 | -15.0% | isel 157 + `and` 311 + `extend` 75 = 543, take 74% |
+| S45-e | constants and addresses: literal pool / `add #imm` / memory folding | **<= 7,550** | 2,038 | -21.3% | constant/address pool 1,232, take 49% |
+
+Each stage also freezes **two side conditions** (fail either and the stage is withdrawn, the ceiling is
+not moved):
+
+1. **No semantic trade for instruction count**: `arm_exec` must agree on return values and memory
+   images per function across arms; new fixtures must cover every shape the stage takes over (at least
+   leaf arithmetic, a call, recursion, `switch`, several exits, a bitfield, a five-argument call,
+   `do-while`).
+2. **No silently swallowed function**: the emitter must report "took n / fell back m", and n + m must
+   equal the 186 of the routing census. Any failure mid-function falls the **whole** function back to
+   the existing text path (byte for byte), never half-emitted.
+
+**This section does not claim armcc parity.** All five stages landed is 7,550, still 1.34x armcc. Stage 6
+(cross-call global allocation + ABI specialisation: amortise the save/restore cost of the 182 `bl`s and
+turn >4-argument stack traffic into a register window) is registered only as a candidate and must be
+re-measured after S45-e; no estimate is frozen now.
+
+### 45.4 The model (what gets built, one line each)
+
+1. **Values have names**: one vreg per SSA value; temporary slots no longer appear on the emission path.
+2. **Liveness**: backward liveness over the CFG; a vreg's live range is definition -> last use; joins
+   are **reconciled and charged** as in 44.2, and the reconciling `MOV`s go into the budget.
+3. **Linear scan**: `r4`-`r11` are allocatable (`r0`-`r3` reserved for calls and arguments); only spills
+   go to the stack. The measured corpus peak of simultaneously live values is <= 5 (44.2), so most
+   functions should have **no** stack temporaries at all.
+4. **Instruction selection table**: emit shapes by `(op, operand kinds)` - register, immediate, shifted
+   operand, `[base, index, lsl #k]` addressing, `uxtb`/`sxth` narrowing, `ubfx`/`bfi` bitfields,
+   `cmp #imm`, `cbz/cbnz`.
+5. **Frame**: slots only for genuinely spilled vregs and callee-saved registers that must be preserved;
+   `push`/`pop` in one register-list instruction.
+6. **Constants**: `mov`/`movw`/`movt` when the value fits, otherwise the literal pool with **load once,
+   use many times across blocks**.
+7. **Fall back**: if any rule misses, or the function has a shape listed in 45.5, fall the **whole**
+   function back to the existing text path.
+
+### 45.5 Shapes that must be refused (byte-for-byte fall-back, never attempted)
+
+`inline __asm`, VLAs, `long long`, floating point, variadic functions, functions with `>4` parameters,
+`setjmp/longjmp`, and indirect calls whose argument count cannot be determined statically. The criterion
+is 43.3's: refused shapes must be **byte-identical** in both arms, and refusals must be visible in the
+census (silence is a bug).
+
+### 45.6 Five anti-false-green checks (in `make test`, none optional)
+
+1. **OFF IS OFF**: the switch is off by default; while off, the 95 TUs are **byte-identical** to
+   today's output (reuse the 43.8 whole-corpus comparison).
+2. **Per-shape must-take / must-refuse fixtures**: one fixture per shape; must-take shapes really get
+   taken (the `route` line count is 1), must-refuse shapes really fall back (= 0), and both arms are
+   byte-identical.
+3. **Take-over count is conserved**: `taken + fell back = 186`, summed per TU and equal to the census;
+   "emission failed but was not accounted" is a red light.
+4. **Semantic double-run**: `arm_exec` runs every fixture and the corpus on `{off, on}`, with identical
+   return values and memory images.
+5. **Cropped**: a `-DARKCC_FEATURE_EMIT2=0` build refuses the switch by name (C3900U) and writes
+   byte-identical text without it; all four `VREGEMIT x OPT_ALLOC x EMIT2` combinations must compile
+   (the 43.4 lesson).
+
+### 45.7 Known risk, stated up front (do not rediscover it after failing)
+
+Section 38.3 measured it: **a second emission path starting from zero loses by 1.683x**, because today's
+text layer already does the +1,026 / +466 / +609 / +100 instruction-equivalents of work. The answer is
+not "be smarter than the text layer", it is that two things hold at once:
+
+- after the new emitter takes a function, **the existing text passes still run on its output**
+  (`constcache` / `slotreg` / `copyprop` / `addrfold` / `peephole` are text-level and
+  source-agnostic), so those 2,201 equivalents need **not** be moved and are not lost;
+- the ceilings in 45.3 are derived from the **measured excess over armcc**, not over ourselves, so
+  "moving the work across" can never be counted as a win.
+
+If S45-a lands with `arm_exec` green but the count going *up*, that is a **model failure**, not a
+"tune it a bit more": withdraw per 45.3 and write the reason into section 46, exactly as section 42 did.
+
+### 45.8 Reproduce
+
+- Attribution table: `D:/tmp/bm/cf/gap45.py` (ours classified from GNU text, armcc classified by
+  disassembling `D:/tmp/cfB/*armcc_O2.o`, same class definitions);
+- Bucket table: `D:/tmp/bm/cf/gap45c.py` (split on function labels; loop = a backward branch that hits a
+  label inside the same function, call = a `bl` appears);
+- The older `mnem_cmp.py` still works but has coarser families; 45.1 is the authority.
