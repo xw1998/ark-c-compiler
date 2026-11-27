@@ -109,6 +109,7 @@ void config_init(void) {
     g_config.enable_opt_remat       = 0;
     g_config.enable_opt_vregemit    = 0;
     g_config.enable_opt_alloc       = 0;
+    g_config.enable_opt_rstack      = 0;
     g_config.enable_opt_copyprop  = 0;
     g_config.enable_opt_live      = 0;
     g_config.enable_opt_inline    = ARKCC_FEATURE_OPT_INLINE;
@@ -584,6 +585,8 @@ void config_apply_args(int argc, char **argv) {
                 g_config.enable_opt_vregemit            = enable;
             else if (ark_streq(name, "opt-alloc") || ark_streq(name, "alloc"))
                 g_config.enable_opt_alloc               = enable;
+            else if (ark_streq(name, "opt-rstack") || ark_streq(name, "rstack"))
+                g_config.enable_opt_rstack              = enable;
             else if (ark_streq(name, "opt-inline") || ark_streq(name, "autoinline"))
                 g_config.enable_opt_inline              = enable;
             else if (ark_streq(name, "opt-vectorize") || ark_streq(name, "vectorize"))
@@ -649,6 +652,7 @@ void config_print(void) {
     ark_log("  opt_remat=%d\n", g_config.enable_opt_remat);
     ark_log("  opt_vregemit=%d\n", g_config.enable_opt_vregemit);
     ark_log("  opt_alloc=%d\n", g_config.enable_opt_alloc);
+    ark_log("  opt_rstack=%d\n", g_config.enable_opt_rstack);
     ark_log("  opt_constcond=%d\n", g_config.enable_opt_constcond);
     ark_log("  opt_exit=%d\n", g_config.enable_opt_exit);
     ark_log("  opt_boolmat=%d\n", g_config.enable_opt_boolmat);

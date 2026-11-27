@@ -4939,3 +4939,146 @@ measures EXIT=0, 38 ok, 0 FAIL (`D:/tmp/bm/alloc_gate_s48.log`).
   cfg_ops=...` line (per function with `ARKCC_ALLOC_NAMES=1` as `alloc-slotcfg <name> off=... ops=...`,
   only >= 4 listed);
 - frame accesses: `D:/tmp/bm/cf/s48b.py` (corpus), `s47j.py` (four buckets).
+## 50 `-fopt-rstack` measured and withdrawn: depth 2 saves register copies, not memory traffic (2026-11-27)
+
+Implemented against the frozen criterion of 49.4, the depth-2 expression stack moves the corpus from
+16,245 to 15,901 instructions on the same arm (-344, -2.1%), but **body `push`/`pop` falls by only 14**
+(496 -> 482), an order of magnitude away from the 324-instruction pool the pre-registration named. This
+section records where that difference comes from and **withdraws** the slice as a pre-registered
+optimization (the code stays, default off).
+
+### 50.1 Implementation
+
+- The invariant: `*top` goes from 0/1 to 0/1/2; 2 means the top word lives in `r0` and the one under it in
+  `r1`. Every change sits inside `ark_top_try()`, there is no second emission path, and any op that is not
+  modelled first runs `ark_top_drain()` (`PUSH {r1}` then `PUSH {r0}`) and then takes its old path, so a
+  wrong decision costs one op, not the backend.
+- When depth 2 is entered (look-ahead): `ark_top_make_room()` may emit `MOV r1, r0` only when **the next IR
+  op is a binary op it can handle**, otherwise it pushes as before. **The unconditional version measured
+  17,281 instructions (+1,036, `PUSH`/`POP` 479/463 -> 847/779)**: almost every push first paid a `MOV` and
+  then had to spill both levels.
+- Consuming the pair: `emit_binary_swap()`. Commutative operators are spelled with two operands
+  (`ADD/AND/ORR/EOR r0, r0, r1`, `MUL r0, r0, r1`), non-commutative ones use three registers
+  (`SUB r0, r1, r0`, `SDIV r0, r1, r0`, `MOD` borrows `r2`, `LSL/LSR/ASR r0, r1, r0`), comparisons use
+  `CMP r1, r0` followed by `emit_cmp_result`.
+- Closing out: `IR_RETURN`, `IR_STORE`, `IR_POP`, `IR_DUP` and the 64-bit / complex `IR_UNARY` forms drain
+  first when `*top==2`; `IR_LABEL` is a join point, so it drains and then hands back to the main switch.
+- Instrumentation: `ARKCC_RSTACK_STATS=1` makes `codegen_arm` print
+  `rstack: depth2=<n> pairs_saved=<n>` next to the existing `ark_alloc_report()`; without the variable
+  nothing is printed, so no existing output can be disturbed.
+- Cropping: `ARKCC_FEATURE_OPT_RSTACK` (0 under `STM32_MIN`); when cropped, `ark_rstack_enabled()` returns
+  0 outright and the `#if !ARKCC_FEATURE_OPT_RSTACK` block in `src/main.c` rejects the switch by name with
+  C3900U.
+
+**A real defect fixed on the way (the internal Thumb-2 assembler)**: the three-operand register shift
+`LSL Rd, Rn, Rs` with `Rn != Rd` was encoded as the 16-bit `Rdn <<= Rs`, silently dropping `Rn` -
+measured: `LSL r0, r1, r0` with `r0=2, r1=12` gave 8 instead of 48. This slice is the first path to emit
+that shape, which is why the defect surfaced now. Fix: the encode pass uses the 16-bit form only for the
+immediate form; the register form stays 16-bit only when `Rd == Rn` and all three registers are <= 7,
+everything else uses the 32-bit `LSL.W`; the size pass mirrors it (without the mirror it immediately
+reports `assembler size pass disagrees with the emit pass (2046 vs 2054)`, which is its self-check).
+
+### 50.2 Measurements (95 TUs, 212 functions, same-arm difference)
+
+| quantity | `--reg-top` (arm A) | `+ -fopt-rstack` (arm B) | difference |
+| --- | ---: | ---: | ---: |
+| instructions | 16,245 | 15,901 | -344 (-2.1%) |
+| text bytes | 299,991 | 295,993 | -3,998 |
+| `PUSH` | 479 | 472 | -7 |
+| `POP` | 463 | 456 | -7 |
+| `push` + `pop` | 942 | 928 | -14 |
+| of which in the body (outside prologue/epilogue) | 496 | 482 | -14 |
+| `MOV rX, rY` (register copies) | 1,379 | 985 | -394 |
+| depth-2 entries / consumed by the next op | - | 1,573 / 1,573 | no waste |
+| largest per-TU growth | - | +3 (4 TUs) | see below |
+
+Distribution over hunks (`difflib` aligned on instruction lines, 1,669 non-empty hunks):
+
+| hunk delta | -26 ... -7 | -4 ... -1 | 0 | +1 ... +4 | +5 ... +25 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| hunks | 10 | 478 | **904** | 265 | 12 |
+
+**904 of 1,669 hunks keep exactly their length and only rename a register**: `MOV r1, #52 / ADD r5, r8, r1`
+becomes `MOV r0, #52 / ADD r5, r0, r8`. That is the whole story - the text layer (`-fopt-basefold`,
+`-fopt-birthdest`, ...) **had already folded "push the left operand, load it back" into a register copy**
+on arm A, so the `--reg-top` arm simply has no 324 body `push`/`pop` waiting to be deleted (of arm A's 942
+`push`/`pop`, only 496 are body shapes this slice can reach, and most of those are not "left operand of a
+binary" either).
+
+Net difference by mnemonic (arm B minus arm A): `MOV` -329, `LDR` -14, `PUSH` -7, `POP` -7, `CMP` -2,
+`AND` -3, `SUB` -1, `ADD` +13, `STR` +4, `MOVW` +2, everything else 0. 3,817 instructions are removed and
+3,473 added, net -344.
+
+The four TUs that grow (all <= +3): `stm32f4xx_hal.c` +1, `stm32f4xx_hal_dma_ex.c` +3,
+`stm32f4xx_hal_pwr_ex.c` +3, `stm32f4xx_hal_rcc_ex.c` +3; the other 18 TUs that change all shrink or stay
+flat.
+
+### 50.3 Reconciliation with the 49.4 pre-registration
+
+| pre-registered item | result |
+| --- | --- |
+| deletable pool 324 (body `push`/`pop`) | the same arm only offers 496 body shapes, and **14** are actually removed (4.3% of 324) |
+| realisation >= 60% => corpus <= 9,394 | **not met**: 14 << 194; `<= 9,394` cannot be evaluated on the `--reg-top` arm (its baseline is 16,245, not 9,588) |
+| never trade semantics for fewer instructions | honoured (both arms agree, see 50.5) |
+| OFF IS OFF | honoured (0 TUs differ, in both directions) |
+| cropping | honoured (`-DARKCC_FEATURE_OPT_RSTACK=0` rejects the flag by name, same text without it) |
+
+The 49.4 pre-registration rested on the reading "the best arm (9,588) has 324 body `push`/`pop` to
+delete", and that reading was taken on the arm **without** `--reg-top`, while `-fopt-rstack` can only live
+inside the `--reg-top` model. The two arms' body `push`/`pop` are not the same instructions, so the
+criterion cannot be evaluated literally once the implementation exists. The conclusion here: **neither
+self-certify against the literal criterion nor move the goalposts afterwards** - it simply did not meet
+the bar.
+
+### 50.4 Verdict
+
+**`rstack_is_withdrawn_its_pool_does_not_exist`**: `-fopt-rstack` is **withdrawn** as a pre-registered
+optimization - it did not deliver "delete the body `push`/`pop`", and the 13,000-instruction gap is not in
+this layer.
+
+Three facts have to be stated together:
+
+1. **It cannot touch the shipping arm.** `--reg-top` is off by default and the text-layer `H.BASE` does not
+   include it; the shipping best arm is 9,588 (no `--reg-top`), and this slice changes not one byte there
+   (50.5 item 2). The -344 buys nothing on the way to beating armcc.
+2. **It saves register copies, not memory traffic.** -394 `MOV rX, rY` are largely offset by +13 `ADD` and
+   a few stragglers; the 904 equal-length hunks say most sites were renamed, not reduced.
+3. **The code stays, default off.** It is semantically correct, byte-identical when off, and it is the only
+   triggering path for the assembler shift defect plus the carrier of that defect's fixture. If S51 does not
+   re-target it at the real goal (register copies), it gets deleted - and deleting needs the user's consent
+   first.
+
+### 50.5 Gate
+
+`tests/run_rstack_tests.py` has **14 checks**; this slice: EXIT=0, 14 ok, 0 FAIL, 0 skip:
+
+1. OFF IS OFF, twice: on the `--reg-top` arm, 95 TUs with `-fno-opt-rstack` are byte-identical to the same
+   arm without it, and the switch alone (without `--reg-top`) also changes no byte;
+2. size pins: arm A `(16245, 299991, 479, 463, 1379)`, arm B `(15901, 295993, 472, 456, 985)`, body
+   push/pop 496 -> 482, total -344;
+3. growth pinned to `{hal.c:+1, hal_dma_ex.c:+3, hal_pwr_ex.c:+3, hal_rcc_ex.c:+3}` - the original
+   "no translation unit grows" was an empty criterion (four TUs do grow), so it is replaced by the measured
+   per-TU values;
+4. sites 1,573 with `depth2 == pairs_saved` (the look-ahead never wastes a `MOV`);
+5. a `unicorn` fixture (nested binary, five-argument call, runtime shifts, bitfield, `switch`): both arms
+   return the same `r0`, the 40-word OUT matches the C source, and the RAM image is byte-identical;
+6. the cropped build rejects `-fopt-rstack` by name and writes the same text as the full build when the
+   switch is absent.
+
+The existing `tests/run_alloc_tests.py` (38 checks) does not regress (EXIT=0).
+
+### 50.6 Reproduction
+
+- Three-arm readings: `D:/tmp/bm/rs/measure.py`, `measure2.py`; sites and waste: `counts.py`;
+- hunk distribution and per-mnemonic net: `D:/tmp/bm/rs/hist.py`, `diffstat2.py`; per-TU growth: `grow.py`;
+- site counter: `-fopt-rstack` with `ARKCC_RSTACK_STATS=1` (`rstack: depth2=... pairs_saved=...`);
+- gate: `python tests/run_rstack_tests.py ./arkcc.exe` (needs `gcc` on `PATH`; the cropping check compiles);
+- full regression: `env -u PYTHONPATH -u PYTHONHOME make test` (log `D:/tmp/bm/make_test_s50.log`).
+
+### 50.7 Side finding (not fixed, registered as a later slice)
+
+While writing this slice's fixture I ran into a pre-existing irgen defect: the `OUT[i++] = ...` shape on the
+**default path** (without `--reg-top`) computes an index one too high from the second statement on -
+measured RAM `[11,0,22,33]`, while the same source on either `--reg-top` arm gives the correct
+`[11,22,33,0]`. Unrelated to this slice, which is why the fixture uses explicit indices. Fixing it changes
+the default path's output and therefore needs its own pre-registration; it is not smuggled in here.

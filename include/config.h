@@ -59,6 +59,7 @@ typedef struct {
     int enable_opt_remat;          /* -fopt-remat: 同值重物化消除（S21） */
     int enable_opt_vregemit;       /* -fopt-vregemit: 虚拟寄存器发射路径（V-5） */
     int enable_opt_alloc;          /* -fopt-alloc: CFG 分配器发射路径（V-4' 阶段 A） */
+    int enable_opt_rstack;         /* -fopt-rstack: 深度 2 表达栈（第二层常驻 r1，S49） */
     int enable_opt_inline;   /* --autoinline / -O2 */
     int enable_opt_vectorize;/* --vectorize / -O2 */
     int opt_level;          /* 0=none, 1=basic, 2=aggressive */

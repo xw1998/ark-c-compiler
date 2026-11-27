@@ -613,6 +613,45 @@ static void emit_binary(AsmBuffer *b, int op) {
     }
 }
 
+/* --- -fopt-rstack: the same operation with the operands the other way round
+ *
+ * The depth-2 form arrives with the left operand in r1 and the right one in r0
+ * (emit_binary() assumes r0 = left, r1 = right), so the commutative ops keep
+ * their two-operand spelling and the rest name both source registers.  What
+ * this buys over the depth-1 path is the push/pop pair plus the MOV that moved
+ * the right operand into r1. */
+static void emit_binary_swap(AsmBuffer *b, int op) {
+    int is_unsigned = (op & 0x100) != 0;
+    int base_op = op & ~0x100;
+    switch (base_op) {
+        case (int)TOK_PLUS:  emit_line(b, "ADD r0, r0, r1"); break;
+        case (int)TOK_MINUS: emit_line(b, "SUB r0, r1, r0"); break;
+        case (int)TOK_MUL:   emit_line(b, "MUL r0, r0, r1"); break;
+        case (int)TOK_DIV:   emit_line(b, "SDIV r0, r1, r0"); break;
+        case (int)TOK_MOD:
+            emit_line(b, "SDIV r2, r1, r0");
+            emit_line(b, "MUL r2, r2, r0");
+            emit_line(b, "SUB r0, r1, r2");
+            break;
+        case (int)TOK_BAND:  emit_line(b, "AND r0, r0, r1"); break;
+        case (int)TOK_BOR:   emit_line(b, "ORR r0, r0, r1"); break;
+        case (int)TOK_BXOR:  emit_line(b, "EOR r0, r0, r1"); break;
+        case (int)TOK_SHL:   emit_line(b, "LSL r0, r1, r0"); break;
+        case (int)TOK_SHR:
+            emit_line(b, is_unsigned ? "LSR r0, r1, r0" : "ASR r0, r1, r0");
+            break;
+        case (int)TOK_EQ: case (int)TOK_NE:
+        case (int)TOK_LT: case (int)TOK_GT:
+        case (int)TOK_LE: case (int)TOK_GE:
+            emit_line(b, "CMP r1, r0");     /* the flags are ordered, the sources are not */
+            emit_cmp_result(b, base_op, is_unsigned);
+            break;
+        default:
+            emit_line(b, "; unknown binary op");
+            break;
+    }
+}
+
 #if ARKCC_FEATURE_OPT_IMM
 /* ThumbExpandImm() representability, defined with the assembler far below. */
 static int thumb_imm12_a(unsigned val, unsigned *out_i, unsigned *out_imm3,
@@ -14933,6 +14972,46 @@ static int ark_top_enabled(void) {
     return g_config.enable_reg_top ? 1 : 0;
 }
 
+/* Depth 2 (-fopt-rstack): the second word of the IR stack may live in r1 as
+ * well, so `a + b` never touches the machine stack.  It extends --reg-top and
+ * only means anything when that model is on; with the switch off the emitter
+ * takes exactly the depth-1 path it took before. */
+static int ark_rstack_enabled(void) {
+#if ARKCC_FEATURE_OPT_RSTACK
+    return (ark_top_enabled() && g_config.enable_opt_rstack) ? 1 : 0;
+#else
+    return 0;
+#endif
+}
+
+/* Counters for the S49 pre-registration: how often the second level was kept
+ * in r1, and how many push/pop pairs that avoided.  Printed only when
+ * ARKCC_RSTACK_STATS=1, so they cannot disturb any existing output. */
+static long g_rs_depth2, g_rs_saved;
+
+/* The instruction after the one being emitted is an IR_BINARY that
+ * emit_binary_swap() can handle.  Set by the codegen loop before each
+ * ark_top_try() call.  Going to depth 2 is only worth its MOV when the very
+ * next op consumes both levels: measured on the corpus, the unconditional
+ * form paid a MOV before every push and then had to spill both at the next
+ * non-binary op (push/pop 479/463 -> 847/779, +1,036 instructions). */
+static int g_rs_bin_next;
+
+/* The binary ops emit_binary_swap() models. */
+static int rs_bin_ok(int op) {
+    switch (op & ~0x100) {
+    case (int)TOK_PLUS: case (int)TOK_MINUS: case (int)TOK_MUL:
+    case (int)TOK_DIV: case (int)TOK_MOD:
+    case (int)TOK_BAND: case (int)TOK_BOR: case (int)TOK_BXOR:
+    case (int)TOK_SHL: case (int)TOK_SHR:
+    case (int)TOK_EQ: case (int)TOK_NE: case (int)TOK_LT:
+    case (int)TOK_GT: case (int)TOK_LE: case (int)TOK_GE:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
 /* va region helpers (defined further down, next to aapcs_assign because they
  * explain the same word indexing). ark_top_try() runs before them, so their
  * prototypes live here. */
@@ -14964,10 +15043,33 @@ static void va_ptr_needs_variadic(void) {
 }
 
 static void ark_top_drain(AsmBuffer *b, int *top) {
+    if (*top == 2) {                    /* push the second level first */
+        emit_line(b, "PUSH {r1}");
+        *top = 1;
+    }
     if (*top) {
         emit_push_r0(b);
         *top = 0;
     }
+}
+
+/* Room for one more value above the current top.  Depth 1 (-fopt-rstack) puts
+ * the old top in r1 instead of on the machine stack; anything else falls back
+ * to ark_top_drain(), which spills both levels in the right order. */
+static void ark_top_make_room(AsmBuffer *b, int *top) {
+    if (*top == 0) return;
+    if (*top == 1 && ark_rstack_enabled() && g_rs_bin_next) {
+        emit_line(b, "MOV r1, r0");
+        *top = 2;
+        g_rs_depth2++;
+        return;
+    }
+    ark_top_drain(b, top);
+}
+
+/* The new value has just been placed in r0 by a one-word push. */
+static void ark_top_pushed(int *top) {
+    *top = (*top == 2) ? 2 : 1;
 }
 
 /* Returns 1 when the instruction was fully emitted and the switch must be
@@ -14987,13 +15089,18 @@ static int ark_top_try(AsmBuffer *b, IrInst *I, int *top, int *ret_in_r0) {
         ark_top_drain(b, top);          /* join point: let the switch emit it */
         return 0;
     case IR_RETURN:
+        /* Depth 2 cannot be modelled here: the epilogue knows how to skip one
+         * pop, not two.  Spilling both first keeps the machine stack exactly
+         * where the generic path expects it (well-formed IR has one value at a
+         * return anyway, so this is the safe direction, not the common one). */
+        if (*top == 2) ark_top_drain(b, top);
         *ret_in_r0 = *top;              /* epilogue skips its pop when set */
         *top = 0;
         return 0;                       /* epilogue lives in the switch */
     case IR_PUSH_INT:
-        ark_top_drain(b, top);
+        ark_top_make_room(b, top);
         emit_mov_imm(b, 0, I->val);
-        *top = 1;
+        ark_top_pushed(top);
         return 1;
     case IR_PUSH_VAR: {
         int width = I->aux & 0xFF;
@@ -15006,7 +15113,7 @@ static int ark_top_try(AsmBuffer *b, IrInst *I, int *top, int *ret_in_r0) {
          * r0 as the low half and 200 as the high half). */
         if (width >= 8) { ark_top_drain(b, top); return 0; }
         if (I->aux & IR_AUX_VOLATILE) { ark_top_drain(b, top); return 0; }
-        ark_top_drain(b, top);
+        ark_top_make_room(b, top);
         if (width == 1)
             asmbuf_puts(b, (I->aux & 0x100) ? "    LDRB r0, [r6, #"
                                             : "    LDRSB r0, [r6, #");
@@ -15017,42 +15124,49 @@ static int ark_top_try(AsmBuffer *b, IrInst *I, int *top, int *ret_in_r0) {
             asmbuf_puts(b, "    LDR r0, [r6, #");
         asmbuf_int(b, I->val);
         asmbuf_puts(b, "]\n");
-        *top = 1;
+        ark_top_pushed(top);
         return 1;
     }
     case IR_PUSH_ADDR:
-        ark_top_drain(b, top);
+        ark_top_make_room(b, top);
         asmbuf_puts(b, "    ADD r0, r6, #");
         asmbuf_int(b, I->val);
         asmbuf_putc(b, '\n');
-        *top = 1;
+        ark_top_pushed(top);
         return 1;
     case IR_PUSH_GLOBAL: {
         unsigned addr;
         if (is_va_ptr_sym(I->name)) {
             if (!g_va_active) va_ptr_needs_variadic();
-            ark_top_drain(b, top);
+            ark_top_make_room(b, top);
             emit_va_ptr(b, 0);
-            *top = 1;
+            ark_top_pushed(top);
             return 1;
         }
         if (gvar_find_size(I->name) >= 8) {           /* two words: fall back */
             ark_top_drain(b, top);
             return 0;
         }
-        ark_top_drain(b, top);
+        ark_top_make_room(b, top);
         emit_gvar_addr32(b, 0, I->name);
         emit_line(b, "LDR r0, [r0]");
-        *top = 1;
+        ark_top_pushed(top);
         return 1;
     }
     case IR_PUSH_GLOBAL_ADDR: {
-        ark_top_drain(b, top);
+        ark_top_make_room(b, top);
         emit_gvar_addr32(b, 0, I->name);
-        *top = 1;
+        ark_top_pushed(top);
         return 1;
     }
     case IR_BINARY:
+        if (*top == 2) {
+            /* left in r1, right in r0, result in r0 */
+            emit_binary_swap(b, I->aux);
+            g_rs_saved++;
+            *top = 1;
+            return 1;
+        }
         if (*top) {
             /* right operand is in r0, left one is on the stack under it */
             asmbuf_puts(b, "    MOV r1, r0\n");
@@ -15072,7 +15186,7 @@ static int ark_top_try(AsmBuffer *b, IrInst *I, int *top, int *ret_in_r0) {
         if (I->aux & IR_AUX_COMPLEX) { ark_top_drain(b, top); return 0; }
         if (!*top) emit_pop_r0(b);
         emit_unary(b, I->aux);
-        *top = 1;
+        *top = (*top == 2) ? 2 : 1;     /* the level under it is untouched */
         return 1;
     case IR_TRUNC:
         if (I->val == 8 || I->val == 16) {
@@ -15086,12 +15200,15 @@ static int ark_top_try(AsmBuffer *b, IrInst *I, int *top, int *ret_in_r0) {
             asmbuf_puts(b, "    ");
             asmbuf_puts(b, op8);
             asmbuf_puts(b, " r0, r0\n");
-            *top = 1;
+            *top = (*top == 2) ? 2 : 1;
         }
         /* 32-bit widths need no work either way. */
         return 1;
     case IR_STORE_GLOBAL: {
         unsigned addr = gvar_find(I->name);
+        if (*top == 2) {                          /* depth 2: spill, then as depth 0 */
+            ark_top_drain(b, top);
+        }
         if (gvar_find_size(I->name) >= 8) {
             ark_top_drain(b, top);                    /* two words: fall back */
             return 0;
@@ -15109,6 +15226,7 @@ static int ark_top_try(AsmBuffer *b, IrInst *I, int *top, int *ret_in_r0) {
          * Only the plain 1/2/4-byte non-volatile forms are modelled. */
         int sw = I->aux & ~IR_AUX_VOLATILE;
         int is_volatile = (I->aux & IR_AUX_VOLATILE) != 0;
+        if (*top == 2) ark_top_drain(b, top);     /* depth 2: spill, then as depth 0 */
         if (sw == 0) sw = 4;
         if (is_volatile || sw >= 8) {
             ark_top_drain(b, top);                    /* not modelled: fall back */
@@ -15132,14 +15250,17 @@ static int ark_top_try(AsmBuffer *b, IrInst *I, int *top, int *ret_in_r0) {
         return 1;
     }
     case IR_POP:
+        if (*top == 2) { ark_top_drain(b, top); return 0; }
         if (*top) *top = 0;              /* dropping a value in a register costs nothing */
         else emit_pop_r0(b);
         return 1;
     case IR_DUP:
         /* val > 1 asks for a multi-word duplicate (a long long is two stack
          * words); the register-top form can only model one word, so let the
-         * generic emitter handle it. */
-        if (I->val > 1) {
+         * generic emitter handle it.  Depth 2 is not modelled either: a second
+         * copy of the top has nowhere to go but the machine stack, which would
+         * break the "one level in r1" invariant, so spill both and fall back. */
+        if (I->val > 1 || *top == 2) {
             ark_top_drain(b, top);
             return 0;
         }
@@ -16663,8 +16784,12 @@ static char *codegen_arm(IrProgram *prog) {
                 continue;
             }
 #endif
-            if (ark_top_enabled() && ark_top_try(&buf, I, &rtop, &rtop_ret))
-                continue;
+            if (ark_top_enabled()) {
+                g_rs_bin_next = (i + 1 < f->code_count &&
+                                 f->code[i + 1].op == IR_BINARY &&
+                                 rs_bin_ok(f->code[i + 1].aux));
+                if (ark_top_try(&buf, I, &rtop, &rtop_ret)) continue;
+            }
             switch (I->op) {
                 case IR_FUNC_BEGIN:
                 case IR_FUNC_END:
@@ -20097,6 +20222,11 @@ arm_skip_frame_opts:
 #if ARKCC_FEATURE_OPT_ALLOC
     if (g_config.enable_opt_alloc) ark_alloc_report();
 #endif
+    if (ark_rstack_enabled()) {
+        const char *e = getenv("ARKCC_RSTACK_STATS");
+        if (e && e[0] && e[0] != '0')
+            fprintf(stderr, "rstack: depth2=%ld pairs_saved=%ld\n", g_rs_depth2, g_rs_saved);
+    }
     return buf.buf;
 }
 
@@ -21499,8 +21629,17 @@ static void pass1_a(ArmAsm *a) {
                         if (*p == '#') (void)parse_imm_a(&p);
                         else           rs1 = parse_reg_a(&p);
                     }
-                    wide1 = !(rd1 >= 0 && rd1 <= 7 && rm1 >= 0 && rm1 <= 7 &&
-                              (rs1 < 0 || rs1 <= 7));
+                    /* Two-operand `LSL Rd, Rs` shifts Rd itself, so the 16-bit
+                     * form fits whenever both names are low.  Three-operand
+                     * `LSL Rd, Rn, Rs` needs Rn == Rd for that same form; when
+                     * the value register differs, pass 2 emits the 32-bit LSL.W
+                     * and this pass has to count four bytes (S49: the encoder
+                     * used to take the 16-bit form there and drop Rn). */
+                    if (rs1 >= 0)
+                        wide1 = !(rd1 >= 0 && rd1 <= 7 && rd1 == rm1 &&
+                                  rs1 >= 0 && rs1 <= 7);
+                    else
+                        wide1 = !(rd1 >= 0 && rd1 <= 7 && rm1 >= 0 && rm1 <= 7);
                 }
                 pc += wide1 ? 4 : 2;
             } else if (strieq_a(first, "NEG") || strieq_a(first, "RSB")) {
@@ -22836,16 +22975,24 @@ static void pass2_a(ArmAsm *a) {
                 if (rs >= 0)     { rn_src = rm; rs_amt = rs; }
                 else if (is_imm) { rn_src = rm; rs_amt = rd; }
                 else             { rn_src = rd; rs_amt = rm; }
-                if (rd >= 0 && rd <= 7 && rm >= 0 && rm <= 7 && rs_amt >= 0 && rs_amt <= 7) {
-                    if (is_imm) {
-                        int imm5;
-                        if (is_lsr || is_asr) imm5 = (imm >= 32) ? 0 : (imm & 0x1F);
-                        else                  imm5 = imm & 0x1F;
-                        out16(a, (unsigned)sh16 | (unsigned)(imm5 << 6) |
-                                 ((rm & 7) << 3) | (rd & 7));
-                    } else {
-                        out16(a, (unsigned)rg16 | ((rs_amt & 7) << 3) | (rd & 7));
-                    }
+                /* The 16-bit register form is `Rdn <<= Rm`: its destination is
+                 * also the shifted value, so it can only express the text when
+                 * the value register IS the destination (rn_src == rd).  For
+                 * the three-operand spelling `LSL r0, r1, r0` the value sits in
+                 * r1 while the result goes to r0, and taking the 16-bit form
+                 * there silently dropped the value register and shifted r0 by
+                 * itself (measured: `LSL r0, r1, r0` with r0=2, r1=12 assembled
+                 * as `lsls r0, r0` -> 8 instead of 48).  Anything that does not
+                 * fit the 16-bit shape goes out as the 32-bit LSL.W below. */
+                if (is_imm && rd >= 0 && rd <= 7 && rm >= 0 && rm <= 7) {
+                    int imm5;
+                    if (is_lsr || is_asr) imm5 = (imm >= 32) ? 0 : (imm & 0x1F);
+                    else                  imm5 = imm & 0x1F;
+                    out16(a, (unsigned)sh16 | (unsigned)(imm5 << 6) |
+                             ((rm & 7) << 3) | (rd & 7));
+                } else if (!is_imm && rd >= 0 && rd <= 7 && rn_src == rd &&
+                           rs_amt >= 0 && rs_amt <= 7) {
+                    out16(a, (unsigned)rg16 | ((rs_amt & 7) << 3) | (rd & 7));
                 } else if (is_imm) {
                     int imm5 = (is_lsr || is_asr)
                                    ? ((imm >= 32) ? 0 : (imm & 0x1F))

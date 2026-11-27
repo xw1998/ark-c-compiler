@@ -743,6 +743,22 @@
 # endif
 #endif
 
+/* ARKCC_FEATURE_OPT_RSTACK: -fopt-rstack, the depth-2 expression stack
+ * (docs/EXPR_MODEL.md section 49).  Extends --reg-top from "the top of the IR
+ * stack lives in r0" to "the top two words live in r0/r1", so the left operand
+ * of a binary expression no longer has to cross the machine stack.  It is a
+ * change to the emitter, not a text pass; off by default, and when off the
+ * text must be byte-identical.  Trimmable on its own: -DARKCC_FEATURE_OPT_RSTACK=0
+ * makes the driver refuse the switch by name (C3900U) instead of accepting a
+ * switch that does nothing. */
+#ifndef ARKCC_FEATURE_OPT_RSTACK
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_OPT_RSTACK 0  /* 板上裁掉：只在宿主/交叉编译用 */
+# else
+#   define ARKCC_FEATURE_OPT_RSTACK 1
+# endif
+#endif
+
 /* ARKCC_FEATURE_IPO: --ipo / -flto, whole-program compilation (src/ipo.c).
  *
  * One front end run per input file inside one process, all units' IR
