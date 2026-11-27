@@ -5077,27 +5077,49 @@ The existing `tests/run_alloc_tests.py` (38 checks) does not regress (EXIT=0).
 
 ### 50.7 Side finding (not fixed, registered as a later slice)
 
-The `OUT[i++] = v;` shape is miscompiled on the **default path** (without `--reg-top`). Running the images
-under `unicorn` narrows it to:
+The `OUT[i++] = v;` shape gets the subscript wrong on the S16 line (the 33 passes, without `--reg-top`). The
+**raw emitter is right** (no `-fopt-*` switch at all, `-O2` straight to an image gives `[11,22]`), and so is
+the `--reg-top` arm. Running the images under `unicorn` narrows the failing arm to:
 
-| Source (`OUT` = `(volatile int *)0x20010000`) | default-path RAM | `--reg-top` |
+| Source (`OUT` = `(volatile int *)0x20010000`) | S16 line RAM | `--reg-top` |
 | --- | --- | --- |
 | `int i=0;` `OUT[i++] = 11;` | `[11]` | `[11]` |
 | `int i=1;` `OUT[i++] = 22;` | `[0,22]` | `[0,22]` |
 | `int i=0;` `OUT[i++] = 11; OUT[i] = 22;` | `[11,22]` | `[11,22]` |
-| `int a=0,b=0;` `OUT[a++] = 11; OUT[b++] = 22;` | `[11,22]` | `[11,22]` |
+| `int i=0;` `OUT[i++] = 11; i++; OUT[i] = 22;` | `[11,0,22]` | `[11,0,22]` |
 | **`int i=0;` `OUT[i++] = 11; OUT[i++] = 22;`** | **`[11,0,22]`** | `[11,22]` |
+| **`int a=0,b=1;` `OUT[a++] = 11; OUT[b++] = 22;`** | **`[11,0,22]`** | `[11,22]` |
+| **`int i=0;` `OUT[0] = 11; OUT[i++] = 22;`** | **`[11,22]`** | `[22]` |
 
-With three statements in a row the default path gives `[11,0,22,33]` while `--reg-top` gives `[11,22,33,0]`
-(correct). The trigger is "**the same variable appears in two adjacent subscript stores that both
-post-increment it**"; use a different variable, or put an ordinary statement in between, and the result is
-correct.
+With three statements in a row the S16 line gives `[11,0,22,33]` while `--reg-top` gives `[11,22,33]`. The
+trigger is **not** "the same variable" (the earlier reading of this section said so, and that is wrong - a
+different variable fails just as well): the accurate shape is "**after the first subscript store in the
+function, any later subscript store that post-increments**" - the later one takes its address from the value
+**after** the increment.
 
-**The IR is right**: `ARKCC_DUMP_IR=1` is identical instruction for instruction on both arms (`PUSH_INT base`,
-`PUSH_VAR i`, `PUSH_VAR i`, `PUSH_INT 1`, `BINARY +`, `STORE i`, `PUSH_INT 4`, `BINARY *`, `BINARY +`,
-`PUSH_INT v`, `STORE_IDX`, `POP`). The defect is therefore **below the IR** - the default emitter or one of
-the text passes, not irgen (the earlier reading of this section, which called it a "pre-existing irgen
-defect", is wrong and is corrected here). Fixing it needs its own slice: locate it with the "`--reg-top` is
-right, default path is wrong" differential, then add a gate (the five rows above plus a byte-for-byte RAM
-comparison via `arm_exec`) and run the full regression. The fixtures in this section therefore always use
-explicit indices and do not carry the fix along.
+The cause is the slot rename in `-fopt-vreg`. The greedy minimal triggering set is
+`-fopt-peep -fopt-prop -fopt-vstack -fopt-vreg`; adding `-fno-opt-vreg` to `BASE` restores `[11,22]` at once.
+The only difference between the two arms (a `-S` diff of prefix 15 against prefix 16) is:
+
+```
+-    LDR r7, [r6, #0]      ; the pre-increment i, parked in r7
+-    LDR r0, [r6, #0]
+-    ADD r0, r0, #1
+-    STR r0, [r6, #0]
+-    MOV r0, r7            ; the subscript uses the pre-increment value
+-    LSL r7, r0, #2
++    ADD r8, r8, #1        ; the slot is renamed to r8
++    LSL r7, r8, #2        ; the subscript now reads r8, i.e. the post-increment value
+```
+
+The slot and the resident register are being treated as one value version, so the increment writes the old
+value out of reach. The `IR` is still right (`ARKCC_DUMP_IR=1` is identical instruction for instruction on both
+arms: `PUSH_INT base`, `PUSH_VAR i`, `PUSH_VAR i`, `PUSH_INT 1`, `BINARY +`, `STORE i`, `PUSH_INT 4`,
+`BINARY *`, `BINARY +`, `PUSH_INT v`, `STORE_IDX`, `POP`); the defect is in a text pass, not in irgen (the
+earlier reading of this section, which called it a "pre-existing irgen defect", is wrong and is corrected
+here).
+
+Fixing it needs its own slice: make vreg keep a version of the old value when "the slot is written in this
+block" (or decline to keep this slot resident at all), then add a gate (the seven rows above plus both the
+S16 and `--reg-top` arms plus a byte-for-byte RAM comparison via `arm_exec`) and run the full regression. The
+fixtures in this section therefore always use explicit indices and do not carry the fix along.
