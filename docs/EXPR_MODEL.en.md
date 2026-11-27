@@ -3914,7 +3914,9 @@ text passes** (this is the essential difference from slice 2a).
   name when compiled out (`C3900U`).
 - Routing: the allowlist opens one function shape at a time; the first slice takes only **leaf integer
   functions** (no `BL` in the body, no address-taken frame, no float/complex/varargs/VLA/`__asm`);
-  everything not routed stays on the old path.
+  everything not routed stays on the old path. **The coverage of the first slice is already measured**:
+  **156 of 211** functions qualify, carrying **3,908 of 9,588** instructions (41%), so the first slice is
+  large enough to be measured meaningfully.
 - Stages:
 
   | Stage | Content | Criterion |
