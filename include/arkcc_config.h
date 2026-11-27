@@ -728,6 +728,21 @@
 #   define ARKCC_FEATURE_MIR           1
 # endif
 #endif
+/* ARKCC_FEATURE_OPT_ALLOC: -fopt-alloc, V-4' stage A -- emit a function body
+ * from IR through a real CFG allocator (liveness + linear scan + constant
+ * residency) instead of the one-shot value stack.  Off by default, and when
+ * off it must change not one byte.  It needs the MIR CFG (src/mir.c), so a
+ * build without ARKCC_FEATURE_MIR cannot carry it; the driver then refuses
+ * -fopt-alloc by name (C3900U) instead of accepting a switch that does
+ * nothing.  See docs/EXPR_MODEL.md section 43. */
+#ifndef ARKCC_FEATURE_OPT_ALLOC
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN || !ARKCC_FEATURE_MIR
+#   define ARKCC_FEATURE_OPT_ALLOC 0  /* 板上裁掉：只在宿主/交叉编译用 */
+# else
+#   define ARKCC_FEATURE_OPT_ALLOC 1
+# endif
+#endif
+
 /* ARKCC_FEATURE_IPO: --ipo / -flto, whole-program compilation (src/ipo.c).
  *
  * One front end run per input file inside one process, all units' IR

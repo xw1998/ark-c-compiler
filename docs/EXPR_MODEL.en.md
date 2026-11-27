@@ -4132,7 +4132,7 @@ withdrawn.
 S39.6 froze the three-stage criteria once. This section turns them into **implementable rules**: the routing
 predicate, the value model, liveness, linear scan, constant residency, calls and ABI, the output shape, and the
 five anti-false-green checks that must come with it. **The rules are frozen here and do not change afterwards**;
-the measurement is written up in S44 and judged by S43.5.
+the measurement is written up in S43.8 (stage A is withdrawn there before implementation) and judged by S43.5.
 
 ### 43.1 Scope and criterion (from S39.6, not renegotiated)
 
@@ -4271,3 +4271,132 @@ S39.2 already recorded it: a real allocator's first landing usually realises 50%
 spill-slot revisits each take a bite), i.e. 680-950 instructions -- **most likely the record tier, possibly the
 withdraw tier**. If the reading comes out that way, S43.5 decides the tier as it stands: no polishing, no
 re-freezing the criteria afterwards.
+
+### 43.8 Routing census readings and the verdict (2026-11-27, stage A withdrawn before implementation)
+
+Check 5 of 43.4 requires the gate to pin "routed functions per TU". Pinning it means the census has to
+exist first, so this slice implements a **read-only** routing census: with `-fopt-alloc` on, every
+function is run through the 43.2.1 predicate and the 43.2.2 abstract-stack model, **without emitting any
+new text** (the off arm and the on arm stay byte-identical), printing counters only under
+`ARKCC_ALLOC_STATS=1`. Reviewing the 43.1 criterion against those readings gives the conclusion:
+**the projection is refuted by measurement, and stage A is withdrawn before a single line of emitter
+code is written.**
+
+#### 43.8.1 Census readings (95 TUs, same ruler)
+
+| Quantity | Measured |
+| --- | ---: |
+| Functions, total | 212 |
+| Functions routed | **167** (79%) |
+| IR instructions, total | 17,116 |
+| IR instructions inside routed functions | **6,064** (35%) |
+| Call sites inside routed functions | 47 |
+| Routed functions that use stack arguments | 1 |
+| Routed functions with a back edge | 10 |
+| Baseline instruction count (§39 best arm) | 9,588 |
+
+Source: the `alloc: eligible_functions=... eligible_ir=... functions=... ir=... call=... stackarg=...
+loop=...` lines, aggregated by `D:/tmp/bm/cf/meas_alloc.py`; the gate `tests/run_alloc_tests.py` pins all
+seven numbers (212 / 9588 / 354989 bytes / 17116 / 167 / 6064 / 47 / 1 / 10).
+
+#### 43.8.2 The 45 refusals, decomposed
+
+212 - 167 = 45. By reason (from the `alc-reject` lines under `ARKCC_ALLOC_DEBUG=1`):
+
+| Reason | Functions |
+| --- | ---: |
+| Function-level flags (all 17 are `irq` service routines) | 17 |
+| Block-entry abstract-stack shape mismatch (join, needs phi) | 21 |
+| Took a local address, `IR_PUSH_ADDR` (43.3 rule 1) | 3 |
+| 64-bit `PUSH_VAR` (width >= 8) | 3 |
+| 64-bit `BINARY` (`IR_64BINARY`) | 1 |
+| Total | **45** |
+
+The most representative join refusal is `NVIC_EncodePriority`: a conditional expression leaves one value
+on each arm at the merge point, and a real allocator has to insert a phi (or a `MOV` at the merge) - both
+outside stage A's model of "one slot = one register, merge points only compare shapes". The model is not
+implemented wrongly; it simply does not cover branches that merge with values on the stack.
+
+#### 43.8.3 Correction: the 208 in 43.4 check 5 was a projection; measurement says 167
+
+When 43.4 check 5 was frozen it said "208/211 integer functions corpus-wide". Both halves are corrected
+by measurement:
+
+- the function total is **212** (not 211);
+- the routed count is **167** (not 208), 41 fewer.
+
+Per 43.5 discipline, **the criterion (the absolute counts of 43.1) is untouched; only our knowledge of the
+routable surface is corrected**. Check 5 goes from pinning the projected number to pinning the measured
+167/6,064 (the gate script's docstring records this correction). This correction is itself the worked
+example of "a pre-registered projection may be refuted by measurement, but the criterion may not move".
+
+#### 43.8.4 Deletable-site ceiling: 565 / 1,394
+
+Using the same ruler as §39 (byte-agnostic deletable sites in the corpus), counted per function on the
+**off-arm text**:
+
+| Scope | Deletable sites |
+| --- | ---: |
+| Whole corpus | **1,394** |
+| Inside routed functions (ceiling, 167 functions) | **565** (40.5%) |
+
+Where the other 829 sites live, by refusal reason (`D:/tmp/bm/cf/alloc_reason_ceiling.py`):
+
+| Owner | Deletable sites |
+| --- | ---: |
+| The 21 join functions | 583 |
+| The 17 `irq` functions | 132 |
+| The 3 `IR_PUSH_ADDR` functions | 54 |
+| The 3 64-bit `PUSH_VAR` functions | 30 |
+| The 1 64-bit `BINARY` function | 22 |
+| Unclassified (leaf / constant-housekeeping) | 8 |
+
+**Even with stage A at 100% (not one site missed), the best possible is 9,588 - 565 = 9,023
+instructions**, still above the 8,888 withdrawal line. Adding phi support would raise the ceiling to
+565 + 583 = 1,148 sites; at the 50%-70% realisation rate of §39.2 that is 574-804 instructions, an
+optimistic 8,784 - **just enough to touch the bottom of the registry tier**, and phi support is a bigger
+job than stage A itself.
+
+#### 43.8.5 Verdict and tier
+
+Verdict: **`stage_a_routing_ceiling_below_landing_line`**.
+
+Judged by the absolute counts of 43.1: stage A's reachable band is 9,023-9,588, **entirely inside the
+withdrawal tier (> 8,888)**. Therefore **the stage A emitter proper is not implemented**; only this
+read-only census is kept, as a gate and as the measuring stick for later stages.
+
+The four prohibitions of 43.5, checked one by one:
+
+1. no switch to a relative criterion - the tier was decided on the absolute counts of 43.1;
+2. no corpus change, no default change (`-fopt-alloc` stays off by default), no unrouted function counted
+   as optimised;
+3. no claim that "what was deleted was redundant" - nothing was deleted in this slice;
+4. no intermediate reading described as "close to armcc" (the end point is still 7,388 vs 5,291).
+
+#### 43.8.6 Evidence and reproduce
+
+- With `-fopt-alloc` on, both arms are byte-identical (95 TUs, `tests/run_alloc_tests.py` check 1);
+- the six-number self-check `0 < eligible < total` (check 2) blocks "docs say 167, code routes 20";
+- five must-refuse fixtures and nine must-accept fixtures each verified (checks 3 and 4);
+- the cropped build (`ARKCC_PROFILE_STM32_MIN`) refuses `C3900U` by name, and without the switch its text
+  equals the full build's (check 5);
+- ceiling scripts: `D:/tmp/bm/cf/alloc_ceiling2.py`, `alloc_reason_ceiling.py` (outside the repo; their
+  output is the two tables of 43.8.4);
+- the crop matrix (`ARKCC_FEATURE_VREGEMIT` x `ARKCC_FEATURE_OPT_ALLOC`, all four combinations) compiles
+  (check 6). This one was added after the fact: the census block first landed inside the
+  `#if ARKCC_FEATURE_VREGEMIT` guard, so cropping VREGEMIT but keeping OPT_ALLOC left its call sites
+  calling functions that did not exist -- a combination nothing had ever built, so nothing caught it. The
+  block now sits outside the VREGEMIT guard, and a `-fsyntax-only` build of all four combinations is
+  pinned in `make test`.
+
+#### 43.8.7 Next step (43.1 is not reopened)
+
+The 583 sites concentrated in the 21 join functions are the most realistic target ahead, but they need phi
+or a merge-point `MOV`, which belongs to the **text layer or to stages B/C**, not to stage A. The
+follow-on entry points are:
+
+- stage B (three-address emission + shifted operands + `UBFX/BIC` + compare-immediate, cumulative <= 7,888);
+- stage C (single exit + switch lowering + jump density, cumulative <= 7,388).
+
+The 43.1 criterion is not changed and not reopened; this withdrawal is simply the cheaper way of refuting
+it - before implementation instead of after.

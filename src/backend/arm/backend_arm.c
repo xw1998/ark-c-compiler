@@ -25,6 +25,7 @@
 #include "scatter.h"
 #include "agginit.h"
 #include "arkcc_config.h"
+#include "mir.h"          /* V-4' stage A: the intra-function CFG */
 /* --rt-lazy 的文本压实用 memmove/memcmp（标准 C 库，宿主与板上都有实现）。 */
 #include <string.h>
 /* On host, <stdlib.h> provides getenv() for the ARKCC_DUMP_SYMS debug flag.
@@ -2900,7 +2901,361 @@ static void ark_remat_function(AsmBuffer *b, int from) {
 }
 #endif /* ARKCC_FEATURE_OPT_REMAT */
 
+#if ARKCC_FEATURE_OPT_ALLOC
+/* ------------- V-4' stage A routing: which functions -fopt-alloc may take --
+ * Stage A replaces a function's whole body with one emitted from IR by a CFG
+ * register allocator (docs/EXPR_MODEL.md section 43).  That only holds for
+ * integer shapes the allocator models, so the routing predicate is decided on
+ * the IR, before a byte of the old body is emitted:
+ *
+ *   - no float, no vector, no 64-bit value, no `__asm`/VLA/`memcpy`/SVC/SMC
+ *     (43.2.1: each one either owns registers the allocator would reuse or
+ *     has a shape whose value count the model cannot see);
+ *   - no local's address taken (43.3.1: with an alias alive, nothing that
+ *     lives in a register is true any more, and stage A does no alias
+ *     analysis);
+ *   - no variadic / interrupt / naked / `__asm` function and no alias
+ *     (their prologue and return shape are not the one stage A emits) --
+ *     the interrupt and naked cases are this implementation's own extra
+ *     conservatism on top of 43.3.2, and cost eligibility, never truth;
+ *   - the abstract value stack at every block entry must be the same shape on
+ *     every path that reaches it (43.2.2: no phi synthesis in stage A, so a
+ *     join that needs one falls back to the old path instead of guessing).
+ *
+ * A function that fails any check keeps the existing path and is byte
+ * identical to a build without the switch.  This block only counts: with
+ * ARKCC_ALLOC_STATS set, one line per translation unit reports how many
+ * functions and IR instructions the predicate accepts, plus how many of the
+ * accepted ones contain a call, use stack arguments, or have a back edge --
+ * the three shapes that will cost the allocator the most.
+ *
+ * Values on the abstract stack are numbered two ways: a produced value by
+ * "defining instruction index + 1", and a local read by its frame slot (a
+ * negative number).  The slot form is what keeps a join phi-free -- two paths
+ * that re-read the same slot arrive holding the same number, because that slot
+ * is one register for its whole live range -- and produced values can never
+ * collide with it.  A join whose two shapes still differ falls back to the old
+ * path: stage A merges nothing it cannot prove. */
+#define ALC_MAX_STK 32
+
+static long g_alc_fn_total, g_alc_fn_elig;
+static long g_alc_in_total, g_alc_in_elig;
+static long g_alc_elig_call, g_alc_elig_stackarg, g_alc_elig_loop;
+
+/* Defined much further down (the emitter's own symbol table).  Declared here
+ * so the routing predicate can ask how wide a global is. */
+static int gvar_find_size(const char *name);
+
+/* Bytes the value of one memory-shaped IR operation moves.  8 or more means a
+ * 64-bit or _Complex value; stage A refuses both, so they answer 8. */
+static int alc_mem_width(const IrInst *I) {
+    int w;
+    if (I == 0) return 8;
+    if (I->aux & IR_AUX_COMPLEX) return 8;
+    switch (I->op) {
+    case IR_PUSH_VAR:
+        w = I->aux & 0xFF;
+        return w ? w : 4;
+    case IR_STORE:
+        w = I->aux & ~(IR_AUX_VOLATILE | IR_AUX_COMPLEX);
+        return w ? w : 4;
+    case IR_STORE_IDX:
+    case IR_LOAD_IDX:
+        w = I->val;
+        return w ? w : 4;
+    default:
+        return 4;
+    }
+}
+
+/* Is this one instruction stage A can model?  Everything not listed is
+ * refused on purpose; the comment in the block header says why each family
+ * is out. */
+static int alc_op_ok(const IrInst *I) {
+    switch (I->op) {
+    case IR_NOP:
+    case IR_FUNC_BEGIN:
+    case IR_FUNC_END:
+    case IR_LABEL:
+    case IR_LABEL_NAMED:
+    case IR_JMP:
+    case IR_JMP_NAMED:
+    case IR_JZ:
+    case IR_JNZ:
+    case IR_CMP_JMP_EQ:
+    case IR_PUSH_INT:
+    case IR_PUSH_STR:
+    case IR_PUSH_GLOBAL_ADDR:
+    case IR_PUSH_FUNC:
+    case IR_POP:
+    case IR_DUP:
+    case IR_SWAP:
+    case IR_BINARY:
+    case IR_DIV:
+    case IR_MOD:
+    case IR_UNARY:
+    case IR_TRUNC:
+    case IR_RETURN:
+    case IR_GETARG:
+    case IR_STORE_FLD:
+    case IR_LOAD_FLD:
+        return 1;
+    case IR_PUSH_VAR:
+    case IR_STORE:
+    case IR_STORE_IDX:
+    case IR_LOAD_IDX:
+        return alc_mem_width(I) <= 4;
+    case IR_PUSH_GLOBAL:
+        return I->name != 0 && gvar_find_size(I->name) <= 4;
+    case IR_STORE_GLOBAL:
+        return I->name != 0 && gvar_find_size(I->name) <= 4;
+    case IR_CALL:
+        /* bit 32 = 64-bit result, bits 34-35 = _Complex result, bit 36 = the
+         * hidden result pointer of a large struct return (AAPCS sret).  Each
+         * changes how many words come back, which is exactly what the value
+         * model would have to know. */
+        if ((I->val >> 32) & 1) return 0;
+        if ((I->val >> 34) & 3) return 0;
+        if ((I->val >> 36) & 1) return 0;
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+/* One instruction applied to the abstract value stack.  `stk` holds vreg
+ * numbers; a fresh value is `idx + 1`.  Returns 0 on success, -1 when the
+ * stack shape is not one stage A models (underflow, overflow, an operation it
+ * cannot see the value count of). */
+static int alc_step(const IrInst *I, int idx, int *stk, int *depth) {
+    int d = *depth, a;
+    switch (I->op) {
+    case IR_PUSH_VAR:
+        /* A local read is numbered by its frame slot, not by this instruction:
+         * two paths that re-read the same slot deliver the same value at a join
+         * (the slot is one register for its whole live range, so no phi is
+         * needed), while two different slots stay distinct.  Negative numbers
+         * are the slot space; positive ones are per-definition values. */
+        if (d >= ALC_MAX_STK) return -1;
+        stk[d++] = -1 - (int)(I->val >> 2);
+        break;
+    case IR_PUSH_INT:
+    case IR_PUSH_STR:
+    case IR_PUSH_GLOBAL:
+    case IR_PUSH_FUNC:
+    case IR_PUSH_GLOBAL_ADDR:
+        if (d >= ALC_MAX_STK) return -1;
+        stk[d++] = idx + 1;
+        break;
+    case IR_POP:
+        if (d < 1) return -1;
+        d--;
+        break;
+    case IR_DUP:                           /* val = words to duplicate */
+        if (I->val > 1) return -1;         /* a 64-bit duplicate: not modelled */
+        if (d < 1 || d >= ALC_MAX_STK) return -1;
+        stk[d] = stk[d - 1];
+        d++;
+        break;
+    case IR_SWAP:
+        if (d < 2) return -1;
+        a = stk[d - 1];
+        stk[d - 1] = stk[d - 2];
+        stk[d - 2] = a;
+        break;
+    case IR_STORE:
+    case IR_STORE_GLOBAL:
+        if (d < 1) return -1;
+        d--;
+        break;
+    case IR_STORE_FLD:                     /* pops value and address */
+        if (d < 2) return -1;
+        d -= 2;
+        break;
+    case IR_LOAD_FLD:                      /* pops address, pushes value */
+        if (d < 1) return -1;
+        stk[d - 1] = idx + 1;
+        break;
+    case IR_LOAD_IDX:                      /* pops base and index, pushes value */
+        if (d < 2) return -1;
+        d -= 1;
+        stk[d - 1] = idx + 1;
+        break;
+    case IR_STORE_IDX:                     /* pops the address and the value,
+                                            * then pushes the value back -- the
+                                            * address arrives already scaled
+                                            * (irgen_lvalue_addr), so no index
+                                            * is on the stack here, unlike
+                                            * IR_LOAD_IDX which scales itself */
+        if (d < 2) return -1;
+        a = stk[d - 1];                    /* value is on top */
+        d -= 1;
+        stk[d - 1] = a;
+        break;
+    case IR_BINARY:
+    case IR_DIV:
+    case IR_MOD:                           /* pops two, pushes one */
+        if (d < 2) return -1;
+        d--;
+        stk[d - 1] = idx + 1;
+        break;
+    case IR_UNARY:
+    case IR_TRUNC:                         /* pops one, pushes one */
+        if (d < 1) return -1;
+        stk[d - 1] = idx + 1;
+        break;
+    case IR_JZ:
+    case IR_JNZ:
+    case IR_CMP_JMP_EQ:                    /* pops the condition */
+        if (d < 1) return -1;
+        d--;
+        break;
+    case IR_CALL: {
+        int n = (int)(I->val & 0x1FFFFFFF);
+        if (d < n) return -1;
+        d -= n;
+        if (!((I->val >> 33) & 1)) {       /* not void: the result is a value */
+            if (d >= ALC_MAX_STK) return -1;
+            stk[d++] = idx + 1;
+        }
+        break;
+    }
+    case IR_RETURN:
+        d = 0;                             /* the returned value leaves with it */
+        break;
+    default:
+        break;                             /* labels, jumps, GETARG, hold markers */
+    }
+    *depth = d;
+    return 0;
+}
+
+/* Route decision for one function; records the counters. */
+static void ark_alloc_census(IrFunc *f) {
+    int i, nins = 0, bad = 0, ncall = 0, nstack = 0, nloop = 0;
+    MirFunc m;
+    int *ent = 0, *dep = 0, *q = 0;
+    unsigned char *queued = 0;
+
+    int alc_debug;
+    if (f == 0) return;
+    alc_debug = (getenv("ARKCC_ALLOC_DEBUG") != 0);
+    for (i = 0; i < f->code_count; i++) {
+        IrOp op = f->code[i].op;
+        if (op == IR_FUNC_BEGIN || op == IR_FUNC_END) continue;
+        nins++;
+    }
+    g_alc_fn_total++;
+    g_alc_in_total += nins;
+
+    if (f->is_variadic || f->is_irq || f->is_naked || f->is_asm_func ||
+        f->alias_target != 0 ||
+        (f->name != 0 && ark_streq(f->name, "Reset_Handler"))) {
+        if (alc_debug) fprintf(stderr, "alc-reject %s: flags%s%s%s%s%s\n",
+                               f->name ? f->name : "?",
+                               f->is_variadic ? " variadic" : "",
+                               f->is_irq ? " irq" : "",
+                               f->is_naked ? " naked" : "",
+                               f->is_asm_func ? " asm" : "",
+                               f->alias_target ? " alias" : "");
+        return;
+    }
+    for (i = 0; i < f->code_count; i++) {
+        if (!alc_op_ok(&f->code[i])) {
+            if (alc_debug) fprintf(stderr, "alc-reject %s: %s\n",
+                                   f->name ? f->name : "?",
+                                   ir_op_name(f->code[i].op));
+            return;
+        }
+        if (f->code[i].op == IR_CALL) ncall = 1;
+    }
+    if (f->param_count > 4) nstack = 1;
+
+    if (mir_build(f, &m) != 0 || m.blk_count <= 0) return;
+    ent = (int *)calloc((size_t)m.blk_count * ALC_MAX_STK, sizeof(int));
+    dep = (int *)calloc((size_t)m.blk_count, sizeof(int));
+    q   = (int *)calloc((size_t)m.blk_count, sizeof(int));
+    queued = (unsigned char *)calloc((size_t)m.blk_count, 1);
+    if (!ent || !dep || !q || !queued) bad = 1;
+    if (!bad) {
+        int blk;
+        for (blk = 0; blk < m.blk_count; blk++) dep[blk] = -1;
+        {
+            int qh = 0, qt = 0;
+            int stk[ALC_MAX_STK];
+            dep[0] = 0;
+            queued[0] = 1;
+            q[qt++] = 0;
+            while (qh < qt && !bad) {
+                int b = q[qh++];
+                MirBlock *B = &m.blk[b];
+                int d, k;
+                memset(stk, 0, sizeof stk);   /* an empty stack has no contents
+                                               * to disagree about, so a stale
+                                               * slot must not be compared */
+                memcpy(stk, ent + (size_t)b * ALC_MAX_STK,
+                       sizeof(int) * ALC_MAX_STK);
+                d = dep[b];
+                for (k = B->start; k < B->end; k++) {
+                    if (alc_step(&f->code[k], k, stk, &d) != 0) {
+                        if (alc_debug) fprintf(stderr, "alc-reject %s: step %s\n",
+                                               f->name ? f->name : "?",
+                                               ir_op_name(f->code[k].op));
+                        bad = 1; break;
+                    }
+                }
+                if (bad) break;
+                for (k = 0; k < B->succ_count; k++) {
+                    int to = B->succ[k];
+                    if (to >= 0 && to < m.blk_count && to <= b) nloop = 1;
+                    if (to < 0 || to >= m.blk_count) continue;
+                    if (dep[to] < 0) {
+                        dep[to] = d;
+                        memcpy(ent + (size_t)to * ALC_MAX_STK, stk,
+                               sizeof(int) * ALC_MAX_STK);
+                        if (!queued[to]) { queued[to] = 1; q[qt++] = to; }
+                    } else if (dep[to] != d ||
+                               (d > 0 &&
+                                memcmp(ent + (size_t)to * ALC_MAX_STK, stk,
+                                       sizeof(int) * d) != 0)) {
+                        if (alc_debug) fprintf(stderr,
+                                               "alc-reject %s: join blk=%d to=%d d=%d/%d\n",
+                                               f->name ? f->name : "?", b, to,
+                                               dep[to], d);
+                        bad = 1;    /* a join needs a phi: fall back */
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    free(ent);
+    free(dep);
+    free(q);
+    free(queued);
+
+    if (bad) return;
+    if (getenv("ARKCC_ALLOC_NAMES"))
+        fprintf(stderr, "alloc-route %s\n", f->name ? f->name : "?");
+    g_alc_fn_elig++;
+    g_alc_in_elig += nins;
+    g_alc_elig_call += ncall;
+    g_alc_elig_stackarg += nstack;
+    g_alc_elig_loop += nloop;
+}
+
+static void ark_alloc_report(void) {
+    const char *e = getenv("ARKCC_ALLOC_STATS");
+    if (!e || !*e || *e == '0') return;
+    fprintf(stderr, "alloc: eligible_functions=%ld eligible_ir=%ld functions=%ld "
+                    "ir=%ld call=%ld stackarg=%ld loop=%ld\n",
+            g_alc_fn_elig, g_alc_in_elig, g_alc_fn_total, g_alc_in_total,
+            g_alc_elig_call, g_alc_elig_stackarg, g_alc_elig_loop);
+}
+#endif /* ARKCC_FEATURE_OPT_ALLOC */
+
 #if ARKCC_FEATURE_VREGEMIT
+
 /* ------------- V-5-a routing: which functions the vreg emitter may take ----
  * The first V-5 slice only takes a leaf integer function.  It is recognised
  * on the text the existing path has just emitted, so the routing decision is
@@ -15840,6 +16195,12 @@ static char *codegen_arm(IrProgram *prog) {
                 }
             }
         }
+#if ARKCC_FEATURE_OPT_ALLOC
+        /* V-4' stage A: the routing answer for this function.  Now only
+         * counted (ARKCC_ALLOC_STATS=1); the emitter that will use it, and the
+         * census values pinned by tests/run_alloc_tests.py, come next. */
+        if (g_config.enable_opt_alloc) ark_alloc_census(f);
+#endif
         fstart = buf.len;
         emit_prologue(&buf, f->name, local_size, va_lo, g_va_epilogue_pad,
                       f->is_irq, f->is_naked, dbg);
@@ -19474,6 +19835,9 @@ arm_skip_frame_opts:
 #endif
 #if ARKCC_FEATURE_VREGEMIT
     if (g_config.enable_opt_vregemit) ark_vregemit_report();
+#endif
+#if ARKCC_FEATURE_OPT_ALLOC
+    if (g_config.enable_opt_alloc) ark_alloc_report();
 #endif
     return buf.buf;
 }
