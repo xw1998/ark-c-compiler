@@ -4698,3 +4698,100 @@ planner. Therefore:
 
 **This section claims no win**: the five tiers of 45 are unchanged; the section records only that the
 judging instrument is not yet good enough.
+## 47 Auditing S45-a's basis column: 417 is not "copies", and 438 is still enough (2026-11-27, basis corrected before implementation, criterion untouched)
+
+45.3 justified S45-a with "that bucket has 417 copies + 282 stack = 699, take 63%". This section prices
+those three numbers down to individual instructions. The result: **the ceiling of 9,150 and the 438
+deletions stay as frozen, but the basis column is wrong** - 268 of the 417 are immediate materialisations
+(armcc emits 392 `mov`-immediates on the same corpus, so they are not deletable at all), and the 282
+counts `push`/`pop` only, without `SUB sp` / `MOV rX, sp` / `ADD sp`.
+
+### 47.1 Class decomposition of the 130 functions (routed, no back edge, no call)
+
+Same best-arm `.s`, 2,746 instructions, same class definitions as 45.1 (`D:/tmp/bm/cf/s47i.py`):
+
+| class | count | class | count |
+| --- | ---: | --- | ---: |
+| `ldr` from memory | 505 | `str` to memory | 265 |
+| stack frame (`push`/`pop`) | 282 | `mov`-imm + `movw/movt` | 268 |
+| branch | 218 | `mov` register | **149** |
+| `add #imm` | 186 | `str` to stack | 138 |
+| `ldr` from stack | 114 | `and #imm` / `and reg` | 91 / 55 |
+| `cmp` | 91 | shift | 84 |
+| `sub #imm` | 78 | `orr` (imm/reg) | 40 / 40 |
+| narrow `uxt/sxt` | 30 | the rest | 97 |
+
+### 47.2 What the "417 copies" really are: 149 copies and 268 immediates
+
+Split by operand shape (`D:/tmp/bm/cf/s47d.py`):
+
+| shape | count |
+| --- | ---: |
+| `mov` immediate (`MOV rN, #k`) | 189 |
+| `movw`/`movt` immediate | 79 |
+| copy `lo <- lo` (between `r0`-`r7`) | 89 |
+| copy `hi <- lo` | 44 |
+| copy `lo <- hi` | 13 |
+| copy `hi <- hi` | 3 |
+| **total** | **417** |
+
+The 268 immediate loads are constant materialisation; a value model still has to emit them (armcc spends
+392 `mov`-immediates on the same job), so they are **not deletable**. Only 149 are real copies.
+
+### 47.3 Measured deletable subsets: the text layer can delete 253, the rest needs the allocator
+
+Four shapes, each measured on the same `.s` by dataflow or by offset, never estimated:
+
+| shape | measured (this bucket / whole corpus) | script |
+| --- | --- | --- |
+| duplicate literal-pool load, intra-block | 2 / 9 | `s47f2.py` |
+| duplicate literal-pool load, cross-block and safely deletable (predecessor intersection non-empty) | 40 / 57 | `s47g2.py` |
+| whole frame deletable (no stack access, no call) | 160 / 194 | `s47c.py`, `s47e.py` |
+| whole frame deletable **and** body stays in `r0`-`r3` (no callee-saved use) | - / **70** (29 functions) | `s47h.py` |
+| adjacent copy (`MOV rX, rY` right after `rY`'s definition) | 29 / 126 | `s47b.py`, `s47e.py` |
+| `str` + `ldr` on the stack (removable by keeping values in registers) | **252** / 453 | `s47i.py` |
+
+Three readings:
+
+1. **Text-layer deletion cannot deliver 438**: 57 + 70 + 126 = **253** (corpus-wide; inside this bucket 2 + 160 + 29 = 191); adding frame shrinking (54
+   functions must keep a frame for callee-saved registers, at most 1-2 each) reaches just over 300.
+2. **The pool itself does hold 438**: stack traffic 252 + frame 437 + copies 149 = **838**, and 438 is
+   only 52% of it - the same order as 45.3's frozen 63%, but **built from different parts**. Those 438
+   must be delivered by value residency (keeping temporaries in registers), not by deleting shapes.
+3. **An independent check that 438 sits inside the headroom**: on the 112 functions that can be matched
+   by name on the armcc side, armcc is 1,348 instructions and we are 2,351 - a gap of **1,003**; 52% of
+   838 sits inside 1,003.
+
+### 47.4 Verdict
+
+**`stage_a_basis_corrected_target_still_reachable`** (basis rewritten by measurement, ceiling and target
+unchanged).
+
+- The criterion (<= 9,150, 438 deletions) is untouched; the five-tier table of 45.3 stays frozen;
+- the basis column changes from "417 copies + 282 stack = 699" to "stack traffic 252 + frame 437 +
+  copies 149 = 838, take 52%";
+- S45-a's **implementation route is fixed** to a value-residency allocator (frame, stack temporaries and
+  copies removed together), not to deleting shapes in the text layer; the 253 text-layer instructions
+  cannot reach 9,150 even if all are taken;
+- three prohibitions: never count the 268 immediate loads as deletable, never pad the pool with
+  "the text layer could do it too", never raise the ceiling mid-implementation.
+
+### 47.5 Next step (the first real number for this bucket)
+
+The two largest parts of the 838 are stack traffic 252 and frame 437, and both depend on which stack
+slots are stack-machine temporaries and which are real locals. On the IR this question has a definite
+answer: a slot written by `IR_PUSH_VAR` / `IR_STORE` and never read again (or read only inside the same
+expression) is a temporary; a slot that ever appears in `IR_PUSH_ADDR`, or that holds an array or a
+struct, is a real local. 43.8's admission rules already excluded the three functions with `IR_PUSH_ADDR`,
+so the temporary share inside this bucket should be high. The next step measures that share with a
+read-only census (one more column under `ARKCC_ALLOC_STATS`) before deciding what the allocator's first
+slice takes over.
+
+### 47.6 Reproduction
+
+- class decomposition: `D:/tmp/bm/cf/s47i.py` (four buckets x 20 classes; this bucket sums to 2,746, as in 45.2);
+- `mov` shape split: `D:/tmp/bm/cf/s47d.py`;
+- cross-block literal CSE: `D:/tmp/bm/cf/s47g.py` (forward must-analysis, `IN[b] = intersection of OUT[pred]`, converges in 5 iterations);
+- whole-frame deletability: `D:/tmp/bm/cf/s47c.py`, `s47e.py`, `s47h.py` (the last one separates the
+  functions whose body uses `r4`-`r11`, because their frame cannot be removed entirely);
+- per-function armcc counts: `capstone` over `D:/tmp/cfB/*armcc_O2.o`, same convention as `gap45.py`.
