@@ -5077,8 +5077,27 @@ The existing `tests/run_alloc_tests.py` (38 checks) does not regress (EXIT=0).
 
 ### 50.7 Side finding (not fixed, registered as a later slice)
 
-While writing this slice's fixture I ran into a pre-existing irgen defect: the `OUT[i++] = ...` shape on the
-**default path** (without `--reg-top`) computes an index one too high from the second statement on -
-measured RAM `[11,0,22,33]`, while the same source on either `--reg-top` arm gives the correct
-`[11,22,33,0]`. Unrelated to this slice, which is why the fixture uses explicit indices. Fixing it changes
-the default path's output and therefore needs its own pre-registration; it is not smuggled in here.
+The `OUT[i++] = v;` shape is miscompiled on the **default path** (without `--reg-top`). Running the images
+under `unicorn` narrows it to:
+
+| Source (`OUT` = `(volatile int *)0x20010000`) | default-path RAM | `--reg-top` |
+| --- | --- | --- |
+| `int i=0;` `OUT[i++] = 11;` | `[11]` | `[11]` |
+| `int i=1;` `OUT[i++] = 22;` | `[0,22]` | `[0,22]` |
+| `int i=0;` `OUT[i++] = 11; OUT[i] = 22;` | `[11,22]` | `[11,22]` |
+| `int a=0,b=0;` `OUT[a++] = 11; OUT[b++] = 22;` | `[11,22]` | `[11,22]` |
+| **`int i=0;` `OUT[i++] = 11; OUT[i++] = 22;`** | **`[11,0,22]`** | `[11,22]` |
+
+With three statements in a row the default path gives `[11,0,22,33]` while `--reg-top` gives `[11,22,33,0]`
+(correct). The trigger is "**the same variable appears in two adjacent subscript stores that both
+post-increment it**"; use a different variable, or put an ordinary statement in between, and the result is
+correct.
+
+**The IR is right**: `ARKCC_DUMP_IR=1` is identical instruction for instruction on both arms (`PUSH_INT base`,
+`PUSH_VAR i`, `PUSH_VAR i`, `PUSH_INT 1`, `BINARY +`, `STORE i`, `PUSH_INT 4`, `BINARY *`, `BINARY +`,
+`PUSH_INT v`, `STORE_IDX`, `POP`). The defect is therefore **below the IR** - the default emitter or one of
+the text passes, not irgen (the earlier reading of this section, which called it a "pre-existing irgen
+defect", is wrong and is corrected here). Fixing it needs its own slice: locate it with the "`--reg-top` is
+right, default path is wrong" differential, then add a gate (the five rows above plus a byte-for-byte RAM
+comparison via `arm_exec`) and run the full regression. The fixtures in this section therefore always use
+explicit indices and do not carry the fix along.
