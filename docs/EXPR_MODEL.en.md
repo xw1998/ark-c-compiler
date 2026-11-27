@@ -3697,3 +3697,146 @@ Per §37.4 ("any slice that misses is withdrawn, switch and routing together"):
 
 After the revert `make test` (all 73 gate targets) passes; the best arm is 9,588 as at HEAD, so
 **OFF IS OFF holds both at corpus level and byte-for-byte** (this slice leaves no switch behind).
+
+## 39 Ceiling verdict: what an allocator can reach, and why S37.4's criteria had to be re-frozen (2026-11-27, recorded after measurement)
+
+After S38 withdrew slice 2a, S38.6 items 1 and 2 demand that a question more important than "implement it
+again" be answered first: **on this corpus, how much can a full value-residency allocator possibly take?**
+This section gives the measured ceiling and re-freezes the slice criteria against it.
+
+The measurement basis is identical to the earlier sections: the same 95 TU, the same best arm
+(`BASE` + `chainfold` + `pushpop` + `remat`) at **9,588 instructions**, decided instruction by
+instruction, not sampled. Every number here is reproducible with the scripts listed at the end of the section.
+
+### 39.1 Pure-removal ceiling: 1,394 instructions (14.5%)
+
+A "value residency" allocator can delete **unconditionally** only the three classes below. The test is
+"deleting it requires no newly introduced instruction":
+
+| Class | Measured | Note |
+|---|---|---|
+| Moves through `r0` | **452** | `MOV r0, rX` 182 + `MOV rX, r0` 270 |
+| Single-register `PUSH`/`POP` of the runtime value stack | **286** | 185 + 101 (they come in pairs, on both sides of control-flow joins) |
+| Frame accesses | **656** | `[sp, #off]` 426 + `[r6/r7, #off]` 230 |
+| **Total** | **1,394** | removing them leaves **8,194** |
+
+Counted per function: of the 211 functions in the corpus **208** are integer functions (98.6% of all
+instructions), and **1,362** removable instructions (97.7%) live in them. So **routing coverage is no
+longer the issue**; the absolute size of the ceiling is:
+
+> **Ceiling 8,226 = 85.8% of today = 1.55x armcc O2 (5,291).**
+
+### 39.2 What S37.4's criteria 2b/2c mean under this ceiling
+
+| Criterion (as frozen in S37.4) | Requirement | Meaning relative to the ceiling |
+|---|---|---|
+| 2b cumulative <= 9,588 - 1,200 = **8,388** | take 1,200 | **88%** of the ceiling, i.e. almost every removable instruction realized |
+| 2c cumulative <= 9,588 - 2,000 = **7,588** | take 2,000 | the ceiling is only 1,362 => **mathematically unreachable** |
+
+The conclusion must be stated without hedging:
+
+1. **Criterion 2c is unsatisfiable**, not merely hard. Any implementation that only changes allocation and
+   not instruction selection can never reach 7,588.
+2. **Criterion 2b demands a 88% realization rate.** A real allocator's first landing is usually 50%-70%
+   (register pressure, calls, spill-slot re-accesses all eat into it), so by the original wording 2b would
+   almost certainly have been withdrawn as well.
+3. The disposal in this section is therefore: **withdraw the 2b/2c criteria of S37.4 themselves** (not the
+   implementation), and re-freeze per 39.5.
+
+### 39.3 The constant family and residency: another over-estimated pocket
+
+Constants are the largest family, but once split apart very little can be realized:
+
+| Item | Measured | Conclusion |
+|---|---|---|
+| `MOV/MOVW rX, #imm` | 1,031 | `#0` 290 and `#1` 214 are half of it; both are necessary steps of an assembly-level ABI, not redundancy |
+| Literal-pool loads `LDR rX, .Llit` | 766 | of which **269 are immediately followed by `CMP`** (switch case-compare chains) |
+| Whether those 269 constants can be encoded as immediates | **0** | all are peripheral addresses of the `0x4002xxxx` form; `thumb_imm12_a` never accepts them |
+| Repeated loads of the same literal inside one function | 395 | concentrated in about 20 functions (up to 218 removable in a single function) |
+| Residency ceiling: only registers "never mentioned anywhere in the function body" | **69** | same order as the 40 of S31.1 (slightly wider: any of r4-r11 not mentioned) |
+| Residency ceiling: allow 4 dedicated registers | **96** | fewer than 120 with 4 registers, so per S34.4.3 no text slice |
+| Residency ceiling: unlimited register count (needs ~40) | 317 | only an allocator can free them; the text layer cannot |
+
+In one sentence: **the constant money is in "where does the register come from", not in "how to load it"**
+-- which again points at the allocator, not at a new text pass.
+
+### 39.4 Instruction-selection families: measured exhaustively, all < 120
+
+The per-mnemonic table of S37.2 shows `MOV` family +1,214, `ADD/SUB` +413, logic +358. This round measured
+the ceiling of each **concrete instruction shape** that could account for those differences (same best arm):
+
+| Shape | Ceiling | Why it is small |
+|---|---|---|
+| `MVN rT,#m` + `AND rD,rT` -> `BIC rD,rD,#m` | 17 (counting only `rD=r0`) / about 30 (unrestricted) | this shape is simply rare in this emitter |
+| Single-bit test `AND #2^k` + `CMP #0` + `Bcc` -> `LSLS`+`BPL` | 27 | single-bit masks are uncommon in the corpus |
+| Redundant extension after a narrow load `LDRB rX,[...]` + `UXTB rX,rX` | 23 | `LDRB` already zero-extends |
+| Shift into a temporary then consume -> shift operand `ORR rD,rD,rS,LSL #k` | 26 | needs the temporary to be single-use |
+| `MOV r0,rA` / `OP r0,rB` / `MOV rA,r0` triple -> three-address | 51 | occurs in contiguous runs only in bitfield packing |
+| `LSR #k` + `AND #mask` -> `UBFX` | 0 | no such shape in the corpus |
+| `B .Lx` where the next instruction is `.Lx:` | 48 | mostly already eaten by `-fopt-branch` |
+| Conditional branch to the immediately following label | 0 | -- |
+
+**All below 120**, so by the hard rule of S34.4.3 none of them is taken as a text slice. The text layer is
+confirmed closed for the third time.
+
+### 39.5 The decisive evidence: the part of a big function that is not a move
+
+The ceiling analysis is easily misread as "a bit more squeezing will do". One account against the largest
+over-budget function in the corpus settles it:
+
+`HAL_RCC_OscConfig`: ours **951**, armcc O2 **336** (2.83x). Of ours only **142** are removable => after an
+ideal allocator **809**, still 2.4x armcc. The mnemonic sources of the remaining 473-instruction gap
+(counted instruction by instruction inside that function):
+
+| Mnemonic | Ours | armcc | Delta | Nature |
+|---|---|---|---|---|
+| `MOV` | 224 | 18 | +206 | of which 18 are `MOV sp,r6` (multi-exit epilogues), 13 are `MOV r7,r0`+`MOV r0,#1` (return 1), 13 are `MOV r5,r0`+`POP{r0}` (value stack) |
+| `LDR` | 164 | 63 | +101 | repeated loads of constants and slots |
+| `B` | 121 | 30 | +91 | branch density: armcc prefers falling through sequentially |
+
+**This table is the most important conclusion of the section**: the allocator addresses only half of the
+first row; the 91-instruction `B` gap (branch density / control-flow shape) and the remaining isel gaps
+**must be taken by the emitter itself changing shape** (three-address, shift operands, bitfield
+instructions, fewer jumps), and their ceilings **cannot be measured before implementation** -- exactly what
+S38.6 item 2 meant by "otherwise it just turns 1,277 mov-imm into 1,000".
+
+### 39.6 Re-freezing: V-4' single path, three stages (replacing 2b/2c of S37.4)
+
+We no longer split into "pure allocator / open calls afterwards" (the pure-allocator ceiling has been
+measured dead in 39.1); instead one path with three stages, each criterion **derived from this round's
+ceiling**, frozen before the run and not re-worded after it:
+
+| Stage | Content | Criterion (frozen) | Basis |
+|---|---|---|---|
+| **A** | value numbering + liveness + linear scan + constant residency; route all integer functions (208/211) | whole corpus **<= 8,588** (take 1,000 = 73% of the ceiling) | the 1,362 of 39.1 |
+| **B** | three-address emission + shift operands + `UBFX`/`BIC`/immediate compare | cumulative **<= 7,888** (another 700 after A) | the isel gap of 39.4/39.5 |
+| **C** | structure: single exit, switch lowering, branch density | cumulative **<= 7,388** (another 500 after B) | the `B` and epilogue gap of 39.5 |
+
+Common guards (apply to all three stages):
+
+1. **OFF IS OFF**: with the whole path off, the 95 TU are byte-identical to today's HEAD output (not to the
+   previous slice -- to HEAD).
+2. **Same answers**: `tests/arm_exec/` gives equal values on both arms per function; unicorn value/RAM
+   snapshots identical; at least three fixtures specific to this path.
+3. **Must-reject fixtures**: `__asm`, VLA, `long long`, `float`, varargs -- must fall back to the old path
+   and stay byte-identical.
+4. **Mixed boundary**: when new and old coexist inside one TU, line differences are allowed only inside the
+   routed function bodies.
+5. **Slicing**: `ARKCC_FEATURE_*` off by default; `STM32_MIN` tier 0; when compiled out, reject by name
+   (`C3900U`).
+6. **No relative criterion may replace an absolute one**: `<= old path x 0.80` is a **process indicator**
+   only, never a pass basis; passing is judged solely by the absolute counts in the table above.
+
+**The endpoint must be on paper**: all three stages passing is **7,388**, which is still not armcc's 5,291
+(1.40x). "Beating armcc" on this corpus needs more than these three -- it needs continuing to change shape
+inside the **same emitter** (the 39.5 class), and every such slice needs its own ceiling measurement and its
+own re-freeze. **Passing stage C may not be described as "close to armcc".**
+
+### 39.7 Reproduction
+
+Out-of-repo scripts (sources of every number in this section): `D:/tmp/bm/cf/mov_census.py` (mnemonic
+families), `frame_census.py` (frame accesses / slot hotness), `ldr_census.py` (repeated loads),
+`alloc_ceiling.py` (the 1,394 of 39.1), `routable_ceiling.py` (the 98.6% routable set and 1,362),
+`isel2.py`/`isel3.py`/`bic_census.py` (39.4), `lit_census.py`/`lit_enc.py`/`resid_census.py` (39.3),
+`fndiff.py`/`fnmov.py` (39.5), `br_census.py` (branch family). The armcc side is decoded from
+`D:/tmp/cfB/*armcc_O2.o` per `FUNC` symbol with `armo.py` + capstone.
