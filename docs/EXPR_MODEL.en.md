@@ -4661,3 +4661,40 @@ If S45-a lands with `arm_exec` green but the count going *up*, that is a **model
   instruction's `op/val/aux/line` to stderr, **not one byte of the product**, gated by check 7 of
   `tests/run_alloc_tests.py`); the paper-emission planner lives outside the repo at
   `D:/tmp/bm/cf/paper45.py`.
+
+## 46 Paper emission, first pass: a planner that does not model the text layer gives the wrong answer (2026-11-27)
+
+**What was built**: so that S45-a can be decided before an emitter exists, the compiler grew a
+read-only IR dump (`ARKCC_DUMP_IR=1`, host profiles; prints `irfunc <name> params=... locals=...`
+plus each instruction's `op/val/aux/line/name` to stderr, not one byte of the product, gated by check 7
+of `tests/run_alloc_tests.py`), and a paper-emission planner lives outside the repo
+(`D:/tmp/bm/cf/paper45.py`, `paper45b.py`): it prices every IR instruction under the V-6 value model and
+compares the plan with today's measured count per function.
+
+**Readings** (same 95 TUs, same best arm at 9,588):
+
+| version | modelled functions | measured | planned | delta |
+| --- | ---: | ---: | ---: | ---: |
+| v1 (each IR instruction priced on its own, every local slot gets a slot) | 55 | 920 | 1,074 | **+154** |
+| v2 (dead stores cost zero, no frame unless needed, params free in `r0`-`r3`) | 75 | 1,242 | 1,440 | **+198** |
+
+Both are **worse** than today. Small functions improve clearly (`HAL_NVIC_GetPriority` -12,
+`HAL_Delay` -8, `HAL_GetTick` -2); large ones get clearly worse (`DMA_CheckFifoParam` +52,
+`HAL_RCC_GetSysClockFreq` +32) because the planner charges 2 for every address constant, 2 for every
+conditional branch and 1 for every `RETURN`, while **today's emitter plus text passes already fold
+those away** (`constcache` / `slotreg` / `copyprop` / `addrfold` / `peephole`).
+
+**Conclusion (recorded)**: 45.7 is re-verified on paper - **a paper plan that does not model the text
+layer's equivalents must answer "the new model is worse"**, which is 38.3's 1.683x reproduced inside the
+planner. Therefore:
+
+- S45-a is **not started**: until the planner can produce a credible estimate that charges the text
+  layer's wins, the ceiling (<= 9,150) is neither shown reachable nor shown unreachable;
+- the next step is not "tune the constants until it looks better" but to **make the planner price
+  "emit, then run the existing passes"**: first tag, per shape, how much today's passes already fold
+  (39.4's per-shape basis), then take the net;
+- if that still yields no win, S45-a is withdrawn before implementation per 45.3 and the result is
+  merged into 45 - **"the model sounds right" is not a reason to write the emitter.**
+
+**This section claims no win**: the five tiers of 45 are unchanged; the section records only that the
+judging instrument is not yet good enough.
