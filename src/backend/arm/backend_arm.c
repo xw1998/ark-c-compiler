@@ -2960,6 +2960,13 @@ static int  g_alc_peak_max;      /* widest simultaneous live value count */
  * Slots that fail the last test are still counted: their size is the part of
  * the problem that needs the CFG, not a text pass. */
 static long g_sl_slots, g_sl_prom_slots, g_sl_ops, g_sl_prom_ops;
+/* S48: the same question one CFG further.  A slot is *residency-promotable*
+ * when one register can hold it for its whole live range without a phi: it has
+ * exactly one definition block, that block dominates every block that touches
+ * the slot, and inside the definition block the first write precedes the first
+ * read.  This is the real first-slice target for S45-a; the single-block count
+ * above is only what a text pass could take without a CFG. */
+static long g_sl_cfg_slots, g_sl_cfg_ops;
 static int  g_sl_fn_total;
 
 /* Defined much further down (the emitter's own symbol table).  Declared here
@@ -3257,10 +3264,15 @@ typedef struct {
 
 static void ark_slot_census(IrFunc *f) {
     SlInfo *si;
+    MirFunc mm;
+    const MirFunc *m = 0;
     int n, i, blk = 0;
     long slots = 0, prom = 0, ops = 0, pops = 0;
 
     if (f == 0) return;
+    /* Its own graph: the census runs before the routing predicate, so it may
+     * not borrow the one the walks build later.  The arena owns the storage. */
+    if (mir_build(f, &mm) == 0 && mm.blk_count > 0) m = &mm;
     n = (int)(f->local_size / 4) + 2;
     if (n < 4) n = 4;
     if (n > SL_MAX) n = SL_MAX;
@@ -3297,6 +3309,86 @@ static void ark_slot_census(IrFunc *f) {
             pops += si[i].defs + si[i].uses;
         }
     }
+    /* S48: residency over the CFG (see the comment on g_sl_cfg_* above). */
+    if (m != 0 && m->blk_count > 0 && m->blk_count <= 512) {
+        int nb = m->blk_count, w = (nb + 31) / 32, b, k, changed, bad = 0;
+        unsigned *dom = (unsigned *)calloc((size_t)nb * (size_t)w, sizeof(unsigned));
+        int *defblk = (int *)calloc((size_t)n, sizeof(int));
+        int *defidx = (int *)calloc((size_t)n, sizeof(int));
+        int *ndef = (int *)calloc((size_t)n, sizeof(int));
+        if (dom && defblk && defidx && ndef) {
+            for (i = 0; i < n; i++) { defblk[i] = -1; defidx[i] = -1; }
+            for (b = 0; b < nb; b++) {
+                if (b == 0) { dom[0] = 1u; continue; }
+                for (k = 0; k < w; k++) dom[(size_t)b * w + k] = ~0u;
+            }
+            for (i = 0; i < f->code_count; i++) {
+                IrInst *I = &f->code[i];
+                int s;
+                if (I->op != IR_STORE) continue;
+                s = (int)(I->val >> 2);
+                if (s < 0 || s >= n) continue;
+                if ((I->aux & IR_AUX_SLOT64) || (I->aux & 0xFF) >= 8 ||
+                    (I->aux & IR_AUX_VOLATILE)) continue;
+                b = mir_inst_block(m, i);
+                if (b < 0) continue;
+                if (defblk[s] < 0) { defblk[s] = b; defidx[s] = i; }
+                else if (defblk[s] != b) ndef[s] = 2;
+                if (defidx[s] < 0 || i < defidx[s]) defidx[s] = i;
+            }
+            for (changed = 1; changed; ) {
+                changed = 0;
+                for (b = 1; b < nb; b++) {
+                    unsigned tmp[16];
+                    int pp, first = 1;
+                    for (k = 0; k < w; k++) tmp[k] = ~0u;
+                    for (pp = 0; pp < m->blk[b].pred_count; pp++) {
+                        int pb = m->pred_list[m->blk[b].pred_start + pp];
+                        if (pb < 0 || pb >= nb) continue;
+                        if (first) { for (k = 0; k < w; k++) tmp[k] = dom[(size_t)pb * w + k]; first = 0; }
+                        else for (k = 0; k < w; k++) tmp[k] &= dom[(size_t)pb * w + k];
+                    }
+                    if (first) for (k = 0; k < w; k++) tmp[k] = 0u;
+                    tmp[b >> 5] |= 1u << (b & 31);
+                    for (k = 0; k < w; k++) {
+                        if (dom[(size_t)b * w + k] != tmp[k]) {
+                            dom[(size_t)b * w + k] = tmp[k];
+                            changed = 1;
+                        }
+                    }
+                }
+            }
+            for (i = 0; i < n; i++) {
+                int d;
+                if (si[i].addr || si[i].wide || si[i].defs < 1 || si[i].uses < 1) continue;
+                if (ndef[i] || defblk[i] < 0) continue;
+                d = defblk[i];
+                for (k = 0; k < f->code_count && !bad; k++) {
+                    IrInst *I = &f->code[k];
+                    int s, ib;
+                    if (I->op != IR_PUSH_VAR && I->op != IR_STORE) continue;
+                    s = (int)(I->val >> 2);
+                    if (s != i) continue;
+                    if ((I->aux & IR_AUX_SLOT64) || (I->aux & 0xFF) >= 8 ||
+                        (I->aux & IR_AUX_VOLATILE)) { bad = 1; break; }
+                    ib = mir_inst_block(m, k);
+                    if (ib < 0) { bad = 1; break; }
+                    if (!(dom[(size_t)ib * w + (d >> 5)] & (1u << (d & 31)))) { bad = 1; break; }
+                    if (ib == d && I->op == IR_PUSH_VAR && k < defidx[i]) { bad = 1; break; }
+                }
+                if (!bad) {
+                    g_sl_cfg_slots++;
+                    g_sl_cfg_ops += si[i].defs + si[i].uses;
+                    if (getenv("ARKCC_ALLOC_NAMES") && si[i].defs + si[i].uses >= 4)
+                        fprintf(stderr, "alloc-slotcfg %s off=%d ops=%d\n",
+                                f->name ? f->name : "?", i * 4, si[i].defs + si[i].uses);
+                }
+                bad = 0;
+            }
+        }
+        free(dom); free(defblk); free(defidx); free(ndef);
+    }
+
     g_sl_fn_total++;
     g_sl_slots += slots;
     g_sl_prom_slots += prom;
@@ -3389,8 +3481,9 @@ static void ark_alloc_report(void) {
             g_alc_elig_call, g_alc_elig_stackarg, g_alc_elig_loop,
             g_alc_fn_join, g_alc_join_moves, g_alc_peak_max);
     fprintf(stderr, "alloc-slots: functions=%d slots=%ld promotable_slots=%ld "
-                    "stack_ops=%ld promotable_ops=%ld\n",
-            g_sl_fn_total, g_sl_slots, g_sl_prom_slots, g_sl_ops, g_sl_prom_ops);
+                    "stack_ops=%ld promotable_ops=%ld cfg_slots=%ld cfg_ops=%ld\n",
+            g_sl_fn_total, g_sl_slots, g_sl_prom_slots, g_sl_ops, g_sl_prom_ops,
+            g_sl_cfg_slots, g_sl_cfg_ops);
 }
 #endif /* ARKCC_FEATURE_OPT_ALLOC */
 

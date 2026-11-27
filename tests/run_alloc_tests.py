@@ -85,7 +85,8 @@ WANT_PEAK = 5
 # `stack_ops` is the part that needs CFG liveness, so the two pins move
 # together and neither may be zero.
 WANT_SLOTS = {'functions': 212, 'slots': 354, 'promotable_slots': 39,
-              'stack_ops': 1711, 'promotable_ops': 120}
+              'stack_ops': 1711, 'promotable_ops': 120,
+              'cfg_slots': 73, 'cfg_ops': 235}
 
 check = H.check
 skip = H.skip
@@ -235,6 +236,10 @@ def main():
         check(0 < agg['promotable_ops'] < agg['stack_ops'],
               'the promotable subset is a proper part of the stack traffic',
               '%d of %d' % (agg['promotable_ops'], agg['stack_ops']))
+        check(agg['promotable_ops'] < agg['cfg_ops'] < agg['stack_ops'],
+              'CFG residency strictly widens the single-block subset',
+              '%d < %d < %d' % (agg['promotable_ops'], agg['cfg_ops'],
+                                agg['stack_ops']))
 
         # --- 3. refusals, five shapes, both arms byte-identical -----------
         refuse = [

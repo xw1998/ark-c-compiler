@@ -4860,3 +4860,82 @@ The gate now has **37 checks**; this slice measures EXIT=0, 37 ok, 0 FAIL (`D:/t
   with `ARKCC_ALLOC_NAMES=1` as `alloc-slots <name> slots=... promotable=... ops=... ops_promotable=...`;
 - summary script: `D:/tmp/bm/cf/s48.py` (same best arm, 212 functions);
 - frame accesses including the `r6` alias: `D:/tmp/bm/cf/s48b.py` (corpus), `s47j.py` (four buckets).
+## 49 Slot residency is the wrong handle: a stack machine pays at the expression stack, not at frame slots (2026-11-27)
+
+48 pinned the slot census. This section re-splits the same text by "prologue / expression stack / frame
+slot" and kills a direction that is very easy to take: **parking frame slots in registers buys only 235 IR
+operations, while the money sits in the `PUSH`/`POP` of the function body.**
+
+### 49.1 Readings (95 TUs, 212 functions)
+
+| quantity | measured | source |
+| --- | ---: | --- |
+| `push`/`pop` total | 769 | same convention as 45.1 |
+| of which prologue (within the first 4 instructions) | 242 | `s49.py` |
+| of which epilogue (within the last 4 instructions) | 203 | `s49.py` |
+| **of which in the function body (expression stack)** | **324** | `s49.py` |
+| single-register `PUSH {rN}` / `POP {rN}` in the body | 237 | `s49.py` |
+| of which `{r0}` / `{r1}` | 210 / 22 | `s49.py` |
+| frame accesses (`[sp]` or the `r6` alias) | 643 (`str` 366 + `ldr` 277) | 48.2 |
+| IR slot operations (`IR_STORE` definitions + `IR_PUSH_VAR` reads) | 1,711 | 48.1 |
+| **promotable by residency (CFG form: one defining block dominating every access)** | **73 slots / 235 ops (13.7%)** | new census in this section |
+
+### 49.2 Why slot residency is the wrong handle
+
+1. **The conversion rate from IR slot operations to assembly instructions is only 0.38**: 1,711 slot
+   operations reach the text as 643 frame accesses. Turning one slot operation into "a register" removes
+   **not a single assembly instruction** in most cases, because that access was never emitted in the first
+   place (the value stayed in `r0` or `slotreg` folded it away). 235 x 0.38 is about **89 instructions** -
+   far from 438.
+2. **The stack machine's cost is the expression stack**: of the 324 body `push`/`pop`, 237 are
+   single-register and 210 are `{r0}`; they all come from "push the left operand before evaluating the
+   right one". armcc has only 154 `push`/`pop` on the same corpus; the difference of **615** is the visible
+   price of exactly this.
+3. The other two blocks are the 643 frame accesses (armcc 46) and the 2,005 register `mov` copies
+   (armcc 219).
+
+### 49.3 Verdict
+
+**`slot_residency_is_the_wrong_handle`** (frame-slot residency is not the right handle).
+
+- 48's finding (single-block promotion of 120 does not form a slice) and this section's finding (235 CFG
+  operations, about 89 instructions) point at the same thing: **S45-a cannot be built as a "slot -> register"
+  transform; it can only be built as a "value -> register" emitter**;
+- the first cut of the next step is not an allocator but **registering the expression stack**: `ark_top_try`
+  today places only the top of stack in `r0`, and the second level always goes to the machine stack. Putting
+  the second level (and where needed the third) in callee-saved registers eats the bulk of the body
+  `PUSH {r0}`.
+
+### 49.4 New slice, pre-registered: `-fopt-rstack` (depth-2 expression stack, frozen criterion)
+
+| item | frozen value |
+| --- | --- |
+| scope | inside the emitter (`ark_top_try` plus the common emission path); **no second emission path** |
+| deletable pool (measured) | body `push`/`pop` **324** (237 single-register); this slice only eats the single-register shape |
+| ceiling if fully realised | 9,588 - 324 = **9,264** |
+| accept criterion | realisation >= **60%** => corpus **<= 9,394** (otherwise withdrawn) |
+| not allowed | no counting prologue/epilogue `push`/`pop`; no trading semantics for fewer instructions; no touching 45.3's five stages |
+| OFF IS OFF | switch off by default; off means byte-identical text to today on all 95 TUs |
+| semantics | `arm_exec` must agree per function on both arms; new fixtures cover leaf arithmetic, nested binary expressions, five-argument calls, `switch`, bitfields |
+| crop | `-DARKCC_FEATURE_OPT_RSTACK=0` rejects the switch by name (C3900U), and without the switch the text stays byte-identical |
+
+**Stated up front**: even if fully realised (9,264) it **does not reach** 45's S45-a ceiling (9,150). This
+slice **does not count toward 45's five stages**; it is an in-architecture gain with no 38.3 penalty, and it
+removes half of the structural premise "every value must cross the machine stack", which lightens the load on
+the later value-residency emitter.
+
+### 49.5 Gate
+
+The CFG counters of the slot census (`cfg_slots=73`, `cfg_ops=235`) are pinned in
+`tests/run_alloc_tests.py`, with the self-check `promotable_ops < cfg_ops < stack_ops` (to catch a reading
+where the CFG form is not larger than the single-block form). The gate now has **38 checks**; this slice
+measures EXIT=0, 38 ok, 0 FAIL (`D:/tmp/bm/alloc_gate_s48.log`).
+
+### 49.6 Reproduction
+
+- `push`/`pop` three-way split (prologue / epilogue / body, single-register, `r0`/`r1`):
+  `D:/tmp/bm/cf/s49.py`;
+- slot-residency CFG census: `-fopt-alloc` plus `ARKCC_ALLOC_STATS=1`, the `alloc-slots: ... cfg_slots=...
+  cfg_ops=...` line (per function with `ARKCC_ALLOC_NAMES=1` as `alloc-slotcfg <name> off=... ops=...`,
+  only >= 4 listed);
+- frame accesses: `D:/tmp/bm/cf/s48b.py` (corpus), `s47j.py` (four buckets).
