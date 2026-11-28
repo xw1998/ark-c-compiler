@@ -716,6 +716,21 @@ int main(int argc, char **argv) {
             return 1;
         }
 #endif
+#if !ARKCC_FEATURE_OPT_VEMIT
+        else if (strcmp(a, "-fopt-vemit") == 0) {
+# if ARKCC_FEATURE_MIR
+            fprintf(stderr,
+                    "Fatal error: C3900U: -fopt-vemit is not compiled into "
+                    "this build (rebuild with -DARKCC_FEATURE_OPT_VEMIT=1)\n");
+# else
+            fprintf(stderr,
+                    "Fatal error: C3900U: -fopt-vemit is not compiled into "
+                    "this build (rebuild with -DARKCC_FEATURE_OPT_VEMIT=1 and "
+                    "-DARKCC_FEATURE_MIR=1; V-6 walks the CFG)\n");
+# endif
+            return 1;
+        }
+#endif
 #if !ARKCC_FEATURE_OPT_FRAME
         else if (strcmp(a, "-fopt-frame") == 0) {
             fprintf(stderr,

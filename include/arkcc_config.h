@@ -759,6 +759,31 @@
 # endif
 #endif
 
+/* ARKCC_FEATURE_OPT_VEMIT: -fopt-vemit, the S53 value-resident emitter.
+ *
+ * For a function it can model end to end (leaf, no 64-bit/float/complex,
+ * value stack never deeper than four levels, joins agreeing on depth) the
+ * IR value stack is emitted straight into r0..r3 instead of the machine
+ * stack, so the PUSH/POP round trips are never written.  Off by default; off
+ * means byte-identical text.  Trimmable on its own: -DARKCC_FEATURE_OPT_VEMIT=0
+ * makes the driver refuse the switch by name (C3900U) instead of accepting a
+ * switch that does nothing, and the board profile drops it (the census costs
+ * a CFG per function).
+ *
+ * It needs the MIR CFG (src/mir.c): whole-function admission walks the
+ * block graph to prove every join agrees on the value-stack depth.  A
+ * build without ARKCC_FEATURE_MIR therefore cannot carry it -- and would
+ * not link if it tried, since ve_can_take() calls mir_build() -- so the
+ * derived default is off whenever MIR is off, on the same rule as
+ * ARKCC_FEATURE_OPT_ALLOC above. */
+#ifndef ARKCC_FEATURE_OPT_VEMIT
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN || !ARKCC_FEATURE_MIR
+#   define ARKCC_FEATURE_OPT_VEMIT 0   /* 板上裁掉：只在宿主/交叉编译用 */
+# else
+#   define ARKCC_FEATURE_OPT_VEMIT 1
+# endif
+#endif
+
 /* ARKCC_FEATURE_IPO: --ipo / -flto, whole-program compilation (src/ipo.c).
  *
  * One front end run per input file inside one process, all units' IR

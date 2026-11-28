@@ -5300,3 +5300,156 @@ Implementation order and discipline:
 - frame-pointer-aware classification: `D:/tmp/bm/cf/paper47b.py` (scan `MOV rX, sp` for the frame base, then
   attribute `[base,#n]`; results in `paper47b.json`);
 - the cached 95 `.s`/`.ir`: `D:/tmp/bm/cf/p47/`.
+
+## 53 The V-6 value-resident emitter: semantics green, corpus +862, withdrawn per pre-registration (2026-11-28, recorded after the run; `-fopt-vemit`)
+
+Section 52 cleared S45-a, and section 45 froze the criterion at "the corpus on the best arm must reach
+9,150 instructions". This section is the reading of that implementation: the emitter was written to 45's
+model, the semantics gate went green on the first run, **but the corpus moved the wrong way by 862
+instructions**. The criterion is missed, so the slice is withdrawn per 45.3 -- the code stays behind
+`-fopt-vemit` (`ARKCC_FEATURE_OPT_VEMIT`, host 1 / board 0, **off by default**) with its measurements in
+the repository, so nobody has to walk this path again. With the switch off the 95 TUs are byte-identical
+to today.
+
+### 53.1 Model: the register is fixed by depth, so a push moves nothing
+
+Level `d` of the value stack lives in `r<d>` (`d = 0..3`, `VE_MAXDEPTH 4`). The decisive difference from
+50's depth-2 window is that **the register is fixed by depth**, so a push costs no move at all: `PUSH`
+writes `r<d>`, `BINARY` reads `r<d-2>` and `r<d-1>` and writes `r<d-2>`. A window-based emitter has to
+`MOV` the window one slot over before every push, which cost 50 an extra 1,036 instructions; a
+depth-to-register mapping does not pay that.
+
+Three constraints:
+
+- the value stack never exceeds four levels, or the function is not taken (`r0`-`r3` are caller-saved, so
+  a leaf function needs no prologue/epilogue change);
+- at a join every predecessor must agree on the depth (the same abstract walk as 41's routing census).
+  When they agree, `r<d>` holds the same value on both paths, so **no phi move is ever needed**; a
+  disagreement refuses the function;
+- an instruction outside the model, a depth underflow, or a depth above the limit **falls the whole
+  function back** to the existing text emission, byte for byte. Emitting half is not allowed.
+
+`IR_GETARG` is the one deliberate exception: it stores an incoming argument register into its frame slot,
+touches no value-stack level, and appears only while the stack is empty (the walk already refuses the
+function otherwise). With the stack empty `r0`-`r3` hold nothing live, so a generic sequence is safe in
+the middle of a V-6 function.
+
+### 53.2 Where the hook goes: before every in-loop IR peephole
+
+This is the only implementation trap this round, and it only shows when the switch is stacked on the full
+BASE.
+
+The main loop of `codegen_arm()` runs a row of **in-loop IR peepholes** before each instruction: the
+volatile DMB block, `tail_return_pending`, `divconst_skip`, `-fopt-divconst`, `-fopt-imm`, `-fopt-pair`,
+the register-top cache (`--reg-top` / `-fopt-rstack`), then the big switch. All of them emit the
+**generic** convention (the value left on the machine stack or in `r0`) and carry a 0/1/2 register-top
+window.
+
+V-6's hook first sat after the register-top cache and before the big switch. The result: `-fopt-pair`
+rewrote `PUSH x; PUSH y; BINARY` into `LDR r0 / LDR r1 / ADD r0 / PUSH {r0}`, and V-6's later layers read
+`r1` and `r2` per the depth model -- the wrong registers. 8 of the 15 fixtures disagreed on the spot.
+**Fix: move the hook before every in-loop IR peephole (after the volatile DMB block).** A V-6 function
+then never mixes the two conventions, while the post-emission `-fopt-*` text chain still sees the whole
+function and optimises it as before (the hard constraint from 52.3).
+
+### 53.3 Admission surface
+
+`ve_op_ok()` judges shape only: `NOP/FUNC_BEGIN/FUNC_END/LABEL/LABEL_NAMED/JMP/JMP_NAMED/JZ/JNZ/
+PUSH_INT/PUSH_VAR/PUSH_GLOBAL/PUSH_GLOBAL_ADDR/PUSH_ADDR/POP/DUP/BINARY/DIV/MOD/UNARY/TRUNC/
+LOAD_IDX/STORE_IDX/STORE/STORE_GLOBAL/RETURN/GETARG`. Refused: calls, 64-bit, float, complex/struct
+returns, `__packed` members, VLAs, inline asm, and any variadic, IRQ, naked or alias function, or one with
+more than four parameters.
+
+Two things that look dangerous but are **modelled on purpose**:
+
+- **volatile**. V-6 never caches a value across an access -- each access happens exactly where the IR put
+  it -- and the shared volatile block has already emitted any DMB SY before the hook, so order is the
+  IR's, not the emitter's. Refusing volatile throws away almost the whole HAL corpus and leaves only
+  four-instruction stubs (early on only 23 functions were taken, nearly all stubs).
+- **address-of-local** (`IR_PUSH_ADDR`). The frame does not move, so `ADD r<d>, r6, #off` names the same
+  slot the generic path names.
+
+
+One dependency: V-6's admission walk needs the CFG (`mir_build()` / `ve_depths()` prove every join
+agrees on the depth), so `ARKCC_FEATURE_OPT_VEMIT` **derives to 0** whenever `ARKCC_FEATURE_MIR` is 0
+(the same rule as `ARKCC_FEATURE_OPT_ALLOC`), and the driver refuses the switch by name saying "V-6 walks
+the CFG". The first cut missed this: the MIR-crop gate reported `undefined reference to mir_build`
+instead of a clean link, and it was only caught because the full regression ran -- the old "cropped build
+fails -> skip" hole would otherwise have hidden it. With the derived macro in place the MIR=0 crop links
+and refuses the switch by name.
+
+### 53.4 Measurements (95 TUs, on the S17 + S19-a + S21 stack)
+
+| Reading | off | on (`-fopt-vemit`) | delta |
+| --- | ---: | ---: | ---: |
+| instructions | **9,588** | **10,450** | **+862 (+9.0%)** |
+| bytes | **354,989** | **367,644** | +12,655 |
+| TUs whose text changes | -- | 15 / 95 | -- |
+
+The emitter's own report (`ARKCC_VEMIT_STATS=1`): it took **120** functions holding **3,857** IR
+instructions, saw **212** functions and fell back on **92** (120 + 92 = 212; every function is accounted
+for).
+
+Per function it is plainer still: **79 functions change text, and only 3 get smaller** (-4 / -3 / -1,
+-8 in total), while **76 get bigger**:
+
+| Function | off | on |
+| --- | ---: | ---: |
+| `DMA_CheckFifoParam` | 115 | 212 |
+| `HAL_RCC_GetOscConfig` | 121 | 214 |
+| `HAL_DMA_UnRegisterCallback` | 81 | 166 |
+
+### 53.5 Root cause: the generic chain's density is shape fusion, not PUSH/POP
+
+On the off arm `DMA_CheckFifoParam` is 115 instructions yet handles 212 IR ops (**0.54 insn/op**). That
+density does not come from nowhere: CBZ fusion, offset-addressing fusion, slot promotion, ITE folding,
+`constcond`, pair, imm and a dozen other peepholes all key off **a shape** -- the shape the stack emitter
+writes. V-6 changes the shape (values in `r<d>`, no `PUSH`/`POP`, an immediate feeding an op directly in
+`r<d>`), so none of those peepholes match any more, and what V-6 deletes is outweighed by what it stops
+the text chain from folding.
+
+In one line: **V-6 saves the instructions it deletes and loses the instructions it prevents the text
+chain from folding, and the second number is bigger.**
+
+### 53.6 Verdict
+
+**S45-a's criterion (<= 9,150) is missed; withdrawn, not in the default chain** -- even "no regression"
+fails (+862). Per the pre-registration in 45.3 and 52.4: no re-negotiated conventions, no raised ceiling,
+no after-the-fact patching. The switch stays, off by default, with the code kept -- the same disposition
+as S10 `-fopt-spill` and S12-1 `-fopt-ldhoist`, except those two were positive results held back while
+this one is a negative result proven.
+
+### 53.7 Methodology: the third "change the shape" attempt fails; today's emitter is a local optimum
+
+| Slice | What it did | Result |
+| --- | --- | --- |
+| S9b | statement-level three-address emission | +0.137% (worse), withdrawn |
+| 50 (S49) | depth-2 register window | **+1,036 insns**, withdrawn |
+| 53 (S53) | depth-fixed register value residence | **+862 insns**, withdrawn |
+
+All three fail at the same place: **the current stack emitter plus its 33 text/IR peepholes is a local
+optimum for this architecture**. Any "change the shape" gain has to pay first for the shape fusion it
+loses, and on code like the HAL that price is larger. The only ways forward are **more peepholes on the
+existing shape** (S45-b/c/d/e) or a rewritten backend with the whole peephole suite rewritten alongside
+it -- and that is not a slice, it is a rebuild.
+
+### 53.8 Gate and reproduction
+
+`make test-vemit` (`tests/run_vemit_tests.py`) has six points, each with its own defence against a false
+pass:
+
+1. switch absent -> the corpus is pinned at 9,588 insns / 354,989 B (the default chain was not touched);
+2. switch present -> pinned at 10,450 insns / 367,644 B, plus an assertion that some TU's text really
+   changes (so a switch that was never wired cannot pass);
+3. a per-TU `taken/fallback/seen` report with corpus sums pinned at 120 / 3,857 / 212,
+   `taken + fallback == seen`, and the same TU run twice reporting the same numbers (not cumulative);
+4. fifteen fixtures on both arms (`BASE+STACK` and `+FLAG`) run on `unicorn`: each arm must return the
+   **C-level** value and leave the same RAM snapshot, and a deliberately wrong expectation must fail
+   (the comparator is not a rubber stamp);
+5. `-DARKCC_FEATURE_OPT_VEMIT=0` crop: it links, refuses the switch by name (`C3900U`), and with the
+   switch absent writes byte-identical text to the full build on a fixture and on a real HAL unit; the
+   full build accepts the switch (so a build that refuses everything cannot pass).
+
+Reproduction: `tests/run_vemit_tests.py`; the debugging artefacts are in `D:/tmp/bm/s53/` (`smoke.py`
+for the fifteen-fixture smoke run, `corpus.py`/`corpus2.py` for the corpus and per-function diff, and
+`dbg/` holding the `off.s`/`on.s`/`raw_*.s` of the eight DIFFs).

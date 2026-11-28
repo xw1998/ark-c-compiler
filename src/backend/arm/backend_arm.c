@@ -16104,6 +16104,507 @@ static void arm_dump_ir_function(IrFunc *f) {
     }
 }
 
+#if ARKCC_FEATURE_OPT_VEMIT
+/* ===================== V-6: the value-resident emitter ====================
+ *
+ * The stack machine is the shape of the IR, not a requirement of the target.
+ * Every IR value is born on the machine stack (PUSH {r0}) and dies on it
+ * (POP {r0}); the text passes then try to delete those round trips one pair at
+ * a time.  V-6 attacks the source instead: for a function it can model end to
+ * end it emits the value stack *into registers*, so most of those pairs are
+ * never written, and the remaining passes see a shorter function.
+ *
+ * Model
+ * -----
+ *   - Stack level d (0 = bottom) lives in r<d>.  The registers r0..r3 are
+ *     caller-saved, so a leaf function needs no prologue or epilogue change:
+ *     there is no call to clobber them, and the epilogue only restores
+ *     r5-r7/pc.  A function whose stack ever exceeds four levels is not taken.
+ *   - A level's register is *fixed by its depth*, so a push never shifts the
+ *     window: PUSH writes r<d> and BINARY reads r<d-2>, r<d-1> and writes
+ *     r<d-2>.  That is exactly what makes this different from the withdrawn
+ *     depth-2 window of S49, which paid a MOV before every push.
+ *   - At a join every predecessor must agree on the depth (checked by the same
+ *     abstract walk the routing census uses).  Then level d holds the same
+ *     value on both paths, so no phi move is ever needed: the register is
+ *     simply the merge point.  A join that disagrees refuses the function.
+ *   - Ops this slice cannot model (calls, 64-bit, float, complex,
+ *     __packed members, VLA, inline asm; and any variadic, IRQ, naked or
+ *     alias function, or one with more than four parameters) refuse the
+ *     whole function before a single byte is written, so the refused path
+ *     is byte-identical to a build without the switch.
+ *
+ * Two things that look unsafe but are modelled on purpose:
+ *   - volatile.  V-6 never caches a value across an access -- each access
+ *     happens exactly where the IR put it -- and the shared volatile
+ *     barrier has already emitted any DMB SY before this hook runs, so
+ *     order is the IR's, not the emitter's.  Refusing volatile would have
+ *     thrown away nearly the whole HAL corpus and left only four-
+ *     instruction stubs.
+ *   - address-of-local (IR_PUSH_ADDR).  The frame does not move, so
+ *     ADD r<d>, r6, #off names the slot exactly as the generic path does.
+ *
+ * One deliberate exception: IR_GETARG keeps the generic path.  It stores an
+ * incoming argument register into its frame slot, touches no value-stack
+ * level, and appears only while the stack is empty (the walk refuses the
+ * function otherwise).  With the stack empty r0-r3 hold nothing live, so the
+ * generic sequence is safe to emit in the middle of a V-6 function.
+ *
+ * Measured by ARKCC_VEMIT_STATS=1: how many functions were taken, how many
+ * instructions they hold, and how many functions were seen at all -- the
+ * "taken n / fell back m" report the S53 slice is judged on.
+ * ---------------------------------------------------------------------- */
+#define VE_MAXDEPTH 4
+
+static int  g_vemit_active;
+static long g_vemit_fn_taken, g_vemit_fn_seen, g_vemit_in_taken;
+
+/* Level d of the value stack lives in r<d>. */
+static int ve_reg(int d) { return d; }
+
+/* Can this instruction be modelled at all?  Shape only; the depth walk below
+ * decides whether the sequence fits. */
+static int ve_op_ok(const IrInst *I)
+{
+    switch (I->op) {
+    case IR_NOP: case IR_FUNC_BEGIN: case IR_FUNC_END:
+    case IR_LABEL: case IR_LABEL_NAMED:
+    case IR_JMP: case IR_JMP_NAMED: case IR_JZ: case IR_JNZ:
+    case IR_PUSH_INT: case IR_PUSH_GLOBAL_ADDR: case IR_PUSH_ADDR:
+    case IR_POP: case IR_DUP:
+    case IR_BINARY: case IR_DIV: case IR_MOD:
+    case IR_RETURN: case IR_GETARG:
+        return 1;
+    case IR_PUSH_VAR: {
+        /* Volatile is modelled: V-6 never caches a value across an access, so
+         * the read happens exactly where the IR put it, and the shared volatile
+         * barrier has already emitted any DMB SY this instruction needs.  A
+         * 64-bit push is two words and stays out. */
+        int w;
+        if (I->aux & IR_AUX_COMPLEX) return 0;
+        w = I->aux & 0xFF;
+        return w == 0 || w == 1 || w == 2 || w == 4;
+    }
+    case IR_STORE: {
+        int sw;
+        if (I->aux & IR_AUX_COMPLEX) return 0;
+        if (I->aux & 0x400) return 0;                 /* __packed member: refused */
+        sw = I->aux & ~(IR_AUX_VOLATILE);
+        if (sw == 0) sw = 4;
+        return sw == 1 || sw == 2 || sw == 4;
+    }
+    case IR_PUSH_GLOBAL:
+    case IR_STORE_GLOBAL:
+        /* Volatile is fine (the barrier runs before this hook); a 64-bit
+         * object is two words and is refused. */
+        if (I->aux & IR_AUX_COMPLEX) return 0;
+        return I->name != 0 && gvar_find_size(I->name) <= 4;
+    case IR_LOAD_IDX:
+    case IR_STORE_IDX: {
+        int es = I->val ? I->val : 4;
+        if (I->aux & 0x400) return 0;                 /* __packed: refused */
+        if (I->aux & IR_AUX_COMPLEX) return 0;
+        return es == 1 || es == 2 || es == 4;
+    }
+    case IR_UNARY:
+        if (I->aux & IR_AUX_COMPLEX) return 0;
+        if (I->val == 1 || I->val == 2) return 0;     /* 64-bit operand */
+        return I->aux == (int)TOK_MINUS || I->aux == (int)TOK_BNOT ||
+               I->aux == (int)TOK_NOT;
+    case IR_TRUNC:
+        return I->val == 0 || I->val == 8 || I->val == 16 || I->val == 32;
+    default:
+        return 0;
+    }
+}
+
+/* Depth after one instruction, or -1 when the sequence is outside the model. */
+static int ve_step(const IrInst *I, int d)
+{
+    switch (I->op) {
+    case IR_PUSH_INT: case IR_PUSH_VAR: case IR_PUSH_GLOBAL:
+    case IR_PUSH_GLOBAL_ADDR: case IR_PUSH_ADDR:
+        return d + 1;
+    case IR_DUP:
+        return d + 1;
+    case IR_POP:
+        return d - 1;
+    case IR_BINARY: case IR_DIV: case IR_MOD:
+        return d - 1;
+    case IR_UNARY: case IR_TRUNC:
+        return d;
+    case IR_LOAD_IDX: case IR_STORE_IDX:
+        return d - 1;
+    case IR_STORE: case IR_STORE_GLOBAL:
+        return d - 1;
+    case IR_JZ: case IR_JNZ:
+        return d - 1;
+    case IR_RETURN:
+        return (d >= 1) ? 0 : -1;      /* a return already has its value */
+    case IR_GETARG:
+        return (d == 0) ? 0 : -1;      /* the generic path uses r0/r1 */
+    default:
+        return d;
+    }
+}
+
+/* Fill dep[k] with the stack depth on entry to instruction k.  Returns 1 on
+ * success.  Joins must agree on the depth; a disagreement, an underflow or a
+ * depth above VE_MAXDEPTH refuses the function.  Blocks the entry block does
+ * not reach are dead code: they take the depth their predecessor left behind
+ * and are emitted without further validation. */
+static int ve_depths(IrFunc *f, MirFunc *m, int *dep, int *maxd)
+{
+    int nb = m->blk_count, b, k, ok = 1, md = 0;
+    int qh = 0, qt = 0, carry = 0;
+    int *bd, *q;
+    unsigned char *seen;
+
+    bd = (int *)malloc((size_t)nb * sizeof(int));
+    q  = (int *)malloc((size_t)nb * sizeof(int));
+    seen = (unsigned char *)malloc((size_t)nb);
+    if (!bd || !q || !seen) { free(bd); free(q); free(seen); return 0; }
+    for (b = 0; b < nb; b++) { bd[b] = -1; seen[b] = 0; }
+    bd[0] = 0; seen[0] = 1; q[qt++] = 0;
+    while (qh < qt && ok) {
+        int bb = q[qh++], d = bd[bb];
+        MirBlock *B = &m->blk[bb];
+        for (k = B->start; k < B->end; k++) {
+            int nd = ve_step(&f->code[k], d);
+            if (nd < 0 || nd > VE_MAXDEPTH) { ok = 0; break; }
+            d = nd;
+        }
+        if (!ok) break;
+        if (d > md) md = d;
+        for (k = 0; k < B->succ_count; k++) {
+            int to = B->succ[k];
+            if (to < 0 || to >= nb) continue;
+            if (bd[to] < 0) {
+                bd[to] = d;
+                if (!seen[to]) { seen[to] = 1; q[qt++] = to; }
+            } else if (bd[to] != d) {
+                ok = 0; break;
+            }
+        }
+    }
+    if (ok) {
+        for (b = 0; b < nb; b++) {
+            int d = (bd[b] >= 0) ? bd[b] : carry;
+            int dead = 0;      /* this instruction leaves the register model */
+            for (k = m->blk[b].start; k < m->blk[b].end; k++) {
+                int nd;
+                if (dead) { dep[k] = -1; continue; }
+                dep[k] = d;
+                nd = ve_step(&f->code[k], d);
+                if (nd < 0 || nd > VE_MAXDEPTH) {
+                    /* A reachable block that leaves the model refuses the
+                     * whole function.  A block nothing reaches is dead code:
+                     * its tail is left to the generic path (dep = -1) so the
+                     * register window stays well defined. */
+                    if (bd[b] >= 0) { ok = 0; break; }
+                    dep[k] = -1;
+                    dead = 1;
+                    continue;
+                }
+                d = nd;
+            }
+            if (!ok) break;
+            carry = d;
+        }
+    }
+    free(bd); free(q); free(seen);
+    if (ok) *maxd = md;
+    return ok;
+}
+
+/* Whole-function admission.  Everything is decided here, before the prologue
+ * is written, so a refused function is byte-identical to a build without the
+ * switch (this is the "整函数回退" the S53 slice is pinned on). */
+static int ve_can_take(IrFunc *f, MirFunc *m, int *dep, int *maxd)
+{
+    int i;
+    if (f->name == 0) return 0;
+    if (f->is_variadic || f->is_irq || f->is_naked || f->is_asm_func ||
+        f->alias_target != 0) return 0;
+    if (f->param_count > 4) return 0;
+    if (f->ret_type != 0) {
+        Type *rt = f->ret_type;
+        if (ARK_IS_CX(rt)) return 0;
+        if (ret_is_two_words(rt)) return 0;
+        if (rt->kind == TYPE_STRUCT || rt->kind == TYPE_UNION) return 0;
+        if (rt->kind == TYPE_FLOAT || rt->kind == TYPE_DOUBLE) return 0;
+    }
+    for (i = 0; i < f->code_count; i++)
+        if (!ve_op_ok(&f->code[i])) return 0;
+    if (mir_build(f, m) != 0 || m->blk_count <= 0) return 0;
+    return ve_depths(f, m, dep, maxd);
+}
+
+/* CMP result into an arbitrary register (the generic one hardcodes r0). */
+static void ve_cmp_result(AsmBuffer *b, int base_op, int is_unsigned, int rd)
+{
+    const char *cc1, *cc2;
+    char t[64];
+    switch (base_op) {
+    case (int)TOK_EQ: cc1 = "EQ"; cc2 = "NE"; break;
+    case (int)TOK_NE: cc1 = "NE"; cc2 = "EQ"; break;
+    case (int)TOK_LT: cc1 = is_unsigned ? "LO" : "LT"; cc2 = is_unsigned ? "HS" : "GE"; break;
+    case (int)TOK_GT: cc1 = is_unsigned ? "HI" : "GT"; cc2 = is_unsigned ? "LS" : "LE"; break;
+    case (int)TOK_LE: cc1 = is_unsigned ? "LS" : "LE"; cc2 = is_unsigned ? "HI" : "GT"; break;
+    case (int)TOK_GE: cc1 = is_unsigned ? "HS" : "GE"; cc2 = is_unsigned ? "LO" : "LT"; break;
+    default: return;
+    }
+    snprintf(t, sizeof t, "    ITE %s\n", cc1);          asmbuf_puts(b, t);
+    snprintf(t, sizeof t, "    MOV%s r%d, #1\n", cc1, rd); asmbuf_puts(b, t);
+    snprintf(t, sizeof t, "    MOV%s r%d, #0\n", cc2, rd); asmbuf_puts(b, t);
+}
+
+/* One binary op with the operands already in registers.  r12 is the only
+ * scratch: it is the register no emitted sequence keeps alive across a local
+ * access, and a vemit body never touches the far-offset rewriting. */
+static void ve_bin(AsmBuffer *b, int op, int rd, int ra, int rb)
+{
+    int is_unsigned = (op & 0x100) != 0;
+    int base = op & ~0x100;
+    char t[80];
+    switch (base) {
+    case (int)TOK_PLUS:
+        snprintf(t, sizeof t, "    ADD r%d, r%d, r%d\n", rd, ra, rb); break;
+    case (int)TOK_MINUS:
+        snprintf(t, sizeof t, "    SUB r%d, r%d, r%d\n", rd, ra, rb); break;
+    case (int)TOK_MUL:
+        snprintf(t, sizeof t, "    MUL r%d, r%d, r%d\n", rd, ra, rb); break;
+    case (int)TOK_DIV:
+        snprintf(t, sizeof t, "    %s r%d, r%d, r%d\n",
+                 is_unsigned ? "UDIV" : "SDIV", rd, ra, rb); break;
+    case (int)TOK_MOD:
+        snprintf(t, sizeof t, "    SDIV r12, r%d, r%d\n", ra, rb); asmbuf_puts(b, t);
+        snprintf(t, sizeof t, "    MUL r12, r12, r%d\n", rb);     asmbuf_puts(b, t);
+        snprintf(t, sizeof t, "    SUB r%d, r%d, r12\n", rd, ra);  asmbuf_puts(b, t);
+        return;
+    case (int)TOK_BAND:
+        snprintf(t, sizeof t, "    AND r%d, r%d, r%d\n", rd, ra, rb); break;
+    case (int)TOK_BOR:
+        snprintf(t, sizeof t, "    ORR r%d, r%d, r%d\n", rd, ra, rb); break;
+    case (int)TOK_BXOR:
+        snprintf(t, sizeof t, "    EOR r%d, r%d, r%d\n", rd, ra, rb); break;
+    case (int)TOK_SHL:
+        snprintf(t, sizeof t, "    LSL r%d, r%d, r%d\n", rd, ra, rb); break;
+    case (int)TOK_SHR:
+        snprintf(t, sizeof t, "    %s r%d, r%d, r%d\n",
+                 is_unsigned ? "LSR" : "ASR", rd, ra, rb); break;
+    case (int)TOK_EQ: case (int)TOK_NE:
+    case (int)TOK_LT: case (int)TOK_GT:
+    case (int)TOK_LE: case (int)TOK_GE:
+        snprintf(t, sizeof t, "    CMP r%d, r%d\n", ra, rb); asmbuf_puts(b, t);
+        ve_cmp_result(b, base, is_unsigned, rd);
+        return;
+    default:
+        return;   /* ve_op_ok has already refused anything else */
+    }
+    asmbuf_puts(b, t);
+}
+
+/* Emit one IR instruction with the value stack resident in r0..r3.
+ * Returns 1 when the instruction was emitted, 0 to let the generic path
+ * handle it (IR_GETARG only). */
+static int ve_emit(AsmBuffer *b, IrFunc *f, int i, const int *dep,
+                   int local_size)
+{
+    IrInst *I = &f->code[i];
+    int d = dep[i];
+    char t[96];
+
+    switch (I->op) {
+    case IR_NOP: case IR_FUNC_BEGIN: case IR_FUNC_END:
+        return 1;
+    case IR_LABEL:
+        emit_label(b, f->name, I->val);
+        return 1;
+    case IR_LABEL_NAMED:
+        asmbuf_puts(b, ".L_");
+        asmbuf_puts(b, f->name);
+        asmbuf_putc(b, '_');
+        asmbuf_puts(b, I->name);
+        asmbuf_puts(b, ":\n");
+        return 1;
+    case IR_JMP:
+        emit_b_label(b, "B", f->name, I->val);
+        return 1;
+    case IR_JMP_NAMED:
+        asmbuf_puts(b, "    B .L_");
+        asmbuf_puts(b, f->name);
+        asmbuf_putc(b, '_');
+        asmbuf_puts(b, I->name);
+        asmbuf_putc(b, '\n');
+        return 1;
+    case IR_GETARG:
+        return 0;                       /* depth is 0 here; generic path */
+    case IR_PUSH_INT:
+        emit_mov_imm(b, ve_reg(d), I->val);
+        return 1;
+    case IR_PUSH_VAR: {
+        int rd = ve_reg(d);
+        int w  = I->aux & 0xFF;
+        int u  = (I->aux & 0x100) != 0;
+        if (w == 1)
+            snprintf(t, sizeof t, "    %s r%d, [r6, #%d]\n",
+                     u ? "LDRB" : "LDRSB", rd, (int)I->val);
+        else if (w == 2)
+            snprintf(t, sizeof t, "    %s r%d, [r6, #%d]\n",
+                     u ? "LDRH" : "LDRSH", rd, (int)I->val);
+        else
+            snprintf(t, sizeof t, "    LDR r%d, [r6, #%d]\n", rd, (int)I->val);
+        asmbuf_puts(b, t);
+        return 1;
+    }
+    case IR_PUSH_GLOBAL: {
+        int rd = ve_reg(d);
+        emit_gvar_addr32(b, rd, I->name);
+        snprintf(t, sizeof t, "    LDR r%d, [r%d]\n", rd, rd);
+        asmbuf_puts(b, t);
+        return 1;
+    }
+    case IR_PUSH_GLOBAL_ADDR:
+        emit_gvar_addr32(b, ve_reg(d), I->name);
+        return 1;
+    case IR_PUSH_ADDR:
+        snprintf(t, sizeof t, "    ADD r%d, r6, #%d\n", ve_reg(d), (int)I->val);
+        asmbuf_puts(b, t);
+        return 1;
+    case IR_STORE: {
+        int sw = I->aux & ~(IR_AUX_VOLATILE | IR_AUX_COMPLEX);
+        int rv = ve_reg(d - 1);
+        if (sw == 0) sw = 4;
+        if (sw == 1)
+            snprintf(t, sizeof t, "    STRB r%d, [r6, #%d]\n", rv, (int)I->val);
+        else if (sw == 2)
+            snprintf(t, sizeof t, "    STRH r%d, [r6, #%d]\n", rv, (int)I->val);
+        else
+            snprintf(t, sizeof t, "    STR r%d, [r6, #%d]\n", rv, (int)I->val);
+        asmbuf_puts(b, t);
+        return 1;
+    }
+    case IR_STORE_GLOBAL: {
+        int rv = ve_reg(d - 1);
+        emit_gvar_addr32(b, 12, I->name);
+        snprintf(t, sizeof t, "    STR r%d, [r12]\n", rv);
+        asmbuf_puts(b, t);
+        return 1;
+    }
+    case IR_POP:
+        return 1;                       /* dropping a register value is free */
+    case IR_DUP:
+        snprintf(t, sizeof t, "    MOV r%d, r%d\n", ve_reg(d), ve_reg(d - 1));
+        asmbuf_puts(b, t);
+        return 1;
+    case IR_LOAD_IDX: {
+        int es = I->val ? I->val : 4;
+        int rb = ve_reg(d - 2);         /* base, also the destination */
+        int ri = ve_reg(d - 1);         /* index */
+        if (es > 1) {
+            int sh = 0;
+            while ((1 << sh) < es) sh++;
+            /* 1, 2 and 4 are the only sizes admitted above, so the scale is
+             * always a shift; no MOV+MUL pair is ever needed here. */
+            snprintf(t, sizeof t, "    LSL r%d, r%d, #%d\n", ri, ri, sh);
+            asmbuf_puts(b, t);
+        }
+        snprintf(t, sizeof t, "    ADD r%d, r%d, r%d\n", rb, rb, ri);
+        asmbuf_puts(b, t);
+        if (es == 1)
+            snprintf(t, sizeof t, "    LDRB r%d, [r%d, #0]\n", rb, rb);
+        else if (es == 2)
+            snprintf(t, sizeof t, "    LDRSH r%d, [r%d, #0]\n", rb, rb);
+        else
+            snprintf(t, sizeof t, "    LDR r%d, [r%d, #0]\n", rb, rb);
+        asmbuf_puts(b, t);
+        return 1;
+    }
+    case IR_STORE_IDX: {
+        int es = I->val ? I->val : 4;
+        int ra = ve_reg(d - 2);         /* address */
+        int rv = ve_reg(d - 1);         /* value, and the result */
+        if (es == 1)
+            snprintf(t, sizeof t, "    STRB r%d, [r%d, #0]\n", rv, ra);
+        else if (es == 2)
+            snprintf(t, sizeof t, "    STRH r%d, [r%d, #0]\n", rv, ra);
+        else
+            snprintf(t, sizeof t, "    STR r%d, [r%d, #0]\n", rv, ra);
+        asmbuf_puts(b, t);
+        snprintf(t, sizeof t, "    MOV r%d, r%d\n", ra, rv);   /* value stays */
+        asmbuf_puts(b, t);
+        return 1;
+    }
+    case IR_BINARY:
+        ve_bin(b, I->aux, ve_reg(d - 2), ve_reg(d - 2), ve_reg(d - 1));
+        return 1;
+    case IR_DIV:
+        snprintf(t, sizeof t, "    %s r%d, r%d, r%d\n", I->aux ? "UDIV" : "SDIV",
+                 ve_reg(d - 2), ve_reg(d - 2), ve_reg(d - 1));
+        asmbuf_puts(b, t);
+        return 1;
+    case IR_MOD:
+        ve_bin(b, (int)TOK_MOD, ve_reg(d - 2), ve_reg(d - 2), ve_reg(d - 1));
+        return 1;
+    case IR_UNARY: {
+        int rd = ve_reg(d - 1);
+        if (I->aux == (int)TOK_MINUS) {
+            snprintf(t, sizeof t, "    NEG r%d, r%d\n", rd, rd);
+            asmbuf_puts(b, t);
+        } else if (I->aux == (int)TOK_BNOT) {
+            snprintf(t, sizeof t, "    MVN r%d, r%d\n", rd, rd);
+            asmbuf_puts(b, t);
+        } else {                        /* TOK_NOT */
+            snprintf(t, sizeof t, "    CMP r%d, #0\n", rd);     asmbuf_puts(b, t);
+            asmbuf_puts(b, "    ITE EQ\n");
+            snprintf(t, sizeof t, "    MOVEQ r%d, #1\n", rd);   asmbuf_puts(b, t);
+            snprintf(t, sizeof t, "    MOVNE r%d, #0\n", rd);   asmbuf_puts(b, t);
+        }
+        return 1;
+    }
+    case IR_TRUNC:
+        if (I->val == 8 || I->val == 16) {
+            int rd = ve_reg(d - 1);
+            snprintf(t, sizeof t, "    %s r%d, r%d\n",
+                     I->val == 8 ? (I->aux ? "UXTB" : "SXTB")
+                                 : (I->aux ? "UXTH" : "SXTH"), rd, rd);
+            asmbuf_puts(b, t);
+        }
+        return 1;
+    case IR_JZ:
+        snprintf(t, sizeof t, "    CMP r%d, #0\n", ve_reg(d - 1));
+        asmbuf_puts(b, t);
+        emit_b_label(b, "BEQ", f->name, I->val);
+        return 1;
+    case IR_JNZ:
+        snprintf(t, sizeof t, "    CMP r%d, #0\n", ve_reg(d - 1));
+        asmbuf_puts(b, t);
+        emit_b_label(b, "BNE", f->name, I->val);
+        return 1;
+    case IR_RETURN:
+        if (ve_reg(d - 1) != 0) {
+            snprintf(t, sizeof t, "    MOV r0, r%d\n", ve_reg(d - 1));
+            asmbuf_puts(b, t);
+        }
+        emit_epilogue_return(b, local_size, f->is_irq, f->is_naked, 1);
+        return 1;
+    default:
+        return 1;                       /* ve_op_ok has already refused these */
+    }
+}
+
+static void ark_vemit_report(void)
+{
+    const char *e = getenv("ARKCC_VEMIT_STATS");
+    if (!e || !*e || *e == '0') return;
+    fprintf(stderr, "vemit6: taken_functions=%ld taken_ir=%ld seen_functions=%ld "
+                    "fallback_functions=%ld\n",
+            g_vemit_fn_taken, g_vemit_in_taken, g_vemit_fn_seen,
+            g_vemit_fn_seen - g_vemit_fn_taken);
+}
+#endif /* ARKCC_FEATURE_OPT_VEMIT */
+
 static char *codegen_arm(IrProgram *prog) {
     AsmBuffer buf;
     int fi;
@@ -16326,6 +16827,9 @@ static char *codegen_arm(IrProgram *prog) {
          * (g_ir_va_slot_region), so a variadic frame is just its locals. */
         int is_sret = 0;
         int fstart = 0;              /* where this function's text begins */
+#if ARKCC_FEATURE_OPT_VEMIT
+        int *vdep = 0;               /* S53 V-6: per-instruction stack depth */
+#endif
         int fn_user_asm = 0;         /* body holds user `__asm`: the text passes
                                       * cannot tell its lines from their own, so
                                       * such a function is exempt from all of
@@ -16597,6 +17101,26 @@ static char *codegen_arm(IrProgram *prog) {
         if (g_config.enable_opt_alloc) ark_alloc_census(f);
 #endif
         fstart = buf.len;
+#if ARKCC_FEATURE_OPT_VEMIT
+        /* V-6 admission is decided before the prologue: a refused function
+         * takes the generic path and is byte-identical to a build without
+         * the switch.  A taken one emits its value stack into r0..r3. */
+        g_vemit_active = 0;
+        if (g_config.enable_opt_vemit && !f->alias_target) {
+            MirFunc vmir;
+            int vmaxd = 0;
+            g_vemit_fn_seen++;
+            vdep = (int *)malloc((size_t)(f->code_count + 1) * sizeof(int));
+            if (vdep != 0 && ve_can_take(f, &vmir, vdep, &vmaxd)) {
+                g_vemit_active = 1;
+                g_vemit_fn_taken++;
+                g_vemit_in_taken += f->code_count;
+            } else {
+                free(vdep);
+                vdep = 0;
+            }
+        }
+#endif
         emit_prologue(&buf, f->name, local_size, va_lo, g_va_epilogue_pad,
                       f->is_irq, f->is_naked, dbg);
         /* #2 FIX: Auto-call __arkcc_init_globals at the start of Reset_Handler
@@ -16698,6 +17222,22 @@ static char *codegen_arm(IrProgram *prog) {
             if ((I->aux & IR_AUX_VOLATILE) && g_config.enable_opt_volbar &&
                 arm_vol_needs_barrier(I->op))
                 emit_line(&buf, "DMB SY");  /* volatile: order prior memory ops */
+#endif
+#if ARKCC_FEATURE_OPT_VEMIT
+            /* V-6 runs before every in-loop IR peephole (-fopt-pair,
+             * -fopt-imm, -fopt-divconst, --reg-top) but after the volatile
+             * barrier, because those peepholes emit the *generic* convention --
+             * the value left on the machine stack or in r0 -- which
+             * desynchronises the register-by-depth model for the rest of the
+             * function (measured: -fopt-pair rewrote a V-6
+             * `LDR r1 / LDR r2 / ADD r1` into `LDR r0 / LDR r1 / ADD r0 /
+             * PUSH {r0}`, and every later level then read the wrong register).
+             * Taking the instruction here means a V-6 function never mixes the
+             * two conventions; the post-emission text chain still sees the whole
+             * function and is free to optimise it. */
+            if (g_vemit_active && vdep != 0 && vdep[i] >= 0 &&
+                ve_emit(&buf, f, i, vdep, local_size))
+                continue;
 #endif
             /* P2: the instructions verified to follow a tail call (the dummy
              * PUSH_INT 0 and the IR_RETURN) emit nothing -- the branch is the
@@ -19297,6 +19837,10 @@ static char *codegen_arm(IrProgram *prog) {
                 emit_line(&buf, "DMB SY");  /* volatile: order subsequent memory ops */
 #endif
         }
+#if ARKCC_FEATURE_OPT_VEMIT
+        if (vdep != 0) { free(vdep); vdep = 0; }
+        g_vemit_active = 0;
+#endif
 #if ARKCC_FEATURE_DWARF
         if (dbg) {
             emit_line(&buf, ".cfi_endproc");
@@ -20234,6 +20778,9 @@ arm_skip_frame_opts:
 #endif
 #if ARKCC_FEATURE_VREGEMIT
     if (g_config.enable_opt_vregemit) ark_vregemit_report();
+#endif
+#if ARKCC_FEATURE_OPT_VEMIT
+    if (g_config.enable_opt_vemit) ark_vemit_report();
 #endif
 #if ARKCC_FEATURE_OPT_ALLOC
     if (g_config.enable_opt_alloc) ark_alloc_report();

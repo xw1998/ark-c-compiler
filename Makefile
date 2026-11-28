@@ -52,7 +52,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-floatlit test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch test-imm test-peep test-cbranch test-copyprop test-cmat test-slotreg test-opalloc test-live test-spill test-ldhoist test-pair test-stackframe test-deadins test-userasm test-movimm test-litpool test-coalesce test-voldmb test-volmem test-constcond test-boolmat test-exit test-bitmask test-ladder test-regbirth test-chainfold test-movtpair test-pushpop test-addrfold test-remat test-vregemit test-alloc test-option test-rstack test-subpostinc test-crop
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-floatlit test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch test-imm test-peep test-cbranch test-copyprop test-cmat test-slotreg test-opalloc test-live test-spill test-ldhoist test-pair test-stackframe test-deadins test-userasm test-movimm test-litpool test-coalesce test-voldmb test-volmem test-constcond test-boolmat test-exit test-bitmask test-ladder test-regbirth test-chainfold test-movtpair test-pushpop test-addrfold test-remat test-vregemit test-alloc test-option test-rstack test-subpostinc test-crop test-vemit
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -443,6 +443,16 @@ test-subpostinc: $(ARKCC)
 # write the same text as the full build.
 test-crop: $(ARKCC)
 	$(PYTHON) tests/run_crop_tests.py ./$(ARKCC)
+
+# Gate for the V-6 value-resident emitter (-fopt-vemit, S53).  The emitter
+# keeps stack level d in r<d> for a whole function, so no PUSH/POP pair is
+# written at all; the corpus then costs 10,450 instructions instead of
+# 9,588, and that measurement -- not a preference -- is why the switch is
+# off by default.  The gate pins both numbers, the emitter's own census,
+# fifteen fixtures on the emulator against their C-level values, and the
+# crop that makes the switch a compile-time refusal.
+test-vemit: $(ARKCC)
+	$(PYTHON) tests/run_vemit_tests.py ./$(ARKCC)
 
 test-live: $(ARKCC)
 	$(PYTHON) tests/run_live_tests.py ./$(ARKCC)
