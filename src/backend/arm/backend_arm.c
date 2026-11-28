@@ -3953,6 +3953,11 @@ static const char *const rm_reason[RM_R_COUNT] = {
 static long g_rm_fn_total, g_rm_fn_ok, g_rm_in_total, g_rm_in_cov;
 static long g_rm_ref[RM_R_COUNT];
 static long g_rm_inst_emitted, g_rm_verify_bad;
+/* alpha-2 counters (only move when ARKCC_RMIR_LS asks) */
+static long g_ls_fn, g_ls_val_sum, g_ls_spill, g_ls_spill_fn;
+static long g_ls_spill8, g_ls_spill8_fn;
+static long g_ls_across_call;
+static int  g_ls_peak_max, g_ls_peak_sum, g_ls_peak_hist[16];
 
 static int ark_rmir_wanted(void) {
     static int cached = -1;
@@ -3960,8 +3965,9 @@ static int ark_rmir_wanted(void) {
         const char *e = getenv("ARKCC_RMIR_COV");
         const char *d = getenv("ARKCC_RMIR_DUMP");
         const char *t = getenv("ARKCC_RMIR_SELFTEST");
+        const char *l = getenv("ARKCC_RMIR_LS");
         cached = ((e && *e && *e != '0') || (d && *d && *d != '0') ||
-                  (t && *t && *t != '0')) ? 1 : 0;
+                  (t && *t && *t != '0') || (l && *l && *l != '0')) ? 1 : 0;
     }
     return cached;
 }
@@ -4455,6 +4461,289 @@ static void ark_rmir_dump(FILE *fp, const char *fname, const RInst *ins, int n) 
     }
 }
 
+
+/* ================== 0.9.2 alpha-2: live intervals + linear scan ==========
+ *
+ * alpha-1 answered "how much of the corpus the register machine can express at
+ * all": 181 of 212 functions, 6,884 of 17,540 IR instructions.  alpha-2 answers
+ * the next question, and answers it as a *measurement*: with the values that
+ * form already names, how many of them are alive at the same time?
+ *
+ * Why this is not an allocator
+ * ----------------------------
+ * A linear scan that emits nothing cannot be wrong about a register: there is
+ * no register.  What this slice does is compute the two numbers that decide
+ * whether alpha-3 is worth building:
+ *
+ *   peak       the widest set of simultaneously live values in the function;
+ *   spills     how many values a 5-register linear scan could not keep in a
+ *              register, i.e. how far the form is from a spilling-free target.
+ *
+ * The intervals are deliberately *conservative*: a frame slot gets one interval
+ * from its first defining store to its last read, even when it is re-stored in
+ * between, and a value that is live into a block starts at that block's first
+ * instruction.  A loop therefore charges a live slot its whole body.  That
+ * over-estimate is the point: if the conservative peak is still <= 5, then no
+ * correct allocator can need more than 5 registers on this function, so
+ * "alpha-2 passes" is a statement that cannot be overturned by a smarter
+ * splitting heuristic later.
+ *
+ * Values are encoded in one index space: a temporary is 0..nv-1, a frame slot
+ * is nv + slot.  Frame slots belong here because alpha-1 refused every function
+ * whose stack does not fit in RMIR_MAX_STK words -- the surviving functions are
+ * exactly the ones whose locals a register can hold.
+ *
+ * Registers: 5.  On ARM the callee-saved candidates are r4-r8 (r9/r10/r11 are
+ * the static/slop/frame pointers in this backend), and a value that stays in one
+ * of them survives a call without a save around it -- which is why counting
+ * values *across* a call site (`across_call`) is informative but not a veto.
+ * ------------------------------------------------------------------------- */
+
+#define RM_LS_REGS 5      /* r4-r8: what one call chain can keep live */
+#define RM_LS_REGS8 8     /* r4-r11: the pool section 44.2 priced with */
+
+typedef struct RLsStat {
+    int peak;         /* widest set of simultaneously live values            */
+    int spills;       /* values a 5-register scan cannot keep in a register   */
+    int spills8;      /* the same with the 8-register pool (r4-r11)          */
+    int nval;         /* values the function defines or reads                */
+    int across_call;  /* call sites with at least one value live across them  */
+} RLsStat;
+
+static void rm_bs_set(unsigned long long *w, int i) { w[i >> 6] |= (1ULL << (i & 63)); }
+static int  rm_bs_get(const unsigned long long *w, int i)
+{
+    return (int)((w[i >> 6] >> (i & 63)) & 1ULL);
+}
+
+/* Greedy linear scan over intervals already sorted by start.  Returns the
+ * number of values that did not get a register out of `regs`: when the pool is
+ * full the value whose interval ends last loses its register -- whether that is
+ * the newcomer or an older value, exactly one value spills.  Counting only the
+ * newcomer would let an eviction of an older interval pass as "no spill". */
+static int rm_ls_spills(const int *ss, const int *se, int cnt, int regs,
+                        int *act, int actmax) {
+    int i, j, na = 0, spills = 0;
+    for (i = 0; i < cnt; i++) {
+        for (j = 0; j < na; ) {           /* drop intervals that ended */
+            if (act[j] < ss[i]) act[j] = act[--na];
+            else j++;
+        }
+        if (na < regs && na < actmax) { act[na++] = se[i]; }
+        else {
+            int worst = 0;
+            for (j = 1; j < na; j++) if (act[j] > act[worst]) worst = j;
+            if (na > 0 && act[worst] > se[i]) act[worst] = se[i];
+            spills++;
+        }
+    }
+    return spills;
+}
+
+/* Compute the two numbers for one translated function.  Returns 0 on success
+ * and -1 when the scratch arrays cannot be allocated (the caller then reports
+ * nothing for this function rather than a wrong zero). */
+static int ark_rmir_lscan(const IrFunc *f, const MirFunc *m, const RInst *ins,
+                          int n, int nv, RLsStat *st) {
+    int nslot, nvals, words, nb, i, b, k, rc = -1;
+    int *pos = 0, *order = 0, *bstart = 0, *bend = 0, *ival = 0;
+    int *istart = 0, *iend = 0;
+    int *diff = 0, *act = 0;
+    unsigned long long *use = 0, *def = 0, *lin = 0, *lout = 0, *tmp = 0;
+
+    st->peak = 0; st->spills = 0; st->spills8 = 0;
+    st->nval = 0; st->across_call = 0;
+    if (f == 0 || m == 0 || n <= 0) return 0;
+    nslot = (int)(f->local_size / 4) + 2;
+    if (nslot < 4) nslot = 4;
+    nvals = nv + nslot;
+    if (nvals <= 0) return 0;
+    words = (nvals + 63) / 64;
+    nb = m->blk_count;
+
+    pos = (int *)calloc((size_t)n, sizeof(int));
+    order = (int *)calloc((size_t)n, sizeof(int));
+    bstart = (int *)calloc((size_t)nb, sizeof(int));
+    bend = (int *)calloc((size_t)nb, sizeof(int));
+    ival = (int *)calloc((size_t)nvals, sizeof(int));
+    istart = (int *)calloc((size_t)nvals, sizeof(int));
+    iend = (int *)calloc((size_t)nvals, sizeof(int));
+    diff = (int *)calloc((size_t)n + 2, sizeof(int));
+    act = (int *)calloc((size_t)nvals, sizeof(int));
+    use = (unsigned long long *)calloc((size_t)nb * words, sizeof(unsigned long long));
+    def = (unsigned long long *)calloc((size_t)nb * words, sizeof(unsigned long long));
+    lin = (unsigned long long *)calloc((size_t)nb * words, sizeof(unsigned long long));
+    lout = (unsigned long long *)calloc((size_t)nb * words, sizeof(unsigned long long));
+    tmp = (unsigned long long *)calloc((size_t)words, sizeof(unsigned long long));
+    if (!pos || !order || !bstart || !bend || !ival || !istart || !iend || !diff ||
+        !act || !use || !def || !lin || !lout || !tmp) goto done;
+
+    /* Linear positions follow block id, which MIR guarantees follows instruction
+     * order; within a block alpha-1 emitted in IR order, so this is a faithful
+     * linearisation of the function (a loop's back edge is the only edge that
+     * goes backwards, and the conservative interval already charges for it). */
+    {
+        int c = 0;
+        for (b = 0; b < nb; b++) {
+            bstart[b] = c;
+            for (i = 0; i < n; i++) {
+                if (ins[i].blk == b) { pos[i] = c; order[c] = i; c++; }
+            }
+            bend[b] = c;
+        }
+    }
+
+    for (i = 0; i < nvals; i++) { istart[i] = n + 1; iend[i] = -1; }
+
+    /* Per-block use/def over the value index space. */
+    for (b = 0; b < nb; b++) {
+        unsigned long long *u = use + (size_t)b * words;
+        unsigned long long *d = def + (size_t)b * words;
+        for (k = bstart[b]; k < bend[b]; k++) {
+            const RInst *r = &ins[order[k]];
+            int j, v;
+            for (j = 0; j < r->nsrc; j++) {
+                v = (r->src[j] >= 0) ? r->src[j] : nv + (-1 - r->src[j]);
+                if (v >= 0 && v < nvals && !rm_bs_get(d, v)) rm_bs_set(u, v);
+            }
+            if (r->op == RM_CALL) {
+                for (j = 0; j < r->nargs; j++) {
+                    v = (r->args[j] >= 0) ? r->args[j] : nv + (-1 - r->args[j]);
+                    if (v >= 0 && v < nvals && !rm_bs_get(d, v)) rm_bs_set(u, v);
+                }
+            }
+            if (r->defs_dst) {
+                v = (r->dst >= 0) ? r->dst : nv + (-1 - r->dst);
+                if (v >= 0 && v < nvals) rm_bs_set(d, v);
+            }
+        }
+    }
+
+    /* Backward liveness to a fixpoint. */
+    {
+        int changed = 1, guard = 0;
+        while (changed && guard++ < nb * 4 + 8) {
+            changed = 0;
+            for (b = nb - 1; b >= 0; b--) {
+                unsigned long long *lo = lout + (size_t)b * words;
+                unsigned long long *li = lin + (size_t)b * words;
+                unsigned long long *u = use + (size_t)b * words;
+                unsigned long long *d = def + (size_t)b * words;
+                int j, w;
+                memset(tmp, 0, (size_t)words * sizeof(unsigned long long));
+                for (j = 0; j < m->blk[b].succ_count; j++) {
+                    int to = m->blk[b].succ[j];
+                    if (to < 0 || to >= nb) continue;
+                    for (w = 0; w < words; w++)
+                        tmp[w] |= lin[(size_t)to * words + w];
+                }
+                if (memcmp(lo, tmp, (size_t)words * sizeof(unsigned long long)) != 0) {
+                    memcpy(lo, tmp, (size_t)words * sizeof(unsigned long long));
+                    changed = 1;
+                }
+                for (w = 0; w < words; w++) tmp[w] = u[w] | (lo[w] & ~d[w]);
+                if (memcmp(li, tmp, (size_t)words * sizeof(unsigned long long)) != 0) {
+                    memcpy(li, tmp, (size_t)words * sizeof(unsigned long long));
+                    changed = 1;
+                }
+            }
+        }
+    }
+
+    /* Intervals: block-level liveness widens a value to the block it is live
+     * across; the instruction walk adds its own definition and use positions. */
+    for (b = 0; b < nb; b++) {
+        int v;
+        for (v = 0; v < nvals; v++) {
+            if (rm_bs_get(lin + (size_t)b * words, v) && bstart[b] < istart[v])
+                istart[v] = bstart[b];
+            if (rm_bs_get(lout + (size_t)b * words, v) && bend[b] - 1 > iend[v])
+                iend[v] = bend[b] - 1;
+        }
+    }
+    for (k = 0; k < n; k++) {
+        const RInst *r = &ins[order[k]];
+        int j, v;
+        for (j = 0; j < r->nsrc; j++) {
+            v = (r->src[j] >= 0) ? r->src[j] : nv + (-1 - r->src[j]);
+            if (v >= 0 && v < nvals && k > iend[v]) iend[v] = k;
+        }
+        if (r->op == RM_CALL) {
+            for (j = 0; j < r->nargs; j++) {
+                v = (r->args[j] >= 0) ? r->args[j] : nv + (-1 - r->args[j]);
+                if (v >= 0 && v < nvals && k > iend[v]) iend[v] = k;
+            }
+        }
+        if (r->defs_dst) {
+            v = (r->dst >= 0) ? r->dst : nv + (-1 - r->dst);
+            if (v >= 0 && v < nvals && k < istart[v]) istart[v] = k;
+        }
+    }
+
+    /* Peak: a difference array over the linear positions. */
+    {
+        int nv_real = 0;
+        for (i = 0; i < nvals; i++) {
+            if (istart[i] > n || iend[i] < 0) { ival[i] = -1; continue; }
+            ival[i] = 0;
+            nv_real++;
+            if (iend[i] < istart[i]) iend[i] = istart[i];
+            diff[istart[i]] += 1;
+            diff[iend[i] + 1] -= 1;
+        }
+        st->nval = nv_real;
+        {
+            int cur = 0;
+            for (k = 0; k < n; k++) {
+                cur += diff[k];
+                if (cur > st->peak) st->peak = cur;
+            }
+        }
+    }
+
+    /* Linear scan: intervals sorted by start (an insertion sort is enough for
+     * the few hundred values one function holds), 5 registers, spill the
+     * interval that ends last when full. */
+    {
+        int cnt = 0, j, na = 0;
+        for (i = 0; i < nvals; i++) if (ival[i] >= 0) cnt++;
+        if (cnt > 0) {
+            int *sv = (int *)calloc((size_t)cnt, sizeof(int));
+            int *ss = (int *)calloc((size_t)cnt, sizeof(int));
+            int *se = (int *)calloc((size_t)cnt, sizeof(int));
+            if (!sv || !ss || !se) { free(sv); free(ss); free(se); goto done; }
+            cnt = 0;
+            for (i = 0; i < nvals; i++) {
+                if (ival[i] < 0) continue;
+                for (j = cnt; j > 0 && ss[j - 1] > istart[i]; j--) {
+                    ss[j] = ss[j - 1]; se[j] = se[j - 1]; sv[j] = sv[j - 1];
+                }
+                ss[j] = istart[i]; se[j] = iend[i]; sv[j] = i;
+                cnt++;
+            }
+            st->spills = rm_ls_spills(ss, se, cnt, RM_LS_REGS, act, nvals);
+            st->spills8 = rm_ls_spills(ss, se, cnt, RM_LS_REGS8, act, nvals);
+            free(sv); free(ss); free(se);
+        }
+    }
+
+    /* Call sites with a value live across them: these must sit in a callee-saved
+     * register, and they are the reason r4-r8 (not r0-r3) is the pool. */
+    for (k = 0; k < n; k++) {
+        if (ins[order[k]].op != RM_CALL) continue;
+        for (i = 0; i < nvals; i++) {
+            if (ival[i] >= 0 && istart[i] < k && iend[i] > k) { st->across_call++; break; }
+        }
+    }
+
+    rc = 0;
+done:
+    free(pos); free(order); free(bstart); free(bend); free(ival);
+    free(istart); free(iend); free(diff); free(act);
+    free(use); free(def); free(lin); free(lout); free(tmp);
+    return rc;
+}
+
 /* Census over one function: build, verify, count.  Called from codegen_arm()
  * only when the environment asked, so the default build is untouched. */
 static void ark_rmir_census(IrFunc *f) {
@@ -4464,7 +4753,12 @@ static void ark_rmir_census(IrFunc *f) {
     const char *dump = getenv("ARKCC_RMIR_DUMP");
     const char *self = getenv("ARKCC_RMIR_SELFTEST");
     int want_dump = (dump && *dump && *dump != '0');
+    int want_ls = 0;
     int want_self = (self && *self && *self != '0');
+    {
+        const char *ls = getenv("ARKCC_RMIR_LS");
+        want_ls = (ls && *ls && *ls != '0');
+    }
 
     if (f == 0) return;
     if (mir_build(f, &m) != 0 || m.blk_count <= 0) { g_rm_ref[RM_R_OP]++; return; }
@@ -4498,6 +4792,25 @@ static void ark_rmir_census(IrFunc *f) {
         g_rm_in_cov += f->code_count;
         g_rm_inst_emitted += n;
         g_rm_verify_bad += bad;
+        if (want_ls && bad == 0) {
+            RLsStat st;
+            if (ark_rmir_lscan(f, &m, ins, n, nv, &st) == 0) {
+                g_ls_fn++;
+                g_ls_val_sum += st.nval;
+                g_ls_spill += st.spills;
+                if (st.spills) g_ls_spill_fn++;
+                g_ls_spill8 += st.spills8;
+                if (st.spills8) g_ls_spill8_fn++;
+                g_ls_across_call += st.across_call;
+                g_ls_peak_sum += st.peak;
+                if (st.peak > g_ls_peak_max) g_ls_peak_max = st.peak;
+                if (st.peak >= 0 && st.peak < 16) g_ls_peak_hist[st.peak]++;
+                if (want_dump)
+                    fprintf(stderr, "rmir-ls %s: values=%d peak=%d spills=%d spills8=%d across_call=%d\n",
+                            f->name ? f->name : "?", st.nval, st.peak, st.spills,
+                            st.spills8, st.across_call);
+            }
+        }
         if (want_dump) {
             ark_rmir_dump(stderr, f->name, ins, n);
             if (bad) fprintf(stderr, "rmir-verify %s: %d violation(s), %d uninit slot read(s)\n",
@@ -4519,6 +4832,17 @@ static void ark_rmir_report(void) {
     for (i = 1; i < RM_R_COUNT; i++)
         if (g_rm_ref[i]) fprintf(stderr, " %s=%ld", rm_reason[i], g_rm_ref[i]);
     fprintf(stderr, "\n");
+    if (g_ls_fn > 0) {
+        fprintf(stderr, "rmir-ls: functions=%ld values=%ld peak_max=%d peak_sum=%d "
+                        "spills=%ld spill_fns=%ld spills8=%ld spill8_fns=%ld across_call=%ld\n",
+                g_ls_fn, g_ls_val_sum, g_ls_peak_max, g_ls_peak_sum,
+                g_ls_spill, g_ls_spill_fn, g_ls_spill8, g_ls_spill8_fn,
+                g_ls_across_call);
+        fprintf(stderr, "rmir-ls-peak-hist:");
+        for (i = 0; i < 16; i++) if (g_ls_peak_hist[i])
+            fprintf(stderr, " %d:%d", i, g_ls_peak_hist[i]);
+        fprintf(stderr, "\n");
+    }
 }
 #endif /* ARKCC_FEATURE_RMIR */
 

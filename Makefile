@@ -476,6 +476,12 @@ test-isel2: $(ARKCC)
 # joins (a phi would be needed) and 4 64-bit functions.  The gate pins that
 # set, OFF IS OFF byte for byte, a self-test that proves the verifier can
 # fail, five refusal fixtures, and the RMIR=0/1 crop matrix.
+# alpha-2 (S56) adds the live-interval / linear-scan reading on the same
+# walk, still without emitting: 3,869 values over the 181 translated
+# functions, peak 8, 154 functions inside 5 registers, 36 spills in 27
+# functions with the r4-r8 pool and none with r4-r11.  Run with
+# ARKCC_RMIR_LS=1 to see it; the gate pins the numbers and asserts that the
+# register count actually changes the answer.
 test-rmir: $(ARKCC)
 	$(PYTHON) tests/run_rmir_tests.py ./$(ARKCC)
 

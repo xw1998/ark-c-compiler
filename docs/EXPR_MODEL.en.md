@@ -5711,3 +5711,108 @@ Reproduction: `make test-rmir` (`tests/run_rmir_tests.py`, 23 checks); `ARKCC_RM
 three-address form per function, and `ARKCC_RMIR_SELFTEST=1` plants one defect per function that the
 verifier must report -- which is what keeps the default "0 violations" from being a statement about
 nothing.
+
+### 56 0.9.2 alpha-2: live intervals and the linear scan (a measurement, not an emitter)
+
+#### 56.1 The question this slice answers
+
+Alpha-1 produced one number: how much of the corpus the register machine can express at all
+(181 of 212 functions, 6,884 of 17,540 IR instructions). It left the second question open --
+of the part it can express, how much has to spill? If half of those 181 functions peak at a
+dozen live values, an emitter (alpha-3) would only move `LDR`/`STR` from the frame to the
+frame.
+
+So alpha-2 is the second question asked on the same walk, and it still emits nothing: give
+every value a live interval, run a linear scan, and count how many registers suffice and how
+many values fall out of them.
+
+#### 56.2 Method and the pre-registered criterion (section 55.6, unchanged)
+
+Criterion: peak live-interval overlap over temporaries and promotable frame slots <= 5, and
+no spill.
+
+The intervals are deliberately conservative:
+
+- one index space for values: a temporary is `0..nv-1`, a frame slot is `nv + slot`;
+- a frame slot gets one interval for the whole function, from the first `STORE` that defines
+  it to the last `LOAD` that reads it, even when it is re-stored in between; a value live
+  across a block is widened to that block (live-in to its first instruction, live-out to its
+  last), so a back edge charges the whole loop body;
+- peak = the largest number of overlapping intervals (a difference array over the linearised
+  instructions);
+- the linear scan sorts by start and, when the pool is full, the interval that ends last
+  loses its register -- newcomer or older value alike, and either way it counts as one spill.
+  Counting only the newcomer would let "an older value got evicted" pass as "no spill".
+
+Two pools are measured:
+
+| pool | registers | where it comes from |
+| --- | --- | --- |
+| 5 registers | `r4`-`r8` | this backend keeps `r9`-`r11` for static/slop/frame pointers, so 5 is what one call chain can hold end to end |
+| 8 registers | `r4`-`r11` | the pool section 44.2 priced with |
+
+#### 56.3 The reading (95 TUs, H.BASE + STACK, `ARKCC_RMIR_LS=1`)
+
+| quantity | value |
+| --- | ---: |
+| translated functions | 181 / 212 |
+| values (temporaries + frame slots) | 3,869 |
+| peak maximum | **8** (`HAL_FLASHEx_Erase`) |
+| functions with peak <= 5 | **154 / 181 (85.1%)** |
+| peak distribution | 0:6 1:27 2:5 3:30 4:65 5:21 **6:19 7:7 8:1** |
+| 5-register pool: spills | **36** (0.93% of 3,869 values), in 27 functions |
+| 8-register pool: spills | **0** (181 / 181 spill-free) |
+| call sites with a value live across them | 43 |
+
+The heaviest functions are all configuration paths in DMA / FLASH / RCC, whose shape is
+"compute a pile of configuration words, then write the registers once":
+
+| function | peak | values | 5-pool spills |
+| --- | ---: | ---: | ---: |
+| `HAL_FLASHEx_Erase` | 8 | 80 | 3 |
+| `HAL_DMA_Init` | 7 | 232 | 2 |
+| `HAL_FLASHEx_OBProgram` | 7 | 121 | 2 |
+| `DMA_CheckFifoParam` | 7 | 104 | 2 |
+| `HAL_DMA_Start_IT` | 7 | 81 | 2 |
+
+#### 56.4 The ruling
+
+Criterion 1 (peak <= 5 and no spill) is **not met**: 27 functions (14.9%) peak at 6-8 and the
+5-register pool needs 36 spills. Per the pre-registration discipline alpha-2 is recorded as
+**`not_passed_as_frozen_on_27_functions`** and is not retroactively accepted.
+
+The same walk's two-pool reading says three things:
+
+1. **Spilling is not what blocks alpha-3.** With the 8-register pool all 181 functions are
+   spill-free; with 5 registers the cost is 36 stack slots (at most 3 per function), not a
+   structural problem;
+2. **The pressure sits in a few shapes.** All 27 over-budget functions are configuration-style
+   long argument lists (DMA/FLASH/RCC/NVIC) where many values are genuinely live at once.
+   Alpha-3 can either emit all 8 registers for them or send 1-3 values to the frame; neither
+   changes the order of magnitude of the instruction count;
+3. **The "peak 5" of section 44.2 is a different quantity.** Section 44.2 counted the *depth*
+   of the abstract value stack (the stack machine's shape); this section counts *overlapping
+   live intervals* (the register machine's shape), which is strictly stricter -- a two-deep
+   expression can have three overlapping intervals. So "8 vs 5" is a model difference, not a
+   worse corpus, and the two numbers must not be quoted interchangeably.
+
+#### 56.5 Alpha-3's entry conditions
+
+- alpha-2's answer satisfies alpha-3's premise: 154 functions are spill-free in 5 registers and
+  all of them are spill-free in 8, so the emitter does not need a spilling framework first --
+  it can emit the register-machine trunk with a linear scan and add spilling later;
+- the spilling framework is deferred with the criterion "the 8-register pool still spills";
+  today that number is 0, so the condition does not hold;
+- alpha-3's net must still be priced shape by shape per section 39.4, with its own
+  pre-registration before any code changes.
+
+#### 56.6 Reproduce
+
+- gate: `make test-rmir` (`tests/run_rmir_tests.py`, **29 checks**; section 6 pins every number
+  above -- 3,869 values, the peak distribution, 154/181, 36 spills in 27 functions, 0 spills in
+  the 8-register pool, 43 call sites with live values);
+- per-function reading on one TU: `ARKCC_RMIR_LS=1 ARKCC_RMIR_DUMP=1 arkcc ...` prints
+  `rmir-ls <function>: values=... peak=... spills=... spills8=... across_call=...`;
+- anti-false-pass: the gate asserts `spills(5) > 0` and `spills(8) == 0` -- a scan that ignored
+  the register count would make the two numbers equal, and this assertion is what keeps
+  "0 spills" from being a statement about nothing.

@@ -41,6 +41,13 @@ This gate pins that set, and pins the two properties the whole line rests on:
      the MIR CFG, so a build that drops MIR must drop RMIR with it, and a
      configuration nobody builds is a configuration nobody catches.  Skipped
      only when no C compiler is on PATH.
+  6. ALPHA-2 IS PINNED.  ARKCC_RMIR_LS computes conservative live intervals
+     for every value (temporaries and frame slots) and runs a linear scan over
+     them.  Over the 181 translated functions: 3,869 values, peak 8, 154
+     functions inside 5 registers, 27 above them with 36 spills in total; with
+     the 8-register pool (r4-r11) the whole set allocates with zero spills.
+     The scan must also be load-bearing, so spills(5) > 0 = spills(8) is
+     asserted: a constant answer would make both numbers equal.
 
 Usage: run_rmir_tests.py [path-to-arkcc]
 Exit 0 = every check passed, 1 = a check failed, 2 = setup problem.
@@ -71,6 +78,16 @@ WANT_COVERED = 6884
 WANT_INST = 5942
 WANT_VERIFY_BAD = 0
 WANT_REFUSE = {'join': 27, '64-bit': 4}
+
+# 6. alpha-2: live intervals + linear scan over the translated set.
+WANT_LS_VALUES = 3869
+WANT_LS_PEAK_MAX = 8
+WANT_LS_HIST = {0: 6, 1: 27, 2: 5, 3: 30, 4: 65, 5: 21, 6: 19, 7: 7, 8: 1}
+WANT_LS_UNDER5 = 154          # functions whose peak interval overlap is <= 5
+WANT_LS_SPILL5 = 36
+WANT_LS_SPILL5_FNS = 27
+WANT_LS_SPILL8 = 0
+WANT_LS_ACROSS_CALL = 43
 
 check = H.check
 skip = H.skip
@@ -263,6 +280,81 @@ def main():
             else:
                 check(read_text(oa) == read_text(ob),
                       'the %s fixture is byte-identical either way' % name)
+
+        # --- 6. alpha-2: live intervals and linear scan --------------------
+        # Section 55.6 pre-registered alpha-2 as "peak live interval <= 5 per
+        # function, no spills".  What the corpus answers is pinned here: the
+        # 5-register pool (r4-r8) leaves 27 functions over budget with 36
+        # spills in all, and the 8-register pool (r4-r11) needs none.
+        ls = []
+        lserrs = []
+        lsdiff = []
+        for src in corpus_units():
+            base = os.path.basename(src)
+            cmd, out = unit_argv(ARKCC, work, src, STACK)
+            rc, log = run_env(cmd, work, {'ARKCC_RMIR_COV': '1',
+                                          'ARKCC_RMIR_LS': '1',
+                                          'ARKCC_RMIR_DUMP': '1'})
+            if rc != 0:
+                lserrs.append('%s: %s' % (base, ' '.join(
+                    log.strip().splitlines()[:1])))
+                continue
+            if base in off and read_text(out) != off[base]:
+                lsdiff.append(base)
+            for ln in log.splitlines():
+                if ln.startswith('rmir-ls ') and ': values=' in ln:
+                    _name, rest = ln[len('rmir-ls '):].split(': ', 1)
+                    d = dict((k, int(v)) for k, v in
+                             (kv.split('=') for kv in rest.split()))
+                    ls.append(d)
+        check(not lserrs, 'every unit measures live intervals', lserrs[:1])
+        check(not lsdiff, 'the linear scan changes no byte of the 95 units',
+              '%d of 95 differ' % len(lsdiff))
+        check(len(ls) == WANT_TRANSLATED,
+              'all %d translated functions report a live-interval line'
+              % WANT_TRANSLATED, '%d' % len(ls))
+        if ls:
+            hist = {}
+            for d in ls:
+                hist[d['peak']] = hist.get(d['peak'], 0) + 1
+            vals = sum(d['values'] for d in ls)
+            peak = max(d['peak'] for d in ls)
+            under = sum(1 for d in ls if d['peak'] <= 5)
+            sp5 = sum(d['spills'] for d in ls)
+            sp5f = sum(1 for d in ls if d['spills'])
+            sp8 = sum(d['spills8'] for d in ls)
+            across = sum(d['across_call'] for d in ls)
+            bad = []
+            if vals != WANT_LS_VALUES:
+                bad.append('values=%d want %d' % (vals, WANT_LS_VALUES))
+            if peak != WANT_LS_PEAK_MAX:
+                bad.append('peak_max=%d want %d' % (peak, WANT_LS_PEAK_MAX))
+            if hist != WANT_LS_HIST:
+                bad.append('hist=%s' % sorted(hist.items()))
+            if under != WANT_LS_UNDER5:
+                bad.append('under5=%d want %d' % (under, WANT_LS_UNDER5))
+            if sp5 != WANT_LS_SPILL5:
+                bad.append('spills=%d want %d' % (sp5, WANT_LS_SPILL5))
+            if sp5f != WANT_LS_SPILL5_FNS:
+                bad.append('spill_fns=%d want %d' % (sp5f, WANT_LS_SPILL5_FNS))
+            if sp8 != WANT_LS_SPILL8:
+                bad.append('spills8=%d want %d' % (sp8, WANT_LS_SPILL8))
+            if across != WANT_LS_ACROSS_CALL:
+                bad.append('across_call=%d want %d' % (across,
+                                                      WANT_LS_ACROSS_CALL))
+            check(not bad,
+                  'the live intervals are the pinned ones (%d values, peak %d, '
+                  '%d/%d under 5 registers)'
+                  % (WANT_LS_VALUES, WANT_LS_PEAK_MAX, WANT_LS_UNDER5,
+                     WANT_TRANSLATED), bad)
+            # The scan must be load-bearing: if it ignored the register count,
+            # the 5- and 8-register answers would be identical.
+            check(sp5 > 0 and sp8 == 0,
+                  'the register count changes the answer (5 regs spill, 8 do '
+                  'not)', 'spills=%d spills8=%d' % (sp5, sp8))
+            check(0 < peak <= 32 and under < len(ls),
+                  'the pressure reading separates easy from hard functions',
+                  'peak=%d under5=%d of %d' % (peak, under, len(ls)))
 
         # --- 5. the crop matrix compiles ----------------------------------
         bad = flag_matrix(work)
