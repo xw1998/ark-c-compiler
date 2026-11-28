@@ -482,6 +482,15 @@ test-isel2: $(ARKCC)
 # functions with the r4-r8 pool and none with r4-r11.  Run with
 # ARKCC_RMIR_LS=1 to see it; the gate pins the numbers and asserts that the
 # register count actually changes the answer.
+# alpha-2b (S57) materialises a join into synthetic phi slots instead of
+# refusing it: with ARKCC_RMIR_PHI=1 the same corpus translates 207 of 212
+# functions and 16,354 of 17,540 IR instructions, allocating 397 phi slots
+# with 794 edge stores (one per predecessor).  One join is still refused on
+# purpose (HAL_DMA_IRQHandler: its block-66 POP would underflow once the
+# entry depth is cut to the minimum of its predecessors, which means one
+# predecessor really left no value there).  The 27 alpha-2 join refusals
+# drop to that one; alpha-2's pinned numbers are untouched because the
+# switch is off by default.
 test-rmir: $(ARKCC)
 	$(PYTHON) tests/run_rmir_tests.py ./$(ARKCC)
 

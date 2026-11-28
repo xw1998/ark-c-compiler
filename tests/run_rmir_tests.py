@@ -88,6 +88,28 @@ WANT_LS_SPILL5 = 36
 WANT_LS_SPILL5_FNS = 27
 WANT_LS_SPILL8 = 0
 WANT_LS_ACROSS_CALL = 43
+# alpha-2b (S57): joins whose shapes differ only on a temporary get a
+# synthetic phi slot; a join with a genuinely missing word stays refused.
+WANT_PHI_FUNCS = 212
+WANT_PHI_TRANSLATED = 207
+WANT_PHI_REFUSED = 5
+WANT_PHI_IR = 17540
+WANT_PHI_COVERED = 16354
+WANT_PHI_INST = 15906
+WANT_PHI_VERIFY_BAD = 0
+WANT_PHI_REFUSE = {'join': 1, '64-bit': 4}
+WANT_PHI_SLOTS = 397
+WANT_PHI_STORES = 794
+WANT_PHI_MULTI = 0
+WANT_PHI_LS_VALUES = 9957
+WANT_PHI_LS_PEAK_MAX = 19
+WANT_PHI_LS_UNDER5 = 162
+WANT_PHI_LS_SPILL5 = 316
+WANT_PHI_LS_SPILL5_FNS = 45
+WANT_PHI_LS_SPILL8 = 161
+WANT_PHI_LS_SPILL8_FNS = 6
+WANT_PHI_LS_ACROSS_CALL = 111
+WANT_PHI_JOIN_REFUSED = {'HAL_DMA_IRQHandler'}
 
 check = H.check
 skip = H.skip
@@ -287,6 +309,7 @@ def main():
         # 5-register pool (r4-r8) leaves 27 functions over budget with 36
         # spills in all, and the 8-register pool (r4-r11) needs none.
         ls = []
+        ls_names = []
         lserrs = []
         lsdiff = []
         for src in corpus_units():
@@ -307,6 +330,7 @@ def main():
                     d = dict((k, int(v)) for k, v in
                              (kv.split('=') for kv in rest.split()))
                     ls.append(d)
+                    ls_names.append(_name)
         check(not lserrs, 'every unit measures live intervals', lserrs[:1])
         check(not lsdiff, 'the linear scan changes no byte of the 95 units',
               '%d of 95 differ' % len(lsdiff))
@@ -355,6 +379,207 @@ def main():
             check(0 < peak <= 32 and under < len(ls),
                   'the pressure reading separates easy from hard functions',
                   'peak=%d under5=%d of %d' % (peak, under, len(ls)))
+
+        # --- 7. alpha-2b: joins materialised into phi slots ----------------
+        # Section 57 pre-registered alpha-2b as "a join whose two predecessors
+        # agree on depth and differ only on a temporary gets a synthetic phi
+        # slot, so the merge is materialised before the branch; a join that is
+        # missing a word outright stays refused".  The corpus answers 207 of
+        # 212 functions (was 181), 397 slots / 794 stores, and leaves exactly
+        # one join refusal: HAL_DMA_IRQHandler, whose blk66 POP underflows once
+        # the entry depth is cut to the minimum of its predecessors.  Cutting
+        # the depth to the min is what makes the extra words dead, so the
+        # underflow means one predecessor really gave no value: refuse, do not
+        # guess.
+        phi_agg = dict((k, 0) for k in ('functions', 'translated', 'refused',
+                                        'ir', 'covered', 'inst',
+                                        'verify_bad'))
+        phi_ref = {}
+        phi_slots = phi_stores = phi_multi = phi_fns = 0
+        phi_errs, phi_diff = [], []
+        phi_ls, phi_fix, phi_join_refused = [], [], set()
+        for src in corpus_units():
+            base = os.path.basename(src)
+            cmd, out = unit_argv(ARKCC, work, src, STACK)
+            rc, log = run_env(cmd, work, {'ARKCC_RMIR_COV': '1',
+                                          'ARKCC_RMIR_PHI': '1',
+                                          'ARKCC_RMIR_LS': '1',
+                                          'ARKCC_RMIR_DUMP': '1'})
+            if rc != 0:
+                phi_errs.append('%s: %s' % (base, ' '.join(
+                    log.strip().splitlines()[:1])))
+                continue
+            if base in off and read_text(out) != off[base]:
+                phi_diff.append(base)
+            seen = False
+            for ln in log.splitlines():
+                if ln.startswith('rmir: '):
+                    seen = True
+                    for kv in ln[len('rmir: '):].split():
+                        k, v = kv.split('=')
+                        phi_agg[k] += int(v)
+                elif ln.startswith('rmir-refuse:'):
+                    for kv in ln[len('rmir-refuse:'):].split():
+                        k, v = kv.split('=')
+                        phi_ref[k] = phi_ref.get(k, 0) + int(v)
+                elif ln.startswith('rmir-refuse ') and ': ' in ln:
+                    _n, rest = ln[len('rmir-refuse '):].split(': ', 1)
+                    if rest.split(' (')[0].strip() == 'join':
+                        phi_join_refused.add(_n)
+                elif ln.startswith('rmir-phi: '):
+                    for kv in ln[len('rmir-phi: '):].split():
+                        k, v = kv.split('=')
+                        if k == 'functions':
+                            phi_fns += int(v)
+                        elif k == 'slots':
+                            phi_slots += int(v)
+                        elif k == 'stores':
+                            phi_stores += int(v)
+                        elif k == 'multi':
+                            phi_multi += int(v)
+                elif ln.startswith('rmir-phi ') and ': slots=' in ln:
+                    _n, rest = ln[len('rmir-phi '):].split(': ', 1)
+                    d = dict((k, int(v)) for k, v in
+                             (kv.split('=') for kv in rest.split()))
+                    phi_fix.append((base, _n, d['slots'], d['stores']))
+                elif ln.startswith('rmir-ls ') and ': values=' in ln:
+                    _n, rest = ln[len('rmir-ls '):].split(': ', 1)
+                    phi_ls.append(dict((k, int(v)) for k, v in
+                                       (kv.split('=') for kv in rest.split())))
+            if not seen:
+                phi_errs.append('%s: no rmir census line' % base)
+        check(not phi_errs, 'every unit reports an alpha-2b census line',
+              phi_errs[:1])
+        check(not phi_diff,
+              'the phi materialisation changes no byte of the 95 units',
+              '%d of 95 differ' % len(phi_diff))
+        want = {'functions': WANT_PHI_FUNCS,
+                'translated': WANT_PHI_TRANSLATED,
+                'refused': WANT_PHI_REFUSED, 'ir': WANT_PHI_IR,
+                'covered': WANT_PHI_COVERED, 'inst': WANT_PHI_INST}
+        bad = ['%s=%d want %d' % (k, phi_agg[k], want[k])
+               for k in want if phi_agg[k] != want[k]]
+        check(not bad,
+              'the phi materialisation translates %d of %d functions, %d of '
+              '%d IR instructions'
+              % (WANT_PHI_TRANSLATED, WANT_PHI_FUNCS, WANT_PHI_COVERED,
+                 WANT_PHI_IR), bad)
+        check(phi_agg['verify_bad'] == WANT_PHI_VERIFY_BAD,
+              'the verifier reports %d violations with phi slots'
+              % WANT_PHI_VERIFY_BAD, '%d' % phi_agg['verify_bad'])
+        bad = ['%s=%d want %d' % (k, phi_ref.get(k, 0), v)
+               for k, v in sorted(WANT_PHI_REFUSE.items())
+               if phi_ref.get(k, 0) != v]
+        bad += ['unexpected %s=%d' % (k, phi_ref[k])
+                for k in phi_ref if k not in WANT_PHI_REFUSE and phi_ref[k]]
+        check(not bad, 'the alpha-2b refusals are the pinned ones', bad)
+        check(phi_join_refused == WANT_PHI_JOIN_REFUSED,
+              'the only join left refused is %s'
+              % ', '.join(sorted(WANT_PHI_JOIN_REFUSED)),
+              ', '.join(sorted(phi_join_refused)) or 'none')
+        # The instrument must move when the switch does.
+        check(phi_agg['translated'] == WANT_PHI_TRANSLATED
+              and phi_agg['translated'] > WANT_TRANSLATED
+              and phi_ref.get('join', 0) < WANT_REFUSE['join'],
+              'turning the phi slots on translates more than alpha-2 did',
+              '%d vs %d functions, %d vs %d join refusals'
+              % (phi_agg['translated'], WANT_TRANSLATED,
+                 phi_ref.get('join', 0), WANT_REFUSE['join']))
+        bad = []
+        if phi_slots != WANT_PHI_SLOTS:
+            bad.append('slots=%d want %d' % (phi_slots, WANT_PHI_SLOTS))
+        if phi_stores != WANT_PHI_STORES:
+            bad.append('stores=%d want %d' % (phi_stores, WANT_PHI_STORES))
+        if phi_multi != WANT_PHI_MULTI:
+            bad.append('multi=%d want %d' % (phi_multi, WANT_PHI_MULTI))
+        check(not bad,
+              'the plan allocates %d slots and %d edge stores'
+              % (WANT_PHI_SLOTS, WANT_PHI_STORES), bad)
+        check(phi_fns == WANT_PHI_TRANSLATED and len(phi_fix)
+              == WANT_PHI_TRANSLATED,
+              'all %d translated functions report a phi plan'
+              % WANT_PHI_TRANSLATED,
+              'census=%d dump=%d' % (phi_fns, len(phi_fix)))
+        # Every slot is written once per predecessor, so stores == 2*slots
+        # holds per function only for two-way joins; over the corpus it is
+        # exact, which says no slot was allocated and then never stored.
+        check(phi_slots > 0 and phi_stores == 2 * phi_slots,
+              'each phi slot is stored by both predecessors',
+              'slots=%d stores=%d' % (phi_slots, phi_stores))
+        # alpha-2's set must not lose a function to alpha-2b.
+        gone = sorted(set(ls_names) - set(n for _, n, _, _ in phi_fix))
+        check(not gone, 'alpha-2b translates every function alpha-2 did',
+              ', '.join(gone[:4]) or 'none lost')
+        if phi_ls:
+            vals = sum(d['values'] for d in phi_ls)
+            peak = max(d['peak'] for d in phi_ls)
+            under = sum(1 for d in phi_ls if d['peak'] <= 5)
+            sp5 = sum(d['spills'] for d in phi_ls)
+            sp5f = sum(1 for d in phi_ls if d['spills'])
+            sp8 = sum(d['spills8'] for d in phi_ls)
+            sp8f = sum(1 for d in phi_ls if d['spills8'])
+            across = sum(d['across_call'] for d in phi_ls)
+            bad = []
+            if len(phi_ls) != WANT_PHI_TRANSLATED:
+                bad.append('lines=%d want %d'
+                           % (len(phi_ls), WANT_PHI_TRANSLATED))
+            if vals != WANT_PHI_LS_VALUES:
+                bad.append('values=%d want %d' % (vals, WANT_PHI_LS_VALUES))
+            if peak != WANT_PHI_LS_PEAK_MAX:
+                bad.append('peak_max=%d want %d' % (peak, WANT_PHI_LS_PEAK_MAX))
+            if under != WANT_PHI_LS_UNDER5:
+                bad.append('under5=%d want %d' % (under, WANT_PHI_LS_UNDER5))
+            if sp5 != WANT_PHI_LS_SPILL5:
+                bad.append('spills=%d want %d' % (sp5, WANT_PHI_LS_SPILL5))
+            if sp5f != WANT_PHI_LS_SPILL5_FNS:
+                bad.append('spill_fns=%d want %d'
+                           % (sp5f, WANT_PHI_LS_SPILL5_FNS))
+            if sp8 != WANT_PHI_LS_SPILL8:
+                bad.append('spills8=%d want %d' % (sp8, WANT_PHI_LS_SPILL8))
+            if sp8f != WANT_PHI_LS_SPILL8_FNS:
+                bad.append('spill8_fns=%d want %d'
+                           % (sp8f, WANT_PHI_LS_SPILL8_FNS))
+            if across != WANT_PHI_LS_ACROSS_CALL:
+                bad.append('across_call=%d want %d'
+                           % (across, WANT_PHI_LS_ACROSS_CALL))
+            check(not bad,
+                  'the phi slots cost %d values, peak %d, %d/%d still under 5 '
+                  'registers' % (WANT_PHI_LS_VALUES, WANT_PHI_LS_PEAK_MAX,
+                                 WANT_PHI_LS_UNDER5, WANT_PHI_TRANSLATED), bad)
+            # The 8-register pool still fits 6 functions short of everything:
+            # alpha-3's emitter cannot pretend the pool is big enough.
+            check(sp8 > 0 and sp8f > 0 and sp8 < sp5,
+                  'the 8-register pool spills less but not nothing',
+                  'spills8=%d in %d functions vs %d' % (sp8, sp8f, sp5))
+        # --- 7b. the fixture has the shape section 57 describes -----------
+        sel = os.path.join(work, 'phi_sel.c')
+        with open(sel, 'w', encoding='utf-8') as fh:
+            fh.write('int sel(int c, int a, int b) { return c ? a + 1 : b * 2; }\n')
+        cmd, _ = unit_argv(ARKCC, work, sel, STACK)
+        rc1, log1 = run_env(cmd, work, {'ARKCC_RMIR_COV': '1',
+                                        'ARKCC_RMIR_DUMP': '1'})
+        rc2, log2 = run_env(cmd, work, {'ARKCC_RMIR_COV': '1',
+                                        'ARKCC_RMIR_PHI': '1',
+                                        'ARKCC_RMIR_DUMP': '1'})
+        if rc1 != 0 or rc2 != 0:
+            check(False, 'the phi fixture builds both ways', log1 or log2)
+        else:
+            off_join = [ln for ln in log1.splitlines()
+                        if ln.startswith('rmir-refuse sel: join (')]
+            check(bool(off_join) and 'rmir-sel' not in log1,
+                  'without the phi slots the ternary is refused as a join',
+                  '; '.join(log1.splitlines()[:2]))
+            plan = [ln for ln in log2.splitlines()
+                    if ln.startswith('rmir-phi sel: ')]
+            check(len(plan) == 1 and 'slots=1 stores=2' in plan[0],
+                  'the ternary join materialises one slot with two stores',
+                  '; '.join(plan) or 'no rmir-phi line')
+            check(log2.count('PEDGE') >= 2,
+                  'both predecessors emit a PEDGE store', '%d'
+                  % log2.count('PEDGE'))
+            body = [ln for ln in log2.splitlines() if ' RET ' in ln]
+            check(bool(body), 'the join block returns the phi slot',
+                  '; '.join(body[:1]))
 
         # --- 5. the crop matrix compiles ----------------------------------
         bad = flag_matrix(work)

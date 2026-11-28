@@ -5816,3 +5816,156 @@ The same walk's two-pool reading says three things:
 - anti-false-pass: the gate asserts `spills(5) > 0` and `spills(8) == 0` -- a scan that ignored
   the register count would make the two numbers equal, and this assertion is what keeps
   "0 spills" from being a statement about nothing.
+
+### 57 0.9.2 alpha-2b: materialising joins into phi slots (a measurement, not an emitter)
+
+#### 57.1 Why the joins come first
+
+Of alpha-1's 31 refusals, 27 were `join`. That is not "26 functions on the side": those 27
+functions carry **10,313 of the corpus's 17,540 IR instructions (58.8%)**, including
+`HAL_DMAEx_MultiBufferStart_IT` (3,346), `HAL_DMA_IRQHandler` (843),
+`HAL_RCCEx_PeriphCLKConfig` (521), `HAL_RCC_ClockConfig` (501) and `HAL_DMA_Init` (384) --
+exactly the configuration functions where the gap to gcc and armcc lives. So the gain of
+alpha-2b is not "181 becomes 207 functions"; it is **IR coverage going from 39.2% to 93.2%**.
+
+#### 57.2 Shape census: the 27 refusals fall into two classes
+
+`ARKCC_RMIR_JOINDBG=1` prints both sides of every failed join; the 27 functions split cleanly:
+
+| class | shape | count | examples (IR insns) |
+| --- | --- | ---: | --- |
+| A | the two predecessors agree on **depth**, only the top temporary differs by number (same meaning) | 17 | `HAL_DMA_PollForTransfer` (198), `HAL_DMAEx_MultiBufferStart_IT` (3346), `HAL_GPIO_Init` (188), `HAL_RCC_OscConfig` (521), `HAL_RCCEx_PeriphCLKConfig` (521) |
+| B | the two predecessors disagree on **depth** | 10 | `HAL_DMA_IRQHandler` (843), `HAL_FLASH_IRQHandler` (1711), `HAL_EXTI_IRQHandler` (258), `LL_PLL_ConfigSystemClock_HSI` (119) |
+
+Class A only differs in value numbering, so one store materialises the merge; class B has to
+decide whether the extra word is dead (never read) or a genuinely missing value -- the former
+can be dropped, the latter must stay refused.
+
+#### 57.3 Method and criterion
+
+The pre-registration of sections 55.6 / 56.5 stands: a `join` is resolved by materialising the
+merge, coverage may only grow, the verifier must stay at zero violations, and the measurement
+must not change a single output byte.
+
+The work is done in **two passes**, because a single BFS pass may already have emitted a merge
+block before a second predecessor is discovered, and rewriting emitted instructions is not an
+option:
+
+1. **plan**: the same stack-effect model the emitter uses (`rm_plan_step`, which also pushes
+   `IR_GETARG` and returns -1 for unmodelled families) runs to a fixed point over a whole-table
+   scan, giving each block's entry depth `depth[blk]` and entry values `ent[(blk,pos)]`:
+   - **join rule: depth is the minimum.** A predecessor that is deeper carries words that the
+     merge block can never read (reading them would `POP` past the bottom and be refused as
+     `RM_R_STACK`), so they are dead and dropped;
+   - when the two predecessors disagree at a position, a **synthetic phi slot** `-1-(nslot+k)`
+     is allocated, with `nslot = local_size/4 + 2` (at least 4); synthetic slots sit after the
+     real frame slots and take no frame space;
+   - when the minimum makes some block `POP` past the bottom, the merge really is missing a
+     value: **refuse**, do not guess.
+2. **emit**: consumes only the `depth` and `phi` tables, copies `pd` stack words from each
+   predecessor, and re-derives nothing.
+
+One op is added, `RM_PEDGE` (`rm_nsrc = 1`, `aux` = successor index): store `src[0]` into slot
+`dst` **only when leaving along edge succ[aux]**. It is emitted just before the predecessor's
+terminator, so a block with several edges executes several stores unconditionally -- but each
+`(succ,pos)` slot is unique in the function, and the extra store writes a slot nobody reads, so
+the semantics are unaffected. `g_phi_multi` counts exactly that case: **0 on the corpus**,
+because lowering `?:` and `if` always ends its arm blocks with `JMP`, so every phi edge comes
+from a single-successor block. That measurement hands alpha-3 a simplification: emit the stores
+at the end of the block, no per-edge guard needed.
+
+Two neighbouring changes are mandatory, or the phi slots get silently cut:
+
+- the build capacity becomes `cap = code_count + 8 + plan.nstores` (one store per incoming edge
+  per phi slot);
+- the verifier and the linear scan take their slot bound from **the largest slot actually seen
+  in the instruction stream + 1** (`rm_nslot()`) instead of `local_size/4 + 2`, so synthetic
+  slots stay inside the value space.
+
+A **fuse** is kept: if the emitter still finds a disagreement at a non-phi position it refuses
+with `RM_R_JOIN`. Plan and emit are two independent models, and a disagreement means refuse
+rather than answer wrongly.
+
+#### 57.4 The reading (95 TUs, H.BASE + STACK, `ARKCC_RMIR_PHI=1`)
+
+| quantity | alpha-2 (PHI off) | alpha-2b (PHI on) |
+| --- | ---: | ---: |
+| translated functions | 181 / 212 | **207 / 212 (97.6%)** |
+| covered IR | 6,884 / 17,540 (39.2%) | **16,354 / 17,540 (93.2%)** |
+| RMIR instructions | 5,942 | **15,906** |
+| verifier violations | 0 | **0** |
+| refusals | `join` 27, `64-bit` 4 | **`join` 1, `64-bit` 4** |
+| phi slots | -- | **397** (in 207 functions) |
+| edge stores | -- | **794** (= 2 x 397) |
+| phi stores in multi-successor blocks | -- | **0** |
+| values (temporaries + frame slots) | 3,869 | **9,957** |
+| peak overlap | 8 | **19** |
+| functions inside 5 registers | 154 / 181 | **162 / 207 (78.3%)** |
+| peak histogram | 0:6 1:27 2:5 3:30 4:65 5:21 6:19 7:7 8:1 | 0:6 1:27 2:5 3:32 4:67 5:25 6:21 7:15 8:3 9:2 10:2 11:1 19:1 |
+| 5-pool spills | 36 (27 functions) | **316 (45 functions)** |
+| 8-pool spills | 0 | **161 (6 functions)** |
+| call sites with a live value | 43 | **111** |
+
+Alpha-2's pinned numbers are **unchanged line for line** (181 / 3,869 / peak 8 / 154 / 36 / 0 /
+43), because the new path is off by default: OFF IS OFF is byte-for-byte true here as well.
+
+The heaviest functions (`peak / spills8 / spills`):
+
+| function | peak | spills8 | spills | values |
+| --- | ---: | ---: | ---: | ---: |
+| `HAL_DMAEx_MultiBufferStart_IT` | 19 | 152 | 212 | 2,201 |
+| `HAL_GPIO_Init` | 11 | 3 | 6 | 302 |
+| `HAL_DMA_PollForTransfer` | 10 | 2 | 6 | 219 |
+| `HAL_GPIO_DeInit` | 10 | 2 | 6 | 153 |
+| `HAL_RCC_OscConfig` | 9 | 1 | 16 | 1,188 |
+
+#### 57.5 The one join still refused: `HAL_DMA_IRQHandler`
+
+`rmir-planstep` points at `blk=66 op=POP`: the block's entry depth is cut to 0 by the minimum of
+its two predecessors, and its first instruction is a `POP`, so the stack underflows. This is not
+an implementation gap -- **an underflow under the minimum rule means one predecessor really left
+no value there** while the other did. Raising the depth to the maximum would only make the other
+predecessor read a word that does not exist, which is the wrong answer. It stays refused, and
+the gate pins the set **by name**: the `join` refusals must be exactly
+`{HAL_DMA_IRQHandler}`.
+
+#### 57.6 Verdict
+
+By the pre-registered criterion: **26 of 27 join refusals are now translated (96.3%), one is
+refused for a structural reason**; function coverage 181 -> 207 (+14.4% relative), IR coverage
+39.2% -> 93.2%; alpha-1/alpha-2's pinned sets lose nothing (the gate asserts section 6's
+function names are a subset of section 7's), `verify_bad = 0`, and 0 bytes of drift over the
+95 TUs. Alpha-2b is **accepted** and shipped as a measurement slice: off by default, only
+`ARKCC_RMIR_PHI=1` turns it on.
+
+#### 57.7 The alpha-3 entry condition, updated
+
+Section 56.5 said the spill framework could wait until after alpha-3 because "8-pool spills are
+0, so the condition does not hold". Alpha-2b **retracts that**: the 8-register pool now spills
+**161 times across 6 functions**, 152 of them inside `HAL_DMAEx_MultiBufferStart_IT` alone.
+Alpha-3 therefore cannot pretend the pool is enough:
+
+1. the emitter must fall back to a frame slot correctly from an 8-pool spill, or prove that
+   those 6 functions can be refused on the conservative path;
+2. `HAL_DMAEx_MultiBufferStart_IT`'s peak of 19 is the product of two conservative assumptions
+   -- linearisation by block id plus one interval per frame slot for the whole function -- not 19
+   values genuinely live at once. Switching the order to **RPO** is an alpha-3 candidate, but it
+   would move alpha-2's pinned numbers, so it is not done in this slice; the gate records that
+   function as an artefact of the convention;
+3. alpha-3's net still has to be priced per shape (section 39.4), and pre-registered before any
+   code changes.
+
+#### 57.8 Reproducing it
+
+- gate: `make test-rmir` (`tests/run_rmir_tests.py`, **46 checks**; section 7 pins every number
+  above: 207/212, 16,354 IR, 15,906 RMIR, 0 violations, 397 slots / 794 stores / 0 multi, 9,957
+  values, peak 19, 162/207 inside 5 registers, 316 / 45 functions, 161 / 6 functions, 111 call
+  sites with a live value, and the `join` refusal set exactly `{HAL_DMA_IRQHandler}`);
+- per-function plan on one TU: `ARKCC_RMIR_PHI=1 ARKCC_RMIR_DUMP=1 arkcc ...` prints
+  `rmir-phi <function>: slots=... stores=...`, and `PEDGE` appears in the instruction stream;
+- the shape fixture (gate section 7b): `int sel(int c,int a,int b){return c?a+1:b*2;}` is refused
+  as a `join` with PHI off and, with PHI on, answers `slots=1 stores=2`, one `PEDGE` per incoming
+  edge, and a merge `RET` that reads that slot;
+- anti-false-pass: the gate asserts `translated(207) > 181` and `join refusals 1 < 27` -- the two
+  modes must disagree, or "phi works" would be a statement about nothing -- and that
+  `stores == 2 x slots` (no slot allocated without a store).

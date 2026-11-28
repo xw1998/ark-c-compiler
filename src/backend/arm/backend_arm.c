@@ -3894,13 +3894,14 @@ enum {
     RM_NOP = 0, RM_MOVI, RM_LOAD, RM_STORE, RM_LEA, RM_LOADSYM, RM_LEASYMBOL,
     RM_LEAFUNC, RM_LEASTR, RM_ALU, RM_ALU1, RM_TRUNC, RM_LOADIDX, RM_STOREIDX,
     RM_BFLDL, RM_BFLDS, RM_CALL, RM_RET, RM_BR, RM_CMPBR, RM_JMP, RM_LABEL,
-    RM_GETARG, RM_DIV, RM_MOD, RM_OPCOUNT
+    RM_GETARG, RM_DIV, RM_MOD, RM_PEDGE, RM_OPCOUNT
 };
 
 static const char *const rm_op_name[RM_OPCOUNT] = {
     "NOP", "MOVI", "LOAD", "STORE", "LEA", "LOADSYM", "LEASYMBOL", "LEAFUNC",
     "LEASTR", "ALU", "ALU1", "TRUNC", "LOADIDX", "STOREIDX", "BFLDL", "BFLDS",
-    "CALL", "RET", "BR", "CMPBR", "JMP", "LABEL", "GETARG", "DIV", "MOD"
+    "CALL", "RET", "BR", "CMPBR", "JMP", "LABEL", "GETARG", "DIV", "MOD",
+    "PEDGE"
 };
 
 /* How many value sources each op takes.  It is a function of the op alone --
@@ -3913,7 +3914,7 @@ static const unsigned char rm_nsrc[RM_OPCOUNT] = {
     /* ALU */ 2, /* ALU1 */ 1, /* TRUNC */ 1, /* LOADIDX */ 2,
     /* STOREIDX */ 2, /* BFLDL */ 1, /* BFLDS */ 2, /* CALL */ 0,
     /* RET */ 1, /* BR */ 1, /* CMPBR */ 1, /* JMP */ 0, /* LABEL */ 0,
-    /* GETARG */ 0, /* DIV */ 2, /* MOD */ 2
+    /* GETARG */ 0, /* DIV */ 2, /* MOD */ 2, /* PEDGE */ 1
 };
 
 /* One RMIR instruction.  `dst`/`src` are virtual-register numbers:
@@ -3958,6 +3959,8 @@ static long g_ls_fn, g_ls_val_sum, g_ls_spill, g_ls_spill_fn;
 static long g_ls_spill8, g_ls_spill8_fn;
 static long g_ls_across_call;
 static int  g_ls_peak_max, g_ls_peak_sum, g_ls_peak_hist[16];
+/* alpha-2b (S57) counters: only move when ARKCC_RMIR_PHI asks. */
+static long g_phi_fn, g_phi_slots, g_phi_stores, g_phi_multi;
 
 static int ark_rmir_wanted(void) {
     static int cached = -1;
@@ -3966,8 +3969,10 @@ static int ark_rmir_wanted(void) {
         const char *d = getenv("ARKCC_RMIR_DUMP");
         const char *t = getenv("ARKCC_RMIR_SELFTEST");
         const char *l = getenv("ARKCC_RMIR_LS");
+        const char *p = getenv("ARKCC_RMIR_PHI");
         cached = ((e && *e && *e != '0') || (d && *d && *d != '0') ||
-                  (t && *t && *t != '0') || (l && *l && *l != '0')) ? 1 : 0;
+                  (t && *t && *t != '0') || (l && *l && *l != '0') ||
+                  (p && *p && *p != '0')) ? 1 : 0;
     }
     return cached;
 }
@@ -3994,6 +3999,244 @@ static int rm_put(RInst *ins, int *n, int max, int op, int defs_dst, int dst,
     return 0;
 }
 
+/* S57: the join plan.
+ *
+ * alpha-1 refuses a block whose value stack disagrees with the stack its first
+ * predecessor left behind, because reconciling the two would need a phi.  This
+ * pass reconciles it the way the same module already reconciles a re-read local:
+ * a differing position is materialised into a *phi slot*, a synthetic frame slot
+ * numbered past the function's real ones.  Every in-edge stores its own value
+ * there (RM_PEDGE), and the join reads the slot instead of a temporary, so the
+ * join needs no phi node and the slot keeps the property that a slot read is a
+ * memory access, not a value with a definition site.
+ *
+ * Two smaller rules come with it:
+ *   - a predecessor deeper than the merged depth contributes only dead words
+ *     (nothing below the merged depth can ever be read), so the extra words are
+ *     dropped instead of refused;
+ *   - a position where every predecessor already agrees keeps its temporary.
+ *
+ * The plan is recomputed to a fixed point because allocating a phi slot changes
+ * what later blocks see.  Both events -- a slot allocation and a depth shrink --
+ * happen at most once per (block, position), so the loop terminates.
+ *
+ * The plan changes no emitted byte: it only widens what the *census* can
+ * translate.  It is off unless ARKCC_RMIR_PHI asks for it. */
+typedef struct RmPhiPlan {
+    int  nblk;
+    int *depth;    /* entry depth per block, -1 = unreachable            */
+    int *ent;      /* nblk * RMIR_MAX_STK entry values, plan numbering   */
+    int *phi;      /* nblk * RMIR_MAX_STK: 0, or the phi slot value id   */
+    int  nslots;   /* phi slots allocated                               */
+    int  nstores;  /* stores the emit pass will add (one per in-edge)    */
+} RmPhiPlan;
+
+static void rm_plan_free(RmPhiPlan *p) {
+    if (p == 0) return;
+    free(p->depth); free(p->ent); free(p->phi);
+    p->depth = 0; p->ent = 0; p->phi = 0;
+}
+
+/* One IR instruction's effect on the abstract value stack, in the numbering the
+ * translation itself uses: a pushed value is `idx + 1` (unique per instruction,
+ * so two different pushes never compare equal), a local read is the slot id
+ * `-1 - slot` (equal whenever the slot is, which is what keeps a slot re-read
+ * phi-free).  Returns -1 for an instruction family the translation refuses
+ * anyway; the emit pass then reports the real reason. */
+static int rm_plan_step(const IrInst *I, int idx, int *stk, int *d) {
+    int a;
+    switch (I->op) {
+    case IR_NOP: case IR_FUNC_BEGIN: case IR_FUNC_END: case IR_LOCAL_ALLOC:
+    case IR_ARG: case IR_LABEL: case IR_LABEL_NAMED:
+    case IR_JMP: case IR_JMP_NAMED:
+        break;
+    case IR_PUSH_INT: case IR_PUSH_ADDR: case IR_PUSH_GLOBAL: case IR_PUSH_FUNC:
+    case IR_PUSH_GLOBAL_ADDR: case IR_PUSH_STR:
+        if (*d >= RMIR_MAX_STK) return -1;
+        stk[(*d)++] = idx + 1;
+        break;
+    case IR_PUSH_VAR:
+        if (*d >= RMIR_MAX_STK) return -1;
+        stk[(*d)++] = -1 - (int)(I->val >> 2);
+        break;
+    case IR_POP:
+        if (*d < 1) return -1;
+        (*d)--;
+        break;
+    case IR_DUP:
+        if (I->val > 1 || *d < 1 || *d >= RMIR_MAX_STK) return -1;
+        stk[*d] = stk[*d - 1];
+        (*d)++;
+        break;
+    case IR_SWAP:
+        if (*d < 2) return -1;
+        a = stk[*d - 1]; stk[*d - 1] = stk[*d - 2]; stk[*d - 2] = a;
+        break;
+    case IR_STORE: case IR_STORE_GLOBAL:
+        if (*d < 1) return -1;
+        (*d)--;
+        break;
+    case IR_STORE_FLD:
+        if (*d < 2) return -1;
+        *d -= 2;
+        break;
+    case IR_LOAD_FLD: case IR_UNARY: case IR_TRUNC:
+        if (*d < 1) return -1;
+        stk[*d - 1] = idx + 1;
+        break;
+    case IR_LOAD_IDX: case IR_BINARY: case IR_DIV: case IR_MOD:
+        if (*d < 2) return -1;
+        (*d)--;
+        stk[*d - 1] = idx + 1;
+        break;
+    case IR_STORE_IDX:
+        if (*d < 2) return -1;
+        a = stk[*d - 1];
+        (*d)--;
+        stk[*d - 1] = a;
+        break;
+    case IR_JZ: case IR_JNZ: case IR_CMP_JMP_EQ:
+        if (*d < 1) return -1;
+        (*d)--;
+        break;
+    case IR_CALL: {
+        int n = (int)(I->val & 0x1FFFFFFF);
+        if (*d < n) return -1;
+        *d -= n;
+        if (!((I->val >> 33) & 1)) {
+            if (*d >= RMIR_MAX_STK) return -1;
+            stk[(*d)++] = idx + 1;
+        }
+        break;
+    }
+    case IR_GETARG:
+        if ((I->aux >> 8) >= 8) return -1;
+        if (*d >= RMIR_MAX_STK) return -1;
+        stk[(*d)++] = idx + 1;
+        break;
+    case IR_RETURN:
+        *d = 0;
+        break;
+    default:
+        return -1;      /* a family alpha-1 refuses: let the emit pass say why */
+    }
+    return 0;
+}
+
+/* Build the plan.  Returns 0 and fills *p, or -1 and leaves *p empty. */
+static int ark_rmir_plan(const IrFunc *f, const MirFunc *m, RmPhiPlan *p) {
+    int nslot, blk, rc = 0, changed = 1, rounds = 0, guard;
+    unsigned char *dirty = 0;
+
+    memset(p, 0, sizeof *p);
+    p->nblk = (int)m->blk_count;
+    nslot = (int)(f->local_size / 4) + 2;
+    if (nslot < 4) nslot = 4;
+    p->depth = (int *)malloc((size_t)p->nblk * sizeof(int));
+    p->ent = (int *)calloc((size_t)p->nblk * RMIR_MAX_STK, sizeof(int));
+    p->phi = (int *)calloc((size_t)p->nblk * RMIR_MAX_STK, sizeof(int));
+    dirty = (unsigned char *)calloc((size_t)p->nblk, 1);
+    if (!p->depth || !p->ent || !p->phi || !dirty) { rc = -1; goto done; }
+    for (blk = 0; blk < p->nblk; blk++) p->depth[blk] = -1;
+    p->depth[0] = 0;
+    dirty[0] = 1;
+    guard = p->nblk * (RMIR_MAX_STK + 1) + 8;
+    while (changed && rc == 0) {
+        changed = 0;
+        if (++rounds > guard) { rc = -1; break; }
+        for (blk = 0; blk < p->nblk && rc == 0; blk++) {
+            const MirBlock *B;
+            int stk[RMIR_MAX_STK], d, k;
+            if (!dirty[blk] || p->depth[blk] < 0) continue;
+            dirty[blk] = 0;
+            B = &m->blk[blk];
+            memcpy(stk, p->ent + (size_t)blk * RMIR_MAX_STK, sizeof stk);
+            d = p->depth[blk];
+            for (k = B->start; k < B->end && rc == 0; k++)
+                if (rm_plan_step(&f->code[k], k, stk, &d) != 0) {
+                    const char *jd3 = getenv("ARKCC_RMIR_JOINDBG");
+                    if (jd3 && *jd3 && *jd3 != '0')
+                        fprintf(stderr, "rmir-planstep %s: blk=%d op=%s\n",
+                                f->name ? f->name : "?", blk,
+                                ir_op_name(f->code[k].op));
+                    rc = -1;
+                }
+            if (rc) break;
+            for (k = 0; k < B->succ_count && rc == 0; k++) {
+                int to = B->succ[k], pos, nd;
+                if (to < 0 || to >= p->nblk) continue;
+                if (p->depth[to] < 0) {
+                    p->depth[to] = d;
+                    memcpy(p->ent + (size_t)to * RMIR_MAX_STK, stk, sizeof stk);
+                    dirty[to] = 1;
+                    changed = 1;
+                    continue;
+                }
+                nd = p->depth[to] < d ? p->depth[to] : d;
+                if (nd != p->depth[to]) {
+                    p->depth[to] = nd;
+                    dirty[to] = 1;
+                    changed = 1;
+                }
+                for (pos = 0; pos < nd; pos++) {
+                    int *ph = &p->phi[(size_t)to * RMIR_MAX_STK + pos];
+                    if (*ph != 0) continue;
+                    if (p->ent[(size_t)to * RMIR_MAX_STK + pos] != stk[pos]) {
+                        *ph = -1 - (nslot + p->nslots);
+                        p->nslots++;
+                        p->ent[(size_t)to * RMIR_MAX_STK + pos] = *ph;
+                        dirty[to] = 1;
+                        changed = 1;
+                    }
+                }
+            }
+        }
+    }
+    if (rc == 0) {
+        for (blk = 0; blk < p->nblk; blk++) {
+            const MirBlock *B = &m->blk[blk];
+            int k2, pos;
+            if (p->depth[blk] < 0) continue;
+            for (k2 = 0; k2 < B->succ_count; k2++) {
+                int to = B->succ[k2], pd;
+                if (to < 0 || to >= p->nblk) continue;
+                pd = p->depth[to];
+                if (pd < 0) continue;
+                for (pos = 0; pos < pd; pos++)
+                    if (p->phi[(size_t)to * RMIR_MAX_STK + pos] != 0) p->nstores++;
+            }
+        }
+    }
+done:
+    free(dirty);
+    if (rc != 0) { rm_plan_free(p); return -1; }
+    return 0;
+}
+
+/* Highest frame slot the instruction stream touches, plus one.  alpha-2 used
+ * local_size/4 + 2 alone; a phi slot sits past that, so the bound has to be the
+ * maximum actually referenced or the verifier and the scan would both drop the
+ * phi slots on the floor. */
+static int rm_nslot(const IrFunc *f, const RInst *ins, int n) {
+    int i, j, mx = (int)(f->local_size / 4) + 2;
+    if (mx < 4) mx = 4;
+    for (i = 0; i < n; i++) {
+        const RInst *r = &ins[i];
+        if (r->defs_dst && r->dst < 0 && -1 - r->dst + 1 > mx) mx = -1 - r->dst + 1;
+        for (j = 0; j < r->nsrc; j++)
+            if (r->src[j] < 0 && -1 - r->src[j] + 1 > mx) mx = -1 - r->src[j] + 1;
+        if (r->op == RM_CALL)
+            for (j = 0; j < r->nargs; j++)
+                if (r->args[j] < 0 && -1 - r->args[j] + 1 > mx) mx = -1 - r->args[j] + 1;
+    }
+    return mx;
+}
+
+/* A control-transfer instruction: the S57 edge stores have to precede it. */
+static int rm_is_term(int op) {
+    return op == RM_BR || op == RM_CMPBR || op == RM_JMP || op == RM_RET;
+}
+
 /* Translate one function into explicit three-address form.
  *
  * Returns RM_OK and fills `ins`/`*n_out`/`*nvreg_out`, or a refusal code (in
@@ -4006,7 +4249,8 @@ static int rm_put(RInst *ins, int *n, int max, int op, int defs_dst, int dst,
  * entry has to agree from every predecessor, and that agreement is what makes
  * a frame slot a single virtual register instead of a phi node. */
 static int ark_rmir_build(const IrFunc *f, const MirFunc *m, RInst *ins,
-                          int max, int *n_out, int *nvreg_out) {
+                          int max, int *n_out, int *nvreg_out,
+                          const RmPhiPlan *plan) {
     int *ent = 0, *dep = 0, *q = 0;
     unsigned char *queued = 0;
     int blk, n = 0, nv = 0, rc = RM_OK;
@@ -4030,11 +4274,21 @@ static int ark_rmir_build(const IrFunc *f, const MirFunc *m, RInst *ins,
             int b = q[qh++];
             const MirBlock *B = &m->blk[b];
             int stk[RMIR_MAX_STK];
-            int d, k;
+            int d, k, nb0;
             memset(stk, 0, sizeof stk);
             memcpy(stk, ent + (size_t)b * RMIR_MAX_STK,
                    sizeof(int) * RMIR_MAX_STK);
             d = dep[b];
+            if (plan != 0) {
+                int p2;
+                d = plan->depth[b];
+                if (d < 0) { rc = RM_R_JOIN; break; }
+                for (p2 = 0; p2 < d; p2++) {
+                    int ph = plan->phi[(size_t)b * RMIR_MAX_STK + p2];
+                    if (ph != 0) stk[p2] = ph;
+                }
+            }
+            nb0 = n;
             for (k = B->start; k < B->end && rc == RM_OK; k++) {
                 const IrInst *I = &f->code[k];
                 int a, c, fresh;
@@ -4317,6 +4571,62 @@ static int ark_rmir_build(const IrFunc *f, const MirFunc *m, RInst *ins,
                 }
             }
             if (rc != RM_OK) break;
+            if (plan != 0) {
+                /* S57: the edge stores go in front of the branch, and only the
+                 * edge that is actually taken executes them (aux = successor
+                 * index).  A block's terminator is the last instruction it
+                 * emitted, so it is lifted, the stores are appended, and it is
+                 * put back. */
+                RInst term;
+                int have_term = 0, pos;
+                if (n > nb0 && rm_is_term(ins[n - 1].op)) { term = ins[n - 1]; n--; have_term = 1; }
+                for (k = 0; k < B->succ_count && rc == RM_OK; k++) {
+                    int to = B->succ[k], pd;
+                    if (to < 0 || to >= m->blk_count) continue;
+                    pd = plan->depth[to];
+                    if (pd < 0 || d < pd) { rc = RM_R_STACK; break; }
+                    for (pos = 0; pos < pd && rc == RM_OK; pos++) {
+                        int ph = plan->phi[(size_t)to * RMIR_MAX_STK + pos];
+                        if (ph == 0) continue;
+                        if (rm_put(ins, &n, max, RM_PEDGE, 1, ph, stk[pos], 0, 0, 0,
+                                   k, have_term ? term.line : 0, b) != 0)
+                            rc = RM_R_ROOM;
+                        else if (B->succ_count > 1)
+                            g_phi_multi++;   /* stored on both edges: see 57.3 */
+                    }
+                    if (rc != RM_OK) break;
+                    if (dep[to] < 0) {
+                        dep[to] = pd;
+                        memset(ent + (size_t)to * RMIR_MAX_STK, 0,
+                               sizeof(int) * RMIR_MAX_STK);
+                        memcpy(ent + (size_t)to * RMIR_MAX_STK, stk,
+                               sizeof(int) * pd);
+                        if (!queued[to]) { queued[to] = 1; q[qt++] = to; }
+                    } else if (dep[to] != pd) {
+                        rc = RM_R_STACK;
+                    } else {
+                        int p2;
+                        for (p2 = 0; p2 < pd; p2++) {
+                            if (plan->phi[(size_t)to * RMIR_MAX_STK + p2] != 0) continue;
+                            if (ent[(size_t)to * RMIR_MAX_STK + p2] != stk[p2]) {
+                                rc = RM_R_JOIN;   /* the plan and the emit disagree */
+                                break;
+                            }
+                        }
+                    }
+                    if (rc != RM_OK) {
+                        const char *jd2 = getenv("ARKCC_RMIR_JOINDBG");
+                        if (jd2 && *jd2 && *jd2 != '0')
+                            fprintf(stderr, "rmir-planfail %s: from=%d to=%d d=%d/%d rc=%s\n",
+                                    f->name ? f->name : "?", b, to, dep[to], d,
+                                    rm_reason[rc]);
+                    }
+                }
+                if (rc == RM_OK && have_term) {
+                    if (n < max) { ins[n] = term; n++; }
+                    else rc = RM_R_ROOM;
+                }
+            } else
             for (k = 0; k < B->succ_count; k++) {
                 int to = B->succ[k];
                 if (to < 0 || to >= m->blk_count) continue;
@@ -4329,6 +4639,22 @@ static int ark_rmir_build(const IrFunc *f, const MirFunc *m, RInst *ins,
                            (d > 0 &&
                             memcmp(ent + (size_t)to * RMIR_MAX_STK, stk,
                                    sizeof(int) * d) != 0)) {
+                    const char *jd = getenv("ARKCC_RMIR_JOINDBG");
+                    if (jd && *jd && *jd != '0') {
+                        int z, m2 = dep[to] > d ? dep[to] : d;
+                        fprintf(stderr, "rmir-join %s: from=%d to=%d d=%d/%d",
+                                f->name ? f->name : "?", b, to, dep[to], d);
+                        for (z = 0; z < m2; z++) {
+                            int x = z < dep[to] ? ent[(size_t)to * RMIR_MAX_STK + z] : 999999;
+                            int y = z < d ? stk[z] : 999999;
+                            fprintf(stderr, " %s%d/%s%d",
+                                    x < 0 ? "s" : (x == 999999 ? "-" : "t"),
+                                    x < 0 ? -1 - x : x,
+                                    y < 0 ? "s" : (y == 999999 ? "-" : "t"),
+                                    y < 0 ? -1 - y : y);
+                        }
+                        fprintf(stderr, "\n");
+                    }
                     rc = RM_R_JOIN;   /* a phi would be needed: not modelled */
                     break;
                 }
@@ -4362,8 +4688,7 @@ static int ark_rmir_verify(const IrFunc *f, const MirFunc *m, const RInst *ins,
     int i, j, bad = 0, uninit = 0, nslot;
 
     if (uninit_out) *uninit_out = 0;
-    nslot = (int)(f->local_size / 4) + 2;
-    if (nslot < 4) nslot = 4;
+    nslot = rm_nslot(f, ins, n);
     dblk = (int *)calloc((size_t)(nvreg > 0 ? nvreg : 1), sizeof(int));
     dpos = (int *)calloc((size_t)(nvreg > 0 ? nvreg : 1), sizeof(int));
     dcnt = (int *)calloc((size_t)(nvreg > 0 ? nvreg : 1), sizeof(int));
@@ -4554,8 +4879,7 @@ static int ark_rmir_lscan(const IrFunc *f, const MirFunc *m, const RInst *ins,
     st->peak = 0; st->spills = 0; st->spills8 = 0;
     st->nval = 0; st->across_call = 0;
     if (f == 0 || m == 0 || n <= 0) return 0;
-    nslot = (int)(f->local_size / 4) + 2;
-    if (nslot < 4) nslot = 4;
+    nslot = rm_nslot(f, ins, n);
     nvals = nv + nslot;
     if (nvals <= 0) return 0;
     words = (nvals + 63) / 64;
@@ -4754,23 +5078,33 @@ static void ark_rmir_census(IrFunc *f) {
     const char *self = getenv("ARKCC_RMIR_SELFTEST");
     int want_dump = (dump && *dump && *dump != '0');
     int want_ls = 0;
+    int want_phi = 0;
     int want_self = (self && *self && *self != '0');
+    RmPhiPlan plan;
+    int have_plan = 0, cap;
+    memset(&plan, 0, sizeof plan);
     {
         const char *ls = getenv("ARKCC_RMIR_LS");
+        const char *ph = getenv("ARKCC_RMIR_PHI");
         want_ls = (ls && *ls && *ls != '0');
+        want_phi = (ph && *ph && *ph != '0');
     }
 
     if (f == 0) return;
     if (mir_build(f, &m) != 0 || m.blk_count <= 0) { g_rm_ref[RM_R_OP]++; return; }
-    ins = (RInst *)calloc((size_t)(f->code_count + 8), sizeof(RInst));
-    if (ins == 0) { g_rm_ref[RM_R_ROOM]++; return; }
+    if (want_phi && ark_rmir_plan(f, &m, &plan) == 0) have_plan = 1;
+    cap = (int)f->code_count + 8 + (have_plan ? plan.nstores : 0);
+    ins = (RInst *)calloc((size_t)cap, sizeof(RInst));
+    if (ins == 0) { g_rm_ref[RM_R_ROOM]++; rm_plan_free(&plan); return; }
     g_rm_fn_total++;
     g_rm_in_total += f->code_count;
-    rc = ark_rmir_build(f, &m, ins, f->code_count + 8, &n, &nv);
+    rc = ark_rmir_build(f, &m, ins, cap, &n, &nv, have_plan ? &plan : 0);
     if (rc != RM_OK) {
+        rm_plan_free(&plan);
         g_rm_ref[rc]++;
-        if (want_dump) fprintf(stderr, "rmir-refuse %s: %s\n",
-                               f->name ? f->name : "?", rm_reason[rc]);
+        if (want_dump) fprintf(stderr, "rmir-refuse %s: %s (%d insns)\n",
+                               f->name ? f->name : "?", rm_reason[rc],
+                               (int)f->code_count);
     } else {
         if (want_self) {
             /* Deliberate defect, one per function: point the first read at a
@@ -4786,7 +5120,16 @@ static void ark_rmir_census(IrFunc *f) {
             fprintf(stderr, "rmir-selftest %s: %d violation(s)\n",
                     f->name ? f->name : "?", bad);
             free(ins);
+            rm_plan_free(&plan);
             return;      /* a corrupted array must not enter the census */
+        }
+        if (have_plan) {
+            g_phi_fn++;
+            g_phi_slots += plan.nslots;
+            g_phi_stores += plan.nstores;
+            if (want_dump)
+                fprintf(stderr, "rmir-phi %s: slots=%d stores=%d\n",
+                        f->name ? f->name : "?", plan.nslots, plan.nstores);
         }
         g_rm_fn_ok++;
         g_rm_in_cov += f->code_count;
@@ -4818,6 +5161,7 @@ static void ark_rmir_census(IrFunc *f) {
         }
     }
     free(ins);
+    rm_plan_free(&plan);
 }
 
 static void ark_rmir_report(void) {
@@ -4843,6 +5187,10 @@ static void ark_rmir_report(void) {
             fprintf(stderr, " %d:%d", i, g_ls_peak_hist[i]);
         fprintf(stderr, "\n");
     }
+    if (g_phi_fn > 0)
+        fprintf(stderr, "rmir-phi: functions=%ld slots=%ld stores=%ld "
+                        "multi=%ld\n",
+                g_phi_fn, g_phi_slots, g_phi_stores, g_phi_multi);
 }
 #endif /* ARKCC_FEATURE_RMIR */
 
