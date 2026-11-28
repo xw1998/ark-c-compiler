@@ -52,7 +52,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-floatlit test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch test-imm test-peep test-cbranch test-copyprop test-cmat test-slotreg test-opalloc test-live test-spill test-ldhoist test-pair test-stackframe test-deadins test-userasm test-movimm test-litpool test-coalesce test-voldmb test-volmem test-constcond test-boolmat test-exit test-bitmask test-ladder test-regbirth test-chainfold test-movtpair test-pushpop test-addrfold test-remat test-vregemit test-alloc test-option test-rstack test-subpostinc test-crop test-vemit
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-floatlit test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch test-imm test-peep test-cbranch test-copyprop test-cmat test-slotreg test-opalloc test-live test-spill test-ldhoist test-pair test-stackframe test-deadins test-userasm test-movimm test-litpool test-coalesce test-voldmb test-volmem test-constcond test-boolmat test-exit test-bitmask test-ladder test-regbirth test-chainfold test-movtpair test-pushpop test-addrfold test-remat test-vregemit test-alloc test-option test-rstack test-subpostinc test-crop test-vemit test-isel2
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -453,6 +453,19 @@ test-crop: $(ARKCC)
 # crop that makes the switch a compile-time refusal.
 test-vemit: $(ARKCC)
 	$(PYTHON) tests/run_vemit_tests.py ./$(ARKCC)
+
+# Gate for -fopt-isel2 (S54): four in-place selection peepholes
+# that delete the instruction a bad shape left behind (AND+CMP+Bcc -> ANDS+Bcc,
+# MOV+ALU -> three-operand ALU, LDRB+UXTB -> LDRB).  On the 95-unit corpus the
+# switch removes exactly 148 instructions (35 R1 / 24 R2 / 70 R3 / 19 R4) and
+# 1,952 bytes, no unit grows.  The gate pins OFF IS OFF byte for byte, that an
+# independent oracle reproduces all 95 translations byte for byte, the pinned
+# rule mix and per-unit distribution, six refusals and four acceptances, one
+# executed fixture (four sites, same value and same RAM on the emulator), and
+# that a cropped build (-DARKCC_FEATURE_OPT_ISEL2=0) refuses the switch by name
+# (C3900U) while writing the same text when the switch is absent.
+test-isel2: $(ARKCC)
+	$(PYTHON) tests/run_isel2_tests.py ./$(ARKCC)
 
 test-live: $(ARKCC)
 	$(PYTHON) tests/run_live_tests.py ./$(ARKCC)

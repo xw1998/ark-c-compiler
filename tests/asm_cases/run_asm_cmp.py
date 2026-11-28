@@ -69,19 +69,20 @@ CASES = [
 # --asm-extra switch contract.  Each entry is (mnemonic, source line that must
 # assemble when the switch is on).  The target label `tgt` and the trailing nop
 # keep every operand form reachable.
-# Six mnemonics that used to live in this table are deliberately absent:
-# ADDS, SUBS, MRS, MSR, CBZ and CBNZ.  ADDS/SUBS/MRS/MSR became *unconditional*
+# Seven mnemonics that used to live in this table are deliberately absent:
+# ADDS, SUBS, ANDS, MRS, MSR, CBZ and CBNZ.  ADDS/SUBS/MRS/MSR became *unconditional*
 # when the backend started emitting flag-setting ALU forms and the PRIMASK
 # critical sections behind <stdatomic.h> (commits 18cd442 / 0e097ca).  CBZ/CBNZ
 # followed for a different reason: `-fopt-cbz` makes the compiler emit them, and
 # a compiler has to be able to assemble its own output, so the two are accepted
 # in every build (the feature macro gates the *pass*, not the encoder).  The
-# contract this table checks is "off means unknown mnemonic", and for these six
-# the off state no longer exists -- listing them here would assert the opposite
+# ANDS joined them for the third reason: `-fopt-isel2` folds "AND + CMP + Bcc"
+# into `ANDS Rd, Rn, #imm` + a branch, so the compiler emits a three-operand
+# ANDS of its own.  The contract this table checks is "off means unknown
+# mnemonic", and for these seven the off state no longer exists -- listing them here would assert the opposite
 # of the design.  They stay covered by the byte-for-byte comparison table above,
 # which is the part that matters for them.
 SWITCH_CASES = [
-    ("ANDS",   "ands r0, r1"),
     ("ORRS",   "orrs r0, r1"),
     ("EORS",   "eors r0, r1"),
     ("BICS",   "bics r0, r1"),

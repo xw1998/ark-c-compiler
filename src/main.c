@@ -692,6 +692,14 @@ int main(int argc, char **argv) {
             return 1;
         }
 #endif
+#if !ARKCC_FEATURE_OPT_ISEL2
+        else if (strcmp(a, "-fopt-isel2") == 0) {
+            fprintf(stderr,
+                    "Fatal error: C3900U: -fopt-isel2 is not compiled into "
+                    "this build (rebuild with -DARKCC_FEATURE_OPT_ISEL2=1)\n");
+            return 1;
+        }
+#endif
 #if !ARKCC_FEATURE_VREGEMIT
         else if (strcmp(a, "-fopt-vregemit") == 0) {
             fprintf(stderr,

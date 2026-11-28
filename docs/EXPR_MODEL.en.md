@@ -5453,3 +5453,139 @@ pass:
 Reproduction: `tests/run_vemit_tests.py`; the debugging artefacts are in `D:/tmp/bm/s53/` (`smoke.py`
 for the fifteen-fixture smoke run, `corpus.py`/`corpus2.py` for the corpus and per-function diff, and
 `dbg/` holding the `off.s`/`on.s`/`raw_*.s` of the eight DIFFs).
+
+## 54 In-place selection peepholes: delete the instruction a bad shape left behind (2026-11-28, recorded after the run; `-fopt-isel2`)
+
+Section 53.7 settled the direction: three attempts to change the *emission shape* (S9b three-address,
+section 50's depth-2 window, section 53's value-resident emitter) all measured worse on the HAL corpus,
+because the 0.54 insn/op density comes from shape fusion -- a dozen peepholes that recognise the stack
+emitter's shape -- and a new shape pays that bill first. The only way left is to add peepholes **on the
+existing shape**. This section is the first cut on that path: the emitter is untouched, the register
+convention is untouched, and the pass only deletes, from a function's text, the one instruction a
+badly chosen instruction shape left behind.
+
+The switch is `-fopt-isel2` (`ARKCC_FEATURE_OPT_ISEL2`, host 1 / board 0, **off by default**; with it off
+the 95 TUs are byte-identical to today). Four rules; each site deletes exactly one instruction and
+computes nothing new:
+
+| Rule | Original shape | Becomes | Why it is sound |
+| --- | --- | --- | --- |
+| R1 | `AND rD, rS, #2^k` / `CMP rD, #2^k` / `B{EQ,NE} L` | `ANDS rD, rS, #2^k` / `B{EQ,NE swapped} L` | `ANDS` writes exactly the value `AND` wrote and sets Z when that value is zero; for a single-bit mask `rD & 2^k` is either 0 or `2^k`, so "zero" means "equals `2^k`" -- the test moves, so the branch polarity must swap |
+| R2 | `AND rD, rS, #m` / `CMP rD, #0` / `B{EQ,NE} L` | `ANDS rD, rS, #m` / `B{EQ,NE} L` | as above: `CMP rD,#0` asks "is the result zero", which `ANDS` already sets, so the polarity stays |
+| R3 | `MOV rT, rB` / `OP rT, X` (OP in ADD/SUB/AND/ORR/EOR/BIC, two operands) | `OP rT, rB, X` | the `MOV` only copied `rB` into `rT` and the next instruction reads `rT`; the three-operand form reads `rB` at the same place -- same result, same flags, and the surviving instruction keeps its own mnemonic |
+| R4 | `LDRB|LDRH|LDRSB|LDRSH rD, [...]` / same extension `rD, rD` | the load alone | those four loads already zero/sign-extend to 32 bits at their own width, so re-stating the same extension on the same register changes no bit |
+
+R1's polarity deserves its own sentence: after `CMP rD, #2^k`, `BEQ` jumps on "equals `2^k`", while
+Z=1 after `ANDS` means "the result is zero"; with `m = 2^k` the two are complements (the mask keeps one
+bit, so a nonzero result is `2^k`), hence `BEQ <-> BNE` must swap. R2's mask is arbitrary and the test is
+"is it zero", so its polarity does not move. Missing that swap would be "shorter, and branches the wrong
+way" -- which is why it is in the rule table and in the gate's R1 fixture (`ANDS ... / BEQ`, not `BNE`).
+
+### 54.1 Pre-registration (frozen before implementation, not re-cut after the run)
+
+Baseline is S17 + S19-a + S21 (`-fopt-chainfold -fopt-pushpop -fopt-remat`, this document's `STACK`),
+95 TUs:
+
+1. the off arm must be **byte-identical** to today's text on that baseline, pinned at **9,588 insns /
+   354,989 B** (OFF IS OFF);
+2. the on arm's instruction total must be **<= off - 145** (one at least per site; 148 is the estimate,
+   not the bar);
+3. the on arm's byte total must **not grow**, and **no single TU may grow** (one extra instruction means
+   a shape was judged wrong);
+4. the independent second implementation (`tests/is2_oracle.py`, importing nothing from the compiler) must
+   replay the off-arm text into the on arm **byte for byte**, 95/95;
+5. a `unicorn` fixture: the off arm really carries four sites (two R1, one R3, one R4) and the on arm
+   none, both arms return the same value and leave the same RAM snapshot;
+6. a cropped build (`-DARKCC_FEATURE_OPT_ISEL2=0`) links, refuses the switch by name (`C3900U`), and
+   writes byte-identical text when the switch is absent.
+
+### 54.2 Readings (95 TUs, `STACK`)
+
+| Reading | off | on (`+ -fopt-isel2`) | delta |
+| --- | ---: | ---: | ---: |
+| instructions | **9,588** | **9,440** | **-148 (-1.54%)** |
+| bytes | **354,989** | **353,037** | **-1,952** |
+| TUs that grow | -- | 0 / 95 | -- |
+
+Against armcc5's 5,619 instructions on the same corpus: **1.706x -> 1.680x**. The absolute gap is still
+3,821 instructions (9,440 - 5,619); this cut takes 2.6% off that gap -- a small step with no shape risk,
+not the answer (section 54.6).
+
+Per rule: **R1 35 / R2 24 / R3 70 / R4 19**, 148 in total, over 13 TUs:
+
+| TU | sites | TU | sites |
+| --- | ---: | --- | ---: |
+| `stm32f4xx_hal_rcc.c` | 37 | `stm32f4xx_hal_flash_ex.c` | 14 |
+| `stm32f4xx_hal_cortex.c` | 25 | `stm32f4xx_hal_gpio.c` | 13 |
+| `stm32f4xx_hal_dma.c` | 21 | `stm32f4xx_hal_flash.c` | 9 |
+| `stm32f4xx_hal_rcc_ex.c` | 8 | `stm32f4xx_hal_exti.c` | 7 |
+| `stm32f4xx_hal_pwr.c` | 5 | `stm32f4xx_ll_utils.c` | 3 |
+| `system_stm32f4xx.c` | 3 | `stm32f4xx_hal_pwr_ex.c` | 2 |
+| `stm32f4xx_hal.c` | 1 | -- | -- |
+
+R3 is the biggest winner and the clearest explanation of why it is safe: the stack machine gives every
+intermediate its own temporary and then runs a two-operand ALU on that same register -- the direct
+consequence of Thumb's 16-bit ALU having only the "Rd = Rd OP x" shape, not of bad register allocation.
+R4 is the same story: `LDRB` followed by `UXTB` is the IR splitting "load a byte" and "zero-extend" into
+two ops.
+
+### 54.3 The four rules that were withdrawn (also recorded in the code comments)
+
+- **R5 epilogue fold** (`MOV sp, r6` / `ADD sp, sp, #k` -> one `ADD sp, r6, #k`): the census shows the
+  frame really is that wide wherever the shape appears; the `ADD` is not redundant and folding it moves
+  the stack to the wrong place. Withdrawn.
+- **R6 constant compare** (`MOV rC,#c` / `CMP rC,#c` / `Bcc`): three candidate sites, and **every one**
+  has a branch-referenced label between the `MOV` and the `CMP` (`dma.c`'s
+  `.L_HAL_DMA_PollForTransfer_12:` is a loop back-edge target), so deleting the `CMP` would drop the
+  back-edge into the deleted line. Safe sites: **0**. The rule is deleted from both the C code and the
+  oracle.
+- **R7/R8** (slot-address recompute, register-copy folding): already eaten by `-fopt-addrfold` /
+  `-fopt-copyprop`; 0 sites on the on arm.
+- **R9** (three specific shapes): already covered by `-fopt-remat`.
+
+### 54.4 An assembler gate that had to open: `ANDS` assembles by default
+
+R1/R2 **emit** `ANDS Rd, Rn, #imm` (three operands, flags set), while `ANDS` sat behind `--asm-extra`
+together with `ORRS/EORS/BICS/MVNS` -- so the compiler could not assemble its own output
+(`unknown mnemonic "ANDS"`). Following the existing precedent (`ADDS/SUBS` for the 64-bit carry chain,
+`CBZ/CBNZ` for `-fopt-cbz`: when the backend emits it, the encoder is not gated), this slice **removes
+`ANDS` from the `ark_asm_extra_name()` list** and wires `ANDS` into the pass-1 size chain (sharing
+`logic_dp_a()` with `AND/ORR/EOR/BIC/MVN`; the S bit is bit 4 of both the T1 and T2 words) and into the
+emit chain. Its four siblings stay gated -- no pass emits them, which is what makes the gate meaningful.
+
+The gate follows: `ANDS` leaves `SWITCH_CASES` in `tests/asm_cases/run_asm_cmp.py` (six -> seven
+mnemonics that no longer appear in that table), and the two- and three-operand forms join
+`01_dp_flags.s`, compared instruction by instruction against **GNU as**. `--no-asm-extra` no longer
+rejects `ANDS`; the other 23 mnemonics still "assemble when on, are rejected when off".
+
+### 54.5 Gate and reproduction
+
+`make test-isel2` (`tests/run_isel2_tests.py`) runs five sections, 24 checks, each with its own
+false-pass guard:
+
+1. both off baselines (`STACK` and `STACK + -fno-opt-isel2`) are byte-identical over 95 TUs, pinned at
+   9,588 / 354,989;
+2. the on arm is pinned at 9,440 / 353,037, the number of deleted instructions is **exactly 148**, the
+   rule mix is **exactly** `{R1:35, R2:24, R3:70, R4:19}`, the per-TU distribution is equal and **no TU
+   grows**; `tests/is2_oracle.py` replays the off-arm text with 95/95 byte-identical output (0 drift);
+3. six refusal fixtures (a referenced label in between, under an `IT`, a flags reader next, R1's value
+   not matching the mask, a different extension, `sp` involved) and four acceptance fixtures (one each
+   for R1/R2/R3/R4), the acceptances compared against the replacement text the oracle computes itself;
+4. a `unicorn` fixture: the off arm reports `{R1:2, R3:1, R4:1}`, the on arm 0 sites, both arms return
+   the same value and the same RAM snapshot, and the expected value is recomputed in Python from the C
+   source rather than copied from the assembly;
+5. a cropped build (`-DARKCC_FEATURE_OPT_ISEL2=0`) refuses the switch by name (`C3900U`) and writes
+   byte-identical text to the full build when the switch is absent.
+
+Reproduction: `tests/run_isel2_tests.py`, `tests/is2_oracle.py`; the scratch products are in
+`D:/tmp/bm/s54/` (`stat54.py` sums `ARKCC_ISEL2_STATS` per TU, `arm54.py` diffs the two arms,
+`census54*.py` censuses rules, `chk54*.py` censuses label/`IT` interference). With
+`ARKCC_ISEL2_STATS=1` the compiler reports `isel2: functions=... r1=... r2=... r3=... r4=...`.
+
+### 54.6 Verdict
+
+Criteria 1-6 are all met: **-148 instructions / -1,952 bytes, no TU grows, both arms behave the same**.
+The slice is **accepted** per pre-registration, and still **off by default** -- for the same reason as
+S10/S12-1: the whole 0.9.1 optimisation line is an experimental tier that does not enter the default
+chain (section 5.7), and on its own it takes 148 off a 3,821 gap. It is the **template for the next
+peepholes** (independent oracle per rule, refusal first, executed fixture, crop gate), not the endpoint.

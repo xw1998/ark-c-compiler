@@ -443,6 +443,20 @@
 # endif
 #endif
 
+/* ARKCC_FEATURE_OPT_ISEL2: -fopt-isel2, in-place instruction-selection
+ * peepholes on the finished text (docs/EXPR_MODEL.md section 54).  Each rule
+ * replaces a two- or three-instruction shape with a one-instruction shape and
+ * deletes what is left over; a site that fails any safety test keeps its text.
+ * Off by default, and the board profile drops it: it only pays off on a real
+ * function body. */
+#ifndef ARKCC_FEATURE_OPT_ISEL2
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN
+#   define ARKCC_FEATURE_OPT_ISEL2 0  /* 板上裁掉：只在宿主/交叉编译用 */
+# else
+#   define ARKCC_FEATURE_OPT_ISEL2 1
+# endif
+#endif
+
 /* ARKCC_FEATURE_VREGEMIT: -fopt-vregemit, V-5 virtual-register emission
  * path.  The idea was to re-emit a function's body from IR with the value
  * stack held in registers instead of memory.  S42 implemented the straight-line
@@ -1480,7 +1494,7 @@
     ARKCC_FEATURE_OPT_LIVE || ARKCC_FEATURE_OPT_ADDRFOLD || \
     ARKCC_FEATURE_OPT_REMAT || ARKCC_FEATURE_OPT_LDHOIST || \
     ARKCC_FEATURE_OPT_STACKFRAME || ARKCC_FEATURE_OPT_DEADINS || \
-    ARKCC_FEATURE_OPT_PUSHPOP
+    ARKCC_FEATURE_OPT_PUSHPOP || ARKCC_FEATURE_OPT_ISEL2
 #  define ARKCC_NEED_LV     1
 #else
 #  define ARKCC_NEED_LV     0

@@ -8,6 +8,9 @@
     adds r0, #200
     subs r1, #9
     ands r0, r1
+    ands r3, r4, #5
+    ands r0, r1, r2
+    ands r6, #3
     orrs r2, r3
     eors r4, r5
     bics r6, r7

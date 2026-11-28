@@ -2940,6 +2940,310 @@ static void ark_remat_function(AsmBuffer *b, int from) {
 }
 #endif /* ARKCC_FEATURE_OPT_REMAT */
 
+#if ARKCC_FEATURE_OPT_ISEL2
+/* ------------- in-place selection peepholes (-fopt-isel2) ----------------
+ * Instruction selection is decided while the body is emitted, so a bad shape
+ * survives every later cleanup.  These rules delete exactly what the chosen
+ * shape left behind -- one instruction per site -- and emit nothing the shape
+ * did not already compute (docs/EXPR_MODEL.md section 54):
+ *
+ *   R1  AND rD, rS, #2^k / CMP rD, #2^k / B{EQ,NE} -> ANDS rD, rS, #2^k / B{swapped}
+ *   R2  AND rD, rS, #m   / CMP rD, #0    / B{EQ,NE} -> ANDS rD, rS, #m    / B
+ *   R3  MOV rT, rB       / OP rT, X                 -> OP rT, rB, X
+ *   R4  LDRB|LDRH|LDRSB|LDRSH rD, [...] / <same extension> rD, rD -> the load only
+ *
+ * Why each one is sound:
+ *   R1/R2  `ANDS` writes the same register value the `AND` did, and sets Z
+ *          exactly when the removed `CMP` would have: `CMP rD, #0` asks
+ *          "is rD zero", `ANDS` sets Z when its result is zero, and the
+ *          result *is* rD.  For a single-bit mask the same argument runs with
+ *          "is rD 2^k" instead, so the branch sense flips.  No other flag bit
+ *          is observed: a site is refused when the next instruction reads the
+ *          flags.
+ *   R3     the `MOV` only copied rB into rT and the next instruction reads
+ *          rT; the three-operand form reads rB there instead.  Same result,
+ *          same flags -- the surviving instruction keeps its own mnemonic.
+ *   R4     LDRB/LDRH zero-extend and LDRSB/LDRSH sign-extend to 32 bits by
+ *          themselves, so re-stating the same extension on the same register
+ *          changes no bit.  A different extension is never dropped.
+ *
+ * What must hold, and why (every test only ever refuses a site):
+ *   - adjacency is measured between *instructions*: `.loc`/`.cfi` directives
+ *     in between are transparent; a label is transparent only when no branch
+ *     in the function names it (a labelled entry would otherwise fall into
+ *     the deleted compare); any other text refuses the site;
+ *   - no participating instruction may sit under an `IT`, or the conditional
+ *     shape would change;
+ *   - for R1/R2 the instruction that follows must not read the flags the
+ *     rewrite changed or removed (conditional branch, `IT`, ADC/SBC);
+ *   - R1/R2 need the mask and the compare value to be immediate constants of
+ *     the right form, and R3's forwarded operand must be a low register, so
+ *     the three-operand form the assembler is asked for always exists.
+ *
+ * Two more shapes were measured on the 95-unit corpus and are deliberately
+ * *not* here: a compare of a register against a constant the register was
+ * just given (three candidates, every one of them with a referenced label
+ * between the two instructions, so no site is safe), and the epilogue
+ * `MOV sp, r6` / `ADD sp, sp, #k` (the frame really is that wide at the
+ * points it appears).  Section 54.3 records both withdrawals.
+ *
+ * The pass runs to a fixed point (at most four rounds): R3 can expose an
+ * R1/R2 site and R1 can expose another R1.  Each round re-parses the text it
+ * is about to read, so no rewrite reasons from a stale index.  Nothing here
+ * reads liveness: every rule keeps every value and flag a later consumer can
+ * see, which is why OFF and ON products must agree on the board. */
+#define IS2_MAX_LABELS 1024
+#define IS2_ROUNDS     4
+
+typedef struct {
+    int  used;              /* instructions consumed: 2 or 3 */
+    int  nrep;              /* replacement lines: 1 or 2 */
+    int  raw0;              /* line 0 is the first instruction's own text */
+    int  rule;              /* 1, 2, 3 or 4, for the census */
+    char rep[2][80];
+} is2_hit;
+
+static long g_is2_hit[8];
+static long g_is2_fns;
+
+/* Register named by this operand text as a low register (r0-r12), or -1. */
+static int is2_reg(const char *s) {
+    int r;
+    if (!cp_reg(s, &r)) return -1;
+    if (r < 0 || r > 12) return -1;
+    return r;
+}
+
+/* `#imm` with nothing after the number. */
+static int is2_imm(const char *s, long *out) {
+    char *e;
+    if (s[0] != '#' || !s[1]) return 0;
+    *out = strtol(s + 1, &e, 0);
+    if (*e) return 0;
+    return 1;
+}
+
+/* The extension a load of this width already performed, or NULL. */
+static const char *is2_ext_for(const char *m) {
+    if (!strcmp(m, "LDRB"))  return "UXTB";
+    if (!strcmp(m, "LDRH"))  return "UXTH";
+    if (!strcmp(m, "LDRSB")) return "SXTB";
+    if (!strcmp(m, "LDRSH")) return "SXTH";
+    return 0;
+}
+
+/* The two-operand ALU forms whose Rd is also Rn (and therefore fold with the
+ * MOV that produced Rd into the three-operand form). */
+static int is2_is_alu2(const char *m) {
+    static const char *A[] = {"ADD", "SUB", "AND", "ORR", "EOR", "BIC", 0};
+    int i;
+    for (i = 0; A[i]; i++)
+        if (!strcmp(m, A[i])) return 1;
+    return 0;
+}
+
+/* Does this instruction read the condition flags?  A conditional branch, an
+ * IT, or a carrying add/subtract. */
+static int is2_reads_flags(const cp_ins *o) {
+    const char *m = o->mn;
+    if (lv_branch_kind(m) == 2) return 1;
+    if (m[0] == 'I' && m[1] == 'T') return 1;
+    if (!strcmp(m, "ADC") || !strcmp(m, "ADCS") ||
+        !strcmp(m, "SBC") || !strcmp(m, "SBCS")) return 1;
+    return 0;
+}
+
+/* Try every rule at `a`, with `b` and `d` the next two instructions (either
+ * may be NULL).  Fills `h` and returns 1 on a hit. */
+static int is2_match(const cp_ins *a, const cp_ins *b, const cp_ins *d,
+                     is2_hit *h) {
+    h->used = 0; h->nrep = 0; h->raw0 = 0; h->rule = 0;
+    if (!a) return 0;
+
+    /* R4: the extension the load already did is dropped. */
+    if (a->nops == 2 && b && b->nops == 2) {
+        const char *x = is2_ext_for(a->mn);
+        if (x && !strcmp(b->mn, x) && is2_reg(a->op[0]) >= 0 &&
+            !strcmp(b->op[0], a->op[0]) && !strcmp(b->op[1], a->op[0])) {
+            h->used = 2; h->nrep = 1; h->raw0 = 1; h->rule = 4;
+            return 1;
+        }
+    }
+
+    /* R3: MOV into a temporary, then a two-operand ALU op on it. */
+    if (a->nops == 2 && b && b->nops == 2 && !strcmp(a->mn, "MOV")) {
+        int rt = is2_reg(a->op[0]), rb = is2_reg(a->op[1]);
+        if (rt >= 0 && rb >= 0 && rt != rb && is2_is_alu2(b->mn) &&
+            is2_reg(b->op[1]) >= 0 &&
+            !strcmp(b->op[0], a->op[0]) && strcmp(b->op[1], a->op[0])) {
+            snprintf(h->rep[0], sizeof h->rep[0], "    %s %s, %s, %s",
+                     b->mn, b->op[0], a->op[1], b->op[1]);
+            h->used = 2; h->nrep = 1; h->rule = 3;
+            return 1;
+        }
+    }
+
+    /* R1/R2: AND then a compare of its result, then a conditional branch. */
+    if (a->nops == 3 && b && d && b->nops == 2 && !strcmp(a->mn, "AND") &&
+        is2_reg(a->op[0]) >= 0 && is2_reg(a->op[1]) >= 0 &&
+        !strcmp(b->mn, "CMP") && !strcmp(b->op[0], a->op[0]) &&
+        (!strcmp(d->mn, "BEQ") || !strcmp(d->mn, "BNE"))) {
+        long k, cv;
+        if (is2_imm(a->op[2], &k) && k > 0 && is2_imm(b->op[1], &cv)) {
+            const char *sw = 0;
+            if ((k & (k - 1)) == 0 && cv == k)
+                sw = !strcmp(d->mn, "BEQ") ? "BNE" : "BEQ";
+            else if (cv == 0)
+                sw = d->mn;
+            if (sw) {
+                snprintf(h->rep[0], sizeof h->rep[0], "    ANDS %s, %s, %s",
+                         a->op[0], a->op[1], a->op[2]);
+                snprintf(h->rep[1], sizeof h->rep[1], "    %s %s", sw, d->op[0]);
+                h->used = 3; h->nrep = 2;
+                h->rule = (cv == 0) ? 2 : 1;
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+/* Is every line strictly between two instructions transparent: a directive,
+ * an empty line, or a label no branch in the function references? */
+static int is2_gap_ok(AsmBuffer *b, const int *ls, const int *ll,
+                      const unsigned char *kd, const unsigned char *rref,
+                      int lo, int hi) {
+    char t[256];
+    int j;
+    for (j = lo + 1; j < hi; j++) {
+        if (kd[j] == 1) return 0;                  /* another instruction */
+        if (kd[j] == 2) { if (rref[j]) return 0; continue; }
+        if (ll[j] >= (int)sizeof t) return 0;
+        if (pp_trim(b->buf + ls[j], ll[j], t, sizeof t) < 0) return 0;
+        if (!t[0] || t[0] == '.' || t[0] == ';' || t[0] == '@') continue;
+        return 0;                                  /* text we cannot classify */
+    }
+    return 1;
+}
+
+static void ark_isel2_function(AsmBuffer *b, int from) {
+    static int ls[PP_MAX_LINES], ll[PP_MAX_LINES], ixn[PP_MAX_LINES];
+    static cp_ins iv[PP_MAX_LINES];
+    static unsigned char kd[PP_MAX_LINES], it[PP_MAX_LINES], rref[PP_MAX_LINES];
+    static char lab[IS2_MAX_LABELS][40];
+    static int labln[IS2_MAX_LABELS];
+    static char t[256];
+    AsmBuffer out;
+    int round, n, i, j, k, q, nlab, nidx, changed_any = 0;
+
+    for (round = 0; round < IS2_ROUNDS; round++) {
+        int changed = 0;
+        n = pp_split_lines(b, from, ls, ll, PP_MAX_LINES);
+        if (n < 0) return;
+        nlab = 0;
+        for (i = 0; i < n; i++) {
+            int L;
+            kd[i] = 0; it[i] = 0; rref[i] = 0;
+            if (ll[i] >= (int)sizeof t) continue;
+            if (pp_trim(b->buf + ls[i], ll[i], t, sizeof t) < 0) continue;
+            if (!t[0] || t[0] == ';' || t[0] == '@') continue;
+            L = (int)strlen(t);
+            if (t[L - 1] == ':') {
+                if (nlab >= IS2_MAX_LABELS) return;     /* refuse, do not guess */
+                for (k = 0; k < L - 1 && k < 39; k++) lab[nlab][k] = t[k];
+                lab[nlab][k] = 0;
+                labln[nlab] = i;
+                nlab++;
+                kd[i] = 2;
+                continue;
+            }
+            if (t[0] == '.') continue;                  /* directive */
+            if (cp_parse(t, &iv[i])) kd[i] = 1;
+        }
+        /* Which labels a branch can land on.  Anything that is not a register
+         * counts as a possible label, literal-pool labels included: marking
+         * one too many only refuses a site. */
+        for (i = 0; i < n; i++) {
+            if (kd[i] != 1) continue;
+            for (q = 0; q < iv[i].nops; q++) {
+                const char *p = iv[i].op[q];
+                int m;
+                if (!p[0] || p[0] == '#' || p[0] == '[') continue;
+                if (lv_regs(p)) continue;
+                for (m = 0; m < nlab; m++)
+                    if (!strcmp(lab[m], p)) { rref[labln[m]] = 1; break; }
+            }
+        }
+        /* Instructions under an IT are conditional: never a candidate. */
+        for (i = 0; i < n; i++) {
+            if (kd[i] != 1) continue;
+            if (iv[i].mn[0] == 'I' && iv[i].mn[1] == 'T' &&
+                (iv[i].mn[2] == 0 || iv[i].mn[2] == 'T' || iv[i].mn[2] == 'E')) {
+                int cnt = (int)strlen(iv[i].mn) - 1, c = 0;
+                for (j = i + 1; j < n && c < cnt; j++) {
+                    if (kd[j] == 2) break;
+                    if (kd[j] == 1) { it[j] = 1; c++; }
+                }
+            }
+        }
+        nidx = 0;
+        for (i = 0; i < n; i++) if (kd[i] == 1) ixn[nidx++] = i;
+
+        asmbuf_init(&out);
+        j = 0;
+        for (k = 0; k < nidx; ) {
+            int i0 = ixn[k];
+            const cp_ins *a = &iv[i0];
+            const cp_ins *pb = (k + 1 < nidx) ? &iv[ixn[k + 1]] : 0;
+            const cp_ins *pd = (k + 2 < nidx) ? &iv[ixn[k + 2]] : 0;
+            is2_hit h;
+            int ok = 0, r;
+
+            if (!it[i0] && is2_match(a, pb, pd, &h)) {
+                ok = 1;
+                for (r = 1; r < h.used && ok; r++)
+                    if (!is2_gap_ok(b, ls, ll, kd, rref, ixn[k + r - 1],
+                                    ixn[k + r]))
+                        ok = 0;
+                if (ok && h.used == 3 && k + 3 < nidx &&
+                    is2_reads_flags(&iv[ixn[k + 3]]))
+                    ok = 0;
+            }
+            if (!ok) { k++; continue; }
+
+            for (r = 0; r < h.used; r++) {
+                int pos = ixn[k + r];
+                for (; j < pos; j++)
+                    pp_copy_line(&out, b->buf + ls[j], ll[j]);
+                if (r < h.nrep) {
+                    if (r == 0 && h.raw0)
+                        pp_copy_line(&out, b->buf + ls[pos], ll[pos]);
+                    else
+                        pp_copy_line(&out, h.rep[r], (int)strlen(h.rep[r]));
+                }
+                j = pos + 1;
+            }
+            changed++;
+            g_is2_hit[h.rule]++;
+            k += h.used;
+        }
+        for (; j < n; j++) pp_copy_line(&out, b->buf + ls[j], ll[j]);
+        if (!changed) break;
+        pp_splice(b, from, &out);
+        changed_any = 1;
+    }
+    if (changed_any) g_is2_fns++;
+}
+
+static void ark_isel2_report(void) {
+    const char *e = getenv("ARKCC_ISEL2_STATS");
+    if (!e || !*e || *e == '0') return;
+    fprintf(stderr, "isel2: functions=%ld r1=%ld r2=%ld r3=%ld r4=%ld\n",
+            g_is2_fns, g_is2_hit[1], g_is2_hit[2], g_is2_hit[3],
+            g_is2_hit[4]);
+}
+#endif /* ARKCC_FEATURE_OPT_ISEL2 */
+
 #if ARKCC_FEATURE_OPT_ALLOC
 /* ------------- V-4' stage A routing: which functions -fopt-alloc may take --
  * Stage A replaces a function's whole body with one emitted from IR by a CFG
@@ -20093,6 +20397,12 @@ arm_skip_text_opts:
          * docs/EXPR_MODEL.md section 31. */
         if (g_config.enable_opt_remat) ark_remat_function(&buf, fstart);
 #endif
+#if ARKCC_FEATURE_OPT_ISEL2
+        /* S54, in-place selection peepholes, last of all: the shapes are
+         * deleted here, on the final text, and nothing below re-derives
+         * what they read; see docs/EXPR_MODEL.md section 54. */
+        if (g_config.enable_opt_isel2) ark_isel2_function(&buf, fstart);
+#endif
 arm_skip_frame_opts:
 
         /* __attribute__((constructor/destructor)): register the function address in .init_array/.fini_array;
@@ -20785,6 +21095,9 @@ arm_skip_frame_opts:
 #if ARKCC_FEATURE_OPT_ALLOC
     if (g_config.enable_opt_alloc) ark_alloc_report();
 #endif
+#if ARKCC_FEATURE_OPT_ISEL2
+    if (g_config.enable_opt_isel2) ark_isel2_report();
+#endif
     if (ark_rstack_enabled()) {
         const char *e = getenv("ARKCC_RSTACK_STATS");
         if (e && e[0] && e[0] != '0')
@@ -21399,8 +21712,13 @@ static int ark_asm_extra_name(const char *op) {
          * CBZ/CBNZ are NOT gated either, now that -fopt-cbz emits them from
          * `CMP #0` + `BEQ/BNE` (same rule as ADDS/SUBS: the compiler has to
          * be able to assemble its own output).  Both are still covered by the
-         * byte-for-byte comparison in tests/asm_cases/run_asm_cmp.py. */
-        "ANDS", "ORRS", "EORS", "BICS", "MVNS", "MULS",
+         * byte-for-byte comparison in tests/asm_cases/run_asm_cmp.py.
+         * ANDS follows the same rule as ADDS/SUBS/CBZ/CBNZ for the same
+         * reason: -fopt-isel2 folds "AND + CMP #0/#2^k + Bcc" into
+         * "ANDS Rd, Rn, #imm" + a branch, and a compiler has to be able to
+         * assemble its own output.  Its four siblings (ORRS/EORS/BICS/MVNS)
+         * are still emitted by nobody, so they stay gated. */
+        "ORRS", "EORS", "BICS", "MVNS", "MULS",
         "LSLS", "LSRS", "ASRS", "ADR",
         "LDM", "LDMIA", "LDMDB", "STM", "STMIA", "STMDB",
         "TBB", "TBH", "LDRD", "STRD",
@@ -21458,6 +21776,12 @@ static int logic_dp_a(ArmAsm *a, const char *op, const char **pp, int emit) {
     int is_orr = strieq_a(op, "ORR");
     int is_eor = strieq_a(op, "EOR");
     int is_mvn = strieq_a(op, "MVN");
+    /* The S-suffixed spelling is the flag-setting form of the same encoder:
+     * the S bit is bit 4 of both the immediate (T1) and the register (T2)
+     * opcode word.  ANDS is the only one the backend emits itself
+     * (-fopt-isel2), so it is the only one that reaches here; the other four
+     * stay behind --asm-extra and never arrive at this function. */
+    unsigned s_bit = strieq_a(op, "ANDS") ? 0x10u : 0u;
     unsigned base_reg, base_imm;
     int rd, rn;
 
@@ -21471,6 +21795,8 @@ static int logic_dp_a(ArmAsm *a, const char *op, const char **pp, int emit) {
      * in the opcode word instead of taking it from the text. */
     else if (is_mvn) { base_reg = 0xEA6Fu; base_imm = 0xF06Fu; }
     else             { base_reg = 0xEA00u; base_imm = 0xF000u; }  /* AND */
+    base_reg |= s_bit;
+    base_imm |= s_bit;
 
     rd = parse_reg_a(&p);
     eat_comma_a(&p);
@@ -21550,7 +21876,8 @@ static int logic_dp_a(ArmAsm *a, const char *op, const char **pp, int emit) {
     }
     /* Two operands with a high register: Thumb-2, Rn = Rd. */
     if (emit && rd >= 0 && rn >= 0) {
-        out16(a, is_mvn ? 0xEA6Fu : (base_reg | (unsigned)(rd & 0xF)));
+        /* base_reg already carries MVN's Rn=1111 and the S bit. */
+        out16(a, base_reg | (unsigned)(rd & 0xF));
         out16(a, ((unsigned)(rd & 0xF) << 8) | (unsigned)(rn & 0xF));
     }
     *pp = p;
@@ -22270,10 +22597,13 @@ static void pass1_a(ArmAsm *a) {
                 }
             } else if (strieq_a(first, "AND") || strieq_a(first, "ORR") ||
                        strieq_a(first, "EOR") || strieq_a(first, "BIC") ||
-                       strieq_a(first, "MVN")) {
+                       strieq_a(first, "MVN") || strieq_a(first, "ANDS")) {
                 /* Same decision function as pass 2: the 16-bit form only
                  * covers two low registers, so a high register or an
-                 * immediate operand makes the instruction 4 bytes. */
+                 * immediate operand makes the instruction 4 bytes.  ANDS is
+                 * the flag-setting spelling of the same encoder (S is bit 4
+                 * of both Thumb-2 opcode words) and is ungated because
+                 * -fopt-isel2 emits it. */
                 pc += logic_dp_a(a, first, &p, 0);
             } else if (strieq_a(first, "TST") ||
                        strieq_a(first, "SXTB") || strieq_a(first, "SXTH") ||
@@ -23496,7 +23826,7 @@ static void pass2_a(ArmAsm *a) {
         }
         else if (strieq_a(first, "AND") || strieq_a(first, "ORR") ||
                  strieq_a(first, "EOR") || strieq_a(first, "BIC") ||
-                 strieq_a(first, "MVN")) {
+                 strieq_a(first, "MVN") || strieq_a(first, "ANDS")) {
             (void)logic_dp_a(a, first, &p, 1);
         }
         else if (strieq_a(first, "LSL") || strieq_a(first, "LSR") ||
@@ -23737,7 +24067,12 @@ static void pass2_a(ArmAsm *a) {
                  strieq_a(first, "MVNS")) {
             /* --asm-extra: 16-bit data-processing forms all set the flags, so
              * ANDS/ORRS/EORS/BICS/MVNS are the same encodings as AND/ORR/EOR/
-             * BIC/MVN with a register operand. */
+             * BIC/MVN with a register operand.  ANDS cannot reach this branch
+             * any more (it is ungated and handled by logic_dp_a() above, which
+             * also has the 32-bit form a high register needs); its case here is
+             * kept only so this table still reads as the five-way set it is.
+             * A high register under this branch is masked with 7 -- which is
+             * why ANDS had to move, and why the other four stay gated. */
             int rd = parse_reg_a(&p); int rm;
             eat_comma_a(&p); rm = parse_reg_a(&p);
             {
