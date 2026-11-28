@@ -5589,3 +5589,125 @@ The slice is **accepted** per pre-registration, and still **off by default** -- 
 S10/S12-1: the whole 0.9.1 optimisation line is an experimental tier that does not enter the default
 chain (section 5.7), and on its own it takes 148 off a 3,821 gap. It is the **template for the next
 peepholes** (independent oracle per rule, refusal first, executed fixture, crop gate), not the endpoint.
+
+## 55. 0.9.2 alpha-1: the register-machine IR (RMIR): translation and verification
+
+### 55.1 Why 0.9.2 has to change the shape
+
+The whole 0.9.1 line (33 text passes + S17 chain folding + S19-a push/pop folding + S21 rematerialisation
++ S10 spilling + S12-1 load hoisting + S54 in-place selection) runs on the **text the accumulator emitter
+produced**, and that emitter gives **every intermediate value** one round trip through `r0` and one store
+to the frame. 9,588 instructions against armcc5's 5,619 on the 95-TU HAL corpus is not a peephole deficit
+-- it is the **shape**: a `MOV r1, r0` before every binary op, an `LDR r7, [sp, #8]` on every re-read of a
+local.
+
+The section 54 census settles it: on the 9,440-instruction on arm the remaining candidates total **39
+sites (0.4%)** -- `A_store_retarget 0`, `B_dead_branch 0`, `C_identity_op 3`, `E_ldr_mov 24`,
+`I_redundant_cmp 0`. Three earlier shape changes (S53 V-6 value-resident emitter, S42 V-5 vregemit, S9b
+statement-level three-address, section 50 depth 2) were **all withdrawn per pre-registration**.
+`RA_MODEL` section 4.1a prices the ceiling: even with a perfect allocator, on the **emitted text** only
+**1.78x** is reachable, because the text already contains the round trips and a text pass may not delete
+an instruction whose value another path can observe.
+
+So the only way out for 0.9.2 is to **move allocation before emission**: IR -> virtual registers ->
+linear scan -> a real register machine.
+
+### 55.2 What alpha-1 pre-registers
+
+Alpha-1 **emits nothing**. It does two things:
+
+1. on top of the existing IR and the existing MIR CFG it builds the **explicit three-address form** of one
+   function: every value is a virtual register, every instruction names its sources and its destination,
+   so no later pass has to re-derive "what is on the stack here";
+2. it verifies that the form is **well formed**: temporaries are single-assignment, and every use is
+   **dominated** by its definition.
+
+The only reason it ships is the number it prints: **how much of the corpus the register machine can
+express at all**. Alpha-2 (linear scan) and alpha-3 (emission) are only worth building for the covered
+set, and the gate pins that set so a later slice cannot silently lose it. The criteria are frozen first:
+
+- coverage (functions, IR instructions) **may only grow**;
+- verifier violations **must be 0**;
+- the measurement **may not change one output byte** (OFF IS OFF).
+
+### 55.3 Translation and the virtual-register convention
+
+It reuses the convention stage A (`-fopt-alloc`, section 43) already measured, which is why a **join needs
+no phi**:
+
+- **temporaries** get a **fresh** non-negative number per definition (`v0, v1, ...`), single-assignment
+  over the whole function;
+- a **frame slot** gets **one negative number for the whole function** (`-1 - slot`, slot 0 -> `-1`);
+  every store "defines" it and every load "reads" it. Two paths that meet agree by construction, so no phi
+  is needed at the join -- exactly the property section 44 reconciled;
+- the walk reuses `alc_walk()`'s **breadth-first transitive closure** and its join consistency check (the
+  value-stack depth and contents must reach a block's entry identically from every predecessor); a
+  disagreement is refused as `join`.
+
+`IR_CALL` argument vregs live in an array from `mem_pool_alloc` (`args`/`nargs`); `src` holds two. One IR
+instruction produces at most one RMIR instruction (`IR_NOP`/`IR_FUNC_BEGIN`/`IR_LOCAL_ALLOC`/`IR_ARG`/
+`IR_POP`/`IR_DUP`/`IR_SWAP` produce none), so sizing `ins` from `f->code_count + 8` is always enough.
+
+### 55.4 The refusal families, and why
+
+The families are **exactly** `alc_op_ok()`'s, for the same reason: those values are **not one machine
+word**, or they change how many words a value is. A refused function takes the generic path and is
+**byte-identical** to a build without this module.
+
+| Reason | Trigger | Why |
+|--------|---------|-----|
+| `float` | `IR_PUSH_FLOAT`/`FADD`/`FSUB`/`FMUL`/`FDIV`/`FCMP`/`F2I`/`I2F`/`F2F`, `IR_AUX_COMPLEX` | needs the FPU register class, and `_Complex` is two words |
+| `64-bit` | `IR_64BINARY`/`64PUSH`/`64CMP`/`64F2I`/`64I2F`, `IR_SEXT`/`ZEXT`/`CDECL64`, memory width >= 8 | one value, two machine words |
+| `inline-asm` | `IR_ASM` | its own register conventions |
+| `memcpy` | `IR_MEMCPY` | inlined struct copy, produces no value |
+| `alloca` | `IR_ALLOCA` | moves the stack pointer inside the body |
+| `simd` | `IR_SIMD_*` | packed half-words |
+| `svc` | `IR_SMC` | self-modifying / privileged |
+| `op` | any other op, no MIR, `IR_CALL` with sret | not modelled |
+| `join` | predecessors disagree on the value stack at a block entry | a phi would be needed |
+| `stack` | value-stack depth > 32 | model limit |
+| `room` | allocation failure | environment |
+
+### 55.5 Measured coverage (95-TU HAL corpus)
+
+With `ARKCC_RMIR_COV=1` the compiler reports:
+
+```
+rmir: functions=212 translated=181 refused=31 ir=17540 covered=6884 inst=5942 verify_bad=0
+rmir-refuse: join=27 64-bit=4
+```
+
+How to read it:
+
+- **181 of 212 functions (85.4%) translate**, covering **6,884 of 17,540 IR instructions (39.2%)** -- the
+  function share is high and the IR share low because several of the 31 refusals are large (`dma_ex`,
+  `rcc` and `dma` are precisely the units with the widest gap to gcc), and that sets alpha-2's priority
+  directly: **joins first, everything else after**;
+- **5,942 RMIR instructions**: fewer than the covered IR, because `IR_NOP`/`LOCAL_ALLOC`/`ARG`/`POP`/
+  `DUP`/`SWAP` produce none and one IR instruction is at most one RMIR instruction;
+- **0 verifier violations**: single assignment for temporaries and dominance for every use both hold;
+- **31 refusals**: 27 `join` (predecessors disagree on the value stack, a phi would be needed) and 4
+  `64-bit`. `float`/`inline-asm`/`memcpy`/`alloca` **do not occur** on this corpus (the HAL does not use
+  them) and are pinned by fixtures.
+
+### 55.6 Verdict, and the alpha-2/alpha-3 plan
+
+Criteria 1-3 are all met: **coverage pinned, 0 verifier violations, 0 bytes of output drift**. Alpha-1 is
+**accepted** per pre-registration and ships as a measurement slice (no user switch, only the three
+environment variables `ARKCC_RMIR_COV` / `ARKCC_RMIR_DUMP` / `ARKCC_RMIR_SELFTEST`; by default it costs
+nothing and changes no output).
+
+Alpha-1's answer also orders the next two slices:
+
+- **alpha-2 linear scan**: liveness + linear scan over the **181 translated functions**, judged on "the
+  peak simultaneous live interval count of temporaries plus promotable frame slots is <= 5" (section 44.2
+  measured the corpus peak at 5) and on **introducing no spill**;
+- **alpha-2b joins**: the 27 `join` refusals need a phi or section 44.2's "rematerialise at the join"
+  reading -- that is where IR coverage goes above 39.2%, and where the large functions are;
+- **alpha-3 emission**: only after alpha-2 yields a credible net on the 181 functions (deducted
+  shape-by-shape per section 39.4).
+
+Reproduction: `make test-rmir` (`tests/run_rmir_tests.py`, 23 checks); `ARKCC_RMIR_DUMP=1` prints the
+three-address form per function, and `ARKCC_RMIR_SELFTEST=1` plants one defect per function that the
+verifier must report -- which is what keeps the default "0 violations" from being a statement about
+nothing.

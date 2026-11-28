@@ -798,6 +798,26 @@
 # endif
 #endif
 
+/* ARKCC_FEATURE_RMIR: the 0.9.2 register-machine IR (docs/EXPR_MODEL.md
+ * section 55), alpha-1.  Builds the explicit three-address form of a function
+ * -- every value a virtual register, every instruction naming its sources and
+ * destination -- and verifies it (single assignment for temporaries, every use
+ * dominated by its definition).  It emits nothing and changes no output byte;
+ * it only measures, and only when ARKCC_RMIR_COV / ARKCC_RMIR_DUMP asks, so a
+ * default build pays one getenv() per function and nothing else.
+ *
+ * It needs the MIR CFG (src/mir.c) to prove joins agree on the value stack, so
+ * a build without ARKCC_FEATURE_MIR cannot carry it; the derived default is
+ * off whenever MIR is off, on the same rule as ARKCC_FEATURE_OPT_ALLOC and
+ * ARKCC_FEATURE_OPT_VEMIT above.  The board profile drops it as well. */
+#ifndef ARKCC_FEATURE_RMIR
+# if ARKCC_PROFILE == ARKCC_PROFILE_STM32_MIN || !ARKCC_FEATURE_MIR
+#   define ARKCC_FEATURE_RMIR 0        /* 板上裁掉：只在宿主/交叉编译用 */
+# else
+#   define ARKCC_FEATURE_RMIR 1
+# endif
+#endif
+
 /* ARKCC_FEATURE_IPO: --ipo / -flto, whole-program compilation (src/ipo.c).
  *
  * One front end run per input file inside one process, all units' IR

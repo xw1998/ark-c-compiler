@@ -3830,6 +3830,698 @@ static void ark_alloc_report(void) {
 }
 #endif /* ARKCC_FEATURE_OPT_ALLOC */
 
+
+#if ARKCC_FEATURE_RMIR
+/* ================== 0.9.2 alpha-1: the register-machine IR (RMIR) ==========
+ *
+ * Why this module exists
+ * ----------------------
+ * Every optimisation this compiler has (the 33 text passes, S17 chainfold,
+ * S19-a pushpop, S21 remat, S54 isel2) runs on the *text* the accumulator
+ * emitter produced, and that emitter gives every intermediate value its own
+ * visit to r0 and its own store to the frame.  9,440 instructions for the
+ * 95-unit HAL corpus against armcc5's 5,619 is not a peephole deficit -- the
+ * text layer is at its floor (§54 census: the remaining candidates total 39
+ * sites, 0.4%) -- it is the shape: `MOV r1, r0` before every binary op,
+ * `LDR r7, [sp, #8]` on every re-read of a local.
+ *
+ * docs/RA_MODEL.md §4.1a prices that: a *perfect* allocator working on the
+ * emitted text still only reaches 1.78x, because the text already contains the
+ * round trips and a text pass may not delete an instruction whose value
+ * another path can observe.  So 0.9.2 has to move the allocation *before* the
+ * emission: IR -> virtual registers -> linear scan -> a real register machine.
+ *
+ * What alpha-1 is, and what it deliberately is not
+ * ------------------------------------------------
+ * This slice does not emit anything.  It builds the explicit three-address
+ * form of one function on top of the existing IR and the existing MIR CFG,
+ * and it proves that form is *well formed*:
+ *
+ *   - every value is a virtual register: temporaries get a fresh number per
+ *     definition, a frame slot gets one number for its whole live range (the
+ *     same convention the stage-A walk uses, which is why a join needs no phi:
+ *     two paths that re-read one slot agree by construction);
+ *   - every instruction names its sources and its destination, so no later
+ *     pass has to re-derive "what is on the stack here";
+ *   - the verifier re-checks single assignment for temporaries and that every
+ *     use is dominated by its definition.
+ *
+ * The point of shipping it alone is the number it prints: how much of the
+ * corpus the register machine can express *at all*.  alpha-2 (linear scan)
+ * and alpha-3 (emission) are only worth building for the covered set, and the
+ * gate pins that set so a later slice cannot silently lose it.
+ *
+ * The refusals are the same decisions `alc_op_ok()` already makes for the
+ * stage-A census: floats, 64-bit values, `_Complex`, inline asm, memcpy,
+ * alloca, SMC, SIMD and wider-than-4-byte memory all stay on the generic
+ * path, because each changes how many machine words a value is.  A refused
+ * function takes the generic path and is byte-identical to a build without
+ * this module -- RMIR changes no output byte, it only measures.
+ * ------------------------------------------------------------------------- */
+
+/* The emitter's symbol table lives much further down.  Stage A declares it too,
+ * but only inside the ARKCC_FEATURE_OPT_ALLOC block, so a build with RMIR on
+ * and stage A off has no prototype here and the call below becomes an implicit
+ * non-static declaration -- which the later `static` definition then rejects.
+ * Declare it for exactly that configuration. */
+#if !ARKCC_FEATURE_OPT_ALLOC
+static int gvar_find_size(const char *name);
+#endif
+
+#define RMIR_MAX_STK 32
+
+enum {
+    RM_NOP = 0, RM_MOVI, RM_LOAD, RM_STORE, RM_LEA, RM_LOADSYM, RM_LEASYMBOL,
+    RM_LEAFUNC, RM_LEASTR, RM_ALU, RM_ALU1, RM_TRUNC, RM_LOADIDX, RM_STOREIDX,
+    RM_BFLDL, RM_BFLDS, RM_CALL, RM_RET, RM_BR, RM_CMPBR, RM_JMP, RM_LABEL,
+    RM_GETARG, RM_DIV, RM_MOD, RM_OPCOUNT
+};
+
+static const char *const rm_op_name[RM_OPCOUNT] = {
+    "NOP", "MOVI", "LOAD", "STORE", "LEA", "LOADSYM", "LEASYMBOL", "LEAFUNC",
+    "LEASTR", "ALU", "ALU1", "TRUNC", "LOADIDX", "STOREIDX", "BFLDL", "BFLDS",
+    "CALL", "RET", "BR", "CMPBR", "JMP", "LABEL", "GETARG", "DIV", "MOD"
+};
+
+/* How many value sources each op takes.  It is a function of the op alone --
+ * RM_CALL carries its argument vregs in `args`, not in `src` -- and it must be
+ * explicit: a virtual register may legitimately be 0, so "s0 == 0" cannot
+ * mean "no source". */
+static const unsigned char rm_nsrc[RM_OPCOUNT] = {
+    /* NOP */ 0, /* MOVI */ 0, /* LOAD */ 0, /* STORE */ 1, /* LEA */ 0,
+    /* LOADSYM */ 0, /* LEASYMBOL */ 0, /* LEAFUNC */ 0, /* LEASTR */ 0,
+    /* ALU */ 2, /* ALU1 */ 1, /* TRUNC */ 1, /* LOADIDX */ 2,
+    /* STOREIDX */ 2, /* BFLDL */ 1, /* BFLDS */ 2, /* CALL */ 0,
+    /* RET */ 1, /* BR */ 1, /* CMPBR */ 1, /* JMP */ 0, /* LABEL */ 0,
+    /* GETARG */ 0, /* DIV */ 2, /* MOD */ 2
+};
+
+/* One RMIR instruction.  `dst`/`src` are virtual-register numbers:
+ *   >= 0   a temporary, defined exactly once in the whole function
+ *   <  0   a frame slot, -1 - slot, defined at every store, read at every load
+ *   -1, for `dst`, means "defines nothing" only when combined with `defs_dst`.
+ */
+typedef struct RInst {
+    unsigned char  op;
+    unsigned char  defs_dst;   /* 1 when this instruction writes `dst`       */
+    int            dst;
+    int            src[2];
+    int            nsrc;
+    const int     *args;       /* RM_CALL: the argument vregs, arg0 first    */
+    int            nargs;
+    long long      val;
+    const char    *name;
+    int            aux;
+    int            line;
+    int            blk;        /* MIR block the instruction sits in          */
+} RInst;
+
+enum {
+    RM_OK = 0, RM_R_FLOAT, RM_R_64, RM_R_ASM, RM_R_MEMCPY, RM_R_ALLOCA,
+    RM_R_SIMD, RM_R_SVC, RM_R_OP, RM_R_STACK, RM_R_JOIN, RM_R_ROOM,
+    RM_R_COUNT
+};
+
+static const char *const rm_reason[RM_R_COUNT] = {
+    "ok", "float", "64-bit", "inline-asm", "memcpy", "alloca", "simd", "svc",
+    "op", "stack", "join", "room"
+};
+
+/* Counters for the census.  All of them are zero unless the environment asks
+ * for the walk (ARKCC_RMIR_COV or ARKCC_RMIR_DUMP), so a normal build pays one
+ * getenv() in codegen_arm() and nothing else. */
+static long g_rm_fn_total, g_rm_fn_ok, g_rm_in_total, g_rm_in_cov;
+static long g_rm_ref[RM_R_COUNT];
+static long g_rm_inst_emitted, g_rm_verify_bad;
+
+static int ark_rmir_wanted(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("ARKCC_RMIR_COV");
+        const char *d = getenv("ARKCC_RMIR_DUMP");
+        const char *t = getenv("ARKCC_RMIR_SELFTEST");
+        cached = ((e && *e && *e != '0') || (d && *d && *d != '0') ||
+                  (t && *t && *t != '0')) ? 1 : 0;
+    }
+    return cached;
+}
+
+static int rm_put(RInst *ins, int *n, int max, int op, int defs_dst, int dst,
+                  int s0, int s1, long long val, const char *name, int aux,
+                  int line, int blk) {
+    RInst *r;
+    if (*n >= max) return -1;
+    r = &ins[*n];
+    memset(r, 0, sizeof *r);
+    r->op = (unsigned char)op;
+    r->defs_dst = (unsigned char)defs_dst;
+    r->dst = dst;
+    r->src[0] = s0;
+    r->src[1] = s1;
+    r->nsrc = (int)rm_nsrc[op];
+    r->aux = aux;
+    r->val = val;
+    r->name = name;
+    r->line = line;
+    r->blk = blk;
+    (*n)++;
+    return 0;
+}
+
+/* Translate one function into explicit three-address form.
+ *
+ * Returns RM_OK and fills `ins`/`*n_out`/`*nvreg_out`, or a refusal code (in
+ * which case nothing about the function may be used).  `max` is the capacity
+ * of `ins`; the caller sizes it from f->code_count and that is always enough
+ * because every IR instruction becomes at most one RMIR instruction.
+ *
+ * The walk is the same breadth-first transitive closure over the MIR blocks
+ * that alc_walk() uses, and for the same reason: the value stack at a block's
+ * entry has to agree from every predecessor, and that agreement is what makes
+ * a frame slot a single virtual register instead of a phi node. */
+static int ark_rmir_build(const IrFunc *f, const MirFunc *m, RInst *ins,
+                          int max, int *n_out, int *nvreg_out) {
+    int *ent = 0, *dep = 0, *q = 0;
+    unsigned char *queued = 0;
+    int blk, n = 0, nv = 0, rc = RM_OK;
+
+    *n_out = 0;
+    *nvreg_out = 0;
+    if (f == 0 || m == 0 || m->blk_count <= 0) return RM_R_OP;
+    ent = (int *)calloc((size_t)m->blk_count * RMIR_MAX_STK, sizeof(int));
+    dep = (int *)calloc((size_t)m->blk_count, sizeof(int));
+    q   = (int *)calloc((size_t)m->blk_count, sizeof(int));
+    queued = (unsigned char *)calloc((size_t)m->blk_count, 1);
+    if (!ent || !dep || !q || !queued) { rc = RM_R_ROOM; goto done; }
+    for (blk = 0; blk < m->blk_count; blk++) dep[blk] = -1;
+
+    {
+        int qh = 0, qt = 0;
+        dep[0] = 0;
+        queued[0] = 1;
+        q[qt++] = 0;
+        while (qh < qt && rc == RM_OK) {
+            int b = q[qh++];
+            const MirBlock *B = &m->blk[b];
+            int stk[RMIR_MAX_STK];
+            int d, k;
+            memset(stk, 0, sizeof stk);
+            memcpy(stk, ent + (size_t)b * RMIR_MAX_STK,
+                   sizeof(int) * RMIR_MAX_STK);
+            d = dep[b];
+            for (k = B->start; k < B->end && rc == RM_OK; k++) {
+                const IrInst *I = &f->code[k];
+                int a, c, fresh;
+                switch (I->op) {
+                case IR_NOP:
+                case IR_FUNC_BEGIN:
+                case IR_FUNC_END:
+                case IR_LOCAL_ALLOC:
+                case IR_ARG:              /* the value is already on the stack */
+                    break;
+
+                case IR_LABEL:
+                case IR_LABEL_NAMED:
+                    if (rm_put(ins, &n, max, RM_LABEL, 0, -1, 0, 0,
+                               I->val, I->name, 0, I->line, b) != 0) rc = RM_R_ROOM;
+                    break;
+                case IR_JMP:
+                case IR_JMP_NAMED:
+                    if (rm_put(ins, &n, max, RM_JMP, 0, -1, 0, 0,
+                               I->val, I->name, 0, I->line, b) != 0) rc = RM_R_ROOM;
+                    break;
+
+                case IR_PUSH_INT:
+                    fresh = nv++;
+                    if (rm_put(ins, &n, max, RM_MOVI, 1, fresh, 0, 0,
+                               I->val, 0, 0, I->line, b) != 0) rc = RM_R_ROOM;
+                    if (d >= RMIR_MAX_STK) { rc = RM_R_STACK; break; }
+                    stk[d++] = fresh;
+                    break;
+
+                case IR_PUSH_VAR: {
+                    int w = I->aux & 0xFF;
+                    int slot;
+                    if (I->aux & IR_AUX_COMPLEX) { rc = RM_R_FLOAT; break; }
+                    if (w >= 8) { rc = RM_R_64; break; }
+                    slot = -1 - (int)(I->val >> 2);
+                    if (rm_put(ins, &n, max, RM_LOAD, 1, slot, 0, 0,
+                               I->val, 0, I->aux, I->line, b) != 0) rc = RM_R_ROOM;
+                    if (d >= RMIR_MAX_STK) { rc = RM_R_STACK; break; }
+                    stk[d++] = slot;
+                    break;
+                }
+
+                case IR_PUSH_ADDR:
+                    fresh = nv++;
+                    if (rm_put(ins, &n, max, RM_LEA, 1, fresh, 0, 0,
+                               I->val, 0, 0, I->line, b) != 0) rc = RM_R_ROOM;
+                    if (d >= RMIR_MAX_STK) { rc = RM_R_STACK; break; }
+                    stk[d++] = fresh;
+                    break;
+
+                case IR_PUSH_GLOBAL:
+                    if (I->name == 0 || gvar_find_size(I->name) >= 8) {
+                        rc = RM_R_64; break;
+                    }
+                    fresh = nv++;
+                    if (rm_put(ins, &n, max, RM_LOADSYM, 1, fresh, 0, 0,
+                               0, I->name, 0, I->line, b) != 0) rc = RM_R_ROOM;
+                    if (d >= RMIR_MAX_STK) { rc = RM_R_STACK; break; }
+                    stk[d++] = fresh;
+                    break;
+
+                case IR_PUSH_GLOBAL_ADDR:
+                    fresh = nv++;
+                    if (rm_put(ins, &n, max, RM_LEASYMBOL, 1, fresh, 0, 0,
+                               0, I->name, 0, I->line, b) != 0) rc = RM_R_ROOM;
+                    if (d >= RMIR_MAX_STK) { rc = RM_R_STACK; break; }
+                    stk[d++] = fresh;
+                    break;
+
+                case IR_PUSH_FUNC:
+                    fresh = nv++;
+                    if (rm_put(ins, &n, max, RM_LEAFUNC, 1, fresh, 0, 0,
+                               0, I->name, 0, I->line, b) != 0) rc = RM_R_ROOM;
+                    if (d >= RMIR_MAX_STK) { rc = RM_R_STACK; break; }
+                    stk[d++] = fresh;
+                    break;
+
+                case IR_PUSH_STR:
+                    fresh = nv++;
+                    if (rm_put(ins, &n, max, RM_LEASTR, 1, fresh, 0, 0,
+                               I->val, I->name, 0, I->line, b) != 0) rc = RM_R_ROOM;
+                    if (d >= RMIR_MAX_STK) { rc = RM_R_STACK; break; }
+                    stk[d++] = fresh;
+                    break;
+
+                case IR_POP:
+                    if (d < 1) { rc = RM_R_STACK; break; }
+                    d--;
+                    break;
+
+                case IR_DUP:
+                    if (I->val > 1 || d < 1 || d >= RMIR_MAX_STK) {
+                        rc = (I->val > 1) ? RM_R_64 : RM_R_STACK; break;
+                    }
+                    stk[d] = stk[d - 1];
+                    d++;
+                    break;
+
+                case IR_SWAP:
+                    if (d < 2) { rc = RM_R_STACK; break; }
+                    a = stk[d - 1]; stk[d - 1] = stk[d - 2]; stk[d - 2] = a;
+                    break;
+
+                case IR_STORE: {
+                    int sw = I->aux & ~(IR_AUX_VOLATILE);
+                    int slot;
+                    if (I->aux & IR_AUX_COMPLEX) { rc = RM_R_FLOAT; break; }
+                    if (sw == 0) sw = 4;
+                    if (sw >= 8) { rc = RM_R_64; break; }
+                    if (d < 1) { rc = RM_R_STACK; break; }
+                    d--;
+                    slot = -1 - (int)(I->val >> 2);
+                    if (rm_put(ins, &n, max, RM_STORE, 1, slot, stk[d], 0,
+                               I->val, 0, I->aux, I->line, b) != 0) rc = RM_R_ROOM;
+                    break;
+                }
+
+                case IR_STORE_GLOBAL:
+                    if (I->name == 0 || gvar_find_size(I->name) >= 8) {
+                        rc = RM_R_64; break;
+                    }
+                    if (d < 1) { rc = RM_R_STACK; break; }
+                    d--;
+                    if (rm_put(ins, &n, max, RM_STORE, 0, -1, stk[d], 0,
+                               I->val, I->name, I->aux, I->line, b) != 0) rc = RM_R_ROOM;
+                    break;
+
+                case IR_LOAD_IDX:
+                    if (I->val >= 8) { rc = RM_R_64; break; }
+                    if (d < 2) { rc = RM_R_STACK; break; }
+                    c = stk[d - 1]; a = stk[d - 2];
+                    d -= 1;
+                    fresh = nv++;
+                    if (rm_put(ins, &n, max, RM_LOADIDX, 1, fresh, a, c,
+                               I->val, 0, I->aux, I->line, b) != 0) rc = RM_R_ROOM;
+                    stk[d - 1] = fresh;
+                    break;
+
+                case IR_STORE_IDX: {
+                    int v, ad;
+                    if (I->val >= 8) { rc = RM_R_64; break; }
+                    if (d < 2) { rc = RM_R_STACK; break; }
+                    v = stk[d - 1]; ad = stk[d - 2];
+                    d -= 1;
+                    if (rm_put(ins, &n, max, RM_STOREIDX, 0, -1, ad, v,
+                               I->val, 0, I->aux, I->line, b) != 0) rc = RM_R_ROOM;
+                    stk[d - 1] = v;         /* the value stays as the result */
+                    break;
+                }
+
+                case IR_STORE_FLD: {
+                    int v, ad;
+                    if (d < 2) { rc = RM_R_STACK; break; }
+                    v = stk[d - 1]; ad = stk[d - 2];
+                    d -= 2;
+                    if (rm_put(ins, &n, max, RM_BFLDS, 0, -1, ad, v,
+                               I->val, 0, I->aux, I->line, b) != 0) rc = RM_R_ROOM;
+                    break;
+                }
+
+                case IR_LOAD_FLD:
+                    if (d < 1) { rc = RM_R_STACK; break; }
+                    a = stk[d - 1];
+                    fresh = nv++;
+                    if (rm_put(ins, &n, max, RM_BFLDL, 1, fresh, a, 0,
+                               I->val, 0, I->aux, I->line, b) != 0) rc = RM_R_ROOM;
+                    stk[d - 1] = fresh;
+                    break;
+
+                case IR_BINARY:
+                case IR_DIV:
+                case IR_MOD:
+                    if (d < 2) { rc = RM_R_STACK; break; }
+                    c = stk[d - 1]; a = stk[d - 2];
+                    d -= 1;
+                    fresh = nv++;
+                    if (rm_put(ins, &n, max,
+                               I->op == IR_BINARY ? RM_ALU
+                                                  : (I->op == IR_DIV ? RM_DIV : RM_MOD),
+                               1, fresh, a, c, 0, 0,
+                               I->aux, I->line, b) != 0)
+                        rc = RM_R_ROOM;
+                    stk[d - 1] = fresh;
+                    break;
+
+                case IR_UNARY:
+                    if (I->val == 1 || I->val == 2) { rc = RM_R_64; break; }
+                    if (I->aux & IR_AUX_COMPLEX) { rc = RM_R_FLOAT; break; }
+                    if (d < 1) { rc = RM_R_STACK; break; }
+                    fresh = nv++;
+                    if (rm_put(ins, &n, max, RM_ALU1, 1, fresh, stk[d - 1], 0,
+                               0, 0, I->aux, I->line, b) != 0) rc = RM_R_ROOM;
+                    stk[d - 1] = fresh;
+                    break;
+
+                case IR_TRUNC:
+                    if (d < 1) { rc = RM_R_STACK; break; }
+                    fresh = nv++;
+                    if (rm_put(ins, &n, max, RM_TRUNC, 1, fresh, stk[d - 1], 0,
+                               I->val, 0, I->aux, I->line, b) != 0) rc = RM_R_ROOM;
+                    stk[d - 1] = fresh;
+                    break;
+
+                case IR_JZ:
+                case IR_JNZ:
+                    if (d < 1) { rc = RM_R_STACK; break; }
+                    d--;
+                    if (rm_put(ins, &n, max, RM_BR, 0, -1, stk[d], 0,
+                               I->val, 0, I->op == IR_JNZ ? 1 : 0, I->line, b) != 0)
+                        rc = RM_R_ROOM;
+                    break;
+
+                case IR_CMP_JMP_EQ:
+                    if (d < 1) { rc = RM_R_STACK; break; }
+                    d--;
+                    if (rm_put(ins, &n, max, RM_CMPBR, 0, -1, stk[d], 0,
+                               I->val, 0, I->aux, I->line, b) != 0) rc = RM_R_ROOM;
+                    break;
+
+                case IR_GETARG:
+                    if ((I->aux >> 8) >= 8) { rc = RM_R_64; break; }
+                    fresh = nv++;
+                    if (rm_put(ins, &n, max, RM_GETARG, 1, fresh, 0, 0,
+                               I->val, 0, I->aux, I->line, b) != 0) rc = RM_R_ROOM;
+                    if (d >= RMIR_MAX_STK) { rc = RM_R_STACK; break; }
+                    stk[d++] = fresh;
+                    break;
+
+                case IR_CALL: {
+                    int na = (int)(I->val & 0x1FFFFFFF);
+                    int *av;
+                    if ((I->val >> 32) & 1) { rc = RM_R_64; break; }
+                    if ((I->val >> 34) & 3) { rc = RM_R_FLOAT; break; }
+                    if ((I->val >> 36) & 1) { rc = RM_R_OP; break; }
+                    if (na < 0 || d < na) { rc = RM_R_STACK; break; }
+                    av = (int *)mem_pool_alloc((na > 0 ? na : 1) * (int)sizeof(int));
+                    if (av == 0) { rc = RM_R_ROOM; break; }
+                    for (a = 0; a < na; a++) av[a] = stk[d - 1 - a];
+                    d -= na;
+                    if (rm_put(ins, &n, max, RM_CALL, 0, -1, 0, 0,
+                               I->val, I->name, 0, I->line, b) != 0) {
+                        rc = RM_R_ROOM; break;
+                    }
+                    ins[n - 1].args = av;
+                    ins[n - 1].nargs = na;
+                    if (!((I->val >> 33) & 1)) {      /* not void */
+                        fresh = nv++;
+                        ins[n - 1].defs_dst = 1;
+                        ins[n - 1].dst = fresh;
+                        if (d >= RMIR_MAX_STK) { rc = RM_R_STACK; break; }
+                        stk[d++] = fresh;
+                    }
+                    break;
+                }
+
+                case IR_RETURN:
+                    if (d >= 1 && rm_put(ins, &n, max, RM_RET, 0, -1, stk[d - 1], 0,
+                                         0, 0, 0, I->line, b) != 0) rc = RM_R_ROOM;
+                    d = 0;
+                    break;
+
+                /* Refused families, each for the reason the stage-A census
+                 * already gives: the value is not one machine word. */
+                case IR_PUSH_FLOAT: case IR_FADD: case IR_FSUB: case IR_FMUL:
+                case IR_FDIV: case IR_FCMP: case IR_F2I: case IR_I2F: case IR_F2F:
+                    rc = RM_R_FLOAT; break;
+                case IR_64BINARY: case IR_64PUSH: case IR_64CMP: case IR_64F2I:
+                case IR_64I2F: case IR_SEXT: case IR_ZEXT: case IR_CDECL64:
+                    rc = RM_R_64; break;
+                case IR_ASM:   rc = RM_R_ASM;    break;
+                case IR_MEMCPY: rc = RM_R_MEMCPY; break;
+                case IR_ALLOCA: rc = RM_R_ALLOCA; break;
+                case IR_SMC:   rc = RM_R_SVC;    break;
+                case IR_SIMD_ADD16: case IR_SIMD_SUB16:
+                case IR_SIMD_ADD8:  case IR_SIMD_SUB8:
+                    rc = RM_R_SIMD; break;
+                default:
+                    rc = RM_R_OP; break;
+                }
+            }
+            if (rc != RM_OK) break;
+            for (k = 0; k < B->succ_count; k++) {
+                int to = B->succ[k];
+                if (to < 0 || to >= m->blk_count) continue;
+                if (dep[to] < 0) {
+                    dep[to] = d;
+                    memcpy(ent + (size_t)to * RMIR_MAX_STK, stk,
+                           sizeof(int) * RMIR_MAX_STK);
+                    if (!queued[to]) { queued[to] = 1; q[qt++] = to; }
+                } else if (dep[to] != d ||
+                           (d > 0 &&
+                            memcmp(ent + (size_t)to * RMIR_MAX_STK, stk,
+                                   sizeof(int) * d) != 0)) {
+                    rc = RM_R_JOIN;   /* a phi would be needed: not modelled */
+                    break;
+                }
+            }
+        }
+    }
+done:
+    free(ent); free(dep); free(q); free(queued);
+    if (rc != RM_OK) return rc;
+    *n_out = n;
+    *nvreg_out = nv;
+    return RM_OK;
+}
+
+/* Re-check the two properties the whole 0.9.2 line rests on.  Returns the
+ * number of violations (0 = the translation is well formed).
+ *
+ *   1. single assignment for temporaries: a vreg >= 0 is written once, so a
+ *      later pass may treat it as a value and not a variable;
+ *   2. dominance: every use of a temporary is preceded by its definition in
+ *      the same block, or dominated by the definition's block.
+ *
+ * Frame slots are exempt from (1) on purpose -- that is the convention that
+ * makes joins phi-free -- and a slot read with no store anywhere in the
+ * function is only *counted* (`*uninit_out`), not called a violation: C code
+ * can write a slot through a pointer this IR does not follow. */
+static int ark_rmir_verify(const IrFunc *f, const MirFunc *m, const RInst *ins,
+                           int n, int nvreg, int *uninit_out) {
+    int *dblk = 0, *dpos = 0, *dcnt = 0;
+    unsigned char *slot_def = 0;
+    int i, j, bad = 0, uninit = 0, nslot;
+
+    if (uninit_out) *uninit_out = 0;
+    nslot = (int)(f->local_size / 4) + 2;
+    if (nslot < 4) nslot = 4;
+    dblk = (int *)calloc((size_t)(nvreg > 0 ? nvreg : 1), sizeof(int));
+    dpos = (int *)calloc((size_t)(nvreg > 0 ? nvreg : 1), sizeof(int));
+    dcnt = (int *)calloc((size_t)(nvreg > 0 ? nvreg : 1), sizeof(int));
+    slot_def = (unsigned char *)calloc((size_t)nslot, 1);
+    if (!dblk || !dpos || !dcnt || !slot_def) { bad = 1; goto done; }
+    for (i = 0; i < nvreg; i++) dblk[i] = -1;
+
+    for (i = 0; i < n; i++) {
+        const RInst *r = &ins[i];
+        if (!r->defs_dst) continue;
+        if (r->dst >= 0) {
+            if (r->dst >= nvreg) { bad++; continue; }
+            if (dcnt[r->dst]++ == 0) { dblk[r->dst] = r->blk; dpos[r->dst] = i; }
+        } else {
+            int s = -1 - r->dst;
+            if (s >= 0 && s < nslot) slot_def[s] = 1;
+            else bad++;
+        }
+    }
+    for (i = 0; i < nvreg; i++) if (dcnt[i] != 1) bad++;
+
+    for (i = 0; i < n; i++) {
+        const RInst *r = &ins[i];
+        for (j = 0; j < r->nsrc; j++) {
+            int s = r->src[j];
+            if (s >= 0) {
+                if (s >= nvreg || dblk[s] < 0) { bad++; continue; }
+                if (dblk[s] == r->blk) {
+                    if (dpos[s] >= i) bad++;
+                } else if (!mir_dominates(m, dblk[s], r->blk)) {
+                    bad++;
+                }
+            } else {
+                int sl = -1 - s;
+                if (sl < 0 || sl >= nslot) bad++;
+                else if (!slot_def[sl]) uninit++;
+            }
+        }
+        if (r->op == RM_CALL) {
+            for (j = 0; j < r->nargs; j++) {
+                int s = r->args[j];
+                if (s >= 0) {
+                    if (s >= nvreg || dblk[s] < 0) { bad++; continue; }
+                    if (dblk[s] == r->blk) { if (dpos[s] >= i) bad++; }
+                    else if (!mir_dominates(m, dblk[s], r->blk)) bad++;
+                } else {
+                    int sl = -1 - s;
+                    if (sl < 0 || sl >= nslot) bad++;
+                    else if (!slot_def[sl]) uninit++;
+                }
+            }
+        }
+    }
+done:
+    free(dblk); free(dpos); free(dcnt); free(slot_def);
+    if (uninit_out) *uninit_out = uninit;
+    return bad;
+}
+
+/* One line per instruction, for the gate's shape assertions:
+ *   <i> <dst|-> <OP> <s0> <s1> [val] [aux] [name]
+ * A `-` in a slot means "not used". */
+static void ark_rmir_dump(FILE *fp, const char *fname, const RInst *ins, int n) {
+    int i, j;
+    fprintf(fp, "rmir %s n=%d\n", fname ? fname : "?", n);
+    for (i = 0; i < n; i++) {
+        const RInst *r = &ins[i];
+        fprintf(fp, "%4d ", i);
+        if (r->defs_dst) {
+            if (r->dst >= 0) fprintf(fp, "v%d ", r->dst);
+            else fprintf(fp, "s%d ", -1 - r->dst);
+        } else {
+            fprintf(fp, "- ");
+        }
+        fprintf(fp, "%-9s", rm_op_name[r->op]);
+        for (j = 0; j < 2; j++) {
+            if (j < r->nsrc) {
+                if (r->src[j] >= 0) fprintf(fp, " v%d", r->src[j]);
+                else fprintf(fp, " s%d", -1 - r->src[j]);
+            } else {
+                fprintf(fp, " -");
+            }
+        }
+        if (r->op == RM_CALL) {
+            fprintf(fp, " [");
+            for (j = 0; j < r->nargs; j++) {
+                if (r->args[j] >= 0) fprintf(fp, "%sv%d", j ? "," : "", r->args[j]);
+                else fprintf(fp, "%ss%d", j ? "," : "", -1 - r->args[j]);
+            }
+            fprintf(fp, "]");
+        }
+        fprintf(fp, " val=%lld aux=%d", r->val, r->aux);
+        if (r->name) fprintf(fp, " name=%s", r->name);
+        fprintf(fp, "\n");
+    }
+}
+
+/* Census over one function: build, verify, count.  Called from codegen_arm()
+ * only when the environment asked, so the default build is untouched. */
+static void ark_rmir_census(IrFunc *f) {
+    MirFunc m;
+    RInst *ins;
+    int n = 0, nv = 0, rc, uninit = 0, bad, i;
+    const char *dump = getenv("ARKCC_RMIR_DUMP");
+    const char *self = getenv("ARKCC_RMIR_SELFTEST");
+    int want_dump = (dump && *dump && *dump != '0');
+    int want_self = (self && *self && *self != '0');
+
+    if (f == 0) return;
+    if (mir_build(f, &m) != 0 || m.blk_count <= 0) { g_rm_ref[RM_R_OP]++; return; }
+    ins = (RInst *)calloc((size_t)(f->code_count + 8), sizeof(RInst));
+    if (ins == 0) { g_rm_ref[RM_R_ROOM]++; return; }
+    g_rm_fn_total++;
+    g_rm_in_total += f->code_count;
+    rc = ark_rmir_build(f, &m, ins, f->code_count + 8, &n, &nv);
+    if (rc != RM_OK) {
+        g_rm_ref[rc]++;
+        if (want_dump) fprintf(stderr, "rmir-refuse %s: %s\n",
+                               f->name ? f->name : "?", rm_reason[rc]);
+    } else {
+        if (want_self) {
+            /* Deliberate defect, one per function: point the first read at a
+             * virtual register that is never defined.  A verifier that always
+             * answers "0 violations" would make the gate's zero a statement
+             * about nothing, so the self-test demands a non-zero answer. */
+            for (i = 0; i < n; i++) {
+                if (ins[i].nsrc > 0) { ins[i].src[0] = nv + 7; break; }
+            }
+        }
+        bad = ark_rmir_verify(f, &m, ins, n, nv, &uninit);
+        if (want_self) {
+            fprintf(stderr, "rmir-selftest %s: %d violation(s)\n",
+                    f->name ? f->name : "?", bad);
+            free(ins);
+            return;      /* a corrupted array must not enter the census */
+        }
+        g_rm_fn_ok++;
+        g_rm_in_cov += f->code_count;
+        g_rm_inst_emitted += n;
+        g_rm_verify_bad += bad;
+        if (want_dump) {
+            ark_rmir_dump(stderr, f->name, ins, n);
+            if (bad) fprintf(stderr, "rmir-verify %s: %d violation(s), %d uninit slot read(s)\n",
+                             f->name ? f->name : "?", bad, uninit);
+        }
+    }
+    free(ins);
+}
+
+static void ark_rmir_report(void) {
+    const char *e = getenv("ARKCC_RMIR_COV");
+    int i;
+    if (!e || !*e || *e == '0') return;
+    fprintf(stderr, "rmir: functions=%ld translated=%ld refused=%ld "
+                    "ir=%ld covered=%ld inst=%ld verify_bad=%ld\n",
+            g_rm_fn_total, g_rm_fn_ok, g_rm_fn_total - g_rm_fn_ok,
+            g_rm_in_total, g_rm_in_cov, g_rm_inst_emitted, g_rm_verify_bad);
+    fprintf(stderr, "rmir-refuse:");
+    for (i = 1; i < RM_R_COUNT; i++)
+        if (g_rm_ref[i]) fprintf(stderr, " %s=%ld", rm_reason[i], g_rm_ref[i]);
+    fprintf(stderr, "\n");
+}
+#endif /* ARKCC_FEATURE_RMIR */
+
 #if ARKCC_FEATURE_VREGEMIT
 
 /* ------------- V-5-a routing: which functions the vreg emitter may take ----
@@ -17404,6 +18096,13 @@ static char *codegen_arm(IrProgram *prog) {
          * census values pinned by tests/run_alloc_tests.py, come next. */
         if (g_config.enable_opt_alloc) ark_alloc_census(f);
 #endif
+#if ARKCC_FEATURE_RMIR
+        /* 0.9.2 alpha-1: translate this function to explicit three-address
+         * form and verify it, but only when the environment asks.  RMIR emits
+         * no instruction and changes no output byte -- with no variable set
+         * this is one getenv() and nothing else. */
+        if (ark_rmir_wanted()) ark_rmir_census(f);
+#endif
         fstart = buf.len;
 #if ARKCC_FEATURE_OPT_VEMIT
         /* V-6 admission is decided before the prologue: a refused function
@@ -21094,6 +21793,9 @@ arm_skip_frame_opts:
 #endif
 #if ARKCC_FEATURE_OPT_ALLOC
     if (g_config.enable_opt_alloc) ark_alloc_report();
+#endif
+#if ARKCC_FEATURE_RMIR
+    ark_rmir_report();
 #endif
 #if ARKCC_FEATURE_OPT_ISEL2
     if (g_config.enable_opt_isel2) ark_isel2_report();

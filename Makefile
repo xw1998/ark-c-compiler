@@ -52,7 +52,7 @@ $(ARKCC): $(SRC) $(wildcard include/*.h)
 # (stdlib / install / reloc-text / x86-64) execute code and memlint checks the
 # diagnostics the compiler prints; those are what actually say "this works",
 # the rest only say "this still compiles".
-test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-floatlit test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch test-imm test-peep test-cbranch test-copyprop test-cmat test-slotreg test-opalloc test-live test-spill test-ldhoist test-pair test-stackframe test-deadins test-userasm test-movimm test-litpool test-coalesce test-voldmb test-volmem test-constcond test-boolmat test-exit test-bitmask test-ladder test-regbirth test-chainfold test-movtpair test-pushpop test-addrfold test-remat test-vregemit test-alloc test-option test-rstack test-subpostinc test-crop test-vemit test-isel2
+test: test-arm test-c test-x86 test-riscv test-stdlib test-install test-reloc-text test-x86-64 test-memlint test-enumcheck test-pipeline test-unusedresult test-mir test-loop test-modern test-atomic test-ipo test-constglobal test-objir test-partiallink test-deadinline test-strinit test-layout test-complit test-knr test-bitfield test-dblprec test-floatlit test-softfloat test-arm-exec test-buffers test-tailmerge test-tailcall test-divconst test-xblock test-sizeweight test-inline test-vstack test-addr test-strength test-cbz test-branch test-imm test-peep test-cbranch test-copyprop test-cmat test-slotreg test-opalloc test-live test-spill test-ldhoist test-pair test-stackframe test-deadins test-userasm test-movimm test-litpool test-coalesce test-voldmb test-volmem test-constcond test-boolmat test-exit test-bitmask test-ladder test-regbirth test-chainfold test-movtpair test-pushpop test-addrfold test-remat test-vregemit test-alloc test-option test-rstack test-subpostinc test-crop test-vemit test-isel2 test-rmir
 
 test-arm: $(ARKCC)
 	./$(ARKCC) examples/hello.c -target arm -S -o $(NULLDEV)
@@ -466,6 +466,18 @@ test-vemit: $(ARKCC)
 # (C3900U) while writing the same text when the switch is absent.
 test-isel2: $(ARKCC)
 	$(PYTHON) tests/run_isel2_tests.py ./$(ARKCC)
+# Gate for the 0.9.2 alpha-1 register-machine IR (S55): translate a function's
+# IR into explicit three-address form (every value a virtual register, every
+# instruction naming its sources and destination) and verify it.  It emits
+# nothing and changes no output byte; it only measures, and only when
+# ARKCC_RMIR_COV / ARKCC_RMIR_DUMP asks.  On the 95-unit corpus 181 of 212
+# functions and 6,884 of 17,540 IR instructions translate, producing 5,942
+# RMIR instructions with zero verifier violations; the 31 refusals are 27
+# joins (a phi would be needed) and 4 64-bit functions.  The gate pins that
+# set, OFF IS OFF byte for byte, a self-test that proves the verifier can
+# fail, five refusal fixtures, and the RMIR=0/1 crop matrix.
+test-rmir: $(ARKCC)
+	$(PYTHON) tests/run_rmir_tests.py ./$(ARKCC)
 
 test-live: $(ARKCC)
 	$(PYTHON) tests/run_live_tests.py ./$(ARKCC)
