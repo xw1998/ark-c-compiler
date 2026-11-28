@@ -5969,3 +5969,92 @@ Alpha-3 therefore cannot pretend the pool is enough:
 - anti-false-pass: the gate asserts `translated(207) > 181` and `join refusals 1 < 27` -- the two
   modes must disagree, or "phi works" would be a statement about nothing -- and that
   `stores == 2 x slots` (no slot allocated without a store).
+
+### 58 0.9.2 alpha-3 pre-registration: the RMIR emitter (frozen before implementation)
+
+#### 58.1 Why the baseline has to be measured first
+
+Section 39.6 set alpha-3's stage-A criterion at "the whole corpus <= 8,588". That is an absolute
+number, but it was read against the **old emitter** on 2026-11-27. Since then the corpus has moved
+under the measurement -- alpha-2b raised the translatable set from 181 to 207 -- so carrying 8,588
+over without re-checking would be aiming at a target that may no longer be the right one. The
+lesson of section 53 is exactly this: a pre-registration that skips the baseline can only be
+withdrawn after the run.
+
+So this section **freezes and implements nothing**: first measure the three things the emitter
+needs (the corpus it must beat, the set it is allowed to touch, and the instruction families it can
+actually remove), then write the criterion, then start writing the emitter.
+
+#### 58.2 Baseline (`tools/measure_rmir_emit_baseline.py`, HEAD = S57's `6e9f2ec`)
+
+Same switches as the gate (`H.BASE + STACK`, `ARKCC_RMIR_PHI=1 ARKCC_RMIR_LS=1`):
+
+| quantity | reading |
+| --- | ---: |
+| corpus total (the 95 TUs the gate pins) | **9,588** / 354,989 B |
+| carried by alpha-2b's 207 translatable functions | 8,835 (92.1%) |
+| ...of which functions with **8-pool spills <= 4** (alpha-3's emitted set) | **206 functions / 7,654 insns** |
+| ...of which functions with 8-pool spills > 4 (stay on the old path) | **1 / 1,181 insns** (`HAL_DMAEx_MultiBufferStart_IT`, spills8=152) |
+| the 5 untranslated functions (stay on the old path) | 753 insns |
+
+The three families inside the emitted set that a change of shape removes outright:
+
+| family | count | share of 7,654 |
+| --- | ---: | ---: |
+| `MOV` family | 1,531 (of which **1,104** touch `r0`) | 20.0% |
+| `PUSH`/`POP` (value stack) | 652 | 8.5% |
+| frame access `LDR/STR [... sp ...]` | 423 | 5.5% |
+| all three | **2,179** | **28.5%** |
+| non-frame `LDR/STR` (real objects, volatile registers) | 1,906 | 24.9% |
+
+**The same measurement carries a warning**: the 207 functions' RMIR is **15,906 instructions**. A
+straight one-to-one emission would therefore produce **1.80x** today's text. The emitter has to earn
+its keep by **folding** (a `LOAD` folded into an operand, temporaries left in registers, a merge slot
+materialised only across blocks); without that it is born worse than the old path, which is exactly
+how V-6 died in section 53 (semantically green, +862 instructions).
+
+#### 58.3 The frozen criteria (written before the run, unchanged after it)
+
+| # | criterion | how it is counted |
+| --- | --- | --- |
+| C1 | **OFF IS OFF**: with the switch off, the 95 TUs are byte-identical to HEAD | both 9,588 insns and 354,989 B must hold |
+| C2 | **the routed set is exactly the 206 functions** (8-pool spills <= 4); the one heavy spiller and the five refusals stay on the old path with byte-identical text | per-TU diff |
+| C3 | **absolute count: the emitted set <= 6,654** (= 7,654 - 1,000); the whole corpus <= **8,588** (= section 39.6 stage A) | absolute counts only |
+| C4 | **same answers**: `tests/arm_exec/` agrees per function; unicorn value/RAM snapshots agree; at least three fixtures specific to the emitting path | gate |
+| C5 | **spill bound**: at most 4 spilled values per function, one frame slot each; a spill must never change an answer | gate assertion |
+| C6 | **crop**: `ARKCC_FEATURE_RMIR_EMIT` defaults to 0; `STM32_MIN` profile 0; cut, it refuses by name (`C3900U`) | build matrix |
+| C7 | **anti-false-pass**: the switch must actually change the routed functions' text (>= 90% of lines differ) and the corpus total must be strictly below 9,588 | gate |
+
+C3's 1,000 is not a guess: it is **45.9% of the 2,179 instructions in the three removable families**.
+An emitter that cannot take half of the families it directly faces is the section 53 outcome again,
+and there is no reason to keep iterating on that shape.
+
+#### 58.4 Abort rules (also pre-registered)
+
+1. If the **first complete reading** (minimal emitter: one-to-one plus copy propagation) puts the
+   emitted set **above 7,654** -- worse than today -- stop and re-price; do **not** pile peepholes
+   onto that shape;
+2. if the **second reading** (with `LOAD` folding and cross-block slot materialisation) is still
+   above 6,654, **withdraw** the whole slice as pre-registered (archive it, default off, record
+   `not_passed_as_frozen`); do not retro-accept it;
+3. any reading with `verify_bad > 0`, a disagreeing answer, or a C5 breach is an immediate
+   withdrawal.
+
+#### 58.5 Not in this slice
+
+- **No** RPO linearisation (the candidate recorded in section 57.7): it would move alpha-2/alpha-2b's
+  pinned numbers and needs its own pre-registration;
+- **No** fallback for more than 4 eight-pool spills (`HAL_DMAEx_MultiBufferStart_IT`'s 152 spills are
+  an artefact of the linearisation convention; settle RPO first);
+- **No** tail merging, `switch` lowering or jump-density work (stage C of section 39.6); those come
+  after C3 is met.
+
+#### 58.6 Reproducing it
+
+```
+python tools/measure_rmir_emit_baseline.py ./arkcc.exe
+```
+
+The script walks all 95 TUs once and prints every number in 58.2; it uses
+`tests/run_chainfold_tests.py`'s `corpus_units()` / `is_insn()` / `insn()`, so it shares the gate's
+corpus and its definition of an instruction line.
